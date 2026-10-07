@@ -116,6 +116,32 @@ def bounded_capture(argv, timeout=60, env=None, cwd=None, stdout_limit=65536, st
         proc.stderr.close()
 
 
+# Default discovery builds share the repository's one-minute incremental build budget.
+BUILD_TIMEOUT = 60
+
+
+def build_discovery():
+    """Build before output allocation; explicitly override Cargo's configured target directory."""
+    root = HERE.parents[1]
+    selected = pathlib.Path(os.environ.get("CARGO_TARGET_DIR") or "target")
+    target = (root / selected).resolve()
+    env = dict(os.environ, CARGO_TARGET_DIR=str(target))
+    try:
+        code, raw, err = bounded_capture(
+            ["nice", "cargo", "build", "--locked", "--target-dir", str(target)],
+            timeout=BUILD_TIMEOUT, env=env, cwd=root)
+    except (ValueError, OSError) as e:
+        raise ValueError("cannot build discovery binary: " + str(e)) from e
+    # Diagnostics remain bounded by bounded_capture; stdout is reserved for the bound binary path.
+    for data in (raw, err):
+        if data:
+            print(data.decode("utf-8", errors="replace"), end="", file=sys.stderr)
+    if code:
+        raise ValueError(f"cannot build discovery binary: cargo exited {code}")
+    print(target / "debug/herdr-threads")
+    return 0
+
+
 def emit_shell_functions(companion, timeout=5):
     """Complete one bounded owned emission before the shell loads any functions."""
     code, raw, _ = bounded_capture([sys.executable, str(companion), "--shell-functions"], timeout=timeout)
@@ -396,6 +422,23 @@ def select_adapters(discovery, selector):
     if any(x not in ids for x in chosen):
         raise ValueError("unknown harness")
     return [a for a in adapters if a["id"] in chosen]
+
+
+def required_preflight(adapters):
+    """Refuse the complete validated selection before allocating output or attempting work."""
+    problems = []
+    if not adapters:
+        problems.append("empty selection")
+    for adapter in adapters:
+        strategy = adapter.get("canary_strategy")
+        if strategy is None:
+            problems.append(adapter["id"] + ": unsupported strategy")
+        elif not strategy.get("model_key_env"):
+            problems.append(adapter["id"] + ": no declared model key")
+        elif not os.environ.get(strategy["model_key_env"]):
+            problems.append(adapter["id"] + ": " + strategy["model_key_env"] + " is empty or unset")
+    if problems:
+        raise ValueError("--model-tier required: " + "; ".join(problems))
 
 
 def isolated_env(work, strategy, stage):
@@ -702,7 +745,7 @@ def legacy_companion(argv, harness, companion):
 def strategy_main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", required=True)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out")
     ap.add_argument("--harness", default="all")
     ap.add_argument("--model-tier", choices=("auto", "off", "required"), default="auto")
     ap.add_argument("--versions", default="since-verified")
@@ -715,16 +758,60 @@ def strategy_main(argv):
     ap.add_argument("--evidence-stage", choices=("source_captured", "no_model", "live"))
     args = ap.parse_args(argv)
     root = HERE.parents[1]
-    out = pathlib.Path(args.out).resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    rc, raw, _ = bounded_capture([args.binary, "adapters", "--json"], timeout=30)
+    binary = pathlib.Path(args.binary).resolve()
+    rc, raw, _ = bounded_capture([str(binary), "adapters", "--json"], timeout=30)
     if rc:
         raise ValueError("same-binary adapter discovery failed")
     registry = _json(raw, 65536)
     adapters = select_adapters(registry, args.harness)
+    if args.model_tier == "required":
+        required_preflight(adapters)
     doc = _sibling("versions").load_versions_json(args.baseline_json) if args.baseline_json else {"rows": []}
+    temporary = args.out is None
+    if temporary:
+        # This directory also contains bisect.py; import tempfile without shadowing stdlib bisect.
+        saved_path = sys.path[:]
+        try:
+            sys.path[:] = [p for p in sys.path if os.path.realpath(p or ".") != str(HERE)]
+            import tempfile
+        finally:
+            sys.path[:] = saved_path
+        temp_root = pathlib.Path(os.environ.get("TMPDIR") or "/tmp").resolve()
+        refuse_output(temp_root / "hc-output", root)
+        out = pathlib.Path(tempfile.mkdtemp(prefix="hc-", dir=str(temp_root)))
+    else:
+        out = pathlib.Path(args.out).resolve()
+    try:
+        return write_strategy_output(args, adapters, binary, root, out, doc)
+    finally:
+        if temporary and not args.keep:
+            import shutil
+            shutil.rmtree(out)
+
+
+def refuse_output(out, root):
+    """Keep the shell output fences when Python owns explicit or temporary allocation."""
+    out, root = pathlib.Path(out).resolve(), pathlib.Path(root).resolve()
+    home = pathlib.Path(os.path.expanduser("~"))
+    for name in (".claude", ".codex", ".aisw"):
+        forbidden = (home / name).resolve()
+        if out.is_relative_to(forbidden):
+            raise ValueError("--out is inside " + str(forbidden))
+    if out.is_relative_to(root):
+        relative = str(out.relative_to(root))
+        _, tracked, _ = bounded_capture(["git", "-C", str(root), "ls-files", "--", relative], timeout=5)
+        if tracked:
+            raise ValueError("--out is inside the tracked tree")
+        rc, _, _ = bounded_capture(["git", "-C", str(root), "check-ignore", "-q", "--", relative], timeout=5)
+        if rc:
+            raise ValueError("--out is inside the repository checkout and not git-ignored")
+
+
+def write_strategy_output(args, adapters, binary, root, out, doc):
+    refuse_output(out, root)
+    out.mkdir(parents=True, exist_ok=True)
     index = {"schema_version": 1, "attempts": []}
-    blocks = [run_strategy(a, out, pathlib.Path(args.binary).resolve(), root, args.model_tier,
+    blocks = [run_strategy(a, out, binary, root, args.model_tier,
                           args.runtime_command_file, args.versions, doc, args.baseline, args.bisect,
                           index, args.versions_json, args.evidence_stage) for a in adapters]
     validate_index(json.dumps(index).encode(), out, adapters)
@@ -742,6 +829,8 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _interrupted)
     signal.signal(signal.SIGINT, _interrupted)
     try:
+        if sys.argv[1:] == ["build-discovery"]:
+            sys.exit(build_discovery())
         if sys.argv[1:2] == ["shell-functions"]:
             if len(sys.argv) != 3:
                 raise ValueError("shell-functions needs one companion path")
