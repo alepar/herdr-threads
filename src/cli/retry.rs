@@ -10,6 +10,35 @@ use crate::{
 };
 use std::io::{self, Write};
 
+/// Administrative recovery retry classifies the separate operator origin before
+/// any lock, output or cleanup. Production activation supplies canonical guards.
+#[allow(clippy::too_many_arguments)]
+pub fn run_topology_recovery_retry_to_writer<C: crate::ports::LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    reference: &IntentRef,
+    actor: super::actor_route::InvocationActor,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    clock: &dyn crate::protocol::time::Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<CommandResult, super::RunError> {
+    if preflight_original_actor(
+        journal.root(),
+        &reference.recovery_ref(),
+        actor,
+        &output.context,
+    )? != super::journal::OriginalActor::HumanOrOperator
+    {
+        return Err(super::invalid_request(
+            "recovery retry requires original operator decision",
+        ));
+    }
+    super::topology_recover::retry_to_writer(
+        journal, reference, namespace, client, clock, output, writer,
+    )
+}
+
 /// Additive internal delivery consumer. Public dispatch stays Unsupported until
 /// activation supplies canonical namespace/current-recipient guards. The wrapper
 /// classifies exact immutable original bytes before entering the strict executor.

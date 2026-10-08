@@ -67,6 +67,7 @@ pub enum CliAction {
     Launch(super::launch::LaunchRequest),
     Handoff(super::handoff::HandoffRequest),
     TopologyHandoff(super::topology_handoff::Request),
+    TopologyRecover(super::topology_recover::Request),
     /// `me init`: record the invoking pane as the person's own seat identity.
     /// `operator` overrides the agent-to-human guard (TRUST-POLICY A4).
     MeInit {
@@ -238,6 +239,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::Launch(_)
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
+        | CliAction::TopologyRecover(_)
         | CliAction::MeInit { .. }
         | CliAction::Skill
         | CliAction::ContractId { .. }
@@ -678,8 +680,10 @@ enum Top {
     #[command(after_help = super::launch::LAUNCH_HELP)]
     Launch(LaunchArgs),
     /// Deliver one durable task, then start an agent in an explicit pane.
-    #[command(after_help = super::handoff::HANDOFF_HELP)]
+    #[command(after_help = format!("{}\n\n{}", super::handoff::HANDOFF_HELP, super::topology_recover::RECOVERY_HELP))]
     Handoff(HandoffArgs),
+    #[command(name = "_topology-recover", hide = true)]
+    TopologyRecover(RecoveryArgs),
     /// Your own identity as a person in this Herdr pane.
     Me {
         #[command(subcommand)]
@@ -1212,6 +1216,22 @@ struct HandoffArgs {
 }
 
 #[derive(Args)]
+#[command(about = "Administrative inspection assertion for one exact bootstrap attempt; public execution awaits canonical guards", group(clap::ArgGroup::new("disposition").required(true).multiple(false).args(["created_pane", "not_created", "cancel"])))]
+struct RecoveryArgs {
+    reference: String,
+    #[arg(long, required = true)]
+    attempt: u32,
+    #[arg(long)]
+    created_pane: Option<String>,
+    #[arg(long)]
+    not_created: bool,
+    #[arg(long, requires = "reason")]
+    cancel: bool,
+    #[arg(long, requires = "cancel", conflicts_with_all = ["created_pane", "not_created"])]
+    reason: Option<String>,
+}
+
+#[derive(Args)]
 struct ViewArgs {
     #[arg(long)]
     once: bool,
@@ -1401,19 +1421,33 @@ where
 {
     use super::actor_route::{InvocationActor, command_index, guidance, split_actor_os_argv};
     let original: Vec<std::ffi::OsString> = argv.into_iter().map(Into::into).collect();
-    let (actor, retained) = split_actor_os_argv(original.clone());
+    let (actor, mut retained) = split_actor_os_argv(original.clone());
     let command = command_index(&retained);
     if actor == InvocationActor::Agent && command.is_some_and(|i| retained[i] == "human") {
         return Err(ParseFailure::Invalid(invalid(guidance(&original, command))));
+    }
+    // Recognize only the command prefix. A legacy body after `--` is data.
+    if let Some(index) = command {
+        if retained[index] == "_topology-recover" {
+            return Err(ParseFailure::Invalid(invalid("use human handoff recover")));
+        }
+        if retained[index] == "handoff"
+            && retained
+                .get(index + 1)
+                .is_some_and(|value| value == "recover")
+        {
+            retained[index] = "_topology-recover".into();
+            retained.remove(index + 1);
+        }
     }
     let mut cli = Cli::try_parse_from(retained.clone()).map_err(|error| {
         use clap::error::ErrorKind;
         match error.kind() {
             ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
-                ParseFailure::Informational(error.render().to_string())
+                ParseFailure::Informational(error.render().to_string().replace("_topology-recover", "human handoff recover"))
             }
             ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-                ParseFailure::Usage(error.render().to_string())
+                ParseFailure::Usage(error.render().to_string().replace("_topology-recover", "human handoff recover"))
             }
             _ => {
                 let legacy = command.is_some_and(|i| {
@@ -1421,7 +1455,7 @@ where
                     let second = retained.get(i + 1).and_then(|s| s.to_str());
                     matches!((first, second), (Some("me"), Some("init")) | (Some("seat"), Some("rebind" | "retire")) | (Some("service"), Some("disconnect")))
                 });
-                let text = error.render().to_string();
+                let text = error.render().to_string().replace("_topology-recover", "human handoff recover");
                 let text = if actor == InvocationActor::Agent && legacy {
                     format!("{text}\nPerson/operator actions require immediate human namespace; supplied arguments remain invalid. Supply the required flags listed above, including --operator for operator repair")
                 } else if text.contains("--cooperative-harness") {
@@ -1484,6 +1518,7 @@ where
     let requires_human = matches!(
         &parsed.action,
         CliAction::MeInit { .. }
+            | CliAction::TopologyRecover(_)
             | CliAction::Mutation(
                 MutationSpec::FreshSeat(_)
                     | MutationSpec::Rebind { .. }
@@ -2181,6 +2216,31 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
                 pane_label: None,
             })
         }
+        Top::TopologyRecover(args) => {
+            use super::topology_recover::{Assertion, Request};
+            let attempt =
+                crate::protocol::handoff::BootstrapAttempt::new(args.attempt).map_err(invalid)?;
+            let disposition = if let Some(pane) = args.created_pane {
+                Assertion::CreatedPane(id(pane, HostTargetId::parse)?)
+            } else if args.not_created {
+                Assertion::NotCreated
+            } else {
+                let reason = args
+                    .reason
+                    .ok_or_else(|| invalid("cancellation requires --reason"))?;
+                if reason.trim().is_empty() || reason.len() > 4096 {
+                    return Err(invalid(
+                        "cancellation reason must be nonblank and at most 4096 UTF-8 bytes",
+                    ));
+                }
+                Assertion::Cancelled { reason }
+            };
+            CliAction::TopologyRecover(Request {
+                reference: id(args.reference, LocalRecoveryRef::parse)?,
+                attempt,
+                disposition,
+            })
+        }
         Top::Handoff(args) => {
             if !args.new_thread
                 && (args.thread_name.is_some() || args.topic.is_some() || args.goal.is_some())
@@ -2339,7 +2399,7 @@ pub fn reject_inert_handoff(
     if semantic.namespace().is_some() {
         return Err(crate::protocol::results::ApiError::new(
             crate::protocol::results::ErrorCode::Unsupported,
-            "bootstrap and delivery execution require canonical guards and original actor classification",
+            "bootstrap, delivery and recovery execution require canonical guards and original actor classification",
         ));
     }
     Ok(())

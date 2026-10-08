@@ -207,6 +207,8 @@ pub enum SemanticMutation {
     },
     HandoffBootstrap(Box<BootstrapPlan>),
     HandoffDelivery(Box<DeliveryPlan>),
+    /// Separate local-account decision; nested original agent claim is a reference.
+    OperatorRecoverBootstrap(Box<super::topology_recover::RecoveryPlan>),
 }
 
 /// Independent versioned immutable plans; old HandoffPlan stays byte-for-byte.
@@ -244,6 +246,9 @@ impl SemanticMutation {
         match self {
             Self::HandoffBootstrap(p) => Some(&p.payload.handoff.namespace),
             Self::HandoffDelivery(p) => Some(&p.payload.namespace),
+            Self::OperatorRecoverBootstrap(p) => {
+                Some(&p.request.identity.payload.handoff.namespace)
+            }
             Self::Frozen { mutation, .. } => mutation.namespace(),
             _ => None,
         }
@@ -291,6 +296,7 @@ impl SemanticMutation {
             Self::Handoff(plan) => plan.validate(),
             Self::HandoffBootstrap(plan) => plan.validate(),
             Self::HandoffDelivery(plan) => plan.validate(),
+            Self::OperatorRecoverBootstrap(plan) => plan.validate(),
             Self::Frozen { mutation, .. } => {
                 if mutation.is_operator()
                     || matches!(
@@ -412,6 +418,7 @@ impl SemanticMutation {
                 | Self::OperatorRetire { .. }
                 | Self::OperatorReplace { .. }
                 | Self::OperatorOrphanInvite { .. }
+                | Self::OperatorRecoverBootstrap(_)
         )
     }
     pub fn kind(&self) -> IntentKind {
@@ -419,6 +426,7 @@ impl SemanticMutation {
             Self::Handoff(_) => IntentKind::Handoff,
             Self::HandoffBootstrap(_) => IntentKind::HandoffBootstrap,
             Self::HandoffDelivery(_) => IntentKind::HandoffDelivery,
+            Self::OperatorRecoverBootstrap(_) => IntentKind::OperatorRecoverBootstrap,
             Self::Frozen { mutation, .. } => mutation.kind(),
             Self::CooperativeCheckIn { .. } => IntentKind::CheckIn,
             Self::ResolveSeat { .. } => IntentKind::ResolveSeat,
@@ -475,7 +483,9 @@ impl SemanticMutation {
         };
         let command = match self {
             Self::Handoff(_) => return Err(invalid("handoff requires compound coordinator")),
-            Self::HandoffBootstrap(_) | Self::HandoffDelivery(_) => {
+            Self::HandoffBootstrap(_)
+            | Self::HandoffDelivery(_)
+            | Self::OperatorRecoverBootstrap(_) => {
                 return Err(invalid("topology contract is inert"));
             }
             Self::Frozen { claim, mutation } => {
@@ -1517,6 +1527,10 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
                         | SemanticMutation::ContinuityCheckIn { .. }
                 )
         }
+        (
+            IntentScope::Operator { local_user_uid, .. },
+            SemanticMutation::OperatorRecoverBootstrap(plan),
+        ) => *local_user_uid == plan.operator_uid,
         (IntentScope::Operator { .. }, request) => request.is_operator(),
         _ => false,
     }

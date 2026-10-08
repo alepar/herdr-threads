@@ -544,6 +544,17 @@ attempt. A recorded unknown cannot later be reclassified as transport zero submi
 Unknown creation remains fenced; delayed older creation cannot replace
 an inspected noncreation decision or a later attempt.
 
+The public administrative grammar is immediate `human handoff recover REF --attempt N`
+with exactly one `--created-pane EXACT_PANE`, `--not-created`, or `--cancel --reason TEXT`.
+Pinned routing and output flags follow immediate `human`; a root `--operator` form
+cannot substitute for this namespace. Recovery accepts bootstrap references only.
+The separate local recovery intent has operator UID scope and retains the original
+bootstrap reference, agent identity and exact inspected attempt as immutable data.
+Its nested original caller claim is a reference, never the operator decision's caller.
+The same effective UID must retry it. Original actor classification runs before
+completed presentation or cleanup; root agent retry refuses an operator decision.
+Public recovery execution remains inert until the production canonical guards are integrated.
+
 Administrative recovery is recorded separately as `operator:local-user:<uid>`,
 using the authenticated local-account peer UID. The decision freezes an explicit
 attempt number and the complete assertion payload. Exact replay presents that

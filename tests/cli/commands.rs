@@ -1764,3 +1764,46 @@ fn actor_prerequisite_real_os_parser_keeps_human_data_and_opaque_guidance() {
     let error = parse_argv(argv).unwrap_err();
     assert!(error.detail.contains("opaque argv cannot be rendered as UTF-8"), "{error:?}");
 }
+
+#[test]
+fn human_topology_recovery_accepts_exact_attempt_qualified_grammar() {
+    for suffix in [vec!["--created-pane", "w1:p2"], vec!["--not-created"], vec!["--cancel", "--reason", "inspected abandonment"]] {
+        let mut argv = vec!["ht", "human", "--state-dir", "/quoted state", "--host-endpoint", "/quoted host.sock", "--json", "handoff", "recover", "local:1", "--attempt", "7"];
+        argv.extend(suffix);
+        let parsed = parse_argv(argv).expect("approved human recovery grammar must parse");
+        assert_eq!(parsed.actor, super::super::actor_route::InvocationActor::Human);
+        assert_eq!(parsed.output.format, OutputFormat::Json);
+    }
+}
+
+#[test]
+fn human_topology_recovery_rejects_missing_extra_and_invalid_assertions() {
+    let cases = [vec!["--not-created"], vec!["--attempt", "0", "--not-created"], vec!["--attempt", "1"], vec!["--attempt", "1", "--not-created", "--cancel", "--reason", "x"], vec!["--attempt", "1", "--cancel"], vec!["--attempt", "1", "--cancel", "--reason", "   "], vec!["--attempt", "1", "--not-created", "--reason", "x"]];
+    for suffix in cases {
+        let mut argv = vec!["ht", "human", "handoff", "recover", "local:1"];
+        argv.extend(suffix);
+        assert!(parse_argv(argv.clone()).is_err(), "unexpected accepted argv: {argv:?}");
+    }
+    for reason in ["x".repeat(4097), "é".repeat(2049)] {
+        assert!(parse_argv(["ht", "human", "handoff", "recover", "local:1", "--attempt", "1", "--cancel", "--reason", reason.as_str()]).is_err());
+    }
+    assert!(parse_argv(["ht", "handoff", "recover", "local:1", "--attempt", "1", "--not-created"]).is_err());
+    assert!(parse_argv(["ht", "--json", "human", "handoff", "recover", "local:1", "--attempt", "1", "--not-created"]).is_err());
+}
+
+#[test]
+fn legacy_handoff_body_word_recover_remains_data() {
+    let parsed = parse_argv(["ht", "handoff", "--pane", "w1:p2", "--new-thread", "--kind", "codex", "--", "recover"]).unwrap();
+    let CliAction::Handoff(request) = parsed.action else { panic!("legacy launch route changed") };
+    assert_eq!(request.body, "recover");
+}
+
+#[test]
+fn human_topology_recovery_help_and_errors_use_only_canonical_route() {
+    let ParseFailure::Informational(help)=parse_argv_or_informational(["ht","human","handoff","recover","--help"]).unwrap_err() else {panic!("expected help")};
+    assert!(help.contains("ht human handoff recover"),"{help}");assert!(help.contains("--attempt"));assert!(!help.contains("_topology-recover"));
+    let error=parse_argv(["ht","human","handoff","recover","local:1","--not-created"]).unwrap_err();assert!(error.detail.contains("human handoff recover"),"{error:?}");assert!(!error.detail.contains("_topology-recover"));
+    for argv in [vec!["ht","human","_topology-recover","local:1","--attempt","1","--not-created"],vec!["ht","--state-dir","human","handoff","recover","local:1","--attempt","1","--not-created"],vec!["ht","handoff","human","recover","local:1","--attempt","1","--not-created"],vec!["ht","handoff","recover","local:1","--attempt","1","--not-created","--operator"]] { assert!(parse_argv(argv).is_err()); }
+    let parsed=parse_argv(["ht","human","--state-dir","human","handoff","recover","local:1","--attempt","1","--not-created"]).unwrap();assert_eq!(parsed.output.context.state_dir.as_deref(),Some("human"));
+    let parsed=parse_argv(["ht","handoff","--pane","w1:p2","--thread","t1","--kind","codex","--agent-arg=recover","--","human handoff recover local:1"]).unwrap();let CliAction::Handoff(request)=parsed.action else {panic!("legacy route changed")};assert_eq!(request.body,"human handoff recover local:1");assert_eq!(request.launch.argv,vec!["recover"]);
+}
