@@ -1,4 +1,4 @@
--- Allocated topology27. Startup registration waits for the actual26 composition.
+-- Allocated topology27, registered after the actual lazy delivery26 migration.
 -- Bootstrap status is retained state, never native submission permission.
 CREATE TABLE bootstrap_handoffs (
     id INTEGER PRIMARY KEY,

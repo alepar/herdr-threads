@@ -67,11 +67,8 @@ fn setup(db: &Connection) {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        25
+        27
     );
-    // Real allocated27 DDL on actual25 fixture; this does not register27 or emulate26.
-    db.execute_batch(include_str!("../../migrations/0027_handoff_topology.sql"))
-        .unwrap();
     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
         .unwrap();
     thread(db);
@@ -82,6 +79,21 @@ pub(super) fn fixture() -> Connection {
     let db = Connection::open_in_memory().unwrap();
     setup(&db);
     db
+}
+
+fn file_fixture() -> (
+    super::handoff_fences::Directory,
+    std::path::PathBuf,
+    Connection,
+) {
+    let directory = super::handoff_fences::Directory(
+        std::env::temp_dir().join(format!("ht-topology-{}", uuid::Uuid::new_v4())),
+    );
+    std::fs::create_dir(&directory.0).unwrap();
+    let path = directory.0.join("store.db");
+    let db = Connection::open(&path).unwrap();
+    setup(&db);
+    (directory, path, db)
 }
 
 fn counts(db: &Connection) -> (i64, i64, i64, i64) {
@@ -126,7 +138,7 @@ fn begin_installs_attempt_one_and_thread_protection_without_delivery() {
 }
 
 #[test]
-fn real_product_ddl_defines_normalized_records_without_registering_startup() {
+fn registered_product_ddl_defines_normalized_records() {
     let db = fixture();
     for name in [
         "bootstrap_handoffs",
@@ -405,7 +417,7 @@ fn late_attempt_failure_rolls_back_helper_rows_even_when_caller_commits() {
 
 #[test]
 fn cancelled_replay_preserves_original_identity_without_current_live_authority() {
-    let mut db = fixture();
+    let (_directory, path, mut db) = file_fixture();
     let id = identity();
     let tx = db.transaction().unwrap();
     topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
@@ -447,7 +459,7 @@ fn cancelled_replay_preserves_original_identity_without_current_live_authority()
         )
         .is_err()
     );
-    let mut changed = id;
+    let mut changed = id.clone();
     changed.claim.binding_generation = 2;
     changed.digest = changed.semantic_digest().unwrap();
     assert_eq!(
@@ -458,6 +470,23 @@ fn cancelled_replay_preserves_original_identity_without_current_live_authority()
     );
     assert_eq!(counts(&tx), (1, 1, 14, 0));
     tx.commit().unwrap();
+    drop(db);
+    let db = Connection::open(path).unwrap();
+    schema::initialize(&db, || UtcMillis(4)).unwrap();
+    assert_eq!(
+        topology_handoff::current(&db, &namespace(), &id).unwrap(),
+        Some(result)
+    );
+    db.execute_batch(
+        "DROP TRIGGER bootstrap_identity; UPDATE bootstrap_handoffs SET identity_json=x'7b7d'",
+    )
+    .unwrap();
+    assert_eq!(
+        topology_handoff::current(&db, &namespace(), &id)
+            .unwrap_err()
+            .code,
+        ErrorCode::StoreCorrupt
+    );
 }
 
 pub(super) fn created() -> herdr_threads::ports::CreatedTab {
@@ -588,7 +617,7 @@ fn bounded_slots_refuse_oversized_or_missing_terminal_reports_without_truncation
 #[test]
 fn full_completed_report_with_large_json_escaping_replays_and_rejects_tamper() {
     use sha2::{Digest, Sha256};
-    let mut db = fixture();
+    let (_directory, path, mut db) = file_fixture();
     let tx = db.transaction().unwrap();
     let mut id = identity();
     id.payload.launch.argv = vec!["\"".repeat(4096); 14];
@@ -674,15 +703,33 @@ fn full_completed_report_with_large_json_escaping_replays_and_rejects_tamper() {
         .unwrap();
     let replay = topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(3)).unwrap();
     assert_eq!(replay.completed, Some(Box::new(completed)));
-    tx.execute_batch("DROP TRIGGER bootstrap_report_immutable; PRAGMA ignore_check_constraints=ON")
+    tx.commit().unwrap();
+    drop(db);
+    let db = Connection::open(path).unwrap();
+    schema::initialize(&db, || UtcMillis(4)).unwrap();
+    assert_eq!(
+        topology_handoff::current(&db, &namespace(), &id).unwrap(),
+        Some(replay)
+    );
+    // A terminal result must still reconstruct its exact normalized current attempt.
+    db.execute_batch("PRAGMA foreign_keys=OFF; DROP TRIGGER bootstrap_terminal; UPDATE bootstrap_handoffs SET current_attempt=2").unwrap();
+    assert_eq!(
+        topology_handoff::current(&db, &namespace(), &id)
+            .unwrap_err()
+            .code,
+        ErrorCode::StoreCorrupt
+    );
+    db.execute_batch("UPDATE bootstrap_handoffs SET current_attempt=1; PRAGMA foreign_keys=ON")
         .unwrap();
-    tx.execute(
+    db.execute_batch("DROP TRIGGER bootstrap_report_immutable; PRAGMA ignore_check_constraints=ON")
+        .unwrap();
+    db.execute(
         "UPDATE bootstrap_reports SET completed_json=?1 WHERE parent_id=1",
         [vec![b' '; topology_handoff::MAX_COMPLETED_BYTES + 1]],
     )
     .unwrap();
     assert_eq!(
-        topology_handoff::current(&tx, &namespace(), &id)
+        topology_handoff::current(&db, &namespace(), &id)
             .unwrap_err()
             .code,
         ErrorCode::StoreCorrupt
@@ -761,3 +808,6 @@ fn current_key_lookup_stays_bounded_after_many_retained_attempts() {
         BootstrapAttempt::new(1001).unwrap()
     );
 }
+
+#[path = "topology_handoff_schema.rs"]
+mod schema_tests;

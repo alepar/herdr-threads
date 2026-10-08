@@ -3,8 +3,8 @@
 //! A future daemon consumer must supply its actual daemon-selected namespace,
 //! never a namespace inferred from a caller, original intent or frozen identity.
 //! These helpers confer no A2, submission or receipt authority and return no
-//! submission permission. Public dispatch/permits and startup registration remain
-//! gated; Begin reuses existing live mapping/member guards in its caller transaction.
+//! submission permission. Schema27 is registered; public dispatch/permits remain
+//! gated. Begin reuses existing live mapping/member guards in its caller transaction.
 use super::connection::api_error;
 use crate::protocol::{
     handoff::{BootstrapIdentity, HandoffNamespace},
