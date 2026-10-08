@@ -1,0 +1,34 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.39s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-d68509100ae355ec)
+
+running 2 tests
+test store::cooperative_checkin_tests::builtin_warning_projection_cleanup_preserves_late_independent_recipient ... FAILED
+test store::cooperative_checkin_tests::builtin_warning_projection_cleanup_keeps_delivered_history_out_of_pending_walks ... FAILED
+
+failures:
+
+---- store::cooperative_checkin_tests::builtin_warning_projection_cleanup_preserves_late_independent_recipient stdout ----
+
+thread 'store::cooperative_checkin_tests::builtin_warning_projection_cleanup_preserves_late_independent_recipient' (8751083) panicked at src/store/../../tests/store/cooperative_checkin.rs:2029:5:
+assertion `left == right` failed: first attribution removes the legacy parent, preventing trigger-order reinsertion
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- store::cooperative_checkin_tests::builtin_warning_projection_cleanup_keeps_delivered_history_out_of_pending_walks stdout ----
+
+thread 'store::cooperative_checkin_tests::builtin_warning_projection_cleanup_keeps_delivered_history_out_of_pending_walks' (8751082) panicked at src/store/../../tests/store/cooperative_checkin.rs:2004:17:
+assertion `left == right` failed: delivered history must never saturate pending warnings
+  left: (0, true)
+ right: (0, false)
+
+
+failures:
+    store::cooperative_checkin_tests::builtin_warning_projection_cleanup_keeps_delivered_history_out_of_pending_walks
+    store::cooperative_checkin_tests::builtin_warning_projection_cleanup_preserves_late_independent_recipient
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 2667 filtered out; finished in 3.00s
+
+error: test failed, to rerun pass `--lib`

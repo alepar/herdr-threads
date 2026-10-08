@@ -49,6 +49,9 @@ pub enum Command {
     PendingReceipts(PendingReceiptsQuery),
     /// Read-only seat attention digest; never mutates receipts, ACK or checkpoints.
     AttentionDigest(AttentionDigestQuery),
+    /// Read-only v1 digest plus exact-occupant informational delivery readiness.
+    /// Separate envelope preserves shipped digest decoders and logical tokens.
+    AttentionDigestDelivery(AttentionDigestQuery),
     /// Read-only hot threads of a seat for the recovery hook text (spec §9).
     HotThreads(HotThreadsQuery),
     /// Thread summary protocol (spec §4). Each carries the seat's claim; a

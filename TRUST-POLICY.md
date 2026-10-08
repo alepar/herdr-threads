@@ -341,6 +341,16 @@ never on heuristic evidence, so a stall and re-entry cycle cannot postpone a war
 never rewritten: they stay stored and displayed beside the effective one. Overdue classification, warnings, pending receipts and the soft-deadline poke use the
 effective deadline.
 
+**A7. Informational warning delivery.** Service notices and canonical built-in warning open/clear
+events have separate delivery rows for their frozen recipients. A committed check-in settles only
+the bounded prefix of attributed events it carries to the exact current binding generation and
+execution. A global decision watermark cannot settle uncarried events, including late attribution.
+History and immutable operation results remain readable. A successor occupant gets its own offers;
+response loss can lose an informational offer after commitment, and an explicit operation retry
+can present the retained result again. Delivery is neither invitation acceptance nor receipt ACK,
+agreement, adoption or task completion. Logical publication tokens stay unchanged by projection;
+an advertised read-only delivery hint lets hooks drain newly attributed and remaining notice pages.
+
 ## Accepted limits
 
 These are decisions, not bugs. Each is safe to rely on only as stated.

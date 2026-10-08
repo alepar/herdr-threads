@@ -1,0 +1,18 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.90s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-d68509100ae355ec)
+
+running 9 tests
+test store::cooperative_checkin_tests::builtin_warning_dedup_manifest_backed_transition_is_carried_without_message_row ... ok
+test store::cooperative_checkin_tests::builtin_warning_projection_cleanup_preserves_late_independent_recipient ... ok
+test store::cooperative_checkin_tests::builtin_warning_dedup_wake_older_notice_survives_newer_covered_legacy_warning ... ok
+test store::cooperative_checkin_tests::builtin_warning_dedup_recipients_and_successor_have_independent_frontiers ... ok
+test store::cooperative_checkin_tests::builtin_warning_dedup_wake_keeps_unprojected_and_late_projected_events ... ok
+test store::cooperative_checkin_tests::builtin_warning_dedup_open_clear_and_new_episode_are_offered_once ... ok
+test store::cooperative_checkin_tests::builtin_warning_dedup_upgrade_backfills_existing_attributed_transitions ... ok
+test store::cooperative_checkin_tests::builtin_warning_dedup_settles_only_carried_page_and_late_projection ... ok
+test store::cooperative_checkin_tests::builtin_warning_projection_cleanup_keeps_delivered_history_out_of_pending_walks ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 2660 filtered out; finished in 2.74s
+
