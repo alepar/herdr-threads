@@ -175,6 +175,12 @@ impl Session {
 
     pub(crate) fn cli(&self, caller: Option<&Caller>, args: &[&str]) -> (i32, Value, String) {
         let mut command = self.herdr.command(BIN);
+        let args = if args.first() == Some(&"human") {
+            command.arg("human");
+            &args[1..]
+        } else {
+            args
+        };
         command
             .arg("--json")
             .arg("--state-dir")
@@ -819,6 +825,7 @@ fn herdr_stopped_freezes_wake_lane() {
         s.ok(
             None,
             &[
+                "human",
                 "seat",
                 "rebind",
                 &caller.seat,

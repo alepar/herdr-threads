@@ -243,8 +243,8 @@ impl World {
         panes: Vec<Value>,
         wake_batch_delay_ms: Option<u64>,
     ) -> Self {
-        let root = PathBuf::from(format!(
-            "/private/tmp/{prefix}-{}",
+        let root = std::env::temp_dir().join(format!(
+            "{prefix}-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -311,6 +311,12 @@ impl World {
     ) -> Output {
         let mut command = Command::new(BIN); // leak-guard: tagged on the next line via spawn::tag
         herdr_threads::test_support::spawn::tag(&mut command);
+        let args = if args.first() == Some(&"human") {
+            command.arg("human");
+            &args[1..]
+        } else {
+            args
+        };
         command
             .arg("--json")
             .arg("--state-dir")
@@ -722,6 +728,7 @@ fn f6_walking_skeleton() {
             None,
             None,
             &[
+                "human",
                 "seat",
                 "resolve",
                 "--pane",
@@ -734,7 +741,15 @@ fn f6_walking_skeleton() {
     let refused = world.run(
         None,
         None,
-        &["seat", "rebind", &b, "--pane", "w1:p2", "--operator"],
+        &[
+            "human",
+            "seat",
+            "rebind",
+            &b,
+            "--pane",
+            "w1:p2",
+            "--operator",
+        ],
     );
     let text = refused.refused("rebind onto an owned target").to_owned();
     assert!(text.contains(&n1), "{text}");
@@ -754,7 +769,7 @@ fn f6_walking_skeleton() {
         "a refusal changes nothing"
     );
     world
-        .run(None, None, &["seat", "retire", &b, "--operator"])
+        .run(None, None, &["human", "seat", "retire", &b, "--operator"])
         .data("seat retire");
     assert_eq!(world.seat_state(&b), "retired");
     assert_eq!(world.seat_state(&n1), "resolved");
@@ -765,6 +780,7 @@ fn f6_walking_skeleton() {
             None,
             None,
             &[
+                "human",
                 "seat",
                 "resolve",
                 "--pane",
@@ -780,6 +796,7 @@ fn f6_walking_skeleton() {
             None,
             None,
             &[
+                "human",
                 "seat",
                 "rebind",
                 &c,
@@ -827,7 +844,7 @@ fn f6_walking_skeleton() {
     assert!(world.pending(&a).is_empty());
 
     // Ordinary resolution and `me init` work in the previously held pane.
-    let me = world.run(Some("w1:p5"), None, &["me", "init"]);
+    let me = world.run(Some("w1:p5"), None, &["human", "me", "init"]);
     assert_eq!(me.kind("me init"), "checked_in");
     let d = world.resolve("w1:p5");
     let human = world.open_binding(&d);
@@ -840,7 +857,7 @@ fn f6_walking_skeleton() {
         .run(None, Some(a_pane), &["invite", &thread, "--seat", &d])
         .data("invite D");
     world
-        .run(Some("w1:p5"), None, &["accept", &thread])
+        .run(Some("w1:p5"), None, &["human", "accept", &thread])
         .data("D accepts");
 
     // D writes to the reattached, joined A: A is available, so the send
@@ -850,6 +867,7 @@ fn f6_walking_skeleton() {
             Some("w1:p5"),
             None,
             &[
+                "human",
                 "send",
                 &thread,
                 "--body",
@@ -1005,21 +1023,21 @@ fn me_init_over_reattached_seat_is_refused() {
         pane("w1:p1", "term-a2"),
     );
     let before = world.open_binding(&a);
-    let by_context = world.run(Some("w1:p1"), None, &["me", "init"]);
+    let by_context = world.run(Some("w1:p1"), None, &["human", "me", "init"]);
     let text = by_context.refused("me init over a reattached agent seat");
     assert!(text.contains("belongs to a Claude agent"), "{text}");
     assert_eq!(world.open_binding(&a), before);
 
     // Without the client-local context only the daemon can refuse.
     fs::remove_dir_all(world.find("contexts").expect("hook context directory")).unwrap();
-    let by_daemon = world.run(Some("w1:p1"), None, &["me", "init"]);
+    let by_daemon = world.run(Some("w1:p1"), None, &["human", "me", "init"]);
     let text = by_daemon.refused("me init with no client context");
     assert!(!text.contains("belongs to a Claude agent"), "{text}");
     assert!(text.contains("never replaces an agent's binding"), "{text}");
     assert_eq!(world.open_binding(&a), before);
 
     // The documented override is the local account's explicit decision.
-    let overridden = world.run(Some("w1:p1"), None, &["me", "init", "--operator"]);
+    let overridden = world.run(Some("w1:p1"), None, &["human", "me", "init", "--operator"]);
     assert_eq!(overridden.kind("me init --operator"), "checked_in");
     assert_eq!(world.open_binding(&a)[0].0, "human");
 }
@@ -1513,7 +1531,7 @@ fn pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics() {
         out.refused("launch").to_owned()
     };
     let me_init = |pane: &str| {
-        let out = world.run(Some(pane), None, &["me", "init"]);
+        let out = world.run(Some(pane), None, &["human", "me", "init"]);
         out.refused("me init").to_owned()
     };
     let (present_me, absent_me, error_me) = (me_init("w1:p1"), me_init("w1:p2"), me_init("w1:p3"));
