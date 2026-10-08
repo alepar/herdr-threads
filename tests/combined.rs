@@ -68,3 +68,6 @@ fn every_top_level_test_file_is_built() {
         "tests/ files built by no target (add a [[test]] entry or a suite in tests/combined.rs): {unbuilt:?}"
     );
 }
+
+#[path = "store/lazy_publication.rs"]
+mod lazy_publication;

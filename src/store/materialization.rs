@@ -658,6 +658,19 @@ fn cleanup_unit(
             "preparation cleanup requires unpublished discarded state",
         ));
     }
+    let lazy: Option<i64> = tx
+        .query_row(
+            "SELECT ordinal FROM lazy_recipients WHERE preparation_id=?1 ORDER BY ordinal LIMIT 1",
+            [preparation],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if let Some(ordinal) = lazy {
+        tx.execute("DELETE FROM lazy_recipients WHERE ordinal=?1", [ordinal])
+            .map_err(store_error)?;
+        return Ok((position, false));
+    }
     let recipient:Option<String>=tx.query_row("SELECT seat_id FROM prepared_recipients WHERE preparation_id=?1 ORDER BY receipt_ordinal LIMIT 1",[preparation],|r|r.get(0)).optional().map_err(store_error)?;
     if let Some(seat) = recipient {
         tx.execute(

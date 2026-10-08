@@ -285,15 +285,14 @@ fn lazy_send_payload_changes_digest_only_for_lazy_mode() {
     assert_ne!(lazy_digest, ordinary_digest);
 }
 
-// Catches accepting new lazy wire as ordinary durable mail during the inert seam.
+// Catches publishing valid lazy mail through the ordinary attention path.
 #[test]
-fn inert_lazy_send_creates_no_preparation_or_attention() {
+fn lazy_send_publishes_without_attention() {
     use crate::{ports::DurableWorkAdmission, protocol::commands::DeliveryMode};
-    let iso = TestIsolation::new("inert-lazy-send");
+    let iso = TestIsolation::new("lazy-send");
     let (context, mut conn) = setup(&iso);
     let mut request = send_request();
     request.delivery_mode = DeliveryMode::Lazy;
-    let before = conn.total_changes();
     let preparation = messages::prepare_send_step(
         &context,
         &mut conn,
@@ -301,13 +300,12 @@ fn inert_lazy_send_creates_no_preparation_or_attention() {
         messages::MessageLimits::default(),
         &budget(),
         DurableWorkAdmission::new(16).unwrap(),
-    );
-    assert_eq!(preparation.unwrap_err().code, ErrorCode::Unsupported);
-    assert_eq!(
-        conn.total_changes(),
-        before,
-        "preparation must not write any state"
-    );
+    )
+    .unwrap();
+    assert!(matches!(
+        preparation,
+        crate::ports::SendPreparationProgress::Ready { .. }
+    ));
     let publication = messages::publish_send(
         &context,
         &mut conn,
@@ -315,20 +313,30 @@ fn inert_lazy_send_creates_no_preparation_or_attention() {
         &mut permit(&request),
         &budget(),
         || messages::MAX_BODY_BYTES,
-    );
-    assert_eq!(publication.unwrap_err().code, ErrorCode::Unsupported);
+    )
+    .unwrap();
+    assert!(matches!(
+        publication,
+        crate::protocol::results::CommandResult::MessageSent(_)
+    ));
     assert_eq!(
-        conn.total_changes(),
-        before,
-        "publication must not write any state"
+        conn.query_row("SELECT delivery_mode FROM messages", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "lazy"
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM send_manifests", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
     );
     for table in [
-        "send_preparations",
-        "send_manifests",
-        "messages",
         "receipts",
         "work_jobs",
-        "operations",
+        "prepared_recipients",
+        "prepared_unavailable_warnings",
+        "warning_conditions",
     ] {
         let rows: i64 = conn
             .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
