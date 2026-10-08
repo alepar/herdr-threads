@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.2.12
+
+- **Installed `ht` alias.** The installer links `ht` beside `herdr-threads`, preserves unrelated commands even with `--force`, removes only its exact owned link on uninstall, and explains PATH shadowing. `ht skill` and `ht follow` use the same CLI.
+- **Per-harness skill consent.** Confirmed installer coverage preserves separate prompts for missing hooks and skills, silent verified-owned updates, and explicit `--setup`/`--no-setup` behavior.
+
 ## v0.2.11
 
 - **Guarded startup enrollment.** Top-level Claude and Codex SessionStart hooks reuse an existing seat or create one for a genuinely new Herdr pane. Resume recovery runs first; ambiguous recovery, unresolved targets and recovery holds refuse allocation. Child, tool-boundary and unregistered events remain passive.
