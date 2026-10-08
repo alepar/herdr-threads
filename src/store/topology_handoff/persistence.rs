@@ -49,7 +49,10 @@ fn parent_keys(identity: &BootstrapIdentity) -> [(&'static str, &OperationId); 1
         ("linked_complete", &payload.linked_complete_key),
     ]
 }
-pub(super) fn decode<T: DeserializeOwned + Serialize>(bytes: &[u8], limit: usize) -> Result<T, ApiError> {
+pub(super) fn decode<T: DeserializeOwned + Serialize>(
+    bytes: &[u8],
+    limit: usize,
+) -> Result<T, ApiError> {
     if bytes.len() > limit {
         return Err(corrupt());
     }
@@ -185,7 +188,11 @@ pub fn current(
             attachment.validate(identity).map_err(|_| corrupt())?;
             if i64::from(saved_attempt) != row.attempt
                 || attachment.attempt != attempt
-                || row.thread.as_deref() != attachment.handoff.thread.as_ref().map(ThreadId::as_str)
+                || attachment
+                    .handoff
+                    .thread
+                    .as_ref()
+                    .is_some_and(|thread| row.thread.as_deref() != Some(thread.as_str()))
                 || creation
                     .as_ref()
                     .is_none_or(|created| !same(created, &attachment.created).unwrap_or(false))
@@ -213,9 +220,10 @@ pub fn current(
                 .is_none_or(|a| !same(a, &result.attachment).unwrap_or(false))
                 || result.legacy_result.state != HandoffState::Completed
                 || result.legacy_result.compound != result.attachment.handoff.compound
-                || result.legacy_result.thread != result.attachment.handoff.thread
+                || result.legacy_result.thread.as_ref().map(ThreadId::as_str)
+                    != row.thread.as_deref()
                 || result.retained.launch != identity.payload.launch
-                || result.attachment.handoff.thread.as_ref() != Some(&result.retained.thread)
+                || row.thread.as_deref() != Some(result.retained.thread.as_str())
                 || result.retained.recipient != result.attachment.resolved_seat
                 || result.retained.pane != result.attachment.created.root_pane
                 || result.retained.terminal != result.attachment.created.terminal

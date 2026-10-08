@@ -738,7 +738,7 @@ fn cleanup_completed<W: Write>(
     journal.complete(reference)?;
     Ok(())
 }
-fn bootstrap(
+pub(crate) fn bootstrap(
     thread: &ThreadId,
     context: &crate::protocol::output::ContinuationContext,
     instance: &str,

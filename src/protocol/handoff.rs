@@ -631,12 +631,10 @@ impl BootstrapAttachment {
             || self.handoff.create_key != identity.payload.handoff.keys.create
             || self.handoff.invite_key != identity.payload.handoff.keys.invite
             || self.handoff.send_key != identity.payload.handoff.keys.send
-            || identity
-                .payload
-                .handoff
-                .channel
-                .thread()
-                .is_some_and(|t| self.handoff.thread.as_ref() != Some(t))
+            || match &identity.payload.handoff.channel {
+                HandoffChannel::Existing { thread } => self.handoff.thread.as_ref() != Some(thread),
+                HandoffChannel::New { .. } => self.handoff.thread.is_some(),
+            }
         {
             return Err("bootstrap attachment mismatch");
         }
@@ -652,7 +650,13 @@ impl CompleteLinkedBootstrap {
             || self.legacy_completion.identity != self.attachment.handoff
             || self.legacy_completion.operation != self.identity.payload.handoff.keys.complete
             || self.retained.launch != self.identity.payload.launch
-            || self.attachment.handoff.thread.as_ref() != Some(&self.retained.thread)
+            || match &self.identity.payload.handoff.channel {
+                HandoffChannel::Existing { thread } => {
+                    self.attachment.handoff.thread.as_ref() != Some(thread)
+                        || thread != &self.retained.thread
+                }
+                HandoffChannel::New { .. } => self.attachment.handoff.thread.is_some(),
+            }
             || self.retained.recipient != self.attachment.resolved_seat
             || self.retained.pane != self.attachment.created.root_pane
             || self.retained.terminal != self.attachment.created.terminal
@@ -980,6 +984,35 @@ pub(crate) mod topology_contract_tests {
         assert_eq!(
             serde_json::to_string(&completion().legacy_completion).unwrap(),
             LEGACY_CHILD
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                sha2::Sha256::digest(
+                    serde_json::to_vec(&serde_json::json!([
+                        "complete_handoff",
+                        completion().legacy_completion
+                    ]))
+                    .unwrap()
+                )
+            ),
+            "c9722e3662c4af0d69f1da919f03984d14d8ae9bbddca3a69f63fea9ace15524"
+        );
+        assert_eq!(
+            crate::store::control::cooperative_payload_hash(
+                "complete_handoff",
+                &completion().legacy_completion
+            )
+            .unwrap()
+            .to_vec(),
+            sha2::Sha256::digest(
+                serde_json::to_vec(&serde_json::json!([
+                    "complete_handoff",
+                    completion().legacy_completion
+                ]))
+                .unwrap()
+            )
+            .to_vec()
         );
         let status = BootstrapResult {
             compound: identity().compound,

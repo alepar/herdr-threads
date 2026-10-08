@@ -1127,3 +1127,6 @@ fn recovery_matching_created_and_cancelled_evidence_survive_reopen() {
         assert_eq!(result.recovery, Some(Box::new(retained)));
     }
 }
+
+#[path = "topology_attachment.rs"]
+mod attachment;
