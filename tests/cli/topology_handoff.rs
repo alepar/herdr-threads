@@ -476,6 +476,7 @@ mod live {
         ReserveReply,
         HostReply,
         NotSubmitted,
+        NotSubmittedRecordUnavailable,
         Check,
         RecordReply,
         SavePossible,
@@ -545,6 +546,12 @@ mod live {
                             ]
                         },
                     },
+                ));
+            }
+            if role == "not_submitted" && s.fault == Fault::NotSubmittedRecordUnavailable {
+                s.fault = Fault::None;
+                return Err(ApiError::host_unavailable(
+                    "no-effect record not submitted to writer",
                 ));
             }
             if role == "resolve" || role == "attach" {
@@ -712,8 +719,13 @@ mod live {
                     "host reply lost",
                 ));
             }
-            if s.fault == Fault::NotSubmitted {
-                s.fault = Fault::None;
+            if matches!(
+                s.fault,
+                Fault::NotSubmitted | Fault::NotSubmittedRecordUnavailable
+            ) {
+                if s.fault == Fault::NotSubmitted {
+                    s.fault = Fault::None;
+                }
                 return CreateTabOutcome::NotSubmitted(ApiError::host_unavailable(
                     "proven zero bytes",
                 ));
@@ -1860,5 +1872,86 @@ mod live {
         let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
         assert!(resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).is_err());
         assert_eq!(counts(&f), (0, 0, 0));
+    }
+    #[test]
+    fn live_fix1_no_effect_without_saved_request_refuses_uncertain_attempt_readonly() {
+        let f = Fixture::new(Fault::HostReply);
+        unknown(f.run());
+        let before = f.peer.status();
+        assert_eq!(before.state, BootstrapState::PossibleCreation);
+        assert_eq!(before.attempt.get(), 1);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+        let mut progress: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(f.peer.progress()).unwrap()).unwrap();
+        assert!(progress["request"].is_object());
+        progress["request"] = serde_json::Value::Null;
+        progress["not_submitted"] = serde_json::Value::Bool(true);
+        std::fs::write(f.peer.progress(), serde_json::to_vec(&progress).unwrap()).unwrap();
+        f.peer.state.lock().unwrap().calls.clear();
+        let result = f.run();
+        assert_eq!(
+            f.peer.status(),
+            before,
+            "malformed local phase advanced the canonical uncertain attempt: {result:?}"
+        );
+        assert!(matches!(
+            result,
+            Err(RunError::Api(ApiError {
+                code: ErrorCode::InvalidRequest,
+                ..
+            }))
+        ));
+        let s = f.peer.state.lock().unwrap();
+        assert_eq!(
+            s.calls,
+            ["capabilities"],
+            "malformed phase must refuse before Begin and no-effect recording"
+        );
+        assert_eq!(s.native_calls, 1);
+    }
+    #[test]
+    fn live_fix1_genuine_typed_zero_saved_request_replays_no_effect_record() {
+        let f = Fixture::new(Fault::NotSubmittedRecordUnavailable);
+        assert!(f.run().is_err());
+        let before = f.peer.status();
+        assert_eq!(before.state, BootstrapState::PossibleCreation);
+        assert_eq!(before.attempt.get(), 1);
+        let progress: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(f.peer.progress()).unwrap()).unwrap();
+        assert_eq!(progress["not_submitted"], true);
+        assert!(
+            progress["request"].is_object(),
+            "typed outcome must retain its actual saved request"
+        );
+        f.peer.state.lock().unwrap().calls.clear();
+        let result = f.run().unwrap();
+        assert_eq!(result.state, BootstrapState::Prepared);
+        assert_eq!(result.attempt.get(), 2);
+        let s = f.peer.state.lock().unwrap();
+        assert_eq!(s.calls, ["capabilities", "begin", "not_submitted"]);
+        assert_eq!(s.native_calls, 1);
+    }
+    #[test]
+    fn live_fix1_canonical_created_without_local_request_still_attaches() {
+        let f = Fixture::new(Fault::ResolveUnsupported);
+        assert!(f.run().is_err());
+        assert_eq!(f.peer.status().state, BootstrapState::Created);
+        let mut progress: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(f.peer.progress()).unwrap()).unwrap();
+        progress["request"] = serde_json::Value::Null;
+        assert!(progress["creation"].is_object());
+        assert_eq!(progress["not_submitted"], false);
+        std::fs::write(f.peer.progress(), serde_json::to_vec(&progress).unwrap()).unwrap();
+        let mut s = f.peer.state.lock().unwrap();
+        s.fault = Fault::None;
+        s.calls.clear();
+        drop(s);
+        let result = f.run().unwrap();
+        assert_eq!(result.state, BootstrapState::Attached);
+        let s = f.peer.state.lock().unwrap();
+        assert_eq!(s.calls, ["capabilities", "begin", "resolve", "attach"]);
+        assert_eq!(s.native_calls, 1);
+        drop(s);
+        assert_eq!(result.creation, f.peer.status().creation);
     }
 }

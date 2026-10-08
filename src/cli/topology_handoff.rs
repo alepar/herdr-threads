@@ -761,6 +761,7 @@ fn load_bootstrap_progress(
                 || progress.creation.is_some()
                 || progress.not_submitted))
         || (progress.not_submitted && progress.creation.is_some())
+        || (progress.not_submitted && progress.request.is_none())
     {
         return Err(super::invalid_request(
             "bootstrap progress identity or state differs",
