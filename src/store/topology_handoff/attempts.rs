@@ -410,7 +410,9 @@ pub fn recover(
                 ));
             }
             let keys = &request.identity.payload.handoff.keys;
-            let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM channel_handoff_fences WHERE instance_id=?1 AND actor_scope=?2 AND state='live' AND (compound=?3 OR create_key=?4 OR invite_key=?5 OR send_key=?6))",params![ns.instance,scope(&request.identity),request.identity.payload.handoff_key.as_str(),keys.create.as_str(),keys.invite.as_str(),keys.send.as_str()],|r|r.get(0)).map_err(store_error)?;
+            // Separate full-key probes keep completed legacy history out of the
+            // deciding lookup while retaining conservative phase-key refusal.
+            let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM channel_handoff_fences WHERE instance_id=?1 AND actor_scope=?2 AND compound=?3 AND state='live') OR EXISTS(SELECT 1 FROM channel_handoff_fences WHERE instance_id=?1 AND actor_scope=?2 AND create_key=?4 AND state='live') OR EXISTS(SELECT 1 FROM channel_handoff_fences WHERE instance_id=?1 AND actor_scope=?2 AND invite_key=?5 AND state='live') OR EXISTS(SELECT 1 FROM channel_handoff_fences WHERE instance_id=?1 AND actor_scope=?2 AND send_key=?6 AND state='live')",params![ns.instance,scope(&request.identity),request.identity.payload.handoff_key.as_str(),keys.create.as_str(),keys.invite.as_str(),keys.send.as_str()],|r|r.get(0)).map_err(store_error)?;
             if live {
                 return Err(api_error(
                     ErrorCode::Conflict,

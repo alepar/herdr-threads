@@ -977,3 +977,114 @@ fn typed_zero_submission_refuses_wrong_key_attempt_creation_unknown_and_terminal
         );
     }
 }
+
+#[test]
+fn cancellation_writer_is_bounded_after_retained_legacy_history_and_checks_each_exact_key() {
+    let mut db = fixture();
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('foreign',0)")
+        .unwrap();
+    {
+        let tx = db.transaction().unwrap();
+        let mut insert = tx.prepare("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,origin,state,created_at,completed_at) VALUES('i','seat:s',?1,?2,'{}','peer',?3,?4,?5,'cooperative_pending_claim','completed',0,1)").unwrap();
+        for n in 0..10_000 {
+            insert
+                .execute(rusqlite::params![
+                    format!("retained-{n}"),
+                    "a".repeat(64),
+                    format!("create-{n}"),
+                    format!("invite-{n}"),
+                    format!("send-{n}")
+                ])
+                .unwrap();
+        }
+        drop(insert);
+        tx.commit().unwrap();
+    }
+    unsafe extern "C" fn count_step(context: *mut std::ffi::c_void) -> i32 {
+        // Connection-local counter remains alive until this callback is cleared.
+        unsafe {
+            *context.cast::<usize>() += 1;
+        }
+        0
+    }
+    // Exercise the actual deciding writer, including its normal retained-record
+    // validation and mutation; no test-side copy of its child lookup is used.
+    for role in ["absent", "compound", "create", "invite", "send"] {
+        for origin in ["cooperative_pending_claim", "legacy_local_journal_hint"] {
+            for scope in ["exact", "foreign-instance", "foreign-actor", "completed"] {
+                let id = identity();
+                let tx = db.transaction().unwrap();
+                topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+                if role != "absent" {
+                    let keys = &id.payload.handoff.keys;
+                    let compound = if role == "compound" {
+                        id.payload.handoff_key.as_str()
+                    } else {
+                        "unrelated-compound"
+                    };
+                    let create = if role == "create" {
+                        keys.create.as_str()
+                    } else {
+                        "unrelated-create"
+                    };
+                    let invite = if role == "invite" {
+                        keys.invite.as_str()
+                    } else {
+                        "unrelated-invite"
+                    };
+                    let send = if role == "send" {
+                        keys.send.as_str()
+                    } else {
+                        "unrelated-send"
+                    };
+                    tx.execute("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,origin,state,created_at,completed_at) VALUES(?1,?2,?3,?4,'{}','peer',?5,?6,?7,?8,?9,0,?10)",rusqlite::params![if scope == "foreign-instance" { "foreign" } else { "i" }, if scope == "foreign-actor" { "seat:other" } else { "seat:s" }, compound, "b".repeat(64), create, invite, send, origin, if scope == "completed" { "completed" } else { "live" }, if scope == "completed" { Some(1) } else { None }]).unwrap();
+                }
+                let mut steps = 0usize;
+                unsafe {
+                    rusqlite::ffi::sqlite3_progress_handler(
+                        tx.handle(),
+                        1,
+                        Some(count_step),
+                        std::ptr::from_mut(&mut steps).cast(),
+                    );
+                }
+                let result = recover(
+                    &tx,
+                    &namespace(),
+                    &decision(&id, 1, cancel()),
+                    501,
+                    UtcMillis(5),
+                    None,
+                );
+                unsafe {
+                    rusqlite::ffi::sqlite3_progress_handler(
+                        tx.handle(),
+                        0,
+                        None,
+                        std::ptr::null_mut(),
+                    );
+                }
+                println!(
+                    "cancel writer role={role} origin={origin} scope={scope}: {steps} VM steps"
+                );
+                assert!(
+                    steps < 3_000,
+                    "cancel writer scanned retained history: {steps} VM steps ({role}/{origin}/{scope})"
+                );
+                if role != "absent" && scope == "exact" {
+                    assert_eq!(result.unwrap_err().code, ErrorCode::Conflict);
+                    assert_eq!(
+                        topology_handoff::current(&tx, &namespace(), &id)
+                            .unwrap()
+                            .unwrap()
+                            .state,
+                        BootstrapState::Prepared
+                    );
+                } else {
+                    assert_eq!(result.unwrap().state, BootstrapState::Cancelled);
+                }
+                tx.rollback().unwrap();
+            }
+        }
+    }
+}
