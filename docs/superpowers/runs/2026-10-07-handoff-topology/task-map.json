@@ -1,0 +1,11 @@
+{
+  "contract": "ht-qhz.1",
+  "store": "ht-qhz.2",
+  "native": "ht-qhz.3",
+  "bootstrap": "ht-qhz.4",
+  "delivery": "ht-qhz.5",
+  "recover": "ht-qhz.6",
+  "archival": "ht-qhz.7",
+  "skill": "ht-qhz.8",
+  "smoke": "ht-qhz.9"
+}

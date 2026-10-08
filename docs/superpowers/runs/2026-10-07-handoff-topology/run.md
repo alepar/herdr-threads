@@ -7,3 +7,6 @@ codeMechanism: ordinary-subagents
 idea: lgtm, let's $super-auto this, fully autonomous, both roasts ar eon
 branch: super-auto/handoff-topology
 base: main
+
+spec: 2026-10-07-handoff-topology-design.md
+epic: ht-qhz
