@@ -84,6 +84,18 @@ pub fn send_payload(request: &SendMessage) -> Value {
     payload
 }
 
+fn validate_delivery_options(request: &SendMessage) -> Result<(), ApiError> {
+    if request.delivery_mode == DeliveryMode::Lazy
+        && (!request.invited_recipients.is_empty() || request.deadline_millis.is_some())
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "lazy delivery cannot require ACKs or a deadline",
+        ));
+    }
+    Ok(())
+}
+
 /// One hidden preparation quantum. The caller yields the writer between steps.
 /// Neither a prepared row nor a ready result grants authority to publish.
 pub fn prepare_send_step(
@@ -94,12 +106,7 @@ pub fn prepare_send_step(
     budget: &CallBudget,
     admission: DurableWorkAdmission,
 ) -> Result<SendPreparationProgress, ApiError> {
-    if request.delivery_mode == DeliveryMode::Lazy {
-        return Err(api_error(
-            ErrorCode::Unsupported,
-            "lazy publication is not implemented",
-        ));
-    }
+    validate_delivery_options(request)?;
     require_live_budget(context, budget)?;
     let max_units = admission.max_units;
     if max_units == 0 || max_units > 16 || request.invited_recipients.len() > 100 {
@@ -141,7 +148,11 @@ pub fn prepare_send_step(
             "message body byte limit",
         ));
     }
-    let duration = frozen_duration(request, limits)?;
+    let duration = if request.delivery_mode == DeliveryMode::Lazy {
+        0
+    } else {
+        frozen_duration(request, limits)?
+    };
     let (instance, membership_revision, timeline_revision, archived): (String, i64, i64, bool) = tx.query_row(
         "SELECT instance_id,membership_revision,timeline_revision,archived FROM threads WHERE id=?1",
         [request.thread.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
@@ -213,7 +224,7 @@ pub fn prepare_send_step(
                     "send preparation cleanup pending",
                 ));
             }
-            let children:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM prepared_recipients WHERE preparation_id=?1) OR EXISTS(SELECT 1 FROM prepared_unavailable_warnings WHERE preparation_id=?1) OR EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1)",[id.as_str()],|r|r.get(0)).map_err(store_error)?;
+            let children:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM prepared_recipients WHERE preparation_id=?1) OR EXISTS(SELECT 1 FROM prepared_unavailable_warnings WHERE preparation_id=?1) OR EXISTS(SELECT 1 FROM send_manifests WHERE preparation_id=?1) OR EXISTS(SELECT 1 FROM lazy_recipients WHERE preparation_id=?1)",[id.as_str()],|r|r.get(0)).map_err(store_error)?;
             if children {
                 return Err(api_error(
                     ErrorCode::StoreCorrupt,
@@ -266,8 +277,8 @@ pub fn prepare_send_step(
                 |r| r.get(0),
             )
             .map_err(store_error)?;
-        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,'building')",
-            params![id,instance,scope,request.operation.as_str(),digest.as_slice(),request.thread.as_str(),membership_revision,lifecycle_revision,eligibility_revision,timeline_revision,config_revision,high_water]).map_err(store_error)?;
+        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,'building',?13)",
+            params![id,instance,scope,request.operation.as_str(),digest.as_slice(),request.thread.as_str(),membership_revision,lifecycle_revision,eligibility_revision,timeline_revision,config_revision,high_water,if request.delivery_mode.is_ordinary() {"ordinary"} else {"lazy"}]).map_err(store_error)?;
         (id, high_water, 0, 0, 0, "building".to_owned())
     };
     if count > 0 {
@@ -538,6 +549,26 @@ pub(super) fn stage_recipient(
     count: &mut i64,
     warning_count: &mut i64,
 ) -> Result<(), ApiError> {
+    let lazy: bool = tx
+        .query_row(
+            "SELECT delivery_mode='lazy' FROM send_preparations WHERE id=?1",
+            [prep_id],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if lazy {
+        let message =
+            MessageId::new(send_message_id_for_preparation(prep_id).ok_or_else(|| {
+                api_error(ErrorCode::StoreCorrupt, "invalid send preparation ID")
+            })?);
+        return super::lazy_delivery::stage_recipient(
+            tx,
+            prep_id,
+            &message,
+            thread,
+            &SeatId::new(recipient),
+        );
+    }
     // The daemon's open binding is the canonical role. A human still sees the
     // thread's message through membership; no ACK expectation is staged.
     // Keep the separate unavailable-recipient warning below.
@@ -626,7 +657,7 @@ pub(super) struct Publication {
     pub duration_ms: i64,
 }
 
-/// Inserts the message, its manifest and the `send_attention` job for the sealed
+/// Inserts the message, its manifest and ordinary-only `send_attention` job for the sealed
 /// preparation `(scope, key, digest)`. The caller proved authority and revision
 /// currency; this touches a constant number of rows regardless of audience size.
 // Allowed: one deciding insert: transaction, instant, replay identity and author.
@@ -661,9 +692,9 @@ pub(super) fn insert_publication(
         }
         PublicationAuthor::Programmatic(_) => None,
     };
-    let (prep_id,instance,high_water,recipient_count,warning_count):(String,String,i64,i64,i64)=tx.query_row(
-        "SELECT id,instance_id,interval_high_water,recipient_count,warning_count FROM send_preparations WHERE operation_scope=?1 AND operation_key=?2 AND digest=?3",
-        params![scope,key,digest.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+    let (prep_id,instance,high_water,recipient_count,warning_count,mode):(String,String,i64,i64,i64,String)=tx.query_row(
+        "SELECT id,instance_id,interval_high_water,recipient_count,warning_count,delivery_mode FROM send_preparations WHERE operation_scope=?1 AND operation_key=?2 AND digest=?3",
+        params![scope,key,digest.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
     ).map_err(store_error)?;
     let mut duration_ms = 0;
     if recipient_count > 0 {
@@ -704,7 +735,7 @@ pub(super) fn insert_publication(
             relays_user,
             user_intent,
         } => {
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str)]).map_err(store_error)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode]).map_err(store_error)?;
         }
         PublicationAuthor::Programmatic(author) => {
             tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service')",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq as i64,author.as_str()]).map_err(store_error)?;
@@ -728,11 +759,14 @@ pub(super) fn insert_publication(
     .map_err(store_error)?;
     schema::bump_timeline_revision(tx, thread)?;
     schema::bump_filter_revision(tx, &instance, "directory", thread.as_str())?;
-    let work_high_water = recipient_count
-        .checked_add(warning_count)
-        .and_then(|v| v.checked_add(1))
-        .ok_or_else(|| api_error(ErrorCode::SequenceExhausted, "send work position exhausted"))?;
-    tx.execute(
+    if mode == "ordinary" {
+        let work_high_water = recipient_count
+            .checked_add(warning_count)
+            .and_then(|v| v.checked_add(1))
+            .ok_or_else(|| {
+                api_error(ErrorCode::SequenceExhausted, "send work position exhausted")
+            })?;
+        tx.execute(
         "INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES (?1,'send_attention',?2,?3)",
         params![
             format!("work:send:{}", id.as_str()),
@@ -741,6 +775,7 @@ pub(super) fn insert_publication(
         ],
     )
     .map_err(store_error)?;
+    }
     Ok(Publication {
         message: id,
         sequence: base,
@@ -762,12 +797,7 @@ pub fn publish_send(
     budget: &CallBudget,
     current_body_bytes: impl FnOnce() -> usize,
 ) -> Result<CommandResult, ApiError> {
-    if request.delivery_mode == DeliveryMode::Lazy {
-        return Err(api_error(
-            ErrorCode::Unsupported,
-            "lazy publication is not implemented",
-        ));
-    }
+    validate_delivery_options(request)?;
     require_live_budget(context, budget)?;
     let digest = schema::canonical_digest(&send_payload(request))?;
     super::seats::cooperative_instance(conn, &request.claim.instance, &request.claim)?;
