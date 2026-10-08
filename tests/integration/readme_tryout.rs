@@ -445,8 +445,22 @@ fn readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundar
         world.json(Some(actor), &["accept", "review"]);
         world.receipt(message, actor.0, EffectiveReceiptState::Pending);
         let inbox = world.json(Some(actor), &["inbox"]);
-        assert_eq!(inbox["items"][0]["thread"], report["thread"]);
-        assert_eq!(inbox["items"][0]["pending_receipts"], 1);
+        // The advertised v2 inbox carries addressed messages, not the legacy
+        // per-thread pending count. JSON offers an ACK candidate but cannot ACK.
+        assert_eq!(inbox["has_more"], false, "{inbox}");
+        let items = inbox["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{inbox}");
+        let item = &items[0];
+        assert_eq!(item["kind"], "message");
+        assert_eq!(item["thread"], report["thread"]);
+        assert_eq!(item["message"], message);
+        assert_eq!(item["sender"], human);
+        assert_eq!(item["author_role"], "human");
+        assert_eq!(item["body"], body);
+        assert_eq!(item["body_start"], 0);
+        assert_eq!(item["body_end"], body.len());
+        assert_eq!(item["body_len"], body.len());
+        assert_eq!(item["ack_candidate"], message);
         world.receipt(message, actor.0, EffectiveReceiptState::Pending);
         assert!(world.run(Some(actor), &["inbox"], false).contains(body));
         world.receipt(message, actor.0, EffectiveReceiptState::Acknowledged);
@@ -551,4 +565,5 @@ fn readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundar
     assert_eq!(world.count("SELECT count(*) FROM threads"), 1);
     assert_eq!(world.count("SELECT count(*) FROM seats"), 3);
     assert_eq!(world.host.starts.lock().unwrap().len(), 2);
+    world.pending_pairs(&[]);
 }
