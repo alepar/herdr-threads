@@ -325,22 +325,35 @@ impl ReadModes {
             capabilities::MESSAGE_DELIVERY_MODES,
             commands::{Command, DeliveryMode, MessageDeliveryModesQuery},
             output::selected_result,
-            results::SearchHit,
+            results::{MessageContent, MessageKind, SearchHit},
         };
         if spec.format != OutputFormat::Text {
             return Ok(Self::default());
         }
         let selected = selected_result(result, spec);
         let ids: Vec<_> = match &selected {
-            CommandResult::History(page) => page.items.iter().map(|m| m.message.clone()).collect(),
-            CommandResult::Message(detail) => vec![detail.summary.message.clone()],
+            // System events may be canonically published by a manifest before
+            // their physical message rows exist. Delivery mode applies only
+            // to ordinary content, so do not query it for warning/info rows.
+            CommandResult::History(page) => page
+                .items
+                .iter()
+                .filter(|m| m.kind == MessageKind::Ordinary)
+                .map(|m| m.message.clone())
+                .collect(),
+            CommandResult::Message(detail) => match &detail.content {
+                MessageContent::Ordinary { .. } => vec![detail.summary.message.clone()],
+                MessageContent::System { .. } => Vec::new(),
+            },
             CommandResult::Search(search) => search
                 .matches
                 .items
                 .iter()
                 .filter_map(|hit| match hit {
-                    SearchHit::Body(m) => Some(m.message.clone()),
-                    SearchHit::Topic(_) => None,
+                    SearchHit::Body(m) if m.kind == MessageKind::Ordinary => {
+                        Some(m.message.clone())
+                    }
+                    SearchHit::Body(_) | SearchHit::Topic(_) => None,
                 })
                 .collect(),
             _ => return Ok(Self::default()),

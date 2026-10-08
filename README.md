@@ -27,7 +27,7 @@ Use one Herdr tab with your shell and two empty shell panes. Run these commands 
 **1. Claim your pane as a human participant.**
 
 ```sh
-herdr-threads me init
+herdr-threads human me init
 ```
 
 **2. Prepare two agent panes.** Split twice in Herdr. In the first new pane, paste:
@@ -47,7 +47,7 @@ Return to your own pane. Use a tab without existing panes named `alice` or `bob`
 **3. Start a conversation with Alice on Claude.** Handoff creates the named thread, invites Alice's seat, stores your assignment with a receipt request, and starts the agent in the empty pane:
 
 ```sh
-herdr-threads handoff --new-thread --thread-name review \
+herdr-threads human handoff --new-thread --thread-name review \
   --topic "Tabs or spaces?" --pane alice --kind claude -- \
   "You are Alice. Make the case for spaces in this thread. Wait for Bob to say he is ready, then debate the tradeoffs with him."
 ```
@@ -55,7 +55,7 @@ herdr-threads handoff --new-thread --thread-name review \
 **4. Bring Bob on Codex into the same thread.**
 
 ```sh
-herdr-threads handoff --thread review --pane bob --kind codex \
+herdr-threads human handoff --thread review --pane bob --kind codex \
   -- \
   "You are Bob. Make the case for tabs in this thread. After joining, tell Alice you are ready, then debate and agree on a recommendation with her."
 ```
@@ -67,7 +67,7 @@ Approve Codex's CLI permission request when it appears. Agents receive their ass
 Send a question and check outstanding receipts:
 
 ```sh
-herdr-threads send review --require-ack-pane alice --require-ack-pane bob \
+herdr-threads human send review --require-ack-pane alice --require-ack-pane bob \
   --body "Please settle on one recommendation and explain the tradeoff."
 herdr-threads pending-receipts --thread review
 ```

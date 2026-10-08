@@ -937,7 +937,24 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     } else {
         client.call_with_output(command.clone(), output_spec, &budget())?
     };
-    let result = fit_inbox_read(command.clone(), result, output_spec, client, budget)?;
+    let topics = match (&result, inbox_seat) {
+        (CommandResult::Inbox(page), Some(seat))
+            if output::human_active()
+                && output_spec.format == OutputFormat::Text
+                && !page.items.is_empty() =>
+        {
+            inbox_topics(seat, output_spec, client, budget)
+        }
+        _ => None,
+    };
+    // Fitting and final rendering must share the exact topic snapshot: the
+    // padded Human topic column is part of the caller's byte budget.
+    let result = match &topics {
+        Some(topics) => human::with_inbox_topics(topics.clone(), || {
+            fit_inbox_read(command.clone(), result, output_spec, client, budget)
+        }),
+        None => fit_inbox_read(command.clone(), result, output_spec, client, budget),
+    }?;
     let (result, modes) = fit_annotated_read(command, result, output_spec, client, budget)?;
     let peer_hints = if output_spec.format == OutputFormat::Text && peer_locations::active() {
         let location_budget = budget();
@@ -950,16 +967,6 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
         )
     } else {
         peer_locations::Prepared::default()
-    };
-    let topics = match (&result, inbox_seat) {
-        (CommandResult::Inbox(page), Some(seat))
-            if output::human_active()
-                && output_spec.format == OutputFormat::Text
-                && !page.items.is_empty() =>
-        {
-            inbox_topics(seat, output_spec, client, budget)
-        }
-        _ => None,
     };
     match topics {
         Some(topics) => {
@@ -1013,6 +1020,27 @@ fn fit_inbox_read<C: LocalClient + ?Sized>(
         let bytes = output::emitted_bytes(&result, spec)?;
         if bytes.len() <= max as usize {
             return Ok(result);
+        }
+        // Human legacy rows can be much wider than their compact wire
+        // encoding (especially UTF-8 topics). Reserve fewer canonical rows
+        // rather than exhausting the wire byte budget without changing the
+        // selected page. Its continuation remains service-generated.
+        if output::human_active()
+            && let CommandResult::Inbox(page) = &result
+            && page.items.len() > 1
+            && let Command::Inbox(query) = &mut command
+        {
+            let rows =
+                (page.items.len() * max as usize / bytes.len()).clamp(1, page.items.len() - 1);
+            query.page.limit = rows as u16;
+            let retry = client.call_with_output(command.clone(), spec, &budget())?;
+            if retry == result {
+                return Err(ApiError::invalid_budget("inbox refit made no progress")
+                    .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX))
+                    .into());
+            }
+            result = retry;
+            continue;
         }
         let current = read_byte_bound(&command);
         let overflow = u32::try_from(bytes.len() - max as usize).unwrap_or(u32::MAX);

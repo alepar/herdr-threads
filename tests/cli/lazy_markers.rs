@@ -683,3 +683,70 @@ fn lazy_markers_advertised_ordinary_only_page_keeps_exact_bytes() {
         1
     );
 }
+
+/// Catches mode lookup treating a canonical manifest warning as a missing message.
+#[test]
+fn lazy_markers_manifest_warning_history_and_body_render_readonly() {
+    use herdr_threads::store::{SqliteStore, StoreSettings, connection::StoreContext};
+    use std::sync::Arc;
+    let iso = TestIsolation::new("lazy-logical-warning-read");
+    let context = StoreContext::new(iso.path("db"), Arc::new(SystemClock::new()));
+    let db = context.open_writer().unwrap();
+    db.execute_batch("INSERT INTO host_instances(id,created_at,decision_seq) VALUES('i',0,10);
+        INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s','i','unresolved','native',1,0);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','i','topic','goal',0,0,4);
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('p','i','scope','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+        INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES('p','key','warn-id','s',1,1,'{}');
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) VALUES('ordinary-id','i','t',1,'ordinary','ordinary control',10,0,'ordinary'),('lazy-id','i','t',3,'ordinary','lazy control',11,0,'lazy');
+        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('p','ordinary-id','i','t',10,0,1,0,1,1);").unwrap();
+    let client = StoreClient {
+        store: SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+        calls: Mutex::new(vec![]),
+    };
+    let before = snapshot(&db);
+    let history_result = execute(&["read", "t"], &client);
+    let body_result = execute(&["body", "warn-id"], &client);
+    assert!(
+        history_result.is_ok() && body_result.is_ok(),
+        "history={history_result:?}, body={body_result:?}"
+    );
+    let (history, _) = history_result.unwrap();
+    assert!(history.contains("warn-id"), "{history}");
+    assert!(history.contains("ordinary control"), "{history}");
+    assert!(history.contains("[lazy] lazy-id"), "{history}");
+    assert!(!history.contains("[lazy] ordinary-id"));
+    let (body, _) = body_result.unwrap();
+    assert!(body.contains("warn-id"), "{body}");
+    assert!(!body.contains("[lazy]"), "{body}");
+    for argv in [
+        vec!["body", "ordinary-id"],
+        vec!["body", "lazy-id"],
+        vec!["search", "control", "--thread", "t"],
+    ] {
+        run(&argv, &client);
+    }
+    let budget = CallBudget {
+        deadline: herdr_threads::protocol::time::MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let error = client
+        .call(
+            Command::MessageDeliveryModes(
+                herdr_threads::protocol::commands::MessageDeliveryModesQuery {
+                    messages: vec![MessageId::new("missing")],
+                },
+            ),
+            &budget,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        herdr_threads::protocol::results::ErrorCode::NotFound
+    );
+    assert!(execute(&["body", "missing"], &client).is_err());
+    assert_eq!(
+        snapshot(&db),
+        before,
+        "text reads must not mutate canonical state"
+    );
+}

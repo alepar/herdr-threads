@@ -624,3 +624,118 @@ fn capture(w: &World, value: Value) {
         writeln!(file, "{value}").unwrap();
     }
 }
+
+/// Catches fitting the legacy Human table before its topic column is installed.
+#[test]
+fn continuation_legacy_human_long_topics_fit_and_remain_readonly() {
+    use std::sync::atomic::Ordering;
+    let w = World::new();
+    let ordinary = w.send(
+        "pending control",
+        &["--nudge", "--require-ack", &w.seats[1]],
+    );
+    let lazy = w.send("passive control", &[]);
+    let mut expected = std::collections::BTreeSet::from([w.thread.clone()]);
+    for n in 0..21 {
+        let topic = format!("topic-{n:02}-{}", "界".repeat(45));
+        let thread = w.ok(Some(0), false, &["thread", "create", "--topic", &topic])["data"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        w.ok(Some(0), false, &["invite", &thread, "--seat", &w.seats[1]]);
+        expected.insert(thread);
+    }
+    wait_for_send_attention(&w);
+    let proxy = crate::lazy_config_smoke::Proxy::new(w.paths(), &w.root);
+    proxy.mode.store(1, Ordering::SeqCst);
+    let before = w.projection_snapshot();
+    let intents = w.intents();
+    let mut out = w.text(
+        2,
+        true,
+        &[
+            "inbox",
+            "--human",
+            "--seat",
+            &w.seats[1],
+            "--max-bytes",
+            "2400",
+        ],
+    );
+    let mut recovered = std::collections::BTreeSet::new();
+    let mut pages = 0;
+    loop {
+        assert!(
+            out.len() <= 2400,
+            "actual Human bytes exceeded bound: {}",
+            out.len()
+        );
+        assert!(out.contains("TOPIC"), "{out}");
+        for line in out.lines() {
+            if let Some(id) = line
+                .split_whitespace()
+                .next()
+                .filter(|id| expected.contains(*id))
+            {
+                assert!(recovered.insert(id.to_owned()), "duplicate thread {id}");
+            }
+        }
+        assert_eq!(w.projection_snapshot(), before);
+        assert_eq!(w.intents(), intents);
+        let Some(next) = out.lines().find_map(|line| line.strip_prefix("more: ")) else {
+            break;
+        };
+        let argv = shlex::split(next).unwrap();
+        assert_eq!(argv[0], "herdr-threads");
+        assert_eq!(argv[1], "human");
+        assert!(argv.iter().any(|a| a == "--human"));
+        let cursor = argv.iter().position(|a| a == "--cursor").unwrap();
+        assert!(argv[cursor + 1].starts_with("c3:"), "{argv:?}");
+        for (flag, expected) in [
+            ("--seat", w.seats[1].clone()),
+            ("--max-bytes", "2400".into()),
+            ("--state-dir", w.root.join("state").to_str().unwrap().into()),
+            (
+                "--host-endpoint",
+                w.root.join("h.sock").to_str().unwrap().into(),
+            ),
+        ] {
+            let at = argv.iter().position(|a| a == flag).unwrap();
+            assert_eq!(argv[at + 1], expected);
+        }
+        // A capability upgrade cannot change the protocol of the captured page.
+        proxy.mode.store(0, Ordering::SeqCst);
+        let output = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"))
+            .args(&argv[1..])
+            .env("HOME", w.root.join("home"))
+            .env("CLAUDE_CONFIG_DIR", w.root.join("claude"))
+            .env("CODEX_HOME", w.root.join("codex"))
+            .env("HERDR_THREADS_OFFLINE", "1")
+            .env("NO_COLOR", "1")
+            .env("HERDR_PANE_ID", "w1:p3")
+            .env_remove("HERDR_PLUGIN_STATE_DIR")
+            .env_remove("HERDR_SOCKET_PATH")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "printed continuation {argv:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        out = String::from_utf8(output.stdout).unwrap();
+        pages += 1;
+        assert!(pages < 20, "cursor failed to advance");
+    }
+    assert!(pages > 0, "long topic page must continue");
+    assert_eq!(recovered, expected);
+    assert_eq!(w.state(&lazy, 1), "pending");
+    let ack: String = w.db().query_row("SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2", [&ordinary, &w.seats[1]], |r| r.get(0)).unwrap();
+    assert_eq!(ack, "pending");
+    let requests = proxy.requests();
+    assert!(requests.iter().any(|r| r["command"]["kind"] == "directory"));
+    assert!(requests.iter().any(|r| r["command"]["kind"] == "inbox"));
+    assert!(!requests.iter().any(|r| matches!(
+        r["command"]["kind"].as_str(),
+        Some("inbox_batch_v2" | "complete_inbox_delivery" | "ack_displayed")
+    )));
+}

@@ -101,3 +101,6 @@ mod lazy_config_smoke;
 
 #[path = "integration/lazy_sweep.rs"]
 mod lazy_sweep;
+
+#[path = "cli/readme_commands.rs"]
+mod readme_commands;
