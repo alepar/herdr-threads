@@ -423,9 +423,10 @@ fn seed(paths: &InstancePaths) -> Uuid {
         ("peer", "w9:p2", 2),
         ("cx", "w9:p3", 3),
     ] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,0,0)", [seat, &instance.to_string(), pane]).unwrap();
-        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,0,?3,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", [instance.to_string(), pane.to_owned(), seq.to_string()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", [seat, &instance.to_string(), pane]).unwrap();
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,1,?3,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", [instance.to_string(), pane.to_owned(), seq.to_string()]).unwrap();
     }
+    db.execute("UPDATE seats SET structural_terminal_id='term-'||target_id, structural_incarnation='inc', structural_incarnation_kind='coherent_enumeration', structural_host_boot='b', structural_host_epoch=1, structural_connection_epoch=1, structural_observation_sequence=1", []).unwrap();
     instance
 }
 
@@ -450,6 +451,60 @@ fn private_root() -> PathBuf {
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     root
+}
+
+/// Publish and reconcile one coherent snapshot for the static fixture through
+/// the production store decisions, rather than bypassing resolution in a mock.
+fn publish_fixture_snapshot(
+    store: &dyn herdr_threads::ports::StorePort,
+    host: &dyn herdr_threads::ports::HostPort,
+    instance: &str,
+    clock: &dyn Clock,
+) {
+    use herdr_threads::ports::{DurableWorkAdmission, HostCallContext, SnapshotHeader};
+    let budget = CallBudget {
+        deadline: herdr_threads::protocol::time::MonoInstant(clock.monotonic_now().0 + 5000),
+        cancellation: Cancellation::default(),
+    };
+    let admission = store.begin_host_observation(instance, &budget).unwrap();
+    let snapshot = host
+        .enumerate_targets(&HostCallContext {
+            budget: budget.clone(),
+            expected_boot: None,
+            expected_epoch: None,
+        })
+        .unwrap();
+    let stage = store
+        .begin_snapshot_stage(
+            SnapshotHeader::from_captured(admission, &snapshot).unwrap(),
+            &budget,
+        )
+        .unwrap();
+    store
+        .stage_snapshot_targets(
+            &stage.id,
+            0,
+            &snapshot.targets,
+            DurableWorkAdmission::new(16).unwrap(),
+            &budget,
+        )
+        .unwrap();
+    store.seal_snapshot_stage(&stage.id, &budget).unwrap();
+    let published = store.publish_snapshot_stage(&stage.id, &budget).unwrap();
+    let page = store
+        .saved_seats_page(&published.id, 0, None, 16, &budget)
+        .unwrap();
+    assert!(!page.has_more);
+    for transition in herdr_threads::identity::reconcile::plan_page(&page).unwrap() {
+        store
+            .apply_reconciliation_transition(transition, &budget)
+            .unwrap();
+    }
+    assert!(
+        store
+            .record_reconciliation_pass(&published, &budget)
+            .unwrap()
+    );
 }
 
 struct Fixture {
@@ -572,11 +627,24 @@ impl Fixture {
                             Some(manifest as Arc<dyn ManifestTrigger>),
                             Arc::clone(&service_clock),
                         ));
-                        let domain = DomainService::new(instance.to_string(), store, service_clock)
-                            .with_cooperative_owner(
-                                unsafe { libc::geteuid() },
-                                Arc::new(FairWriter::new(32)),
-                            );
+                        // The static seeded hook fixture also supplies the real guarded
+                        // resolver: startup now reads the host even when reusing a seat.
+                        let host = Arc::new(continuity::Herdr::legacy(Arc::clone(&service_clock)));
+                        publish_fixture_snapshot(
+                            store.as_ref(),
+                            host.as_ref(),
+                            &instance.to_string(),
+                            service_clock.as_ref(),
+                        );
+                        let writer = Arc::new(FairWriter::new(32));
+                        let domain = DomainService::with_host(
+                            instance.to_string(),
+                            store,
+                            service_clock,
+                            host,
+                            Arc::clone(&writer),
+                        )
+                        .with_cooperative_owner(unsafe { libc::geteuid() }, writer);
                         let inner = Arc::new(
                             ControlService::new(
                                 StopController::new(instance, boot, cancellation),
@@ -3612,19 +3680,34 @@ mod continuity {
         Slow,
     }
 
-    struct Herdr {
+    pub(super) struct Herdr {
+        legacy: bool,
         clock: Arc<dyn Clock>,
         epoch: AtomicU64,
         sequence: AtomicU64,
         panes: Mutex<BTreeMap<String, Agent>>,
     }
     impl Herdr {
+        pub(super) fn legacy(clock: Arc<dyn Clock>) -> Self {
+            Self {
+                legacy: true,
+                clock,
+                epoch: AtomicU64::new(1),
+                sequence: AtomicU64::new(10),
+                panes: Mutex::new(
+                    ["w9:p1", "w9:p2", "w9:p3"]
+                        .into_iter()
+                        .map(|p| (p.into(), Agent::NoSession))
+                        .collect(),
+                ),
+            }
+        }
         fn observation(&self, target: &str, sequence: u64) -> HostObservation {
             let at = self.clock.monotonic_now();
             HostObservation {
                 focused: false,
                 target: HostTargetId::new(target),
-                host_boot: HostBootId::new("host"),
+                host_boot: HostBootId::new(if self.legacy { "b" } else { "host" }),
                 epoch: self.epoch.load(Ordering::SeqCst),
                 generation: 1,
                 observed_at_utc: self.clock.utc_now(),
@@ -3632,10 +3715,13 @@ mod continuity {
                 provenance: ObservationProvenance::FreshCurrentTarget,
                 occupant: None,
                 ui: HostUiState::Idle,
-                terminal: Some(TerminalId::new(format!("terminal-{target}"))),
+                terminal: Some(TerminalId::new(format!(
+                    "{}{target}",
+                    if self.legacy { "term-" } else { "terminal-" }
+                ))),
                 occupancy: StructuralOccupancy::EmptyShell,
                 incarnation: IncarnationEvidence::Verified {
-                    identity: "incarnation".into(),
+                    identity: if self.legacy { "inc" } else { "incarnation" }.into(),
                     evidence_kind: EvidenceKind::CoherentEnumeration,
                 },
                 execution: ExecutionEvidence::Unknown,
@@ -3688,13 +3774,13 @@ mod continuity {
                 })
                 .collect();
             Ok(HostSnapshot {
-                boot: HostBootId::new("host"),
+                boot: HostBootId::new(if self.legacy { "b" } else { "host" }),
                 epoch: self.epoch.load(Ordering::SeqCst),
                 observation_sequence: sequence,
                 complete: true,
                 enumeration: EnumerationEvidence::CoherentVerified,
                 incarnation: IncarnationEvidence::Verified {
-                    identity: "incarnation".into(),
+                    identity: if self.legacy { "inc" } else { "incarnation" }.into(),
                     evidence_kind: EvidenceKind::CoherentEnumeration,
                 },
                 targets,
@@ -3811,6 +3897,7 @@ mod continuity {
             let _ = harness_path(&host);
             let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
             let herdr = Arc::new(Herdr {
+                legacy: false,
                 clock: Arc::clone(&clock),
                 epoch: AtomicU64::new(1),
                 sequence: AtomicU64::new(1),
@@ -4035,6 +4122,357 @@ mod continuity {
         );
         fx.wait_reconciled();
         fx
+    }
+
+    /// Missing startup enrollment would leave a genuinely new pane seatless;
+    /// allocating on replay would split the same pane's durable role.
+    #[test]
+    fn startup_enrollment_allocates_then_reuses_the_canonical_seat() {
+        for harness in HARNESSES {
+            let fx = Fixture::start(&[(PANE, Agent::NoSession)], |_, _| {});
+            fx.wait_reconciled();
+            let payload = session_start(harness, "fresh-session", "startup");
+            for _ in 0..2 {
+                let hook = fx.hook(harness, PANE, &payload);
+                assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+                assert_eq!(
+                    fx.count(
+                        "SELECT count(*) FROM seats WHERE state='resolved' AND target_id='w1:p1'"
+                    ),
+                    1,
+                    "{harness}: {}",
+                    hook.stderr
+                );
+                assert_eq!(
+                    fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='ordinary'"),
+                    1
+                );
+                assert_eq!(fx.count("SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL AND observation_provenance='cooperative_top_level' AND registered_at IS NOT NULL"), 1);
+                assert_eq!(fx.intents(), 0);
+            }
+            let seat: String = fx
+                .db()
+                .query_row("SELECT id FROM seats", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(
+                fx.context_json(&seat)["current"]["session"]["Native"],
+                "fresh-session"
+            );
+            let replacement = fx.hook(
+                harness,
+                PANE,
+                &session_start(harness, "next-session", "startup"),
+            );
+            assert_eq!(replacement.code, Some(0), "{}", replacement.stderr);
+            assert_eq!(fx.count("SELECT count(*) FROM seats"), 1);
+            assert_eq!(
+                fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='ordinary'"),
+                1
+            );
+            assert_eq!(
+                fx.context_json(&seat)["current"]["session"]["Native"],
+                "next-session"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_enrollment_concurrent_callbacks_and_lost_resolution_reply_keep_one_seat_per_pane() {
+        for harness in HARNESSES {
+            let fx = Fixture::start(
+                &[(PANE, Agent::NoSession), ("w1:p2", Agent::NoSession)],
+                |_, _| {},
+            );
+            fx.wait_reconciled();
+            // Commit an ordinary intent but lose its reply before journal completion.
+            // The next hook must reuse that allocation, not manufacture another role.
+            use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
+            let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+            let reference = journal
+                .record(
+                    IntentScope::ServiceAllocation {
+                        instance: fx.instance.to_string(),
+                        target: HostTargetId::new(PANE),
+                    },
+                    SemanticMutation::ResolveSeat {
+                        target: HostTargetId::new(PANE),
+                    },
+                    1,
+                )
+                .unwrap();
+            let command = journal
+                .load(&reference)
+                .unwrap()
+                .semantic
+                .to_command(reference.operation.clone(), None)
+                .unwrap();
+            let CommandResult::SeatResolved(seat) = fx.call(command.clone()).unwrap() else {
+                panic!("resolution result")
+            };
+            let registered = if harness == "codex" {
+                fx.codex.clone()
+            } else {
+                fx.claude.clone()
+            };
+            let results = std::thread::scope(|scope| {
+                let mut workers = Vec::new();
+                for _ in 0..4 {
+                    let registered = registered.clone();
+                    let host = fx.host.clone();
+                    workers.push(scope.spawn(move || {
+                        run_hook(
+                            &registered,
+                            "w1:p2",
+                            &host,
+                            &session_start(harness, "concurrent", "startup"),
+                        )
+                    }));
+                }
+                workers
+                    .into_iter()
+                    .map(|w| w.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            for result in results {
+                assert_eq!(result.code, Some(0), "{}", result.stderr);
+            }
+            let final_hook = fx.hook(
+                harness,
+                "w1:p2",
+                &session_start(harness, "concurrent", "startup"),
+            );
+            assert_eq!(final_hook.code, Some(0), "{}", final_hook.stderr);
+            let reused = fx.hook(
+                harness,
+                PANE,
+                &session_start(harness, "response-loss", "startup"),
+            );
+            assert_eq!(reused.code, Some(0), "{}", reused.stderr);
+            assert_eq!(fx.count("SELECT count(*) FROM seats"), 2);
+            assert_eq!(
+                fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='ordinary'"),
+                2
+            );
+            assert_eq!(fx.count("SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL AND registered_at IS NOT NULL AND observation_provenance='cooperative_top_level'"), 2);
+            assert_eq!(
+                fx.context_json(seat.as_str())["current"]["seat"],
+                seat.as_str()
+            );
+            assert!(
+                journal.load(&reference).is_ok(),
+                "lost reply remains explicitly retryable"
+            );
+            assert_eq!(fx.call(command).unwrap(), CommandResult::SeatResolved(seat));
+            journal.complete(&reference).unwrap();
+            // A racing lifecycle may leave its uncertain intent for explicit
+            // replay. Settle each under its exact key and frozen payload.
+            let pending = journal
+                .page(&herdr_threads::protocol::pagination::PageRequest {
+                    cursor: None,
+                    limit: 50,
+                    max_bytes: herdr_threads::protocol::pagination::MAX_PAGE_BYTES,
+                })
+                .unwrap();
+            for item in pending.items {
+                let reference = journal
+                    .resolve_recovery_ref(item.recovery_ref.as_str())
+                    .unwrap();
+                let intent = journal.load(&reference).unwrap();
+                let command = intent
+                    .semantic
+                    .to_command(reference.operation.clone(), None)
+                    .unwrap();
+                if let Err(error) = fx.call(command) {
+                    assert!(
+                        matches!(
+                            error.code,
+                            ErrorCode::CallerUnverified | ErrorCode::Conflict
+                        ),
+                        "{error:?}"
+                    );
+                }
+                journal.complete(&reference).unwrap();
+            }
+            assert_eq!(fx.intents(), 0);
+        }
+    }
+
+    #[test]
+    fn startup_enrollment_excludes_child_tool_wrong_registration_and_non_herdr() {
+        for harness in HARNESSES {
+            let fx = Fixture::start(&[(PANE, Agent::NoSession)], |_, _| {});
+            fx.wait_reconciled();
+            let registered = if harness == "codex" {
+                &fx.codex
+            } else {
+                &fx.claude
+            };
+            let mut child: serde_json::Value =
+                serde_json::from_slice(&session_start(harness, "child", "startup")).unwrap();
+            child["agent_id"] = "worker".into();
+            child["agent_type"] = "worker".into();
+            let child = fx.hook(harness, PANE, &serde_json::to_vec(&child).unwrap());
+            assert_eq!(child.code, Some(0), "{}", child.stderr);
+            let tool = fx.hook(harness, PANE, &tool_event(harness, "unregistered"));
+            assert_eq!(tool.code, Some(0), "{}", tool.stderr);
+            let wrong = run_hook(
+                &format!("{registered} --event PreToolUse"),
+                PANE,
+                &fx.host,
+                &session_start(harness, "wrong", "startup"),
+            );
+            assert_eq!(wrong.code, Some(0), "{}", wrong.stderr);
+            let outside = run_hook_outside_pane(
+                registered,
+                &fx.host,
+                &session_start(harness, "outside", "startup"),
+            );
+            assert_eq!(outside.code, Some(0));
+            assert!(outside.stdout.is_empty());
+            if harness == "codex" {
+                let compact = fx.hook(
+                    harness,
+                    PANE,
+                    &session_start(harness, "unregistered", "compact"),
+                );
+                assert_eq!(compact.code, Some(0));
+            }
+            assert_eq!(fx.count("SELECT count(*) FROM seats"), 0);
+            assert_eq!(fx.count("SELECT count(*) FROM allocation_decisions"), 0);
+            assert_eq!(fx.count("SELECT count(*) FROM occupant_bindings"), 0);
+            assert_eq!(fx.intents(), 0);
+            // Positive control: these same installed hooks can enroll top-level startup.
+            let top = fx.hook(harness, PANE, &session_start(harness, "top", "startup"));
+            assert_eq!(top.code, Some(0), "{}", top.stderr);
+            assert_eq!(fx.count("SELECT count(*) FROM seats"), 1);
+        }
+    }
+
+    #[test]
+    fn startup_enrollment_resume_in_new_pane_recovers_unique_but_refuses_ambiguous_identity() {
+        for harness in HARNESSES {
+            for ambiguous in [false, true] {
+                let fx = Fixture::start(&[(PANE, Agent::NoSession)], |db, instance| {
+                    saved_seat(db, instance, "saved", harness, "saved-session");
+                    if ambiguous {
+                        saved_seat(db, instance, "twin", harness, "saved-session");
+                    }
+                });
+                fx.wait_reconciled();
+                // The new target is authoritatively after the recovery baseline:
+                // ordinary resolution could allocate here, so continuity refusal
+                // must not fall through and erase the resumed identity.
+                fx.herdr
+                    .panes
+                    .lock()
+                    .unwrap()
+                    .insert("w1:p3".into(), Agent::NoSession);
+                let store = herdr_threads::store::SqliteStore::new(
+                    StoreContext::new(fx.db.clone(), Arc::clone(&fx.clock)),
+                    fx.instance.to_string(),
+                    herdr_threads::store::StoreSettings::default(),
+                )
+                .unwrap();
+                publish_fixture_snapshot(
+                    &store,
+                    fx.herdr.as_ref(),
+                    &fx.instance.to_string(),
+                    fx.clock.as_ref(),
+                );
+                assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT active_snapshot_id FROM host_instances)"), 1);
+                assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT recovery_baseline_generation_id FROM host_instances)"), 0);
+                let resume = fx.hook(
+                    harness,
+                    "w1:p3",
+                    &session_start(harness, "saved-session", "resume"),
+                );
+                assert_eq!(resume.code, Some(0), "{}", resume.stderr);
+                assert_eq!(
+                    fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='ordinary'"),
+                    0
+                );
+                if ambiguous {
+                    assert_eq!(
+                        fx.count("SELECT count(*) FROM seats WHERE state='unresolved'"),
+                        2
+                    );
+                    assert_eq!(
+                        fx.count("SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL"),
+                        0
+                    );
+                } else {
+                    assert_eq!(fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='resolved' AND target_id='w1:p3'"), 1);
+                    assert_eq!(fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"), 1);
+                }
+                assert_eq!(fx.intents(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn startup_enrollment_never_allocates_around_unresolved_target_after_baseline() {
+        for harness in HARNESSES {
+            let fx = Fixture::start(&[(PANE, Agent::NoSession)], |db, instance| {
+                saved_seat(db, instance, "saved", harness, "saved-session");
+                db.execute("UPDATE seats SET target_id='w1:p3' WHERE id='saved'", [])
+                    .unwrap();
+            });
+            fx.wait_reconciled();
+            for pane in ["w1:p3", "w1:p4"] {
+                fx.herdr
+                    .panes
+                    .lock()
+                    .unwrap()
+                    .insert(pane.into(), Agent::NoSession);
+            }
+            let store = herdr_threads::store::SqliteStore::new(
+                StoreContext::new(fx.db.clone(), Arc::clone(&fx.clock)),
+                fx.instance.to_string(),
+                herdr_threads::store::StoreSettings::default(),
+            )
+            .unwrap();
+            publish_fixture_snapshot(
+                &store,
+                fx.herdr.as_ref(),
+                &fx.instance.to_string(),
+                fx.clock.as_ref(),
+            );
+            assert_eq!(fx.count("SELECT count(*) FROM snapshot_targets WHERE target_id='w1:p3' AND generation_id=(SELECT recovery_baseline_generation_id FROM host_instances)"), 0);
+            for source in ["startup", "clear", "resume"] {
+                let callback = fx.hook(
+                    harness,
+                    "w1:p3",
+                    &session_start(harness, "different-session", source),
+                );
+                assert_eq!(callback.code, Some(0), "{}", callback.stderr);
+                assert_eq!(fx.count("SELECT count(*) FROM seats"), 1);
+                assert_eq!(
+                    fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='unresolved'"),
+                    1
+                );
+                assert_eq!(fx.count("SELECT count(*) FROM allocation_decisions"), 0);
+            }
+            // An unrelated genuinely new pane remains eligible under ordinary policy.
+            let new = fx.hook(
+                harness,
+                "w1:p4",
+                &session_start(harness, "new-session", "startup"),
+            );
+            assert_eq!(new.code, Some(0), "{}", new.stderr);
+            assert_eq!(
+                fx.count("SELECT count(*) FROM seats WHERE target_id='w1:p4' AND state='resolved'"),
+                1
+            );
+            assert_eq!(
+                fx.count("SELECT count(*) FROM seats WHERE id='saved' AND state='unresolved'"),
+                1
+            );
+            assert_eq!(
+                fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='ordinary'"),
+                1
+            );
+            assert_eq!(fx.intents(), 0);
+        }
     }
 
     #[test]

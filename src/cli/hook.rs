@@ -5,8 +5,10 @@
 //! takes the pane from `HERDR_PANE_ID`, resolves that pane's durable seat from the
 //! service and writes the native `hookSpecificOutput.additionalContext` envelope.
 //!
-//! Two hook classes. Lifecycle hooks (SessionStart startup/clear/resume) perform
-//! the durable Lifecycle CheckIn through the context journal with exact replay;
+//! Two hook classes. Top-level lifecycle hooks (SessionStart startup/clear/resume)
+//! first enroll through launch's ordinary canonical guarded seat resolver, after
+//! any resume continuity attempt. They then perform the durable Lifecycle CheckIn
+//! through the context journal with exact replay;
 //! a definitively rejected pending request is abandoned as terminal. Tool-boundary
 //! hooks (Claude and Codex Bash PreToolUse, Codex compact) read the seat's
 //! server-side attention digest, compare only its token with the last token
@@ -1440,6 +1442,7 @@ fn check_in(
     args: &HookArgs,
     event: &LifecycleEvent,
     turn: Option<&crate::harness::context::QualifiedTurn>,
+    enroll: bool,
     env: &HookEnv,
     deadline: Instant,
     current_deadline: CurrentDeadline,
@@ -1521,12 +1524,12 @@ fn check_in(
     };
     // Daemon check order for a lifecycle check-in (TRUST-POLICY A4, C1):
     // (1) A4 agent-to-human refusal, (2) C1 reattachment on a held or
-    // unowned target, (3) the existing hold refusal / ordinary path. A
+    // unowned target, (3) canonical guarded startup enrollment / ordinary path. A
     // person's lifecycle check-in is never sent here; (2) is attempted only
     // for a top-level resume. The reattachment is one complete check-in (the
     // daemon rebinds the seat and opens its successor binding), so nothing
     // follows it.
-    let (seat, generation) = match find_seat(&client, &target, deadline, clock.as_ref())? {
+    let existing = match find_seat(&client, &target, deadline, clock.as_ref())? {
         // A resume in a pane that still looks resolved may be running in a
         // restored Herdr (the same pane id, a new incarnation) the daemon has
         // not reconciled yet (ht-p63). The continuity request makes the daemon
@@ -1537,7 +1540,14 @@ fn check_in(
         // never does. This probe never replays an earlier intent's result.
         PaneSeat::Resolved(seat, generation) => match call.reattach_by_continuity(event, true) {
             Reattach::Done(done) => return Ok(stamp(*done)),
-            Reattach::Declined => (seat, generation),
+            Reattach::Declined | Reattach::Refused(ErrorCode::TargetAlreadyOwned) => {
+                Some((seat, generation))
+            }
+            Reattach::Refused(_) => {
+                return Err(Failure::Unavailable(
+                    "resume continuity requires repair; no new seat allocated".into(),
+                ));
+            }
             Reattach::InstallFailed(detail) => return Err(install_failed(&detail)),
             Reattach::Pending => {
                 return Err(Failure::Unavailable(
@@ -1548,8 +1558,49 @@ fn check_in(
         absent => match call.reattach_by_continuity(event, false) {
             Reattach::Done(done) => return Ok(stamp(*done)),
             Reattach::InstallFailed(detail) => return Err(install_failed(&detail)),
-            Reattach::Declined | Reattach::Pending => return Err(absent.refusal(pane)),
+            Reattach::Declined
+                if enroll
+                    && event.kind != EventKind::Resume
+                    && matches!(absent, PaneSeat::Unowned) =>
+            {
+                // Continuity decided no recovery route (or this is not resume).
+                // The daemon alone decides whether this target is genuinely new.
+                None
+            }
+            Reattach::Refused(ErrorCode::NotFound)
+                if enroll && matches!(absent, PaneSeat::Unowned) =>
+            {
+                None
+            }
+            Reattach::Declined | Reattach::Refused(_) | Reattach::Pending => {
+                return Err(absent.refusal(pane));
+            }
         },
+    };
+    let (seat, generation) = if enroll {
+        let journal = call
+            .journal()
+            .ok_or_else(|| Failure::Unavailable("seat enrollment journal unavailable".into()))?;
+        let resolved = super::launch::resolve_seat(
+            &client,
+            &journal,
+            instance,
+            &target,
+            clock.as_ref(),
+            &budget(deadline, clock.as_ref()),
+        )
+        .map_err(|e| api_failure("seat enrollment", &e))?;
+        // Operation replay is historical, never current mapping authority.
+        match find_seat(&client, &target, deadline, clock.as_ref())? {
+            PaneSeat::Resolved(current, generation) if current == resolved => (current, generation),
+            _ => {
+                return Err(Failure::Unavailable(
+                    "enrolled seat mapping changed; retry".into(),
+                ));
+            }
+        }
+    } else {
+        existing.ok_or_else(|| Failure::Quiet(format!("no resolved seat for pane {pane}")))?
     };
     call.check_in_seat_with_turn(event, turn, &seat, generation)
         .map(stamp)
@@ -1573,7 +1624,7 @@ struct PaneCall<'a> {
 enum ContinuityOutcome {
     Reattached(crate::protocol::results::ContinuityReattachment),
     /// A definitive refusal; the intent was discarded.
-    Refused,
+    Refused(ErrorCode),
     /// Still retryable when the hook's deadline passed; the intent is kept for
     /// the next `resume` in the pane or `herdr-threads retry`.
     Kept,
@@ -1584,9 +1635,11 @@ enum Reattach {
     /// The daemon reattached the pane's seat; the check-in is complete
     /// (boxed: the check-in output dwarfs the other variants).
     Done(Box<CheckedIn>),
-    /// Not attempted (not a top-level resume with a native session) or
-    /// definitively refused.
+    /// Not attempted (not a top-level resume with a native session).
     Declined,
+    /// A definitive daemon continuity refusal; only no-match or an already
+    /// resolved owner may proceed to ordinary enrollment.
+    Refused(ErrorCode),
     /// Undecided: still retryable when the deadline passed (the intent is
     /// kept), or the hook could not record the intent.
     Pending,
@@ -1600,7 +1653,7 @@ impl Reattach {
     fn done(self) -> Option<CheckedIn> {
         match self {
             Self::Done(done) => Some(*done),
-            Self::Declined | Self::Pending | Self::InstallFailed(_) => None,
+            Self::Declined | Self::Refused(_) | Self::Pending | Self::InstallFailed(_) => None,
         }
     }
 }
@@ -1684,7 +1737,7 @@ impl PaneCall<'_> {
                 Ok(Err(rejection)) if super::retry::is_continuity_refusal(&rejection.code) => {
                     // A failed removal leaves an inert, still-refused entry.
                     let _ = journal.complete(reference);
-                    return ContinuityOutcome::Refused;
+                    return ContinuityOutcome::Refused(rejection.code);
                 }
                 Ok(Ok(_)) => return ContinuityOutcome::Kept,
                 _ => {}
@@ -1811,7 +1864,7 @@ impl PaneCall<'_> {
         };
         let mut reattached = match self.submit_continuity(&journal, &reference) {
             ContinuityOutcome::Reattached(reattached) => reattached,
-            ContinuityOutcome::Refused => return Reattach::Declined,
+            ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
             ContinuityOutcome::Kept => return Reattach::Pending,
         };
         if reused {
@@ -1831,7 +1884,7 @@ impl PaneCall<'_> {
                     execution = fresh_execution;
                     reattached = match self.submit_continuity(&journal, &reference) {
                         ContinuityOutcome::Reattached(reattached) => reattached,
-                        ContinuityOutcome::Refused => return Reattach::Declined,
+                        ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
                         ContinuityOutcome::Kept => return Reattach::Pending,
                     };
                 }
@@ -2832,10 +2885,20 @@ fn run_admitted_hook_since(
         EventIntent::QualifiedTurn(turn) => Some(turn),
         _ => None,
     };
+    // Only original admitted lifecycle intent permits ordinary enrollment.
+    // A qualified turn's normalized Startup/Clear is context preparation, not
+    // native lifecycle enrollment evidence. Actual native metadata stays intact.
+    let enroll = matches!(
+        decoded.intent,
+        EventIntent::Lifecycle(EventKind::Startup | EventKind::Clear | EventKind::Resume)
+    ) && matches!(decoded.role, EventRole::TopLevel)
+        && matches!(decoded.delivery, DeliveryEligibility::Context)
+        && decoded.can_check_in();
     match check_in(
         args,
         &event,
         turn,
+        enroll,
         env,
         deadline,
         CurrentDeadline {

@@ -3269,7 +3269,7 @@ mod continuity_gate {
             assert!(matches!(
                 pane.call(&daemon)
                     .reattach_by_continuity(&resume(Harness::Claude), false),
-                Reattach::Declined
+                Reattach::Refused(ref refused) if *refused == code
             ));
             assert_eq!(daemon.continuity_requests().len(), 1, "{code:?}");
             assert!(pane.pending().is_none(), "{code:?}");
@@ -5224,6 +5224,10 @@ mod enum_callback {
                     page.items.push(summary());
                     Ok(CommandResult::Seats(page))
                 }
+                Command::ResolveSeat(command) => {
+                    assert_eq!(command.target.as_str(), "w9:p1");
+                    Ok(CommandResult::SeatResolved(SeatId::new("callback-seat")))
+                }
                 Command::SeatInspect(_) => Ok(CommandResult::SeatInspect(SeatInspection {
                     summary: summary(),
                     mapping: MappingStatus {
@@ -5535,6 +5539,11 @@ mod registered_resume {
                 fields: FIELDS,
             },
             EventContract {
+                event: "SyntheticRestart",
+                class: EventClass::Other,
+                fields: FIELDS,
+            },
+            EventContract {
                 event: "SyntheticCompact",
                 class: EventClass::Other,
                 fields: FIELDS,
@@ -5569,6 +5578,11 @@ mod registered_resume {
                 native_event: "SyntheticClear",
                 milestone: Some("lifecycle"),
                 always_send: true,
+            },
+            EvidenceEvent {
+                native_event: "SyntheticRestart",
+                milestone: None,
+                always_send: false,
             },
             EvidenceEvent {
                 native_event: "SyntheticCompact",
@@ -5663,6 +5677,7 @@ mod registered_resume {
                 "SyntheticStart" => (EventIntent::Lifecycle(EventKind::Startup), "startup"),
                 "SyntheticClear" => (EventIntent::Lifecycle(EventKind::Clear), "clear"),
                 "SyntheticCompact" => (EventIntent::Lifecycle(EventKind::Compact), "compact"),
+                "SyntheticRestart" => (EventIntent::Lifecycle(EventKind::Restart), "restart"),
                 "SyntheticTool" => (EventIntent::Current, "SyntheticTool"),
                 "SyntheticObserver" => (EventIntent::Observer, "SyntheticObserver"),
                 _ => return Err(DecodeFailure::Invalid("invalid fixture event".into())),
@@ -5790,6 +5805,11 @@ mod registered_resume {
                 })
                 .collect()
         }
+        fn control(&self, name: &str) -> bool {
+            self.transcript
+                .as_ref()
+                .is_some_and(|path| path.with_file_name(name).exists())
+        }
         fn summary(&self) -> SeatSummary {
             SeatSummary {
                 seat: SeatId::new("registered-seat"),
@@ -5861,8 +5881,25 @@ mod registered_resume {
             match c {
                 Command::Seats(_) => {
                     let mut page = empty();
-                    page.items.push(self.summary());
+                    if self.resolved.load(Ordering::SeqCst)
+                        || !self.control("enrollment-unowned.json")
+                    {
+                        page.items.push(self.summary());
+                    }
                     Ok(CommandResult::Seats(page))
+                }
+                Command::ResolveSeat(command) => {
+                    assert_eq!(command.target.as_str(), "w9:p1");
+                    if !self.resolved.load(Ordering::SeqCst)
+                        && !self.control("enrollment-unowned.json")
+                    {
+                        return Err(ApiError::new(
+                            ErrorCode::TargetUnresolved,
+                            "fixture unresolved mapping requires repair",
+                        ));
+                    }
+                    self.resolved.store(true, Ordering::SeqCst);
+                    Ok(CommandResult::SeatResolved(SeatId::new("registered-seat")))
                 }
                 Command::SeatInspect(_) => {
                     let summary = self.summary();
@@ -5885,6 +5922,12 @@ mod registered_resume {
                     assert_eq!(c.target.as_str(), "w9:p1");
                     assert_eq!(c.harness.as_str(), "synthetic_fourth");
                     assert_eq!(c.native_session.as_str(), "fourth-resume-session");
+                    if self.control("enrollment-no-match.json") {
+                        return Err(ApiError::new(
+                            ErrorCode::NotFound,
+                            "fixture confirmed no continuity match",
+                        ));
+                    }
                     *self.generation.lock().unwrap() = 7;
                     self.resolved.store(true, Ordering::SeqCst);
                     Ok(CommandResult::ContinuityReattached(
@@ -6457,6 +6500,216 @@ mod registered_resume {
             !root.exists(),
             "successful exact-owner cleanup must remove private root"
         );
+    }
+    fn enrollment_counts(f: &Fixture) -> (usize, usize) {
+        let seen = f.service.seen.lock().unwrap();
+        (
+            seen.iter()
+                .filter(|c| matches!(c, Command::ResolveSeat(_)))
+                .count(),
+            seen.iter()
+                .filter(|c| matches!(c, Command::CheckIn(_)))
+                .count(),
+        )
+    }
+    fn assert_no_enrollment_intents(f: &Fixture) {
+        let journal =
+            crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        let page = journal
+            .page(&crate::protocol::pagination::PageRequest {
+                cursor: None,
+                limit: 50,
+                max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+            })
+            .unwrap();
+        assert!(
+            page.items.is_empty(),
+            "unexpected durable intents: {:?}",
+            page.items
+        );
+    }
+    /// Actual admitted fourth producer -> canonical socket commands -> context
+    /// journal. Native names differ truthfully from SessionStart. Disabling
+    /// enrollment must fail actual ResolveSeat and installed-context assertions.
+    #[test]
+    fn startup_enrollment_registered_fourth_uses_original_typed_intent() {
+        for event in ["SyntheticStart", "SyntheticClear", "SyntheticResume"] {
+            let f = Fixture::new(false);
+            write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+            write_fixture_json(&f.root.join("enrollment-no-match.json"), &true).unwrap();
+            let i = input(event, "top_level", Some("fourth-resume-session"));
+            let (_, d) = decode(registration(), &i);
+            assert_eq!(d.metadata.native_event, event);
+            let outcome = f.run(registration(), &i);
+            assert_eq!(
+                enrollment_counts(&f),
+                (1, 1),
+                "{event}: diagnostic={:?}; commands={:?}",
+                outcome.diagnostic,
+                f.service.seen.lock().unwrap()
+            );
+            assert_eq!(outcome.diagnostic, None);
+            let saved = f
+                .saved()
+                .expect("ordinary resolver followed by real check-in installs context");
+            assert_eq!(saved.seat, "registered-seat");
+            assert_eq!(saved.target, "w9:p1");
+            assert_eq!(saved.binding_generation, 2);
+            assert_eq!(
+                saved.session,
+                SessionReference::Native("fourth-resume-session".into())
+            );
+            assert_eq!(saved.harness, OccupantHarness::Agent(d.harness).into());
+            let seen = f.service.seen.lock().unwrap();
+            let resolve = seen
+                .iter()
+                .position(|c| matches!(c, Command::ResolveSeat(_)))
+                .unwrap();
+            let check = seen
+                .iter()
+                .position(|c| matches!(c, Command::CheckIn(_)))
+                .unwrap();
+            assert!(resolve < check);
+            for c in &*seen {
+                if let Command::CheckIn(c) = c {
+                    assert_eq!(c.claim.seat.as_str(), "registered-seat");
+                    assert_eq!(c.claim.binding_generation, 1);
+                    assert_eq!(c.claim.harness, OccupantHarness::Agent(d.harness));
+                }
+            }
+            if event == "SyntheticResume" {
+                assert_eq!(
+                    seen.iter()
+                        .filter(|c| matches!(c, Command::ContinuityCheckIn(_)))
+                        .count(),
+                    1
+                );
+                assert!(
+                    seen.iter()
+                        .position(|c| matches!(c, Command::ContinuityCheckIn(_)))
+                        .unwrap()
+                        < resolve
+                );
+            } else {
+                assert!(
+                    !seen
+                        .iter()
+                        .any(|c| matches!(c, Command::ContinuityCheckIn(_)))
+                );
+            }
+            drop(seen);
+            assert_no_enrollment_intents(&f);
+            // Resolved reuse is freshly guarded, not a cached local bypass.
+            let mut next: serde_json::Value = serde_json::from_slice(
+                &input("SyntheticStart", "top_level", Some("fourth-resume-session")).bytes,
+            )
+            .unwrap();
+            next["event_id"] = "fresh-guarded-reuse".into();
+            let next = HookInput {
+                bytes: serde_json::to_vec(&next).unwrap(),
+                registered_event: Some("SyntheticStart".into()),
+            };
+            let reuse = f.run(registration(), &next);
+            assert_eq!(reuse.diagnostic, None);
+            assert_eq!(enrollment_counts(&f), (2, 2));
+            assert_eq!(f.saved().unwrap().seat, saved.seat);
+            assert_no_enrollment_intents(&f);
+        }
+    }
+    /// A registry entry and normalized Startup cannot enroll Hermes. A mutant
+    /// based on context_event mode reaches the forbidden actual ResolveSeat.
+    #[test]
+    fn startup_enrollment_hermes_qualified_unowned_never_resolves() {
+        let r = builtins()
+            .by_id(builtins().agent("hermes").unwrap())
+            .unwrap();
+        for callback in ["pre_llm_call", "on_session_reset", "on_session_start"] {
+            let f = Fixture::new(false);
+            write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+            let role = if callback == "pre_llm_call" {
+                "top"
+            } else {
+                "unknown"
+            };
+            let i = hermes_input(callback, "unowned-native-session", "turn", 1, role);
+            let handle = r
+                .admit(
+                    &hook_admission_request(r, callback_install_observation(r), &i),
+                    &budget(Instant::now() + LIFECYCLE_BUDGET, clock().as_ref()),
+                )
+                .unwrap();
+            let d = r.decode(&handle, &i).unwrap();
+            assert_eq!(d.metadata.native_event, callback);
+            if callback == "pre_llm_call" {
+                assert!(matches!(d.intent, EventIntent::QualifiedTurn(_)));
+                assert_eq!(d.context_event().unwrap().kind, EventKind::Startup);
+            }
+            let outcome = f.run(r, &i);
+            assert_eq!(
+                enrollment_counts(&f),
+                (0, 0),
+                "{callback}: diagnostic={:?}; commands={:?}",
+                outcome.diagnostic,
+                f.service.seen.lock().unwrap()
+            );
+            assert!(f.saved().is_none());
+            assert!(f.service.requests().is_empty());
+            assert!(outcome.attention.is_none());
+            assert_no_enrollment_intents(&f);
+        }
+    }
+    #[test]
+    fn startup_enrollment_fourth_neighbors_refuse_before_resolver() {
+        for (event, role, session) in [
+            ("SyntheticStart", "child", Some("fourth-resume-session")),
+            ("SyntheticStart", "unknown", Some("fourth-resume-session")),
+            ("SyntheticTool", "top_level", Some("fourth-resume-session")),
+            (
+                "SyntheticCompact",
+                "top_level",
+                Some("fourth-resume-session"),
+            ),
+            (
+                "SyntheticRestart",
+                "top_level",
+                Some("fourth-resume-session"),
+            ),
+            (
+                "SyntheticObserver",
+                "top_level",
+                Some("fourth-resume-session"),
+            ),
+            ("SyntheticResume", "top_level", None),
+        ] {
+            let f = Fixture::new(false);
+            write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+            let i = input(event, role, session);
+            let outcome = f.run(registration(), &i);
+            assert_eq!(enrollment_counts(&f), (0, 0), "{event}/{role}");
+            assert!(f.saved().is_none());
+            assert!(outcome.attention.is_none());
+            assert_no_enrollment_intents(&f);
+        }
+        // Actual strict registered-event mismatch stops before canonical I/O.
+        let f = Fixture::new(false);
+        write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+        let mut i = input("SyntheticStart", "top_level", Some("fourth-resume-session"));
+        i.registered_event = Some("SyntheticTool".into());
+        let outcome = f.run(registration(), &i);
+        assert_eq!(enrollment_counts(&f), (0, 0));
+        // Refused payload diagnostics may negotiate capabilities, but no
+        // canonical seat read/mutation or context journal work is permitted.
+        assert!(
+            f.service
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|c| matches!(c, Command::Capabilities))
+        );
+        assert!(f.saved().is_none());
+        assert!(outcome.attention.is_none());
+        assert_no_enrollment_intents(&f);
     }
     #[test]
     fn registered_fourth_genuine_resume_reaches_canonical_request_and_installs_context() {
