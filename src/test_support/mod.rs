@@ -135,3 +135,16 @@ macro_rules! no_durable_work {
         }
     };
 }
+
+/// Construct sealed bootstrap attachment evidence from a qualified test current
+/// observation and explicit same-response scope. Absent in ordinary builds.
+pub fn bootstrap_attachment_guard(
+    request: &crate::protocol::commands::ResolveSeat,
+    observation: crate::ports::HostObservation,
+    workspace: crate::protocol::ids::HostTargetId,
+    tab: crate::protocol::ids::HostTargetId,
+    admission: &crate::ports::HostObservationAdmission,
+) -> Result<crate::ports::BootstrapAttachmentGuard, &'static str> {
+    let pane = crate::ports::BootstrapPaneObservation::try_new(observation, workspace, tab)?;
+    crate::ports::BootstrapAttachmentGuard::try_new(request, pane, admission)
+}
