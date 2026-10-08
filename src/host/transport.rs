@@ -14,6 +14,7 @@ use std::{
     future::Future,
     io,
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -131,6 +132,11 @@ fn budgeted_capture<T>(
     result.map_err(witness_error)
 }
 
+struct CreationGuard<'a> {
+    expected: &'a LocalEndpointWitness,
+    possible: AtomicBool,
+}
+
 // Allowed: one host RPC exchange with its budget, deadline and peer-identity provider.
 #[allow(clippy::too_many_arguments)]
 async fn exchange(
@@ -143,6 +149,7 @@ async fn exchange(
     started: Instant,
     limit: Duration,
     provider: Option<&dyn ProcessInfoProvider>,
+    creation: Option<&CreationGuard<'_>>,
 ) -> Result<(Value, Option<LocalEndpointWitness>), ApiError> {
     check(clock, budget, started, limit)?;
     let request = encode_request(&json!({"id":id,"method":method,"params":params}))?;
@@ -178,8 +185,39 @@ async fn exchange(
             "host endpoint changed during connect",
         ));
     }
+    if let Some(guard) = creation {
+        let before = witness
+            .as_ref()
+            .ok_or_else(|| error(ErrorCode::StaleHostObservation, "creation witness missing"))?;
+        let after = budgeted_capture(
+            || {
+                capture_peer_witness_with(
+                    &stream,
+                    socket,
+                    provider.expect("creation requires provider"),
+                )
+            },
+            clock,
+            budget,
+            started,
+            limit,
+        )?;
+        if before != guard.expected || &after != guard.expected {
+            return Err(error(
+                ErrorCode::StaleHostObservation,
+                "creation endpoint witness changed before write",
+            ));
+        }
+        check(clock, budget, started, limit)?;
+    }
     let mut position = 0;
     while position < request.len() {
+        // Once the write future may be polled, an error or cancellation cannot
+        // prove zero bytes. Never reset this conservative marker or retry.
+        if let Some(guard) = creation {
+            check(clock, budget, started, limit)?;
+            guard.possible.store(true, Ordering::Release);
+        }
         let count = bounded(
             stream.write(&request[position..]),
             clock,
@@ -304,7 +342,7 @@ async fn exchange(
 
 // Allowed: exchange's inputs for the blocking path.
 #[allow(clippy::too_many_arguments)]
-fn request_inner(
+fn request_inner_guarded(
     socket: &Path,
     id: &str,
     method: &str,
@@ -313,7 +351,14 @@ fn request_inner(
     budget: &CallBudget,
     limit: Duration,
     provider: Option<&dyn ProcessInfoProvider>,
+    creation: Option<&CreationGuard<'_>>,
 ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
+    if method == "tab.create" && creation.is_none() {
+        return Err(error(
+            ErrorCode::InvalidRequest,
+            "tab.create requires the typed witnessed boundary",
+        ));
+    }
     let started = Instant::now();
     // HostPort is synchronous and may be called from inside a Tokio runtime.
     // Keep this one transport task owned and joined on every return path.
@@ -338,6 +383,7 @@ fn request_inner(
                         started,
                         limit,
                         provider,
+                        None,
                     )
                     .await?;
                     if let Some(error) = super::observation::structured_host_error(&ping) {
@@ -357,8 +403,15 @@ fn request_inner(
                             "host API version or protocol mismatch",
                         ));
                     }
+                    if creation.is_some_and(|guard| ping_witness.as_ref() != Some(guard.expected)) {
+                        return Err(error(
+                            ErrorCode::StaleHostObservation,
+                            "creation ping witness changed",
+                        ));
+                    }
                     let (result, witness) = exchange(
                         socket, id, method, params, clock, budget, started, limit, provider,
+                        creation,
                     )
                     .await?;
                     if ping_witness != witness {
@@ -371,6 +424,7 @@ fn request_inner(
                         return Err(error);
                     }
                     let expected = match method {
+                        "tab.create" if creation.is_some() => Some("tab_created"),
                         "pane.get" => Some("pane_info"),
                         "pane.current" => Some("pane_current"),
                         "pane.read" => Some("pane_read"),
@@ -412,6 +466,61 @@ fn request_inner(
             .join()
             .map_err(|_| error(ErrorCode::HostUnavailable, "host API task panicked"))?
     })
+}
+
+// Existing exchange callers retain their allowlist and failure contract.
+#[allow(clippy::too_many_arguments)]
+fn request_inner(
+    socket: &Path,
+    id: &str,
+    method: &str,
+    params: Value,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+    limit: Duration,
+    provider: Option<&dyn ProcessInfoProvider>,
+) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
+    request_inner_guarded(
+        socket, id, method, params, clock, budget, limit, provider, None,
+    )
+}
+
+/// The only tab creation admission, tied to the exact caller-frozen witness.
+pub(crate) fn create_tab(
+    socket: &Path,
+    request: &crate::ports::CreateTabRequest,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+    limit: Duration,
+) -> Result<WitnessedResponse, crate::ports::CreateTabOutcome> {
+    let guard = CreationGuard {
+        expected: &request.expected_witness,
+        possible: AtomicBool::new(false),
+    };
+    let result = request_inner_guarded(
+        socket,
+        request.correlation.as_str(),
+        "tab.create",
+        json!({"workspace_id":request.workspace.as_str(), "cwd":request.cwd, "label":request.label, "focus":false, "env":{}}),
+        clock,
+        budget,
+        limit,
+        Some(&KernelProcessInfo),
+        Some(&guard),
+    );
+    result
+        .and_then(|(body, witness)| {
+            witness
+                .map(|witness| WitnessedResponse { body, witness })
+                .ok_or_else(|| error(ErrorCode::StaleHostObservation, "creation witness missing"))
+        })
+        .map_err(|error| {
+            if guard.possible.load(Ordering::Acquire) {
+                crate::ports::CreateTabOutcome::OutcomeUnknown(error)
+            } else {
+                crate::ports::CreateTabOutcome::NotSubmitted(error)
+            }
+        })
 }
 
 #[cfg(test)]
@@ -504,3 +613,7 @@ fn witness_error(error_value: super::continuity::CaptureError) -> ApiError {
 #[cfg(all(test, target_os = "macos"))]
 #[path = "../../tests/host/witness_transport.rs"]
 mod witness_tests;
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "../../tests/host/topology_creation.rs"]
+mod topology_creation;
