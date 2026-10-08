@@ -23,4 +23,3 @@ roastDesignRound: 2
 roast-design: 2026-10-07-handoff-topology-roast-design-1.md, 2026-10-07-handoff-topology-roast-design-2.md
 stepBackDesign-round-1: patch — independent exact-attempt recovery, bootstrap-only cancellation/liveness and atomic linked successful-report-backed completion; no shared redesign
 graph-pass: depth 7→7 · width 2.3→2.3 · applied 0 · parked 0
-
