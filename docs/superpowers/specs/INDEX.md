@@ -34,3 +34,4 @@ Columns: date · title · relative link · one-line summary · status · tags.
 | 2026-10-04 | Channel UX | [Design](2026-10-04-channel-ux-design.md) | Recipient-local commands, joined/active/history resolution and conservative one-hour archival. | implemented | cli, channels, lifecycle |
 
 | 2026-10-05 | Harness version independence | [Design](2026-10-05-harness-versionless-design.md) | Contract-based core admission; optional honest metadata, strict payload decoding and scoped operational diagnostics. | Task1–3 source reviewed; final review/merge pending | harness, wrappers, admission, evidence |
+| 2026-10-07 | Lazy messages — storage | [Design](../runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--storage-design.md) | Persist frozen lazy audiences atomically with bounded preparation, cleanup and pending scans, without creating actionable work. | draft | lazy-messages |
