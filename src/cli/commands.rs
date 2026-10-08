@@ -288,6 +288,7 @@ pub enum MutationSpec {
     },
     Leave(ThreadId),
     Send {
+        delivery_mode: DeliveryMode,
         thread: ThreadId,
         body: String,
         require_ack: Vec<SeatId>,
@@ -421,6 +422,7 @@ impl MutationSpec {
                 claim: claim.unwrap(),
             }),
             Self::Send {
+                delivery_mode,
                 thread,
                 body,
                 require_ack,
@@ -428,7 +430,7 @@ impl MutationSpec {
                 relays_user,
                 user_intent,
             } => WireCommand::SendMessage(SendMessage {
-                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                delivery_mode,
                 thread,
                 body,
                 invited_recipients: require_ack,
@@ -1017,7 +1019,13 @@ struct SendArgs {
     /// Deduplicates with --require-ack seats without changing the sender.
     #[arg(long = "require-ack-pane", action = ArgAction::Append)]
     require_ack_pane: Vec<String>,
-    /// ACK deadline in positive seconds.
+    /// Passive delivery at the next explicit inbox check (the default); no wake or ACK obligation.
+    #[arg(long, conflicts_with = "nudge")]
+    lazy: bool,
+    /// Enable ordinary attention and wake behavior; explicit ACK recipients imply this mode.
+    #[arg(long)]
+    nudge: bool,
+    /// ACK deadline in positive seconds; requires --nudge or explicit ACK recipients.
     #[arg(long)]
     deadline: Option<u64>,
     #[arg(
@@ -1557,6 +1565,17 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
             selector.is_explicit().then(|| selector.clone())
         }
         Top::Send(args) => {
+            let explicit_ack = !args.require_ack.is_empty() || !args.require_ack_pane.is_empty();
+            if args.lazy && (explicit_ack || args.deadline.is_some()) {
+                return Err(invalid(
+                    "--lazy cannot be combined with explicit ACK recipients or a deadline",
+                ));
+            }
+            if args.deadline.is_some() && !args.nudge && !explicit_ack {
+                return Err(invalid(
+                    "lazy sends cannot have a deadline; use --nudge or explicit ACK recipients",
+                ));
+            }
             if args.selector.pane.is_some() {
                 return Err(invalid("send uses --require-ack-pane PANE"));
             }
@@ -1740,6 +1759,14 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
         }
         Top::Leave { thread } => CliAction::Mutation(MutationSpec::Leave(thread_id(thread)?)),
         Top::Send(args) => {
+            let delivery_mode = if args.nudge
+                || !args.require_ack.is_empty()
+                || !args.require_ack_pane.is_empty()
+            {
+                DeliveryMode::Ordinary
+            } else {
+                DeliveryMode::Lazy
+            };
             if args.require_ack.len() > MAX_BATCH_ITEMS {
                 return Err(invalid("too many explicit recipients"));
             }
@@ -1761,6 +1788,7 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
             let relays_user = args.relays_user;
             let body = crate::cli::input::read_body(args.body, args.file, args.stdin)?;
             CliAction::Mutation(MutationSpec::Send {
+                delivery_mode,
                 thread,
                 body,
                 require_ack: recipients,

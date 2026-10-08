@@ -32,6 +32,7 @@ fn claim() -> CallerClaim {
 }
 fn send() -> SemanticMutation {
     SemanticMutation::SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("thread-1"),
         body: "body secret\n".into(),
         invited_recipients: vec![],
@@ -841,6 +842,7 @@ fn invalid_semantic_batch_does_not_reserve_ordinal_or_publish_intent() {
             .record(
                 scope(),
                 SemanticMutation::SendMessage {
+                    delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                     thread: ThreadId::new("thread-1"),
                     body: "hello".into(),
                     invited_recipients: (0..101)
@@ -1307,6 +1309,7 @@ fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
             user_intent,
             ..
         } => SemanticMutation::SendMessage {
+            delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread,
             body,
             invited_recipients,
@@ -1533,6 +1536,7 @@ fn user_intent_send_retry_preserves_recorded_claim() {
             "t1",
             "--body",
             "user input",
+            "--nudge",
             "--relays-user",
             "--user-intent",
             spelling,

@@ -373,6 +373,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
     );
     let message = w.call(
         SemanticMutation::SendMessage {
+            delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: plan.request.body.clone(),
             invited_recipients: vec![plan.recipient.clone()],
