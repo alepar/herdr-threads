@@ -1675,3 +1675,46 @@ fn handoff_thread_name_uses_shared_canonical_resolution() {
     assert!(parsed.thread_selector.is_none());
     assert!(matches!(parsed.action,CliAction::Handoff(request) if request.thread.as_ref().unwrap().as_str()=="tFrozen"));
 }
+
+#[test]
+fn handoff_new_tab_grammar() {
+    for target in [vec!["--new-tab", "peer"], vec!["--new-tab", "peer", "--space", "work", "--cwd", "/tmp"]] {
+        let mut argv = vec!["herdr-threads", "handoff", "--new-thread", "--kind", "codex"];
+        argv.extend(target);
+        argv.extend(["--agent-arg=--model", "--agent-arg=literal $HOME", "--", "quoted work"]);
+        assert!(parse_argv(argv).is_ok(), "valid new-tab grammar must parse");
+    }
+}
+#[test]
+fn handoff_new_tab_conflicts_and_required_fields() {
+    for extra in [vec!["--existing"], vec!["--tab", "t1"], vec!["--pane", "w1:p1"], vec!["--seat", "peer"]] {
+        let mut argv=vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--kind", "codex"];
+        argv.extend(extra); argv.extend(["--", "work"]);
+        assert!(parse_argv(argv.clone()).is_err(), "accepted conflict: {argv:?}");
+    }
+    for argv in [
+        vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--", "work"],
+        vec!["herdr-threads", "handoff", "--new-tab", "peer", "--kind", "codex", "--", "work"],
+        vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--kind", "codex"],
+        vec!["herdr-threads", "handoff", "--pane", "w1:p1", "--cwd", "/tmp", "--new-thread", "--kind", "codex", "--", "work"],
+    ] { assert!(parse_argv(argv.clone()).is_err(), "accepted missing/conflict: {argv:?}"); }
+}
+
+#[test]
+fn handoff_existing_target_matrix_and_no_launch_options() {
+    for target in [vec!["--pane", "w1:p1"], vec!["--seat", "peer"], vec!["--space", "work", "--tab", "tab", "--pane", "peer"]] {
+        let mut argv=vec!["herdr-threads","handoff","--existing","--thread","selected"];
+        argv.extend(target); argv.extend(["--","work"]);
+        assert!(parse_argv(argv).is_ok());
+    }
+    for target in [vec![],vec!["--space","work"],vec!["--tab","tab"],vec!["--seat","peer","--pane","w1:p1"],vec!["--seat","peer","--space","work"],vec!["--pane","w1:p1","--kind","codex"],vec!["--pane","w1:p1","--agent-arg=--model"],vec!["--pane","w1:p1","--harness-binary","/bin/codex"],vec!["--pane","w1:p1","--name","peer"],vec!["--pane","w1:p1","--cwd","/tmp"]] {
+        let mut argv=vec!["herdr-threads","handoff","--existing","--thread","selected"];
+        argv.extend(target); argv.extend(["--","work"]);
+        assert!(parse_argv(argv.clone()).is_err(),"accepted: {argv:?}");
+    }
+    let parsed=parse_argv(["herdr-threads","handoff","--new-tab","peer","--new-thread","--kind","codex","--agent-arg=--model","--agent-arg=$HOME","--agent-arg=--model","--","literal body"]).unwrap();
+    let CliAction::TopologyHandoff(request)=parsed.action else {panic!("wrong route")};
+    assert_eq!(request.argv,vec!["--model","$HOME","--model"]);
+    assert_eq!(request.body,"literal body");
+    assert!(parsed.thread_selector.is_none());
+}
