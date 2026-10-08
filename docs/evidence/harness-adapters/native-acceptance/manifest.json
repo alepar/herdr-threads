@@ -46,7 +46,7 @@
     {"stage": "guarded_launch", "verdict": "PASS", "evidence": "04-launch.json"},
     {"stage": "recognition", "verdict": "PASS", "evidence": "07-agent-get-after-turn.json agent_session"},
     {"stage": "callback_context", "verdict": "PASS", "evidence": "08-turn1-api-content.txt, snap-after-turn1"},
-    {"stage": "context_only_turn", "verdict": "PASS", "evidence": "13-neutral-api-content.txt; ack +2.0s, accept +19.5s, reply +22.1s reservation removed before its +180s deadline, so no wake was due"},
+    {"stage": "context_only_turn", "verdict": "PASS", "evidence": "13-neutral-api-content.txt; ack +2.0s, accept +19.5s, reply +22.1s; reservation removed before its +180s deadline, so no wake was due"},
     {"stage": "model_accept", "verdict": "PASS", "evidence": "snap-neutral-10/invitations.txt gen 3 cooperative_top_level"},
     {"stage": "model_inbox", "verdict": "PASS", "evidence": "receipt action_provenance cooperative_inbox_display"},
     {"stage": "model_ack", "verdict": "PASS", "evidence": "snap-neutral-10/receipts.txt"},
