@@ -236,11 +236,19 @@ impl ElectedHealth {
         if let Ok(observed) = self.host.harnesses.lock() {
             inputs.claude = observed.status("claude");
             inputs.codex = observed.status("codex");
+            // Only observed additional harnesses report: an optional harness
+            // the observer has not reached yet is not an unknown core harness.
             inputs.additional_harnesses = crate::harness::registry::builtins()
                 .registrations()
                 .iter()
-                .filter(|r| !matches!(r.metadata().id, "claude" | "codex"))
-                .map(|r| (r.metadata().id.into(), observed.status(r.metadata().id)))
+                .map(|r| r.metadata().id)
+                .filter(|id| !matches!(*id, "claude" | "codex"))
+                .filter_map(|id| {
+                    observed
+                        .entries
+                        .get(id)
+                        .map(|entry| (id.into(), entry.status.clone()))
+                })
                 .collect();
         }
         inputs

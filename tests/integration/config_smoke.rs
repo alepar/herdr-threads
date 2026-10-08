@@ -279,11 +279,13 @@ impl SyntheticDaemon {
         })
         .into()
     }
-    fn counts(&self) -> [i64; 9] {
+    /// Accountable row counts. `operations` is left out: lifecycle startup
+    /// enrollment records a fresh guarded resolution per event, which reuses
+    /// the resolved seat and allocates nothing.
+    fn counts(&self) -> [i64; 8] {
         let db = self.db();
         [
             "occupant_bindings",
-            "operations",
             "receipts",
             "invitations",
             "warning_offer",
@@ -393,8 +395,8 @@ fn synthetic_four_adapter_hook_configuration_and_canonical_replay() {
     );
     let after_restart = daemon.counts();
     assert_eq!(
-        &after_restart[..8],
-        &before[..8],
+        &after_restart[..7],
+        &before[..7],
         "restart replay allocated accountable rows"
     );
     let before = after_restart;

@@ -43,6 +43,16 @@ pub trait LaunchSeatResolver: Send + Sync {
         budget: &CallBudget,
     ) -> Result<SeatId, ApiError>;
 
+    /// The pane's already resolved seat, without resolving or allocating
+    /// one. The default reports none.
+    fn existing_seat(
+        &self,
+        _target: &HostTargetId,
+        _budget: &CallBudget,
+    ) -> Result<Option<SeatId>, ApiError> {
+        Ok(None)
+    }
+
     /// The seat's open binding, if any (TRUST-POLICY A4 launch guard). The
     /// default reports none.
     fn open_binding(
@@ -235,6 +245,87 @@ pub fn prepare_managed(
     )
 }
 
+/// TRUST-POLICY A4: refuse a launch onto a seat whose agent binding Herdr
+/// still reports live in its pane.
+fn refuse_second_agent(
+    registry: &super::registry::Registry,
+    host: &dyn HostPort,
+    seats: &dyn LaunchSeatResolver,
+    seat: &SeatId,
+    budget: &CallBudget,
+) -> Result<(), ApiError> {
+    if let Some(bound) = seats.open_binding(seat, budget)?
+        && crate::protocol::authority::AGENT_BINDING_PROVENANCES
+            .contains(&bound.provenance.as_str())
+    {
+        let observed = host.observe_pane_agent(
+            &bound.target,
+            &HostCallContext {
+                budget: budget.clone(),
+                expected_boot: None,
+                expected_epoch: None,
+            },
+        )?;
+        if let Some(kind) = observed
+            .and_then(|agent| agent.kind)
+            .filter(|kind| registry.by_host_kind(kind).is_some())
+        {
+            return Err(error(
+                ErrorCode::TargetUnsafe,
+                &format!(
+                    "seat {} is bound to a live {kind} agent in pane {}; launch refuses to start a second agent for the seat (TRUST-POLICY A4). Use that pane, or retire/rebind the seat as the operator",
+                    seat.as_str(),
+                    bound.target.as_str()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The seat guards `prepare_managed_with_registry` applies before hook
+/// configuration, for callers whose own preparation found the hook missing:
+/// a fresh target read, then the A4 refusal for the pane's already resolved
+/// seat. It never resolves or allocates a seat.
+pub fn launch_seat_guards(
+    registry: &super::registry::Registry,
+    host: &dyn HostPort,
+    seats: &dyn LaunchSeatResolver,
+    clock: &dyn Clock,
+    target: &HostTargetId,
+    caller_budget: &CallBudget,
+) -> Result<(), ApiError> {
+    let capability = host.native_launch_capability();
+    if capability == NativeLaunchCapability::Unsupported {
+        return Err(error(
+            ErrorCode::Unsupported,
+            "native guarded launch is unavailable",
+        ));
+    }
+    let budget = CallBudget {
+        deadline: MonoInstant(
+            caller_budget
+                .deadline
+                .0
+                .min(clock.monotonic_now().0.saturating_add(MAX_LAUNCH_MILLIS)),
+        ),
+        cancellation: caller_budget.cancellation.clone(),
+    };
+    let first = host.observe_current_target(
+        target,
+        &HostCallContext {
+            budget: budget.clone(),
+            expected_boot: None,
+            expected_epoch: None,
+        },
+    )?;
+    launch_target(&first, target, capability)?;
+    match seats.existing_seat(target, &budget)? {
+        Some(seat) => refuse_second_agent(registry, host, seats, &seat, &budget),
+        None => Ok(()),
+    }
+}
+
 /// The application passes adapter-prepared argv; compatibility callers use provider composition.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_managed_with_registry(
@@ -274,18 +365,21 @@ pub fn prepare_managed_with_registry(
         ),
         cancellation: caller_budget.cancellation.clone(),
     };
-    let configuration = hooks
-        .launch_configuration(request.harness, &budget)?
-        .ok_or_else(|| error(ErrorCode::MissingHook, "supported hook is not configured"))?;
-    let hook = configuration.hook;
-    // Owned configuration at the caller's subcommand level (Codex) or first
-    // (Claude); the caller's arguments keep their bytes and order.
-    let argv = match native_argv {
-        Some(argv) => argv,
-        None => policy.compose_argv(request.argv.clone(), configuration.argv)?,
+    // A composed form is refused before any seat work.
+    let configured = match hooks.launch_configuration(request.harness, &budget)? {
+        Some(configuration) => {
+            // Owned configuration at the caller's subcommand level (Codex) or
+            // first (Claude); the caller's arguments keep their bytes and order.
+            let argv = match native_argv {
+                Some(argv) => argv,
+                None => policy.compose_argv(request.argv.clone(), configuration.argv)?,
+            };
+            crate::ports::validate_native_argv(&argv)
+                .map_err(|detail| error(ErrorCode::InvalidRequest, detail))?;
+            Some((configuration.hook, argv))
+        }
+        None => None,
     };
-    crate::ports::validate_native_argv(&argv)
-        .map_err(|detail| error(ErrorCode::InvalidRequest, detail))?;
     let first = host.observe_current_target(
         &request.target,
         &HostCallContext {
@@ -302,32 +396,10 @@ pub fn prepare_managed_with_registry(
         ));
     }
     let seat = seats.resolve_for_launch(&request.target, &first, &budget)?;
-    if let Some(bound) = seats.open_binding(&seat, &budget)?
-        && crate::protocol::authority::AGENT_BINDING_PROVENANCES
-            .contains(&bound.provenance.as_str())
-    {
-        let observed = host.observe_pane_agent(
-            &bound.target,
-            &HostCallContext {
-                budget: budget.clone(),
-                expected_boot: None,
-                expected_epoch: None,
-            },
-        )?;
-        if let Some(kind) = observed
-            .and_then(|agent| agent.kind)
-            .filter(|kind| registry.by_host_kind(kind).is_some())
-        {
-            return Err(error(
-                ErrorCode::TargetUnsafe,
-                &format!(
-                    "seat {} is bound to a live {kind} agent in pane {}; launch refuses to start a second agent for the seat (TRUST-POLICY A4). Use that pane, or retire/rebind the seat as the operator",
-                    seat.as_str(),
-                    bound.target.as_str()
-                ),
-            ));
-        }
-    }
+    refuse_second_agent(registry, host, seats, &seat, &budget)?;
+    // A missing hook is reported only after the seat guards (TRUST-POLICY A4).
+    let (hook, argv) = configured
+        .ok_or_else(|| error(ErrorCode::MissingHook, "supported hook is not configured"))?;
     if budget.is_exhausted(clock) {
         return Err(error(
             ErrorCode::DeadlineExceeded,

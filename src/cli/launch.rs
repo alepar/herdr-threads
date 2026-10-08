@@ -361,6 +361,24 @@ pub(crate) fn resolve_seat(
 }
 
 impl LaunchSeatResolver for DaemonSeatResolver<'_> {
+    fn existing_seat(
+        &self,
+        target: &HostTargetId,
+        budget: &CallBudget,
+    ) -> Result<Option<SeatId>, ApiError> {
+        let seats = super::collect_pane_seats(target, |command| self.client.call(command, budget))
+            .map_err(|error| match error {
+                super::PaneSeatsError::Api(error) => error,
+                super::PaneSeatsError::Unexpected => {
+                    api(ErrorCode::InvalidRequest, "seat lookup: unexpected result")
+                }
+            })?;
+        Ok(match seats.resolved.as_slice() {
+            [only] => Some(only.seat.clone()),
+            _ => None,
+        })
+    }
+
     fn resolve_for_launch(
         &self,
         target: &HostTargetId,
@@ -456,6 +474,14 @@ struct RecordingResolver<'a> {
     seat: Mutex<Option<SeatId>>,
 }
 impl LaunchSeatResolver for RecordingResolver<'_> {
+    fn existing_seat(
+        &self,
+        target: &HostTargetId,
+        budget: &CallBudget,
+    ) -> Result<Option<SeatId>, ApiError> {
+        self.inner.existing_seat(target, budget)
+    }
+
     fn resolve_for_launch(
         &self,
         target: &HostTargetId,
@@ -712,6 +738,31 @@ fn execute_guarded_inner(
         deadline: MonoInstant(local_clock.monotonic_now().0.saturating_add(30_000)),
         cancellation: Cancellation::default(),
     };
+    // TRUST-POLICY A4 precedes hook configuration: a missing hook is
+    // reported only after the seat guards pass.
+    let missing_hook = |error: ApiError| -> RunError {
+        if error.code == ErrorCode::MissingHook {
+            let remaining = local_budget
+                .deadline
+                .0
+                .saturating_sub(local_clock.monotonic_now().0);
+            let budget = CallBudget {
+                deadline: MonoInstant(parts.clock.monotonic_now().0.saturating_add(remaining)),
+                cancellation: local_budget.cancellation.clone(),
+            };
+            if let Err(refused) = crate::harness::launch::launch_seat_guards(
+                registry,
+                parts.host,
+                parts.seats,
+                parts.clock,
+                &request.target,
+                &budget,
+            ) {
+                return refused.into();
+            }
+        }
+        error.into()
+    };
     policy.validate_native_argv(&request.argv)?;
     let scope = policy.resolve_scope(&adapter_request, parts.shell_probe, &local_budget)?;
     let root = match &scope.setup {
@@ -870,11 +921,10 @@ fn execute_guarded_inner(
             return Err(api(ErrorCode::Conflict, error.to_string()).into());
         }
         _ => {
-            return Err(api(
+            return Err(missing_hook(api(
                 ErrorCode::MissingHook,
                 format!("{word}: launch setup status is unavailable"),
-            )
-            .into());
+            )));
         }
     };
     let config_fingerprint = if status.installed
@@ -902,7 +952,7 @@ fn execute_guarded_inner(
                     root.display(), error.detail
                 );
             }
-            error
+            missing_hook(error)
         })?;
     // The native host carries argv only; providers cannot silently request an environment it cannot submit.
     if !preparation.environment_overrides.is_empty() {
@@ -925,10 +975,10 @@ fn execute_guarded_inner(
         .into());
     }
     let config_fingerprint = config_fingerprint.ok_or_else(|| {
-        api(
+        missing_hook(api(
             ErrorCode::MissingHook,
             "owned launch configuration unavailable",
-        )
+        ))
     })?;
     let inspector = PreparedHookInspector(preparation.hook.clone());
     let seats = RecordingResolver {

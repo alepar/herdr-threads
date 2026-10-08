@@ -1750,10 +1750,16 @@ pub fn render_debug_text(report: &Value) -> String {
             scalar(&report["hooks"]["codex"]["trust"]["status"])
         ));
         let installed = &report["hooks"]["codex"]["installed"];
-        out.push_str(&format!(
-            "hooks.codex.installed: {}\n",
-            scalar(&installed["evidence"])
-        ));
+        // A declared contract carries no evidence field; say what it means.
+        let installed_line = match installed["admission"].as_str() {
+            Some("contract_declared") => {
+                "contract_declared; runtime metadata unavailable; rich optional capabilities unavailable".to_owned()
+            }
+            Some("not_found") => "no executable codex on PATH".to_owned(),
+            _ if !installed["evidence"].is_null() => scalar(&installed["evidence"]),
+            _ => scalar(&installed["admission"]),
+        };
+        out.push_str(&format!("hooks.codex.installed: {installed_line}\n"));
         if !installed["fingerprint_source"].is_null() {
             out.push_str(&format!(
                 "codex fingerprint source: {}\n",

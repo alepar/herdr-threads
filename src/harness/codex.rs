@@ -1252,10 +1252,7 @@ impl HarnessAdapter for CodexAdapter {
         Some(self)
     }
     fn receipt_admission_summary(&self) -> Option<String> {
-        Some(format!(
-            "contract_declared {}; runtime/native behavior unverified",
-            RECIPES[0].id
-        ))
+        Some("declared".into())
     }
     fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String> {
         super::adapter::executable_observation_fingerprint(env, "codex")

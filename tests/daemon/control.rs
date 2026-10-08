@@ -1559,8 +1559,9 @@ fn cooperative_inputs() -> HealthInputs {
 /// limitations; a version admission line that returns to Health.
 #[test]
 fn cooperative_mode_is_healthy_with_notes() {
-    use crate::daemon::health::{COOPERATIVE_WAKE_LINE, cooperative_receipt_line};
+    use crate::daemon::health::{cooperative_receipt_line, cooperative_wake_line_for};
     use crate::protocol::results::HarnessState;
+    let wake_line = cooperative_wake_line_for(crate::harness::registry::builtins());
     let health = cooperative_inputs().assemble();
     assert_eq!(health.state, HealthState::Healthy, "{health:?}");
     assert!(health.validate().is_ok());
@@ -1569,9 +1570,9 @@ fn cooperative_mode_is_healthy_with_notes() {
     assert!(health.limitations.is_empty(), "{:?}", health.limitations);
     assert_eq!(
         health.notes,
-        vec![cooperative_receipt_line(), COOPERATIVE_WAKE_LINE.to_owned(),]
+        vec![cooperative_receipt_line(), wake_line.clone()]
     );
-    assert!(cooperative_receipt_line().len() <= 256 && COOPERATIVE_WAKE_LINE.len() <= 256);
+    assert!(cooperative_receipt_line().len() <= 256 && wake_line.len() <= 256);
     let json = serde_json::to_value(&health).unwrap();
     assert_eq!(json["harness"]["claude"], "cooperative");
     assert_eq!(json["state"], "healthy");

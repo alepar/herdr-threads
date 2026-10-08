@@ -253,7 +253,7 @@ fn admit_candidate(
 ) -> AdmissionDecision<HermesAdmission> {
     let Some(input) = &request.input else {
         return AdmissionDecision::Refused {
-            diagnostic: "Hermes requires actual startup-captured callback input".into(),
+            diagnostic: "Hermes requires actual callback input captured at startup".into(),
         };
     };
     match parse(input) {
@@ -282,7 +282,7 @@ fn admit_candidate(
                     bytes: input.bytes.clone(),
                 },
                 recipe: "initialized-hermes-bridge-schema1",
-                diagnostic: "startup-captured API candidate; native/model acceptance unmeasured"
+                diagnostic: "API candidate captured at startup; native/model acceptance unmeasured"
                     .into(),
             }
         }
