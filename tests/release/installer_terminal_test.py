@@ -92,6 +92,16 @@ with tempfile.TemporaryDirectory(prefix='ht-installer-tty-') as folder:
     assert not (root / 'codex/hooks.json').exists()
     for name in ['claude', 'codex']:
         assert (root / name / 'skills/herdr-threads/SKILL.md').is_file()
+    # Skill consent can differ per harness; declining Claude never blocks Codex.
+    mixed = root / 'mixed-consent'
+    mixed.mkdir()
+    (mixed / 'bin').symlink_to(root / 'bin', target_is_directory=True)
+    data = run(mixed, ['n', 'n', 'n', 'y'], no_color=True)
+    assert b'claude skill: declined' in data, data
+    assert b'codex skill: installed' in data, data
+    assert not (mixed / 'claude').exists()
+    assert (mixed / 'codex/skills/herdr-threads/SKILL.md').is_file()
+    assert not (mixed / 'codex/hooks.json').exists()
     # Existing owned skills do not ask, while missing hooks still ask.
     data = run(root, ['n', 'n'])
     assert data.count(b'[y/N] ') == 2, data

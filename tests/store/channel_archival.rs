@@ -2043,3 +2043,203 @@ fn archival_registered_alias_family_canonical_sample() {
         "exact registered aliases must qualify canonical synthetic samples: {failures:?}"
     );
 }
+
+#[test]
+fn archival_startup_waits_for_canonical_host_instance() {
+    let db = Connection::open_in_memory().unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    let mut rt = runtime(0);
+    rt.coherent = false;
+    assert_eq!(
+        archival::advance(&db, "i", &rt).unwrap(),
+        archival::Progress::default()
+    );
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM archival_instances", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "archival cannot manufacture canonical host state");
+    db.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES('i',0)",
+        [],
+    )
+    .unwrap();
+    thread(&db);
+    assert!(
+        archival::advance(&db, "i", &rt)
+            .unwrap()
+            .archived
+            .is_empty()
+    );
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM archival_instances", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "next pass resumes after canonical initialization");
+    assert!(!archived(&db));
+}
+
+#[test]
+fn archival_registered_decision_waits_for_canonical_host_instance() {
+    use herdr_threads::{
+        protocol::results::ErrorCode, test_support::archival_composer_fixture as injected,
+    };
+    let db = Connection::open_in_memory().unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    let r = injected::registry();
+    assert!(
+        r.by_host_kind("synthetic_fourth_alias")
+            .unwrap()
+            .composer_policy()
+            .is_some()
+    );
+    let mut rt = runtime(0);
+    rt.mono = -1;
+    assert_eq!(
+        injected::advance(&db, "i", &rt, r).unwrap_err().code,
+        ErrorCode::InvalidRequest,
+        "timing validation still precedes missing-host refusal"
+    );
+    rt.mono = 0;
+    // This helper calls advance_in_with_registry directly, bypassing the
+    // builtin advance_in wrapper. A wrapper-only guard cannot satisfy it.
+    assert_eq!(
+        injected::advance(&db, "i", &rt, r).unwrap(),
+        archival::Progress::default()
+    );
+    for table in [
+        "host_instances",
+        "archival_instances",
+        "channel_archival",
+        "seat_archival",
+        "channel_handoff_fences",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0,
+            "direct registered decision must not synthesize {table} before host admission"
+        );
+    }
+    db.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES('i',0)",
+        [],
+    )
+    .unwrap();
+    thread(&db);
+    joined_agent(&db);
+    ordinary(&db);
+    db.execute(
+        "UPDATE occupant_bindings SET harness='synthetic_fourth' WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    assert!(
+        injected::advance(&db, "i", &rt, r)
+            .unwrap()
+            .archived
+            .is_empty()
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM archival_instances", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        1,
+        "canonical admission permits the ordinary registered retry"
+    );
+    assert!(injected::ticket(&db, "i", "s", &rt, r).unwrap().is_some());
+    assert!(!archived(&db));
+}
+
+#[test]
+fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
+    use herdr_threads::{
+        ports::StorePort,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+    };
+    let dir = super::handoff_fences::Directory(
+        std::env::temp_dir().join(format!("ht-archival-startup-{}", uuid::Uuid::new_v4())),
+    );
+    std::fs::create_dir(&dir.0).unwrap();
+    let path = dir.0.join("store.db");
+    let store = SqliteStore::new(
+        StoreContext::new(
+            path.clone(),
+            std::sync::Arc::new(herdr_threads::app::SystemClock::default()),
+        ),
+        "i",
+        StoreSettings::default(),
+    )
+    .unwrap();
+    let db = Connection::open(&path).unwrap();
+    let budget = herdr_threads::protocol::time::CallBudget {
+        deadline: herdr_threads::protocol::time::MonoInstant(
+            store.clock().monotonic_now().0 + 5000,
+        ),
+        cancellation: Default::default(),
+    };
+    let mut rt = runtime(0);
+    rt.coherent = false;
+    let mut identity = super::handoff_fences::identity();
+    identity.thread = None;
+    let hints = [herdr_threads::archival_legacy::Hint {
+        identity,
+        progress_thread: None,
+    }];
+    assert_eq!(
+        store.archival_pass(&rt, &hints, &budget).unwrap(),
+        archival::Progress::default()
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM channel_handoff_fences", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let next = store.archival_next(&rt, &budget).unwrap();
+    assert!(next.ticket.is_none());
+    assert!(!next.has_more);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM host_instances", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM archival_instances", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES('i',0)",
+        [],
+    )
+    .unwrap();
+    thread(&db);
+    assert!(
+        store
+            .archival_pass(&rt, &hints, &budget)
+            .unwrap()
+            .archived
+            .is_empty()
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM channel_handoff_fences", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "fresh retry imports the veto after canonical initialization"
+    );
+    assert!(store.archival_next(&rt, &budget).unwrap().ticket.is_none());
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM archival_instances", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert!(!archived(&db));
+}

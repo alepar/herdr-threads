@@ -204,6 +204,11 @@ fn wait(what: &str, mut check: impl FnMut() -> bool) {
 fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane() {
     for version in [0, 21, 22] {
         let w = World::new(version, false);
+        // The boot archival pass may precede canonical host admission, then
+        // park until its 60s safety tick. Resolve a real fixture target before
+        // expecting prompt initialization: this admits qualified host evidence
+        // and the seat_archival insertion kicks the existing archival lane.
+        w.ok(None, &["seat", "resolve", "--pane", "w1:p1"]);
         let db = w.db();
         // The initializer upgrades each historical input to the current schema25.
         assert_eq!(

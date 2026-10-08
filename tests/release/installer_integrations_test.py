@@ -69,6 +69,10 @@ OUT_UPGRADED=0
 OUT_LINKED=1
 OUT_DAEMON_UP=0
 on_path=1
+# This extracted fixture omits installation; its private bin has no ht alias.
+alias_owned=0
+alias_on_path=0
+selected_alias=''
 REPO=fixture/repo
 os=macos
 new_version=fixture
@@ -76,7 +80,8 @@ new_version=fixture
             env = dict(os.environ, PATH=str(path), HOME=str(root / 'home'),
                        CLAUDE_CONFIG_DIR=str(root / 'claude'), CODEX_HOME=str(root / 'codex'),
                        XDG_CONFIG_HOME=str(root / 'config'), XDG_STATE_HOME=str(root / 'state'),
-                       installed_binary=str(binary), setup=mode, registered=str(registered),
+                       installed_binary=str(binary), bin_dir=str(path), alias_path=str(path / 'ht'),
+                       setup=mode, registered=str(registered),
                        CALL_LOG=str(log), CAPABILITY_STATUS='0' if modern else '2',
                        INTEGRATION_STATUS='1' if fail else '0', USER_LEVEL=str(int(user_level)),
                        BARE_SETUP=str(int(bare)), TERMINAL=str(int(terminal)),

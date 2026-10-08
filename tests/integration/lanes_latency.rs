@@ -407,6 +407,10 @@ pub(crate) struct Scene {
 impl Scene {
     pub(crate) fn new(case: &str, recipients: usize) -> Option<Self> {
         let session = Session::new(case)?;
+        Some(Self::from_session(session, case, recipients))
+    }
+
+    fn from_session(session: Session, case: &str, recipients: usize) -> Self {
         let sender_pane = session.first_pane();
         let sender = session.seat(&sender_pane);
         let mut joined = Vec::new();
@@ -426,11 +430,11 @@ impl Scene {
             session.ok(Some(&sender), &["accept", &thread]);
             joined.push((caller, thread));
         }
-        Some(Self {
+        Self {
             session,
             sender,
             recipients: joined,
-        })
+        }
     }
 
     pub(crate) fn send(&self, index: usize, body: &str, extra: &[&str]) -> Value {
@@ -438,6 +442,18 @@ impl Scene {
         let mut args = vec!["send", thread, "--body", body, "--require-ack", &to.seat];
         args.extend_from_slice(extra);
         self.session.ok(Some(&self.sender), &args)
+    }
+
+    fn recipients_have_wake_outcomes(&self) -> bool {
+        let db = self.session.db();
+        self.recipients.iter().all(|(caller, _)| {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM wake_work WHERE seat_id=?1 AND last_outcome IS NOT NULL)",
+                [&caller.seat],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap()
+        })
     }
 }
 
@@ -683,6 +699,79 @@ fn most_attempts(elapsed: f64) -> u64 {
     most
 }
 
+#[test]
+fn settled_setup_invitations_do_not_require_a_sender_wake() {
+    let Some(session) = Session::new("settled_setup_invitations") else {
+        return;
+    };
+    let (parked_tx, parked_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let stop = session.stop.clone();
+    let first = AtomicBool::new(true);
+    session.probe.set_registered_idle_hook(
+        Lane::Wakes,
+        Box::new(move |_| {
+            if !first.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            parked_tx.send(()).unwrap();
+            // Session teardown cancels this wait even if fixture setup panics.
+            while !stop.is_cancelled() {
+                match release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_millis(20))
+                {
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+        }),
+    );
+    session.probe.kick_registered(Lane::Wakes);
+    parked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let scene = Scene::from_session(session, "settled_setup_invitations", 3);
+    for index in 0..2 {
+        scene.send(index, "owed", &[]);
+    }
+    release_tx.send(()).unwrap();
+    wait_until(
+        "exact recipients first wakes",
+        Duration::from_secs(15),
+        || {
+            scene.recipients[..2].iter().all(|(caller, _)| {
+                scene.session.db().query_row(
+            "SELECT EXISTS(SELECT 1 FROM wake_work WHERE seat_id=?1 AND last_outcome IS NOT NULL)",
+            [&caller.seat], |r| r.get::<_, bool>(0)).unwrap()
+            })
+        },
+    );
+    assert!(
+        !scene.recipients_have_wake_outcomes(),
+        "the unsent third recipient cannot satisfy the wait"
+    );
+    scene.send(2, "owed", &[]);
+    wait_until(
+        "all exact recipients first wakes",
+        Duration::from_secs(15),
+        || scene.recipients_have_wake_outcomes(),
+    );
+    let completed: i64 = scene
+        .session
+        .db()
+        .query_row(
+            "SELECT count(*) FROM wake_work WHERE last_outcome IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(completed, 3, "settled setup attention needs no sender wake");
+    assert!(!scene.session.db().query_row(
+        "SELECT EXISTS(SELECT 1 FROM wake_work WHERE seat_id=?1 AND last_outcome IS NOT NULL)",
+        [&scene.sender.seat], |r| r.get::<_, bool>(0)).unwrap());
+}
+
 /// Herdr stopped with `SEATS` seats holding pending wake work: once the
 /// observation lane's first capture of the dead host is frozen (TRUST-POLICY
 /// C4), the wake lane is frozen too (ht-72q): for the rest of the outage it
@@ -722,21 +811,12 @@ fn herdr_stopped_freezes_wake_lane() {
         scene.send(index, &format!("owed {index}"), &[]);
     }
     // Each recipient's first wake runs with Herdr up and reaches a plain
-    // shell (`Unsafe`); the sender was woken for its invitations in setup.
+    // shell (`Unsafe`). Setup accepts the sender's invitations, so that
+    // settled attention need not have produced any sender wake.
     wait_until(
         "each recipient's first wake",
         Duration::from_secs(15),
-        || {
-            let waked: i64 = s
-                .db()
-                .query_row(
-                    "SELECT count(*) FROM wake_work WHERE last_outcome IS NOT NULL",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            waked == SEATS as i64 + 1
-        },
+        || scene.recipients_have_wake_outcomes(),
     );
     s.wait_commits_quiet("wake", Duration::from_secs(1));
     let before = s.commits("wake");

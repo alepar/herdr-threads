@@ -32,12 +32,28 @@ fn source() -> (Temp, InstancePaths, Source) {
     );
     (dir, paths, source)
 }
+// Complete a bounded scan, without treating a partial page as absence or a
+// veto. Tests of the page boundary below continue to call scan directly.
+fn complete_scan(source: &mut Source) -> herdr_threads::archival_legacy::Scan {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut hints = Vec::new();
+    loop {
+        let mut page = source.scan(|| false).unwrap();
+        hints.append(&mut page.hints);
+        if !page.pending {
+            page.hints = hints;
+            return page;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "legacy scan did not finish"
+        );
+    }
+}
 #[test]
 fn archival_legacy_absence_and_orphan_progress_are_covered_read_only() {
     let (_dir, paths, mut source) = source();
-    let first = source
-        .scan(|| false)
-        .unwrap()
+    let first = complete_scan(&mut source)
         .coverage
         .expect("absence is covered");
     assert!(source.validate(&first));
@@ -49,7 +65,23 @@ fn archival_legacy_absence_and_orphan_progress_are_covered_read_only() {
     )
     .unwrap();
     assert!(!source.validate(&first));
-    let next = source.scan(|| false).unwrap();
+    let calls = std::cell::Cell::new(0);
+    let next = source
+        .scan(|| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 2 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            false
+        })
+        .unwrap();
+    assert!(next.pending, "expired page must remain partial");
+    assert!(
+        next.coverage.is_none(),
+        "partial traversal cannot claim coverage"
+    );
+    assert!(next.hints.is_empty());
+    let next = complete_scan(&mut source);
     assert!(next.coverage.is_some());
     assert!(next.hints.is_empty());
 }
@@ -65,10 +97,10 @@ fn archival_legacy_noncompound_and_malformed_veto_until_fresh_absence() {
 malformed tail"#,
     ] {
         std::fs::write(&file, bytes).unwrap();
-        assert!(source.scan(|| false).unwrap().coverage.is_none());
+        assert!(complete_scan(&mut source).coverage.is_none());
     }
     std::fs::remove_file(file).unwrap();
-    assert!(source.scan(|| false).unwrap().coverage.is_some());
+    assert!(complete_scan(&mut source).coverage.is_some());
 }
 fn context(paths: &InstancePaths) -> ContinuationContext {
     ContinuationContext {
@@ -140,7 +172,7 @@ fn compound_in(
 fn archival_legacy_verified_compound_has_only_exact_veto_identity() {
     let (_dir, paths, mut source) = source();
     let reference = compound(&paths);
-    let scan = source.scan(|| false).unwrap();
+    let scan = complete_scan(&mut source);
     assert!(scan.coverage.is_some());
     assert_eq!(scan.hints.len(), 1);
     assert_eq!(scan.hints[0].identity.compound, reference.operation);
@@ -173,7 +205,7 @@ fn archival_legacy_aliases_preserve_frozen_bytes_and_digest() {
         .header;
     // Exercise normalization with canonical and aliased current contexts.
     for scanner in [&mut source, &mut Source::new(&paths, "i".into(), aliased)] {
-        let scan = scanner.scan(|| false).unwrap();
+        let scan = complete_scan(scanner);
         assert!(scan.coverage.is_some());
         assert_eq!(scan.hints.len(), 1);
         assert_eq!(scan.hints[0].identity.digest, header.semantic_digest);
@@ -226,17 +258,17 @@ fn archival_legacy_unknown_or_distinct_full_namespaces_veto() {
     let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
     for frozen in cases {
         let reference = compound_in(&paths, frozen.clone());
-        let scan = source.scan(|| false).unwrap();
+        let scan = complete_scan(&mut source);
         assert!(scan.coverage.is_none(), "{frozen:?}");
         assert!(scan.hints.is_empty(), "{frozen:?}");
         journal.complete(&reference).unwrap();
         let reference = compound(&paths);
         // Current uncertainty cannot be repaired by the frozen record either.
         let mut unknown_current = Source::new(&paths, "i".into(), frozen);
-        assert!(unknown_current.scan(|| false).unwrap().coverage.is_none());
+        assert!(complete_scan(&mut unknown_current).coverage.is_none());
         journal.complete(&reference).unwrap();
     }
-    assert!(source.scan(|| false).unwrap().coverage.is_some());
+    assert!(complete_scan(&mut source).coverage.is_some());
 }
 #[test]
 fn archival_legacy_valid_noncompound_is_a_transient_coverage_veto() {
@@ -265,7 +297,7 @@ fn archival_legacy_valid_noncompound_is_a_transient_coverage_veto() {
             0,
         )
         .unwrap();
-    let scan = source.scan(|| false).unwrap();
+    let scan = complete_scan(&mut source);
     assert!(scan.coverage.is_none());
     assert!(scan.hints.is_empty());
     assert!(
@@ -273,7 +305,7 @@ fn archival_legacy_valid_noncompound_is_a_transient_coverage_veto() {
         "importer must not remove intent"
     );
     journal.complete(&reference).unwrap();
-    assert!(source.scan(|| false).unwrap().coverage.is_some());
+    assert!(complete_scan(&mut source).coverage.is_some());
 }
 #[test]
 fn archival_legacy_partial_pages_and_cancel_never_claim_coverage() {
@@ -308,17 +340,17 @@ fn archival_legacy_unsafe_roots_files_and_caps_veto() {
     std::fs::create_dir(&root).unwrap();
     let intent = root.join("00000000000000000001-op.intent");
     symlink(dir.path().join("missing"), &intent).unwrap();
-    assert!(source.scan(|| false).unwrap().coverage.is_none());
+    assert!(complete_scan(&mut source).coverage.is_none());
     std::fs::remove_file(&intent).unwrap();
     std::fs::write(
         &intent,
         vec![b'x'; herdr_threads::archival_legacy::RECORD_CAP + 1],
     )
     .unwrap();
-    assert!(source.scan(|| false).unwrap().coverage.is_none());
+    assert!(complete_scan(&mut source).coverage.is_none());
     std::fs::remove_file(&intent).unwrap();
     std::fs::create_dir(&intent).unwrap();
-    assert!(source.scan(|| false).unwrap().coverage.is_none());
+    assert!(complete_scan(&mut source).coverage.is_none());
 }
 #[test]
 fn archival_legacy_false_kind_digest_and_malformed_compound_tails_veto() {
@@ -338,21 +370,21 @@ fn archival_legacy_false_kind_digest_and_malformed_compound_tails_veto() {
         format!("{}\n{}", header, &original[header_end + 1..]),
     )
     .unwrap();
-    assert!(source.scan(|| false).unwrap().coverage.is_none());
+    assert!(complete_scan(&mut source).coverage.is_none());
     std::fs::write(&path, format!("{original}malformed trailing JSON")).unwrap();
-    assert!(source.scan(|| false).unwrap().coverage.is_none());
+    assert!(complete_scan(&mut source).coverage.is_none());
     std::fs::write(
         &path,
         original.replace("\"body\":\"body\"", "\"body\":\"changed\""),
     )
     .unwrap();
-    assert!(source.scan(|| false).unwrap().coverage.is_none());
+    assert!(complete_scan(&mut source).coverage.is_none());
 }
 #[test]
 fn archival_legacy_captured_hint_cannot_revive_completion() {
     let (_dir, paths, mut source) = source();
     compound(&paths);
-    let mut scan = source.scan(|| false).unwrap();
+    let mut scan = complete_scan(&mut source);
     let hint = scan.hints.pop().unwrap();
     let mut db = super::channel_archival::fixture();
     super::channel_archival::thread(&db);

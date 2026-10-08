@@ -120,6 +120,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 tests/release/installer_alias_test.py
+          python3 tests/release/installer_integrations_test.py
+          python3 tests/release/installer_terminal_test.py bin/herdr-threads
           tests/release/install_test.sh bin/herdr-threads 2>&1 | tee install_test.log
 
       - name: Build release proof fixture
