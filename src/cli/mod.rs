@@ -25,6 +25,7 @@ pub mod setup;
 pub mod skill;
 pub mod summary;
 pub mod threads;
+pub mod topology_handoff;
 
 use crate::{
     app::SystemClock,
@@ -345,6 +346,11 @@ where
         Err(commands::ParseFailure::Usage(text)) => return Err(RunError::Usage(text)),
         Err(commands::ParseFailure::Invalid(error)) => return Err(error.into()),
     };
+    if matches!(parsed.action, CliAction::TopologyHandoff(_)) {
+        return Err(unsupported(
+            "bootstrap and delivery execution require canonical guards and original actor classification",
+        ));
+    }
     let _presentation = output::PresentationGuard::enter(parsed.presentation, &parsed.output);
     if let CliAction::Skill = &parsed.action {
         writer.write_all(skill::SKILL_MD.as_bytes())?;
@@ -753,7 +759,7 @@ where
         CliAction::InstallerIntegrations { .. } | CliAction::InternalJsonField { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }
-        CliAction::Launch(_) | CliAction::Handoff(_) => {
+        CliAction::Launch(_) | CliAction::Handoff(_) | CliAction::TopologyHandoff(_) => {
             unreachable!("launch is handled after context resolution")
         }
         CliAction::MeInit { .. } => unreachable!("me init is handled after context resolution"),
@@ -1534,9 +1540,10 @@ fn caller_need(
                 CallerNeed::Selection
             }
         }
-        CliAction::CachedCheckIn(_) | CliAction::Summary(_) | CliAction::Handoff(_) => {
-            CallerNeed::Selection
-        }
+        CliAction::CachedCheckIn(_)
+        | CliAction::Summary(_)
+        | CliAction::Handoff(_)
+        | CliAction::TopologyHandoff(_) => CallerNeed::Selection,
         CliAction::Retry(recovery) => {
             // Retry needs the daemon; report it unavailable (exit 3, intent
             // kept) before inspecting the local journal.

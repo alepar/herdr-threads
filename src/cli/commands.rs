@@ -65,6 +65,7 @@ pub enum CliAction {
     /// Managed native launch into one explicit existing empty shell pane.
     Launch(super::launch::LaunchRequest),
     Handoff(super::handoff::HandoffRequest),
+    TopologyHandoff(super::topology_handoff::Request),
     /// `me init`: record the invoking pane as the person's own seat identity.
     /// `operator` overrides the agent-to-human guard (TRUST-POLICY A4).
     MeInit {
@@ -235,6 +236,7 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::SetupAll(..)
         | CliAction::Launch(_)
         | CliAction::Handoff(_)
+        | CliAction::TopologyHandoff(_)
         | CliAction::MeInit { .. }
         | CliAction::Skill
         | CliAction::ContractId { .. }
@@ -1173,6 +1175,14 @@ struct LaunchArgs {
 
 #[derive(Args)]
 struct HandoffArgs {
+    #[arg(long, conflicts_with_all = ["existing", "tab", "pane", "seat"])]
+    new_tab: Option<String>,
+    #[arg(long)]
+    existing: bool,
+    #[arg(long, requires = "existing", conflicts_with_all = ["pane", "tab", "space"])]
+    seat: Option<String>,
+    #[arg(long, requires = "new_tab")]
+    cwd: Option<std::path::PathBuf>,
     #[command(flatten)]
     selector: super::panes::PaneSelector,
     #[arg(long, required_unless_present = "thread", conflicts_with = "thread")]
@@ -1185,8 +1195,8 @@ struct HandoffArgs {
     topic: Option<String>,
     #[arg(long, requires = "new_thread")]
     goal: Option<String>,
-    #[arg(long, value_parser = ["claude", "codex"])]
-    kind: String,
+    #[arg(long, value_parser = ["claude", "codex"], required_unless_present = "existing", conflicts_with = "existing")]
+    kind: Option<String>,
     #[arg(long)]
     harness_binary: Option<String>,
     /// Herdr agent name, distinct from --thread-name.
@@ -1527,12 +1537,29 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
         Top::Seat {
             command: SeatSub::Rebind { selector, .. },
         }
-        | Top::Launch(LaunchArgs { selector, .. })
-        | Top::Handoff(HandoffArgs { selector, .. }) => {
+        | Top::Launch(LaunchArgs { selector, .. }) => {
             if selector.pane.is_none() {
                 return Err(invalid("launch, handoff and rebind require --pane PANE"));
             }
             Some(selector.clone())
+        }
+        Top::Handoff(args) => {
+            if args.cwd.is_some() && args.new_tab.is_none() {
+                return Err(invalid("--cwd requires --new-tab"));
+            }
+            if args.new_tab.is_some() {
+                None
+            } else if args.existing {
+                if args.selector.pane.is_none() && args.seat.is_none() {
+                    return Err(invalid("--existing requires --pane or --seat"));
+                }
+                args.selector.pane.as_ref().map(|_| args.selector.clone())
+            } else {
+                if args.selector.pane.is_none() {
+                    return Err(invalid("handoff requires --pane PANE"));
+                }
+                Some(args.selector.clone())
+            }
         }
         Top::Invite(args) => {
             if args.seat.is_some() && args.selector.is_explicit() {
@@ -1603,7 +1630,7 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
         | Top::Leave { thread }
         | Top::Archive { thread }
         | Top::Reopen { thread } => Some(thread.clone()),
-        Top::Handoff(args) => args.thread.clone(),
+        Top::Handoff(args) if args.new_tab.is_none() && !args.existing => args.thread.clone(),
         Top::Invite(args) => Some(args.thread.clone()),
         Top::Send(args) => Some(args.thread.clone()),
         Top::Read(args) => args.thread.clone(),
@@ -2085,25 +2112,47 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
                 validate_thread_name(name).map_err(validation_error)?;
             }
             let body = bounded(args.body, "body")?;
-            CliAction::Handoff(super::handoff::HandoffRequest {
-                thread: args.thread.map(thread_id).transpose()?,
-                thread_name: args.thread_name,
-                topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
-                goal: args.goal.map(|s| bounded(s, "goal")).transpose()?,
-                body,
-                launch: super::launch::LaunchRequest {
-                    target: locator_hint(args.selector.pane.expect("explicit pane validated")),
-                    harness: if args.kind == "codex" {
-                        crate::harness::context::Harness::Codex
-                    } else {
-                        crate::harness::context::Harness::Claude
-                    },
-                    harness_binary: args.harness_binary,
-                    argv: args.agent_args,
+            if args.new_tab.is_some() || args.existing {
+                if args.existing
+                    && (args.harness_binary.is_some()
+                        || args.name.is_some()
+                        || !args.agent_args.is_empty())
+                {
+                    return Err(invalid("native launch arguments conflict with --existing"));
+                }
+                CliAction::TopologyHandoff(super::topology_handoff::Request {
+                    new_tab: args.new_tab,
+                    existing: args.existing,
+                    selector: args.selector,
+                    seat: args.seat,
+                    cwd: args.cwd,
+                    thread: args.thread,
+                    thread_name: args.thread_name,
+                    topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
+                    goal: args.goal.map(|s| bounded(s, "goal")).transpose()?,
+                    body,
+                    kind: args.kind,
+                    binary: args.harness_binary,
                     name: args.name,
-                    pane_label: None,
-                },
-            })
+                    argv: args.agent_args,
+                })
+            } else {
+                CliAction::Handoff(super::handoff::HandoffRequest {
+                    thread: args.thread.map(thread_id).transpose()?,
+                    thread_name: args.thread_name,
+                    topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
+                    goal: args.goal.map(|s| bounded(s, "goal")).transpose()?,
+                    body,
+                    launch: super::launch::LaunchRequest {
+                        target: locator_hint(args.selector.pane.expect("explicit pane validated")),
+                        harness: harness_arg(args.kind.as_deref().expect("kind required")),
+                        harness_binary: args.harness_binary,
+                        argv: args.agent_args,
+                        name: args.name,
+                        pane_label: None,
+                    },
+                })
+            }
         }
         Top::PendingOps(args) => CliAction::PendingOps(page(args)?),
         Top::Skill => CliAction::Skill,
