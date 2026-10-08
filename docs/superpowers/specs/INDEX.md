@@ -35,3 +35,5 @@ Columns: date · title · relative link · one-line summary · status · tags.
 | 2026-10-05 | Harness version independence | [Design](2026-10-05-harness-versionless-design.md) | Contract-based core admission; optional honest metadata, strict payload decoding and scoped operational diagnostics. | Task1–3 source reviewed; final review/merge pending | harness, wrappers, admission, evidence |
 
 | 2026-10-07 | Installer permissions and explicit human commands | [Design](../runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions-design.md) | Owned Claude/Codex grants, immediate human namespace and frozen replay origin. | draft | installer-human-permissions, installer, permissions, trust |
+
+| 2026-10-07 | Installer permissions: runtime-actor-routing | [Design](../runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--runtime-actor-routing-design.md) | Root accountable commands refuse inferred Human before effects; human communication and check-in retain honest existing provenance and canonical guards. | draft | installer-human-permissions, ht-uwd.3 |
