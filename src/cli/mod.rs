@@ -389,6 +389,18 @@ where
         parsed.output.context.host.as_ref().map(PathBuf::from),
     ))
     .map_err(context_error)?;
+    if let CliAction::Retry(recovery) = &parsed.action {
+        let paths = InstancePaths::resolve_read_only(&context)?;
+        retry::preflight_original_actor(
+            paths.instance_dir.join("intents"),
+            recovery.as_str(),
+            parsed.actor,
+            &crate::protocol::output::ContinuationContext {
+                state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
+                host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+            },
+        )?;
+    }
     let paths = InstancePaths::resolve(&context)?;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let budget = || CallBudget {
