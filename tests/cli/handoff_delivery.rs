@@ -1447,3 +1447,173 @@ corrupt_report_test!(
     "participation",
     serde_json::json!("staged_unbound")
 );
+
+struct PublicationSyncFailureClient<'a> {
+    terminal: &'a TerminalClient,
+    root: std::path::PathBuf,
+}
+impl LocalClient for PublicationSyncFailureClient<'_> {
+    fn call_with_output(
+        &self,
+        c: Command,
+        _: &OutputSpec,
+        b: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(c, b)
+    }
+    fn call(&self, c: Command, b: &CallBudget) -> Result<CommandResult, ApiError> {
+        use std::os::unix::fs::PermissionsExt;
+        let result = self.terminal.call(c, b)?;
+        // Permit publication/unlink and direct file reads, but refuse opening
+        // the private directory for its durability sync. No global state.
+        std::fs::set_permissions(&self.root, std::fs::Permissions::from_mode(0o300)).unwrap();
+        Ok(result)
+    }
+}
+fn failed_publication_retry_boundary(output_boundary: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let (reference, terminal) = terminal_fixture(&journal);
+    let original = journal.snapshot_delivery_origin(&reference).unwrap();
+    let client = PublicationSyncFailureClient {
+        terminal: &terminal,
+        root: journal.root().into(),
+    };
+    let mut first_output = Vec::new();
+    let first = retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut first_output,
+    );
+    std::fs::set_permissions(journal.root(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        matches!(first, Err(RunError::Io(ref e)) if e.kind() == std::io::ErrorKind::PermissionDenied),
+        "publication must reach actual directory sync failure: {first:?}"
+    );
+    assert!(terminal_path(&journal, &reference).is_file());
+    assert!(first_output.is_empty());
+    assert_eq!(
+        journal.snapshot_delivery_origin(&reference).unwrap(),
+        original
+    );
+    assert!(handoff::progress_path(&journal, &reference).is_file());
+    std::fs::set_permissions(journal.root(), std::fs::Permissions::from_mode(0o300)).unwrap();
+    // The origin helper must remain read-only even when directory sync fails.
+    let origin = load_original(&journal, &reference);
+    let mut output = Vec::new();
+    let retry = retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut output,
+    );
+    std::fs::set_permissions(journal.root(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        origin.is_ok(),
+        "read-only origin selection attempted durability work: {origin:?}"
+    );
+    assert!(
+        matches!(retry, Err(RunError::Io(ref e)) if e.kind() == std::io::ErrorKind::PermissionDenied),
+        "retry must propagate actual barrier error: {retry:?}"
+    );
+    if output_boundary {
+        assert!(
+            output.is_empty(),
+            "retry presented before terminal durability was confirmed"
+        );
+    } else {
+        assert!(
+            handoff::progress_path(&journal, &reference).is_file(),
+            "retry removed progress before terminal durability was confirmed"
+        );
+        assert_eq!(
+            journal.snapshot_delivery_origin(&reference).unwrap(),
+            original
+        );
+    }
+    let report = retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &terminal,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(report["message"]["data"], "m1");
+    assert!(journal.load(&reference).is_err());
+    assert!(!handoff::progress_path(&journal, &reference).exists());
+}
+#[test]
+fn fix_retry_publication_sync_failure_refuses_output_until_durable() {
+    failed_publication_retry_boundary(true);
+}
+#[test]
+fn fix_retry_publication_sync_failure_retains_files_until_durable() {
+    failed_publication_retry_boundary(false);
+}
+fn corrupted_standalone_progress_refuses(with_terminal: bool) {
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let (reference, client) = terminal_fixture(&journal);
+    if with_terminal {
+        let failed = retry_to_writer(
+            &journal,
+            &reference,
+            &plan().payload.namespace,
+            &client,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut FailedWriter::default(),
+        );
+        assert!(matches!(failed, Err(RunError::Io(_))));
+        assert!(terminal_path(&journal, &reference).is_file());
+    }
+    let path = handoff::progress_path(&journal, &reference);
+    let mut raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    raw["staged"]["accepted"] = serde_json::json!(true);
+    let corrupt = serde_json::to_vec(&raw).unwrap();
+    std::fs::write(&path, &corrupt).unwrap();
+    let original = journal.snapshot_delivery_origin(&reference).unwrap();
+    let mut output = Vec::new();
+    let result = retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut output,
+    );
+    assert!(
+        result.is_err(),
+        "raw staged.accepted silently discarded, with_terminal={with_terminal}: {result:?}"
+    );
+    assert!(output.is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+    assert_eq!(
+        journal.snapshot_delivery_origin(&reference).unwrap(),
+        original
+    );
+    if !with_terminal {
+        assert!(!terminal_path(&journal, &reference).exists());
+    }
+}
+#[test]
+fn fix_retry_preterminal_unknown_staged_field_refuses() {
+    corrupted_standalone_progress_refuses(false);
+}
+#[test]
+fn fix_retry_surviving_progress_unknown_staged_field_refuses() {
+    corrupted_standalone_progress_refuses(true);
+}

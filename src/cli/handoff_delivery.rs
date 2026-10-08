@@ -206,6 +206,31 @@ struct Progress {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     report_digest: Option<String>,
 }
+// Keep the legacy shared staged-work schema and reader unchanged. Delivery
+// checks the raw frame before unknown nested fields can be discarded by serde.
+fn load_delivery_progress(journal: &Journal, reference: &IntentRef) -> io::Result<Progress> {
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(handoff::progress_path(journal, reference))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Progress::default()),
+        Err(error) => return Err(error),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("unsafe delivery progress"));
+    }
+    let mut bytes = Vec::new();
+    file.take(4 * 1024 * 1024).read_to_end(&mut bytes)?;
+    let progress: Progress = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    if serde_json::from_slice::<serde_json::Value>(&bytes).map_err(io::Error::other)?
+        != serde_json::to_value(&progress).map_err(io::Error::other)?
+    {
+        return Err(io::Error::other("unexpected delivery progress fields"));
+    }
+    Ok(progress)
+}
 fn retained_digest(value: &impl Serialize) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
@@ -310,7 +335,7 @@ fn execute_locked<C: LocalClient + ?Sized>(
         send_key: keys.send.clone(),
     };
     let current = handoff::keyed_fence(client, clock, &identity, keys.begin.clone(), false)?;
-    let mut progress: Progress = handoff::load_progress(journal, reference)?;
+    let mut progress: Progress = load_delivery_progress(journal, reference)?;
     if current.state == HandoffState::Completed {
         return retained_report(reference, &plan, &current, &progress)
             .map(|report| (report, current));
@@ -457,7 +482,7 @@ fn read_terminal(journal: &Journal, reference: &IntentRef) -> Result<Option<Term
         Err(error) => return Err(error.into()),
     }
     if handoff::progress_path(journal, reference).try_exists()? {
-        let progress: Progress = handoff::load_progress(journal, reference)?;
+        let progress: Progress = load_delivery_progress(journal, reference)?;
         if serde_json::to_value(progress).map_err(io::Error::other)?
             != serde_json::to_value(&terminal.progress).map_err(io::Error::other)?
         {
@@ -603,11 +628,20 @@ pub fn retry_to_writer<C: LocalClient + ?Sized, W: Write>(
                 "delivery terminal disagrees with canonical completion",
             ));
         }
+        // Publication may have left a visible hard link after directory sync
+        // failed. Reestablish durability before presentation or any unlink;
+        // the later cleanup sync cannot prove this earlier boundary.
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(terminal_path(journal, reference))?
+            .sync_all()?;
+        File::open(journal.root())?.sync_all()?;
         terminal
     } else {
         let original = journal.snapshot_delivery_origin(reference)?;
         let (_, completed) = execute_locked(journal, reference, pending, client, clock)?;
-        let progress: Progress = handoff::load_progress(journal, reference)?;
+        let progress: Progress = load_delivery_progress(journal, reference)?;
         let progress_digest = retained_digest(&progress)?;
         let terminal = Terminal {
             version: 1,
