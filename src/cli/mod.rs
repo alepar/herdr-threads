@@ -1,4 +1,5 @@
 //! Typed CLI client, selected renderer and local journal composition.
+pub mod actor_route;
 pub mod commands;
 pub mod doctor;
 pub mod exit;
@@ -389,6 +390,18 @@ where
         parsed.output.context.host.as_ref().map(PathBuf::from),
     ))
     .map_err(context_error)?;
+    if let CliAction::Retry(recovery) = &parsed.action {
+        let paths = InstancePaths::resolve_read_only(&context)?;
+        retry::preflight_original_actor(
+            paths.instance_dir.join("intents"),
+            recovery.as_str(),
+            parsed.actor,
+            &crate::protocol::output::ContinuationContext {
+                state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
+                host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+            },
+        )?;
+    }
     let paths = InstancePaths::resolve(&context)?;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let budget = || CallBudget {
@@ -1053,15 +1066,12 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
             &claim,
             lazy_display::DisplaySelection::OwnDefaultText,
         )?;
-        // Lazy candidates remain pending until the independent settlement leaf
-        // installs its frozen completion intent. Never turn them into ACKs.
-        return settle_displayed_ack(
-            candidates.ordinary,
-            candidates.claim,
-            output_spec,
+        return lazy_display::settle(
+            candidates,
             journal,
-            client,
-            clock,
+            clock.utc_now().0,
+            |command| client.call(command, &cooperative_budget(clock)),
+            output_spec,
         );
     }
     if !supported {
@@ -1221,6 +1231,16 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         harness::context::{OccupantContext, SessionReference},
         protocol::{commands::SeatInspectQuery, pagination::PageRequest, results::CommandResult},
     };
+    if let CliAction::Retry(recovery) = &parsed.action {
+        retry::preflight_original_actor(
+            paths.instance_dir.join("intents"),
+            recovery.as_str(),
+            parsed.actor,
+            &parsed.output.context,
+        )?;
+    } else {
+        validate_actor_harness(parsed.actor, selection.harness)?;
+    }
     if matches!(&parsed.action, CliAction::Summary(_)) {
         return summary::run(parsed, selection, paths, instance, client, clock, writer);
     }
@@ -1537,6 +1557,11 @@ fn run_operator<W: Write>(
     clock: &Arc<dyn Clock>,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    if parsed.actor != actor_route::InvocationActor::Human {
+        return Err(invalid_request(
+            "operator actions require `herdr-threads human` before routing flags",
+        ));
+    }
     let (instance, _, client) = connect(paths, clock)?;
     let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
     retry::run_new_api_to_writer(
@@ -1786,6 +1811,11 @@ where
     C: LocalClient,
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
 {
+    if let Some(selection) = &parsed.cooperative
+        && !matches!(&parsed.action, CliAction::Retry(_))
+    {
+        validate_actor_harness(parsed.actor, selection.harness)?;
+    }
     match caller_need(parsed, paths)? {
         CallerNeed::None => Ok(parsed.cooperative.clone()),
         CallerNeed::SelfMarker => {
@@ -2000,6 +2030,9 @@ where
                 ))
             })?,
     };
+    if !matches!(&parsed.action, CliAction::Retry(_)) {
+        validate_actor_harness(parsed.actor, context.harness)?;
+    }
     let operator_override = contexts.operator_mark() == Some(context.execution);
     selection_from_context(
         pane,
@@ -2009,6 +2042,26 @@ where
         std::env::vars(),
         |pane| pane_agent(runtime, clock, pane),
     )
+}
+
+/// Check the declared invocation route against the honestly selected harness.
+/// Explicit Agent selection may replace an old Human context during lifecycle
+/// check-in; this check therefore precedes, rather than inspects, that retirement.
+fn validate_actor_harness(
+    actor: actor_route::InvocationActor,
+    harness: crate::harness::context::Harness,
+) -> Result<(), RunError> {
+    use crate::harness::context::Harness;
+    use actor_route::InvocationActor;
+    match (actor, harness) {
+        (InvocationActor::Agent, Harness::Human) => Err(invalid_request(
+            "this command selects a Human context; use `herdr-threads human` immediately after the executable, before routing flags",
+        )),
+        (InvocationActor::Human, Harness::Claude | Harness::Codex) => Err(invalid_request(
+            "the human namespace cannot act through an agent cooperative selection; use the ordinary root command for that agent",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// The selection a located seat's recorded context yields. A Human context
@@ -2148,6 +2201,23 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         Capability, LifecycleEvent, bridge,
         context::{EventKind, Role},
     };
+    let own_text_inbox = matches!(&parsed.action, CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
+        && parsed.output.format == OutputFormat::Text
+        && parsed.presentation != output::Presentation::Machine;
+    if let CliAction::Retry(recovery) = &parsed.action {
+        retry::preflight_original_actor(
+            journal.root(),
+            recovery.as_str(),
+            parsed.actor,
+            &parsed.output.context,
+        )?;
+    }
+    if !matches!(&parsed.action, CliAction::Wire(_) | CliAction::Retry(_)) || own_text_inbox {
+        let current = contexts.current().map_err(context_run_error)?;
+        if let Some(context) = initial.or(current.as_ref()) {
+            validate_actor_harness(parsed.actor, context.harness)?;
+        }
+    }
     if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
         && query.seat.is_none()
         && parsed.output.format == OutputFormat::Text

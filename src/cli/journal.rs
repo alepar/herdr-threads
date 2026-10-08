@@ -50,6 +50,46 @@ pub enum IntentScope {
     },
 }
 
+/// Actor of the validated durable payload, independent of today's binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginalActor {
+    Agent,
+    HumanOrOperator,
+}
+
+pub fn classify_original_actor(
+    scope: &IntentScope,
+    semantic: &SemanticMutation,
+) -> io::Result<OriginalActor> {
+    semantic.validate()?;
+    if !scope_matches(scope, semantic) {
+        return Err(invalid("intent authority scope mismatch"));
+    }
+    if let Some(claim) = semantic.frozen_claim() {
+        return Ok(
+            if claim.harness == crate::protocol::authority::Harness::Human {
+                OriginalActor::HumanOrOperator
+            } else {
+                OriginalActor::Agent
+            },
+        );
+    }
+    match (scope, semantic) {
+        (IntentScope::Operator { .. }, semantic) if semantic.is_operator() => {
+            Ok(OriginalActor::HumanOrOperator)
+        }
+        (IntentScope::Native { .. }, SemanticMutation::Handoff(_)) => {
+            Err(invalid("handoff needs frozen caller"))
+        }
+        (IntentScope::Native { .. }, _)
+        | (IntentScope::Continuity { .. }, SemanticMutation::ContinuityCheckIn { .. })
+        | (IntentScope::ServiceAllocation { .. }, SemanticMutation::ResolveSeat { .. }) => {
+            Ok(OriginalActor::Agent)
+        }
+        _ => Err(invalid("unsupported original intent actor")),
+    }
+}
+
 /// Native evidence is refreshed; cooperative claims are frozen as durable payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -124,6 +164,9 @@ pub enum SemanticMutation {
         messages: Vec<MessageId>,
     },
     AckDisplayed {
+        messages: Vec<MessageId>,
+    },
+    CompleteInboxDelivery {
         messages: Vec<MessageId>,
     },
     Leave {
@@ -307,7 +350,9 @@ impl SemanticMutation {
                 expected_revision: 0,
                 ..
             } => Err(invalid("required acceptance revision must be positive")),
-            Self::Ack { messages } | Self::AckDisplayed { messages }
+            Self::Ack { messages }
+            | Self::AckDisplayed { messages }
+            | Self::CompleteInboxDelivery { messages }
                 if messages.is_empty() || messages.len() > MAX_BATCH_ITEMS =>
             {
                 Err(invalid("invalid ack batch size"))
@@ -353,6 +398,7 @@ impl SemanticMutation {
             Self::AcceptRequired { .. } => IntentKind::Accept,
             Self::SendMessage { .. } => IntentKind::SendMessage,
             Self::Ack { .. } | Self::AckDisplayed { .. } => IntentKind::Ack,
+            Self::CompleteInboxDelivery { .. } => IntentKind::CompleteInboxDelivery,
             Self::Leave { .. } => IntentKind::Leave,
             Self::SetTopic { .. } => IntentKind::SetTopic,
             Self::SetThreadName { .. } => IntentKind::SetThreadName,
@@ -515,6 +561,13 @@ impl SemanticMutation {
                 operation,
                 claim: native()?,
             }),
+            Self::CompleteInboxDelivery { messages } => {
+                Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                    messages: messages.clone(),
+                    operation,
+                    claim: native()?,
+                })
+            }
             Self::Leave { thread } => Command::Leave(Leave {
                 thread: thread.clone(),
                 operation,
@@ -784,6 +837,27 @@ impl Journal {
         }
         Ok(journal)
     }
+    /// Validate an existing journal without allocating, locking or publishing metadata.
+    pub fn read_only(root: impl AsRef<Path>) -> io::Result<Self> {
+        let root = root.as_ref();
+        let metadata = root.symlink_metadata()?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(invalid("unsafe intent directory"));
+        }
+        #[cfg(unix)]
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(invalid("intent directory is not private"));
+        }
+        let journal = Self {
+            root: root.canonicalize()?,
+        };
+        if fs::read_to_string(journal.root.join("journal-format"))? != "1\n" {
+            return Err(invalid("intent journal format corrupt"));
+        }
+        journal.counter()?;
+        Ok(journal)
+    }
+
     fn lock(&self) -> io::Result<File> {
         let file = private_open(&self.root.join("allocator.lock"))?;
         let start = std::time::Instant::now();
@@ -1154,7 +1228,19 @@ impl Journal {
         file.write_all(b"\n")?;
         file.sync_all()?;
         fs::rename(path, self.path(&reference))?;
-        File::open(&self.root)?.sync_all()?;
+        // The entry is already visible. A failed durability barrier must not
+        // hide the operation's exact recovery reference from the caller.
+        File::open(&self.root)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "published intent durability uncertain: {error}; recovery_ref={}",
+                        reference.recovery_ref()
+                    ),
+                )
+            })?;
         Ok(reference)
     }
     pub fn load(&self, reference: &IntentRef) -> io::Result<PendingIntent> {
@@ -1430,6 +1516,7 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
                     request,
                     SemanticMutation::ResolveSeat { .. }
                         | SemanticMutation::ContinuityCheckIn { .. }
+                        | SemanticMutation::CompleteInboxDelivery { .. }
                 )
         }
         (IntentScope::Operator { .. }, request) => request.is_operator(),

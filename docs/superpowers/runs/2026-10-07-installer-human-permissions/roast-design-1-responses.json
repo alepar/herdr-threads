@@ -1,0 +1,290 @@
+{
+  "triage": {
+    "lanes": [],
+    "domains": [
+      "authorization",
+      "installer/configuration-management",
+      "crash-consistency"
+    ]
+  },
+  "scout:yagni": {
+    "findings": []
+  },
+  "scout:premortem": {
+    "findings": [
+      {
+        "claim": "Codex installation/update/removal lacks an explicit crash-recovery ownership protocol across rules-file and separate manifest publication.",
+        "location": "Decision 3: independent permission ownership; Decision 4: native policy rendering",
+        "category": "premortem",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Exact rules fingerprints live in separate component manifest; Codex writes CODEX_HOME/rules file. Prepared-record publication/recovery is explicit only for Claude transfer; crash between file/manifest publications leaves unmatched live grants or ownership proof without safe resume/remove protocol."
+      }
+    ]
+  },
+  "scout:feasibility": {
+    "findings": [
+      {
+        "claim": "Race refusal depends on an unspecified cross-process exclusion/publication mechanism between final revalidation and replacement.",
+        "location": "Decision 3: independent permission ownership",
+        "category": "feasibility",
+        "external": false,
+        "kind": "UNVERIFIED-ASSUMPTION",
+        "evidence": "Spec promises revalidates before replacement, refuses raced states, preserves unrelated content, and writers run sequentially. No cross-process lock identity/protected interval or conditional replacement is defined; concurrent writer can edit after check and before replace.",
+        "spike": "Pause after final comparison, edit settings from second isolated fixture writer, resume; fail if overwritten without conflict."
+      }
+    ]
+  },
+  "scout:completeness": {
+    "findings": [
+      {
+        "claim": "Codex installation/update/removal lacks an explicit crash-recovery ownership protocol across rules-file and separate manifest publication.",
+        "location": "Decision 3: independent permission ownership; Decision 4: native policy rendering",
+        "category": "completeness",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Exact rules fingerprints live in separate component manifest; Codex writes CODEX_HOME/rules file. Prepared-record publication/recovery is explicit only for Claude transfer; crash between file/manifest publications leaves unmatched live grants or ownership proof without safe resume/remove protocol."
+      },
+      {
+        "claim": "Race refusal depends on an unspecified cross-process exclusion/publication mechanism between final revalidation and replacement.",
+        "location": "Decision 3: independent permission ownership",
+        "category": "completeness",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Spec promises revalidates before replacement, refuses raced states, preserves unrelated content, and writers run sequentially. No cross-process lock identity/protected interval or conditional replacement is defined; concurrent writer can edit after check and before replace.",
+        "spike": "Pause after final comparison, edit settings from second isolated fixture writer, resume; fail if overwritten without conflict."
+      }
+    ]
+  },
+  "scout:failure-mode": {
+    "findings": [
+      {
+        "claim": "Declined/missing permission consent can retain historical owned broad Claude allowance and cover new human namespace without native approval.",
+        "location": "Decision 3: independent permission ownership; Decision 5: setup, installer and consent",
+        "category": "failure-mode",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Historical hooks own Bash(herdr-threads *). Explicit permission update performs narrowing; missing permission consent may decline/report missing. No transition handles exact owned broad rule when permission grant declined; existing broad grant can cover human."
+      },
+      {
+        "claim": "Race refusal depends on an unspecified cross-process exclusion/publication mechanism between final revalidation and replacement.",
+        "location": "Decision 3: independent permission ownership",
+        "category": "failure-mode",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Spec promises revalidates before replacement, refuses raced states, preserves unrelated content, and writers run sequentially. No cross-process lock identity/protected interval or conditional replacement is defined; concurrent writer can edit after check and before replace.",
+        "spike": "Pause after final comparison, edit settings from second isolated fixture writer, resume; fail if overwritten without conflict."
+      }
+    ]
+  },
+  "scout:domain:authorization": {
+    "findings": []
+  },
+  "scout:domain:installer/configuration-management": {
+    "findings": [
+      {
+        "claim": "Race refusal depends on an unspecified cross-process exclusion/publication mechanism between final revalidation and replacement.",
+        "location": "Decision 3: independent permission ownership",
+        "category": "domain:installer/configuration-management",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Spec promises revalidates before replacement, refuses raced states, preserves unrelated content, and writers run sequentially. No cross-process lock identity/protected interval or conditional replacement is defined; concurrent writer can edit after check and before replace.",
+        "spike": "Pause after final comparison, edit settings from second isolated fixture writer, resume; fail if overwritten without conflict."
+      },
+      {
+        "claim": "Fresh permission installation lacks interruption ownership contract; historical source transfer does not cover source-absent installs.",
+        "location": "Decision 3: independent permission ownership; Decision 4: native policy rendering",
+        "category": "domain:installer/configuration-management",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Prepared transfer requires source and destination manifests; fresh Claude/Codex grants have no historical source. No durable prepared ownership record before new policy publication or inspect/remove restart protocol specified."
+      }
+    ]
+  },
+  "scout:domain:crash-consistency": {
+    "findings": [
+      {
+        "claim": "Durable ownership invariant lacks explicit crash fault model and persistence barriers across ordered publications.",
+        "location": "Decision 3: independent permission ownership",
+        "category": "domain:crash-consistency",
+        "external": false,
+        "kind": "UNVERIFIED-ASSUMPTION",
+        "evidence": "At every interruption durable record promised but process termination versus OS/power crash unspecified; cross-file prepared/settings/destination/source persistence ordering needs actual sync and directory barriers.",
+        "spike": "Interrupt isolated migration at persistence boundaries; changed settings cannot survive without durable owner proof."
+      },
+      {
+        "claim": "Ordinary fresh install/update/remove crash recovery unspecified outside historical Claude transfer.",
+        "location": "Decision 3: independent permission ownership; Decision 4: native policy rendering",
+        "category": "domain:crash-consistency",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Exact rules fingerprints live in separate component manifest; Codex writes CODEX_HOME/rules file. Prepared-record publication/recovery is explicit only for Claude transfer; crash between file/manifest publications leaves unmatched live grants or ownership proof without safe resume/remove protocol."
+      },
+      {
+        "claim": "Required verification matrix does not require restarted-process interrupted lifecycle tests.",
+        "location": "Required configurations and verification: ownership matrix",
+        "category": "domain:crash-consistency",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Root lists fresh/update/remove and partial/edited/foreign/symlink/race but not process termination between publication boundaries followed by new-process inspect/resume/remove. Nested transfer acceptance covers historical transfer only."
+      },
+      {
+        "claim": "Independent hook and permission entry points do not specify discovery/handling of a pending transfer before mutating its source or destination.",
+        "location": "Decision 3: independent permission ownership",
+        "category": "domain:crash-consistency",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Sequential invocation writers and exact-state resume do not identify later entrypoints that discover durable prepared transfer; hook install/remove may invalidate source or settings before resume."
+      }
+    ]
+  },
+  "dedupe": {
+    "groups": [
+      {
+        "ids": [
+          3
+        ],
+        "suggestedSeverity": "Blocking",
+        "rank": 1
+      },
+      {
+        "ids": [
+          2,
+          4,
+          5,
+          6
+        ],
+        "suggestedSeverity": "Blocking",
+        "rank": 2
+      },
+      {
+        "ids": [
+          0,
+          1,
+          7,
+          9
+        ],
+        "suggestedSeverity": "Blocking",
+        "rank": 3,
+        "mergedClaim": "Fresh permission installation and ordinary updates/removals lack a crash-recovery ownership protocol across native policy and separate manifest publication outside historical Claude transfer."
+      },
+      {
+        "ids": [
+          11
+        ],
+        "suggestedSeverity": "Blocking",
+        "rank": 4
+      },
+      {
+        "ids": [
+          8
+        ],
+        "suggestedSeverity": "Should-fix",
+        "rank": 5
+      },
+      {
+        "ids": [
+          10
+        ],
+        "suggestedSeverity": "Should-fix",
+        "rank": 6
+      }
+    ]
+  },
+  "judge:reproduce#0": {
+    "verdict": "CONFIRM",
+    "severity": "Blocking",
+    "evidence": "Goal requires human native approval; historical exactly-owned Bash(herdr-threads *) narrows only on explicit permission update. Missing/declined consent retains owned broad rule; foreign-policy exception does not apply. Concrete upgrade+decline covers human service disconnect. Ground fetched official Claude permissions docs: * matches spaces, allow permits tool without manual approval."
+  },
+  "judge:refute#0": {
+    "verdict": "CONFIRM",
+    "severity": "Blocking",
+    "evidence": "Goal requires human native approval; historical exactly-owned Bash(herdr-threads *) narrows only on explicit permission update. Missing/declined consent retains owned broad rule; foreign-policy exception does not apply. Concrete upgrade+decline covers human service disconnect. Ground fetched official Claude permissions docs: * matches spaces, allow permits tool without manual approval."
+  },
+  "judge:ground#0": {
+    "verdict": "CONFIRM",
+    "severity": "Blocking",
+    "evidence": "Goal requires human native approval; historical exactly-owned Bash(herdr-threads *) narrows only on explicit permission update. Missing/declined consent retains owned broad rule; foreign-policy exception does not apply. Concrete upgrade+decline covers human service disconnect. Ground fetched official Claude permissions docs: * matches spaces, allow permits tool without manual approval."
+  },
+  "judge:reproduce#1": {
+    "verdict": "CONFIRM",
+    "severity": "Blocking",
+    "evidence": "Decision3 promises race refusal and unrelated preservation but only sequential flow+revalidate before replacement. Concurrent writer changes A\u2192B after final check; prepared A+permissions overwrite unrelated B. No cross-process exclusion/conditional publication/accepted limit specified."
+  },
+  "judge:refute#1": {
+    "verdict": "CONFIRM",
+    "severity": "Blocking",
+    "evidence": "Decision3 promises race refusal and unrelated preservation but only sequential flow+revalidate before replacement. Concurrent writer changes A\u2192B after final check; prepared A+permissions overwrite unrelated B. No cross-process exclusion/conditional publication/accepted limit specified."
+  },
+  "judge:ground#1": {
+    "verdict": "CONFIRM",
+    "severity": "Should-fix",
+    "evidence": "Whole-spec search finds no shared lock interval; sequential component calls do not exclude other writers. No multi-file transaction limit does not excuse single-file preservation promise."
+  },
+  "judge:reproduce#2": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "Decision3 explicitly accepts partial/edited/raced refusal and honest partial reporting, no multi-file transaction. Prepared automatic recovery guarantee is historical Claude transfer only; universal resumable fresh/update/remove publication extends bounded contract."
+  },
+  "judge:refute#2": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "Decision3 explicitly accepts partial/edited/raced refusal and honest partial reporting, no multi-file transaction. Prepared automatic recovery guarantee is historical Claude transfer only; universal resumable fresh/update/remove publication extends bounded contract."
+  },
+  "judge:ground#2": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "Decision3 explicitly accepts partial/edited/raced refusal and honest partial reporting, no multi-file transaction. Prepared automatic recovery guarantee is historical Claude transfer only; universal resumable fresh/update/remove publication extends bounded contract."
+  },
+  "judge:reproduce#3": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "Exact ownership/fingerprint validation and conflicting/edited/partial refusal already prevent unsafe changes. Subsequent independent change invalidating exact resume may refuse; uninterrupted successful resume after unrelated edits not promised. Missing named discovery routine alone demonstrates no ownership loss."
+  },
+  "judge:refute#3": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "Exact ownership/fingerprint validation and conflicting/edited/partial refusal already prevent unsafe changes. Subsequent independent change invalidating exact resume may refuse; uninterrupted successful resume after unrelated edits not promised. Missing named discovery routine alone demonstrates no ownership loss."
+  },
+  "judge:ground#3": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "Exact ownership/fingerprint validation and conflicting/edited/partial refusal already prevent unsafe changes. Subsequent independent change invalidating exact resume may refuse; uninterrupted successful resume after unrelated edits not promised. Missing named discovery routine alone demonstrates no ownership loss."
+  },
+  "judge:reproduce#4": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "Prepared record with exact identities/fingerprints, existing crash-safe helpers and ordered publication already require durable proof at every interruption. No demonstrated inadequacy of helpers; stronger power-loss syscall prescription extends unspecified fault model, not concrete design contradiction."
+  },
+  "judge:refute#4": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "Prepared record with exact identities/fingerprints, existing crash-safe helpers and ordered publication already require durable proof at every interruption. No demonstrated inadequacy of helpers; stronger power-loss syscall prescription extends unspecified fault model, not concrete design contradiction."
+  },
+  "judge:ground#4": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "Prepared record with exact identities/fingerprints, existing crash-safe helpers and ordered publication already require durable proof at every interruption. No demonstrated inadequacy of helpers; stronger power-loss syscall prescription extends unspecified fault model, not concrete design contradiction."
+  },
+  "judge:reproduce#5": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "Root matrix does not name restarted-process tests, but prepared exact-state invariant and partial refusal explicit. Missing particular verification methodology alone does not demonstrate material failure."
+  },
+  "judge:refute#5": {
+    "verdict": "CONFIRM",
+    "severity": "Should-fix",
+    "evidence": "Durable historical transfer/resume invariant explicitly promised; root verification matrix omits terminated operation followed by new-process inspect/resume/remove. Partial refusal is not successful recovery witness. Isolated process fixture is permitted and material."
+  },
+  "judge:ground#5": {
+    "verdict": "CONFIRM",
+    "severity": "Should-fix",
+    "evidence": "Durable historical transfer/resume invariant explicitly promised; root verification matrix omits terminated operation followed by new-process inspect/resume/remove. Partial refusal is not successful recovery witness. Isolated process fixture is permitted and material."
+  },
+  "reporter": {
+    "verdict": "Blocking (3 confirmed)",
+    "reportMarkdown": "super-roast verdict: Blocking (3 confirmed)\nmode: design        iteration: 1 of 3\nprofile (assumed): internal production local CLI; native configuration ownership is real persistent data.\ninputs: ht-uwd settled permission tree, root and five nested specs\ncoverage: scouts 8/8 \u00b7 raw 12 \u2192 deduped 6 \u2192 panel 6 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion 100% \u00b7 remainder-capped: 0\nindependence: same-family (GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\n\n## Confirmed findings\n- [Blocking] Decision 3: independent permission ownership; Decision 5: setup, installer and consent \u2014 Declined/missing consent retains exact owned broad Claude allowance covering human without native approval.\n  verdict: confirmed, all three seats. Historical broad narrowing requires explicit permission update; absent consent leaves owned grant, not covered by foreign-policy exception. Ground checked official Claude docs: wildcard matches spaces, allow permits manual-approval-free execution.\n  fix-shape hint: define owned broad-rule transition on declined/missing consent to preserve human approval boundary.\n- [Blocking] Decision 3: independent permission ownership \u2014 Race refusal lacks cross-process exclusion or bounded publication guarantee.\n  verdict: confirmed, all three seats; ground severity Should-fix, reporter applies real configuration data-loss Blocking floor. Writer B changes after comparison; prepared A overwrites unrelated B. Sequential calls do not exclude other writers.\n  fix-shape hint: define protected publication interval/participants or bound race guarantee with recoverable conflict behavior.\n- [Should-fix] Required configurations and verification: ownership matrix \u2014 Restarted-process interrupted historical transfer witnesses missing.\n  verdict: confirmed 2 of 3; reproduce rejects particular methodology, refute/ground show durable historical recovery guarantee unwitnessed by partial refusal.\n  fix-shape hint: isolated termination at historical transfer boundaries, new-process inspect/resume/remove, exact ownership invariance.\n\n## Not verified (beyond panel cap)\n- none\n\n## Not verified (dedupe failed or judge lost)\n- none\n\n## Beyond remainder cap (count only)\n- none\n\n## Rejected (with reason)\n- Decision 3: independent permission ownership; Decision 4: native policy rendering \u2014 Universal crash recovery for fresh install/update/remove: all three REJECT. Explicit partial-state refusal/honest reporting/no multi-file transaction bounds ordinary lifecycle; stronger automatic recovery promise applies historical Claude transfer only.\n- Decision 3: independent permission ownership \u2014 Mandatory pending-transfer discovery at every independent entrypoint: all three REJECT. Exact ownership/fingerprint/conflict checks already enforce refusal; interrupted successful resume after unrelated changes is not promised.\n- Decision 3: independent permission ownership \u2014 Unspecified universal power-loss barriers: all three REJECT. Existing crash-safe helpers/prepared exact identities/ordered durable ownership invariant explicit; no proven helper inadequacy, stronger power-fault prescription exceeds unspecified model.\n\n## Unverified nits (spot-checked)\n- none\n\n## Escalations (need human)\n- none\n",
+    "confirmedCount": 3,
+    "escalations": []
+  }
+}

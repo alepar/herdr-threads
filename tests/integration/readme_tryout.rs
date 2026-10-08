@@ -132,8 +132,8 @@ struct World {
 }
 impl World {
     fn new() -> Self {
-        let root = PathBuf::from(format!(
-            "/private/tmp/htr-{}",
+        let root = std::env::temp_dir().join(format!(
+            "htr-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -172,8 +172,11 @@ impl World {
         world.json(None, &["daemon", "ensure"]);
         world
     }
-    fn command(&self, actor: Option<(&str, &str, &str)>) -> Command {
+    fn command(&self, actor: Option<(&str, &str, &str)>, human_route: bool) -> Command {
         let mut cmd = crate::scrubbed_command(BIN);
+        if human_route {
+            cmd.arg("human");
+        }
         cmd.arg("--state-dir")
             .arg(&self.state)
             .arg("--host-endpoint")
@@ -203,7 +206,9 @@ impl World {
         cmd
     }
     fn run(&self, actor: Option<(&str, &str, &str)>, args: &[&str], json: bool) -> String {
-        let mut cmd = self.command(actor);
+        let human_route = args.first() == Some(&"human");
+        let args = if human_route { &args[1..] } else { args };
+        let mut cmd = self.command(actor, human_route);
         if json {
             cmd.arg("--json");
         }
@@ -277,7 +282,7 @@ impl World {
 }
 impl Drop for World {
     fn drop(&mut self) {
-        let _ = self.command(None).args(["daemon", "stop"]).output();
+        let _ = self.command(None, false).args(["daemon", "stop"]).output();
     }
 }
 
@@ -290,7 +295,7 @@ struct Follower {
 impl Follower {
     fn start(world: &World) -> Self {
         let mut child = world
-            .command(None)
+            .command(None, false)
             .args(["read", "review", "--follow"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -341,13 +346,14 @@ impl Drop for Follower {
 #[test]
 fn readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundaries() {
     let world = World::new();
-    let human = world.json(None, &["me", "init"])["context"]["seat"]
+    let human = world.json(None, &["human", "me", "init"])["context"]["seat"]
         .as_str()
         .unwrap()
         .to_owned();
     let alice = world.json(
         None,
         &[
+            "human",
             "handoff",
             "--new-thread",
             "--thread-name",
@@ -365,7 +371,7 @@ fn readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundar
     let bob = world.json(
         None,
         &[
-            "handoff", "--thread", "review", "--pane", "bob", "--kind", "codex", "--", BOB,
+            "human", "handoff", "--thread", "review", "--pane", "bob", "--kind", "codex", "--", BOB,
         ],
     );
     for report in [&alice, &bob] {
@@ -477,6 +483,7 @@ fn readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundar
         .json(
             None,
             &[
+                "human",
                 "send",
                 "review",
                 "--require-ack-pane",
