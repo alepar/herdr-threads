@@ -5633,8 +5633,10 @@ fn pending_receipts(
 /// Hot threads of one seat for the recovery hook text (spec §9), computed in
 /// one read transaction: threads with a pending receipt (earliest effective
 /// deadline first), then other pending attention (invitations, actionable
-/// warnings), then joined threads whose latest ordinary message is newer than
-/// `hot_window_ms`, newest first. The first `q.limit` are returned in full,
+/// warnings), then joined threads whose latest ordinary-delivery message is
+/// newer than `hot_window_ms`, newest first. Lazy arrivals create no recovery
+/// obligation and do not advance the ordinary last_activity used here.
+/// The first `q.limit` are returned in full,
 /// up to `MAX_HOT_OVERFLOW` more as bare ids.
 pub fn hot_threads(
     store: &StoreContext,
@@ -5717,7 +5719,7 @@ fn hot_threads_in(
     let latest = |thread: &str| -> Result<i64, ApiError> {
         Ok(db
             .query_row(
-                "SELECT decision_at FROM messages WHERE thread_id=?1 AND kind='ordinary' ORDER BY sequence DESC LIMIT 1",
+                "SELECT decision_at FROM messages WHERE thread_id=?1 AND kind='ordinary' AND delivery_mode='ordinary' ORDER BY sequence DESC LIMIT 1",
                 [thread],
                 |r| r.get(0),
             )

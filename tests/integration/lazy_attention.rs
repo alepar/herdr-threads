@@ -18,12 +18,15 @@ use herdr_threads::{
     test_support::isolation::TestIsolation,
 };
 use rusqlite::{Connection, params};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicI64, Ordering},
+};
 
-struct FixedClock;
+struct FixedClock(AtomicI64);
 impl Clock for FixedClock {
     fn utc_now(&self) -> UtcMillis {
-        UtcMillis(1000)
+        UtcMillis(self.0.load(Ordering::Relaxed))
     }
     fn monotonic_now(&self) -> MonoInstant {
         MonoInstant(100)
@@ -46,17 +49,19 @@ struct Fixture {
     // SQLite owners drop before the isolation directory.
     store: SqliteStore,
     db: Connection,
+    clock: Arc<FixedClock>,
     _iso: TestIsolation,
 }
 impl Fixture {
     fn new() -> Self {
         let iso = TestIsolation::new("lazy-attention");
-        let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+        let clock = Arc::new(FixedClock(AtomicI64::new(1000)));
+        let context = StoreContext::new(iso.path("store.db"), clock.clone());
         let db = context.open_writer().unwrap();
         db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'b',1,1);
             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);").unwrap();
         let store = SqliteStore::new(
-            StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)),
+            StoreContext::new(iso.path("store.db"), clock.clone()),
             "i",
             StoreSettings::default(),
         )
@@ -64,6 +69,7 @@ impl Fixture {
         let f = Self {
             store,
             db,
+            clock,
             _iso: iso,
         };
         f.member("author", "resolved", "joined", Harness::Codex);
@@ -111,6 +117,9 @@ impl Fixture {
         self.store.mutate(mutation, permit, &budget())
     }
     fn send(&self, op: &str, mode: DeliveryMode) -> MessageId {
+        self.send_as("author", op, mode)
+    }
+    fn send_as(&self, seat: &str, op: &str, mode: DeliveryMode) -> MessageId {
         let request = SendMessage {
             delivery_mode: mode,
             thread: ThreadId::new("t"),
@@ -118,7 +127,7 @@ impl Fixture {
             invited_recipients: vec![],
             deadline_millis: None,
             operation: OperationId::new(op),
-            claim: self.claim("author"),
+            claim: self.claim(seat),
             relays_user: false,
             user_intent: None,
         };
@@ -205,7 +214,7 @@ impl Fixture {
     }
     fn reopen(&mut self) {
         self.store = SqliteStore::new(
-            StoreContext::new(self._iso.path("store.db"), Arc::new(FixedClock)),
+            StoreContext::new(self._iso.path("store.db"), self.clock.clone()),
             "i",
             StoreSettings::default(),
         )
@@ -280,6 +289,131 @@ fn execution(seat: &str) -> &'static str {
 fn offer_attention(offer: &CheckInResult) -> serde_json::Value {
     // Binding generations may advance on startup; actionable offer must not.
     serde_json::json!({"count":offer.warning_count,"more":offer.warning_count_has_more,"inbox":offer.inbox,"warnings":offer.warnings,"notices":offer.notices})
+}
+
+/// Catches lazy publication making a quiet joined thread Recent, replacing
+/// ordinary last_activity on pending attention, or hiding explicit content.
+#[test]
+fn lazy_publication_does_not_create_recovery_recency() {
+    use herdr_threads::{
+        cli::hook::encode_native,
+        harness::{Capability, LifecycleEvent, RecoveryRows, context},
+        protocol::{
+            results::HotReason,
+            summary::{SummaryOutcome, SummaryRequest},
+        },
+    };
+
+    let mut f = Fixture::new();
+    let old = f.send("old-ordinary", DeliveryMode::Ordinary);
+    let hot = |f: &Fixture, seat| {
+        let CommandResult::HotThreads(hot) = f.query(Command::HotThreads(HotThreadsQuery {
+            seat: SeatId::new(seat),
+            limit: 8,
+        })) else {
+            panic!("hot threads")
+        };
+        hot
+    };
+    assert_eq!(hot(&f, "author").hot[0].reason, HotReason::Recent);
+    // The ordinary message is more than the default 24-hour hot window old.
+    f.clock.0.store(86_402_000, Ordering::Relaxed);
+    assert!(hot(&f, "author").hot.is_empty());
+    let lazy = f.send_as("agent", "lazy-arrival", DeliveryMode::Lazy);
+
+    assert_eq!(f.inbox("author").as_slice(), std::slice::from_ref(&lazy));
+    let CommandResult::History(history) = f.query(Command::History(HistoryQuery {
+        thread: ThreadId::new("t"),
+        page: PageRequest::default(),
+        initial: None,
+        full_bodies: true,
+    })) else {
+        panic!("history")
+    };
+    assert_eq!(
+        history
+            .items
+            .iter()
+            .map(|row| &row.message)
+            .collect::<Vec<_>>(),
+        [&lazy, &old]
+    );
+    let SummaryOutcome::Ready(summary) = f
+        .store
+        .summary(
+            &SummaryRequest {
+                thread: ThreadId::new("t"),
+                claim: f.claim("author"),
+            },
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("small explicit summary should be ready")
+    };
+    assert_eq!(
+        summary
+            .tail
+            .iter()
+            .map(|row| &row.message)
+            .collect::<Vec<_>>(),
+        [&old, &lazy]
+    );
+    assert_eq!(f.inbox("author").as_slice(), std::slice::from_ref(&lazy));
+
+    for reopened in [false, true] {
+        if reopened {
+            f.reopen();
+        }
+        let quiet = hot(&f, "author");
+        assert!(
+            quiet.hot.is_empty() && quiet.overflow.is_empty(),
+            "{quiet:?}"
+        );
+        let recovery = RecoveryRows::from_hot_threads(&quiet);
+        assert!(
+            recovery.is_none(),
+            "lazy mail must create no recovery block"
+        );
+        assert!(!attention::seat_has_pending_rows(&f.db, "author").unwrap());
+        let attention = hot(&f, "agent");
+        assert_eq!(attention.hot.len(), 1);
+        assert_eq!(attention.hot[0].reason, HotReason::PendingReceipt);
+        assert_eq!(attention.hot[0].last_activity, UtcMillis(1000));
+        assert!(attention.overflow.is_empty());
+
+        for harness in [context::Harness::Claude, context::Harness::Codex] {
+            for (kind, source) in [
+                (context::EventKind::Compact, "compact"),
+                (context::EventKind::Resume, "resume"),
+                (context::EventKind::Clear, "clear"),
+            ] {
+                let event = LifecycleEvent {
+                    harness,
+                    kind,
+                    source: source.into(),
+                    native_session: Some("session-author".into()),
+                    role: context::Role::TopLevel,
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    capability: Capability::ObservedInput,
+                };
+                let output = encode_native(&event, b"", &[], None, None, None, recovery.as_ref());
+                let output = String::from_utf8(output).unwrap();
+                assert!(!output.contains(&herdr_threads::harness::recovery_instruction()));
+                assert!(!output.contains("hot threads:"));
+            }
+        }
+    }
+
+    // A fresh ordinary publication still creates Recent recovery for its
+    // author, without relying on a pending recipient receipt to make it hot.
+    f.send("ordinary-control", DeliveryMode::Ordinary);
+    let recent = hot(&f, "author");
+    assert_eq!(recent.hot.len(), 1);
+    assert_eq!(recent.hot[0].thread, ThreadId::new("t"));
+    assert_eq!(recent.hot[0].reason, HotReason::Recent);
+    assert_eq!(recent.hot[0].last_activity, UtcMillis(86_402_000));
+    assert!(RecoveryRows::from_hot_threads(&recent).is_some());
 }
 
 /// Catches accidental inclusion of passive rows in hook attention/count/token.
