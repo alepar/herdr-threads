@@ -1617,3 +1617,61 @@ fn fix_retry_preterminal_unknown_staged_field_refuses() {
 fn fix_retry_surviving_progress_unknown_staged_field_refuses() {
     corrupted_standalone_progress_refuses(true);
 }
+
+fn oversized_progress_prefix_refuses(with_terminal: bool) {
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let (reference, client) = terminal_fixture(&journal);
+    if with_terminal {
+        let failed = retry_to_writer(
+            &journal,
+            &reference,
+            &plan().payload.namespace,
+            &client,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut FailedWriter::default(),
+        );
+        assert!(matches!(failed, Err(RunError::Io(_))));
+        assert!(terminal_path(&journal, &reference).is_file());
+    }
+    let path = handoff::progress_path(&journal, &reference);
+    // The valid genuine JSON plus whitespace fits exactly in the old read
+    // limit. Its malformed extra frame must not disappear past that limit.
+    let mut corrupt = std::fs::read(&path).unwrap();
+    corrupt.resize(4 * 1024 * 1024, b' ');
+    corrupt.extend_from_slice(br#"{"staged":{"accepted":true}}"#);
+    std::fs::write(&path, &corrupt).unwrap();
+    let original = journal.snapshot_delivery_origin(&reference).unwrap();
+    let mut output = Vec::new();
+    let result = retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut output,
+    );
+    assert!(
+        result.is_err(),
+        "oversized progress suffix silently ignored, with_terminal={with_terminal}: {result:?}"
+    );
+    assert!(output.is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+    assert_eq!(
+        journal.snapshot_delivery_origin(&reference).unwrap(),
+        original
+    );
+    if !with_terminal {
+        assert!(!terminal_path(&journal, &reference).exists());
+    }
+}
+#[test]
+fn fix_reader_preterminal_oversized_prefix_refuses() {
+    oversized_progress_prefix_refuses(false);
+}
+#[test]
+fn fix_reader_surviving_progress_oversized_prefix_refuses() {
+    oversized_progress_prefix_refuses(true);
+}

@@ -222,7 +222,10 @@ fn load_delivery_progress(journal: &Journal, reference: &IntentRef) -> io::Resul
         return Err(io::Error::other("unsafe delivery progress"));
     }
     let mut bytes = Vec::new();
-    file.take(4 * 1024 * 1024).read_to_end(&mut bytes)?;
+    file.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err(io::Error::other("oversized delivery progress"));
+    }
     let progress: Progress = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
     if serde_json::from_slice::<serde_json::Value>(&bytes).map_err(io::Error::other)?
         != serde_json::to_value(&progress).map_err(io::Error::other)?
