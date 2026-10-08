@@ -34,10 +34,10 @@ Columns: date · title · relative link · one-line summary · status · tags.
 
 | 2026-10-05 | Harness version independence | [Design](2026-10-05-harness-versionless-design.md) | Contract-based core admission; optional honest metadata, strict payload decoding and scoped operational diagnostics. | Task1–3 source reviewed; final review/merge pending | harness, wrappers, admission, evidence |
 
-| 2026-10-07 | Native topology handoff | [Design](../runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology-design.md) | Canonical at-most-one tab creation attempts, exact recovery and delivery without relaunch. | draft | handoff, topology, super-auto |
+| 2026-10-07 | Native topology handoff | [Design](../runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology-design.md) | Canonical at-most-one tab creation attempts, exact recovery and delivery without relaunch. | reviewed | handoff, topology, super-auto |
 
-| 2026-10-07 | Handoff canonical-bootstrap | [Design](../runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology--canonical-bootstrap-design.md) | Scoped subepic ht-qhz.2. | draft | handoff, handoff-topology |
+| 2026-10-07 | Handoff canonical-bootstrap | [Design](../runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology--canonical-bootstrap-design.md) | Scoped subepic ht-qhz.2. | reviewed | handoff, handoff-topology |
 
-| 2026-10-07 | Handoff bootstrap-coordinator | [Design](../runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology--bootstrap-coordinator-design.md) | Scoped subepic ht-qhz.4. | draft | handoff, handoff-topology |
+| 2026-10-07 | Handoff bootstrap-coordinator | [Design](../runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology--bootstrap-coordinator-design.md) | Scoped subepic ht-qhz.4. | reviewed | handoff, handoff-topology |
 
-| 2026-10-07 | Handoff existing-delivery | [Design](../runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology--existing-delivery-design.md) | Scoped subepic ht-qhz.5. | draft | handoff, handoff-topology |
+| 2026-10-07 | Handoff existing-delivery | [Design](../runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology--existing-delivery-design.md) | Scoped subepic ht-qhz.5. | reviewed | handoff, handoff-topology |

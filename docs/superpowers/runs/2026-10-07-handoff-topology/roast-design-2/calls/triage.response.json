@@ -1,0 +1,11 @@
+{
+  "hash": "20b70ca90bc5b98ba388770983fbf71f974ddde118b8947efc14dd97623ca597",
+  "result": {
+    "lanes": [],
+    "domains": [
+      "distributed-systems",
+      "auth",
+      "workflow-orchestration"
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "persistent_helpers_started": [],
+  "private_servers_started": [],
+  "owned_topology_created": [],
+  "short_lived_helpers": [
+    "Python artifact assembly and validation: exited 0",
+    "assemble-args bash/node: exited 0",
+    "canonical replay Node commands: exited 0"
+  ],
+  "live_owned_processes_at_handoff": [],
+  "collaboration_agents": "triage, nine fresh scouts and reporter all completed; no judges or dedupe needed"
+}

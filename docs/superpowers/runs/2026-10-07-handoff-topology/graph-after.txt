@@ -1,0 +1,9 @@
+shape: leaves 16 · depth 7 · width 2.3 · critical path: ht-qhz.1 → ht-qhz.2.1 → ht-qhz.2.3 → ht-qhz.4.2 → ht-qhz.4.3 → ht-qhz.9 → ht-qhz.20
+edge: ht-qhz.19 <- ht-qhz.4.3 · leaf · critical yes · depth 7→7
+edge: ht-qhz.4.3 <- ht-qhz.4.2 · leaf · critical yes · depth 7→6
+edge: ht-qhz.4.2 <- ht-qhz.2.3 · leaf · critical yes · depth 7→7
+edge: ht-qhz.4.2 <- ht-qhz.2.2 · leaf · critical yes · depth 7→7
+edge: ht-qhz.2.3 <- ht-qhz.2.1 · leaf · critical yes · depth 7→7
+edge: ht-qhz.2.2 <- ht-qhz.2.1 · leaf · critical yes · depth 7→7
+edge: ht-qhz.9 <- ht-qhz.4.3 · leaf · critical yes · depth 7→7
+summary: edges 45 · exempt 25 · candidates 7 (critical 7, epic-level 0)

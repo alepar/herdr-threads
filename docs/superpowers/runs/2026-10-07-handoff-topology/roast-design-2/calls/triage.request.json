@@ -1,0 +1,35 @@
+{
+  "key": "triage",
+  "hash": "20b70ca90bc5b98ba388770983fbf71f974ddde118b8947efc14dd97623ca597",
+  "prompt": "You classify a design spec or a PR diff to decide which review lenses should run next.\nDetermine your mode from what follows: a spec file path means **design mode**; a diff file\nlist and stat summary means **PR mode**. Do NOT review the design or the change here — only\nclassify.\n\n## Input\nSpec file: /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows/docs/superpowers/runs/2026-10-07-handoff-topology/roast-design-2/artifact.md — read it.\n\n## Design mode: name the domain(s)\nRead the spec and name the technical domain(s) whose typical failure modes and load-bearing\nassumptions most apply. These pick the domain-expert scouts.\n- Output 1–3 domain labels, most relevant first (e.g., distributed-systems, auth,\n  ml-pipeline, payments/billing, data-pipeline, realtime, browser-extension).\n- Cap at 3. **Lean toward recall:** a missed domain means its typical traps are never\n  surfaced (a silent gap), whereas a wrong domain is cheaply rejected later. If a domain is\n  plausibly relevant, name it. Only output `none` when the design is genuinely generic — this\n  widens the core lenses (adds `security` and `maintainer`) instead of narrowing to a domain.\n- Think through a one-line rationale per label before choosing, but return only the bare\n  labels (e.g. `\"auth\"`) in `domains`: each label is substituted into a scout prompt verbatim.\n- Populate `domains`; leave `lanes` empty (`[]`).\n\n## PR mode: activate conditional lanes\nCore lanes (`correctness`, `security`, `premortem`, `simplicity-design`, `hot-path-perf`,\n`concurrency-async`) always run and are supplied by config — they are not your concern. Given\nthe diff's file list and stat summary, decide which of the following conditional lanes to\nactivate:\n- `data-migrations` — schema/migration files touched, or model/entity changes.\n- `deploy-safety` — CI/deploy/infra files touched, or a behavior change gated by a flag.\n- `api-contract` — exported/public API surface changed, or a wire format (request/response,\n  event schema) changed.\n- `observability` — new failure paths introduced, or logging/metrics/tracing changed.\n- `testing` — production code changed with no corresponding test changes, or the diff is\n  test-heavy.\n- `dependency` — lockfile or manifest changes.\n- `hygiene-docs` — docs/README changes, or the diff mixes unrelated concerns.\n\n**On doubt, activate — a missed lane is a silent gap; an extra lane is one wasted scout.**\nPopulate `lanes` with the conditional lane names to activate (list only the ones you're\nactivating — omit the rest); leave `domains` empty (`[]`).\n\n## Output contract (exact — return one JSON object matching this shape, no prose outside it)\n`{\"lanes\": [<string>, ...], \"domains\": [<string>, ...]}`\n\nBoth fields are required. Fill the field for your mode; return `[]` for the field the other\nmode would use.",
+  "opts": {
+    "label": "triage",
+    "phase": "Triage",
+    "model": "gpt-6.1-sol",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "lanes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "security",
+              "maintainer"
+            ]
+          }
+        },
+        "domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lanes",
+        "domains"
+      ]
+    },
+    "effort": "low"
+  }
+}

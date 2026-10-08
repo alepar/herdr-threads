@@ -1,0 +1,79 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 9,
+  "scoutsDead": 0,
+  "unknownLanes": [],
+  "domainsDropped": [],
+  "rawFindings": 0,
+  "dedupedFindings": 0,
+  "dedupeOrphans": 0,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 0,
+  "spotCount": 0,
+  "promotedCount": 0,
+  "judgeLost": 0,
+  "spotLost": 0,
+  "laneYield": {
+    "premortem": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "completeness": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "yagni": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "failure-mode": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "feasibility": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "regression": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "domain:distributed-systems": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "domain:auth": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "domain:workflow-orchestration": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    }
+  },
+  "judgeCompletionPct": 0,
+  "lowCoverage": false,
+  "panelCappedTag": "",
+  "emptyLateRound": true,
+  "convergenceEligible": true
+}

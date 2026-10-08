@@ -19,5 +19,6 @@ approvals:
 - top-split · auto · ht-qhz.1 LEAF, ht-qhz.2 PROMOTE, ht-qhz.3 LEAF, ht-qhz.4 PROMOTE, ht-qhz.5 PROMOTE, ht-qhz.6 LEAF, ht-qhz.7 LEAF, ht-qhz.8 LEAF, ht-qhz.9 LEAF, ht-qhz.19 LEAF, ht-qhz.20 LEAF
 
 roastDesignRound: 2
-roast-design: 2026-10-07-handoff-topology-roast-design-1.md
+roast-design: 2026-10-07-handoff-topology-roast-design-1.md, 2026-10-07-handoff-topology-roast-design-2.md
 stepBackDesign-round-1: patch — independent exact-attempt recovery, bootstrap-only cancellation/liveness and atomic linked successful-report-backed completion; no shared redesign
+graph-pass: depth 7→7 · width 2.3→2.3 · applied 0 · parked 0
