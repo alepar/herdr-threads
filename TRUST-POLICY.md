@@ -351,6 +351,24 @@ can present the retained result again. Delivery is neither invitation acceptance
 agreement, adoption or task completion. Logical publication tokens stay unchanged by projection;
 an advertised read-only delivery hint lets hooks drain newly attributed and remaining notice pages.
 
+**A8. Passive lazy delivery bookkeeping.** Recorded `ordinary`/`lazy` delivery mode is immutable and
+independent of sender role, relay and human intent. A lazy audience is frozen by canonical preparation
+and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
+Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
+Unpublished rows are invisible and may be discarded in bounded cleanup; published progress is retained.
+Lazy delivery creates no receipt, deadline, ACK evidence, attention, wake, poke or automatic adoption.
+
+Only the caller's default text inbox may claim completion after complete contiguous body output has
+been written and flushed. The completion handler validates the current top-level or human canonical
+caller (A2) and exact published addressed message IDs in its deciding transaction; declared subagents
+cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
+read-only. Local display journals are cooperative hints, never authority. Completion is idempotent
+presentation bookkeeping: it records no ACK actor, receipt provenance, timeline ACK, agreement,
+instruction adoption, task completion or proof of model consumption. Partial output and changed
+bindings cannot manufacture complete display. Frozen completion retries preserve their original full
+caller claim, harness and intent scope through submission and local cleanup. These same-user cooperative
+limits are deliberate; no adversarial execution verification is added.
+
 ## Accepted limits
 
 These are decisions, not bugs. Each is safe to rely on only as stated.

@@ -27,6 +27,8 @@ mod host_adapter;
 mod installer_integrations;
 #[path = "protocol/lazy_delivery.rs"]
 mod lazy_delivery;
+#[path = "store/lazy_schema.rs"]
+mod lazy_schema;
 #[path = "lifecycle_ux.rs"]
 mod lifecycle_ux;
 #[path = "local_endpoint.rs"]

@@ -5125,7 +5125,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
             "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
         ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
         let roots = db
-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics') ORDER BY name")
+            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients') ORDER BY name")
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -5457,7 +5457,20 @@ fn task3_versionless_schema24_upgrades_preserves_history_and_audits_objects() {
             .unwrap(),
         schema::LATEST_VERSION
     );
-    db.execute_batch("INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at) VALUES ('codex','0.159.3','0123456789abcdef',1,2); DROP TABLE harness_contract_diagnostics; DROP TRIGGER digest_transition_warning_projected; PRAGMA user_version=23;").unwrap();
+    // Build the actual historical shape; rolling back only user_version on a
+    // latest database leaves later additive columns installed.
+    let db = Connection::open_in_memory().unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut migrations = std::fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for path in migrations.into_iter().take(23) {
+        db.execute_batch(&std::fs::read_to_string(path).unwrap())
+            .unwrap();
+    }
+    db.execute_batch("PRAGMA user_version=23; INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at) VALUES ('codex','0.159.3','0123456789abcdef',1,2);").unwrap();
     schema::initialize(&db, || UtcMillis(3)).unwrap();
     assert_eq!(
         db.query_row("SELECT version FROM harness_version_evidence", [], |row| {
