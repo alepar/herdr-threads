@@ -1,4 +1,25 @@
-use super::super::retry::run_delivery_retry_to_writer as retry_to_writer;
+// Existing delivery fixtures have an honestly known Agent invocation.
+#[allow(clippy::too_many_arguments)]
+fn retry_to_writer<C: LocalClient + ?Sized, W: std::io::Write>(
+    journal: &Journal,
+    reference: &IntentRef,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<serde_json::Value, super::super::RunError> {
+    super::super::retry::run_delivery_retry_to_writer(
+        journal,
+        reference,
+        super::super::actor_route::InvocationActor::Agent,
+        namespace,
+        client,
+        clock,
+        output,
+        writer,
+    )
+}
 use super::*;
 use crate::protocol::{
     commands::Command,
@@ -1674,4 +1695,242 @@ fn fix_reader_preterminal_oversized_prefix_refuses() {
 #[test]
 fn fix_reader_surviving_progress_oversized_prefix_refuses() {
     oversized_progress_prefix_refuses(true);
+}
+
+// Removing the wrapper's original-actor gate presents/cleans a completed Human
+// handoff even after its intent was removed, before any selected current actor.
+#[test]
+fn actor_prerequisite_retained_human_delivery_refuses_before_canonical_or_cleanup() {
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let mut claim = canonical_claim();
+    claim.harness = crate::protocol::authority::Harness::Human;
+    let reference = journal
+        .record(
+            super::super::journal::IntentScope::Cooperative {
+                instance: claim.instance.clone(),
+                seat: claim.seat.clone(),
+            },
+            super::super::journal::SemanticMutation::freeze(
+                super::super::journal::SemanticMutation::HandoffDelivery(Box::new(plan())),
+                claim,
+            )
+            .unwrap(),
+            1,
+        )
+        .unwrap();
+    let live_client = Client::new(false);
+    execute(&journal, &reference, &live_client, &TestClock).unwrap();
+    let original = live_client
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|command| match command {
+            Command::BeginHandoff(q) => Some(q.identity.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let client = TerminalClient {
+        original,
+        calls: Mutex::new(0),
+    };
+    super::super::retry::run_delivery_retry_to_writer(
+        &journal,
+        &reference,
+        super::super::actor_route::InvocationActor::Human,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert!(
+        journal.load(&reference).is_err(),
+        "fixture removes original intent"
+    );
+    let path = terminal_path(&journal, &reference);
+    let before = std::fs::read(&path).unwrap();
+    *client.calls.lock().unwrap() = 0;
+    let mut output = Vec::new();
+    let failure = retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut output,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{failure:?}").contains("person/operator retry requires immediate human namespace"),
+        "{failure:?}"
+    );
+    assert_eq!(*client.calls.lock().unwrap(), 0);
+    assert!(output.is_empty());
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn actor_prerequisite_retained_agent_evidence_must_be_unique_valid_and_present() {
+    for damage in ["missing", "malformed", "ambiguous", "contradictory_intent"] {
+        let tmp = TempRoot::new();
+        let journal = Journal::open(tmp.0.join("intents")).unwrap();
+        let (reference, client) = terminal_fixture(&journal);
+        retry_to_writer(
+            &journal,
+            &reference,
+            &plan().payload.namespace,
+            &client,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert!(journal.load(&reference).is_err());
+        let terminal = terminal_path(&journal, &reference);
+        let bytes = std::fs::read(&terminal).unwrap();
+        match damage {
+            "missing" => std::fs::remove_file(&terminal).unwrap(),
+            "malformed" => std::fs::write(&terminal, b"{malformed").unwrap(),
+            "ambiguous" => {
+                let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let original = value["original"].as_str().unwrap();
+                let (header, body) = original.split_once('\n').unwrap();
+                let mut header: serde_json::Value = serde_json::from_str(header).unwrap();
+                let operation =
+                    crate::protocol::ids::OperationId::new(uuid::Uuid::new_v4().to_string());
+                header["reference"]["operation"] = serde_json::json!(operation.as_str());
+                value["original"] = serde_json::json!(format!("{}\n{}", header, body));
+                let other = IntentRef {
+                    ordinal: reference.ordinal,
+                    operation,
+                };
+                std::fs::write(
+                    terminal_path(&journal, &other),
+                    serde_json::to_vec(&value).unwrap(),
+                )
+                .unwrap();
+                // Both records independently pass the real bounded origin loader.
+                load_original(&journal, &reference).unwrap();
+                load_original(&journal, &other).unwrap();
+            }
+            "contradictory_intent" => {
+                let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let original = value["original"].as_str().unwrap();
+                let path = journal.root().join(format!(
+                    "{:020}-{}.intent",
+                    reference.ordinal,
+                    reference.operation.as_str()
+                ));
+                // Equivalent JSON with changed bytes still contradicts the retained original.
+                std::fs::write(path, format!("{original}\n")).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let snapshot = || {
+            let mut rows: Vec<_> = std::fs::read_dir(journal.root())
+                .unwrap()
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    (
+                        path.file_name().unwrap().to_owned(),
+                        std::fs::read(path).unwrap(),
+                    )
+                })
+                .collect();
+            rows.sort();
+            rows
+        };
+        let before = snapshot();
+        *client.calls.lock().unwrap() = 0;
+        let mut output = Vec::new();
+        let error = retry_to_writer(
+            &journal,
+            &reference,
+            &plan().payload.namespace,
+            &client,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut output,
+        )
+        .unwrap_err();
+        if damage == "ambiguous" {
+            assert!(
+                format!("{error:?}").contains("ambiguous delivery reference"),
+                "{error:?}"
+            );
+        }
+        assert_eq!(*client.calls.lock().unwrap(), 0, "{damage}");
+        assert!(output.is_empty(), "{damage}");
+        assert_eq!(snapshot(), before, "{damage}");
+    }
+}
+
+#[test]
+fn actor_prerequisite_public_retained_agent_delivery_remains_inert_before_daemon_selection() {
+    let tmp = TempRoot::new();
+    let runtime = crate::daemon::paths::RuntimeContext::explicit(
+        tmp.0.join("state"),
+        tmp.0.join("host.sock"),
+        None,
+    )
+    .unwrap();
+    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let (reference, client) = terminal_fixture(&journal);
+    retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert!(journal.load(&reference).is_err());
+    let snapshot = || {
+        let mut rows: Vec<_> = std::fs::read_dir(journal.root())
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                (
+                    path.file_name().unwrap().to_owned(),
+                    std::fs::read(path).unwrap(),
+                )
+            })
+            .collect();
+        rows.sort();
+        rows
+    };
+    let before = snapshot();
+    let argv = vec![
+        "ht".to_owned(),
+        "--state-dir".into(),
+        runtime.state_dir.display().to_string(),
+        "--host-endpoint".into(),
+        runtime.host_endpoint.display().to_string(),
+        "retry".into(),
+        reference.recovery_ref(),
+    ];
+    let mut output = Vec::new();
+    let error = super::super::run_in_pane(argv, None, &mut output).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            super::super::RunError::Api(ApiError {
+                code: ErrorCode::Unsupported,
+                ..
+            })
+        ),
+        "public retained delivery must refuse before daemon selection: {error:?}"
+    );
+    assert!(output.is_empty());
+    assert_eq!(snapshot(), before);
+    assert!(!paths.descriptor_path.exists());
+    assert!(!paths.database_path.exists());
+    assert!(!paths.instance_dir.join("contexts").exists());
 }

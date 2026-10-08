@@ -11,18 +11,32 @@ use crate::{
 use std::io::{self, Write};
 
 /// Additive internal delivery consumer. Public dispatch stays Unsupported until
-/// activation calls the shared original-actor gate on load_original's exact
-/// immutable bytes and supplies canonical namespace/current-recipient guards.
+/// activation supplies canonical namespace/current-recipient guards. The wrapper
+/// classifies exact immutable original bytes before entering the strict executor.
 #[allow(clippy::too_many_arguments)]
 pub fn run_delivery_retry_to_writer<C: crate::ports::LocalClient + ?Sized, W: Write>(
     journal: &Journal,
     reference: &IntentRef,
+    actor: super::actor_route::InvocationActor,
     namespace: &crate::protocol::handoff::HandoffNamespace,
     client: &C,
     clock: &dyn crate::protocol::time::Clock,
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<serde_json::Value, super::RunError> {
+    preflight_original_actor(
+        journal.root(),
+        &reference.recovery_ref(),
+        actor,
+        &output.context,
+    )?;
+    let selected =
+        super::handoff_delivery::resolve_recovery_ref(journal, &reference.recovery_ref())?;
+    if selected != *reference {
+        return Err(super::invalid_request(
+            "delivery original reference mismatch",
+        ));
+    }
     super::handoff_delivery::retry_to_writer(
         journal, reference, namespace, client, clock, output, writer,
     )
@@ -412,4 +426,108 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
                 CommandResult::OperatorInvited(_)
             )
     )
+}
+
+/// Read the immutable origin before any service, selection or completion effects.
+pub fn preflight_original_actor(
+    root: impl AsRef<std::path::Path>,
+    recovery: &str,
+    actor: super::actor_route::InvocationActor,
+    context: &crate::protocol::output::ContinuationContext,
+) -> io::Result<super::journal::OriginalActor> {
+    let journal = Journal::read_only(root)?;
+    let pending = load_original_for_actor(&journal, recovery)?;
+    let original =
+        super::journal::classify_original_actor(&pending.header.scope, &pending.semantic)?;
+    if original == super::journal::OriginalActor::HumanOrOperator
+        && actor == super::actor_route::InvocationActor::Agent
+    {
+        let mut argv = super::hook::cli_prefix(context);
+        argv.insert(1, "human".into());
+        argv.extend(["retry".into(), recovery.into()]);
+        let command = argv
+            .iter()
+            .map(|token| {
+                shlex::try_quote(token)
+                    .map(|quoted| quoted.into_owned())
+                    .map_err(io::Error::other)
+            })
+            .collect::<io::Result<Vec<_>>>()?
+            .join(" ");
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("person/operator retry requires immediate human namespace; use {command}"),
+        ));
+    }
+    Ok(original)
+}
+
+// Ordinary intents and retained delivery terminals share the exact local ordinal.
+// Inspect both namespaces before classifying; never let a second origin disappear
+// behind Journal's historical first-match lookup or an absent original intent.
+pub(crate) fn load_original_for_actor(
+    journal: &Journal,
+    recovery: &str,
+) -> io::Result<super::journal::PendingIntent> {
+    crate::protocol::ids::LocalRecoveryRef::parse(recovery).map_err(io::Error::other)?;
+    let ordinal: u64 = recovery
+        .strip_prefix("local:")
+        .unwrap()
+        .parse()
+        .map_err(io::Error::other)?;
+    if ordinal == 0 || recovery != format!("local:{ordinal}") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "noncanonical intent reference",
+        ));
+    }
+    let prefix = format!("{ordinal:020}-");
+    let terminal_prefix = format!("delivery-{ordinal:020}-");
+    let mut intents = 0;
+    let mut retained = false;
+    for entry in std::fs::read_dir(journal.root())? {
+        let name = entry?.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&prefix) && name.ends_with(".intent") {
+            intents += 1;
+        }
+        retained |= name.starts_with(&terminal_prefix) && name.ends_with(".terminal");
+    }
+    if intents > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ambiguous original intent reference",
+        ));
+    }
+    let pending = match journal.resolve_recovery_ref(recovery) {
+        Ok(reference) => Some(journal.load(&reference)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound && retained => None,
+        Err(error) => return Err(error),
+    };
+    // Validate scope/semantic and unfrozen handoff refusal before delivery's
+    // stricter retained-origin decoder (which deliberately requires a claim).
+    if let Some(pending) = &pending {
+        super::journal::classify_original_actor(&pending.header.scope, &pending.semantic)?;
+    }
+    if retained
+        && pending
+            .as_ref()
+            .is_some_and(|p| p.header.kind != crate::protocol::results::IntentKind::HandoffDelivery)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "conflicting original intent and delivery terminal",
+        ));
+    }
+    if retained
+        || pending
+            .as_ref()
+            .is_some_and(|p| p.header.kind == crate::protocol::results::IntentKind::HandoffDelivery)
+    {
+        let reference = super::handoff_delivery::resolve_recovery_ref(journal, recovery)
+            .map_err(io::Error::other)?;
+        super::handoff_delivery::load_original(journal, &reference).map_err(io::Error::other)
+    } else {
+        pending.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "original intent not found"))
+    }
 }

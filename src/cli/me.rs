@@ -173,15 +173,20 @@ pub(crate) fn run_me_init<W: Write>(
     clock: &Arc<dyn Clock>,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    if parsed.actor != super::actor_route::InvocationActor::Human {
+        return Err(invalid_request(
+            "person initialization requires `ht human me init` before routing flags",
+        ));
+    }
     if parsed.cooperative.is_some() {
         return Err(invalid_request(
-            "`me init` records the invoking pane as your own seat; --cooperative-* caller \
+            "`human me init` records the invoking pane as your own seat; --cooperative-* caller \
              selection does not apply",
         ));
     }
     let pane = caller_pane.filter(|pane| !pane.is_empty()).ok_or_else(|| {
         invalid_request(
-            "`me init` runs inside your own Herdr pane: HERDR_PANE_ID is not set in this shell",
+            "`human me init` runs inside your own Herdr pane: HERDR_PANE_ID is not set in this shell",
         )
     })?;
     let pane = parse_pane(pane)?;
