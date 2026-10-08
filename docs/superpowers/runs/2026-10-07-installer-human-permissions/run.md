@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-07-installer-human-permissions
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-design
+phase: code
 codeMechanism: ordinary-subagents
 
 idea: we basically need to make sure that all harnesses are permissioned to run arbitrary Bash(herdr-threads *) commands, except the ones that pose as human
