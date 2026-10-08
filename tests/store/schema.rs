@@ -5455,9 +5455,9 @@ fn task3_versionless_schema24_upgrades_preserves_history_and_audits_objects() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        24
+        schema::LATEST_VERSION
     );
-    db.execute_batch("INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at) VALUES ('codex','0.159.3','0123456789abcdef',1,2); DROP TABLE harness_contract_diagnostics; PRAGMA user_version=23;").unwrap();
+    db.execute_batch("INSERT INTO harness_version_evidence(harness,version,contract_id,first_seen_at,last_seen_at) VALUES ('codex','0.159.3','0123456789abcdef',1,2); DROP TABLE harness_contract_diagnostics; DROP TRIGGER digest_transition_warning_projected; PRAGMA user_version=23;").unwrap();
     schema::initialize(&db, || UtcMillis(3)).unwrap();
     assert_eq!(
         db.query_row("SELECT version FROM harness_version_evidence", [], |row| {
@@ -5469,7 +5469,7 @@ fn task3_versionless_schema24_upgrades_preserves_history_and_audits_objects() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        24
+        schema::LATEST_VERSION
     );
     db.execute_batch("DROP TABLE harness_contract_diagnostics")
         .unwrap();

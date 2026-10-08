@@ -48,7 +48,7 @@ use crate::{
         authority::{MutationPermit, OperatorActor},
         commands::{
             Command, DirectoryMembership, OperatorCommand, PermitMutation, ResolveSeat,
-            RetirementJobsQuery, SendMessage, WarningsQuery,
+            RetirementJobsQuery, SendMessage,
         },
         ids::{RetirementJobId, SeatId, WakeAttemptId},
         pagination::{
@@ -1728,20 +1728,17 @@ impl StorePort for SqliteStore {
                         budget,
                         self.context.clock(),
                     )?;
-                let warnings = queries::warnings_in_transaction(
-                    tx,
-                    &self.instance,
-                    &WarningsQuery {
-                        seat: seat.clone(),
-                        page,
-                    },
-                    &request.read.output,
-                )?;
-                let CommandResult::Warnings(warnings) = warnings else {
-                    return Err(api_error(
-                        ErrorCode::StoreCorrupt,
-                        "warning query returned wrong result",
-                    ));
+                // Historical warnings remain explicitly queryable; fresh
+                // notifications carry only the bounded unoffered notice page.
+                let warnings = crate::protocol::pagination::Page {
+                    items: Vec::new(),
+                    next_cursor: None,
+                    next_argv: None,
+                    high_water_ordinal: 0,
+                    scope_revision: None,
+                    has_more: false,
+                    stop_reason: crate::protocol::pagination::StopReason::Complete,
+                    consistency: crate::protocol::pagination::Consistency::BoundedLive,
                 };
                 let mut returned_context = request.command.claim.clone();
                 returned_context.instance = self.instance.clone();

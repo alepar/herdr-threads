@@ -1,0 +1,83 @@
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.65s
+────────────
+ Nextest run ID de14eb27-91a6-44df-8efe-6c025f10f8a2 with nextest profile: default
+    Starting 76 tests across 1 binary (2588 tests skipped)
+        PASS [   0.024s] ( 1/76) herdr-threads cli::hook::tests::budgets_follow_event_mode
+        PASS [   0.025s] ( 2/76) herdr-threads cli::hook::tests::codex_command_guidance_survives_overflow_without_granting_permissions
+        PASS [   0.025s] ( 3/76) herdr-threads cli::hook::tests::codex_hook_explains_approved_outside_sandbox_commands_before_mail
+        PASS [   0.026s] ( 4/76) herdr-threads cli::hook::tests::codex_compact_emits_recovery_text_for_hot_threads
+        PASS [   0.027s] ( 5/76) herdr-threads cli::hook::tests::burst_digest_ranks_the_require_ack_handoff_first
+        PASS [   0.029s] ( 6/76) herdr-threads cli::hook::tests::communication_guide_instruction_survives_offer_trimming
+        PASS [   0.029s] ( 7/76) herdr-threads cli::hook::tests::burst_session_start_keeps_the_handoff_inbox_within_budget
+        PASS [   0.032s] ( 8/76) herdr-threads cli::hook::tests::budget_trims_overview_first_and_marks_overflow_rows_hot
+        PASS [   0.056s] ( 9/76) herdr-threads cli::hook::tests::concise_native_context_explains_verified_recipient_routing
+        PASS [   0.165s] (10/76) herdr-threads cli::hook::tests::context_budget_trim_order_is_documented_order
+        PASS [   0.009s] (11/76) herdr-threads cli::hook::tests::continuity_gate::continuity_refusal_table_is_pinned
+        PASS [   0.053s] (12/76) herdr-threads cli::hook::tests::continuity_gate::hot_query_failure_or_no_hot_thread_degrades_to_ordinary_output
+        PASS [   0.280s] (13/76) herdr-threads cli::hook::tests::continuity_gate::a_closed_window_submits_once_and_keeps_the_intent
+        PASS [   0.308s] (14/76) herdr-threads cli::hook::tests::continuity_gate::a_committed_reattachment_whose_install_fails_says_so
+        PASS [   0.142s] (15/76) herdr-threads cli::hook::tests::continuity_gate::only_a_top_level_resume_with_a_session_asks_for_reattachment
+        PASS [   0.062s] (16/76) herdr-threads cli::hook::tests::continuity_gate::recovery_is_read_only_for_top_level_compact_resume_and_clear
+        PASS [   0.336s] (17/76) herdr-threads cli::hook::tests::continuity_gate::a_fresh_intent_is_not_rechecked
+        PASS [   0.328s] (18/76) herdr-threads cli::hook::tests::continuity_gate::a_reused_intent_whose_replay_is_current_installs_it
+        PASS [   0.323s] (19/76) herdr-threads cli::hook::tests::continuity_gate::an_unconfirmed_replay_keeps_the_intent_and_installs_nothing
+        PASS [   0.337s] (20/76) herdr-threads cli::hook::tests::continuity_gate::a_resume_of_the_same_session_reuses_the_pending_intent
+        PASS [   0.045s] (21/76) herdr-threads cli::hook::tests::deep_run_root_context_fits_and_abbreviates
+        PASS [   0.058s] (22/76) herdr-threads cli::hook::tests::continuity_gate::subagent_events_never_get_recovery_text
+        PASS [   0.008s] (23/76) herdr-threads cli::hook::tests::hook_argv_accepts_an_optional_event_registration
+        PASS [   0.031s] (24/76) herdr-threads cli::hook::tests::hook_deadline_window_never_waits_past_the_deadline
+        PASS [   0.009s] (25/76) herdr-threads cli::hook::tests::hook_parse_error_outside_herdr_is_quiet
+        PASS [   0.073s] (26/76) herdr-threads cli::hook::tests::final_fallback_never_exceeds_max_context
+        PASS [   0.469s] (27/76) herdr-threads cli::hook::tests::continuity_gate::a_reused_intent_whose_replay_is_stale_is_discarded_and_resubmitted
+        PASS [   0.009s] (28/76) herdr-threads cli::hook::tests::hook_sequence::observe_gets_the_whole_tool_budget_and_evidence_runs_last
+        PASS [   0.478s] (29/76) herdr-threads cli::hook::tests::continuity_gate::a_resume_of_another_session_supersedes_the_pending_intent
+        PASS [   0.474s] (30/76) herdr-threads cli::hook::tests::continuity_gate::an_intent_without_a_usable_execution_is_superseded
+        PASS [   0.145s] (31/76) herdr-threads cli::hook::tests::extreme_budget_trims_items_to_the_pin_then_the_notices_then_the_pin
+        PASS [   0.009s] (32/76) herdr-threads cli::hook::tests::hook_sequence::refused_probe_still_sends_evidence_with_the_tool_deadline
+        PASS [   0.010s] (33/76) herdr-threads cli::hook::tests::hostile_topics_stay_in_peer_data
+        PASS [   0.008s] (34/76) herdr-threads cli::hook::tests::instruction_is_short_and_the_child_rule_forbids_every_write
+        PASS [   0.010s] (35/76) herdr-threads cli::hook::tests::installed_argv_and_hook_parser_are_one_contract
+        PASS [   0.008s] (36/76) herdr-threads cli::hook::tests::native_envelope_marks_peer_data_and_never_decides_permission
+        PASS [   0.009s] (37/76) herdr-threads cli::hook::tests::native_hooks_use_one_mailbox_read_for_multiple_pending_threads
+        PASS [   0.009s] (38/76) herdr-threads cli::hook::tests::one_and_three_thread_startup_keep_the_overview_and_every_command
+        PASS [   0.029s] (39/76) herdr-threads cli::hook::tests::hot_rows_give_way_before_the_instruction_when_nothing_else_is_left
+        PASS [   0.012s] (40/76) herdr-threads cli::hook::tests::oversize_trim_order_keeps_commands_and_the_offered_notices_line
+        PASS [   0.008s] (41/76) herdr-threads cli::hook::tests::oversized_offer_falls_back_to_fixed_text_and_read_argv
+        PASS [   0.009s] (42/76) herdr-threads cli::hook::tests::pane_seat_selection::only_unresolved_still_reports_unresolved_and_never_allocates
+        PASS [   0.009s] (43/76) herdr-threads cli::hook::tests::pane_seat_selection::hook_and_cli_choose_the_resolved_seat_after_repair
+        PASS [   0.011s] (44/76) herdr-threads cli::hook::tests::owned_claude_allow_rule_covers_every_ready_command_form
+        PASS [   0.008s] (45/76) herdr-threads cli::hook::tests::pane_seat_selection::resolved_seat_behind_many_unresolved_seats_is_still_chosen
+        PASS [   0.009s] (46/76) herdr-threads cli::hook::tests::parse_failure_report::unparsable_payload_under_operational_contract_stays_quiet
+        PASS [   0.009s] (47/76) herdr-threads cli::hook::tests::parse_failure_report::never_a_human_reports
+        PASS [   0.009s] (48/76) herdr-threads cli::hook::tests::parse_failure_report::hook_reports_parse_failure_only_when_advertised
+        PASS [   0.009s] (49/76) herdr-threads cli::hook::tests::procedure_line_survives_a_missing_digest
+        PASS [   0.009s] (50/76) herdr-threads cli::hook::tests::ready_commands_ride_the_fixed_section_in_both_paths
+        PASS [   0.151s] (51/76) herdr-threads cli::hook::tests::hook_refuses_previous_protocol_daemon_before_send
+        PASS [   0.272s] (52/76) herdr-threads cli::hook::tests::continuity_gate::tool_event_never_scans_or_replays_continuity_intents
+        PASS [   0.382s] (53/76) herdr-threads cli::hook::tests::continuity_gate::reattachment_replaces_any_saved_context_of_the_seat
+        PASS [   0.061s] (54/76) herdr-threads cli::hook::tests::ready_prefix_is_bare_when_pane_detection_reaches_the_same_instance
+        PASS [   0.010s] (55/76) herdr-threads cli::hook::tests::recovery_instruction_names_the_skill_command
+        PASS [   0.009s] (56/76) herdr-threads cli::hook::tests::reply_request_gets_the_exact_send_form_after_inbox
+        PASS [   0.009s] (57/76) herdr-threads cli::hook::tests::required_invitations_get_the_accept_required_argv
+        PASS [   0.009s] (58/76) herdr-threads cli::hook::tests::resume_and_clear_emit_it_for_claude_and_codex
+        PASS [   0.297s] (59/76) herdr-threads cli::hook::tests::continuity_gate::service_busy_then_reattached_is_retried_within_the_hook
+        PASS [   0.071s] (60/76) herdr-threads cli::hook::tests::ready_prefix_stays_explicit_for_a_non_default_state_dir_or_host
+        PASS [   0.010s] (61/76) herdr-threads cli::hook::tests::skill_hint_is_sessionstart_only
+        PASS [   0.015s] (62/76) herdr-threads cli::hook::tests::unavailable_daemon_is_reported_only_for_top_level_lifecycle
+        PASS [   0.123s] (63/76) herdr-threads cli::hook::tests::parse_failure_report::parse_failure_report_skips_a_previous_protocol_daemon
+        PASS [   0.023s] (64/76) herdr-threads cli::hook::tests::unknown_payload_and_non_herdr_process_are_quiet
+        PASS [   0.008s] (65/76) herdr-threads cli::hook::tests::versionless_registered_and_legacy_lifecycle_keep_lifecycle_budget
+        PASS [   0.053s] (66/76) herdr-threads cli::hook::tests::stored_commands_require_both_selectors_and_flag_free_recipient_proof
+        PASS [   0.012s] (67/76) herdr-threads cli::hook::tests::versionless_registered_event_mismatch_refuses_before_check_in
+        PASS [   0.119s] (68/76) herdr-threads cli::hook::tests::ready_prefix_stays_explicit_when_the_default_is_ambiguous_or_overridden
+        PASS [   0.050s] (69/76) herdr-threads cli::hook::tests::unresolved_or_oversized_routing_metadata_never_claims_a_matching_group
+        PASS [   0.046s] (70/76) herdr-threads cli::hook::tests::versionless_hook_contracts_decode_without_path_or_probes
+        PASS [   0.747s] (71/76) herdr-threads cli::hook::tests::continuity_gate::a_refusal_discards_the_intent_and_reattaches_nothing
+        PASS [   0.454s] (72/76) herdr-threads cli::hook::tests::continuity_gate::resume_reattaches_in_one_request_and_installs_the_context
+        PASS [   0.176s] (73/76) herdr-threads cli::hook::tests::two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_groups
+        PASS [   0.866s] (74/76) herdr-threads cli::hook::tests::continuity_gate::a_retryable_outcome_is_retried_then_keeps_the_intent_under_its_key
+        PASS [   0.510s] (75/76) herdr-threads cli::hook::tests::hook_sequence::slow_daemon_cannot_cut_the_observe_budget_and_the_check_in_still_happens
+        PASS [   3.293s] (76/76) herdr-threads cli::hook::tests::routing_metadata_yields_to_escaped_main_thread_commands
+────────────
+     Summary [   3.970s] 76 tests run: 76 passed, 2588 skipped

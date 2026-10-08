@@ -1,0 +1,52 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.73s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-d68509100ae355ec)
+
+running 28 tests
+test store::attention::tests::axes_are_flat_at_a_hundred_thousand ... ignored, writes 10^5 items per axis through the real writers; run in release
+test store::attention::tests::check_in_reads_are_flat_at_a_hundred_thousand_acked_receipts ... ignored, writes 10^5 sends through the real writers; run in release
+test store::attention::tests::check_in_reads_are_flat_at_a_hundred_thousand_settled_warnings ... ignored, writes 10^5 sends through the real writers; run in release
+test store::attention::tests::check_in_reads_are_flat_in_production_settled_warnings ... ignored, writes 10^4 sends through the real writers (60-180 s in debug under parallel load); run in release
+test store::attention::tests::check_in_reads_are_flat_in_production_shaped_acked_receipts ... ignored, writes 10^4 sends through the real writers (60-180 s in debug under parallel load); run in release
+test store::attention::tests::delivered_programmatic_axis_is_flat ... ignored, writes 10^4 items through the real writers (60-180 s in debug under parallel load); run in release
+test store::attention::tests::offer_settlement_writes_are_constant ... ignored, writes 10^4 notices through the real writers (60-180 s in debug under parallel load); run in release
+test store::attention::tests::offer_settlement_writes_are_constant_at_three_hundred_thousand ... ignored, writes 3x10^5 notices through the real writers; run in release
+test store::attention::tests::pending_invitation_axis_is_flat ... ignored, writes 10^4 items through the real writers (60-180 s in debug under parallel load); run in release
+test store::attention::tests::pending_receipt_axis_is_flat ... ignored, writes 10^4 items through the real writers (60-180 s in debug under parallel load); run in release
+test store::attention::tests::ack_advances_nothing_and_arrival_advances ... ok
+test store::attention::tests::class_lists_the_newest_bounded_ids_with_an_exact_count ... ok
+test store::attention::tests::scale_invariance_inventory_of_canonical_effective_scans ... ignored, report-only inventory; writes 10^5 sends through the real writers
+test store::attention::tests::undelivered_programmatic_axis_is_flat ... ignored, writes 10^4 items through the real writers (60-180 s in debug under parallel load); run in release
+test store::attention::tests::projections_hold_only_pending_rows_through_settlement_and_upgrade ... ok
+test store::attention::tests::listed_required_invitations_carry_their_pending_requirement ... ok
+test store::attention::tests::digest_is_read_only ... ok
+test store::attention::tests::burst_lists_the_receipt_threads_older_invitation_first ... FAILED
+test store::attention::tests::digest_frontier_equals_the_canonical_wake_frontier ... ok
+test store::attention::tests::wake_seat_attention_of_an_unknown_seat_is_not_found ... ok
+test store::attention::tests::wake_seat_attention_matches_the_oracle ... ok
+test store::attention::tests::recipients_backfill_covers_existing_warnings ... ok
+test store::attention::tests::wake_seat_attention_position_is_the_host_decision_sequence ... ok
+test store::attention::tests::pending_warning_counts_are_capped_with_has_more ... ok
+test store::attention::tests::pending_warning_count_is_flat_in_instance_threads ... ok
+test store::attention::tests::digest_cost_is_flat_in_the_seats_acked_receipts_and_settled_warnings ... ok
+test store::attention::tests::check_in_reads_are_flat_from_two_hundred_to_two_thousand_acked_receipts ... ok
+test store::attention::tests::digest_cost_is_flat_from_a_thousand_to_a_hundred_thousand_threads ... ok
+
+failures:
+
+---- store::attention::tests::burst_lists_the_receipt_threads_older_invitation_first stdout ----
+
+thread 'store::attention::tests::burst_lists_the_receipt_threads_older_invitation_first' (8728811) panicked at src/store/../../tests/store/attention.rs:324:9:
+assertion `left == right` failed: 22: ["- pending mail for th and other threads: herdr-threads inbox", "- accept (if topic and goal fit your role/remit): herdr-threads accept th", "- reply (replace <text>): herdr-threads send th --body '<text>'", "- accept (if topic and goal fit your role/remit): herdr-threads accept tb-22", "- accept (if topic and goal fit your role/remit): herdr-threads accept tb-21"]
+  left: ["- pending mail for th and other threads: herdr-threads inbox", "- accept (if topic and goal fit your role/remit): herdr-threads accept th", "- reply (replace <text>): herdr-threads send th --body '<text>'"]
+ right: ["- pending mail for th and other threads: herdr-threads inbox", "- accept: herdr-threads accept th", "- reply (replace <text>): herdr-threads send th --body '<text>'"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    store::attention::tests::burst_lists_the_receipt_threads_older_invitation_first
+
+test result: FAILED. 15 passed; 1 failed; 12 ignored; 0 measured; 2638 filtered out; finished in 4.28s
+
+error: test failed, to rerun pass `--lib`

@@ -1,0 +1,52 @@
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.21s
+────────────
+ Nextest run ID 4097c804-3f14-4f0c-96b2-61cab168769d with nextest profile: default
+    Starting 45 tests across 1 binary (11 tests skipped)
+        PASS [   1.685s] ( 1/45) herdr-threads::hook_entrypoint ack_then_arrival_between_tool_calls_is_emitted_once
+        PASS [   0.864s] ( 2/45) herdr-threads::hook_entrypoint arrivals_racing_the_offer_are_emitted_on_the_next_call
+        PASS [   0.622s] ( 3/45) herdr-threads::hook_entrypoint attention_beyond_any_inbox_page_is_emitted_once_then_quiet
+        PASS [   3.692s] ( 4/45) herdr-threads::hook_entrypoint attention_beyond_the_check_in_page_is_emitted_and_then_coalesced
+        PASS [   0.814s] ( 5/45) herdr-threads::hook_entrypoint clear_and_codex_compact_emit_recovery_text_but_startup_and_tool_calls_do_not
+        PASS [   0.041s] ( 6/45) herdr-threads::hook_entrypoint conflicting_globals_fail_the_cli_but_fail_open_only_for_hook
+        PASS [   0.351s] ( 7/45) herdr-threads::hook_entrypoint continuity::a_different_session_supersedes_a_stale_continuity_intent
+        PASS [   0.820s] ( 8/45) herdr-threads::hook_entrypoint continuity::a_resume_after_the_daemon_was_down_reuses_the_pending_intent
+        PASS [   0.205s] ( 9/45) herdr-threads::hook_entrypoint continuity::cooperative_continuity_in_history_never_on_receipts
+        PASS [   0.796s] (10/45) herdr-threads::hook_entrypoint continuity::daemon_restart_mid_reattachment_replays_idempotently
+        PASS [   1.147s] (11/45) herdr-threads::hook_entrypoint continuity::herdr_agent_session_diagnostic_is_recorded_for_each_case
+        PASS [   0.875s] (12/45) herdr-threads::hook_entrypoint continuity::lost_reply_next_event_takes_the_ordinary_path
+        PASS [   0.410s] (13/45) herdr-threads::hook_entrypoint continuity::reattaching_last_unresolved_seat_lifts_hold
+        PASS [   0.686s] (14/45) herdr-threads::hook_entrypoint continuity::resume_into_a_pane_other_than_the_saved_context_reattaches
+        PASS [   0.409s] (15/45) herdr-threads::hook_entrypoint continuity::resume_with_unique_session_match_in_held_pane_reattaches
+        PASS [   0.522s] (16/45) herdr-threads::hook_entrypoint continuity::slow_continuity_diagnostic_does_not_expire_the_guard
+        PASS [   0.760s] (17/45) herdr-threads::hook_entrypoint continuity::startup_clear_and_new_never_reattach
+        PASS [   0.926s] (18/45) herdr-threads::hook_entrypoint continuity::startup_enrollment_allocates_then_reuses_the_canonical_seat
+        PASS [   1.354s] (19/45) herdr-threads::hook_entrypoint continuity::startup_enrollment_concurrent_callbacks_and_lost_resolution_reply_keep_one_seat_per_pane
+        PASS [   0.700s] (20/45) herdr-threads::hook_entrypoint continuity::startup_enrollment_excludes_child_tool_wrong_registration_and_non_herdr
+        PASS [   0.947s] (21/45) herdr-threads::hook_entrypoint continuity::startup_enrollment_never_allocates_around_unresolved_target_after_baseline
+        PASS [   0.927s] (22/45) herdr-threads::hook_entrypoint continuity::startup_enrollment_resume_in_new_pane_recovers_unique_but_refuses_ambiguous_identity
+        PASS [   1.025s] (23/45) herdr-threads::hook_entrypoint continuity::zero_or_multiple_matches_leave_pane_held_with_todays_diagnostic
+        PASS [   0.474s] (24/45) herdr-threads::hook_entrypoint cooperative_seat_on_own_target_startup_clear_resume_always_replace_binding
+        PASS [   1.002s] (25/45) herdr-threads::hook_entrypoint deep_state_dir_startup_context_fits_and_names_the_main_thread
+        PASS [   0.682s] (26/45) herdr-threads::hook_entrypoint emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane
+        PASS [   0.174s] (27/45) herdr-threads::hook_entrypoint foreign_session_with_fifo_transcript_exits_silently
+        PASS [   0.167s] (28/45) herdr-threads::hook_entrypoint hook_evidence_reaches_the_daemon_and_verifies
+        PASS [   0.021s] (29/45) herdr-threads::hook_entrypoint hook_parse_error_outside_herdr_prints_nothing_but_reports_inside_a_pane
+        PASS [   0.362s] (30/45) herdr-threads::hook_entrypoint hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation
+        PASS [   0.142s] (31/45) herdr-threads::hook_entrypoint hook_with_unreachable_manifest_url_stays_within_budget
+        PASS [   5.479s] (32/45) herdr-threads::hook_entrypoint installed_claude_hook_checks_in_over_socket_and_never_blocks
+        PASS [   0.954s] (33/45) herdr-threads::hook_entrypoint offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted
+        PASS [   0.218s] (34/45) herdr-threads::hook_entrypoint overlapping_in_process_daemons_leave_process_stdio_intact
+        PASS [   6.197s] (35/45) herdr-threads::hook_entrypoint rejection_then_generation_bump_then_session_start_registers_new_generation
+        PASS [   1.527s] (36/45) herdr-threads::hook_entrypoint stalled_stdin_cannot_hold_a_hook_past_the_tool_budget
+        PASS [   0.870s] (37/45) herdr-threads::hook_entrypoint three_thread_startup_keeps_the_overview_and_every_command
+        PASS [   2.928s] (38/45) herdr-threads::hook_entrypoint two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal
+        PASS [   3.907s] (39/45) herdr-threads::hook_entrypoint two_thousand_pending_invitations_stay_bounded_and_emit_new_invitation
+        PASS [   4.048s] (40/45) herdr-threads::hook_entrypoint two_thousand_pending_receipts_stay_bounded_and_emit_new_invitation
+        PASS [   3.014s] (41/45) herdr-threads::hook_entrypoint two_thousand_programmatic_notices_are_offered_page_by_page
+        PASS [   0.033s] (42/45) herdr-threads::hook_entrypoint user_level_hook_is_silent_outside_its_herdr_instance
+        PASS [   0.443s] (43/45) herdr-threads::hook_entrypoint versionless_evidence_and_check_in_independent_of_installed_version
+        PASS [   0.368s] (44/45) herdr-threads::hook_entrypoint versionless_native_callbacks_without_path_refuse_registered_event_mismatch
+        PASS [   3.152s] (45/45) herdr-threads::hook_entrypoint versionless_registered_event_mismatch_keeps_tool_deadline_with_withheld_capabilities
+────────────
+     Summary [  56.743s] 45 tests run: 45 passed, 11 skipped

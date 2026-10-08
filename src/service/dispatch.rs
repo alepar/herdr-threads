@@ -249,6 +249,7 @@ impl LocalService for DomainService {
             | Command::DeliveryInspect(_)
             | Command::PendingReceipts(_)
             | Command::AttentionDigest(_)
+            | Command::AttentionDigestDelivery(_)
             | Command::HotThreads(_)
             | Command::Message(_)
             | Command::Diagnostics(_)

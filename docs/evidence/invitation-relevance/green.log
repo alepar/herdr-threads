@@ -1,0 +1,12 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.41s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-d68509100ae355ec)
+
+running 3 tests
+test protocol::output::tests::invitation_relevance_output_exposes_goal_or_exact_read_only_inspection ... ok
+test store::queries::tests::invitation_relevance_inbox_supplies_canonical_goal_without_joining ... ok
+test store::queries::tests::invitation_relevance_goal_yields_to_bounded_inspection_without_skipping ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 2656 filtered out; finished in 0.09s
+

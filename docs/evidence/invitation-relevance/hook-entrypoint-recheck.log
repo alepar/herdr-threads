@@ -1,0 +1,10 @@
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.86s
+────────────
+ Nextest run ID 7c4ebcb1-fafd-4457-9422-0af2e12e859c with nextest profile: default
+    Starting 3 tests across 1 binary (53 tests skipped)
+        PASS [   1.661s] (1/3) herdr-threads::hook_entrypoint emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane
+        PASS [   0.854s] (2/3) herdr-threads::hook_entrypoint three_thread_startup_keeps_the_overview_and_every_command
+        PASS [   2.981s] (3/3) herdr-threads::hook_entrypoint two_thousand_programmatic_notices_are_offered_page_by_page
+────────────
+     Summary [   5.497s] 3 tests run: 3 passed, 53 skipped
