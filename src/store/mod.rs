@@ -24,6 +24,7 @@ pub mod service_events;
 pub mod service_send;
 pub mod service_substrate;
 pub mod summary;
+pub mod topology_handoff;
 pub mod wake;
 pub mod work;
 
