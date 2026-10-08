@@ -1778,3 +1778,47 @@ fn topology_contract_new_journal_variants_roundtrip_and_validate() {
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn operator_bootstrap_recovery_has_own_actor_without_reclassifying_reference() {
+    use crate::protocol::handoff::*;
+    let identity = topology_contract_tests::identity();
+    let mut request = RecoverBootstrap {
+        identity,
+        expected_attempt: BootstrapAttempt::first(),
+        operation: OperationId::new("placeholder"),
+        disposition: BootstrapRecoveryDisposition::NotCreated {
+            quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+        },
+    };
+    request.operation = request.decision_operation().unwrap();
+    let raw = serde_json::json!({"kind":"operator_recover_bootstrap", "version":1, "original_ref":{"ordinal":1,"operation":"original"},"operator_uid":42,"request":request});
+    let semantic: SemanticMutation =
+        serde_json::from_value(raw).expect("operator recovery must have separate durable semantic");
+    assert!(semantic.is_operator());
+    assert!(
+        semantic.frozen_claim().is_none(),
+        "nested original claim is a reference, never operator caller"
+    );
+    assert_eq!(
+        classify_original_actor(
+            &IntentScope::Operator {
+                instance: "i".into(),
+                local_user_uid: 42
+            },
+            &semantic
+        )
+        .unwrap(),
+        OriginalActor::HumanOrOperator
+    );
+    assert!(
+        classify_original_actor(
+            &IntentScope::Operator {
+                instance: "i".into(),
+                local_user_uid: 43
+            },
+            &semantic
+        )
+        .is_err()
+    );
+}
