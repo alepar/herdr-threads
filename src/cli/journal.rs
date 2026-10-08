@@ -1124,7 +1124,50 @@ impl Journal {
         Ok(None)
     }
     pub fn load(&self, reference: &IntentRef) -> io::Result<PendingIntent> {
-        let mut reader = BufReader::new(File::open(self.path(reference))?);
+        Self::decode_reader(reference, BufReader::new(File::open(self.path(reference))?))
+    }
+    /// Exact bounded original bytes for delivery-only terminal cleanup recovery.
+    pub(crate) fn snapshot_delivery_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(self.path(reference))?;
+        if !file.metadata()?.is_file() || file.metadata()?.len() > 65536 {
+            return Err(invalid("unsafe or oversized delivery origin"));
+        }
+        let mut bytes = Vec::new();
+        file.take(65537).read_to_end(&mut bytes)?;
+        Self::decode_delivery_origin(reference, &bytes)?;
+        Ok(bytes)
+    }
+    pub(crate) fn decode_delivery_origin(
+        reference: &IntentRef,
+        bytes: &[u8],
+    ) -> io::Result<PendingIntent> {
+        if bytes.len() > 65536
+            || reference.ordinal == 0
+            || Uuid::parse_str(reference.operation.as_str()).is_err()
+        {
+            return Err(invalid("invalid retained delivery origin"));
+        }
+        let pending = Self::decode_reader(reference, BufReader::new(bytes))?;
+        if pending.header.kind != IntentKind::HandoffDelivery {
+            return Err(invalid("retained origin is not delivery"));
+        }
+        let original = std::str::from_utf8(bytes).map_err(invalid)?;
+        let (header, body) = original
+            .split_once('\n')
+            .ok_or_else(|| invalid("missing delivery origin header"))?;
+        if serde_json::from_str::<serde_json::Value>(header)?
+            != serde_json::to_value(&pending.header)?
+            || serde_json::from_str::<serde_json::Value>(body)?
+                != serde_json::to_value(&pending.semantic)?
+        {
+            return Err(invalid("unexpected retained delivery origin fields"));
+        }
+        Ok(pending)
+    }
+    fn decode_reader(reference: &IntentRef, mut reader: impl BufRead) -> io::Result<PendingIntent> {
         let mut line = String::new();
         reader.read_line(&mut line)?;
         let header: IntentHeader = serde_json::from_str(&line)?;
