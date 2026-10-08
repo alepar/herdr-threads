@@ -15,6 +15,7 @@ pub mod internal;
 pub mod irc;
 pub mod journal;
 pub mod launch;
+pub mod lazy_display;
 pub mod me;
 pub mod output;
 pub mod panes;
@@ -869,6 +870,15 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     budget: &dyn Fn() -> CallBudget,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    let command = match command {
+        Command::Inbox(query)
+            if client
+                .supports_capability(crate::protocol::capabilities::INBOX_BATCH_V2, &budget()) =>
+        {
+            Command::InboxBatchV2(query)
+        }
+        command => command,
+    };
     let max_bytes = read_byte_bound(&command);
     let participant_thread = match &command {
         Command::Participants(query) => Some(query.thread.clone()),
@@ -1003,12 +1013,9 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
     let claim = crate::harness::bridge::caller_claim(&context).map_err(context_run_error)?;
     let mut request = query.clone();
     request.seat = Some(claim.seat.clone());
-    let supported = match client.call(Command::Capabilities, &cooperative_budget(clock)) {
-        Ok(CommandResult::Capabilities(list)) => list
-            .capabilities
-            .iter()
-            .any(|name| name == crate::protocol::capabilities::INBOX_BATCH),
-        Ok(_) => false,
+    let capabilities = match client.call(Command::Capabilities, &cooperative_budget(clock)) {
+        Ok(CommandResult::Capabilities(list)) => list.capabilities,
+        Ok(_) => Vec::new(),
         Err(error)
             if matches!(
                 error.code,
@@ -1016,10 +1023,47 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
                     | crate::protocol::results::ErrorCode::InvalidRequest
             ) =>
         {
-            false
+            Vec::new()
         }
         Err(error) => return Err(RunError::Api(error)),
     };
+    let v2 = capabilities
+        .iter()
+        .any(|name| name == crate::protocol::capabilities::INBOX_BATCH_V2);
+    let supported = capabilities
+        .iter()
+        .any(|name| name == crate::protocol::capabilities::INBOX_BATCH);
+    if v2 {
+        let result = client.call_with_output(
+            Command::InboxBatchV2(request),
+            output_spec,
+            &cooperative_budget(clock),
+        )?;
+        if !matches!(result, CommandResult::InboxBatchV2(_)) {
+            return Err(RunError::Api(ApiError::store_corrupt(
+                "daemon returned no v2 inbox batch",
+            )));
+        }
+        let candidates = lazy_display::write_page(
+            &result,
+            output_spec,
+            query.page.max_bytes,
+            writer,
+            journal,
+            &claim,
+            lazy_display::DisplaySelection::OwnDefaultText,
+        )?;
+        // Lazy candidates remain pending until the independent settlement leaf
+        // installs its frozen completion intent. Never turn them into ACKs.
+        return settle_displayed_ack(
+            candidates.ordinary,
+            candidates.claim,
+            output_spec,
+            journal,
+            client,
+            clock,
+        );
+    }
     if !supported {
         return Err(unsupported(
             "this daemon does not support compact inbox display ACK; upgrade the daemon or use inbox --machine for a read-only view",
@@ -1064,6 +1108,17 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
             }
         }
     }
+    settle_displayed_ack(candidates, claim, output_spec, journal, client, clock)
+}
+
+fn settle_displayed_ack<C: LocalClient + ?Sized>(
+    candidates: Vec<crate::protocol::ids::MessageId>,
+    claim: crate::protocol::authority::CallerClaim,
+    output_spec: &OutputSpec,
+    journal: &journal::Journal,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
     if candidates.is_empty() {
         return Ok(());
     }

@@ -2460,9 +2460,19 @@ mod scoped_runtime {
             let has_thread = args.contains(&"--thread") || args.contains(&"--active");
             assert_eq!(
                 calls.len(),
-                if has_thread { 2 } else { 1 },
+                if has_thread || args[0] == "inbox" {
+                    2
+                } else {
+                    1
+                },
                 "{args:?}: {calls:?}"
             );
+            if args[0] == "inbox" {
+                assert!(matches!(calls.first(), Some(Command::Capabilities)));
+                assert!(
+                    matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient")) && q.page.cursor.is_none() && q.page.limit == 20)
+                );
+            }
             if has_thread {
                 assert!(
                     matches!(calls.first(),Some(Command::ResolveThread(q)) if q.selector=="t123")
@@ -2584,11 +2594,18 @@ mod scoped_runtime {
                 "--cooperative-role",
                 "top-level",
             ];
+            let inbox = args[0] == "inbox";
             selected.extend(args);
             runtime.run(&selected).unwrap();
             assert!(runtime.host_calls.lock().unwrap().is_empty());
             let calls = runtime.calls.lock().unwrap();
-            assert_eq!(calls.len(), 2, "{calls:?}");
+            assert_eq!(calls.len(), if inbox { 3 } else { 2 }, "{calls:?}");
+            if inbox {
+                assert!(matches!(calls.get(1), Some(Command::Capabilities)));
+                assert!(
+                    matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient")) && q.page.cursor.is_none() && q.page.limit == 20)
+                );
+            }
             assert!(matches!(calls.first(), Some(Command::SeatInspect(_))));
             assert!(
                 !calls
