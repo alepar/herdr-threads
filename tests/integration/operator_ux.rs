@@ -37,6 +37,12 @@ impl Plugin {
         extra_env: &[(&str, &str)],
     ) -> (i32, Value, String) {
         let mut command = crate::scrubbed_command(BIN);
+        let args = if args.first() == Some(&"human") {
+            command.arg("human");
+            &args[1..]
+        } else {
+            args
+        };
         command
             .arg("--json")
             .arg("--state-dir")
@@ -167,8 +173,8 @@ fn provenance(observation: Option<String>) -> String {
 /// unknown names with how to find the ID.
 #[test]
 fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() {
-    let root = PathBuf::from(format!(
-        "/private/tmp/htme-{}",
+    let root = std::env::temp_dir().join(format!(
+        "htme-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -251,7 +257,10 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
     );
 
     // (a) Without `me init` the person's pane has no caller identity.
-    let before = plugin.refused(Some("w1:p1"), &["thread", "create", "--topic", "too early"]);
+    let before = plugin.refused(
+        Some("w1:p1"),
+        &["human", "thread", "create", "--topic", "too early"],
+    );
     assert!(before.contains("me init"), "{before}");
 
     // Before the human check-in, an unbound seat can inherit an agent obligation.
@@ -294,7 +303,7 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
     );
 
     // `me init` resolves the pane by ordinary resolution and checks in as a person.
-    let me = plugin.ok(Some("w1:p1"), None, &["me", "init"]);
+    let me = plugin.ok(Some("w1:p1"), None, &["human", "me", "init"]);
     assert_eq!(me["kind"], "checked_in", "{me}");
     assert_eq!(me["data"]["context"]["harness"], "human", "{me}");
     assert_eq!(me["data"]["context"]["role"], "top_level", "{me}");
@@ -307,23 +316,28 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
         "human check-in waives the old obligation: {waived}"
     );
     // Re-running is a current check-in for the same occupant.
-    let again = plugin.ok(Some("w1:p1"), None, &["me", "init"]);
+    let again = plugin.ok(Some("w1:p1"), None, &["human", "me", "init"]);
     assert_eq!(again["data"]["context"], me["data"]["context"], "{again}");
 
     // From the person's pane, with no flags: create, invite, send --require-ack, read.
     let thread = plugin.ok(
         Some("w1:p1"),
         None,
-        &["thread", "create", "--topic", "human handoff"],
+        &["human", "thread", "create", "--topic", "human handoff"],
     )["data"]
         .as_str()
         .unwrap()
         .to_owned();
-    plugin.ok(Some("w1:p1"), None, &["invite", &thread, "--seat", &agent]);
+    plugin.ok(
+        Some("w1:p1"),
+        None,
+        &["human", "invite", &thread, "--seat", &agent],
+    );
     let handoff = plugin.ok(
         Some("w1:p1"),
         None,
         &[
+            "human",
             "send",
             &thread,
             "--body",
@@ -335,7 +349,7 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
         .as_str()
         .unwrap()
         .to_owned();
-    let history = plugin.ok(Some("w1:p1"), None, &["read", &thread]);
+    let history = plugin.ok(Some("w1:p1"), None, &["human", "read", &thread]);
     assert!(history.to_string().contains(&handoff), "{history}");
     let pending = plugin.ok(None, None, &["pending-receipts", "--seat", &agent]);
     assert!(pending.to_string().contains(&handoff), "{pending}");
@@ -360,16 +374,16 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
         .as_str()
         .unwrap()
         .to_owned();
-    let inbox = plugin.ok(Some("w1:p1"), None, &["inbox"]);
+    let inbox = plugin.ok(Some("w1:p1"), None, &["human", "inbox"]);
     assert!(
         !inbox.to_string().contains(&thread),
         "no human receipt expectation: {inbox}"
     );
-    let history = plugin.ok(Some("w1:p1"), None, &["read", &thread]);
+    let history = plugin.ok(Some("w1:p1"), None, &["human", "read", &thread]);
     assert!(history.to_string().contains(&reply), "{history}");
     let pending = plugin.ok(None, None, &["pending-receipts", "--seat", &person]);
     assert!(!pending.to_string().contains(&reply), "{pending}");
-    let (code, _, refused) = plugin.run(Some("w1:p1"), None, &["ack", &reply]);
+    let (code, _, refused) = plugin.run(Some("w1:p1"), None, &["human", "ack", &reply]);
     assert_eq!(
         code, 2,
         "human-only delivery has no retained receipt to ACK: {refused}"
@@ -379,7 +393,7 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
         "{refused}"
     );
     // The person may still explicitly ACK retained older mail, with human provenance.
-    let acked = plugin.ok(Some("w1:p1"), None, &["ack", &legacy]);
+    let acked = plugin.ok(Some("w1:p1"), None, &["human", "ack", &legacy]);
     assert_eq!(acked["data"]["acknowledged"], json!([legacy]), "{acked}");
 
     // The person accepts an agent's invitation from their pane.
@@ -393,7 +407,7 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
         .to_owned();
     plugin.ok(None, agent_caller, &["invite", &second, "--seat", &person]);
     assert_eq!(
-        plugin.ok(Some("w1:p1"), None, &["accept", &second])["kind"],
+        plugin.ok(Some("w1:p1"), None, &["human", "accept", &second])["kind"],
         "accepted"
     );
 
@@ -447,12 +461,12 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
     assert_eq!(provenance(accepted), "operator_human");
 
     // `me init` never acts as an agent and needs the invoking pane.
-    let in_agent_pane = plugin.refused(Some("w1:p5"), &["me", "init"]);
+    let in_agent_pane = plugin.refused(Some("w1:p5"), &["human", "me", "init"]);
     assert!(in_agent_pane.contains("agent"), "{in_agent_pane}");
-    let no_pane = plugin.refused(None, &["me", "init"]);
+    let no_pane = plugin.refused(None, &["human", "me", "init"]);
     assert!(no_pane.contains("HERDR_PANE_ID"), "{no_pane}");
     // Nor does it take over an agent's registered seat.
-    let agent_seat = plugin.refused(Some("w1:p2"), &["me", "init"]);
+    let agent_seat = plugin.refused(Some("w1:p2"), &["human", "me", "init"]);
     assert!(agent_seat.contains("never takes over"), "{agent_seat}");
 
     // An agent started later in the person's pane replaces the person at its
@@ -487,13 +501,13 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
             ),
         ]
     );
-    let replaced = plugin.refused(Some("w1:p1"), &["me", "init"]);
+    let replaced = plugin.refused(Some("w1:p1"), &["human", "me", "init"]);
     assert!(replaced.contains("never takes over"), "{replaced}");
 }
 
 fn scratch(prefix: &str) -> (PathBuf, Scratch, PathBuf) {
-    let root = PathBuf::from(format!(
-        "/private/tmp/{prefix}-{}",
+    let root = std::env::temp_dir().join(format!(
+        "{prefix}-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -503,6 +517,7 @@ fn scratch(prefix: &str) -> (PathBuf, Scratch, PathBuf) {
 }
 
 const OVERRIDE_ARGV: &str = "herdr-threads me init --operator";
+const HUMAN_OVERRIDE_ARGV: &str = "herdr-threads human me init --operator";
 
 /// TRUST-POLICY A4, client side: an agent environment marker refuses `me init`
 /// and names the override; `--operator` is the explicit escape.
@@ -516,7 +531,7 @@ fn me_init_refuses_with_claudecode_or_codex_marker() {
     };
     plugin.ok(None, None, &["daemon", "ensure"]);
     for marker in [("CLAUDECODE", "1"), ("CODEX_SANDBOX", "seatbelt")] {
-        let refused = plugin.refused_with_env(Some("w1:p1"), &["me", "init"], &[marker]);
+        let refused = plugin.refused_with_env(Some("w1:p1"), &["human", "me", "init"], &[marker]);
         assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
         assert!(refused.contains(marker.0), "{refused}");
     }
@@ -534,7 +549,7 @@ fn me_init_refuses_with_claudecode_or_codex_marker() {
     let (code, value, stderr) = plugin.run_with_env(
         Some("w1:p1"),
         None,
-        &["me", "init", "--operator"],
+        &["human", "me", "init", "--operator"],
         &[("CLAUDECODE", "1")],
     );
     assert_eq!(code, 0, "{stderr}{value}");
@@ -558,13 +573,13 @@ fn me_init_refuses_where_stand_in_herdr_reports_claude_or_codex() {
     };
     plugin.ok(None, None, &["daemon", "ensure"]);
     for (pane, kind) in [("w1:p1", "claude"), ("w1:p2", "codex")] {
-        let refused = plugin.refused(Some(pane), &["me", "init"]);
+        let refused = plugin.refused(Some(pane), &["human", "me", "init"]);
         assert!(refused.contains(kind), "{refused}");
         assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
     }
     // A plain shell pane is fine.
     assert_eq!(
-        plugin.ok(Some("w1:p3"), None, &["me", "init"])["kind"],
+        plugin.ok(Some("w1:p3"), None, &["human", "me", "init"])["kind"],
         "checked_in"
     );
 }
@@ -589,8 +604,8 @@ fn refused_then_overridden(root: &Path, socket: &Path) -> (Plugin, String) {
         &["check-in", "--lifecycle-event", "agent-start"],
     );
 
-    let refused = plugin.refused(Some("w1:p1"), &["me", "init"]);
-    assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
+    let refused = plugin.refused(Some("w1:p1"), &["human", "me", "init"]);
+    assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
     let open = |plugin: &Plugin| -> Vec<(String, String)> {
         plugin
             .database()
@@ -606,7 +621,7 @@ fn refused_then_overridden(root: &Path, socket: &Path) -> (Plugin, String) {
         vec![("claude".to_owned(), "cooperative_top_level".to_owned())]
     );
 
-    let me = plugin.ok(Some("w1:p1"), None, &["me", "init", "--operator"]);
+    let me = plugin.ok(Some("w1:p1"), None, &["human", "me", "init", "--operator"]);
     assert_eq!(me["data"]["context"]["harness"], "human", "{me}");
     assert_eq!(
         open(&plugin),
@@ -617,12 +632,16 @@ fn refused_then_overridden(root: &Path, socket: &Path) -> (Plugin, String) {
     let thread = plugin.ok(
         Some("w1:p1"),
         None,
-        &["thread", "create", "--topic", "after override"],
+        &["human", "thread", "create", "--topic", "after override"],
     )["data"]
         .as_str()
         .unwrap()
         .to_owned();
-    plugin.ok(Some("w1:p1"), None, &["send", &thread, "--body", "hello"]);
+    plugin.ok(
+        Some("w1:p1"),
+        None,
+        &["human", "send", &thread, "--body", "hello"],
+    );
     let leaked: i64 = plugin
         .database()
         .query_row(
@@ -671,11 +690,11 @@ fn flagless_command_from_human_context_with_agent_marker_refuses() {
         host: socket.clone(),
     };
     plugin.ok(None, None, &["daemon", "ensure"]);
-    plugin.ok(Some("w1:p1"), None, &["me", "init"]);
-    plugin.ok(Some("w1:p1"), None, &["inbox"]);
+    plugin.ok(Some("w1:p1"), None, &["human", "me", "init"]);
+    plugin.ok(Some("w1:p1"), None, &["human", "inbox"]);
     let refused = plugin.refused_with_env(
         Some("w1:p1"),
-        &["thread", "create", "--topic", "x"],
+        &["human", "thread", "create", "--topic", "x"],
         &[("CLAUDECODE", "1")],
     );
     assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
@@ -721,24 +740,28 @@ fn me_init_operator_then_person_pane_commands_work() {
         &["check-in", "--lifecycle-event", "agent-start"],
     );
     let env = [("CODEX_SANDBOX", "seatbelt")];
-    let refused = plugin.refused_with_env(Some("w1:p1"), &["me", "init"], &env);
+    let refused = plugin.refused_with_env(Some("w1:p1"), &["human", "me", "init"], &env);
     assert!(refused.contains("CODEX_SANDBOX"), "{refused}");
-    let (code, value, stderr) =
-        plugin.run_with_env(Some("w1:p1"), None, &["me", "init", "--operator"], &env);
+    let (code, value, stderr) = plugin.run_with_env(
+        Some("w1:p1"),
+        None,
+        &["human", "me", "init", "--operator"],
+        &env,
+    );
     assert_eq!(code, 0, "{stderr}{value}");
     assert_eq!(value["result"]["data"]["context"]["harness"], "human");
     // The recorded override covers later commands in the same pane.
-    let (code, value, stderr) = plugin.run_with_env(Some("w1:p1"), None, &["inbox"], &env);
+    let (code, value, stderr) = plugin.run_with_env(Some("w1:p1"), None, &["human", "inbox"], &env);
     assert_eq!(code, 0, "{stderr}{value}");
     let (code, value, stderr) = plugin.run_with_env(
         Some("w1:p1"),
         None,
-        &["thread", "create", "--topic", "operator override"],
+        &["human", "thread", "create", "--topic", "operator override"],
         &env,
     );
     assert_eq!(code, 0, "{stderr}{value}");
     // The mark covers person-pane commands only; a plain `me init` still refuses.
-    let refused = plugin.refused_with_env(Some("w1:p1"), &["me", "init"], &env);
+    let refused = plugin.refused_with_env(Some("w1:p1"), &["human", "me", "init"], &env);
     assert!(refused.contains("CODEX_SANDBOX"), "{refused}");
 }
 
@@ -772,12 +795,67 @@ fn rejected_operator_check_in_leaves_agent_context_intact() {
     fs::write(&files[0], serde_json::to_vec(&state).unwrap()).unwrap();
     let before = fs::read(&files[0]).unwrap();
 
-    let (code, value, stderr) =
-        plugin.run_with_env(Some("w1:p1"), None, &["me", "init", "--operator"], &[]);
+    let (code, value, stderr) = plugin.run_with_env(
+        Some("w1:p1"),
+        None,
+        &["human", "me", "init", "--operator"],
+        &[],
+    );
     assert_ne!(code, 0, "the check-in must be rejected: {stderr}{value}");
     let after: Value = serde_json::from_slice(&fs::read(&files[0]).unwrap()).unwrap();
     assert_eq!(after["current"], state["current"], "{after}");
     assert_eq!(after["current"]["harness"], "Claude");
     assert_eq!(fs::read(&files[0]).unwrap(), before);
     assert_eq!(plugin.operator_mark_files(), 0);
+}
+
+#[test]
+fn legacy_root_person_operations_refuse_before_effects() {
+    let (root, _scratch, socket) = scratch("htroot");
+    let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
+    let plugin = Plugin {
+        state: root.join("state"),
+        host: socket,
+    };
+    plugin.ok(None, None, &["daemon", "ensure"]);
+    let refused = plugin.refused(Some("w1:p1"), &["me", "init"]);
+    assert!(refused.contains("human"), "{refused}");
+    let db = plugin.database();
+    let humans: i64 = db
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE harness='human'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(humans, 0);
+    plugin.ok(Some("w1:p1"), None, &["human", "me", "init"]);
+    let files = context_files(&plugin.state);
+    assert_eq!(files.len(), 1);
+    let before = fs::read(&files[0]).unwrap();
+    for args in [
+        vec!["thread", "create", "--topic", "root person refusal"],
+        vec!["check-in"],
+        vec![
+            "seat",
+            "resolve",
+            "--pane",
+            "w1:p1",
+            "--new-seat",
+            "--operator",
+        ],
+    ] {
+        let refused = plugin.refused(Some("w1:p1"), &args);
+        assert!(refused.contains("human"), "{refused}");
+        assert_eq!(fs::read(&files[0]).unwrap(), before);
+    }
+    let threads: i64 = db
+        .query_row("SELECT count(*) FROM threads", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(threads, 0);
+    assert_eq!(plugin.operator_mark_files(), 0);
+    let bindings: i64 = db
+        .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(bindings, 1);
 }

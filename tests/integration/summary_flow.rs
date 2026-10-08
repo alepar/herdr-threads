@@ -91,8 +91,8 @@ struct World {
 }
 impl World {
     fn start(panes: Vec<Value>) -> Self {
-        let root = PathBuf::from(format!(
-            "/private/tmp/htsf-{}",
+        let root = std::env::temp_dir().join(format!(
+            "htsf-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -153,7 +153,9 @@ impl World {
     /// A person's actual pane context, initialized by `me init`; no agent
     /// caller claim is relabeled as human.
     fn person(&self, pane: &str, args: &[&str]) -> Out {
-        self.exec_in_pane(None, Some(pane), None, args, true)
+        let mut person_args = vec!["human"];
+        person_args.extend_from_slice(args);
+        self.exec_in_pane(None, Some(pane), None, &person_args, true)
     }
     fn exec_in_pane(
         &self,
@@ -164,6 +166,12 @@ impl World {
         json: bool,
     ) -> Out {
         let mut command = crate::scrubbed_command(BIN);
+        let args = if args.first() == Some(&"human") {
+            command.arg("human");
+            &args[1..]
+        } else {
+            args
+        };
         if json {
             command.arg("--json");
         }
