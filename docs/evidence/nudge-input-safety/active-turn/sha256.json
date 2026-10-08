@@ -1,0 +1,13 @@
+{
+  "nudge-active-clippy.log": "707b9f3e2090de7219ce43313eb703129da14cb1f4dd9256c574f1e440283647",
+  "nudge-active-default.log": "1ae2ce53f6c4a3265acd385e7e4a21d827a2b5594337d0d9ae68b92a856b30dc",
+  "nudge-active-hook-green.log": "b5996cdeb5a41cc2ad17dc2107e1a04d428bd0c61fa8d3387237e65118eae537",
+  "nudge-active-host-green.log": "07064eb4896b965dfc0dbbd8c1867e4339c3f86de6d359982c81f5876b8a9020",
+  "nudge-active-leaks.log": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+  "nudge-active-native-green.log": "02a9b0690a2a159aad6f7d4f159340c16adb6eaf3286d2f2e96095c8c54385e0",
+  "nudge-active-red.log": "5cc66aef123c6f394733f2f5459a2dfa01b4c750fb466c521010a5c3442b0e1e",
+  "nudge-active-scheduler-green.log": "42e616b96cfc0fffdde37854a2a8f5586c3a01627fb2b729611ed5e945384ae8",
+  "nudge-active-scheduler-red.log": "acb2ea4b7c844f172e3a39fc6f5bc2afe4e44d005b3344490f1ee049ff099dbf",
+  "product.patch": "90a59670b71005a3bdd145536c23e292bbb513282c8cbf63e2a41b47797c0cc0",
+  "review.md": "e85aba4ab570471d48a7836527cd782a56864a2e3dbeeffb1fc3e79aa4bcb9af"
+}

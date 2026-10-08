@@ -1917,8 +1917,8 @@ impl WakeReservation {
     }
     /// The structural half of [`Self::matches_cooperative_identity`], without
     /// the UI exclusions: a soft-deadline poke decides the UI state itself
-    /// (`poke_eligibility`) and may act in an active turn or typed input where
-    /// the harness recipe declares it.
+    /// (`poke_eligibility`); the dispatcher still refuses active turns and
+    /// typed input regardless of historical recipe declarations.
     pub fn matches_cooperative_structure(&self, observation: &HostObservation) -> bool {
         let ReservedWakeAuthority::Cooperative {
             terminal,
@@ -2254,8 +2254,8 @@ pub enum ComposerStash {
     Failed(String),
 }
 
-/// Evidence-backed poke capabilities per harness. The default reports none, so
-/// ActiveTurn and HumanInput pokes are skipped until a recipe declares them.
+/// Historical captured poke capabilities per harness. Notification dispatch
+/// now defers ActiveTurn and HumanInput even when a recipe declares support.
 pub trait PokeCapabilitySource: Send + Sync {
     fn capabilities(&self, _harness: Harness) -> crate::harness::recipe::PokeCapabilities {
         crate::harness::recipe::PokeCapabilities::NONE
@@ -2846,11 +2846,8 @@ pub trait HostPort: Send + Sync {
         text: &str,
         context: &HostCallContext,
     ) -> Result<PromptOutcome, ApiError>;
-    /// A soft-deadline poke into a running turn (spec §10 `poke_during_turn`):
-    /// the prompt is queued into the current turn, so the adapter's recheck
-    /// accepts a `working` agent for this call only. Ordinary wakes keep
-    /// `submit_prompt`'s idle/done recheck. Adapters without the mode submit
-    /// as an ordinary wake, which refuses a working agent.
+    /// Historical turn-time compatibility hook, unused by notification dispatch.
+    /// Native attention requires idle/done through both entry points.
     fn submit_prompt_during_turn(
         &self,
         target: &SafeWakeTarget,

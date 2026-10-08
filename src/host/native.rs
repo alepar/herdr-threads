@@ -1000,19 +1000,18 @@ impl HostPort for NativeCli {
         text: &str,
         context: &HostCallContext,
     ) -> Result<ports::PromptOutcome, ApiError> {
-        self.submit_prompt_mode(target, text, context, false)
+        self.submit_prompt_mode(target, text, context)
     }
 
-    /// Poke spike Q5: `agent.prompt` during a running turn is queued and
-    /// steered into it at the next tool boundary. Only a recipe declaring
-    /// `poke_during_turn` reaches this; the recheck allows `working`.
+    /// Retained port compatibility; attention now requires idle/done even
+    /// through this entry point. Historical turn-time recipes are not admission.
     fn submit_prompt_during_turn(
         &self,
         target: &SafeWakeTarget,
         text: &str,
         context: &HostCallContext,
     ) -> Result<ports::PromptOutcome, ApiError> {
-        self.submit_prompt_mode(target, text, context, true)
+        self.submit_prompt_mode(target, text, context)
     }
 
     /// Reads the composer (`agent read --source detection`), clears it with a
@@ -1234,7 +1233,6 @@ impl HostPort for NativeCli {
 fn cooperative_wake_ready(
     agent: &serde_json::Value,
     target: &SafeWakeTarget,
-    during_turn: bool,
 ) -> Result<(), String> {
     let text = |name: &str| agent.get(name).and_then(serde_json::Value::as_str);
     if text("pane_id") != Some(target.target.as_str())
@@ -1262,9 +1260,7 @@ fn cooperative_wake_ready(
         _ => {}
     }
     let status = text("agent_status");
-    let ready = status.is_some_and(|status| {
-        WAKE_READY_STATUSES.contains(&status) || (during_turn && status == "working")
-    });
+    let ready = status.is_some_and(|status| WAKE_READY_STATUSES.contains(&status));
     if !ready {
         return Err(format!(
             "agent is not awaiting input (status {})",
@@ -1327,7 +1323,6 @@ impl NativeCli {
         target: &SafeWakeTarget,
         text: &str,
         context: &HostCallContext,
-        during_turn: bool,
     ) -> Result<ports::PromptOutcome, ApiError> {
         // Taking the sample first makes every failed identity/status/read reset
         // the window. Only a successful focused-empty sample below retains it.
@@ -1402,7 +1397,7 @@ impl NativeCli {
             .ok()
             .and_then(|value| value.pointer("/result/agent").cloned())
             .ok_or_else(|| refuse("unreadable agent recheck"))?;
-        if let Err(detail) = cooperative_wake_ready(&agent, target, during_turn) {
+        if let Err(detail) = cooperative_wake_ready(&agent, target) {
             return Err(refuse(&detail));
         }
         let harness = target
@@ -3929,42 +3924,29 @@ mod tests {
         assert_eq!(methods, ["pane.get"]);
     }
 
-    /// Kills: `poke_during_turn` leaking into ordinary wakes. A working agent
-    /// is prompted only through the during-turn mode; `submit_prompt` still
-    /// refuses it before any prompt.
+    /// Empty composer is not idle evidence: both prompt entry points refuse
+    /// a working agent before composer I/O or any submitted input.
     #[cfg(target_os = "macos")]
     #[test]
-    fn active_turn_poke_uses_the_declared_primitive() {
-        let working = || recheck_exchange(wake_agent("working", Some("claude"), "term_1"));
-        let ((ordinary, during_turn), methods) = poke_session(
-            vec![
-                working(),
-                working(),
-                detection_exchange(CLAUDE_EMPTY),
-                prompt_exchange("poke text"),
-            ],
-            |cli, target, context| {
-                (
-                    cli.submit_prompt(target, "poke text", context),
-                    cli.submit_prompt_during_turn(target, "poke text", context),
-                )
-            },
-        );
-        let refused = ordinary.unwrap_err();
-        assert_eq!(refused.code, ErrorCode::TargetUnsafe);
-        assert!(refused.detail.contains("not awaiting input"), "{refused:?}");
-        assert_eq!(during_turn.unwrap(), ports::PromptOutcome::Submitted);
-        assert_eq!(
-            methods,
-            [
-                "pane.get",
-                "agent.get",
-                "agent.get",
-                "agent.read",
-                "agent.prompt"
-            ],
-            "the ordinary wake sent no prompt"
-        );
+    fn active_turn_attention_is_refused_for_codex_and_claude() {
+        for kind in ["codex", "claude"] {
+            let working = || recheck_exchange(wake_agent("working", Some(kind), "term_1"));
+            let ((ordinary, during_turn), methods) =
+                poke_session(vec![working(), working()], |cli, target, context| {
+                    let mut target = target.clone();
+                    target.bound_harness = Some(kind.into());
+                    (
+                        cli.submit_prompt(&target, "wake marker", context),
+                        cli.submit_prompt_during_turn(&target, "poke text", context),
+                    )
+                });
+            for result in [ordinary, during_turn] {
+                let refused = result.unwrap_err();
+                assert_eq!(refused.code, ErrorCode::TargetUnsafe);
+                assert!(refused.detail.contains("not awaiting input"), "{refused:?}");
+            }
+            assert_eq!(methods, ["pane.get", "agent.get", "agent.get"], "{kind}");
+        }
     }
 
     /// Blocked UI is refused even in the during-turn mode.

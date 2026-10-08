@@ -225,7 +225,10 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         if !identity_ok {
             return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
         }
-        if observation.ui == HostUiState::HumanInput {
+        if matches!(
+            observation.ui,
+            HostUiState::HumanInput | HostUiState::ActiveTurn
+        ) {
             return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
         }
         let selected = if poke.is_some() {
@@ -328,27 +331,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             (Some(request), true) => request.plan.text.as_str(),
             _ => MARKER,
         };
-        // A poke accepted for a running turn queues into it; the host's
-        // recheck then allows `working` for this call only.
-        let during_turn = using_poke && observation.ui == HostUiState::ActiveTurn;
-        let submitted = if during_turn {
-            self.host
-                .submit_prompt_during_turn(&target, text, &prompt_context)
-        } else {
-            self.host.submit_prompt(&target, text, &prompt_context)
-        };
+        // Unsolicited attention never queues into an active turn.
+        let submitted = self.host.submit_prompt(&target, text, &prompt_context);
         let diagnostic = None;
         let submitted = match submitted {
             Ok(submitted) => submitted,
             Err(err) => return refuse_error(err),
         };
         match submitted {
-            // A turn-time poke is queued; otherwise verification only reads.
-            PromptOutcome::Submitted if during_turn => Ok(PokeAttempt {
-                outcome: WakeOutcome::Submitted,
-                poked: using_poke,
-                diagnostic,
-            }),
             PromptOutcome::Submitted => {
                 let verification = self.verify_submission(&target, context);
                 if let Ok(mut verifications) = self.verifications.lock() {

@@ -5751,6 +5751,58 @@ fn poke_plan_for_tests() -> PokePlan {
 }
 
 #[test]
+fn active_attention_is_deferred_even_with_turn_capability_then_idle_delivers() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let caps = Declared(PokeCapabilities {
+        composer_stash: NativeSupport::Supported,
+        poke_during_turn: NativeSupport::Supported,
+    });
+    for mode in [PokeMode::PokeOnly, PokeMode::WithWake] {
+        let host = PokeHost::new(HostUiState::ActiveTurn, false);
+        let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+        let attempt = dispatcher
+            .attempt_poke(
+                poke_reservation("seat", "a"),
+                &poke_plan_for_tests(),
+                mode,
+                &caps,
+                &dispatch_context(),
+            )
+            .unwrap();
+        assert!(
+            host.prompts().is_empty(),
+            "{mode:?}: active turn sends no input"
+        );
+        assert!(!attempt.poked);
+        assert_eq!(
+            attempt.outcome,
+            if mode == PokeMode::PokeOnly {
+                WakeOutcome::Unsafe
+            } else {
+                WakeOutcome::Refused(RefusalCause::Unsafe)
+            }
+        );
+        host.set(HostUiState::Idle, false);
+        let attempt = dispatcher
+            .attempt_poke(
+                poke_reservation("seat", "b"),
+                &poke_plan_for_tests(),
+                mode,
+                &caps,
+                &dispatch_context(),
+            )
+            .unwrap();
+        assert_eq!(attempt.outcome, WakeOutcome::Submitted);
+        assert!(attempt.poked);
+        assert_eq!(host.prompts(), [POKE_TEXT]);
+    }
+}
+
+#[test]
 fn nudge_safety_pokes_never_stash_user_input() {
     let clock = FakeClock(AtomicU64::new(0));
     let check = FakeReservationCheck {
@@ -5787,11 +5839,10 @@ fn nudge_safety_pokes_never_stash_user_input() {
                             &dispatch_context(),
                         )
                         .unwrap();
-                    let supported = |s| s == NativeSupport::Supported;
                     let (submits, stashes) = match (ui, focused) {
                         (_, true) => (false, false),
                         (HostUiState::Idle, _) => (true, false),
-                        (HostUiState::ActiveTurn, _) => (supported(during_turn), false),
+                        (HostUiState::ActiveTurn, _) => (false, false),
                         (HostUiState::HumanInput, _) => (false, false),
                         _ => (false, false),
                     };
@@ -6292,7 +6343,7 @@ fn five_due_seats_send_at_most_four_active_prompts() {
 }
 
 #[test]
-fn active_turn_is_poked_only_where_the_recipe_declares_it() {
+fn active_turn_pokes_defer_receipts_until_idle_even_with_declared_support() {
     let clock = Arc::new(FakeClock(AtomicU64::new(0)));
     let store = PokeStore::new(clock, one_seat_due());
     let host = PokeHost::new(HostUiState::ActiveTurn, false);
@@ -6308,7 +6359,16 @@ fn active_turn_is_poked_only_where_the_recipe_declares_it() {
     with_scheduler(&store, &host, &DURING_TURN, |scheduler| {
         scheduler.drive_pokes(&poke_budget()).unwrap();
     });
-    assert_eq!(host.prompts(), [POKE_TEXT], "declared poke_during_turn");
+    assert!(
+        host.prompts().is_empty(),
+        "historical capability cannot admit active attention"
+    );
+    assert!(store.marked.lock().unwrap().is_empty());
+    host.set(HostUiState::Idle, false);
+    with_scheduler(&store, &host, &DURING_TURN, |scheduler| {
+        scheduler.drive_pokes(&poke_budget()).unwrap();
+    });
+    assert_eq!(host.prompts(), [POKE_TEXT]);
     assert_eq!(store.marked.lock().unwrap().len(), 3);
 }
 

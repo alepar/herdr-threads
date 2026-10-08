@@ -571,54 +571,38 @@ fn skips_leave_the_receipt_unpoked_and_the_next_idle_evaluation_pokes() {
 }
 
 #[test]
-fn active_turn_pokes_only_with_the_capability() {
+fn active_turn_pokes_remain_pending_even_with_the_capability() {
     let fx = Fixture::new(&["t1"]);
     let host = RecordingHost::new(HostUiState::ActiveTurn, false);
     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
     let flow = scheduler(&fx, &dispatcher, &DURING_TURN_CAPS);
     assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
-    assert_eq!(host.prompts().len(), 1, "poke_during_turn lets it through");
-    assert!(
-        matches!(
-            host.log().as_slice(),
-            [Call::Observe, Call::SubmitDuringTurn(_)]
-        ),
-        "an active-turn poke goes through the during-turn mode: {:?}",
-        host.log()
-    );
-    assert_eq!(fx.poked(), [("t1".into(), Some(SOFT))]);
+    assert_eq!(host.log(), [Call::Observe]);
+    assert!(host.prompts().is_empty());
+    assert_eq!(fx.poked(), [("t1".into(), None)]);
 
-    // An idle pane is an ordinary submit even with the capability declared.
-    let fx = Fixture::new(&["t1"]);
-    let host = RecordingHost::new(HostUiState::Idle, false);
-    let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
-    let flow = scheduler(&fx, &dispatcher, &DURING_TURN_CAPS);
-    assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
+    // The same receipt is delivered when the host later reports idle.
+    host.set(HostUiState::Idle, false);
+    let spacing = i64::try_from(RetryConfig::default().minimum_delay_ms()).unwrap();
+    assert_eq!(tick(&fx, &flow, SOFT + spacing), (1, 1));
     assert!(matches!(
         host.log().as_slice(),
-        [Call::Observe, Call::Submit(_)]
+        [Call::Observe, Call::Observe, Call::Submit(_)]
     ));
+    assert_eq!(fx.poked(), [("t1".into(), Some(SOFT + spacing))]);
 }
 
 #[test]
-fn stash_order_with_test_only_capabilities() {
-    // Saved: observe, stash (read and clear), submit the poke, restore.
+fn drafts_never_stash_even_with_test_only_capabilities() {
+    // Saved drafts stay untouched, including with historical stash capability.
     let fx = Fixture::new(&["t1"]);
     let host = RecordingHost::new(HostUiState::HumanInput, false);
     *host.stash.lock().unwrap() = ComposerStash::Saved("draft".into());
     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
     let flow = scheduler(&fx, &dispatcher, &STASH_CAPS);
     assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
-    let log = host.log();
-    assert_eq!(log.len(), 4, "{log:?}");
-    assert_eq!(log[0], Call::Observe);
-    assert_eq!(log[1], Call::Stash);
-    assert!(
-        matches!(&log[2], Call::Submit(text) if text.contains("t1")),
-        "{log:?}"
-    );
-    assert_eq!(log[3], Call::Restore("draft".into()));
-    assert_eq!(fx.poked(), [("t1".into(), Some(SOFT))]);
+    assert_eq!(host.log(), [Call::Observe]);
+    assert_eq!(fx.poked(), [("t1".into(), None)]);
 
     // Failed: no prompt, no restore, nothing marked.
     let fx = Fixture::new(&["t1"]);
@@ -627,7 +611,7 @@ fn stash_order_with_test_only_capabilities() {
     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
     let flow = scheduler(&fx, &dispatcher, &STASH_CAPS);
     assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
-    assert_eq!(host.log(), [Call::Observe, Call::Stash]);
+    assert_eq!(host.log(), [Call::Observe]);
     assert_eq!(fx.poked(), [("t1".into(), None)]);
 
     // Without the capability the stash hook is never called.
@@ -704,10 +688,9 @@ fn production_shaped_idle_observation_is_poked() {
     assert_eq!(fx.poked(), [("t1".into(), Some(SOFT))]);
 }
 
-/// Typed input in an idle pane is HumanInput: skipped without
-/// `composer_stash`, stashed and restored with it.
+/// Typed input in an idle pane is HumanInput and always deferred.
 #[test]
-fn production_shaped_draft_observation_is_stashed_only_with_the_capability() {
+fn production_shaped_draft_observation_always_defers_with_the_capability() {
     let fx = Fixture::new(&["t1"]);
     let host = RecordingHost::production_shaped("idle", Harness::Codex, CODEX_DRAFT);
     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
@@ -722,13 +705,8 @@ fn production_shaped_draft_observation_is_stashed_only_with_the_capability() {
     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
     let flow = scheduler(&fx, &dispatcher, &STASH_CAPS);
     assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
-    let log = host.log();
-    assert_eq!(log.len(), 4, "{log:?}");
-    assert_eq!(log[0], Call::Observe);
-    assert_eq!(log[1], Call::Stash);
-    assert!(matches!(&log[2], Call::Submit(text) if text.contains("t1")));
-    assert_eq!(log[3], Call::Restore("hello world one".into()));
-    assert_eq!(fx.poked(), [("t1".into(), Some(SOFT))]);
+    assert_eq!(host.log(), [Call::Observe]);
+    assert_eq!(fx.poked(), [("t1".into(), None)]);
 }
 
 /// An Unknown observation is skipped, and the seat is then left alone until
