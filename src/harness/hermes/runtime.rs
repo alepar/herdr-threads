@@ -570,8 +570,12 @@ mod tests {
         crate::protocol::time::CallBudget,
     ) {
         use std::os::unix::fs::PermissionsExt;
-        let tmp =
-            TestDir(std::env::temp_dir().join(format!("hermes-runtime-{}", uuid::Uuid::new_v4())));
+        let tmp = TestDir(
+            std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("hermes-runtime-{}", uuid::Uuid::new_v4())),
+        );
         std::fs::create_dir(&tmp.0).unwrap();
         let path = tmp.path().join("launcher with spaces");
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();

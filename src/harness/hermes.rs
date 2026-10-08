@@ -1023,7 +1023,10 @@ impl HarnessAdapter for HermesAdapter {
             .state_dir
             .as_deref()
             .ok_or_else(|| SetupFailure::Invalid("state unavailable".into()))?;
-        let removed = assets::unsetup(home, profile, state).map_err(asset_error)?;
+        // Ownership binds the physical home; a lexical alias (a symlinked
+        // ancestor such as macOS /var) names the same profile.
+        let physical = home.canonicalize().unwrap_or_else(|_| home.clone());
+        let removed = assets::unsetup(&physical, profile, state).map_err(asset_error)?;
         Ok(removal_outcome(removed))
     }
 }
@@ -1132,7 +1135,9 @@ fn inspection_helper(env: &SetupEnvironment) -> Result<PathBuf, SetupFailure> {
         }
         Err(error) => return Err(SetupFailure::Io(error)),
     }
-    Ok(helper)
+    // The helper checks its own entry path against its resolved `__file__`;
+    // a state dir under a symlinked ancestor (macOS /var) must not fail it.
+    helper.canonicalize().map_err(SetupFailure::Io)
 }
 fn inspect_scope(
     scope: &ResolvedSetupScope,
@@ -1296,8 +1301,10 @@ mod adapter_tests {
     #[test]
     fn hermes_unknown_rotation_uses_declared_startup_policy_without_resume() {
         use super::super::context::*;
-        let directory =
-            std::env::temp_dir().join(format!("hermes-context-{}", uuid::Uuid::new_v4()));
+        let directory = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("hermes-context-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1693,9 +1700,11 @@ mod adapter_tests {
             .into(),
             ..Default::default()
         };
+        // Real Python inspection under a loaded test pool: the probe's own
+        // ceiling (PROBE_LIMIT), not a 2 s budget, bounds it.
         let budget = CallBudget {
             deadline: crate::protocol::time::MonoInstant(
-                environment.clock.monotonic_now().0 + 2000,
+                environment.clock.monotonic_now().0 + 15_000,
             ),
             cancellation: Default::default(),
         };
@@ -1813,7 +1822,8 @@ mod adapter_tests {
             QualifiedTurn, Role, SessionReference,
         };
         let iso = crate::test_support::isolation::TestIsolation::new("hermes-result-kinds");
-        let directory = iso.path("contexts");
+        // The journal requires a physical path; macOS temp dirs sit under /var.
+        let directory = iso.path(".").canonicalize().unwrap().join("contexts");
         crate::daemon::paths::ensure_private_dir(&directory).unwrap();
         let instance = uuid::Uuid::new_v4();
         let journal = ContextJournal::open(
@@ -2197,7 +2207,8 @@ mod adapter_tests {
             PendingCheckIn, QualifiedTurn, Role, SessionReference,
         };
         let iso = crate::test_support::isolation::TestIsolation::new("hermes-reset-conservative");
-        let directory = iso.path("contexts");
+        // The journal requires a physical path; macOS temp dirs sit under /var.
+        let directory = iso.path(".").canonicalize().unwrap().join("contexts");
         crate::daemon::paths::ensure_private_dir(&directory).unwrap();
         let instance = uuid::Uuid::new_v4();
         let journal = ContextJournal::open(

@@ -3224,7 +3224,8 @@ fn task51_command(f: &HermesScopeFixture, verb: &str, json_format: bool) -> Comm
 }
 
 fn task51_manifest(f: &HermesScopeFixture) -> PathBuf {
-    let selected = f.selected_home("work");
+    // Manifests record the physical home; macOS temp dirs sit under /var.
+    let selected = f.selected_home("work").canonicalize().unwrap();
     let mut manifests: Vec<_> = fs::read_dir(f.scratch.state.join("setup/hermes"))
         .unwrap()
         .map(|entry| entry.unwrap().path())

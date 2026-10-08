@@ -1515,7 +1515,11 @@ mod identity_tests {
     }
     #[test]
     fn unknown_context_identity_is_rejected_without_rewriting_file() {
-        let directory = std::env::temp_dir().join(format!("context-{}", Uuid::new_v4()));
+        // The journal requires a physical path; macOS temp dirs sit under /var.
+        let directory = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("context-{}", Uuid::new_v4()));
         fs::create_dir_all(&directory).unwrap();
         #[cfg(unix)]
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
