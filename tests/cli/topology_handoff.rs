@@ -481,6 +481,13 @@ mod live {
         SavePossible,
         SaveCreated,
         MissingCapability,
+        OldCapability,
+        WrongCapability,
+        BadCorrelation,
+        ResolveUnsupported,
+        AttachReply,
+        MovedResolveTab,
+        MovedAttachTab,
     }
     struct State {
         db: rusqlite::Connection,
@@ -515,10 +522,18 @@ mod live {
                 Command::CheckBootstrapSubmission(_) => "check",
                 Command::RecordBootstrapCreated(_) => "record",
                 Command::RecordBootstrapNotSubmitted(_) => "not_submitted",
+                Command::ResolveBootstrapSeat(_) => "resolve",
+                Command::AttachBootstrapHandoff(_) => "attach",
                 _ => panic!("unapproved live route {command:?}"),
             };
             s.calls.push(role);
             if role == "capabilities" {
+                if s.fault == Fault::OldCapability {
+                    return Err(ApiError::unsupported("older daemon"));
+                }
+                if s.fault == Fault::WrongCapability {
+                    return Ok(CommandResult::SeatResolved(SeatId::new("wrong-reply")));
+                }
                 return Ok(CommandResult::Capabilities(
                     crate::protocol::results::CapabilityList {
                         capabilities: if s.fault == Fault::MissingCapability {
@@ -532,51 +547,101 @@ mod live {
                     },
                 ));
             }
-            if role == "check" && s.fault == Fault::Check {
-                return Err(ApiError::invalid_request("current authority changed"));
+            if role == "resolve" || role == "attach" {
+                let fault = s.fault;
+                drop(s);
+                if fault == Fault::ResolveUnsupported {
+                    return Err(ApiError::unsupported(
+                        "injected unavailable guarded handler",
+                    ));
+                }
+                let tab = if (role == "resolve" && fault == Fault::MovedResolveTab)
+                    || (role == "attach" && fault == Fault::MovedAttachTab)
+                {
+                    "w1:t9"
+                } else {
+                    "w1:t2"
+                };
+                let (ctx, guard, budget) = scoped_peer_guard(self, tab);
+                let mut s = self.state.lock().unwrap();
+                let ns = &self.identity.payload.handoff.namespace;
+                match command {
+                    Command::ResolveBootstrapSeat(r) => {
+                        assert_eq!(r.identity, self.identity);
+                        assert_eq!(
+                            r.expected_attempt,
+                            canonical::current(&s.db, ns, &r.identity)
+                                .unwrap()
+                                .unwrap()
+                                .attempt
+                        );
+                        crate::store::seats::resolve_bootstrap_seat(
+                            &ctx, &mut s.db, ns, &r, &guard, &budget,
+                        )
+                        .map(CommandResult::SeatResolved)
+                    }
+                    Command::AttachBootstrapHandoff(r) => {
+                        let tx = s
+                            .db
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                            .unwrap();
+                        let result = canonical::attach_pending(&tx, ns, &r, &guard);
+                        tx.commit().unwrap();
+                        if result.is_ok() && fault == Fault::AttachReply {
+                            s.fault = Fault::None;
+                            return Err(ApiError::unknown_outcome("committed attach reply lost"));
+                        }
+                        result.map(|v| CommandResult::Bootstrap(Box::new(v)))
+                    }
+                    _ => unreachable!(),
+                }
+            } else {
+                let ns = &self.identity.payload.handoff.namespace;
+                let tx =
+                    s.db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                        .unwrap();
+                let result = match command {
+                    Command::BeginBootstrap(r) => {
+                        assert_eq!(r.identity, self.identity);
+                        assert_eq!(r.operation, self.identity.payload.handoff.keys.begin);
+                        canonical::begin_pending(&tx, ns, &r.identity, UtcMillis(1))
+                            .map(|v| CommandResult::Bootstrap(Box::new(v)))
+                    }
+                    Command::BootstrapStatus(r) => canonical::current(&tx, ns, &r.identity)
+                        .map(|v| CommandResult::Bootstrap(Box::new(v.unwrap()))),
+                    Command::ReserveBootstrapAttempt(r) => {
+                        canonical::attempts::reserve_attempt(&tx, ns, &r)
+                            .map(|v| CommandResult::BootstrapReserved(Box::new(v)))
+                    }
+                    Command::CheckBootstrapSubmission(r) => {
+                        canonical::attempts::check_submission(&tx, ns, &r)
+                            .map(CommandResult::BootstrapSubmissionChecked)
+                    }
+                    Command::RecordBootstrapCreated(r) => {
+                        canonical::attempts::record_created(&tx, ns, &r)
+                            .map(|v| CommandResult::Bootstrap(Box::new(v)))
+                    }
+                    Command::RecordBootstrapNotSubmitted(r) => {
+                        canonical::attempts::record_not_submitted(&tx, ns, &r)
+                            .map(|v| CommandResult::Bootstrap(Box::new(v)))
+                    }
+                    _ => unreachable!(),
+                };
+                tx.commit().unwrap();
+                if role == "reserve" && s.fault == Fault::Check {
+                    s.db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002' WHERE seat_id='sender'", []).unwrap();
+                }
+                if role == "reserve" && s.fault == Fault::SavePossible {
+                    std::fs::create_dir(self.progress()).unwrap();
+                }
+                if (role == "reserve" && s.fault == Fault::ReserveReply)
+                    || (role == "record" && s.fault == Fault::RecordReply)
+                {
+                    s.fault = Fault::None;
+                    return Err(ApiError::unknown_outcome("committed reply lost"));
+                }
+                result
             }
-            let ns = &self.identity.payload.handoff.namespace;
-            let tx =
-                s.db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                    .unwrap();
-            let result = match command {
-                Command::BeginBootstrap(r) => {
-                    assert_eq!(r.identity, self.identity);
-                    assert_eq!(r.operation, self.identity.payload.handoff.keys.begin);
-                    canonical::begin_pending(&tx, ns, &r.identity, UtcMillis(1))
-                        .map(|v| CommandResult::Bootstrap(Box::new(v)))
-                }
-                Command::BootstrapStatus(r) => canonical::current(&tx, ns, &r.identity)
-                    .map(|v| CommandResult::Bootstrap(Box::new(v.unwrap()))),
-                Command::ReserveBootstrapAttempt(r) => {
-                    canonical::attempts::reserve_attempt(&tx, ns, &r)
-                        .map(|v| CommandResult::BootstrapReserved(Box::new(v)))
-                }
-                Command::CheckBootstrapSubmission(r) => {
-                    canonical::attempts::check_submission(&tx, ns, &r)
-                        .map(CommandResult::BootstrapSubmissionChecked)
-                }
-                Command::RecordBootstrapCreated(r) => {
-                    canonical::attempts::record_created(&tx, ns, &r)
-                        .map(|v| CommandResult::Bootstrap(Box::new(v)))
-                }
-                Command::RecordBootstrapNotSubmitted(r) => {
-                    canonical::attempts::record_not_submitted(&tx, ns, &r)
-                        .map(|v| CommandResult::Bootstrap(Box::new(v)))
-                }
-                _ => unreachable!(),
-            };
-            tx.commit().unwrap();
-            if role == "reserve" && s.fault == Fault::SavePossible {
-                std::fs::create_dir(self.progress()).unwrap();
-            }
-            if (role == "reserve" && s.fault == Fault::ReserveReply)
-                || (role == "record" && s.fault == Fault::RecordReply)
-            {
-                s.fault = Fault::None;
-                return Err(ApiError::unknown_outcome("committed reply lost"));
-            }
-            result
         }
     }
     impl Peer {
@@ -660,6 +725,9 @@ mod live {
             let mut created = crate::protocol::handoff::topology_contract_tests::created();
             created.correlation = r.correlation.clone();
             created.witness = r.expected_witness.clone();
+            if s.fault == Fault::BadCorrelation {
+                created.correlation = HostCallId::new("different-call");
+            }
             CreateTabOutcome::Created(Box::new(created))
         }
     }
@@ -746,7 +814,7 @@ mod live {
         );
     }
     #[test]
-    fn live_created_is_durable_before_unprovided_exact_resolution_boundary() {
+    fn live_created_attaches_exact_recipient_without_downstream_effects() {
         let f = Fixture::new(Fault::None);
         let result = f.run();
         assert_eq!(
@@ -754,14 +822,13 @@ mod live {
             1,
             "coordinator must submit exactly once"
         );
-        assert_eq!(f.peer.status().state, BootstrapState::Created);
-        assert!(matches!(
-            result,
-            Err(RunError::Api(ApiError {
-                code: ErrorCode::Unsupported,
-                ..
-            }))
-        ));
+        let attached = result.expect("internal coordinator must reach exact attachment");
+        assert_eq!(attached.state, BootstrapState::Attached);
+        let a = attached.attachment.as_ref().unwrap();
+        assert_eq!(a.created, attached.creation.clone().unwrap());
+        assert_eq!(a.handoff.compound, f.peer.identity.payload.handoff_key);
+        assert_eq!(a.handoff.claim, f.peer.identity.claim);
+        assert_eq!(counts(&f), (1, 1, 1));
         assert_eq!(
             f.peer.state.lock().unwrap().calls,
             [
@@ -770,7 +837,9 @@ mod live {
                 "reserve",
                 "check",
                 "native",
-                "record"
+                "record",
+                "resolve",
+                "attach"
             ]
         );
         let _ = f.run();
@@ -835,7 +904,7 @@ mod live {
             1,
             "creation must occur before lost record reply recovery"
         );
-        assert_eq!(f.peer.status().state, BootstrapState::Created);
+        assert_eq!(f.peer.status().state, BootstrapState::Attached);
         let _ = f.run();
         assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
     }
@@ -867,16 +936,7 @@ mod live {
         std::fs::remove_file(f.peer.progress()).unwrap();
         for _ in 0..2 {
             let result = f.run();
-            assert!(
-                matches!(
-                    result,
-                    Err(RunError::Api(ApiError {
-                        code: ErrorCode::Unsupported,
-                        ..
-                    }))
-                ),
-                "canonical evidence recovery must reach the exact-resolution boundary: {result:?}"
-            );
+            assert_eq!(result.unwrap().state, BootstrapState::Attached);
         }
         assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
     }
@@ -1064,28 +1124,141 @@ mod live {
     }
     #[test]
     fn live_missing_guard_capability_refuses_before_any_mutation() {
-        let f = Fixture::new(Fault::MissingCapability);
-        let result = f.run();
-        assert!(matches!(
-            result,
-            Err(RunError::Api(ApiError {
-                code: ErrorCode::Unsupported,
-                ..
-            }))
-        ));
-        let s = f.peer.state.lock().unwrap();
-        assert_eq!(s.native_calls, 0, "capability absence must fence creation");
-        assert_eq!(
-            s.db.query_row("SELECT count(*) FROM bootstrap_handoffs", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-        assert_eq!(s.calls, ["capabilities"]);
-        assert!(!f.peer.progress().exists());
+        for fault in [
+            Fault::MissingCapability,
+            Fault::OldCapability,
+            Fault::WrongCapability,
+        ] {
+            let f = Fixture::new(fault);
+            let result = f.run();
+            assert!(matches!(
+                result,
+                Err(RunError::Api(ApiError {
+                    code: ErrorCode::Unsupported,
+                    ..
+                }))
+            ));
+            let s = f.peer.state.lock().unwrap();
+            assert_eq!(s.native_calls, 0, "capability absence must fence creation");
+            assert_eq!(
+                s.db.query_row("SELECT count(*) FROM bootstrap_handoffs", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+            assert_eq!(s.calls, ["capabilities"]);
+            assert!(!f.peer.progress().exists());
+        }
     }
-    fn scoped_current(
+    #[test]
+    fn live_attachment_reply_loss_recovers_identical_child_without_resubmit() {
+        let f = Fixture::new(Fault::AttachReply);
+        let first = f
+            .run()
+            .expect("canonical attachment must survive reply loss");
+        let second = f.run().unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.state, BootstrapState::Attached);
+        assert_eq!(counts(&f), (1, 1, 1));
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+    }
+    #[test]
+    fn live_moved_scope_at_resolve_or_attach_retains_exact_creation() {
+        for fault in [Fault::MovedResolveTab, Fault::MovedAttachTab] {
+            let f = Fixture::new(fault);
+            assert!(f.run().is_err());
+            assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(f.peer.status().state, BootstrapState::Created);
+            assert!(f.peer.status().attachment.is_none());
+            assert_eq!(
+                counts(&f),
+                if fault == Fault::MovedResolveTab {
+                    (0, 0, 0)
+                } else {
+                    (1, 1, 1)
+                }
+            );
+            f.peer.state.lock().unwrap().fault = Fault::None;
+            assert_eq!(f.run().unwrap().state, BootstrapState::Attached);
+            assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+        }
+    }
+    fn actor_run(
         f: &Fixture,
+        reference: &super::super::super::journal::IntentRef,
+    ) -> Result<BootstrapResult, RunError> {
+        super::super::super::retry::run_bootstrap_retry(
+            &f.journal,
+            reference,
+            super::super::super::actor_route::InvocationActor::Agent,
+            &f.peer.identity.payload.handoff.namespace,
+            f.peer.as_ref(),
+            f.peer.as_ref(),
+            &f.clock,
+            BootstrapSubmissionInputs {
+                witness: &f.witness,
+                context: &f.context,
+            },
+        )
+    }
+    #[test]
+    fn live_actor_wrapper_human_origin_refuses_before_client_lock_or_progress() {
+        let f = Fixture::new(Fault::MissingCapability);
+        let mut identity = f.peer.identity.clone();
+        identity.claim.harness = crate::protocol::authority::Harness::Human;
+        identity.digest = identity.semantic_digest().unwrap();
+        let reference = publish(&f.journal, &identity, 2).unwrap();
+        let result = actor_run(&f, &reference);
+        assert!(
+            format!("{result:?}")
+                .contains("person/operator retry requires immediate human namespace"),
+            "{result:?}"
+        );
+        assert!(f.peer.state.lock().unwrap().calls.is_empty());
+        assert!(!f.peer.progress().exists());
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 0);
+    }
+    #[test]
+    fn live_actor_wrapper_invalid_missing_ambiguous_origins_refuse_readonly() {
+        for damage in ["malformed", "missing", "ambiguous"] {
+            let f = Fixture::new(Fault::MissingCapability);
+            let path = std::fs::read_dir(f.journal.root())
+                .unwrap()
+                .map(Result::unwrap)
+                .map(|e| e.path())
+                .find(|p| p.extension().is_some_and(|e| e == "intent"))
+                .unwrap();
+            match damage {
+                "malformed" => std::fs::write(&path, b"{broken").unwrap(),
+                "missing" => std::fs::remove_file(&path).unwrap(),
+                "ambiguous" => {
+                    let second = f.journal.root().join(format!(
+                        "{:020}-{}.intent",
+                        f.peer.reference.ordinal,
+                        uuid::Uuid::new_v4()
+                    ));
+                    std::fs::copy(&path, second).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(actor_run(&f, &f.peer.reference).is_err());
+            assert!(
+                f.peer.state.lock().unwrap().calls.is_empty(),
+                "{damage} origin reached client"
+            );
+            assert!(!f.peer.progress().exists());
+        }
+    }
+    #[test]
+    fn live_actor_wrapper_agent_original_reaches_guarded_attachment() {
+        let f = Fixture::new(Fault::None);
+        assert_eq!(
+            actor_run(&f, &f.peer.reference).unwrap().state,
+            BootstrapState::Attached
+        );
+    }
+    fn scoped_peer_current(
+        peer: &Peer,
     ) -> (
         crate::store::connection::StoreContext,
         crate::ports::HostObservation,
@@ -1094,11 +1267,11 @@ mod live {
     ) {
         use crate::ports::*;
         let context = crate::store::connection::StoreContext::new(
-            f._temp.path().join("canonical.db"),
+            peer.journal.parent().unwrap().join("canonical.db"),
             Arc::new(crate::app::SystemClock::new()),
         );
         let budget = super::super::super::cooperative_budget(context.clock());
-        let mut s = f.peer.state.lock().unwrap();
+        let mut s = peer.state.lock().unwrap();
         let admission =
             crate::store::seats::begin_host_observation(&context, &mut s.db, "i", &budget).unwrap();
         let observed_at_mono = context.clock().monotonic_now();
@@ -1138,8 +1311,8 @@ mod live {
         );
         (context, observation, admission, budget)
     }
-    fn scoped_guard(
-        f: &Fixture,
+    fn scoped_peer_guard(
+        peer: &Peer,
         tab: &str,
     ) -> (
         crate::store::connection::StoreContext,
@@ -1147,11 +1320,11 @@ mod live {
         CallBudget,
     ) {
         use crate::ports::*;
-        let (context, observation, admission, budget) = scoped_current(f);
+        let (context, observation, admission, budget) = scoped_peer_current(peer);
         let guard = BootstrapAttachmentGuard::try_new(
             &crate::protocol::commands::ResolveSeat {
                 target: observation.target.clone(),
-                operation: f.peer.identity.payload.resolve_key.clone(),
+                operation: peer.identity.payload.resolve_key.clone(),
             },
             BootstrapPaneObservation::try_new(
                 observation,
@@ -1163,6 +1336,26 @@ mod live {
         )
         .unwrap();
         (context, guard, budget)
+    }
+    fn scoped_current(
+        f: &Fixture,
+    ) -> (
+        crate::store::connection::StoreContext,
+        crate::ports::HostObservation,
+        crate::ports::HostObservationAdmission,
+        CallBudget,
+    ) {
+        scoped_peer_current(&f.peer)
+    }
+    fn scoped_guard(
+        f: &Fixture,
+        tab: &str,
+    ) -> (
+        crate::store::connection::StoreContext,
+        crate::ports::BootstrapAttachmentGuard,
+        CallBudget,
+    ) {
+        scoped_peer_guard(&f.peer, tab)
     }
     fn resolve_request(f: &Fixture) -> ResolveBootstrapSeat {
         ResolveBootstrapSeat {
@@ -1193,7 +1386,7 @@ mod live {
     }
     #[test]
     fn live_preallocation_moved_tab_refuses_with_zero_seats_and_operations() {
-        let f = Fixture::new(Fault::None);
+        let f = Fixture::new(Fault::ResolveUnsupported);
         let _ = f.run();
         let (ctx, guard, budget) = scoped_guard(&f, "w1:t9");
         let result = resolve(&f, &resolve_request(&f), &ctx, &guard, &budget);
@@ -1203,7 +1396,7 @@ mod live {
     }
     #[test]
     fn live_preallocation_same_response_allocates_once_and_keeps_old_digest() {
-        let f = Fixture::new(Fault::None);
+        let f = Fixture::new(Fault::ResolveUnsupported);
         let _ = f.run();
         let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
         let recipient = resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).unwrap();
@@ -1229,7 +1422,7 @@ mod live {
     }
     #[test]
     fn live_preallocation_stale_attempt_refuses_before_allocation() {
-        let f = Fixture::new(Fault::None);
+        let f = Fixture::new(Fault::ResolveUnsupported);
         let _ = f.run();
         let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
         let mut r = resolve_request(&f);
@@ -1265,7 +1458,7 @@ mod live {
     }
     #[test]
     fn live_preallocation_existing_owner_positive_uses_no_allocation_bump() {
-        let f = Fixture::new(Fault::None);
+        let f = Fixture::new(Fault::ResolveUnsupported);
         let _ = f.run();
         let owner = preexisting_owner(&f);
         let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
@@ -1277,7 +1470,7 @@ mod live {
     }
     #[test]
     fn live_preallocation_lifecycle_only_change_refuses_existing_owner_fresh_key() {
-        let f = Fixture::new(Fault::None);
+        let f = Fixture::new(Fault::ResolveUnsupported);
         let _ = f.run();
         let _ = preexisting_owner(&f);
         let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
@@ -1299,7 +1492,7 @@ mod live {
     }
     #[test]
     fn live_preallocation_lifecycle_only_change_refuses_exact_replay_and_preserves_row() {
-        let f = Fixture::new(Fault::None);
+        let f = Fixture::new(Fault::ResolveUnsupported);
         let _ = f.run();
         let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
         let _ = resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).unwrap();
@@ -1347,7 +1540,7 @@ mod live {
     }
     #[test]
     fn live_preallocation_own_extra_lifecycle_bump_rolls_back_allocation() {
-        let f = Fixture::new(Fault::None);
+        let f = Fixture::new(Fault::ResolveUnsupported);
         let _ = f.run();
         let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
         f.peer.state.lock().unwrap().db.execute_batch("CREATE TEMP TRIGGER extra_lifecycle AFTER INSERT ON allocation_decisions BEGIN UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1 WHERE id='i'; END;").unwrap();
@@ -1355,6 +1548,317 @@ mod live {
             resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).is_err(),
             "unexpected own-transaction lifecycle bump committed"
         );
+        assert_eq!(counts(&f), (0, 0, 0));
+    }
+    #[test]
+    fn live_preallocation_a2_namespace_claim_and_race_controls_zero_effect() {
+        for change in [
+            "membership",
+            "archive",
+            "binding",
+            "namespace",
+            "claim",
+            "key",
+            "hold",
+            "admission",
+            "incarnation",
+            "owner",
+            "unresolved",
+            "retired",
+        ] {
+            let f = Fixture::new(Fault::ResolveUnsupported);
+            let _ = f.run();
+            if change == "owner" {
+                let _ = preexisting_owner(&f);
+            }
+            let before = counts(&f);
+            let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+            let mut request = resolve_request(&f);
+            let mut namespace = f.peer.identity.payload.handoff.namespace.clone();
+            let mut state = f.peer.state.lock().unwrap();
+            match change {
+                "membership" => {
+                    state
+                        .db
+                        .execute("DELETE FROM memberships WHERE seat_id='sender'", [])
+                        .unwrap();
+                }
+                "archive" => {
+                    state
+                        .db
+                        .execute(
+                            "UPDATE threads SET archived=1 WHERE id='canonical-thread'",
+                            [],
+                        )
+                        .unwrap();
+                }
+                "binding" => {
+                    state.db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002' WHERE seat_id='sender'", []).unwrap();
+                }
+                "namespace" => namespace.host_endpoint = f._temp.path().join("different.sock"),
+                "claim" => {
+                    request.identity.claim.execution =
+                        ExecutionId::new("00000000-0000-4000-8000-000000000002");
+                    request.identity.digest = request.identity.semantic_digest().unwrap();
+                }
+                "key" => request.operation = OperationId::new("wrong-resolve"),
+                "hold" => {
+                    state.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','w1:p2',?1,1,'test hold')", ["herdr-server:pid=42:start=1.000002:uid=501"]).unwrap();
+                }
+                "admission" => {
+                    crate::store::seats::begin_host_observation(&ctx, &mut state.db, "i", &budget)
+                        .unwrap();
+                }
+                "incarnation" => {
+                    state.db.execute("UPDATE observed_targets SET incarnation='different-incarnation' WHERE target_id='w1:p2'", []).unwrap();
+                }
+                "unresolved" => {
+                    state.db.execute("UPDATE seats SET state='unresolved',unresolved_reason='other' WHERE id='sender'", []).unwrap();
+                }
+                "retired" => {
+                    state.db.execute("UPDATE seats SET state='retired',retired_at=1,retired_seq=1 WHERE id='sender'", []).unwrap();
+                }
+                "owner" => {
+                    state.db.execute("UPDATE seats SET structural_terminal_id='different-terminal' WHERE target_id='w1:p2'", []).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let result = crate::store::seats::resolve_bootstrap_seat(
+                &ctx,
+                &mut state.db,
+                &namespace,
+                &request,
+                &guard,
+                &budget,
+            );
+            drop(state);
+            assert!(result.is_err(), "{change} guard accepted: {result:?}");
+            assert_eq!(counts(&f), before, "{change} guard mutated seats/ledger");
+        }
+    }
+    #[test]
+    fn live_preallocation_same_response_wrong_workspace_or_terminal_refuses() {
+        use crate::ports::{BootstrapAttachmentGuard, BootstrapPaneObservation};
+        for change in ["workspace", "terminal"] {
+            let f = Fixture::new(Fault::ResolveUnsupported);
+            let _ = f.run();
+            let (ctx, mut observation, admission, budget) = scoped_current(&f);
+            if change == "terminal" {
+                observation.terminal = Some(TerminalId::new("different-terminal"));
+            }
+            let response = BootstrapPaneObservation::try_new(
+                observation,
+                HostTargetId::new(if change == "workspace" { "w9" } else { "w1" }),
+                HostTargetId::new("w1:t2"),
+            );
+            if change == "workspace" {
+                assert!(response.is_err());
+                assert_eq!(counts(&f), (0, 0, 0));
+                continue;
+            }
+            let response = response.unwrap();
+            let guard = BootstrapAttachmentGuard::try_new(
+                &crate::protocol::commands::ResolveSeat {
+                    target: HostTargetId::new("w1:p2"),
+                    operation: f.peer.identity.payload.resolve_key.clone(),
+                },
+                response,
+                &admission,
+            )
+            .unwrap();
+            assert!(resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).is_err());
+            assert_eq!(counts(&f), (0, 0, 0));
+        }
+    }
+    #[test]
+    fn live_preallocation_operation_insert_failure_rolls_back_allocation() {
+        let f = Fixture::new(Fault::ResolveUnsupported);
+        let _ = f.run();
+        let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+        f.peer.state.lock().unwrap().db.execute_batch("CREATE TEMP TRIGGER reject_resolution BEFORE INSERT ON operations WHEN NEW.actor_scope='service-allocation:i' BEGIN SELECT RAISE(ABORT,'injected late ledger failure'); END;").unwrap();
+        assert!(resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).is_err());
+        assert_eq!(counts(&f), (0, 0, 0));
+    }
+    #[test]
+    fn live_preallocation_budget_entry_and_final_presentation_zero_effect() {
+        use crate::protocol::time::{Cancellation, Clock, MonoInstant};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct EdgeClock {
+            calls: AtomicUsize,
+            trip: usize,
+            cancel: Option<Cancellation>,
+        }
+        impl Clock for EdgeClock {
+            fn utc_now(&self) -> UtcMillis {
+                UtcMillis(1)
+            }
+            fn monotonic_now(&self) -> MonoInstant {
+                if self.calls.fetch_add(1, Ordering::SeqCst) + 1 >= self.trip {
+                    if let Some(cancel) = &self.cancel {
+                        cancel.cancel();
+                        MonoInstant(1)
+                    } else {
+                        MonoInstant(10)
+                    }
+                } else {
+                    MonoInstant(1)
+                }
+            }
+        }
+        for (trip, cancelled) in [(1, false), (5, false), (1, true), (4, true)] {
+            let f = Fixture::new(Fault::ResolveUnsupported);
+            let _ = f.run();
+            let (_, guard, _) = scoped_guard(&f, "w1:t2");
+            let cancel = Cancellation::default();
+            if trip == 1 && cancelled {
+                cancel.cancel();
+            }
+            let ctx = crate::store::connection::StoreContext::new(
+                f._temp.path().join("canonical.db"),
+                Arc::new(EdgeClock {
+                    calls: AtomicUsize::new(0),
+                    trip,
+                    cancel: cancelled.then(|| cancel.clone()),
+                }),
+            );
+            let budget = CallBudget {
+                deadline: MonoInstant(10),
+                cancellation: cancel,
+            };
+            let result = resolve(&f, &resolve_request(&f), &ctx, &guard, &budget);
+            assert!(
+                result.is_err(),
+                "budget ({trip},{cancelled}) accepted {result:?}"
+            );
+            assert_eq!(counts(&f), (0, 0, 0));
+        }
+    }
+    #[test]
+    fn live_preallocation_integer_ceiling_allocating_and_owner_phases() {
+        for existing in [false, true] {
+            let f = Fixture::new(Fault::ResolveUnsupported);
+            let _ = f.run();
+            let owner = existing.then(|| preexisting_owner(&f));
+            f.peer
+                .state
+                .lock()
+                .unwrap()
+                .db
+                .execute(
+                    "UPDATE host_instances SET lifecycle_revision=?1 WHERE id='i'",
+                    [i64::MAX - 1],
+                )
+                .unwrap();
+            let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+            let before = counts(&f);
+            let result = resolve(&f, &resolve_request(&f), &ctx, &guard, &budget);
+            if let Some(owner) = owner {
+                assert_eq!(result.unwrap(), owner);
+                assert_eq!(counts(&f), (1, 1, 1));
+            } else {
+                assert!(result.is_err());
+                assert_eq!(counts(&f), before);
+            }
+        }
+    }
+    #[test]
+    fn live_progress_nested_unknown_fields_refuse_without_new_effects() {
+        let f = Fixture::new(Fault::ResolveUnsupported);
+        let _ = f.run();
+        let mut progress: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(f.peer.progress()).unwrap()).unwrap();
+        progress["request"]["unknown-option"] = serde_json::json!("must refuse");
+        std::fs::write(f.peer.progress(), serde_json::to_vec(&progress).unwrap()).unwrap();
+        f.peer.state.lock().unwrap().calls.clear();
+        assert!(f.run().is_err());
+        assert_eq!(f.peer.state.lock().unwrap().calls, ["capabilities"]);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+        assert_eq!(counts(&f), (0, 0, 0));
+    }
+    #[test]
+    fn live_attached_plan_exact_frozen_options_and_digest_tampering_refusal() {
+        let f = Fixture::new(Fault::None);
+        let status = f.run().unwrap();
+        let mut attachment = status.attachment.unwrap();
+        let plan = attached_handoff_plan(&f.peer.identity, &attachment).unwrap();
+        assert_eq!(
+            plan.request.launch.argv,
+            f.peer.identity.payload.launch.argv
+        );
+        assert_eq!(plan.request.launch.target, attachment.created.root_pane);
+        assert_eq!(
+            plan.context.state_dir.as_deref(),
+            f.peer.identity.payload.handoff.namespace.state_dir.to_str()
+        );
+        assert_eq!(plan.request.body, f.peer.identity.payload.handoff.body);
+        attachment.handoff.digest = "0".repeat(64);
+        assert!(attached_handoff_plan(&f.peer.identity, &attachment).is_err());
+    }
+    #[test]
+    fn live_uncorrelated_creation_stays_unknown_without_record_or_retry() {
+        let f = Fixture::new(Fault::BadCorrelation);
+        unknown(f.run());
+        unknown(f.run());
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+        assert!(!f.peer.state.lock().unwrap().calls.contains(&"record"));
+        assert!(f.peer.status().creation.is_none());
+    }
+    #[test]
+    fn live_preallocation_replay_rechecks_original_authority_preserving_ledger() {
+        for change in ["archive", "binding"] {
+            let f = Fixture::new(Fault::ResolveUnsupported);
+            let _ = f.run();
+            let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+            resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).unwrap();
+            let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+            let mut s = f.peer.state.lock().unwrap();
+            let before: (Vec<u8>, String) =
+                s.db.query_row(
+                    "SELECT digest,result_json FROM operations WHERE operation_key=?1",
+                    [f.peer.identity.payload.resolve_key.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            if change == "archive" {
+                s.db.execute(
+                    "UPDATE threads SET archived=1 WHERE id='canonical-thread'",
+                    [],
+                )
+                .unwrap();
+            } else {
+                s.db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002' WHERE seat_id='sender'",[]).unwrap();
+            }
+            let result = crate::store::seats::resolve_bootstrap_seat(
+                &ctx,
+                &mut s.db,
+                &f.peer.identity.payload.handoff.namespace,
+                &resolve_request(&f),
+                &guard,
+                &budget,
+            );
+            assert!(result.is_err());
+            let after: (Vec<u8>, String) =
+                s.db.query_row(
+                    "SELECT digest,result_json FROM operations WHERE operation_key=?1",
+                    [f.peer.identity.payload.resolve_key.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(before, after);
+            drop(s);
+            assert_eq!(counts(&f), (1, 1, 1));
+        }
+    }
+    #[test]
+    fn live_preallocation_actual_next_attempt_rejects_previous_attempt() {
+        let f = Fixture::new(Fault::NotSubmitted);
+        assert_eq!(f.run().unwrap().attempt.get(), 2);
+        f.peer.state.lock().unwrap().fault = Fault::ResolveUnsupported;
+        let _ = f.run();
+        assert_eq!(f.peer.status().attempt.get(), 2);
+        assert_eq!(f.peer.status().state, BootstrapState::Created);
+        let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+        assert!(resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).is_err());
         assert_eq!(counts(&f), (0, 0, 0));
     }
 }

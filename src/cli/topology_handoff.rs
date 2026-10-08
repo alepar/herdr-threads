@@ -372,7 +372,7 @@ pub fn resume_to_attachment<
         local.possible_creation = true;
         local.creation = Some(created.clone());
         save_bootstrap_progress(journal, reference, &local)?;
-        return missing_resolution_boundary();
+        return resolve_and_attach(&identity, &current, &call, &status);
     }
     if local.not_submitted {
         return close_not_submitted(&identity, local.attempt, &call);
@@ -385,7 +385,7 @@ pub fn resume_to_attachment<
         if current.creation.as_ref() != Some(evidence) {
             return Err(super::invalid_request("canonical creation result differs"));
         }
-        return missing_resolution_boundary();
+        return resolve_and_attach(&identity, &current, &call, &status);
     }
     if current.state != BootstrapState::Prepared || local.possible_creation {
         return Err(creation_unknown(reference, &identity, current.attempt));
@@ -412,7 +412,7 @@ pub fn resume_to_attachment<
             ReserveBootstrapResult::Replay { status: replay } => {
                 let replay = bootstrap_result(&identity, CommandResult::Bootstrap(replay))?;
                 if replay.creation.is_some() {
-                    return missing_resolution_boundary();
+                    return resolve_and_attach(&identity, &replay, &call, &status);
                 }
                 return Err(creation_unknown(reference, &identity, replay.attempt));
             }
@@ -425,7 +425,7 @@ pub fn resume_to_attachment<
         Err(error) => {
             if let Ok(saved) = status() {
                 if saved.creation.is_some() {
-                    return missing_resolution_boundary();
+                    return resolve_and_attach(&identity, &saved, &call, &status);
                 }
                 if saved.state != BootstrapState::Prepared {
                     return Err(creation_unknown(reference, &identity, saved.attempt));
@@ -505,16 +505,198 @@ pub fn resume_to_attachment<
             if current.creation.as_ref() != Some(evidence) {
                 return Err(super::invalid_request("canonical creation result differs"));
             }
-            missing_resolution_boundary()
+            resolve_and_attach(&identity, &current, &call, &status)
         }
     }
 }
 
-/// No ordinary resolver call: it lacks current tab scope before allocation.
-fn missing_resolution_boundary<T>() -> Result<T, RunError> {
-    Err(super::unsupported(
-        "bootstrap creation retained; fresh exact-tab preallocation resolver unavailable",
-    ))
+/// Derive the legacy immutable plan from the original frozen options and the
+/// exact canonical recipient. No downstream journal/effect is produced here.
+fn downstream_plan(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    created: &crate::ports::CreatedTab,
+    recipient: &crate::protocol::ids::SeatId,
+) -> Result<super::handoff::HandoffPlan, RunError> {
+    use crate::{harness::context::Harness, protocol::handoff::HandoffChannel};
+    let payload = &identity.payload;
+    let (thread, thread_name, topic, goal) = match &payload.handoff.channel {
+        HandoffChannel::Existing { thread } => (Some(thread.clone()), None, None, None),
+        HandoffChannel::New { name, topic, goal } => {
+            (None, name.clone(), Some(topic.clone()), Some(goal.clone()))
+        }
+    };
+    let harness = match payload.launch.harness {
+        crate::protocol::authority::Harness::Codex => Harness::Codex,
+        crate::protocol::authority::Harness::Claude => Harness::Claude,
+        crate::protocol::authority::Harness::Human => {
+            return Err(super::invalid_request(
+                "bootstrap cannot launch human harness",
+            ));
+        }
+    };
+    let plan = super::handoff::HandoffPlan {
+        request: super::handoff::HandoffRequest {
+            thread,
+            thread_name,
+            topic,
+            goal,
+            body: payload.handoff.body.clone(),
+            launch: super::launch::LaunchRequest {
+                target: created.root_pane.clone(),
+                harness,
+                harness_binary: payload.launch.binary.clone(),
+                argv: payload.launch.argv.clone(),
+                name: payload.launch.name.clone(),
+                pane_label: Some(payload.label.clone()),
+            },
+        },
+        context: crate::protocol::output::ContinuationContext {
+            state_dir: Some(
+                payload
+                    .handoff
+                    .namespace
+                    .state_dir
+                    .to_str()
+                    .ok_or_else(|| super::invalid_request("bootstrap state path is not UTF-8"))?
+                    .into(),
+            ),
+            host: Some(
+                payload
+                    .handoff
+                    .namespace
+                    .host_endpoint
+                    .to_str()
+                    .ok_or_else(|| super::invalid_request("bootstrap endpoint is not UTF-8"))?
+                    .into(),
+            ),
+        },
+        recipient: recipient.clone(),
+        create_key: payload.handoff.keys.create.clone(),
+        invite_key: payload.handoff.keys.invite.clone(),
+        send_key: payload.handoff.keys.send.clone(),
+    };
+    plan.validate()?;
+    Ok(plan)
+}
+fn downstream_identity(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    plan: &super::handoff::HandoffPlan,
+) -> Result<crate::protocol::handoff::HandoffIdentity, RunError> {
+    use sha2::{Digest, Sha256};
+    let semantic = super::journal::SemanticMutation::freeze(
+        super::journal::SemanticMutation::Handoff(Box::new(plan.clone())),
+        identity.claim.clone(),
+    )?;
+    Ok(crate::protocol::handoff::HandoffIdentity {
+        compound: identity.payload.handoff_key.clone(),
+        digest: format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&semantic).map_err(std::io::Error::other)?)
+        ),
+        claim: identity.claim.clone(),
+        thread: plan.request.thread.clone(),
+        recipient: plan.recipient.clone(),
+        create_key: plan.create_key.clone(),
+        invite_key: plan.invite_key.clone(),
+        send_key: plan.send_key.clone(),
+    })
+}
+/// The downstream consumer must use this exact plan, retaining the saved child
+/// compound and digest. It owns its own staged work, launch and terminal handling.
+pub fn attached_handoff_plan(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    attachment: &crate::protocol::handoff::BootstrapAttachment,
+) -> Result<super::handoff::HandoffPlan, RunError> {
+    identity.validate().map_err(super::invalid_request)?;
+    attachment
+        .validate(identity)
+        .map_err(super::invalid_request)?;
+    let plan = downstream_plan(identity, &attachment.created, &attachment.resolved_seat)?;
+    if downstream_identity(identity, &plan)? != attachment.handoff {
+        return Err(super::invalid_request(
+            "bootstrap downstream immutable identity differs",
+        ));
+    }
+    Ok(plan)
+}
+fn resolve_and_attach(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    current: &crate::protocol::handoff::BootstrapResult,
+    call: &impl Fn(
+        crate::protocol::commands::Command,
+    ) -> Result<crate::protocol::results::CommandResult, RunError>,
+    status: &impl Fn() -> Result<crate::protocol::handoff::BootstrapResult, RunError>,
+) -> Result<crate::protocol::handoff::BootstrapResult, RunError> {
+    use crate::protocol::{commands::Command, handoff::*, results::CommandResult};
+    let created = current
+        .creation
+        .as_ref()
+        .ok_or_else(|| super::invalid_request("bootstrap canonical creation missing"))?;
+    let recipient = match call(Command::ResolveBootstrapSeat(Box::new(
+        ResolveBootstrapSeat {
+            identity: identity.clone(),
+            expected_attempt: current.attempt,
+            operation: identity.payload.resolve_key.clone(),
+        },
+    )))? {
+        CommandResult::SeatResolved(seat) => seat,
+        _ => {
+            return Err(super::invalid_request(
+                "unexpected bootstrap resolution result",
+            ));
+        }
+    };
+    let plan = downstream_plan(identity, created, &recipient)?;
+    let attachment = BootstrapAttachment {
+        attempt: current.attempt,
+        created: created.clone(),
+        resolve_operation: identity.payload.resolve_key.clone(),
+        resolved_seat: recipient,
+        handoff: downstream_identity(identity, &plan)?,
+    };
+    attachment
+        .validate(identity)
+        .map_err(super::invalid_request)?;
+    if current
+        .attachment
+        .as_ref()
+        .is_some_and(|saved| saved != &attachment)
+    {
+        return Err(super::invalid_request(
+            "canonical bootstrap attachment differs",
+        ));
+    }
+    let response = call(Command::AttachBootstrapHandoff(Box::new(
+        AttachBootstrapHandoff {
+            identity: identity.clone(),
+            operation: identity.payload.attach_key.clone(),
+            attachment: attachment.clone(),
+        },
+    )));
+    let result = match response {
+        Ok(v) => bootstrap_result(identity, v)?,
+        Err(error) => match status() {
+            Ok(saved)
+                if saved.attempt == current.attempt
+                    && saved.attachment.as_ref() == Some(&attachment) =>
+            {
+                saved
+            }
+            _ => return Err(error),
+        },
+    };
+    if result.attempt != current.attempt
+        || result.attachment.as_ref() != Some(&attachment)
+        || !matches!(
+            result.state,
+            BootstrapState::Attached | BootstrapState::Completed
+        )
+    {
+        return Err(super::invalid_request(
+            "bootstrap attachment result differs",
+        ));
+    }
+    Ok(result)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
