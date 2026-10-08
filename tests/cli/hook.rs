@@ -3106,7 +3106,7 @@ mod continuity_gate {
             assert!(matches!(
                 pane.call(&daemon)
                     .reattach_by_continuity(&resume(Harness::Claude), false),
-                Reattach::Declined
+                Reattach::Refused(ref refused) if *refused == code
             ));
             assert_eq!(daemon.continuity_requests().len(), 1, "{code:?}");
             assert!(pane.pending().is_none(), "{code:?}");

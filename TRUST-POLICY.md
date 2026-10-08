@@ -70,10 +70,25 @@ candidates in diagnostics; they never move a seat, allocate one, or end a bindin
 **C2. Restore holds.** After a new or unknown Herdr incarnation while nonretired seats exist, every saved
 seat whose continuity is not structurally proven becomes unresolved, and the daemon takes a coherent baseline
 of current targets. Every unowned target in that baseline is **held**: ordinary resolution (`seat resolve`,
-`launch`, `me init`) refuses it with inspect / rebind / fresh-seat guidance. Panes authoritatively created
+`launch`, top-level `SessionStart` enrollment, `me init`) refuses it with inspect / rebind / fresh-seat guidance. Panes authoritatively created
 after the baseline are not held. Holds are durable and survive daemon restart. A hold is released by:
 operator rebind or fresh seat on that target; cooperative continuity on that target (C1); or, instance-wide,
 when no unresolved nonretired seats remain (implemented, nothing left to protect).
+
+**Startup enrollment.** Installed Claude/Codex top-level `SessionStart` lifecycle hooks enroll
+`HERDR_PANE_ID` through the same journaled ordinary canonical guarded seat resolver as `launch`.
+It freshly reads the actual target and decides against A2: reuse its resolved seat, or allocate only
+when ordinary resolution permits a genuinely new pane. An unresolved mapping, restore hold or collision
+is never bypassed by creating, moving, rebinding or retiring a seat. A resumed session attempts C1
+cooperative continuity first, even when the client's seat listing appears resolved; pending recovery,
+ambiguous matches and unusable recovery evidence stop enrollment. A confirmed no-match may proceed
+only through ordinary guards; a resume without a usable native session cannot allocate a seat.
+Resolution and check-in retain their separate durable operation journals: concurrent/replayed startup
+and response loss cannot split a pane's role; an uncertain resolution remains explicitly retryable.
+A historical resolution result is revalidated against the current pane mapping before check-in.
+Enrollment itself grants no receipt authority; check-in retains `cooperative_top_level` provenance.
+Subagent callbacks, `PreToolUse` and Current/compact checks never allocate; the exact installed event
+registration must match the native payload before service or journal access.
 
 **C3. Collisions resolve by abandonment, never by merge.** When a rebind finds its target owned by another
 live seat, the refusal offers exactly two resolutions, each as ready argv:
@@ -330,6 +345,12 @@ effective deadline.
 
 These are decisions, not bugs. Each is safe to rely on only as stated.
 
+- **Global hooks enroll supported top-level Herdr sessions.** A user-level Claude/Codex hook
+  enrolls every supported top-level lifecycle session in its Herdr instance, including sessions
+  started outside `launch`, subject to the ordinary canonical guards above. Outside Herdr it
+  remains silent. No wrapper or global configuration change is made by enrollment. The actual
+  pane environment must come from the user's foreground harness configuration; enrollment
+  cannot infer a different attaching TUI pane or turn a shared-server environment into proof.
 - **Foreground harness execution is user managed.** Hooks and tools must inherit the TUI
   pane's `HERDR_PANE_ID`. A shared harness server started in another pane can instead supply
   its own pane environment; herdr-threads does not recover the attaching TUI pane from

@@ -399,6 +399,53 @@ impl<'a> DaemonSeatResolver<'a> {
     }
 }
 
+/// Ordinary journaled canonical resolution shared by launch and top-level
+/// SessionStart enrollment. No caller claim, repair override or local authority.
+pub(crate) fn resolve_seat(
+    client: &LocalSocketClient,
+    journal: &Journal,
+    instance: uuid::Uuid,
+    target: &HostTargetId,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+) -> Result<SeatId, ApiError> {
+    let output = OutputSpec::default();
+    let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
+        journal,
+        IntentScope::ServiceAllocation {
+            instance: instance.to_string(),
+            target: target.clone(),
+        },
+        SemanticMutation::ResolveSeat {
+            target: target.clone(),
+        },
+        clock.utc_now().0,
+        || {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "ordinary resolution has no native claim",
+            ))
+        },
+        |command| client.call_with_output_definitive(command, &output, budget),
+        &output,
+        &mut io::sink(),
+    )
+    .map_err(|failure| match failure {
+        retry::RetryFailure::Local(error) => api(
+            ErrorCode::InvalidRequest,
+            format!("local intent journal: {error}"),
+        ),
+        retry::RetryFailure::Submit(error) => error,
+    })?;
+    match result {
+        CommandResult::SeatResolved(seat) => Ok(seat),
+        _ => Err(api(
+            ErrorCode::TargetUnresolved,
+            "service returned no resolved seat",
+        )),
+    }
+}
+
 impl LaunchSeatResolver for DaemonSeatResolver<'_> {
     fn resolve_for_launch(
         &self,
@@ -406,44 +453,14 @@ impl LaunchSeatResolver for DaemonSeatResolver<'_> {
         _observation: &HostObservation,
         budget: &CallBudget,
     ) -> Result<SeatId, ApiError> {
-        let output = OutputSpec::default();
-        let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
+        resolve_seat(
+            self.client,
             self.journal,
-            IntentScope::ServiceAllocation {
-                instance: self.instance.to_string(),
-                target: target.clone(),
-            },
-            SemanticMutation::ResolveSeat {
-                target: target.clone(),
-            },
-            self.clock.utc_now().0,
-            || {
-                Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "ordinary resolution has no native claim",
-                ))
-            },
-            |command| {
-                self.client
-                    .call_with_output_definitive(command, &output, budget)
-            },
-            &output,
-            &mut io::sink(),
+            self.instance,
+            target,
+            self.clock,
+            budget,
         )
-        .map_err(|failure| match failure {
-            retry::RetryFailure::Local(error) => api(
-                ErrorCode::InvalidRequest,
-                format!("local intent journal: {error}"),
-            ),
-            retry::RetryFailure::Submit(error) => error,
-        })?;
-        match result {
-            CommandResult::SeatResolved(seat) => Ok(seat),
-            _ => Err(api(
-                ErrorCode::TargetUnresolved,
-                "service returned no resolved seat",
-            )),
-        }
     }
 
     fn open_binding(
