@@ -3,6 +3,163 @@ use crate::lazy_config_smoke::World;
 use herdr_threads::test_support::spawn;
 use serde_json::Value;
 
+fn wait_for_send_attention(w: &World) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let unfinished: i64 = w
+            .db()
+            .query_row(
+                "SELECT count(*) FROM work_jobs WHERE kind='send_attention' AND status!='complete'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if unfinished == 0 {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "private send attention failed to finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn continuation_legacy_checkin_replays_on_v2_daemon_readonly() {
+    let w = World::new();
+    let lazy = w.send("pending lazy delivery", &[]);
+    let ordinary = w.send("pending ordinary receipt", &["--require-ack", &w.seats[1]]);
+    let mut expected = std::collections::BTreeSet::from([w.thread.clone()]);
+    // The real check-in builder caps its v1 inbox offer at 20 threads.
+    for n in 0..21 {
+        let topic = format!("legacy continuation {n}");
+        let thread = w.ok(Some(0), false, &["thread", "create", "--topic", &topic])["data"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        w.ok(Some(0), false, &["invite", &thread, "--seat", &w.seats[1]]);
+        expected.insert(thread);
+    }
+    let proxy = crate::lazy_config_smoke::Proxy::new(w.paths(), &w.root);
+    let offer = w.ok(Some(1), false, &["check-in"]);
+    let mut page = offer["data"]["inbox"].clone();
+    assert_eq!(page["items"].as_array().unwrap().len(), 20);
+    let legacy_cursor = page["next_cursor"].as_str().unwrap();
+    assert!(legacy_cursor.starts_with("c3"));
+    assert_eq!(
+        herdr_threads::protocol::pagination::InboxBatchV2CursorState::decode(legacy_cursor),
+        Err("not a v2 cursor")
+    );
+    wait_for_send_attention(&w);
+    let before = w.projection_snapshot();
+    let intents = w.intents();
+    let mut recovered = std::collections::BTreeSet::new();
+    let mut pages = 0;
+    loop {
+        for item in page["items"].as_array().unwrap() {
+            assert!(recovered.insert(item["thread"].as_str().unwrap().to_owned()));
+        }
+        let Some(next) = page["next_argv"].as_array() else {
+            break;
+        };
+        let argv: Vec<_> = next
+            .iter()
+            .map(|a| a.as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(argv[0], "herdr-threads");
+        assert!(!argv.iter().any(|a| a == "human"));
+        assert!(argv.iter().any(|a| a == "--json"));
+        for (flag, expected) in [
+            (
+                "--state-dir",
+                w.root.join("state").to_str().unwrap().to_owned(),
+            ),
+            (
+                "--host-endpoint",
+                w.root.join("h.sock").to_str().unwrap().to_owned(),
+            ),
+            ("--seat", w.seats[1].clone()),
+            ("--max-bytes", "8000".into()),
+        ] {
+            let at = argv
+                .iter()
+                .position(|a| a == flag)
+                .unwrap_or_else(|| panic!("{flag} not retained: {argv:?}"));
+            assert_eq!(argv[at + 1], expected);
+            assert_eq!(argv.iter().filter(|a| *a == flag).count(), 1);
+        }
+        // The check-in continuation omits the default limit; later inbox
+        // pages may spell it out, but must retain the same effective bound.
+        if let Some(at) = argv.iter().position(|a| a == "--limit") {
+            assert_eq!(argv[at + 1], "20");
+        }
+        // Execute the printed argv unchanged, with a different caller pane and
+        // no routing environment: its explicit seat must keep the read passive.
+        let output = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"))
+            .args(&argv[1..])
+            .env("HOME", w.root.join("home"))
+            .env("CLAUDE_CONFIG_DIR", w.root.join("claude"))
+            .env("CODEX_HOME", w.root.join("codex"))
+            .env("HERDR_THREADS_OFFLINE", "1")
+            .env("NO_COLOR", "1")
+            .env("HERDR_PANE_ID", "w1:p1")
+            .env_remove("HERDR_PLUGIN_STATE_DIR")
+            .env_remove("HERDR_SOCKET_PATH")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "printed legacy argv failed: {argv:?}\nstdout={} stderr={}\nrequests={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+            proxy.requests()
+        );
+        assert!(output.stdout.len() <= 8000);
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["result"]["kind"], "inbox");
+        page = result["result"]["data"].clone();
+        assert_eq!(w.projection_snapshot(), before);
+        assert_eq!(w.intents(), intents);
+        pages += 1;
+        assert!(pages < 10, "legacy cursor failed to advance");
+    }
+    assert!(pages > 0);
+    assert_eq!(recovered, expected);
+    assert_eq!(w.state(&lazy, 1), "pending");
+    let ack: String = w.db().query_row("SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2", [&ordinary, &w.seats[1]], |r| r.get(0)).unwrap();
+    assert_eq!(ack, "pending");
+    let requests = proxy.requests();
+    assert!(requests.iter().any(|r| r["command"]["kind"] == "inbox"));
+    assert!(!requests.iter().any(|r| matches!(
+        r["command"]["kind"].as_str(),
+        Some("complete_inbox_delivery" | "ack_displayed")
+    )));
+}
+
+#[test]
+fn continuation_malformed_namespace_is_refused() {
+    let w = World::new();
+    let lazy = w.send("must remain pending", &[]);
+    let before = w.projection_snapshot();
+    let intents = w.intents();
+    for cursor in ["c3broken", "ib2broken", "unknown:broken"] {
+        let output = w.raw(
+            Some(1),
+            false,
+            &["inbox", "--seat", &w.seats[1], "--cursor", cursor],
+        );
+        assert!(
+            !output.status.success(),
+            "malformed cursor restarted inbox: {cursor}"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("cursor"));
+        assert_eq!(w.projection_snapshot(), before);
+        assert_eq!(w.intents(), intents);
+    }
+    assert_eq!(w.state(&lazy, 1), "pending");
+}
+
 fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, selected: usize) {
     let paths = w.paths();
     let instance = herdr_threads::daemon::ownership::read_existing_namespace(&paths)
@@ -18,6 +175,14 @@ fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, s
     let receipt_seat = if selected == 2 { 1 } else { selected };
     let ordinary_body = "ordinary-é界-'$`-".repeat(1100);
     let ordinary = w.send(&ordinary_body, &["--require-ack", &w.seats[receipt_seat]]);
+    // Ordinary send returns before its worker materializes receipt projections.
+    // Let this private fixture's job finish before comparing read-only pages.
+    wait_for_send_attention(w);
+    let pending: String = w.db().query_row("SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2", [&ordinary, &w.seats[receipt_seat]], |r| r.get(0)).unwrap();
+    assert_eq!(
+        pending, "pending",
+        "ordinary attention must remain actionable"
+    );
     let proxy = crate::lazy_config_smoke::Proxy::new(w.paths(), &w.root);
     let before = w.projection_snapshot();
     let intents = w.intents();
@@ -95,10 +260,15 @@ fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, s
                 .map(|s| shlex::split(s).unwrap())
         };
         if readonly {
-            assert_eq!(
-                w.projection_snapshot(),
-                before,
-                "readonly page {pages} mutated canonical state"
+            let after = w.projection_snapshot();
+            let changed: Vec<_> = after
+                .iter()
+                .zip(&before)
+                .filter(|(after, before)| after != before)
+                .collect();
+            assert!(
+                changed.is_empty(),
+                "readonly page {pages} mutated canonical tables: {changed:?}"
             );
             assert_eq!(
                 w.intents(),
@@ -107,6 +277,11 @@ fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, s
             );
         }
         let Some(argv) = next else { break };
+        let cursor = argv.iter().position(|a| a == "--cursor").unwrap();
+        assert!(
+            argv[cursor + 1].starts_with("ib2"),
+            "v2 continuation lost: {argv:?}"
+        );
         assert_eq!(argv[0], "herdr-threads");
         assert_eq!(
             argv.get(1).map(String::as_str) == Some("human"),
@@ -205,6 +380,24 @@ fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, s
             )
         })
         .collect();
+    let inbox_requests: Vec<_> = proxy
+        .requests()
+        .into_iter()
+        .filter(|r| {
+            matches!(
+                r["command"]["kind"].as_str(),
+                Some("inbox" | "inbox_batch_v2")
+            )
+        })
+        .collect();
+    assert_eq!(inbox_requests[0]["command"]["kind"], "inbox_batch_v2");
+    assert!(inbox_requests[0]["command"]["args"]["page"]["cursor"].is_null());
+    assert!(
+        inbox_requests
+            .iter()
+            .skip(1)
+            .all(|r| r["command"]["kind"] == "inbox_batch_v2")
+    );
     capture(
         w,
         serde_json::json!({"accountable_requests":mutations,"pages":pages}),

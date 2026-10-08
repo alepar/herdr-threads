@@ -906,7 +906,10 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
 ) -> Result<(), RunError> {
     let command = match command {
         Command::Inbox(query)
-            if client
+            // A continuation must stay in the protocol that captured it.
+            if query.page.cursor.as_deref().is_none_or(|cursor| {
+                cursor.starts_with(crate::protocol::pagination::INBOX_V2_PREFIX)
+            }) && client
                 .supports_capability(crate::protocol::capabilities::INBOX_BATCH_V2, &budget()) =>
         {
             Command::InboxBatchV2(query)
