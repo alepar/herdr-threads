@@ -14,6 +14,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCli {
+    pub actor: super::actor_route::InvocationActor,
     pub output: OutputSpec,
     /// Terminal presentation of text output; never sent to the daemon.
     pub presentation: crate::cli::output::Presentation,
@@ -500,7 +501,7 @@ impl MutationSpec {
     name = "herdr-threads",
     version,
     after_help = format!("Examples:\n  herdr-threads inbox\n  herdr-threads read THREAD\n  herdr-threads send THREAD --body 'Hello'\n  herdr-threads ack MESSAGE\n\n{}\n\n{}", exit_status_help(), super::skill::AI_HELP_FOOTER),
-    about = "Read threads and explicitly ACK exact message IDs. Accept invitations separately. Optional cheap subagents can summarize recent or full history without ACK authority."
+    about = "Person/operator commands require immediate `human`: ht human [GLOBALS] COMMAND. --human only selects output. Read threads and explicitly ACK exact message IDs. Accept invitations separately. Optional cheap subagents can summarize recent or full history without ACK authority."
 )]
 struct Cli {
     /// Select the local herdr-threads state directory. May repeat with an
@@ -1398,7 +1399,14 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    let cli = Cli::try_parse_from(argv).map_err(|error| {
+    use super::actor_route::{InvocationActor, command_index, guidance, split_actor_os_argv};
+    let original: Vec<std::ffi::OsString> = argv.into_iter().map(Into::into).collect();
+    let (actor, retained) = split_actor_os_argv(original.clone());
+    let command = command_index(&retained);
+    if actor == InvocationActor::Agent && command.is_some_and(|i| retained[i] == "human") {
+        return Err(ParseFailure::Invalid(invalid(guidance(&original, command))));
+    }
+    let mut cli = Cli::try_parse_from(retained.clone()).map_err(|error| {
         use clap::error::ErrorKind;
         match error.kind() {
             ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
@@ -1407,10 +1415,90 @@ where
             ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
                 ParseFailure::Usage(error.render().to_string())
             }
-            _ => ParseFailure::Invalid(invalid(error.render().to_string())),
+            _ => {
+                let legacy = command.is_some_and(|i| {
+                    let first = retained[i].to_str();
+                    let second = retained.get(i + 1).and_then(|s| s.to_str());
+                    matches!((first, second), (Some("me"), Some("init")) | (Some("seat"), Some("rebind" | "retire")) | (Some("service"), Some("disconnect")))
+                });
+                let text = error.render().to_string();
+                let text = if actor == InvocationActor::Agent && legacy {
+                    format!("{text}\nPerson/operator actions require immediate human namespace; supplied arguments remain invalid. Supply the required flags listed above, including --operator for operator repair")
+                } else if text.contains("--cooperative-harness") {
+                    format!("{text}\nHuman is an invocation namespace, not an agent harness; use immediate human without cooperative agent selectors")
+                } else { text };
+                ParseFailure::Invalid(invalid(text))
+            },
         }
     })?;
-    Ok(parse_cli(cli)?)
+    // Clap propagates globals from the deepest subcommand and can drop earlier
+    // Append values. Preserve recognized leading routing values for conflict checks.
+    let mut index = 1;
+    while index < command.unwrap_or(retained.len()) {
+        let Some(token) = retained[index].to_str() else {
+            break;
+        };
+        let (flag, inline) = token
+            .split_once('=')
+            .map_or((token, None), |(f, v)| (f, Some(v)));
+        if matches!(flag, "--state-dir" | "--host-endpoint") {
+            let value = inline.or_else(|| retained.get(index + 1).and_then(|v| v.to_str()));
+            if let Some(value) = value {
+                if flag == "--state-dir" {
+                    cli.state_dir.push(value.to_owned());
+                } else {
+                    cli.host_endpoint.push(value.to_owned());
+                }
+            }
+        }
+        index += if inline.is_none()
+            && matches!(
+                flag,
+                "--state-dir"
+                    | "--host-endpoint"
+                    | "--cooperative-seat"
+                    | "--cooperative-target"
+                    | "--cooperative-harness"
+                    | "--cooperative-role"
+            ) {
+            2
+        } else {
+            1
+        };
+    }
+    let mut parsed = parse_cli(cli).map_err(|error| {
+        if actor == InvocationActor::Agent && error.detail == "operator required" {
+            invalid(format!(
+                "{}; use the human namespace and supply --operator",
+                error.detail
+            ))
+        } else {
+            error
+        }
+    })?;
+    if actor == InvocationActor::Human && parsed.cooperative.is_some() {
+        return Err(ParseFailure::Invalid(invalid(
+            "human namespace cannot be mixed with cooperative agent selectors",
+        )));
+    }
+    let requires_human = matches!(
+        &parsed.action,
+        CliAction::MeInit { .. }
+            | CliAction::Mutation(
+                MutationSpec::FreshSeat(_)
+                    | MutationSpec::Rebind { .. }
+                    | MutationSpec::Replace { .. }
+                    | MutationSpec::Retire(_)
+                    | MutationSpec::Invite { operator: true, .. }
+                    | MutationSpec::CheckInLifecycle { operator: true, .. }
+            )
+            | CliAction::Wire(WireCommand::ServiceDisconnect(_))
+    );
+    if actor == InvocationActor::Agent && requires_human {
+        return Err(ParseFailure::Invalid(invalid(guidance(&original, None))));
+    }
+    parsed.actor = actor;
+    Ok(parsed)
 }
 
 /// P7 (native Claude demo 3): a global path flag may repeat only with one
@@ -2224,6 +2312,7 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
         command.validate().map_err(validation_error)?;
     }
     Ok(ParsedCli {
+        actor: super::actor_route::InvocationActor::Agent,
         output,
         presentation: if cli.human {
             crate::cli::output::Presentation::Human
