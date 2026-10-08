@@ -301,6 +301,8 @@ pub struct BootstrapSubmissionChecked {
 pub enum BootstrapRecoveryDisposition {
     CreatedPane {
         evidence: crate::ports::CreatedTab,
+        /// Historical operator-assertion correlation, retained byte-for-byte.
+        /// Fresh canonical admission uses an independently generated read ID.
         structural_reference: HostCallId,
     },
     NotCreated {

@@ -370,7 +370,7 @@ pub fn recover(
     let (state, creation) = match &request.disposition {
         BootstrapRecoveryDisposition::CreatedPane {
             evidence,
-            structural_reference,
+            structural_reference: _,
         } => {
             if !matches!(
                 result.attempt_state,
@@ -384,13 +384,36 @@ pub fn recover(
             let proof = guard.ordinary().structural_proof();
             if guard.workspace() != &evidence.workspace
                 || guard.tab() != &evidence.tab
-                || guard.ordinary().call_id() != structural_reference
+                || guard.witness() != &evidence.witness
                 || guard.ordinary().operation() != &request.identity.payload.resolve_key
                 || proof.target() != &evidence.root_pane
                 || proof.terminal() != &evidence.terminal
                 || proof.host_boot() != &evidence.host_incarnation
             {
                 return Err(invalid("created-pane structural evidence mismatch"));
+            }
+            let lifecycle: i64 = tx
+                .query_row(
+                    "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
+                    [&ns.instance],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let published_lifecycle =
+                i64::try_from(guard.ordinary().admission().lifecycle_revision)
+                    .ok()
+                    .and_then(|value| value.checked_add(1))
+                    .ok_or_else(|| {
+                        api_error(
+                            ErrorCode::SequenceExhausted,
+                            "recovery lifecycle revision exhausted",
+                        )
+                    })?;
+            if lifecycle != published_lifecycle {
+                return Err(api_error(
+                    ErrorCode::TargetUnresolved,
+                    "recovery observation predates a lifecycle change",
+                ));
             }
             crate::store::seats::validate_bootstrap_creation(tx, &ns.instance, guard.ordinary())?;
             (BootstrapState::Created, Some(evidence.clone()))
@@ -490,13 +513,13 @@ mod tests {
         id.digest = id.semantic_digest().unwrap();
         let boot = created().host_incarnation;
         db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,observation_sequence,observation_admission_sequence,observation_decided_sequence,lifecycle_revision,recovery_boot,recovery_epoch) VALUES('i',0,?1,1,1,1,1,1,?1,1)",[boot.as_str()]).unwrap();
-        db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','i',?1,1,1,'structural-incarnation',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
+        db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','i',?1,1,1,'herdr-server:pid=42:start=1.000002:uid=501',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
         db.execute_batch("UPDATE host_instances SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('sender','i','resolved','native','w1:p1',1,0,0);").unwrap();
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('sender',1,'w1:p1',?1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0)",[boot.as_str()]).unwrap();
         for (pane, terminal, generation) in
             [("w1:p1", "caller-terminal", 0), ("w1:p2", "terminal", 1)]
         {
-            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i',?1,?2,1,?3,2,'fresh',0,?4,'structural-incarnation','native_current_target',1)",params![pane,boot.as_str(),generation,terminal]).unwrap();
+            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i',?1,?2,1,?3,2,'fresh',0,?4,'herdr-server:pid=42:start=1.000002:uid=501','native_current_target',1)",params![pane,boot.as_str(),generation,terminal]).unwrap();
         }
         let observation = HostObservation {
             focused: false,
@@ -512,7 +535,7 @@ mod tests {
             terminal: Some(TerminalId::new("terminal")),
             occupancy: StructuralOccupancy::Unknown,
             incarnation: IncarnationEvidence::Verified {
-                identity: "structural-incarnation".into(),
+                identity: "herdr-server:pid=42:start=1.000002:uid=501".into(),
                 evidence_kind: EvidenceKind::NativeCurrentTarget,
             },
             execution: ExecutionEvidence::Unknown,
@@ -540,6 +563,7 @@ mod tests {
                 observation,
                 HostTargetId::new("w1"),
                 HostTargetId::new(tab),
+                crate::protocol::handoff::topology_contract_tests::created().witness,
             )
             .unwrap(),
             &admission,
@@ -577,11 +601,280 @@ mod tests {
         .unwrap();
     }
     #[test]
+    fn phase13_a225_created_recovery_bytes_remain_compatible() {
+        use sha2::{Digest, Sha256};
+        let (mut db, id, guard) = fixture();
+        let tx = db.transaction().unwrap();
+        begin_reserve(&tx, &id);
+        let request = request(&id, &guard);
+        let semantic = crate::cli::journal::SemanticMutation::Frozen {
+            claim: id.claim.clone(),
+            mutation: Box::new(crate::cli::journal::SemanticMutation::HandoffBootstrap(
+                Box::new(crate::cli::journal::BootstrapPlan {
+                    version: 1,
+                    payload: id.payload.clone(),
+                }),
+            )),
+        };
+        let saved = recover(
+            &tx,
+            &id.payload.handoff.namespace,
+            &request,
+            501,
+            UtcMillis(1),
+            Some(&guard),
+        )
+        .unwrap();
+        let mut raw = std::collections::BTreeMap::<&str, Vec<u8>>::new();
+        raw.insert("request", serde_json::to_vec(&request).unwrap());
+        raw.insert(
+            "disposition",
+            serde_json::to_vec(&request.disposition).unwrap(),
+        );
+        raw.insert("semantic", serde_json::to_vec(&semantic).unwrap());
+        raw.insert("operation", request.operation.as_str().as_bytes().to_vec());
+        raw.insert(
+            "identity",
+            tx.query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| {
+                r.get(0)
+            })
+            .unwrap(),
+        );
+        raw.insert(
+            "creation",
+            tx.query_row("SELECT creation_json FROM bootstrap_attempts", [], |r| {
+                r.get(0)
+            })
+            .unwrap(),
+        );
+        raw.insert(
+            "decision",
+            tx.query_row(
+                "SELECT result_json FROM bootstrap_recovery_decisions",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap(),
+        );
+        let hashes = raw
+            .iter()
+            .map(|(k, v)| (*k, format!("{:x}", Sha256::digest(v))))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        // Captured by executing the exact a225 production recovery segment,
+        // with constructor-compatible test fixtures; raw evidence is retained.
+        let expected = std::collections::BTreeMap::from([
+            (
+                "creation",
+                "3e4b98a23362f7fc915c593e5adc80e75c96b648d365c787482d0bb9f8a5220b",
+            ),
+            (
+                "decision",
+                "8b28643cb0c9e5f04e4168bccb5b3016b1255c12c171342c84790783f75ad5d6",
+            ),
+            (
+                "disposition",
+                "cfdc47909b6ecd00b30170bca99b9d2293c337dc2a210d1fb1c909d75d7533d2",
+            ),
+            (
+                "identity",
+                "3e23dafb4ae353f85cbf16d6919c9719b767603718785aec528a1a20e89b1fae",
+            ),
+            (
+                "operation",
+                "38a41e4ad1c5694248ee4c83b88e7a627342e4bc21b1b022832def71b2dfeece",
+            ),
+            (
+                "request",
+                "2f57b3cfbafd13308697dccd374a927674a3b515695b291843d35d4ee0021395",
+            ),
+            (
+                "semantic",
+                "454dfbd3a27765377f2bb829f33a4b76d0e1811ddd3a1ea7a727ae2d11b28f4c",
+            ),
+        ]);
+        for (name, hash) in hashes {
+            assert_eq!(hash, expected[name], "a225 frozen {name} bytes changed");
+        }
+        tx.execute_batch("UPDATE host_instances SET lifecycle_revision=5; DELETE FROM observed_targets; UPDATE occupant_bindings SET native_session='changed'").unwrap();
+        assert_eq!(
+            recover(
+                &tx,
+                &id.payload.handoff.namespace,
+                &request,
+                501,
+                UtcMillis(2),
+                None
+            )
+            .unwrap(),
+            saved
+        );
+        assert_eq!(
+            tx.query_row::<Vec<u8>, _, _>(
+                "SELECT result_json FROM bootstrap_recovery_decisions",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            raw["decision"]
+        );
+        assert_eq!(serde_json::to_vec(&request).unwrap(), raw["request"]);
+    }
+    #[test]
+    fn phase13_created_recovery_preserves_independent_historical_reference() {
+        let (mut db, id, guard) = fixture();
+        let tx = db.transaction().unwrap();
+        begin_reserve(&tx, &id);
+        let mut r = request(&id, &guard);
+        if let BootstrapRecoveryDisposition::CreatedPane {
+            structural_reference,
+            ..
+        } = &mut r.disposition
+        {
+            *structural_reference = HostCallId::new("historical-operator-observation");
+        }
+        r.operation = r.decision_operation().unwrap();
+        let before = serde_json::to_vec(&r).unwrap();
+        let saved = recover(
+            &tx,
+            &id.payload.handoff.namespace,
+            &r,
+            501,
+            UtcMillis(1),
+            Some(&guard),
+        )
+        .expect("an independent fresh admitted observation must validate the historical assertion");
+        assert_eq!(serde_json::to_vec(&r).unwrap(), before);
+        assert_eq!(saved.disposition, r.disposition);
+        let row: Vec<u8> = tx
+            .query_row(
+                "SELECT result_json FROM bootstrap_recovery_decisions",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        tx.execute_batch(
+            "UPDATE host_instances SET lifecycle_revision=17; DELETE FROM observed_targets;",
+        )
+        .unwrap();
+        assert_eq!(
+            recover(
+                &tx,
+                &id.payload.handoff.namespace,
+                &r,
+                501,
+                UtcMillis(2),
+                None
+            )
+            .unwrap(),
+            saved
+        );
+        assert_eq!(
+            tx.query_row(
+                "SELECT result_json FROM bootstrap_recovery_decisions",
+                [],
+                |r| r.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+            row
+        );
+    }
+    #[test]
+    fn phase13_created_recovery_refuses_existing_owner_lifecycle_change() {
+        let (mut db, id, guard) = fixture();
+        let tx = db.transaction().unwrap();
+        begin_reserve(&tx, &id);
+        let p = guard.ordinary().structural_proof();
+        tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('recipient','i','resolved','native',?1,1,1,?2,?3,?4,1,'native_current_target',1,2,0)",params![p.target().as_str(),p.terminal().as_str(),p.incarnation(),p.host_boot().as_str()]).unwrap();
+        tx.execute_batch("UPDATE host_instances SET lifecycle_revision=2")
+            .unwrap();
+        assert!(
+            recover(
+                &tx,
+                &id.payload.handoff.namespace,
+                &request(&id, &guard),
+                501,
+                UtcMillis(1),
+                Some(&guard)
+            )
+            .is_err(),
+            "an existing owner cannot waive fresh deciding lifecycle equality"
+        );
+        assert_eq!(
+            status(&tx, &id.payload.handoff.namespace, &id)
+                .unwrap()
+                .state,
+            BootstrapState::PossibleCreation
+        );
+        assert_eq!(
+            tx.query_row(
+                "SELECT count(*) FROM bootstrap_recovery_decisions",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+    #[test]
+    fn phase13_recovery_refuses_canonical_lifecycle_transition_for_both_owner_states() {
+        for owned in [false, true] {
+            let (mut db, id, guard) = fixture();
+            let tx = db.transaction().unwrap();
+            begin_reserve(&tx, &id);
+            if owned {
+                let p = guard.ordinary().structural_proof();
+                tx.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('recipient','i','resolved','native',?1,1,1,?2,?3,?4,1,'native_current_target',1,2,0)",params![p.target().as_str(),p.terminal().as_str(),p.incarnation(),p.host_boot().as_str()]).unwrap();
+            }
+            // A genuine canonical retirement decision changes the lifecycle
+            // after publication, independently of the recovery target owner.
+            crate::store::control::begin_retirement_fence(
+                &tx,
+                UtcMillis(1),
+                id.claim.seat.clone(),
+                "i",
+                created().host_incarnation.as_str(),
+                1,
+                "w1:p1",
+                1,
+            )
+            .unwrap();
+            assert_eq!(
+                recover(
+                    &tx,
+                    &id.payload.handoff.namespace,
+                    &request(&id, &guard),
+                    501,
+                    UtcMillis(2),
+                    Some(&guard)
+                )
+                .unwrap_err()
+                .code,
+                ErrorCode::TargetUnresolved,
+                "owned={owned}"
+            );
+            assert_eq!(
+                tx.query_row(
+                    "SELECT count(*) FROM bootstrap_recovery_decisions",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+            assert_eq!(
+                status(&tx, &id.payload.handoff.namespace, &id)
+                    .unwrap()
+                    .state,
+                BootstrapState::PossibleCreation
+            );
+        }
+    }
+    #[test]
     fn created_recovery_uses_process_boot_and_fresh_structural_call_without_seat_allocation() {
         let (mut db, id, guard) = fixture();
         let tx = db.transaction().unwrap();
         begin_reserve(&tx, &id);
-        assert_ne!(
+        assert_eq!(
             guard.ordinary().structural_proof().incarnation(),
             created().host_incarnation.as_str()
         );
@@ -668,12 +961,8 @@ mod tests {
         let tx = db.transaction().unwrap();
         begin_reserve(&tx, &id);
         let mut r = request(&id, &guard);
-        if let BootstrapRecoveryDisposition::CreatedPane {
-            structural_reference,
-            ..
-        } = &mut r.disposition
-        {
-            *structural_reference = HostCallId::new("creation-correlation-is-not-fresh-call");
+        if let BootstrapRecoveryDisposition::CreatedPane { evidence, .. } = &mut r.disposition {
+            evidence.witness.socket.change_nanoseconds += 1;
         }
         r.operation = r.decision_operation().unwrap();
         assert_eq!(
@@ -693,7 +982,7 @@ mod tests {
     #[test]
     fn common_canonical_guard_returns_exact_current_owner_without_mutation() {
         let (mut db, _, guard) = fixture();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('peer','i','resolved','native','w1:p2',1,1,'terminal','structural-incarnation',?1,1,'native_current_target',1,2,0)",[created().host_incarnation.as_str()]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES('peer','i','resolved','native','w1:p2',1,1,'terminal','herdr-server:pid=42:start=1.000002:uid=501',?1,1,'native_current_target',1,2,0)",[created().host_incarnation.as_str()]).unwrap();
         let tx = db.transaction().unwrap();
         assert_eq!(
             seats::validate_bootstrap_creation(&tx, "i", guard.ordinary()).unwrap(),

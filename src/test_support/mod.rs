@@ -144,7 +144,9 @@ pub fn bootstrap_attachment_guard(
     workspace: crate::protocol::ids::HostTargetId,
     tab: crate::protocol::ids::HostTargetId,
     admission: &crate::ports::HostObservationAdmission,
+    witness: crate::host::continuity::LocalEndpointWitness,
 ) -> Result<crate::ports::BootstrapAttachmentGuard, &'static str> {
-    let pane = crate::ports::BootstrapPaneObservation::try_new(observation, workspace, tab)?;
+    let pane =
+        crate::ports::BootstrapPaneObservation::try_new(observation, workspace, tab, witness)?;
     crate::ports::BootstrapAttachmentGuard::try_new(request, pane, admission)
 }

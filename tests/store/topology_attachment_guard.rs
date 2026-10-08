@@ -36,8 +36,16 @@ fn attachment_fixture_with_recording(real_writer: bool) -> AttachmentFixture {
     };
     let mut snapshot = snapshot_for_test(1, &["w1:p1", "w1:p2"]);
     snapshot.boot = created.host_incarnation.clone();
+    snapshot.incarnation = crate::ports::IncarnationEvidence::Verified {
+        identity: created.host_incarnation.as_str().into(),
+        evidence_kind: crate::ports::EvidenceKind::CoherentEnumeration,
+    };
     for target in &mut snapshot.targets {
         target.host_boot = created.host_incarnation.clone();
+        target.incarnation = crate::ports::IncarnationEvidence::Verified {
+            identity: created.host_incarnation.as_str().into(),
+            evidence_kind: crate::ports::EvidenceKind::CoherentEnumeration,
+        };
         target.terminal = Some(if target.target.as_str() == "w1:p2" {
             created.terminal.clone()
         } else {
@@ -59,7 +67,7 @@ fn attachment_fixture_with_recording(real_writer: bool) -> AttachmentFixture {
     let mut observation = snapshot.targets.remove(1);
     observation.provenance = crate::ports::ObservationProvenance::FreshCurrentTarget;
     observation.incarnation = crate::ports::IncarnationEvidence::Verified {
-        identity: "test-incarnation".into(),
+        identity: "herdr-server:pid=42:start=1.000002:uid=501".into(),
         evidence_kind: crate::ports::EvidenceKind::NativeCurrentTarget,
     };
     let mut id = crate::protocol::handoff::topology_contract_tests::identity();
@@ -78,7 +86,7 @@ fn attachment_fixture_with_recording(real_writer: bool) -> AttachmentFixture {
         panic!("missing recipient")
     };
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('sender','i','resolved','native','w1:p1',1,1,0)",[]).unwrap();
-    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w1:p1',?1,1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0,'sender-terminal','test-incarnation')",[created.host_incarnation.as_str()]).unwrap();
+    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w1:p1',?1,1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0,'sender-terminal','herdr-server:pid=42:start=1.000002:uid=501')",[created.host_incarnation.as_str()]).unwrap();
     db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('thread','i','topic','goal',0,0); INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('thread','sender','joined',0)").unwrap();
     let a = BootstrapAttachment {
         attempt: BootstrapAttempt::first(),
@@ -150,6 +158,7 @@ fn attachment_guard(
         current.clone(),
         HostTargetId::new("w1"),
         HostTargetId::new("w1:t2"),
+        crate::protocol::handoff::topology_contract_tests::created().witness,
     )
     .unwrap();
     BootstrapAttachmentGuard::try_new(
@@ -166,11 +175,18 @@ fn attachment_guard(
 fn topology_attachment_uses_real_resolution_and_fresh_guard_without_allocating() {
     let (_context, mut db, path, store, observation, budget, id, a) = attachment_fixture();
     let (mut wrong_boot, admission) = ordinary_resolution_read(&store, &observation, 3, &budget);
-    wrong_boot.host_boot = HostBootId::new("changed");
+    let mut changed_witness = crate::protocol::handoff::topology_contract_tests::created().witness;
+    changed_witness.peer_pid = 43;
+    wrong_boot.host_boot = HostBootId::new("herdr-server:pid=43:start=1.000002:uid=501");
+    wrong_boot.incarnation = crate::ports::IncarnationEvidence::Verified {
+        identity: wrong_boot.host_boot.as_str().into(),
+        evidence_kind: crate::ports::EvidenceKind::NativeCurrentTarget,
+    };
     let pane = BootstrapPaneObservation::try_new(
         wrong_boot,
         HostTargetId::new("w1"),
         HostTargetId::new("w1:t2"),
+        changed_witness,
     )
     .unwrap();
     let wrong_boot_guard = BootstrapAttachmentGuard::try_new(
@@ -308,6 +324,7 @@ fn topology_attachment_refuses_stale_or_held_evidence_and_missing_or_changed_res
                     current.clone(),
                     HostTargetId::new("w1"),
                     HostTargetId::new("w1:other-tab"),
+                    crate::protocol::handoff::topology_contract_tests::created().witness,
                 )
                 .unwrap();
                 guard = BootstrapAttachmentGuard::try_new(

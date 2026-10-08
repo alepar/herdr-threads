@@ -765,10 +765,10 @@ mod live {
             let created = crate::protocol::handoff::topology_contract_tests::created();
             let boot = &created.host_incarnation;
             db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,observation_sequence,observation_admission_sequence,observation_decided_sequence,lifecycle_revision,recovery_boot,recovery_epoch) VALUES('i',0,?1,1,1,1,1,1,?1,1)",[boot.as_str()]).unwrap();
-            db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','i',?1,1,1,'structural-incarnation',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
+            db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','i',?1,1,1,'herdr-server:pid=42:start=1.000002:uid=501',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
             db.execute_batch("UPDATE host_instances SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('sender','i','resolved','native','w1:p1',1,0,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('canonical-thread','i','topic','goal',0,0); INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('canonical-thread','sender','joined',0)").unwrap();
             db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('sender',1,'w1:p1',?1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0)",[boot.as_str()]).unwrap();
-            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','w1:p1',?1,1,0,2,'fresh',0,'caller-terminal','structural-incarnation','native_current_target',1)",[boot.as_str()]).unwrap();
+            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','w1:p1',?1,1,0,2,'fresh',0,'caller-terminal','herdr-server:pid=42:start=1.000002:uid=501','native_current_target',1)",[boot.as_str()]).unwrap();
             let clock = crate::app::SystemClock::new();
             let context = HostCallContext {
                 budget: super::super::super::cooperative_budget(&clock),
@@ -1301,7 +1301,7 @@ mod live {
             terminal: Some(TerminalId::new("terminal")),
             occupancy: StructuralOccupancy::Unknown,
             incarnation: IncarnationEvidence::Verified {
-                identity: "structural-incarnation".into(),
+                identity: "herdr-server:pid=42:start=1.000002:uid=501".into(),
                 evidence_kind: EvidenceKind::NativeCurrentTarget,
             },
             execution: ExecutionEvidence::Unknown,
@@ -1342,6 +1342,7 @@ mod live {
                 observation,
                 HostTargetId::new("w1"),
                 HostTargetId::new(tab),
+                crate::protocol::handoff::topology_contract_tests::created().witness,
             )
             .unwrap(),
             &admission,
@@ -1662,6 +1663,7 @@ mod live {
                 observation,
                 HostTargetId::new(if change == "workspace" { "w9" } else { "w1" }),
                 HostTargetId::new("w1:t2"),
+                crate::protocol::handoff::topology_contract_tests::created().witness,
             );
             if change == "workspace" {
                 assert!(response.is_err());

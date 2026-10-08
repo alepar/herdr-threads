@@ -565,7 +565,18 @@ a confirmed creation retains its earlier decision for historical presentation.
 Recovery never rewrites original actor claims,
 produces receipts, proves occupancy or reports successful launch. Created-pane
 assertions need fresh coherent canonical structural evidence and the ordinary
-restore/hold/ownership guards; they do not move or allocate a seat. The normal
+restore/hold/ownership guards; they do not move or allocate a seat. The retained
+`structural_reference` is historical operator-assertion correlation, not fresh
+admission or authority. A deciding daemon read has its own unchanged call ID and
+must supply full workspace/tab/pane/terminal/process incarnation and genuine
+endpoint witness from that same response, published through the canonical lane.
+Fresh creation recovery compares the complete witness to the assertion and checks
+the admission's lifecycle revision plus exactly one publication for both owned
+and unowned targets. Exact saved decisions replay before any fresh host read.
+Full witness equality is deliberately conservative: socket metadata changes or
+an auxiliary socket for the same server may prevent fresh recovery even when
+process identity remains unchanged. Metadata does not prove creation, occupancy
+or caller authority, and refusal never repairs or rewrites a frozen witness. The normal
 operation lock must exclude a known in-flight invocation while the operator
 inspects and asserts noncreation or quiescence. No heuristic PID or topology
 snapshot proves quiescence, and recovery never kills an unowned process.
