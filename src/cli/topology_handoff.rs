@@ -903,6 +903,639 @@ fn creation_unknown(
     crate::protocol::results::ApiError::unknown_outcome(format!("bootstrap {} compound {} attempt {}: outcome_unknown; inspect original exact namespace before guarded recovery; no automatic creation", reference.recovery_ref(), identity.compound.as_str(), attempt.get())).into()
 }
 
+// Linked child progress is separate from the bootstrap submission record. Local
+// bytes only conservatively fence launch; canonical completion owns the report.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChildProgress {
+    version: u32,
+    identity: crate::protocol::handoff::BootstrapIdentity,
+    attachment: crate::protocol::handoff::BootstrapAttachment,
+    progress: super::handoff::Progress,
+}
+fn child_progress_path(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+) -> std::path::PathBuf {
+    journal.root().join(format!(
+        "bootstrap-child-{}.progress",
+        reference.operation.as_str()
+    ))
+}
+// Canonical identity + attachment + genuine raw launch report and bounded staged
+// metadata fit the child ceiling. Terminal includes the full canonical envelope
+// plus original JSON escaped once as a String (at most twice its compact bytes).
+const MAX_LINKED_LOCAL_BYTES: usize = 2 * 1024 * 1024;
+const MAX_BOOTSTRAP_TERMINAL_BYTES: usize = crate::store::topology_handoff::MAX_COMPLETED_BYTES
+    + 2 * super::journal::MAX_BOOTSTRAP_ORIGIN_BYTES
+    + 4096;
+fn read_linked_local<T: serde::de::DeserializeOwned + serde::Serialize>(
+    path: &std::path::Path,
+    limit: usize,
+) -> Result<Option<T>, RunError> {
+    use std::{io::Read, os::unix::fs::OpenOptionsExt};
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    if !file.metadata()?.is_file() || file.metadata()?.len() > limit as u64 {
+        return Err(super::invalid_request(
+            "unsafe or oversized bootstrap retained record",
+        ));
+    }
+    let mut bytes = vec![];
+    file.take((limit + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(super::invalid_request(
+            "oversized bootstrap retained record",
+        ));
+    }
+    let value: T = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+    if serde_json::from_slice::<serde_json::Value>(&bytes).map_err(std::io::Error::other)?
+        != serde_json::to_value(&value).map_err(std::io::Error::other)?
+    {
+        return Err(super::invalid_request(
+            "unexpected bootstrap retained fields",
+        ));
+    }
+    Ok(Some(value))
+}
+fn same_record<T: serde::Serialize>(a: &T, b: &T) -> Result<bool, RunError> {
+    Ok(serde_json::to_value(a).map_err(std::io::Error::other)?
+        == serde_json::to_value(b).map_err(std::io::Error::other)?)
+}
+fn load_child_progress(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    attachment: &crate::protocol::handoff::BootstrapAttachment,
+) -> Result<super::handoff::Progress, RunError> {
+    let Some(saved): Option<ChildProgress> = read_linked_local(
+        &child_progress_path(journal, reference),
+        MAX_LINKED_LOCAL_BYTES,
+    )?
+    else {
+        return Ok(Default::default());
+    };
+    if saved.version != 1
+        || !same_record(&saved.identity, identity)?
+        || !same_record(&saved.attachment, attachment)?
+        || (saved.progress.possible_start
+            && (saved.progress.thread.is_none()
+                || saved.progress.invitation.is_none()
+                || saved.progress.message.is_none()))
+        || (saved.progress.launch.is_some() && !saved.progress.possible_start)
+        || saved
+            .progress
+            .thread
+            .as_ref()
+            .zip(attachment.handoff.thread.as_ref())
+            .is_some_and(|(a, b)| a != b)
+        || saved.progress.invitation.as_ref().is_some_and(|v| {
+            !matches!(
+                v,
+                crate::protocol::results::CommandResult::Invitation(_)
+                    | crate::protocol::results::CommandResult::AlreadyJoined(_)
+            )
+        })
+        || saved
+            .progress
+            .message
+            .as_ref()
+            .is_some_and(|v| !matches!(v, crate::protocol::results::CommandResult::MessageSent(_)))
+    {
+        return Err(super::invalid_request(
+            "bootstrap child progress identity or state differs",
+        ));
+    }
+    Ok(saved.progress)
+}
+fn bootstrap_identity(
+    pending: &super::journal::PendingIntent,
+) -> Result<crate::protocol::handoff::BootstrapIdentity, RunError> {
+    let super::journal::SemanticMutation::Frozen { claim, mutation } = &pending.semantic else {
+        return Err(super::invalid_request(
+            "bootstrap needs original frozen caller",
+        ));
+    };
+    let super::journal::SemanticMutation::HandoffBootstrap(plan) = mutation.as_ref() else {
+        return Err(super::invalid_request("not a bootstrap origin"));
+    };
+    let identity = crate::protocol::handoff::BootstrapIdentity {
+        compound: plan.payload.handoff.keys.compound.clone(),
+        scope: pending.header.scope.clone(),
+        claim: claim.clone(),
+        digest: pending.header.semantic_digest.clone(),
+        payload: plan.payload.clone(),
+    };
+    identity.validate().map_err(super::invalid_request)?;
+    Ok(identity)
+}
+fn validate_completed(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    done: &crate::protocol::handoff::CompletedBootstrapResult,
+) -> Result<(), RunError> {
+    use crate::protocol::handoff::*;
+    let wrapper = CompleteLinkedBootstrap {
+        identity: identity.clone(),
+        attachment: done.attachment.clone(),
+        operation: identity.payload.linked_complete_key.clone(),
+        legacy_completion: HandoffMutation {
+            identity: done.attachment.handoff.clone(),
+            operation: identity.payload.handoff.keys.complete.clone(),
+        },
+        retained: done.retained.clone(),
+    };
+    wrapper.validate().map_err(super::invalid_request)?;
+    let plan = attached_handoff_plan(identity, &done.attachment)?;
+    let mut caller = plan.request.launch.argv.clone();
+    caller.push(super::handoff::bootstrap(
+        &done.retained.thread,
+        &plan.context,
+        &identity.claim.instance,
+    ));
+    let expected = crate::harness::launch::compose_native_argv(
+        identity.payload.launch.harness,
+        caller,
+        vec![],
+    )?;
+    if !same_record(&done.identity, identity)?
+        || done.legacy_result.state != HandoffState::Completed
+        || done.legacy_result.compound != done.attachment.handoff.compound
+        || done.legacy_result.thread.as_ref() != Some(&done.retained.thread)
+        || done.retained.report["argv"] != serde_json::json!(expected)
+    {
+        return Err(super::invalid_request("bootstrap completed report differs"));
+    }
+    Ok(())
+}
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BootstrapTerminal {
+    version: u32,
+    original: String,
+    completed: crate::protocol::handoff::CompletedBootstrapResult,
+}
+fn terminal_path(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+) -> std::path::PathBuf {
+    journal.root().join(format!(
+        "bootstrap-{:020}-{}.terminal",
+        reference.ordinal,
+        reference.operation.as_str()
+    ))
+}
+fn read_terminal(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+) -> Result<Option<BootstrapTerminal>, RunError> {
+    let Some(saved): Option<BootstrapTerminal> = read_linked_local(
+        &terminal_path(journal, reference),
+        MAX_BOOTSTRAP_TERMINAL_BYTES,
+    )?
+    else {
+        return Ok(None);
+    };
+    if saved.version != 1 {
+        return Err(super::invalid_request(
+            "unsupported bootstrap terminal record",
+        ));
+    }
+    let pending =
+        super::journal::Journal::decode_bootstrap_origin(reference, saved.original.as_bytes())?;
+    validate_completed(&bootstrap_identity(&pending)?, &saved.completed)?;
+    match journal.snapshot_bootstrap_origin(reference) {
+        Ok(original) if original != saved.original.as_bytes() => {
+            return Err(super::invalid_request(
+                "bootstrap terminal origin contradiction",
+            ));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    Ok(Some(saved))
+}
+/// Bounded read-only original evidence for the shared classifier. Retained
+/// terminal bytes only select the exact origin; they authorize no live effect.
+pub(crate) fn load_original(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+) -> Result<super::journal::PendingIntent, RunError> {
+    if let Some(saved) = read_terminal(journal, reference)? {
+        return Ok(super::journal::Journal::decode_bootstrap_origin(
+            reference,
+            saved.original.as_bytes(),
+        )?);
+    }
+    let bytes = journal.snapshot_bootstrap_origin(reference)?;
+    let pending = super::journal::Journal::decode_bootstrap_origin(reference, &bytes)?;
+    bootstrap_identity(&pending)?;
+    Ok(pending)
+}
+pub(crate) fn resolve_recovery_ref(
+    journal: &super::journal::Journal,
+    value: &str,
+) -> Result<super::journal::IntentRef, RunError> {
+    let ordinal: u64 = value
+        .strip_prefix("local:")
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .ok_or_else(|| super::invalid_request("invalid bootstrap reference"))?;
+    if value != format!("local:{ordinal}") {
+        return Err(super::invalid_request("noncanonical bootstrap reference"));
+    }
+    let mut found = None;
+    for entry in std::fs::read_dir(journal.root())? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if let Some(operation) = name
+            .strip_prefix(&format!("bootstrap-{ordinal:020}-"))
+            .and_then(|v| v.strip_suffix(".terminal"))
+            .or_else(|| {
+                name.strip_prefix(&format!("{ordinal:020}-"))
+                    .and_then(|v| v.strip_suffix(".intent"))
+            })
+        {
+            let reference = super::journal::IntentRef {
+                ordinal,
+                operation: crate::protocol::ids::OperationId::parse(operation.to_owned())
+                    .map_err(super::invalid_request)?,
+            };
+            load_original(journal, &reference)?;
+            if found
+                .as_ref()
+                .is_some_and(|previous| previous != &reference)
+            {
+                return Err(super::invalid_request("ambiguous bootstrap reference"));
+            }
+            found = Some(reference);
+        }
+    }
+    found.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "bootstrap reference not found",
+        )
+        .into()
+    })
+}
+fn terminal_bytes(terminal: &BootstrapTerminal) -> Result<Vec<u8>, RunError> {
+    let bytes = serde_json::to_vec(terminal).map_err(std::io::Error::other)?;
+    if bytes.len() > MAX_BOOTSTRAP_TERMINAL_BYTES {
+        return Err(super::invalid_request(
+            "oversized bootstrap terminal record",
+        ));
+    }
+    Ok(bytes)
+}
+fn save_terminal(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    terminal: &BootstrapTerminal,
+) -> Result<(), RunError> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let bytes = terminal_bytes(terminal)?;
+    let temp = journal
+        .root()
+        .join(format!(".bootstrap-terminal-{}", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&temp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        std::fs::hard_link(&temp, terminal_path(journal, reference))?;
+        std::fs::File::open(journal.root())?.sync_all()
+    })();
+    let cleanup = std::fs::remove_file(temp);
+    result?;
+    cleanup?;
+    std::fs::File::open(journal.root())?.sync_all()?;
+    Ok(())
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resume_to_writer<
+    C: crate::ports::LocalClient + ?Sized,
+    N: crate::ports::CreateTabPort + ?Sized,
+    W: std::io::Write,
+>(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    actor: super::actor_route::InvocationActor,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    native: &N,
+    launcher: &mut dyn super::handoff::HandoffLauncher,
+    clock: &dyn crate::protocol::time::Clock,
+    submission: BootstrapSubmissionInputs<'_>,
+    output: &crate::protocol::output::OutputSpec,
+    writer: &mut W,
+) -> Result<crate::protocol::handoff::BootstrapResult, RunError> {
+    use crate::protocol::{commands::Command, handoff::*, results::CommandResult};
+    let pending = load_original(journal, reference)?;
+    let identity = bootstrap_identity(&pending)?;
+    crate::store::topology_handoff::encode_identity(namespace, &identity)?;
+    let status = || -> Result<BootstrapResult, RunError> {
+        bootstrap_result(
+            &identity,
+            client.call(
+                Command::BootstrapStatus(Box::new(BootstrapStatus {
+                    identity: identity.clone(),
+                })),
+                &super::cooperative_budget(clock),
+            )?,
+        )
+    };
+    let retained = read_terminal(journal, reference)?;
+    let current = match status() {
+        Ok(current) => Some(current),
+        Err(RunError::Api(e))
+            if e.code == crate::protocol::results::ErrorCode::NotFound && retained.is_none() =>
+        {
+            None
+        }
+        Err(e) => return Err(e),
+    };
+    if retained.is_some()
+        && current
+            .as_ref()
+            .is_none_or(|v| v.state != BootstrapState::Completed)
+    {
+        return Err(super::invalid_request(
+            "bootstrap terminal lacks canonical completion",
+        ));
+    }
+    if current.as_ref().is_none_or(|v| {
+        !matches!(
+            v.state,
+            BootstrapState::Attached | BootstrapState::Completed
+        )
+    }) {
+        super::retry::run_bootstrap_retry(
+            journal, reference, actor, namespace, client, native, clock, submission,
+        )?;
+    }
+    let _lock = super::handoff::lock(journal, reference)?;
+    let retained = read_terminal(journal, reference)?;
+    let mut current = status()?;
+    if retained.is_some() && current.state != BootstrapState::Completed {
+        return Err(super::invalid_request(
+            "bootstrap terminal lacks canonical completion",
+        ));
+    }
+    if current.state != BootstrapState::Completed {
+        let attachment = current
+            .attachment
+            .as_ref()
+            .filter(|_| current.state == BootstrapState::Attached)
+            .ok_or_else(|| super::invalid_request("bootstrap lacks canonical attachment"))?;
+        let plan = attached_handoff_plan(&identity, attachment)?;
+        let child = super::handoff::keyed_fence(
+            client,
+            clock,
+            &attachment.handoff,
+            identity.payload.handoff.keys.begin.clone(),
+            false,
+        )?;
+        if child.state != HandoffState::Live {
+            return Err(super::invalid_request(
+                "bootstrap child completed without atomic parent completion",
+            ));
+        }
+        let mut progress = load_child_progress(journal, reference, &identity, attachment)?;
+        if progress
+            .thread
+            .as_ref()
+            .zip(child.thread.as_ref())
+            .is_some_and(|(a, b)| a != b)
+        {
+            return Err(super::invalid_request(
+                "bootstrap child progress contradicts canonical thread",
+            ));
+        }
+        let (_, attempt) = super::handoff::execute_steps(
+            &plan,
+            &identity.claim,
+            &mut progress,
+            &mut |p| {
+                let saved = ChildProgress {
+                    version: 1,
+                    identity: identity.clone(),
+                    attachment: attachment.clone(),
+                    progress: p.clone(),
+                };
+                if serde_json::to_vec(&saved)
+                    .map_err(std::io::Error::other)?
+                    .len()
+                    > MAX_LINKED_LOCAL_BYTES
+                {
+                    return Err(super::invalid_request("oversized bootstrap child progress"));
+                }
+                super::handoff::save_progress_at(
+                    journal,
+                    &child_progress_path(journal, reference),
+                    &saved,
+                )?;
+                Ok(())
+            },
+            client,
+            launcher,
+            clock,
+            &mut || {
+                // Live Begin replay is a deciding A2 check, not cached admission.
+                // This is bounded cooperative freshness, not a daemon/host transaction.
+                match client.call(
+                    Command::BeginHandoff(HandoffMutation {
+                        identity: attachment.handoff.clone(),
+                        operation: identity.payload.handoff.keys.begin.clone(),
+                    }),
+                    &super::cooperative_budget(clock),
+                )? {
+                    CommandResult::Handoff(result)
+                        if result.compound == attachment.handoff.compound
+                            && result.state == HandoffState::Live
+                            && result.thread.is_some() =>
+                    {
+                        Ok(())
+                    }
+                    _ => Err(crate::protocol::results::ApiError::invalid_request(
+                        "bootstrap child live launch guard differs",
+                    )),
+                }
+            },
+        );
+        if progress.possible_start
+            && progress
+                .launch
+                .as_ref()
+                .is_none_or(|v| v["outcome"] != "started")
+        {
+            return Err(crate::protocol::results::ApiError::unknown_outcome(format!("bootstrap {} downstream possible start; inspect exact pane {} and seat {}; no automatic launch",reference.recovery_ref(),attachment.created.root_pane.as_str(),attachment.resolved_seat.as_str())).into());
+        }
+        attempt?;
+        super::handoff::complete_with(
+            &attachment.handoff,
+            identity.payload.handoff.keys.complete.clone(),
+            &progress,
+            &mut |legacy_completion, thread, report| {
+                use sha2::{Digest, Sha256};
+                let retained = LinkedBootstrapReport {
+                    thread: thread.clone(),
+                    recipient: attachment.resolved_seat.clone(),
+                    pane: attachment.created.root_pane.clone(),
+                    kind: "launch".into(),
+                    launch: identity.payload.launch.clone(),
+                    report: report.clone(),
+                    report_digest: format!(
+                        "{:x}",
+                        Sha256::digest(serde_json::to_vec(report).map_err(std::io::Error::other)?)
+                    ),
+                    terminal: attachment.created.terminal.clone(),
+                    host_incarnation: attachment.created.host_incarnation.clone(),
+                };
+                let wrapper = CompleteLinkedBootstrap {
+                    identity: identity.clone(),
+                    attachment: attachment.clone(),
+                    operation: identity.payload.linked_complete_key.clone(),
+                    legacy_completion,
+                    retained,
+                };
+                wrapper.validate().map_err(super::invalid_request)?;
+                // This preview checks only the eventual envelope's size/shape;
+                // presentation uses the actual canonical response/status below.
+                let preview = CompletedBootstrapResult {
+                    identity: identity.clone(),
+                    attachment: attachment.clone(),
+                    retained: wrapper.retained.clone(),
+                    legacy_result: HandoffResult {
+                        compound: attachment.handoff.compound.clone(),
+                        thread: Some(thread.clone()),
+                        state: HandoffState::Completed,
+                    },
+                };
+                validate_completed(&identity, &preview)?;
+                if serde_json::to_vec(&preview)
+                    .map_err(std::io::Error::other)?
+                    .len()
+                    > crate::store::topology_handoff::MAX_COMPLETED_BYTES
+                {
+                    return Err(super::invalid_request(
+                        "oversized bootstrap completion report",
+                    ));
+                }
+                terminal_bytes(&BootstrapTerminal {
+                    version: 1,
+                    original: String::from_utf8(journal.snapshot_bootstrap_origin(reference)?)
+                        .map_err(std::io::Error::other)?,
+                    completed: preview,
+                })?;
+                let result = client.call(
+                    Command::CompleteLinkedBootstrap(Box::new(wrapper.clone())),
+                    &super::cooperative_budget(clock),
+                );
+                let done = match result {
+                    Ok(CommandResult::LinkedBootstrapCompleted(done)) => *done,
+                    Ok(_) => {
+                        return Err(super::invalid_request(
+                            "unexpected linked completion result",
+                        ));
+                    }
+                    Err(error) => {
+                        let saved = status()?;
+                        match saved.completed {
+                            Some(done)
+                                if saved.state == BootstrapState::Completed
+                                    && done.retained == wrapper.retained =>
+                            {
+                                *done
+                            }
+                            _ => return Err(error.into()),
+                        }
+                    }
+                };
+                validate_completed(&identity, &done)?;
+                if done.attachment != wrapper.attachment || done.retained != wrapper.retained {
+                    return Err(super::invalid_request("linked completion report differs"));
+                }
+                Ok(())
+            },
+        )?;
+        current = status()?;
+    }
+    let done = current
+        .completed
+        .as_ref()
+        .filter(|_| current.state == BootstrapState::Completed)
+        .ok_or_else(|| {
+            super::invalid_request("completed bootstrap requires retained successful report")
+        })?;
+    validate_completed(&identity, done)?;
+    if let Some(terminal) = retained {
+        if !same_record(&terminal.completed, done.as_ref())? {
+            return Err(super::invalid_request(
+                "bootstrap terminal disagrees with canonical completion",
+            ));
+        }
+    } else {
+        let terminal = BootstrapTerminal {
+            version: 1,
+            original: String::from_utf8(journal.snapshot_bootstrap_origin(reference)?)
+                .map_err(std::io::Error::other)?,
+            completed: (**done).clone(),
+        };
+        save_terminal(journal, reference, &terminal)?;
+    }
+    // Reestablish exclusive terminal publication durability after lost local sync.
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(terminal_path(journal, reference))?;
+        if !file.metadata()?.is_file() {
+            return Err(super::invalid_request(
+                "unsafe bootstrap terminal durability record",
+            ));
+        }
+        file.sync_all()?;
+    }
+    std::fs::File::open(journal.root())?.sync_all()?;
+    let report = serde_json::json!({"outcome":"started","thread":done.retained.thread,"seat":done.retained.recipient,"pane":done.retained.pane,"launch":done.retained.report,"bootstrap_compound":identity.compound,"child_compound":done.attachment.handoff.compound,"tab":done.attachment.created.tab,"attempt":done.attachment.attempt,"recovery_ref":reference.recovery_ref()});
+    let bytes = if output.format == crate::protocol::output::OutputFormat::Json {
+        format!("{}\n", serde_json::json!({"handoff":report})).into_bytes()
+    } else {
+        super::setup::render_text(&report).into_bytes()
+    };
+    writer.write_all(&bytes)?;
+    writer.flush()?;
+    for path in [
+        child_progress_path(journal, reference),
+        super::handoff::progress_path(journal, reference),
+    ] {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    match journal.complete(reference) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    std::fs::File::open(journal.root())?.sync_all()?;
+    Ok(current)
+}
+
 #[cfg(test)]
 #[path = "../../tests/cli/topology_handoff.rs"]
 mod tests;
