@@ -4878,8 +4878,12 @@ fn inbox_argv(seat: &SeatId, cursor: &str, page: &PageRequest) -> Vec<String> {
 }
 
 fn inbox_batch_argv(seat: &SeatId, raw: &str, request: &PageRequest) -> Vec<String> {
-    let _ = seat; // The cursor binds the selected seat; an explicit seat switches CLI mode.
-    let mut argv = vec!["herdr-threads".into(), "inbox".into()];
+    let mut argv = vec![
+        "herdr-threads".into(),
+        "inbox".into(),
+        "--seat".into(),
+        seat.as_str().into(),
+    ];
     argv.extend(page_bounds(request));
     argv.extend(["--cursor".into(), raw.into()]);
     argv

@@ -7,7 +7,7 @@ use crate::protocol::{
 use crate::view::escape::{Context, escape_for_terminal};
 use std::{
     borrow::Cow,
-    cell::Cell,
+    cell::{Cell, RefCell},
     ffi::OsString,
     io::{self, Write},
 };
@@ -29,6 +29,134 @@ thread_local! {
     static STDOUT_IS_TERMINAL: Cell<bool> = const { Cell::new(false) };
     static HARNESS_MARKED: Cell<bool> = const { Cell::new(false) };
     static HUMAN: Cell<bool> = const { Cell::new(false) };
+    static INBOX: RefCell<Option<InboxInvocation>> = const { RefCell::new(None) };
+}
+
+/// Local continuation hints, captured before an omitted read selector is resolved.
+/// They grant no authority: every executed continuation is resolved normally.
+#[derive(Clone)]
+struct InboxInvocation {
+    actor: super::actor_route::InvocationActor,
+    seat: Option<crate::protocol::ids::SeatId>,
+    own_text: bool,
+    presentation: Presentation,
+    spec: OutputSpec,
+    page: crate::protocol::pagination::PageRequest,
+}
+
+pub(crate) struct InboxInvocationGuard(Option<InboxInvocation>);
+
+impl InboxInvocationGuard {
+    pub(crate) fn enter(
+        parsed: &super::commands::ParsedCli,
+        seat: Option<crate::protocol::ids::SeatId>,
+    ) -> Self {
+        use crate::protocol::commands::Command;
+        let invocation = match &parsed.action {
+            super::commands::CliAction::Wire(
+                Command::Inbox(q) | Command::InboxBatch(q) | Command::InboxBatchV2(q),
+            ) => Some(InboxInvocation {
+                actor: parsed.actor,
+                seat: q
+                    .seat
+                    .clone()
+                    .or(seat)
+                    .or_else(|| parsed.cooperative.as_ref().map(|s| s.seat.clone())),
+                own_text: parsed.caller_read_default
+                    && parsed.output.format == OutputFormat::Text
+                    && parsed.presentation != Presentation::Machine,
+                presentation: parsed.presentation,
+                spec: parsed.output.clone(),
+                page: q.page.clone(),
+            }),
+            _ => None,
+        };
+        Self(INBOX.with(|slot| slot.replace(invocation)))
+    }
+}
+
+impl Drop for InboxInvocationGuard {
+    fn drop(&mut self) {
+        INBOX.with(|slot| slot.replace(self.0.take()));
+    }
+}
+
+fn inbox_continuation(result: &CommandResult) -> CommandResult {
+    let mut result = result.clone();
+    INBOX.with(|slot| {
+        let invocation = slot.borrow();
+        let Some(context) = invocation.as_ref() else {
+            return;
+        };
+        let next = match &mut result {
+            CommandResult::Inbox(p) => &mut p.next_argv,
+            CommandResult::InboxBatch(p) => &mut p.next_argv,
+            CommandResult::InboxBatchV2(p) => &mut p.next_argv,
+            _ => return,
+        };
+        let Some(argv) = next else { return };
+        let mut state = context.spec.context.state_dir.clone();
+        let mut host = context.spec.context.host.clone();
+        let mut seat = context.seat.as_ref().map(|s| s.as_str().to_owned());
+        let mut args = argv.iter().skip(1);
+        let mut rest = Vec::new();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "human" | "--json" | "--human" | "--machine" => {}
+                "--state-dir" => {
+                    if let Some(value) = args.next() {
+                        state.get_or_insert_with(|| value.clone());
+                    }
+                }
+                "--host-endpoint" => {
+                    if let Some(value) = args.next() {
+                        host.get_or_insert_with(|| value.clone());
+                    }
+                }
+                "--seat" => {
+                    if let Some(value) = args.next() {
+                        seat.get_or_insert_with(|| value.clone());
+                    }
+                }
+                "--max-bytes" | "--limit" => {
+                    args.next();
+                }
+                _ => rest.push(arg.clone()),
+            }
+        }
+        let mut normalized = vec![argv[0].clone()];
+        if context.actor == super::actor_route::InvocationActor::Human {
+            normalized.push("human".into());
+        }
+        if let Some(state) = state {
+            normalized.extend(["--state-dir".into(), state]);
+        }
+        if let Some(host) = host {
+            normalized.extend(["--host-endpoint".into(), host]);
+        }
+        if context.spec.format == OutputFormat::Json {
+            normalized.push("--json".into());
+        }
+        match context.presentation {
+            Presentation::Human => normalized.push("--human".into()),
+            Presentation::Machine => normalized.push("--machine".into()),
+            Presentation::Auto => {}
+        }
+        normalized.extend(rest);
+        if !context.own_text
+            && let Some(seat) = seat
+        {
+            normalized.extend(["--seat".into(), seat]);
+        }
+        normalized.extend([
+            "--limit".into(),
+            context.page.limit.to_string(),
+            "--max-bytes".into(),
+            context.page.max_bytes.to_string(),
+        ]);
+        *argv = normalized;
+    });
+    result
 }
 
 /// Environment variables an agent harness sets for the subprocesses of its
@@ -106,6 +234,8 @@ pub fn human_active() -> bool {
 /// The bytes a CLI command emits for `result`: the selected machine encoding,
 /// or the human form when this run selected it and one exists for the kind.
 pub fn emitted_bytes(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, ApiError> {
+    let result = inbox_continuation(result);
+    let result = &result;
     if HUMAN.with(Cell::get)
         && spec.format == OutputFormat::Text
         && let Some(text) = super::human::render(result, spec)
@@ -149,7 +279,8 @@ pub fn write_selected<W: Write>(
     max_bytes: u32,
     writer: &mut W,
 ) -> Result<usize, OutputError> {
-    let bytes = encode_selected(result, spec)?;
+    let decorated = inbox_continuation(result);
+    let bytes = encode_selected(&decorated, spec)?;
     if bytes.len() > max_bytes as usize {
         return Err(OutputError::Api(
             ApiError::invalid_budget("selected output exceeds byte budget")
@@ -161,9 +292,13 @@ pub fn write_selected<W: Write>(
     } else {
         bytes
     };
-    if matches!(result, CommandResult::InboxBatchV2(_)) && bytes.len() > max_bytes as usize {
+    if matches!(
+        result,
+        CommandResult::Inbox(_) | CommandResult::InboxBatch(_) | CommandResult::InboxBatchV2(_)
+    ) && bytes.len() > max_bytes as usize
+    {
         return Err(OutputError::Api(
-            ApiError::invalid_budget("selected v2 inbox output exceeds byte budget")
+            ApiError::invalid_budget("selected inbox output exceeds byte budget")
                 .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX)),
         ));
     }

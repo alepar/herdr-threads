@@ -20,7 +20,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(".tmp/ht-big.5.1")
+            .join(".tmp/ht-big.11/lazy-display-scratch")
             .join(uuid::Uuid::new_v4().to_string());
         let journal = Journal::open(&root).unwrap();
         Self {
@@ -229,15 +229,31 @@ fn run(
     client: &Client,
     role: herdr_threads::harness::context::Role,
 ) -> Vec<u8> {
+    let mut out = Vec::new();
+    run_to_writer(f, argv, client, role, &mut out).unwrap();
+    out
+}
+fn run_to_writer<C: herdr_threads::ports::LocalClient, W: Write>(
+    f: &Fixture,
+    argv: &[&str],
+    client: &C,
+    role: herdr_threads::harness::context::Role,
+    writer: &mut W,
+) -> Result<(), herdr_threads::cli::RunError> {
     use herdr_threads::harness::context::{
         ContextJournal, Harness, OccupantContext, Role, SessionReference,
     };
+    let parsed = herdr_threads::cli::commands::parse_argv(argv.iter().copied()).unwrap();
     let context = OccupantContext {
         format_version: 1,
         instance: uuid::Uuid::from_u128(1),
         seat: "seat".into(),
         target: "pane".into(),
-        harness: Harness::Codex,
+        harness: if parsed.actor == herdr_threads::cli::actor_route::InvocationActor::Human {
+            Harness::Human
+        } else {
+            Harness::Codex
+        },
         binding_generation: 1,
         execution: uuid::Uuid::from_u128(2),
         session: SessionReference::Native("native".into()),
@@ -260,19 +276,16 @@ fn run(
     )
     .unwrap();
     contexts.install_reattached(context).unwrap();
-    let mut out = vec![];
     herdr_threads::cli::run_cooperative(
-        herdr_threads::cli::commands::parse_argv(argv.iter().copied()).unwrap(),
+        parsed,
         &f.journal,
         &contexts,
         None,
         role,
         client,
         &herdr_threads::app::SystemClock::new(),
-        &mut out,
+        writer,
     )
-    .unwrap();
-    out
 }
 fn has_lazy_progress(f: &Fixture) -> bool {
     std::fs::read_dir(&f.root).unwrap().any(|x| {
@@ -599,4 +612,530 @@ fn lazy_display_progress_does_not_veto_archival_coverage() {
         covered,
         "lazy display bookkeeping must not veto quiet archival coverage"
     );
+}
+
+// Dropping selectors on an empty work page must fail before a later chunk can settle.
+#[test]
+fn continuation_empty_work_page_preserves_invocation() {
+    use herdr_threads::harness::context::Role;
+    for flags in [
+        vec!["--machine"],
+        vec!["--json"],
+        vec!["--seat", "foreign"],
+        vec!["human"],
+    ] {
+        let f = Fixture::new();
+        let CommandResult::InboxBatchV2(mut p) = page(0, 4) else {
+            unreachable!()
+        };
+        p.items.clear();
+        p.has_more = true;
+        p.stop_reason = StopReason::Work;
+        let cursor = test_cursor();
+        p.next_cursor = Some(cursor.clone());
+        p.next_argv = Some(vec![
+            "herdr-threads".into(),
+            "inbox".into(),
+            "--seat".into(),
+            "seat".into(),
+            "--cursor".into(),
+            cursor,
+        ]);
+        let c = Client {
+            calls: Default::default(),
+            v2: true,
+            result: CommandResult::InboxBatchV2(p),
+        };
+        let mut argv = vec!["ht"];
+        if flags == ["human"] {
+            argv.push("human");
+        }
+        argv.extend([
+            "--state-dir",
+            "/private/tmp/state ' $",
+            "--host-endpoint",
+            "/private/tmp/host \" socket",
+            "inbox",
+        ]);
+        if flags != ["human"] {
+            argv.extend(&flags);
+        }
+        let out = String::from_utf8(run(&f, &argv, &c, Role::TopLevel)).unwrap();
+        assert!(
+            !out.contains("empty"),
+            "work-limited page falsely exhausted: {out}"
+        );
+        let next: Vec<String> = if flags == ["--json"] {
+            serde_json::from_str::<serde_json::Value>(&out).unwrap()["result"]["data"]["next_argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect()
+        } else {
+            shlex::split(out.lines().find_map(|l| l.strip_prefix("next: ")).unwrap()).unwrap()
+        };
+        assert_eq!(
+            next.get(1).map(String::as_str) == Some("human"),
+            flags == ["human"]
+        );
+        for flag in ["--state-dir", "--host-endpoint"] {
+            assert!(next.iter().any(|s| s == flag), "{next:?}");
+        }
+        for flag in flags.iter().filter(|s| **s != "human") {
+            assert!(next.iter().any(|s| s == flag), "{next:?}");
+        }
+        assert!(!has_lazy_progress(&f));
+        let c = Client {
+            calls: Default::default(),
+            v2: true,
+            result: page(0, 4),
+        };
+        let refs: Vec<_> = next.iter().map(String::as_str).collect();
+        let follow = run(&f, &refs, &c, Role::TopLevel);
+        assert!(!follow.is_empty());
+        if flags != ["human"] {
+            assert!(!has_lazy_progress(&f));
+        }
+        assert!(!c.calls.lock().unwrap().iter().any(|c| matches!(
+            c,
+            herdr_threads::protocol::commands::Command::CompleteInboxDelivery(_)
+        )));
+    }
+}
+
+fn test_cursor() -> String {
+    use herdr_threads::protocol::pagination::{
+        InboxBatchV2CursorState, InboxBatchV2Source, ReceiptAttentionCursorState,
+        SeatAttentionCursorState,
+    };
+    InboxBatchV2CursorState {
+        seat: SeatId::new("seat"),
+        binding_generation: Some(1),
+        execution: Some(ExecutionId::new(uuid::Uuid::from_u128(2).to_string())),
+        source: InboxBatchV2Source::Lazy,
+        lazy_after_ordinal: 0,
+        lazy_high_water_ordinal: 2,
+        publication_decision_high_water: 4,
+        body: None,
+        attention: SeatAttentionCursorState {
+            invitation_after_seq: 0,
+            invitation_after_ordinal: 0,
+            invitations_done: false,
+            has_pending_invitation: false,
+            invitation_frontier: Some((0, 2)),
+            receipts: Some(ReceiptAttentionCursorState {
+                physical_after: 0,
+                manifest_after: 0,
+                physical_high_water: 2,
+                manifest_high_water: 2,
+                next_manifest: false,
+            }),
+            receipts_done: false,
+            has_pending_receipt: false,
+            receipt_frontier_seq: Some(4),
+            physical_warning_after: 0,
+            physical_warning_high_water: 4,
+            manifest_warning_after: 0,
+            manifest_warning_high_water: 4,
+            next_manifest_warning: false,
+            latest_warning_seq: None,
+            latest_warning_offset: Some(0),
+        },
+    }
+    .encode(&uuid::Uuid::from_u128(1).to_string())
+    .unwrap()
+}
+
+#[test]
+fn continuation_mixed_sources_preserve_invocation() {
+    use herdr_threads::harness::context::Role;
+    let f = Fixture::new();
+    let CommandResult::InboxBatchV2(mut p) = page(0, 4) else {
+        unreachable!()
+    };
+    p.items.extend([
+        InboxBatchV2Item::Invitation {
+            thread: ThreadId::new("invite-thread"),
+            topic_data: "invite".into(),
+            invitation: InvitationId::new("invitation"),
+            required_service: None,
+        },
+        InboxBatchV2Item::Warning {
+            thread: ThreadId::new("warning-thread"),
+            topic_data: "warn".into(),
+            warning: MessageId::new("warning"),
+            sequence: 2,
+        },
+        InboxBatchV2Item::Message {
+            thread: ThreadId::new("thread"),
+            topic_data: "topic".into(),
+            message: MessageId::new("ordinary"),
+            sequence: 3,
+            sender: None,
+            author_role: None,
+            relays_user: false,
+            user_intent: None,
+            author_role_backfilled: false,
+            body: "ordinary".into(),
+            body_start: 0,
+            body_end: 8,
+            body_len: 8,
+            ack_candidate: Some(MessageId::new("ordinary")),
+        },
+    ]);
+    p.has_more = true;
+    p.stop_reason = StopReason::Bytes;
+    let cursor = test_cursor();
+    p.next_cursor = Some(cursor.clone());
+    p.next_argv = Some(vec![
+        "herdr-threads".into(),
+        "inbox".into(),
+        "--seat".into(),
+        "seat".into(),
+        "--cursor".into(),
+        cursor,
+    ]);
+    let c = Client {
+        calls: Default::default(),
+        v2: true,
+        result: CommandResult::InboxBatchV2(p),
+    };
+    let out = String::from_utf8(run(
+        &f,
+        &["ht", "inbox", "--machine", "--seat", "foreign"],
+        &c,
+        Role::TopLevel,
+    ))
+    .unwrap();
+    assert!(
+        out.contains("invite") && out.contains("warn") && out.contains("ordinary"),
+        "{out}"
+    );
+    let next = shlex::split(out.lines().find_map(|l| l.strip_prefix("next: ")).unwrap()).unwrap();
+    assert!(next.iter().any(|s| s == "--machine"));
+    let at = next.iter().position(|s| s == "--seat").unwrap();
+    assert_eq!(next[at + 1], "foreign");
+    let c = Client {
+        calls: Default::default(),
+        v2: true,
+        result: page(4, 10),
+    };
+    let refs: Vec<_> = next.iter().map(String::as_str).collect();
+    let out = String::from_utf8(run(&f, &refs, &c, Role::TopLevel)).unwrap();
+    assert!(out.contains("efghij"));
+    assert!(!has_lazy_progress(&f));
+    assert!(!c.calls.lock().unwrap().iter().any(|c| matches!(
+        c,
+        herdr_threads::protocol::commands::Command::CompleteInboxDelivery(_)
+            | herdr_threads::protocol::commands::Command::AckDisplayed(_)
+    )));
+}
+
+struct RefitClient {
+    calls: std::sync::Mutex<Vec<herdr_threads::protocol::commands::Command>>,
+}
+impl herdr_threads::ports::LocalClient for RefitClient {
+    fn supports_capability(
+        &self,
+        name: &str,
+        _: &herdr_threads::protocol::time::CallBudget,
+    ) -> bool {
+        name == herdr_threads::protocol::capabilities::INBOX_BATCH_V2
+    }
+    fn call(
+        &self,
+        command: herdr_threads::protocol::commands::Command,
+        _: &herdr_threads::protocol::time::CallBudget,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        use herdr_threads::protocol::{commands::Command, results::CapabilityList};
+        self.calls.lock().unwrap().push(command.clone());
+        match command {
+            Command::Capabilities => Ok(CommandResult::Capabilities(CapabilityList {
+                capabilities: vec![herdr_threads::protocol::capabilities::INBOX_BATCH_V2.into()],
+            })),
+            _ => panic!("unexpected accountable call {command:?}"),
+        }
+    }
+    fn call_with_output(
+        &self,
+        command: herdr_threads::protocol::commands::Command,
+        spec: &OutputSpec,
+        _: &herdr_threads::protocol::time::CallBudget,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        use herdr_threads::protocol::{
+            commands::Command,
+            output::{OutputFormat, encode_selected},
+            results::ApiError,
+        };
+        self.calls.lock().unwrap().push(command.clone());
+        let Command::InboxBatchV2(q) = command else {
+            panic!("unexpected call")
+        };
+        let CommandResult::InboxBatchV2(mut p) = page(0, 4) else {
+            unreachable!()
+        };
+        let cursor = test_cursor();
+        let mut argv = vec!["herdr-threads".into()];
+        if let Some(state) = &spec.context.state_dir {
+            argv.extend(["--state-dir".into(), state.clone()]);
+        }
+        if let Some(host) = &spec.context.host {
+            argv.extend(["--host-endpoint".into(), host.clone()]);
+        }
+        if spec.format == OutputFormat::Json {
+            argv.push("--json".into());
+        }
+        argv.extend([
+            "inbox".into(),
+            "--seat".into(),
+            "seat".into(),
+            "--cursor".into(),
+            cursor.clone(),
+            "--max-bytes".into(),
+            q.page.max_bytes.to_string(),
+        ]);
+        p.next_cursor = Some(cursor);
+        p.next_argv = Some(argv);
+        p.has_more = true;
+        p.stop_reason = StopReason::Bytes;
+        for n in (0..=1000).rev() {
+            if let InboxBatchV2Item::LazyMessage {
+                body,
+                body_end,
+                body_len,
+                ..
+            } = &mut p.items[0]
+            {
+                *body = "界".repeat(n);
+                *body_end = (n * 3) as u64;
+                *body_len = 3003;
+            }
+            let result = CommandResult::InboxBatchV2(p.clone());
+            if encode_selected(&result, spec)?.len() <= q.page.max_bytes as usize {
+                return Ok(result);
+            }
+        }
+        Err(ApiError::invalid_budget("server envelope cannot fit"))
+    }
+}
+
+#[derive(Default)]
+struct CountingWriter {
+    bytes: Vec<u8>,
+    writes: usize,
+    flushes: usize,
+}
+impl Write for CountingWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.writes += 1;
+        self.bytes.extend(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.flushes += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn continuation_final_argv_budget_blocks_proof_and_mutation() {
+    use herdr_threads::{harness::context::Role, protocol::commands::Command};
+    // The server page itself fits; only the final invocation decoration is impossible.
+    let f = Fixture::new();
+    let CommandResult::InboxBatchV2(mut p) = page(0, 10) else {
+        unreachable!()
+    };
+    p.has_more = true;
+    p.next_cursor = Some(test_cursor());
+    p.next_argv = Some(vec![
+        "herdr-threads".into(),
+        "inbox".into(),
+        "--cursor".into(),
+        test_cursor(),
+    ]);
+    let c = Client {
+        calls: Default::default(),
+        v2: true,
+        result: CommandResult::InboxBatchV2(p),
+    };
+    let state = format!("/private/tmp/{} ' $", "s".repeat(900));
+    let mut writer = CountingWriter::default();
+    let result = run_to_writer(
+        &f,
+        &["ht", "--state-dir", &state, "inbox", "--max-bytes", "1024"],
+        &c,
+        Role::TopLevel,
+        &mut writer,
+    );
+    assert!(
+        matches!(result, Err(herdr_threads::cli::RunError::Api(e)) if e.code == herdr_threads::protocol::results::ErrorCode::InvalidBudget)
+    );
+    assert_eq!(writer.writes, 0);
+    assert_eq!(writer.flushes, 0);
+    assert!(!has_lazy_progress(&f));
+    assert!(!c.calls.lock().unwrap().iter().any(|c| matches!(
+        c,
+        Command::CompleteInboxDelivery(_) | Command::AckDisplayed(_)
+    )));
+    for flags in [
+        vec!["--machine"],
+        vec!["--json"],
+        vec!["--seat", "foreign"],
+        vec!["human"],
+    ] {
+        for impossible in [false, true] {
+            let f = Fixture::new();
+            let client = RefitClient {
+                calls: Default::default(),
+            };
+            let state = format!(
+                "/private/tmp/state '{}' $ {}",
+                "s".repeat(if impossible { 900 } else { 20 }),
+                "界".repeat(4)
+            );
+            let host = "/private/tmp/host ' $ socket";
+            let mut argv = vec!["ht"];
+            if flags == ["human"] {
+                argv.push("human");
+            }
+            argv.extend([
+                "--state-dir",
+                &state,
+                "--host-endpoint",
+                host,
+                "inbox",
+                "--max-bytes",
+                "1024",
+                "--limit",
+                "7",
+            ]);
+            if flags != ["human"] {
+                argv.extend(&flags);
+            }
+            let mut writer = CountingWriter::default();
+            let result = run_to_writer(&f, &argv, &client, Role::TopLevel, &mut writer);
+            if impossible {
+                assert!(
+                    matches!(result, Err(herdr_threads::cli::RunError::Api(e)) if e.code == herdr_threads::protocol::results::ErrorCode::InvalidBudget)
+                );
+                assert!(writer.bytes.is_empty());
+                assert_eq!(writer.writes, 0);
+                assert_eq!(writer.flushes, 0);
+                assert!(!has_lazy_progress(&f));
+            } else {
+                result.unwrap();
+                assert!(writer.bytes.len() <= 1024);
+                assert_eq!(writer.flushes, 1);
+                let out = String::from_utf8(writer.bytes).unwrap();
+                let next = if flags == ["--json"] {
+                    serde_json::from_str::<serde_json::Value>(&out).unwrap()["result"]["data"]["next_argv"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_owned()).collect::<Vec<_>>()
+                } else {
+                    shlex::split(out.lines().find_map(|l| l.strip_prefix("next: ")).unwrap())
+                        .unwrap()
+                };
+                for (flag, value) in [
+                    ("--limit", "7"),
+                    ("--max-bytes", "1024"),
+                    ("--state-dir", &state),
+                    ("--host-endpoint", host),
+                ] {
+                    let at = next.iter().position(|s| s == flag).unwrap();
+                    assert_eq!(next[at + 1], value);
+                }
+                assert!(
+                    client
+                        .calls
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|c| matches!(c, Command::InboxBatchV2(_)))
+                        .count()
+                        > 1,
+                    "effective body budget was never reduced"
+                );
+                if flags == ["human"] {
+                    assert_eq!(next[1], "human");
+                } else {
+                    assert!(next.iter().any(|s| s == flags[0]));
+                }
+                if flags != ["human"] {
+                    assert!(!has_lazy_progress(&f));
+                }
+            }
+            let calls = client.calls.lock().unwrap();
+            assert!(
+                calls.iter().any(|c| matches!(c, Command::InboxBatchV2(_))),
+                "read control never ran"
+            );
+            assert!(!calls.iter().any(|c| matches!(
+                c,
+                Command::CompleteInboxDelivery(_) | Command::AckDisplayed(_) | Command::Ack(_)
+            )));
+        }
+    }
+}
+
+#[test]
+fn continuation_explicit_pane_stays_readonly_at_direct_entry() {
+    use herdr_threads::{harness::context::Role, protocol::commands::Command};
+    let f = Fixture::new();
+    let c = Client {
+        calls: Default::default(),
+        v2: true,
+        result: page(0, 10),
+    };
+    let out = run(&f, &["ht", "inbox", "--pane", "pane"], &c, Role::TopLevel);
+    assert!(!out.is_empty());
+    assert!(!has_lazy_progress(&f));
+    let calls = c.calls.lock().unwrap();
+    assert!(!calls.iter().any(|c| matches!(
+        c,
+        Command::CompleteInboxDelivery(_) | Command::AckDisplayed(_)
+    )));
+    assert!(calls.iter().any(|c| matches!(c, Command::InboxBatchV2(_))));
+}
+
+#[test]
+fn continuation_server_routing_fallback_stays_passive() {
+    use herdr_threads::harness::context::Role;
+    let f = Fixture::new();
+    let CommandResult::InboxBatchV2(mut p) = page(0, 4) else {
+        unreachable!()
+    };
+    p.has_more = true;
+    p.next_cursor = Some(test_cursor());
+    p.next_argv = Some(vec![
+        "herdr-threads".into(),
+        "--state-dir".into(),
+        "/server state".into(),
+        "--host-endpoint".into(),
+        "/server host".into(),
+        "inbox".into(),
+        "--seat".into(),
+        "seat".into(),
+        "--cursor".into(),
+        test_cursor(),
+    ]);
+    let c = Client {
+        calls: Default::default(),
+        v2: true,
+        result: CommandResult::InboxBatchV2(p),
+    };
+    let out =
+        String::from_utf8(run(&f, &["ht", "inbox", "--machine"], &c, Role::TopLevel)).unwrap();
+    let next = shlex::split(out.lines().find_map(|l| l.strip_prefix("next: ")).unwrap()).unwrap();
+    for (flag, value) in [
+        ("--state-dir", "/server state"),
+        ("--host-endpoint", "/server host"),
+        ("--seat", "seat"),
+    ] {
+        let at = next
+            .iter()
+            .position(|s| s == flag)
+            .expect("daemon continuation routing retained");
+        assert_eq!(next[at + 1], value);
+        assert_eq!(next.iter().filter(|s| *s == flag).count(), 1);
+    }
+    assert!(!has_lazy_progress(&f));
 }

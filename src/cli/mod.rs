@@ -839,8 +839,29 @@ where
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
     W: Write,
 {
+    if matches!(
+        &parsed.action,
+        CliAction::Wire(Command::Inbox(_) | Command::InboxBatch(_) | Command::InboxBatchV2(_))
+    ) {
+        // Pin effective routing even when it came from environment/defaults.
+        parsed
+            .output
+            .context
+            .state_dir
+            .get_or_insert_with(|| context.state_dir.to_string_lossy().into_owned());
+        parsed
+            .output
+            .context
+            .host
+            .get_or_insert_with(|| context.host_endpoint.to_string_lossy().into_owned());
+    }
+    // Capture omission before default_seat resolves the caller read. The second
+    // guard below adds the canonical selected seat while retaining that choice.
+    let _origin_inbox = output::InboxInvocationGuard::enter(&parsed, None);
     let selection = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock)?;
     resolve_recipient_seats(&mut parsed, paths, connection, clock)?;
+    let _inbox =
+        output::InboxInvocationGuard::enter(&parsed, selection.as_ref().map(|s| s.seat.clone()));
     if let Some(selection) = selection {
         let (instance, client) = connection.get()?;
         run_selected(
@@ -913,6 +934,7 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     } else {
         client.call_with_output(command.clone(), output_spec, &budget())?
     };
+    let result = fit_inbox_read(command.clone(), result, output_spec, client, budget)?;
     let (result, modes) = fit_annotated_read(command, result, output_spec, client, budget)?;
     let peer_hints = if output_spec.format == OutputFormat::Text && peer_locations::active() {
         let location_budget = budget();
@@ -964,6 +986,52 @@ fn read_byte_bound(command: &Command) -> u32 {
         _ => command
             .page()
             .map_or(crate::protocol::pagination::MAX_PAGE_BYTES, |p| p.max_bytes),
+    }
+}
+
+/// Refit server-selected chunks with the final CLI continuation overhead.
+/// Only the effective request bound shrinks; emitted continuations retain the
+/// original limit and byte bound through the invocation guard.
+fn fit_inbox_read<C: LocalClient + ?Sized>(
+    mut command: Command,
+    mut result: CommandResult,
+    spec: &OutputSpec,
+    client: &C,
+    budget: &dyn Fn() -> CallBudget,
+) -> Result<CommandResult, RunError> {
+    if !matches!(
+        command,
+        Command::Inbox(_) | Command::InboxBatch(_) | Command::InboxBatchV2(_)
+    ) {
+        return Ok(result);
+    }
+    let max = read_byte_bound(&command);
+    loop {
+        let bytes = output::emitted_bytes(&result, spec)?;
+        if bytes.len() <= max as usize {
+            return Ok(result);
+        }
+        let current = read_byte_bound(&command);
+        let overflow = u32::try_from(bytes.len() - max as usize).unwrap_or(u32::MAX);
+        let next = current.saturating_sub(overflow.max(current / 4));
+        if next < 256 {
+            return Err(ApiError::invalid_budget(
+                "inbox continuation cannot fit selected byte budget",
+            )
+            .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX))
+            .into());
+        }
+        match &mut command {
+            Command::Inbox(q) | Command::InboxBatch(q) | Command::InboxBatchV2(q) => {
+                q.page.max_bytes = next
+            }
+            _ => unreachable!(),
+        }
+        let retry = client.call_with_output(command.clone(), spec, &budget())?;
+        if retry == result {
+            return Err(ApiError::invalid_budget("inbox refit made no progress").into());
+        }
+        result = retry;
     }
 }
 
@@ -1047,11 +1115,12 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         .iter()
         .any(|name| name == crate::protocol::capabilities::INBOX_BATCH);
     if v2 {
-        let result = client.call_with_output(
-            Command::InboxBatchV2(request),
-            output_spec,
-            &cooperative_budget(clock),
-        )?;
+        let command = Command::InboxBatchV2(request);
+        let result =
+            client.call_with_output(command.clone(), output_spec, &cooperative_budget(clock))?;
+        let result = fit_inbox_read(command, result, output_spec, client, &|| {
+            cooperative_budget(clock)
+        })?;
         if !matches!(result, CommandResult::InboxBatchV2(_)) {
             return Err(RunError::Api(ApiError::store_corrupt(
                 "daemon returned no v2 inbox batch",
@@ -1079,11 +1148,12 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
             "this daemon does not support compact inbox display ACK; upgrade the daemon or use inbox --machine for a read-only view",
         ));
     }
-    let result = client.call_with_output(
-        Command::InboxBatch(request),
-        output_spec,
-        &cooperative_budget(clock),
-    )?;
+    let command = Command::InboxBatch(request);
+    let result =
+        client.call_with_output(command.clone(), output_spec, &cooperative_budget(clock))?;
+    let result = fit_inbox_read(command, result, output_spec, client, &|| {
+        cooperative_budget(clock)
+    })?;
     let CommandResult::InboxBatch(page) = &result else {
         return Err(RunError::Api(ApiError::store_corrupt(
             "daemon returned no inbox batch",
@@ -2201,7 +2271,22 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         Capability, LifecycleEvent, bridge,
         context::{EventKind, Role},
     };
-    let own_text_inbox = matches!(&parsed.action, CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
+    let seat = if matches!(
+        &parsed.action,
+        CliAction::Wire(Command::Inbox(_) | Command::InboxBatch(_) | Command::InboxBatchV2(_))
+    ) {
+        contexts
+            .current()
+            .map_err(context_run_error)?
+            .as_ref()
+            .map(|c| crate::protocol::ids::SeatId::new(c.seat.clone()))
+    } else {
+        None
+    };
+    let _inbox = output::InboxInvocationGuard::enter(&parsed, seat);
+    let _presentation = output::PresentationGuard::enter(parsed.presentation, &parsed.output);
+    let own_text_inbox = parsed.caller_read_default
+        && matches!(&parsed.action, CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
         && parsed.output.format == OutputFormat::Text
         && parsed.presentation != output::Presentation::Machine;
     if let CliAction::Retry(recovery) = &parsed.action {
@@ -2219,9 +2304,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         }
     }
     if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
-        && query.seat.is_none()
-        && parsed.output.format == OutputFormat::Text
-        && parsed.presentation != output::Presentation::Machine
+        && own_text_inbox
         && role == Role::TopLevel
     {
         return run_display_inbox(
