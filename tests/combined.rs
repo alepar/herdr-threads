@@ -85,3 +85,6 @@ mod lazy_markers;
 
 #[path = "cli/lazy_display.rs"]
 mod lazy_display;
+
+#[path = "cli/lazy_settlement.rs"]
+mod lazy_settlement;

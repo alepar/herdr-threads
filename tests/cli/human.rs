@@ -592,6 +592,7 @@ fn human_namespace_communication_preserves_claim() {
             "thread-test",
             "--body",
             "human is peer text",
+            "--nudge",
             "--relays-user",
         ],
         &["invite", "thread-test", "--seat", "seat-recipient"],

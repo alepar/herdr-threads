@@ -1066,15 +1066,12 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
             &claim,
             lazy_display::DisplaySelection::OwnDefaultText,
         )?;
-        // Lazy candidates remain pending until the independent settlement leaf
-        // installs its frozen completion intent. Never turn them into ACKs.
-        return settle_displayed_ack(
-            candidates.ordinary,
-            candidates.claim,
-            output_spec,
+        return lazy_display::settle(
+            candidates,
             journal,
-            client,
-            clock,
+            clock.utc_now().0,
+            |command| client.call(command, &cooperative_budget(clock)),
+            output_spec,
         );
     }
     if !supported {
@@ -1234,7 +1231,16 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         harness::context::{OccupantContext, SessionReference},
         protocol::{commands::SeatInspectQuery, pagination::PageRequest, results::CommandResult},
     };
-    validate_actor_harness(parsed.actor, selection.harness)?;
+    if let CliAction::Retry(recovery) = &parsed.action {
+        retry::preflight_original_actor(
+            paths.instance_dir.join("intents"),
+            recovery.as_str(),
+            parsed.actor,
+            &parsed.output.context,
+        )?;
+    } else {
+        validate_actor_harness(parsed.actor, selection.harness)?;
+    }
     if matches!(&parsed.action, CliAction::Summary(_)) {
         return summary::run(parsed, selection, paths, instance, client, clock, writer);
     }
@@ -1805,7 +1811,9 @@ where
     C: LocalClient,
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
 {
-    if let Some(selection) = &parsed.cooperative {
+    if let Some(selection) = &parsed.cooperative
+        && !matches!(&parsed.action, CliAction::Retry(_))
+    {
         validate_actor_harness(parsed.actor, selection.harness)?;
     }
     match caller_need(parsed, paths)? {
@@ -2022,7 +2030,9 @@ where
                 ))
             })?,
     };
-    validate_actor_harness(parsed.actor, context.harness)?;
+    if !matches!(&parsed.action, CliAction::Retry(_)) {
+        validate_actor_harness(parsed.actor, context.harness)?;
+    }
     let operator_override = contexts.operator_mark() == Some(context.execution);
     selection_from_context(
         pane,
@@ -2194,7 +2204,15 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     let own_text_inbox = matches!(&parsed.action, CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
         && parsed.output.format == OutputFormat::Text
         && parsed.presentation != output::Presentation::Machine;
-    if !matches!(&parsed.action, CliAction::Wire(_)) || own_text_inbox {
+    if let CliAction::Retry(recovery) = &parsed.action {
+        retry::preflight_original_actor(
+            journal.root(),
+            recovery.as_str(),
+            parsed.actor,
+            &parsed.output.context,
+        )?;
+    }
+    if !matches!(&parsed.action, CliAction::Wire(_) | CliAction::Retry(_)) || own_text_inbox {
         let current = contexts.current().map_err(context_run_error)?;
         if let Some(context) = initial.or(current.as_ref()) {
             validate_actor_harness(parsed.actor, context.harness)?;

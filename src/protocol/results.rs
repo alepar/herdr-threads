@@ -1291,6 +1291,7 @@ pub enum IntentKind {
     Reject,
     SendMessage,
     Ack,
+    CompleteInboxDelivery,
     Leave,
     SetTopic,
     SetThreadName,

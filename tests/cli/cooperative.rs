@@ -2881,3 +2881,88 @@ fn actor_boundary_selected(human_route: bool) {
     assert!(output.is_empty());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+// Kills: selected retry reaching SeatInspect or cleanup before original-actor
+// preflight. A misleading current selection cannot turn a saved Human into Agent.
+#[test]
+fn lazy_selected_human_retry_root_refuses_before_client() {
+    use crate::{
+        cli::commands::CooperativeSelection,
+        daemon::paths::{InstancePaths, RuntimeContext},
+        harness::context::{Harness as ContextHarness, Role},
+    };
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(".tmp/ht-big.5.2")
+        .join(format!("lazy-selected-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let runtime = RuntimeContext::explicit(root.join("state"), root.join("host"), None).unwrap();
+    let paths = InstancePaths::resolve_read_only(&runtime).unwrap();
+    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let mut saved = claim();
+    saved.harness = Harness::Human;
+    let reference = journal
+        .record(
+            IntentScope::Cooperative {
+                instance: saved.instance.clone(),
+                seat: saved.seat.clone(),
+            },
+            SemanticMutation::freeze(
+                SemanticMutation::CompleteInboxDelivery {
+                    messages: vec![MessageId::new("lazy")],
+                },
+                saved.clone(),
+            )
+            .unwrap(),
+            1,
+        )
+        .unwrap();
+    struct NoClient;
+    impl crate::ports::LocalClient for NoClient {
+        fn call(
+            &self,
+            c: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            panic!("must refuse before client {c:?}")
+        }
+        fn call_with_output(
+            &self,
+            c: Command,
+            _: &crate::protocol::output::OutputSpec,
+            b: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.call(c, b)
+        }
+    }
+    let selection = CooperativeSelection {
+        seat: saved.seat,
+        target: saved.target,
+        harness: ContextHarness::Codex,
+        role: Role::TopLevel,
+    };
+    let parsed = crate::cli::commands::parse_argv([
+        "ht".to_owned(),
+        "retry".into(),
+        reference.recovery_ref(),
+    ])
+    .unwrap();
+    let mut output = vec![];
+    let error = crate::cli::run_selected(
+        parsed,
+        &selection,
+        &paths,
+        uuid::Uuid::from_u128(1),
+        &NoClient,
+        &crate::app::SystemClock::new(),
+        &mut output,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("person/operator retry requires immediate human namespace")
+    );
+    assert!(output.is_empty());
+    assert!(journal.load(&reference).is_ok());
+    std::fs::remove_dir_all(root).unwrap();
+}

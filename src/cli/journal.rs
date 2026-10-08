@@ -166,6 +166,9 @@ pub enum SemanticMutation {
     AckDisplayed {
         messages: Vec<MessageId>,
     },
+    CompleteInboxDelivery {
+        messages: Vec<MessageId>,
+    },
     Leave {
         thread: ThreadId,
     },
@@ -347,7 +350,9 @@ impl SemanticMutation {
                 expected_revision: 0,
                 ..
             } => Err(invalid("required acceptance revision must be positive")),
-            Self::Ack { messages } | Self::AckDisplayed { messages }
+            Self::Ack { messages }
+            | Self::AckDisplayed { messages }
+            | Self::CompleteInboxDelivery { messages }
                 if messages.is_empty() || messages.len() > MAX_BATCH_ITEMS =>
             {
                 Err(invalid("invalid ack batch size"))
@@ -393,6 +398,7 @@ impl SemanticMutation {
             Self::AcceptRequired { .. } => IntentKind::Accept,
             Self::SendMessage { .. } => IntentKind::SendMessage,
             Self::Ack { .. } | Self::AckDisplayed { .. } => IntentKind::Ack,
+            Self::CompleteInboxDelivery { .. } => IntentKind::CompleteInboxDelivery,
             Self::Leave { .. } => IntentKind::Leave,
             Self::SetTopic { .. } => IntentKind::SetTopic,
             Self::SetThreadName { .. } => IntentKind::SetThreadName,
@@ -555,6 +561,13 @@ impl SemanticMutation {
                 operation,
                 claim: native()?,
             }),
+            Self::CompleteInboxDelivery { messages } => {
+                Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                    messages: messages.clone(),
+                    operation,
+                    claim: native()?,
+                })
+            }
             Self::Leave { thread } => Command::Leave(Leave {
                 thread: thread.clone(),
                 operation,
@@ -1215,7 +1228,19 @@ impl Journal {
         file.write_all(b"\n")?;
         file.sync_all()?;
         fs::rename(path, self.path(&reference))?;
-        File::open(&self.root)?.sync_all()?;
+        // The entry is already visible. A failed durability barrier must not
+        // hide the operation's exact recovery reference from the caller.
+        File::open(&self.root)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "published intent durability uncertain: {error}; recovery_ref={}",
+                        reference.recovery_ref()
+                    ),
+                )
+            })?;
         Ok(reference)
     }
     pub fn load(&self, reference: &IntentRef) -> io::Result<PendingIntent> {
@@ -1491,6 +1516,7 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
                     request,
                     SemanticMutation::ResolveSeat { .. }
                         | SemanticMutation::ContinuityCheckIn { .. }
+                        | SemanticMutation::CompleteInboxDelivery { .. }
                 )
         }
         (IntentScope::Operator { .. }, request) => request.is_operator(),
