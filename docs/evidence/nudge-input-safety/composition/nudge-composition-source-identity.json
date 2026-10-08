@@ -1,0 +1,74 @@
+{
+  "src/host/native.rs": {
+    "unchanged_from": "95d6749b118f1ebf6aea0f198eafa1787a9ea12a",
+    "sha256": "ee218c096c0a85659490ed3fb229bf2d6f427a4be3efbad9fcf714baac38da8e"
+  },
+  "src/notification/dispatch.rs": {
+    "unchanged_from": "95d6749b118f1ebf6aea0f198eafa1787a9ea12a",
+    "sha256": "d0ecd62cfa3c566c08ee655ab3b1a9f80216999b08d166dcb48e931e58ff1453"
+  },
+  "src/scheduler/mod.rs": {
+    "unchanged_from": "95d6749b118f1ebf6aea0f198eafa1787a9ea12a",
+    "sha256": "87340db78bfcee432589a737591d1b02846522bb8a186279bd61dc86b7e75897"
+  },
+  "tests/scheduler/dispatch.rs": {
+    "unchanged_from": "95d6749b118f1ebf6aea0f198eafa1787a9ea12a",
+    "sha256": "12a58e04179a8253a62515c86babd7d7db8ff43168246b8985e8591074c8a573"
+  },
+  "tests/scheduler/poke_flow.rs": {
+    "unchanged_from": "95d6749b118f1ebf6aea0f198eafa1787a9ea12a",
+    "sha256": "3ff35fc1ebb9076dafdd0b0a7d734aa29099e58b6a97cf0d3f916c17c5cbd991"
+  },
+  "tests/scheduler/wake_outcome_seam.rs": {
+    "unchanged_from": "95d6749b118f1ebf6aea0f198eafa1787a9ea12a",
+    "sha256": "675ee5bd6fad0dd284ae03f1ca17a1d097909444f5ff8c85bfe0be11f727bf43"
+  },
+  "tests/integration/latency.rs": {
+    "unchanged_from": "95d6749b118f1ebf6aea0f198eafa1787a9ea12a",
+    "sha256": "7b07aa2885b4891b0400f634fe49a2c71762c2af52772c6e4782e96724cd2c64"
+  },
+  "tests/integration/sweep.rs": {
+    "unchanged_from": "95d6749b118f1ebf6aea0f198eafa1787a9ea12a",
+    "sha256": "595577f57458444d5bcb2a5e177dc91fc975be5c63d834922eaf29f11956203a"
+  },
+  "src/store/wake.rs": {
+    "unchanged_from": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+    "sha256": "ef2d3922a9668e1dd887a2909ae84685af11b8a336186e84e48240130a381c24"
+  },
+  "src/store/attention.rs": {
+    "unchanged_from": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+    "sha256": "cfedab1c09980a34d2581e7fbc30cf7cec9be0f7255cb1d222fd1293cac08ee2"
+  },
+  "src/store/mod.rs": {
+    "unchanged_from": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+    "sha256": "a277f9be5206e32d4c02ec5cda62fb18ab502c2883f14b25a20d05c62c9f6763"
+  },
+  "src/store/seats.rs": {
+    "unchanged_from": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+    "sha256": "7d788b485609657a22f173faaca595b36a8b5129f5808dea5074e20eee7691fa"
+  },
+  "src/harness/bridge.rs": {
+    "unchanged_from": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+    "sha256": "2b4e223789492ceaab7b3591a55f76dd74e2e5c22edfa3266922e1f2316a1ed5"
+  },
+  "src/harness/mod.rs": {
+    "unchanged_from": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+    "sha256": "e359210cc1148325171b8867736b855dd39212245e58de0b4fb7d418168ee293"
+  },
+  "src/cli/hook.rs": {
+    "unchanged_from": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+    "sha256": "dabd1b01b1a71e314bc9c7d014630e0966cd8b26dfad3004da368414a976a9f8"
+  },
+  "src/protocol/capabilities.rs": {
+    "unchanged_from": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+    "sha256": "f5bbaecea522b35e52583b95330e15c694ce6f49dabe4c3c8f75b2e6c7516249"
+  },
+  "src/protocol/results.rs": {
+    "unchanged_from": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+    "sha256": "f962bdabb3c06c06489d11066fa28889cefc8b13ed76745190a480a143ba2ef4"
+  },
+  "migrations/0025_warning_notice_delivery.sql": {
+    "unchanged_from": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+    "sha256": "be0ff728fb17015517364604d2d2fe55a5a826665fb1f34e23ecf2f854431417"
+  }
+}

@@ -1,0 +1,22 @@
+   Compiling herdr-threads v0.2.12 (/Users/alepar/AleCode/herdr-threads/.worktrees/nudge-input-safety)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.10s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-aa425b885727aee3)
+
+running 1 test
+test scheduler::tests::active_attention_is_deferred_even_with_turn_capability_then_idle_delivers ... FAILED
+
+failures:
+
+---- scheduler::tests::active_attention_is_deferred_even_with_turn_capability_then_idle_delivers stdout ----
+
+thread 'scheduler::tests::active_attention_is_deferred_even_with_turn_capability_then_idle_delivers' (9586669) panicked at src/scheduler/../../tests/scheduler/dispatch.rs:5771:9:
+PokeOnly: active turn sends no input
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    scheduler::tests::active_attention_is_deferred_even_with_turn_capability_then_idle_delivers
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2662 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

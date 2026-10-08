@@ -1905,8 +1905,8 @@ impl WakeReservation {
     /// target, boot, epoch, generation, terminal and verified server
     /// incarnation, from a fresh current-target read with no positive
     /// evidence of an empty shell, an active turn or blocked UI. Typed
-    /// composer input (`HumanInput`) never refuses an ordinary wake
-    /// (TRUST-POLICY A4), as before the composer reader existed.
+    /// composer input is refused by the dispatcher; the native adapter also
+    /// checks the composer immediately before delivery (TRUST-POLICY A4).
     /// A verified execution is never downgraded to this path.
     pub fn matches_cooperative_identity(&self, observation: &HostObservation) -> bool {
         self.matches_cooperative_structure(observation)
@@ -1917,8 +1917,8 @@ impl WakeReservation {
     }
     /// The structural half of [`Self::matches_cooperative_identity`], without
     /// the UI exclusions: a soft-deadline poke decides the UI state itself
-    /// (`poke_eligibility`) and may act in an active turn or typed input where
-    /// the harness recipe declares it.
+    /// (`poke_eligibility`); the dispatcher still refuses active turns and
+    /// typed input regardless of historical recipe declarations.
     pub fn matches_cooperative_structure(&self, observation: &HostObservation) -> bool {
         let ReservedWakeAuthority::Cooperative {
             terminal,
@@ -2169,8 +2169,7 @@ pub enum WakeOutcome {
     /// The prompt was delivered and verified submitted.
     Submitted,
     /// The prompt may or may not have been delivered. Also the outcome of a
-    /// prompt delivered to the pane but still unsent after the single
-    /// submit-key retry (ht-p03.41): it keeps the advanced ladder step, is
+    /// prompt delivered to the pane but still observed in its composer: it keeps the advanced ladder step, is
     /// never re-sent in a loop, and stores this same last_outcome string.
     OutcomeUnknown,
     Unsafe,
@@ -2255,8 +2254,8 @@ pub enum ComposerStash {
     Failed(String),
 }
 
-/// Evidence-backed poke capabilities per harness. The default reports none, so
-/// ActiveTurn and HumanInput pokes are skipped until a recipe declares them.
+/// Historical captured poke capabilities per harness. Notification dispatch
+/// now defers ActiveTurn and HumanInput even when a recipe declares support.
 pub trait PokeCapabilitySource: Send + Sync {
     fn capabilities(&self, _harness: Harness) -> crate::harness::recipe::PokeCapabilities {
         crate::harness::recipe::PokeCapabilities::NONE
@@ -2847,11 +2846,8 @@ pub trait HostPort: Send + Sync {
         text: &str,
         context: &HostCallContext,
     ) -> Result<PromptOutcome, ApiError>;
-    /// A soft-deadline poke into a running turn (spec §10 `poke_during_turn`):
-    /// the prompt is queued into the current turn, so the adapter's recheck
-    /// accepts a `working` agent for this call only. Ordinary wakes keep
-    /// `submit_prompt`'s idle/done recheck. Adapters without the mode submit
-    /// as an ordinary wake, which refuses a working agent.
+    /// Historical turn-time compatibility hook, unused by notification dispatch.
+    /// Native attention requires idle/done through both entry points.
     fn submit_prompt_during_turn(
         &self,
         target: &SafeWakeTarget,
@@ -2880,7 +2876,8 @@ pub trait HostPort: Send + Sync {
         context: &HostCallContext,
     ) -> Result<AgentComposerState, ApiError>;
     /// Send exactly one submit key (Enter) to the wake target's composer. Used
-    /// once per wake drive when the prompt was left unsent (Wave 28).
+    /// retained for explicit adapter clients; attention verification never
+    /// invokes it because new user input may have entered the composer.
     fn send_submit_key(
         &self,
         target: &SafeWakeTarget,

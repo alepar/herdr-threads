@@ -1,0 +1,13 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running tests/integration.rs (target/debug/deps/integration-4af53d42e594f6a8)
+
+running 6 tests
+test sweep::stand_in_herdr_scripts_pane_agent_present_absent_mismatched_and_error ... ok
+test sweep::cooperative_setup_sweep_reports_healthy_daemon_and_pending_codex_review ... ok
+test summary_flow::summary_sweep::settings_change_starts_a_new_generation ... ok
+test summary_flow::summary_sweep::recovery_to_ready_with_hold_and_poke_suppressed ... ok
+test summary_flow::summary_sweep::join_hint_then_summary ... ok
+test sweep::installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 8.73s
+

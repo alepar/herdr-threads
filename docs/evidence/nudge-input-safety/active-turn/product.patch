@@ -1,0 +1,472 @@
+diff --git a/TRUST-POLICY.md b/TRUST-POLICY.md
+index 7ae7cebd..9f14132b 100644
+--- a/TRUST-POLICY.md
++++ b/TRUST-POLICY.md
+@@ -200,8 +200,8 @@ model open work, and summary closure never changes receipt state or installs glo
+   `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
+   submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound
+   harness. It is decided from a fresh observation immediately before the prompt, only when the pane is not
+-  focused and the composer is empty; an active turn is eligible only where the harness recipe
+-  declares `poke_during_turn` from captured evidence
++  focused, the composer is empty, and the agent is idle/done. Working agents are deferred even
++  where a historical recipe declares `poke_during_turn` from captured evidence
+   (`docs/evidence/poke-spike/findings.md`). Existing exact-version recipe declarations remain
+   historical captured qualification, not operational admission. Ordinary daemon observation resolves
+   executables without probing runtime metadata; absent current-runtime qualification declares neither
+@@ -241,11 +241,12 @@ model open work, and summary closure never changes receipt state or installs glo
+     disabled through the existing user-approved setup option; this change never edits configuration.
+   - *Verification is read-only.* A held marker yields an unsubmitted diagnostic/uncertain delivery;
+     verification never sends an additional Enter, which could submit newly typed user text.
+-  - *During a turn.* Where a recipe declares `poke_during_turn`, the poke is submitted with `agent prompt`,
+-    which queues it into the running turn at the next tool boundary (steering, not a separate user turn). The
+-    adapter's recheck allows a working agent for that call only.
+-  - *Post-send verification.* The read-only check is skipped for a poke queued into a running turn,
+-    whose prompt does not occupy the idle composer. It never changes the composer or sends keys.
++  - *During a turn.* Unsolicited attention never queues into a reported active turn. The dispatcher
++    refuses ActiveTurn and both native prompt entry points require idle/done, regardless of an old
++    turn-time capability declaration. Pending obligations wait for a later eligible observation.
++    Composer emptiness never establishes idle status. These host status observations are sampled
++    screen/lifecycle inference, not independent proof of physical turn completion.
++  - *Post-send verification.* The read-only check never changes the composer or sends keys.
+   - *Declarations.* Claude 2.1.287 declares both (spike evidence). No Codex recipe declares either: the
+     spike tested Codex 0.160.0 (mock provider), which no recipe covers, so Codex seats are poked only when
+     idle with an empty composer. Claude's `composer_stash` declaration currently never stashes, because no
+@@ -387,8 +388,8 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
+   runtime metadata. Unknown metadata inherits no optional compact, composer, turn-time poke or native
+   receipt capability. Historical captured declarations (Claude 2.1.287's richer behavior; every Codex
+   version declares neither rich poke capability) remain evidence for their exact captures, never a grant
+-  to an unidentified current runtime. A working agent or typed draft is skipped without separate safe
+-  turn-time qualification; typed drafts always defer attention. The hard-deadline warning remains
++  to an unidentified current runtime. Working agents and typed drafts always defer native attention,
++  including with historical turn-time qualification. The hard-deadline warning remains
+   durable pending attention, subject to the same native composer admission when waking.
+ - **Unavailable-runtime diagnostics are bounded advisory history.** Failures use only the existing
+   harness/session/contract producer scope, never an invented version/build key or account authority.
+diff --git a/src/host/native.rs b/src/host/native.rs
+index 3b1776c3..68eb623d 100644
+--- a/src/host/native.rs
++++ b/src/host/native.rs
+@@ -1000,19 +1000,18 @@ impl HostPort for NativeCli {
+         text: &str,
+         context: &HostCallContext,
+     ) -> Result<ports::PromptOutcome, ApiError> {
+-        self.submit_prompt_mode(target, text, context, false)
++        self.submit_prompt_mode(target, text, context)
+     }
+ 
+-    /// Poke spike Q5: `agent.prompt` during a running turn is queued and
+-    /// steered into it at the next tool boundary. Only a recipe declaring
+-    /// `poke_during_turn` reaches this; the recheck allows `working`.
++    /// Retained port compatibility; attention now requires idle/done even
++    /// through this entry point. Historical turn-time recipes are not admission.
+     fn submit_prompt_during_turn(
+         &self,
+         target: &SafeWakeTarget,
+         text: &str,
+         context: &HostCallContext,
+     ) -> Result<ports::PromptOutcome, ApiError> {
+-        self.submit_prompt_mode(target, text, context, true)
++        self.submit_prompt_mode(target, text, context)
+     }
+ 
+     /// Reads the composer (`agent read --source detection`), clears it with a
+@@ -1234,7 +1233,6 @@ impl HostPort for NativeCli {
+ fn cooperative_wake_ready(
+     agent: &serde_json::Value,
+     target: &SafeWakeTarget,
+-    during_turn: bool,
+ ) -> Result<(), String> {
+     let text = |name: &str| agent.get(name).and_then(serde_json::Value::as_str);
+     if text("pane_id") != Some(target.target.as_str())
+@@ -1262,9 +1260,7 @@ fn cooperative_wake_ready(
+         _ => {}
+     }
+     let status = text("agent_status");
+-    let ready = status.is_some_and(|status| {
+-        WAKE_READY_STATUSES.contains(&status) || (during_turn && status == "working")
+-    });
++    let ready = status.is_some_and(|status| WAKE_READY_STATUSES.contains(&status));
+     if !ready {
+         return Err(format!(
+             "agent is not awaiting input (status {})",
+@@ -1327,7 +1323,6 @@ impl NativeCli {
+         target: &SafeWakeTarget,
+         text: &str,
+         context: &HostCallContext,
+-        during_turn: bool,
+     ) -> Result<ports::PromptOutcome, ApiError> {
+         // Taking the sample first makes every failed identity/status/read reset
+         // the window. Only a successful focused-empty sample below retains it.
+@@ -1402,7 +1397,7 @@ impl NativeCli {
+             .ok()
+             .and_then(|value| value.pointer("/result/agent").cloned())
+             .ok_or_else(|| refuse("unreadable agent recheck"))?;
+-        if let Err(detail) = cooperative_wake_ready(&agent, target, during_turn) {
++        if let Err(detail) = cooperative_wake_ready(&agent, target) {
+             return Err(refuse(&detail));
+         }
+         let harness = target
+@@ -3929,42 +3924,29 @@ mod tests {
+         assert_eq!(methods, ["pane.get"]);
+     }
+ 
+-    /// Kills: `poke_during_turn` leaking into ordinary wakes. A working agent
+-    /// is prompted only through the during-turn mode; `submit_prompt` still
+-    /// refuses it before any prompt.
++    /// Empty composer is not idle evidence: both prompt entry points refuse
++    /// a working agent before composer I/O or any submitted input.
+     #[cfg(target_os = "macos")]
+     #[test]
+-    fn active_turn_poke_uses_the_declared_primitive() {
+-        let working = || recheck_exchange(wake_agent("working", Some("claude"), "term_1"));
+-        let ((ordinary, during_turn), methods) = poke_session(
+-            vec![
+-                working(),
+-                working(),
+-                detection_exchange(CLAUDE_EMPTY),
+-                prompt_exchange("poke text"),
+-            ],
+-            |cli, target, context| {
+-                (
+-                    cli.submit_prompt(target, "poke text", context),
+-                    cli.submit_prompt_during_turn(target, "poke text", context),
+-                )
+-            },
+-        );
+-        let refused = ordinary.unwrap_err();
+-        assert_eq!(refused.code, ErrorCode::TargetUnsafe);
+-        assert!(refused.detail.contains("not awaiting input"), "{refused:?}");
+-        assert_eq!(during_turn.unwrap(), ports::PromptOutcome::Submitted);
+-        assert_eq!(
+-            methods,
+-            [
+-                "pane.get",
+-                "agent.get",
+-                "agent.get",
+-                "agent.read",
+-                "agent.prompt"
+-            ],
+-            "the ordinary wake sent no prompt"
+-        );
++    fn active_turn_attention_is_refused_for_codex_and_claude() {
++        for kind in ["codex", "claude"] {
++            let working = || recheck_exchange(wake_agent("working", Some(kind), "term_1"));
++            let ((ordinary, during_turn), methods) =
++                poke_session(vec![working(), working()], |cli, target, context| {
++                    let mut target = target.clone();
++                    target.bound_harness = Some(kind.into());
++                    (
++                        cli.submit_prompt(&target, "wake marker", context),
++                        cli.submit_prompt_during_turn(&target, "poke text", context),
++                    )
++                });
++            for result in [ordinary, during_turn] {
++                let refused = result.unwrap_err();
++                assert_eq!(refused.code, ErrorCode::TargetUnsafe);
++                assert!(refused.detail.contains("not awaiting input"), "{refused:?}");
++            }
++            assert_eq!(methods, ["pane.get", "agent.get", "agent.get"], "{kind}");
++        }
+     }
+ 
+     /// Blocked UI is refused even in the during-turn mode.
+diff --git a/src/notification/dispatch.rs b/src/notification/dispatch.rs
+index fddf6990..a1411e6c 100644
+--- a/src/notification/dispatch.rs
++++ b/src/notification/dispatch.rs
+@@ -225,7 +225,10 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
+         if !identity_ok {
+             return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+         }
+-        if observation.ui == HostUiState::HumanInput {
++        if matches!(
++            observation.ui,
++            HostUiState::HumanInput | HostUiState::ActiveTurn
++        ) {
+             return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+         }
+         let selected = if poke.is_some() {
+@@ -328,27 +331,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
+             (Some(request), true) => request.plan.text.as_str(),
+             _ => MARKER,
+         };
+-        // A poke accepted for a running turn queues into it; the host's
+-        // recheck then allows `working` for this call only.
+-        let during_turn = using_poke && observation.ui == HostUiState::ActiveTurn;
+-        let submitted = if during_turn {
+-            self.host
+-                .submit_prompt_during_turn(&target, text, &prompt_context)
+-        } else {
+-            self.host.submit_prompt(&target, text, &prompt_context)
+-        };
++        // Unsolicited attention never queues into an active turn.
++        let submitted = self.host.submit_prompt(&target, text, &prompt_context);
+         let diagnostic = None;
+         let submitted = match submitted {
+             Ok(submitted) => submitted,
+             Err(err) => return refuse_error(err),
+         };
+         match submitted {
+-            // A turn-time poke is queued; otherwise verification only reads.
+-            PromptOutcome::Submitted if during_turn => Ok(PokeAttempt {
+-                outcome: WakeOutcome::Submitted,
+-                poked: using_poke,
+-                diagnostic,
+-            }),
+             PromptOutcome::Submitted => {
+                 let verification = self.verify_submission(&target, context);
+                 if let Ok(mut verifications) = self.verifications.lock() {
+diff --git a/src/ports.rs b/src/ports.rs
+index 000549e4..ef77b741 100644
+--- a/src/ports.rs
++++ b/src/ports.rs
+@@ -1917,8 +1917,8 @@ impl WakeReservation {
+     }
+     /// The structural half of [`Self::matches_cooperative_identity`], without
+     /// the UI exclusions: a soft-deadline poke decides the UI state itself
+-    /// (`poke_eligibility`) and may act in an active turn or typed input where
+-    /// the harness recipe declares it.
++    /// (`poke_eligibility`); the dispatcher still refuses active turns and
++    /// typed input regardless of historical recipe declarations.
+     pub fn matches_cooperative_structure(&self, observation: &HostObservation) -> bool {
+         let ReservedWakeAuthority::Cooperative {
+             terminal,
+@@ -2254,8 +2254,8 @@ pub enum ComposerStash {
+     Failed(String),
+ }
+ 
+-/// Evidence-backed poke capabilities per harness. The default reports none, so
+-/// ActiveTurn and HumanInput pokes are skipped until a recipe declares them.
++/// Historical captured poke capabilities per harness. Notification dispatch
++/// now defers ActiveTurn and HumanInput even when a recipe declares support.
+ pub trait PokeCapabilitySource: Send + Sync {
+     fn capabilities(&self, _harness: Harness) -> crate::harness::recipe::PokeCapabilities {
+         crate::harness::recipe::PokeCapabilities::NONE
+@@ -2846,11 +2846,8 @@ pub trait HostPort: Send + Sync {
+         text: &str,
+         context: &HostCallContext,
+     ) -> Result<PromptOutcome, ApiError>;
+-    /// A soft-deadline poke into a running turn (spec §10 `poke_during_turn`):
+-    /// the prompt is queued into the current turn, so the adapter's recheck
+-    /// accepts a `working` agent for this call only. Ordinary wakes keep
+-    /// `submit_prompt`'s idle/done recheck. Adapters without the mode submit
+-    /// as an ordinary wake, which refuses a working agent.
++    /// Historical turn-time compatibility hook, unused by notification dispatch.
++    /// Native attention requires idle/done through both entry points.
+     fn submit_prompt_during_turn(
+         &self,
+         target: &SafeWakeTarget,
+diff --git a/tests/scheduler/dispatch.rs b/tests/scheduler/dispatch.rs
+index ab3a406f..9195a80d 100644
+--- a/tests/scheduler/dispatch.rs
++++ b/tests/scheduler/dispatch.rs
+@@ -5750,6 +5750,58 @@ fn poke_plan_for_tests() -> PokePlan {
+     }
+ }
+ 
++#[test]
++fn active_attention_is_deferred_even_with_turn_capability_then_idle_delivers() {
++    let clock = FakeClock(AtomicU64::new(0));
++    let check = FakeReservationCheck {
++        current: true,
++        calls: AtomicU64::new(0),
++    };
++    let caps = Declared(PokeCapabilities {
++        composer_stash: NativeSupport::Supported,
++        poke_during_turn: NativeSupport::Supported,
++    });
++    for mode in [PokeMode::PokeOnly, PokeMode::WithWake] {
++        let host = PokeHost::new(HostUiState::ActiveTurn, false);
++        let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
++        let attempt = dispatcher
++            .attempt_poke(
++                poke_reservation("seat", "a"),
++                &poke_plan_for_tests(),
++                mode,
++                &caps,
++                &dispatch_context(),
++            )
++            .unwrap();
++        assert!(
++            host.prompts().is_empty(),
++            "{mode:?}: active turn sends no input"
++        );
++        assert!(!attempt.poked);
++        assert_eq!(
++            attempt.outcome,
++            if mode == PokeMode::PokeOnly {
++                WakeOutcome::Unsafe
++            } else {
++                WakeOutcome::Refused(RefusalCause::Unsafe)
++            }
++        );
++        host.set(HostUiState::Idle, false);
++        let attempt = dispatcher
++            .attempt_poke(
++                poke_reservation("seat", "b"),
++                &poke_plan_for_tests(),
++                mode,
++                &caps,
++                &dispatch_context(),
++            )
++            .unwrap();
++        assert_eq!(attempt.outcome, WakeOutcome::Submitted);
++        assert!(attempt.poked);
++        assert_eq!(host.prompts(), [POKE_TEXT]);
++    }
++}
++
+ #[test]
+ fn nudge_safety_pokes_never_stash_user_input() {
+     let clock = FakeClock(AtomicU64::new(0));
+@@ -5787,11 +5839,10 @@ fn nudge_safety_pokes_never_stash_user_input() {
+                             &dispatch_context(),
+                         )
+                         .unwrap();
+-                    let supported = |s| s == NativeSupport::Supported;
+                     let (submits, stashes) = match (ui, focused) {
+                         (_, true) => (false, false),
+                         (HostUiState::Idle, _) => (true, false),
+-                        (HostUiState::ActiveTurn, _) => (supported(during_turn), false),
++                        (HostUiState::ActiveTurn, _) => (false, false),
+                         (HostUiState::HumanInput, _) => (false, false),
+                         _ => (false, false),
+                     };
+@@ -6292,7 +6343,7 @@ fn five_due_seats_send_at_most_four_active_prompts() {
+ }
+ 
+ #[test]
+-fn active_turn_is_poked_only_where_the_recipe_declares_it() {
++fn active_turn_pokes_defer_receipts_until_idle_even_with_declared_support() {
+     let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+     let store = PokeStore::new(clock, one_seat_due());
+     let host = PokeHost::new(HostUiState::ActiveTurn, false);
+@@ -6308,7 +6359,16 @@ fn active_turn_is_poked_only_where_the_recipe_declares_it() {
+     with_scheduler(&store, &host, &DURING_TURN, |scheduler| {
+         scheduler.drive_pokes(&poke_budget()).unwrap();
+     });
+-    assert_eq!(host.prompts(), [POKE_TEXT], "declared poke_during_turn");
++    assert!(
++        host.prompts().is_empty(),
++        "historical capability cannot admit active attention"
++    );
++    assert!(store.marked.lock().unwrap().is_empty());
++    host.set(HostUiState::Idle, false);
++    with_scheduler(&store, &host, &DURING_TURN, |scheduler| {
++        scheduler.drive_pokes(&poke_budget()).unwrap();
++    });
++    assert_eq!(host.prompts(), [POKE_TEXT]);
+     assert_eq!(store.marked.lock().unwrap().len(), 3);
+ }
+ 
+diff --git a/tests/scheduler/poke_flow.rs b/tests/scheduler/poke_flow.rs
+index ba8f6ac3..63ba2186 100644
+--- a/tests/scheduler/poke_flow.rs
++++ b/tests/scheduler/poke_flow.rs
+@@ -571,54 +571,38 @@ fn skips_leave_the_receipt_unpoked_and_the_next_idle_evaluation_pokes() {
+ }
+ 
+ #[test]
+-fn active_turn_pokes_only_with_the_capability() {
++fn active_turn_pokes_remain_pending_even_with_the_capability() {
+     let fx = Fixture::new(&["t1"]);
+     let host = RecordingHost::new(HostUiState::ActiveTurn, false);
+     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
+     let flow = scheduler(&fx, &dispatcher, &DURING_TURN_CAPS);
+     assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
+-    assert_eq!(host.prompts().len(), 1, "poke_during_turn lets it through");
+-    assert!(
+-        matches!(
+-            host.log().as_slice(),
+-            [Call::Observe, Call::SubmitDuringTurn(_)]
+-        ),
+-        "an active-turn poke goes through the during-turn mode: {:?}",
+-        host.log()
+-    );
+-    assert_eq!(fx.poked(), [("t1".into(), Some(SOFT))]);
++    assert_eq!(host.log(), [Call::Observe]);
++    assert!(host.prompts().is_empty());
++    assert_eq!(fx.poked(), [("t1".into(), None)]);
+ 
+-    // An idle pane is an ordinary submit even with the capability declared.
+-    let fx = Fixture::new(&["t1"]);
+-    let host = RecordingHost::new(HostUiState::Idle, false);
+-    let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
+-    let flow = scheduler(&fx, &dispatcher, &DURING_TURN_CAPS);
+-    assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
++    // The same receipt is delivered when the host later reports idle.
++    host.set(HostUiState::Idle, false);
++    let spacing = i64::try_from(RetryConfig::default().minimum_delay_ms()).unwrap();
++    assert_eq!(tick(&fx, &flow, SOFT + spacing), (1, 1));
+     assert!(matches!(
+         host.log().as_slice(),
+-        [Call::Observe, Call::Submit(_)]
++        [Call::Observe, Call::Observe, Call::Submit(_)]
+     ));
++    assert_eq!(fx.poked(), [("t1".into(), Some(SOFT + spacing))]);
+ }
+ 
+ #[test]
+-fn stash_order_with_test_only_capabilities() {
+-    // Saved: observe, stash (read and clear), submit the poke, restore.
++fn drafts_never_stash_even_with_test_only_capabilities() {
++    // Saved drafts stay untouched, including with historical stash capability.
+     let fx = Fixture::new(&["t1"]);
+     let host = RecordingHost::new(HostUiState::HumanInput, false);
+     *host.stash.lock().unwrap() = ComposerStash::Saved("draft".into());
+     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
+     let flow = scheduler(&fx, &dispatcher, &STASH_CAPS);
+     assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
+-    let log = host.log();
+-    assert_eq!(log.len(), 4, "{log:?}");
+-    assert_eq!(log[0], Call::Observe);
+-    assert_eq!(log[1], Call::Stash);
+-    assert!(
+-        matches!(&log[2], Call::Submit(text) if text.contains("t1")),
+-        "{log:?}"
+-    );
+-    assert_eq!(log[3], Call::Restore("draft".into()));
+-    assert_eq!(fx.poked(), [("t1".into(), Some(SOFT))]);
++    assert_eq!(host.log(), [Call::Observe]);
++    assert_eq!(fx.poked(), [("t1".into(), None)]);
+ 
+     // Failed: no prompt, no restore, nothing marked.
+     let fx = Fixture::new(&["t1"]);
+@@ -627,7 +611,7 @@ fn stash_order_with_test_only_capabilities() {
+     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
+     let flow = scheduler(&fx, &dispatcher, &STASH_CAPS);
+     assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
+-    assert_eq!(host.log(), [Call::Observe, Call::Stash]);
++    assert_eq!(host.log(), [Call::Observe]);
+     assert_eq!(fx.poked(), [("t1".into(), None)]);
+ 
+     // Without the capability the stash hook is never called.
+@@ -704,10 +688,9 @@ fn production_shaped_idle_observation_is_poked() {
+     assert_eq!(fx.poked(), [("t1".into(), Some(SOFT))]);
+ }
+ 
+-/// Typed input in an idle pane is HumanInput: skipped without
+-/// `composer_stash`, stashed and restored with it.
++/// Typed input in an idle pane is HumanInput and always deferred.
+ #[test]
+-fn production_shaped_draft_observation_is_stashed_only_with_the_capability() {
++fn production_shaped_draft_observation_always_defers_with_the_capability() {
+     let fx = Fixture::new(&["t1"]);
+     let host = RecordingHost::production_shaped("idle", Harness::Codex, CODEX_DRAFT);
+     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
+@@ -722,13 +705,8 @@ fn production_shaped_draft_observation_is_stashed_only_with_the_capability() {
+     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
+     let flow = scheduler(&fx, &dispatcher, &STASH_CAPS);
+     assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
+-    let log = host.log();
+-    assert_eq!(log.len(), 4, "{log:?}");
+-    assert_eq!(log[0], Call::Observe);
+-    assert_eq!(log[1], Call::Stash);
+-    assert!(matches!(&log[2], Call::Submit(text) if text.contains("t1")));
+-    assert_eq!(log[3], Call::Restore("hello world one".into()));
+-    assert_eq!(fx.poked(), [("t1".into(), Some(SOFT))]);
++    assert_eq!(host.log(), [Call::Observe]);
++    assert_eq!(fx.poked(), [("t1".into(), None)]);
+ }
+ 
+ /// An Unknown observation is skipped, and the seat is then left alone until

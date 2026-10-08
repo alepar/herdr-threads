@@ -1,0 +1,17 @@
+{
+  "01-invalid-start/commands.jsonl": "fc477baf566ed9a78409a8bc5c5993a3f852117079310d746128bdc011392638",
+  "01-invalid-start/nudge-input-safety-server-1.out": "26a0e2cbbae59e67f0edb290ac1a06d7914245fd2c89e23fdbc1078a41761ea6",
+  "01-invalid-start/results.json": "9cd037ea07305b44027596642317c48017ae8c211f21094a21f26b5d6265cfa7",
+  "01-invalid-start/run-id": "d37c5a10a445dbbca9a6903b6a278555f7cb237e319ccfae415b960a5b8698d9",
+  "02-unknown-codex/commands.jsonl": "dc08b7c0dcdc4042f7119c3587b085be35d820f0268309e7573295fba7847fae",
+  "02-unknown-codex/nudge-input-safety-server-1.out": "b6a1487d12d4ff9c743bc51c9f74bbed28c40949ea2dc1b3ec3dc2cfadcf4f05",
+  "02-unknown-codex/results.json": "9cd037ea07305b44027596642317c48017ae8c211f21094a21f26b5d6265cfa7",
+  "02-unknown-codex/run-id": "6e9833c83a95dcba62403138d3e5d880d149fb3a21b7b2709ba01a4bc5185760",
+  "03-reproduced/commands.jsonl": "1c13e5cf9bb3f1719d0dc48e987a29f263f4947e366d9c54cc354d91b0704a61",
+  "03-reproduced/nudge-input-safety-server-1.out": "214b185ed6639619658741a31447831252da40319db24fa06cd4ce9a533708ca",
+  "03-reproduced/received.jsonl": "455157eb17160a71d8d22371601ea4cfc6979006356a5aa10669640803d532df",
+  "03-reproduced/results.json": "6d95c5d00f117bbdb49de8335f76d0e175c0835853677b5b81e1c863c65de9b2",
+  "03-reproduced/run-id": "06def7d4a50f975ba5591f2af896036495868a0610d5d9712a68da57c2b781cb",
+  "intake-brief.txt": "1994279568620e029a866387e290bc252e92c271fcba73f125f1c5c01e40eef6",
+  "private-repro.py": "ef0ce2f8aed376e7810340cc0c347f5db7b7c1b6ee92f6860a8c7e391629b861"
+}

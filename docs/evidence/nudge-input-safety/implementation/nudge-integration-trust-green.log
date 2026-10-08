@@ -1,0 +1,20 @@
+   Compiling herdr-threads v0.2.12 (/Users/alepar/AleCode/herdr-threads/.worktrees/nudge-input-safety)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.14s
+     Running tests/integration.rs (target/debug/deps/integration-4af53d42e594f6a8)
+
+running 12 tests
+test trust_policy::stand_in_herdr_process_entry ... ok
+test trust_policy::restore_with_every_seat_structurally_reconfirmed_leaves_no_hold ... ok
+test trust_policy::resume_before_reconciliation_with_daemon_kept_running_is_retried_then_reattaches ... ok
+test trust_policy::resume_on_same_pane_id_before_reconciliation_with_daemon_kept_running_reattaches ... ok
+test trust_policy::carried_forward_binding_still_matches_session_after_later_incarnation_change ... ok
+test trust_policy::me_init_over_reattached_seat_is_refused ... ok
+test trust_policy::send_right_after_ensure_before_reconciliation_pass_gives_no_warning_and_a_timer ... ok
+test trust_policy::expected_boot_and_carry_forward_give_no_unknown_outcome_across_stop_ensure ... ok
+test trust_policy::launch_onto_reattached_seat_with_live_agent_is_refused ... ok
+test trust_policy::codex_reattachment_without_herdr_hint_then_wake ... ok
+test trust_policy::pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics ... ok
+test trust_policy::f6_walking_skeleton ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 119 filtered out; finished in 4.61s
+

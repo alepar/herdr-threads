@@ -1,0 +1,15 @@
+{
+  "nudge-composition-baseline.log": "10825f21726c2231b026b861de0a5674d9c51ea90fa31b9a8e84676d5a6cdfce",
+  "nudge-composition-clippy.log": "3a670262b4903490a74a7c273260f206c390657fb6ba7fbefb29592627709f73",
+  "nudge-composition-default.log": "1ae2ce53f6c4a3265acd385e7e4a21d827a2b5594337d0d9ae68b92a856b30dc",
+  "nudge-composition-host.log": "e9f3860261da30d0148fd6fffa49d80f1af9ac9cf0113d6def1787b652e88a89",
+  "nudge-composition-latency.log": "97370d35f25629e677adeff6f1b8f01c7239af56a871faac7041c7e86965ea2b",
+  "nudge-composition-leaks.log": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+  "nudge-composition-raw-whitespace.log": "ca67e202f12381265bc57946f63303dd4cba01a24a88a01ba779609630b6d9a3",
+  "nudge-composition-scheduler.log": "a4ae294d18dbb5b3ee66e5fe5c93efb594808fed58a961b18510334891996346",
+  "nudge-composition-source-identity.json": "b2ed236b8e07c2f1927646fe329ecd432a44fc1d46728b4d130aaa53b8881da3",
+  "nudge-composition-trust.log": "7e6a02fa60283c2f27a23a96555a53a53a8a19a3fb2b90c0e9e6341bd56d4da6",
+  "nudge-composition-warning.log": "29db070f2d550d92f4656659626dcc9974c471964f9f26ef5c72f03ca1845450",
+  "product.patch": "470922557b7870ef653b729e7d2680ee02f8f767b6bd0b1a6c4a4cc084062594",
+  "review.md": "a1d7b4f310a6077382129e42bb676c1d699a65ece6bdad66c100c8972b38344b"
+}

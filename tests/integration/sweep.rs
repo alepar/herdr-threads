@@ -86,6 +86,7 @@ pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
                 Some(pane) if pane["agent"].is_string() => {
                     let mut agent = json!({"agent":pane["agent"],
                             "agent_status":pane["agent_status"],
+                            "focused":pane["focused"],
                             "pane_id":pane["pane_id"],
                             "terminal_id":pane["terminal_id"]});
                     if let Some(session) = pane.get("agent_session") {
@@ -98,6 +99,25 @@ pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
                 }
             }
         }
+        "agent.read" => match panes
+            .iter()
+            .find(|pane| pane["pane_id"] == request["params"]["target"])
+        {
+            Some(pane) if pane["agent"].is_string() => {
+                let text = match pane["agent"].as_str() {
+                    Some("claude") => include_str!(
+                        "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
+                    ),
+                    Some("codex") => include_str!(
+                        "../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt"
+                    ),
+                    _ => "unrecognized composer",
+                };
+                json!({"id":id,"result":{"type":"pane_read","read":{
+                    "pane_id":pane["pane_id"],"source":"detection","text":text}}})
+            }
+            _ => json!({"id":id,"error":{"code":"agent_not_found","message":"no agent in pane"}}),
+        },
         _ => {
             json!({"id":id,"error":{"code":"agent_not_found","message":"no agent in pane"}})
         }
