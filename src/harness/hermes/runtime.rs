@@ -108,6 +108,11 @@ impl Drop for OwnedProbe {
     }
 }
 
+/// Local ceiling for one Hermes probe, inside the caller's budget. Real
+/// Hermes bootstrap (dependency activation and imports) takes about 2 s on a
+/// warm macOS install, so the bound leaves room for a cold start.
+const PROBE_LIMIT: Duration = Duration::from_secs(15);
+
 fn check_budget(
     clock: &dyn crate::protocol::time::Clock,
     budget: &crate::protocol::time::CallBudget,
@@ -116,7 +121,7 @@ fn check_budget(
     if budget.cancellation.is_cancelled() {
         return Err(ProbeFailure::Cancelled);
     }
-    if budget.deadline_passed(clock) || started.elapsed() >= Duration::from_secs(2) {
+    if budget.deadline_passed(clock) || started.elapsed() >= PROBE_LIMIT {
         return Err(ProbeFailure::Deadline);
     }
     Ok(())
@@ -602,6 +607,25 @@ mod tests {
         assert_eq!(result.machine_metadata.argv[8], "default");
         // Executing the returned nonexisting fixture interpreter would fail.
         assert!(!tmp.path().join("config.yaml").exists());
+    }
+
+    #[test]
+    #[cfg(feature = "test-support")]
+    fn capture_tolerates_bootstrap_slower_than_two_seconds() {
+        // Real Hermes bootstrap takes about 2 s; a 2 s local cap made setup
+        // fail with Deadline against every real install.
+        let fixture = include_str!("../../../tests/fixtures/hermes/runtime-command.json");
+        let (_tmp, launch, env, budget) =
+            launcher(&format!("/bin/sleep 2.2\n/bin/cat <<'JSON'\n{fixture}JSON"));
+        let result = capture_machine_metadata(
+            &launch,
+            Path::new("/fixture/owned helper/runtime_helper.py"),
+            "default",
+            &env,
+            &budget,
+        )
+        .unwrap();
+        assert_eq!(result.reason, "native_bootstrap_read_only_unqualified");
     }
 
     #[test]

@@ -1,8 +1,10 @@
 # Hermes experimental adapter
 
 The adapter, owned Python plugin and bounded driver are implemented and tested with
-source-shaped synthetic APIs. Native recognition, actual context delivery and
-cooperative model/receipt acceptance remain unverified. Do not treat setup, an
+source-shaped synthetic APIs. One live native run (2026-10-08, Hermes 0.21.5, private
+modified Herdr) passed setup, launch, recognition, context delivery, model
+accept/inbox/read/ACK and reset; see
+`docs/evidence/harness-adapters/native-acceptance/`. Do not treat setup, an
 enabled config entry, a fixture or a replay as a native PASS.
 
 ## Operator scope
