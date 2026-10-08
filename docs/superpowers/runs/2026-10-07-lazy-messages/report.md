@@ -1,5 +1,5 @@
 status: completed with 1 unresolved Blocking, 0 escalations [degraded: Full-suite sweep delegated to main; worker runs focused gates only, per explicit user scope., Merge/main-only push already authorized subject to main granting actual mutation window; preserve release freeze., Main retains actual landing window, integrated exact-SHA full suite, release and install; preserve real migration26 → actual reviewed adapter27 → topology28 order. No standalone foundation or whole-feature composition permission issued while roast Blocking remains., sweep: SWEEP DEFERRED (caller-owned)]
-metrics: pending (upstream-feedback not yet run)
+metrics: upstream-feedback-draft.md (parked locally; not filed)
 
 ## Implemented
 

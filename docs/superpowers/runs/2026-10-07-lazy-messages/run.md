@@ -2,7 +2,7 @@
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-08 direct user redesign of native send default — lazy by default, explicit --nudge for attention, ACK implies nudge; interim --ordinary superseded; applied within current code run, wire/saved omission stays Ordinary.
-phase: report
+phase: finish
 codeMechanism: ordinary-subagents
 
 idea: lgtm, let's $super-auto this, fully autonomous, both roasts are on
