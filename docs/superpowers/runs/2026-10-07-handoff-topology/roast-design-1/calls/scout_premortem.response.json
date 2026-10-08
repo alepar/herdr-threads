@@ -1,0 +1,23 @@
+{
+  "hash": "c2f291145ea61a456118684378e87547f08492dd0b06add4d529f9be0789635e",
+  "result": {
+    "findings": [
+      {
+        "claim": "A confirmed-created bootstrap whose pane disappears before downstream completion permanently blocks archival of its selected existing thread because the design supplies no terminal abandonment path.",
+        "location": "artifact.md:67,73,75,81,89; root spec Topology state machine and response loss, Human recovery, and Archival; canonical bootstrap task ht-qhz.2.3",
+        "category": "premortem",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Begin protects the existing thread, and the live fence never expires even when its seat retires (line 67). Missing pane or changed incarnation must refuse (line 73); completion is allowed only after canonical downstream completion and retained report validation (line 75). The only recovery decisions are created-pane adoption for an uncertain attempt and not-created assertion of inspected noncreation (line 81). Neither truthfully terminates a confirmed creation whose tab was subsequently closed, and no cancellation/abandonment command or state is specified anywhere in the bundled task tree. Consequently, a crash after recording creation followed by ordinary user tab closure leaves no legal path to complete the bootstrap or remove its thread archival veto (line 89). This concerns releasing durable workflow protection, not automatically closing topology."
+      },
+      {
+        "claim": "The recovery grammar lacks an expected-attempt binding, leaving stale recovery instructions able to apply an operator assertion to a later attempt than the one the operator inspected.",
+        "location": "artifact.md:53,79,81,85; root spec CLI and compatibility and Human recovery; recovery task ht-qhz.6",
+        "category": "premortem",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "The documented commands are human handoff recover REF --created-pane EXACT_PANE or --not-created (line 53), while recovery is required to reference an exact attempt (line 79), and not-created enables a distinct next attempt (line 81). The spec never defines REF as an immutable attempt-qualified recovery reference or exposes an expected-attempt parameter. A ready command retained while attempt A is uncertain can therefore be executed after another operator closes A and retry creates uncertain attempt B: resolving the same bootstrap REF to its current attempt applies an assertion based on inspection of A to B. Per-attempt deterministic keys and canonical contradictory-decision checks do not reject that newly selected B decision. The contract needs an immutable inspected-attempt reference in generated/user-facing recovery commands and stale-attempt refusal; the full recovery task specifies exact attempt references internally but no such user-to-attempt binding."
+      }
+    ]
+  }
+}

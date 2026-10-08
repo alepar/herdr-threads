@@ -32,6 +32,10 @@ consumes: BootstrapPlan live resume and canonical bootstrap attachment.
 Files: src/cli/topology_handoff.rs (downstream/terminal), src/cli/retry.rs, src/cli/handoff.rs (existing compound helper only).
 Acceptance: RED/GREEN no duplicate create/invite/message/launch on failed flush/removal/restart/archive/binding change; frozen terminal report required; completed replay only presents/removes owned intent, wrongnamespace refuses; launch possible-start preserved.
 
+## Roast1 contract amendments
+
+Inherit the root mandatory inspected --attempt N and bootstrap-only Cancelled administrative disposition (no-live-legacy-child proof/quiescence; old child remains indefinite). Canonical terminal completion is the NEW report-backed atomic CompleteLinkedBootstrap wrapper, preserving all standalone legacy completion semantics/identities. New modes stay inert until canonical guards/original actor classifier integration. Respective leaf descriptions carry source-bound failure tests.
+
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*

@@ -32,6 +32,10 @@ consumes: canonical bootstrap persistence and exact identity lookup.
 Files: src/store/topology_handoff.rs (attachment module if split), src/store/control.rs, src/store/archival.rs.
 Acceptance: existing-thread protected before topology; create-thread attaches in deciding create transaction to both fences; deterministic resolve key/result; contradictory attach refuses; completed historical presentation bypasses only live guards, no effects or revived protection; delayed importer terminal precedence; RED/GREEN.
 
+## Roast1 contract amendments
+
+Inherit the root mandatory inspected --attempt N and bootstrap-only Cancelled administrative disposition (no-live-legacy-child proof/quiescence; old child remains indefinite). Canonical terminal completion is the NEW report-backed atomic CompleteLinkedBootstrap wrapper, preserving all standalone legacy completion semantics/identities. New modes stay inert until canonical guards/original actor classifier integration. Respective leaf descriptions carry source-bound failure tests.
+
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*

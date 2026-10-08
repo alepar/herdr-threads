@@ -1,0 +1,8 @@
+{
+  "hash": "79feb165e83d992e71796749ebce9a8eec3c12d4e90a194d29563bec9ca5e977",
+  "result": {
+    "verdict": "CONFIRM",
+    "severity": "Should-fix",
+    "evidence": "Verified the full named root/nested-spec/task-tree bundle and searched attempt, reference, recovery key/argv, invocation, expected-attempt, attempt-qualified, token and stale-recovery equivalents. Line 53 supplies only recover REF plus the decision; it does not define REF as an immutable attempt reference. Lines 79 and 935 require exact attempt references, while line 81 permits a distinct next attempt and promises recovery-key replay is presentation only. Lines 63 and 85 supply per-attempt keys and report attempt IDs/ready argv, but do not bind a saved operator invocation to the inspected attempt. The nested specs and ht-qhz.2.2/.6 repeat exact/repeated/contradictory recovery requirements without that CLI binding. Consequently, after not-created for A commits with a lost reply and an agent retry leaves B uncertain, repeating the same bootstrap recovery invocation can select B and create its different deterministic recovery key; operation locking and same-attempt contradiction checks do not distinguish this stale assertion. This is a real interface specification gap in the stated conservative replay contract, rather than a demand to prevent the explicitly accepted mistaken operator assertion. Define an attempt-qualified recovery REF or explicit expected-attempt input, emit it in recovery guidance, and retain replay/refusal semantics for that exact attempt. No external premise is needed."
+  }
+}

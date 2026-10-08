@@ -1,0 +1,9 @@
+{
+  "models": {
+    "triage": "gpt-6.1-sol",
+    "scout": "gpt-6-astra",
+    "dedupe": "gpt-6-astra",
+    "judge": "gpt-6.1-sol",
+    "reporter": "gpt-6-astra"
+  }
+}

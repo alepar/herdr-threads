@@ -1,0 +1,8 @@
+{
+  "hash": "3a50c3c59dd4ee1adcae021ba1b2958bc7c7853ceb570440dca4df4b0a5e53e5",
+  "result": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "The strongest reproduction establishes the intermediate state, but fails at the required contradiction. artifact.md:65 installs the live bootstrap archival fence; :75 sequences canonical downstream completion before bootstrap completion, and :62 declares separate CompleteBootstrap and downstream interfaces without promising atomic cross-completion. Therefore a coordinator crash can leave downstream complete and bootstrap live. If the host incarnation changes before retry, :73 explicitly requires confirming the same incarnation and says incarnation change or missing pane must refuse. The exceptional retained-report path in :75 applies specifically to a Completed bootstrap, so it does not cover this live parent. However, the spec does not require a terminal downstream to automatically make its bootstrap terminal, nor promise that a still-live bootstrap can complete after its current guards become invalid. Its stated live-fence rule (:65) and retry-refusal rule (:73) expressly permit retaining protection in that state. The nested coordinator acceptance (:183; ht-qhz.4.3) requires no duplicate effects on restart/binding change and completed replay presentation, both of which refusal preserves; canonical acceptance (:142; ht-qhz.2.3) likewise scopes bypass to completed historical presentation. Thus the proposed recovery branch would improve availability, but the finding has not demonstrated violation of a stated requirement. No external premise is needed for this structural judgment."
+  }
+}

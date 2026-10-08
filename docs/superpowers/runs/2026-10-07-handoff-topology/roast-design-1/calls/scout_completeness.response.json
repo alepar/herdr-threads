@@ -1,0 +1,23 @@
+{
+  "hash": "15de8941ebf0e9cfdbcc61f30a462b05e2524d3e915b31ec746e77d8bb44007d",
+  "result": {
+    "findings": [
+      {
+        "claim": "The recovery CLI does not define a way to pin the operator assertion to the inspected creation attempt, allowing a delayed or repeated recovery invocation to be interpreted against a newer uncertain attempt.",
+        "location": "artifact.md:53, 79\u201381 (recovery CLI and exact-attempt recovery/replay contract)",
+        "category": "completeness",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "The only recovery grammar is `human handoff recover REF --created-pane EXACT_PANE` or `--not-created`; no expected-attempt argument or attempt-qualified REF semantics are defined. The canonical contract nevertheless says recovery references the \"exact attempt\", that not-created enables \"a distinct next attempt\", and that \"Replaying either recovery key is presentation only\". If an operator inspects attempt A, another recovery closes A, and a retry makes attempt B uncertain before the delayed command executes, resolving the bootstrap REF to the current attempt applies the old inspection assertion to B. Deterministic per-attempt mutation keys do not prevent this because choosing B produces a different key. The interface must define how the user-visible recovery invocation freezes A before the deciding transaction; neither the nested specs nor recovery task ht-qhz.6 supplies that binding."
+      },
+      {
+        "claim": "A bootstrap whose confirmed created pane disappears before downstream completion has no defined terminal abandonment path and therefore can protect its selected thread from archival indefinitely.",
+        "location": "artifact.md:67, 73, 75, 81, 89 (live fence, missing-pane refusal, completion, recovery and archival)",
+        "category": "completeness",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Begin protects the existing selected thread, and the live fence \"never expires or completes because a local file disappeared, a seat retired\". A \"missing pane\" or \"incarnation change\" must refuse, while bootstrap completion is permitted \"only after canonical downstream completion\". Human recovery addresses an uncertain attempt: --created-pane asserts that an exact extant result belongs to it, and --not-created asserts inspected noncreation. For a durably confirmed creation that the user later closes before downstream handoff, neither assertion is truthful and the exact-topology rule prevents replacing the pane. The bundle defines no cancel/abandon transition, administrative archival release, or accepted permanent-protection limit for this state; its canonical command inventory and full task tree cover only reservation, evidence/recovery, attachment and successful completion. Consequently abandoning the unusable handoff cannot release its canonical archival protection even after the local journal is removed."
+      }
+    ]
+  }
+}

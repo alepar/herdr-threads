@@ -1,0 +1,23 @@
+{
+  "hash": "b13151bef140cbcc71cd211d52419c4020c230891dc19537aa6a924a6f4ee7ab",
+  "result": {
+    "findings": [
+      {
+        "claim": "The retry contract does not define how to finish a still-live bootstrap after its downstream handoff has canonically completed and current caller or topology guards subsequently fail.",
+        "location": "artifact.md, root spec \u201cTopology state machine and response loss\u201d, paragraphs beginning \u201cThe result records\u201d and \u201cAfter attachment\u201d; nested bootstrap coordinator \u201cDownstream launch and terminal bootstrap replay\u201d; ht-qhz.4.3 and ht-qhz.2.3.",
+        "category": "domain:durable-workflows",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "The root requires \u201cCurrent host reads and canonical ordinary guarded seat resolution must still confirm that exact topology, same incarnation and mapping\u201d and refuses missing panes/incarnation changes. It separately says \u201cThe bootstrap is completed only after canonical downstream completion and retained terminal report validation\u201d, with the guard-bypassing presentation path described only for \u201cCompleted bootstrap\u201d. Therefore downstream Complete can commit, the coordinator can crash before CompleteBootstrap, and the pane or original caller binding can change before retry. The downstream is terminal but the bootstrap is still live. The combined contract specifies neither atomic completion of both fences nor an early downstream-terminal reconciliation path that can validate the retained result and complete the bootstrap without re-running live caller/topology/resolution guards. Existing completed-bootstrap tests do not specify this intermediate two-fence state. The missing transition can strand an already-finished handoff behind live bootstrap archival protection."
+      },
+      {
+        "claim": "A bootstrap whose confirmed created pane disappears before downstream completion has no specified terminal failure or abandonment path, leaving its selected thread protected indefinitely.",
+        "location": "artifact.md, root spec \u201cTopology state machine and response loss\u201d, \u201cHuman recovery, authority and cleanup\u201d, and \u201cArchival and compatibility\u201d; canonical bootstrap nested spec and ht-qhz.6.",
+        "category": "domain:durable-workflows",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Begin protects the selected existing thread, and the root says the live fence \u201cnever expires or completes because a local file disappeared, a seat retired\u201d while retry must refuse a \u201cmissing pane\u201d or \u201cincarnation change\u201d. Completion requires canonical downstream completion. The only operator transitions are --created-pane for an \u201cuncertain attempt\u201d and --not-created, which asserts actual noncreation and opens another attempt. After durable confirmed creation, followed by the pane being closed before downstream completion, neither assertion truthfully applies and exact retry cannot progress. The archival section explicitly makes a valid bootstrap selecting an existing thread a veto. No cancellation, abandoned/failed terminal state, or explicit operator retirement of that protection appears in the combined state machine or full task tree. This gap does not require automatically closing topology, adopting another pane, resetting a start gate, or weakening the existing noncreation assertion; it requires specifying how permanently unfinishable work can end while retaining its honest historical evidence."
+      }
+    ]
+  }
+}
