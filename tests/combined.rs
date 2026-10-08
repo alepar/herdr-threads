@@ -23,6 +23,8 @@ mod contracts;
 mod handoff_fences;
 #[path = "host_adapter.rs"]
 mod host_adapter;
+#[path = "cli/inbox_continuation_context.rs"]
+mod inbox_continuation_context;
 #[path = "installer_integrations.rs"]
 mod installer_integrations;
 #[path = "protocol/lazy_delivery.rs"]
