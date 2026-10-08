@@ -5,6 +5,7 @@ phase: design
 codeMechanism: ordinary-subagents
 
 idea: we basically need to make sure that all harnesses are permissioned to run arbitrary Bash(herdr-threads *) commands, except the ones that pose as human
+spec: 2026-10-07-installer-human-permissions-design.md
 branch: installer-permissions
 base: main
 

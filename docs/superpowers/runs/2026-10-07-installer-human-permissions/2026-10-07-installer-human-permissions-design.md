@@ -1,0 +1,71 @@
+## Goal
+
+Installer and setup grant owned native Claude/Codex permissions for ordinary herdr-threads reads and communication writes through bare names and validated installed paths, while every action declaring a person or local operator requires an immediate `human` namespace and remains subject to native approval. Preserve canonical daemon authority and exact immutable retry semantics.
+
+# Installer permissions and explicit human commands
+
+Mode B, autonomous. Authoritative scope: [approved brief](approved-brief.md). Branch `installer-permissions`; baseline `c3b8f3f0`. This is a cooperative safety and attribution boundary, not hostile same-user verification.
+
+## Problem description
+
+Claude currently installs a broad `Bash(herdr-threads *)` grant as part of hooks. Codex has no equivalent owned execpolicy component. A broad executable allowance cannot exclude root commands with trailing `--operator`, leading globals or implicit Human contexts. Hooks, permission ownership and installer consent must become separate components; person actions need a stable native prefix that policy can withhold.
+
+## Main challenges
+
+The grammar must distinguish output `--human` from actor declaration, reject legacy spellings before any accountable effects and guard historical completed retry fast paths without changing frozen payloads. Installation must migrate owned Claude rules without adopting foreign rules, preserve stricter external policy and use actual installer paths despite canonicalization losing the invoked symlink. Native permission evidence has text/argv matcher limits; no model or shared server experiment is authorized.
+
+## Key decisions made
+
+Require executable argv[1] `human` for person/operator actions; globals follow this word. Ordinary argv remains unchanged. Enforce honest actor routing centrally before mutations and retry presentation/cleanup, while retaining A2 canonical decisions. Implement an independently owned permissions component with backend-neutral plan/inspect/install/remove operations, two native renderers and explicit integration consent. Publish ordinary CLI command-family metadata from the namespace owner so renderers do not derive human exclusion from ad hoc regexes.
+
+## Decision 1: grammar and semantic boundary
+
+Add a typed invocation actor route (`Agent` or `Human`) separate from presentation and propagate it in the parsed invocation to accountable dispatch. Scan the original argv before global extraction: only raw argv[1] `human` selects Human, so `ht --state-dir S human ...` refuses and gives `ht human --state-dir S ...`. Raw argv quoted bodies are data; trailing `--operator`, `--relays-user`, lazy flags and output `--human` do not select a route. Clap must still handle ordinary global arrangements. Root `me init`, operator repair/invite and explicit Human harness selection refuse with accurate replacement argv. No mutation aliases bypass this gate. Human allows person communication, check-in/lifecycle and local repair forms through existing lawful semantics; it never fabricates agent provenance. Agent cooperative selection accepts existing agent harnesses only. Accountable root commands refuse inferred Human context before creating any operation intent or submitting requests; ordinary read-only discovery remains usable. Native lifecycle hooks retain their existing agent contract.
+
+The command-family catalog is a Rust-owned positive ordinary syntax description (families/subfamilies, supported pinned globals, output forms), exposed to permission renderers. It contains no path ownership or harness-provider implementation. Namespace and dispatch edits in commands.rs/mod.rs have one owner; overlapping handoff help is coordinated through the parent with w4:pD0 before edits. Shared SKILL/help wording is supplied to that owner: ordinary root commands are agent operations; human/operator commands begin `ht human`; pinned routing flags follow `human`; `--human` only changes output; pending person recovery uses `ht human retry REF`. This run does not consume queued 8106f5c or edit their handoff logic speculatively.
+
+## Decision 2: immutable retry classification
+
+Classify the original saved `SemanticMutation`, frozen `CallerClaim` harness and `IntentScope` before any completion shortcut, effects, output or cleanup. Place the check before `handoff::try_completed_retry` in cli/mod.rs and reuse it for ordinary journal replay. Return an explicit origin classification `Agent`, `HumanOrOperator`, or a definite malformed/unsupported error. Operator semantics/scopes are HumanOrOperator; a frozen Human harness is HumanOrOperator; historical agent claims remain Agent despite a changed live binding. Do not use current contexts, delivery flags or new argv to rewrite origin.
+
+The classifier reads existing intent bytes without creating absent journal directories (Journal::open creates directories). Namespace routing is a preflight check only: retry then executes the existing replay algorithm with byte-identical claim, scope, digest, operation key, canonical IDs and historical completed response. Human/operator retained legacy intents remain usable only via `human retry`; no schema rewrite is needed. Completed agent handoff retries remain root-compatible and keep their existing cleanup behavior after classification. Unknown/malformed intent fails closed without cleanup. Handoff/lazy owners receive this stable origin classifier seam; no adoption/recovery feature is implemented. Future operator recovery is `human handoff recover` owned elsewhere.
+
+## Decision 3: independent permission ownership
+
+Introduce a permissions module with validated executable/routing inputs, backend plan, status and exact owned removal. The component manifest records version, backend, effective config root, exact owned file/rules and fingerprints, pre-existing rules and validated path set. It is separate from hook ownership and status. Plans validate size/type/symlinks, base bytes and ownership; apply revalidates before replacement, refuses edited/foreign/partial/raced states, preserves unrelated content and reports partial changes honestly. Existing crash-safe helpers are reused; no multi-file transaction is claimed. Config reads follow active CLAUDE_CONFIG_DIR/CODEX_HOME; tests isolate all roots.
+
+Decouple new hook install/status from permission grants. Historical hook manifests still validate historical permission fingerprints and pre-existing status, but hook ownership alone never authorizes adding missing permissions. An explicit permission component update performs migration: owned broad Claude grant is removed only when the historical exact ownership proof matches; pre-existing broad/foreign rules remain and status reports that external broad policy can still cover human. Historical retired export rule handling remains exact. A refused/partial migration cannot report complete permission setup; hook installation/removal remains independently inspectable. Unsetup removes exact recorded owned permissions and leaves edited/foreign/pre-existing rules with actionable diagnostics. Hook and permission writers touching Claude settings run sequentially and re-read a fresh base, preventing stale plans overwriting each other.
+
+## Decision 4: native policy rendering
+
+Codex writes an owned file under active CODEX_HOME/rules with a literal/union executable allow prefix and a stricter immediate `human` prompt prefix for every same executable spelling. The allow union includes bare `herdr-threads` and `ht`, plus validated owned canonical binary, herdr-threads link and ht alias paths, deduplicated. No shell prefix rule, network setting, sandbox setting or approval mode changes. Existing forbidden/prompt rules are preserved and native strictest precedence remains forbidden > prompt > allow. `codex-prefix-limit.json` proves only local execpolicy matching; compounds require constituent decisions and do not prove a live classifier/model accepts them.
+
+Claude replaces owned broad allow with positive ordinary command-family forms and exact supported installed pinned-routing forms. Human prompt forms are written where supported. Never allow an arbitrary middle wildcard that could match `human`; globals/output forms before or after ordinary verbs get exact finite supported forms. Quoted bodies, compounds and quoting spellings are tested against the declared rule contract; unsupported forms may prompt and are documented. Root ordinary `--human` formatting remains covered in supported command forms. Stronger deny/ask/managed rules remain untouched. Presence of external broad allowance is disclosed; component ownership does not claim it can revoke foreign permissions. Evidence distinguishes generated text matching, native policy checker and live execution; this run promises no native model/classifier proof.
+
+## Decision 5: setup, installer and consent
+
+Use the existing setup component architecture to add permissions beside hooks/skill, including explicit setup, setup-status, unsetup and requested doctor fix. Missing permissions require consent naming ordinary reads AND communication writes plus human/operator exclusion and native matcher limits, whether hooks are owned or absent. An explicit CLI permission choice or installer `--setup` after updated consent text can supply this permission consent; hook-only automatic repair cannot. Noninteractive absence fails/reports missing component without silent grant. Status reports components independently; doctor mutates only on requested fix. Update/removal only touches owned bytes.
+
+Installer validates owned canonical binary, symlink and alias via its existing exact ownership/foreign/force/PATH protections (4bc613bb), passes this explicit set and pinned state/socket routing to setup, and never grants any unrelated `which ht` discovery. Setup invoked directly admits bare names and its verified current canonical executable only unless explicit owned path inputs verify against the installer ownership record. Path inputs are bounded absolute paths without controls and have exact owned symlink target checks; normalization must retain the validated spelling as well as canonical target. Installer unavailable components and declined permission consent retain truthful exit/next-step reporting. No speculative version bump or real configuration change.
+
+The adapter registry in w4:pCC is unfinished: implement against the currently landed component interface, with one local permission backend seam. Do not invent optional provider APIs or Hermes settings. Parent obtains any eventual exact interface/landing evidence before consuming it; external integration is follow-on, not a blocking task for an unlanded branch.
+
+## Required configurations and verification
+
+Exercise Claude and Codex render/install/status/remove, bare herdr-threads and ht, canonical/link/alias absolute paths, installed pinned routing, root/human parse, formatting `--human`, quoted bodies and shell compounds; positive ordinary reads/writes plus negative person/operator/legacy/inferred-Human cases. A dedicated early `Configuration smoke:` task runs isolated fake-host/fixture entry points for these configurations before the terminal join; renderer and grammar leaves include their own causal RED/GREEN tests.
+
+Replay tests compare frozen bytes/claim/scope/digest/key before and after legacy Human/operator refusal and successful human retry, completed agent handoff replay after binding changes, malformed classification refusal with no output/cleanup and immutable lazy actor handling where existing lazy code supports it. Ownership matrix includes fresh/update/remove, pre-existing stronger/broad policy, historical owned and retired rules, absent consent, partial/edited/foreign/symlink/race refusal. Installer gateway and actual Rust component consumer both need witnesses. New stateless suites join combined.rs; process-state suites get explicit test targets/required test-support. Children use test_support::spawn and owned teardown.
+
+Focused tests only, all Rust tests --all-features; fmt, nice cargo clippy --locked --all-targets --all-features -- -D warnings, nice scripts/check-default-features, diff checks and fresh UUID-scoped leak check. No shared Herdr stop/restart, native models, real config, provisioning, full suite or release actions. Coordinator owns the integrated full suite and landing window. Integration sweep here is a scope-bounded source/focused-fixture join, not permission to run the full suite. Parent handles shared mutation coordination and later code roast independently.
+
+## Alternatives considered
+
+Broad allowance plus trailing operator exclusions fails with globals and text-prefix matching. A native-only policy rewrite without namespace/implicit actor checks leaves accountable root operations posing as Human. Making all commands human-by-default breaks ordinary agent workflows. Rewriting frozen retries changes their provenance and keys. Extending unfinished adapter interfaces or foreign branch consumption adds unapproved scope. The chosen route and owned component preserve current ordinary behavior with one stable approval prefix.
+
+## Follow-on and exclusions
+
+Other adapter providers, operator handoff adoption, native model evidence, real install/activation, coordinator full-suite/release and shared SKILL publication are outside this merge-ready tree. Existing policy provenance vocabulary and canonical daemon checks remain normative; update TRUST-POLICY.md command examples/accepted native matcher limits in the namespace/documentation change if shipped CLI spelling or limits change.
+
+## Post-Implementation Notes
+
+*As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
