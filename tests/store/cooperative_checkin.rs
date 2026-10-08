@@ -2280,19 +2280,94 @@ fn builtin_warning_dedup_recipients_and_successor_have_independent_frontiers() {
 // canonical built-in events must gain delivery rows without deleting history.
 #[test]
 fn builtin_warning_dedup_upgrade_backfills_existing_attributed_transitions() {
-    let (store, mut conn, clock, _) = fixture_with_context();
+    // Build the actual historical schema: opening a current StoreContext first
+    // would already install v26, which cannot honestly be relabelled v24.
+    let directory = Arc::new(PrivateDirectory(
+        std::env::temp_dir().join(format!("cooperative-upgrade-{}", uuid::Uuid::new_v4())),
+    ));
+    std::fs::create_dir(&directory.0).unwrap();
+    let clock = Arc::new(TestClock(AtomicU64::new(100)));
+    let context = StoreContext::new(directory.0.join("store.db"), clock.clone());
+    let mut conn = OwnedFixture {
+        value: Connection::open(directory.0.join("store.db")).unwrap(),
+        _directory: directory.clone(),
+    };
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    for migration in [
+        include_str!("../../migrations/0001_initial.sql"),
+        include_str!("../../migrations/0002_service_substrate.sql"),
+        include_str!("../../migrations/0003_invitation_cancellations.sql"),
+        include_str!("../../migrations/0004_voluntary_membership.sql"),
+        include_str!("../../migrations/0005_service_notifications.sql"),
+        include_str!("../../migrations/0006_retirement_health.sql"),
+        include_str!("../../migrations/0007_attention_digest.sql"),
+        include_str!("../../migrations/0008_digest_pending_paths.sql"),
+        include_str!("../../migrations/0009_human_occupant.sql"),
+        include_str!("../../migrations/0010_b5_trust_guards.sql"),
+        include_str!("../../migrations/0011_cooperative_only.sql"),
+        include_str!("../../migrations/0012_harness_version_evidence.sql"),
+        include_str!("../../migrations/0013_thread_summaries.sql"),
+        include_str!("../../migrations/0014_catch_up_release.sql"),
+        include_str!("../../migrations/0015_preparation_retention.sql"),
+        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
+        include_str!("../../migrations/0017_wake_batches.sql"),
+        include_str!("../../migrations/0018_warning_conditions.sql"),
+        include_str!("../../migrations/0019_thread_names.sql"),
+        include_str!("../../migrations/0020_recent_activity.sql"),
+        include_str!("../../migrations/0021_invitation_rejections.sql"),
+        include_str!("../../migrations/0022_user_message_intent.sql"),
+        include_str!("../../migrations/0023_channel_archival.sql"),
+        include_str!("../../migrations/0024_harness_contract_diagnostics.sql"),
+    ] {
+        conn.execute_batch(migration).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 24).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('messages') WHERE name='delivery_mode'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    conn.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1);
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,0,0);
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-p','inc','coherent_enumeration',1);
+        INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,'p','b',1,'codex','plugin_context:n','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0,'term-p','inc');").unwrap();
+    let mut historical_context = claim();
+    historical_context.binding_generation = 1;
     seed_warning_dedup_thread(&conn);
-    let first = check_in(&store, lifecycle(claim(), "dedup-initial")).unwrap();
     let warning = open_warning_dedup_invitation(&mut conn, 1);
     drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
-    conn.execute_batch(
-        "DROP TRIGGER digest_transition_warning_projected;
-        DELETE FROM digest_programmatic_warnings;
-        INSERT OR IGNORE INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id) SELECT 'job',ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id FROM warning_jobs;
-        INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT wr.seat_id,d.warning_id,d.thread_id,d.source,d.source_ordinal FROM digest_open_warnings d JOIN warning_recipients wr ON wr.warning_id=d.warning_id;
-        PRAGMA user_version=24;",
-    )
-    .unwrap();
+    // The old coarse offer watermark covers the event, but is not evidence
+    // that this exact notice was delivered to this occupant.
+    conn.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',1,?1,100)", [historical_context.execution.as_str()]).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",
+            [warning.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM digest_programmatic_warnings WHERE warning_id=?1",
+            [warning.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let before_history: String = conn
+        .query_row(
+            "SELECT event_json FROM messages WHERE id=?1",
+            [warning.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
     schema::initialize(&conn, || UtcMillis(100)).unwrap();
     assert_eq!(
         conn.query_row(
@@ -2304,12 +2379,43 @@ fn builtin_warning_dedup_upgrade_backfills_existing_attributed_transitions() {
         0,
         "upgrade removes backfilled canonical transitions from legacy pending walks"
     );
-    let upgraded = check_in(&store, current(&first.context, "dedup-upgraded")).unwrap();
+    let store = OwnedFixture {
+        value: SqliteStore::new(context, "i", StoreSettings::default()).unwrap(),
+        _directory: directory,
+    };
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        schema::LATEST_VERSION
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT event_json FROM messages WHERE id=?1",
+            [warning.as_str()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        before_history
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",
+            [warning.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    let upgraded = check_in(&store, current(&historical_context, "dedup-upgraded")).unwrap();
     assert_eq!(
         carried(&upgraded),
         (names(std::slice::from_ref(&warning)), false)
     );
-    let repeated = check_in(&store, current(&first.context, "dedup-upgraded-repeat")).unwrap();
+    let repeated = check_in(
+        &store,
+        current(&historical_context, "dedup-upgraded-repeat"),
+    )
+    .unwrap();
     assert!(repeated.notices.is_empty());
     assert_eq!(repeated.warning_count, 0);
     assert_eq!(

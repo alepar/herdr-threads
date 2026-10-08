@@ -1437,7 +1437,7 @@ fn attention_beyond_the_check_in_page_is_emitted_and_then_coalesced() {
         assert!(!context.is_empty(), "{label}");
     };
     // The seat has no attention in any of the 105 threads: a complete, empty
-    // frontier is quiet even though the check-in page is truncated.
+    // message frontier is quiet even though the legacy check-in walk is truncated.
     quiet("filler 1");
     quiet("filler 2");
     let thread = fx.cooperative(
@@ -1454,7 +1454,32 @@ fn attention_beyond_the_check_in_page_is_emitted_and_then_coalesced() {
         "the new thread is instance thread 106"
     );
     let inbox = fx.cooperative("seat", "w9:p1", &["inbox", "--seat", "seat"]);
-    assert_eq!(inbox["result"]["data"]["has_more"], true, "{inbox}");
+    assert_eq!(inbox["result"]["kind"], "inbox_batch_v2", "{inbox}");
+    assert_eq!(inbox["result"]["data"]["items"], serde_json::json!([]));
+    assert_eq!(inbox["result"]["data"]["has_more"], false);
+    assert_eq!(inbox["result"]["data"]["stop_reason"], "complete");
+    assert_eq!(
+        inbox["result"]["data"]["next_cursor"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        inbox["result"]["data"]["next_argv"],
+        serde_json::Value::Null
+    );
+    // Check the original boundary through the independent check-in response,
+    // whose legacy inbox still scans at most 100 instance threads.
+    let checked = fx.cooperative("seat", "w9:p1", &["check-in"]);
+    assert_eq!(
+        checked["result"]["data"]["inbox"]["has_more"], true,
+        "{checked}"
+    );
+    assert!(
+        checked["result"]["data"]["inbox"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["thread"] != thread)
+    );
     fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
     offered("invitation in thread 106");
     quiet("invitation repeat");

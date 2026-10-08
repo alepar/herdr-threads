@@ -1782,18 +1782,41 @@ fn user_intent_configuration_smoke() {
             &["read", &fx.thread, "--limit", "100"],
         )
         .data("read");
-    let aggregate = fx
+    let default_inbox = fx
         .world
         .cli(Some(fx.caller_b()), None, &["inbox", "--limit", "100"])
         .data("inbox");
-    assert_eq!(
-        aggregate["items"].as_array().unwrap().len(),
-        1,
-        "{aggregate}"
-    );
-    assert_eq!(aggregate["items"][0]["thread"], fx.thread);
-    assert_eq!(aggregate["items"][0]["pending_receipts"], sent.len());
     let inbox = fx.world.inbox_batch_json(&fx.b);
+    // Both JSON routes expose exactly the sent ordinary messages, with complete
+    // bytes and ACK candidates, without making an inbox-display claim.
+    for page in [&default_inbox, &inbox] {
+        let rows = page["items"].as_array().unwrap();
+        assert_eq!(rows.len(), 12, "{page}");
+        let actual: std::collections::BTreeSet<_> = rows
+            .iter()
+            .map(|row| row["message"].as_str().unwrap())
+            .collect();
+        let expected: std::collections::BTreeSet<_> =
+            sent.iter().map(|(message, ..)| message.as_str()).collect();
+        assert_eq!(actual, expected, "{page}");
+        assert_eq!(page["has_more"], false);
+        assert_eq!(page["stop_reason"], "complete");
+        assert_eq!(page["next_cursor"], Value::Null);
+        assert_eq!(page["next_argv"], Value::Null);
+        for (message, text, human, relay, intent) in &sent {
+            let row = rows.iter().find(|row| row["message"] == *message).unwrap();
+            assert_eq!(row["kind"], "message");
+            assert_eq!(row["thread"], fx.thread);
+            assert_eq!(row["sender"], if *human { &fx.c } else { &fx.a }.as_str());
+            assert_intent_claim(row, *human, *relay, *intent);
+            assert_eq!(row.get("author_role_backfilled"), None);
+            assert_eq!(row["body"], *text);
+            assert_eq!(row["body_start"], 0);
+            assert_eq!(row["body_end"], text.len());
+            assert_eq!(row["body_len"], text.len());
+            assert_eq!(row["ack_candidate"], *message);
+        }
+    }
     for (message, text, human, relay, intent) in &sent {
         let find = |page: &Value| {
             page["items"]

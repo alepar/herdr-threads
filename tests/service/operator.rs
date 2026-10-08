@@ -567,6 +567,12 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
             "--host-endpoint".to_owned(),
             host.to_str().unwrap().to_owned(),
         ];
+        let args = if args.first() == Some(&"human") {
+            argv.insert(1, "human".to_owned());
+            &args[1..]
+        } else {
+            args
+        };
         argv.extend(args.iter().map(|a| (*a).to_owned()));
         argv
     };
@@ -583,10 +589,33 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
         other => panic!("expected API error, got {other:?}"),
     };
 
+    // Agent routing cannot execute an operator mutation or create its journal.
+    let refused = api_error(run(
+        None,
+        &[
+            "seat",
+            "resolve",
+            "--pane",
+            "w1:p2",
+            "--new-seat",
+            "--operator",
+        ],
+    ));
+    assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    assert!(refused.detail.contains("require immediate human namespace"));
+    assert_eq!(
+        f.db()
+            .query_row("SELECT count(*) FROM allocation_decisions", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+
     // Operator forms reach the daemon and are attributed to the local user.
     let fresh = ok(
         None,
         &[
+            "human",
             "seat",
             "resolve",
             "--pane",
@@ -599,7 +628,15 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     let recipient = fresh["result"]["data"].as_str().unwrap().to_owned();
     let rebound = ok(
         None,
-        &["seat", "rebind", "saved", "--pane", "w1:p1", "--operator"],
+        &[
+            "human",
+            "seat",
+            "rebind",
+            "saved",
+            "--pane",
+            "w1:p1",
+            "--operator",
+        ],
     );
     assert_eq!(rebound["result"]["kind"], "operator_rebound");
     assert_eq!(rebound["result"]["data"], "saved");
@@ -618,6 +655,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     let mixed = api_error(run(
         None,
         &[
+            "human",
             "--cooperative-seat",
             "saved",
             "--cooperative-target",
@@ -635,7 +673,12 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
         ],
     ));
     assert_eq!(mixed.code, ErrorCode::InvalidRequest);
-    assert!(mixed.detail.contains("--operator"), "{}", mixed.detail);
+    assert!(
+        mixed.detail.contains("human namespace")
+            && mixed.detail.contains("cooperative agent selectors"),
+        "{}",
+        mixed.detail
+    );
 
     // Launch-driver lifecycle check-ins record each seat's private context.
     for (seat, pane, event) in [
@@ -711,6 +754,31 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
         ok(None, &["pending-receipts", "--seat", &recipient])["result"]["data"]["items"][0]["message"],
         message.as_str()
     );
+    let inbox = ok(Some("w1:p2"), &["inbox"]);
+    assert_eq!(inbox["result"]["kind"], "inbox_batch_v2");
+    let page = &inbox["result"]["data"];
+    assert_eq!(page["items"].as_array().unwrap().len(), 1, "{inbox}");
+    let row = &page["items"][0];
+    assert_eq!(row["kind"], "message");
+    assert_eq!(row["thread"], thread);
+    assert_eq!(row["message"], message);
+    assert_eq!(row["sender"], "saved");
+    assert_eq!(row["author_role"], "agent");
+    assert_eq!(row.get("user_intent"), None);
+    assert_eq!(row.get("relays_user"), None);
+    assert_eq!(row["body"], "line one\nline two ünïcode\n");
+    assert_eq!(row["body_start"], 0);
+    assert_eq!(row["body_end"], 28);
+    assert_eq!(row["body_len"], 28);
+    assert_eq!(row["ack_candidate"], message);
+    assert_eq!(page["has_more"], false);
+    assert_eq!(page["stop_reason"], "complete");
+    assert_eq!(page["next_cursor"], serde_json::Value::Null);
+    assert_eq!(page["next_argv"], serde_json::Value::Null);
+    assert_eq!(
+        ok(None, &["pending-receipts", "--seat", &recipient])["result"]["data"]["items"][0]["message"],
+        message
+    );
     let acked = ok(Some("w1:p2"), &["ack", &message]);
     assert_eq!(acked["result"]["kind"], "acknowledged");
     let acked_seat: String = f
@@ -764,7 +832,10 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
         ok(Some("w1:p2"), &["leave", &thread])["result"]["kind"],
         "left"
     );
-    let invited = ok(None, &["invite", &thread, "--seat", "saved", "--operator"]);
+    let invited = ok(
+        None,
+        &["human", "invite", &thread, "--seat", "saved", "--operator"],
+    );
     assert_eq!(invited["result"]["kind"], "operator_invited");
 
     // An operator mutation whose output was lost stays in the private journal
@@ -773,6 +844,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     assert!(
         run_in_pane(
             base(&[
+                "human",
                 "seat",
                 "resolve",
                 "--pane",
@@ -790,7 +862,7 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     assert_eq!(items.len(), 1, "{pending_ops}");
     assert_eq!(items[0]["kind"], "operator_fresh_seat");
     let reference = items[0]["recovery_ref"].as_str().unwrap().to_owned();
-    let retried = ok(None, &["retry", &reference]);
+    let retried = ok(None, &["human", "retry", &reference]);
     assert_eq!(retried["result"]["kind"], "operator_fresh_seat");
     let third_seat: String = f
         .db()
@@ -833,6 +905,12 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
             "--host-endpoint".to_owned(),
             host.to_str().unwrap().to_owned(),
         ];
+        let args = if args.first() == Some(&"human") {
+            argv.insert(1, "human".to_owned());
+            &args[1..]
+        } else {
+            args
+        };
         argv.extend(args.iter().map(|a| (*a).to_owned()));
         argv
     };
@@ -851,6 +929,7 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
     let fresh = ok(
         None,
         &[
+            "human",
             "seat",
             "resolve",
             "--pane",
@@ -862,7 +941,15 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
     let recipient = fresh["result"]["data"].as_str().unwrap().to_owned();
     ok(
         None,
-        &["seat", "rebind", "saved", "--pane", "w1:p1", "--operator"],
+        &[
+            "human",
+            "seat",
+            "rebind",
+            "saved",
+            "--pane",
+            "w1:p1",
+            "--operator",
+        ],
     );
     for (seat, pane, event) in [
         ("saved", "w1:p1", "launch-a"),
@@ -961,8 +1048,26 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
     assert_eq!(listed.len(), 1, "{receipts}");
     assert_eq!(listed[0]["message"], committed.as_str());
     let inbox = ok(Some("w1:p2"), &["inbox"]);
-    assert_eq!(inbox["result"]["kind"], "inbox");
-    assert!(inbox.to_string().contains(&thread), "{inbox}");
+    assert_eq!(inbox["result"]["kind"], "inbox_batch_v2");
+    let page = &inbox["result"]["data"];
+    assert_eq!(page["items"].as_array().unwrap().len(), 1, "{inbox}");
+    let row = &page["items"][0];
+    assert_eq!(row["kind"], "message");
+    assert_eq!(row["thread"], thread);
+    assert_eq!(row["message"], committed);
+    assert_eq!(row["sender"], "saved");
+    assert_eq!(row["author_role"], "agent");
+    assert_eq!(row.get("user_intent"), None);
+    assert_eq!(row.get("relays_user"), None);
+    assert_eq!(row["body"], "lost reply");
+    assert_eq!(row["body_start"], 0);
+    assert_eq!(row["body_end"], 10);
+    assert_eq!(row["body_len"], 10);
+    assert_eq!(row["ack_candidate"], committed);
+    assert_eq!(page["has_more"], false);
+    assert_eq!(page["stop_reason"], "complete");
+    assert_eq!(page["next_cursor"], serde_json::Value::Null);
+    assert_eq!(page["next_argv"], serde_json::Value::Null);
     // Explicit read selectors choose the requested seat, independently of the caller.
     let selected = ok(Some("w1:p1"), &["pending-receipts", "--pane", "w1:p2"]);
     assert_eq!(selected["result"]["data"], receipts["result"]["data"]);
