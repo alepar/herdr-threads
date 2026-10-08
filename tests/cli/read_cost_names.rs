@@ -725,3 +725,257 @@ fn relative_nick_live_caller_target_change_invalidates_nicks_even_with_unchanged
     assert_eq!(state.hints, vec!["w1:p0", "w1:p0"]);
     assert_eq!(state.snapshots, 2);
 }
+
+fn write_display_context(fx: &mut Fixture, seat: &SeatId, harness: &str, generation: u64) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = fx
+        .cache
+        .paths
+        .instance_dir
+        .join("contexts")
+        .join(format!("{:x}", Sha256::digest(seat.as_str().as_bytes())));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let state = serde_json::json!({
+        "version": 1, "instance": fx.cache.instance, "seat": seat,
+        "current": {
+            "format_version": 1, "instance": fx.cache.instance, "seat": seat,
+            "target": "w9:p99", "harness": harness, "binding_generation": generation,
+            "execution": uuid::Uuid::new_v4(),
+            "session": {"PluginContext": uuid::Uuid::new_v4()}, "role": "TopLevel"
+        },
+        "pending": null, "completed": []
+    });
+    let file = dir.join("context.json");
+    std::fs::write(&file, state.to_string()).unwrap();
+    std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+type DisplayLabels = Arc<Mutex<Option<Vec<SeatHostLabels>>>>;
+
+fn registered_display_fixture(
+    root: &NickScratch,
+    context: Option<(&str, u64)>,
+    workspace: &str,
+) -> (Fixture, SeatId, DisplayLabels) {
+    let author = SeatId::new("seat-0b5a1c2e-1111-2222-3333-444455556666");
+    let mut warning = message(2, seat(0));
+    warning.kind = MessageKind::Warn;
+    warning.preview_data = format!(
+        "{{\"obligation\":\"receipt\",\"seat\":\"{}\"}}",
+        author.as_str()
+    );
+    let mut daemon = standard_daemon(vec![message(1, author.clone()), warning]);
+    daemon
+        .seats
+        .push(seat_summary(author.clone(), Some(target(1))));
+    daemon.participants.push(author.clone());
+    let mut fx = fixture(daemon);
+    fx.cache.paths.instance_dir = root.0.clone();
+    fx.cache.instance = uuid::Uuid::new_v4();
+    if let Some((harness, generation)) = context {
+        write_display_context(&mut fx, &author, harness, generation);
+    }
+    let mut decoy = scoped_labels(99, "wrong-space", "wrong-tab");
+    decoy.target = HostTargetId::new("w9:p99");
+    decoy.workspace_label = Some("wrong-context-target".into());
+    let labels = Arc::new(Mutex::new(Some(vec![
+        scoped_labels(0, "w1", "t1"),
+        scoped_labels(1, workspace, "t2"),
+        decoy,
+    ])));
+    fx.cache.host = Box::new(ScopedPanes {
+        labels: Arc::clone(&labels),
+    });
+    fx.cache = fx.cache.with_caller(Some(target(0).as_str()));
+    (fx, author, labels)
+}
+
+/// Kills both one-sided fixes: history and live follow traverse real cache + renderer.
+#[test]
+fn registered_agents_history_and_follow_use_canonical_full_names_and_refresh() {
+    for registration in crate::harness::registry::builtins().registrations() {
+        let metadata = registration.metadata();
+        for workspace in ["w1", "w2"] {
+            let root = NickScratch::new();
+            let (mut fx, author, labels) =
+                registered_display_fixture(&root, Some((metadata.context_spelling, 1)), workspace);
+            let full = "project/alice/seat-0b5a1c2e-1111-2222-3333-444455556666";
+            let text = read_page(&mut fx);
+            assert!(
+                text.contains(&format!("<{full}>")),
+                "registered {}: {text}",
+                metadata.id
+            );
+            assert!(
+                text.contains(&format!("{full} is overdue")),
+                "registered {}: {text}",
+                metadata.id
+            );
+            assert!(
+                !text.contains('·') && !text.contains("wrong-context-target"),
+                "registered {}: {text}",
+                metadata.id
+            );
+            assert_eq!(fx.fake.calls(CallKind::SeatInspect), 0);
+            let spec = OutputSpec {
+                format: OutputFormat::Text,
+                context: ContinuationContext::default(),
+            };
+            let mut out = Vec::new();
+            let mut errors = Vec::new();
+            let mut printer = Printer {
+                form: Form::Human,
+                style: Style::plain(),
+                no_system: false,
+                writer: &mut out,
+                errors: &mut errors,
+            };
+            printer
+                .message(
+                    &message(3, author.clone()),
+                    fx.fake.as_ref(),
+                    &mut fx.cache,
+                    &spec,
+                )
+                .unwrap();
+            labels.lock().unwrap().as_mut().unwrap()[1].workspace_label = Some("renamed".into());
+            fx.cache.panes = None;
+            printer
+                .message(
+                    &message(4, author.clone()),
+                    fx.fake.as_ref(),
+                    &mut fx.cache,
+                    &spec,
+                )
+                .unwrap();
+            *labels.lock().unwrap() = None;
+            fx.cache.panes = None;
+            printer
+                .message(
+                    &message(5, author.clone()),
+                    fx.fake.as_ref(),
+                    &mut fx.cache,
+                    &spec,
+                )
+                .unwrap();
+            let text = String::from_utf8(out).unwrap();
+            let lines: Vec<_> = text.lines().collect();
+            assert!(
+                lines[0].contains(&format!("<{full}>")),
+                "registered {}: {text}",
+                metadata.id
+            );
+            assert!(
+                lines[1].contains("<renamed/alice/seat-0b5a1c2e-1111-2222-3333-444455556666>"),
+                "registered {}: {text}",
+                metadata.id
+            );
+            assert!(
+                lines[2].contains("<seat-0b5a1c2e-1111-2222-3333-444455556666>"),
+                "registered {}: {text}",
+                metadata.id
+            );
+            let mut out = Vec::new();
+            // Empty caches make an accidental naming call observable; cached
+            // names must not make a machine-output regression look harmless.
+            fx.cache.nicks.clear();
+            fx.cache.panes = None;
+            fx.cache.host = Box::new(CountingPanes {
+                fake: Arc::clone(&fx.fake),
+                panes: panes(),
+            });
+            let before = fx.fake.calls(CallKind::SeatInspect);
+            let before_names = fx.fake.calls(CallKind::PaneNames);
+            let mut printer = Printer {
+                form: Form::Lines,
+                style: Style::plain(),
+                no_system: false,
+                writer: &mut out,
+                errors: &mut errors,
+            };
+            printer
+                .message(
+                    &message(6, author.clone()),
+                    fx.fake.as_ref(),
+                    &mut fx.cache,
+                    &spec,
+                )
+                .unwrap();
+            assert!(String::from_utf8(out).unwrap().contains(author.as_str()));
+            assert_eq!(fx.fake.calls(CallKind::SeatInspect), before);
+            assert_eq!(fx.fake.calls(CallKind::PaneNames), before_names);
+        }
+    }
+}
+
+#[test]
+fn registered_agents_history_missing_labels_keep_host_ids_without_tab_names() {
+    for registration in crate::harness::registry::builtins().registrations() {
+        let root = NickScratch::new();
+        let (mut fx, _, labels) = registered_display_fixture(
+            &root,
+            Some((registration.metadata().context_spelling, 1)),
+            "w2",
+        );
+        let mut labels = labels.lock().unwrap();
+        let pane = &mut labels.as_mut().unwrap()[1];
+        pane.workspace_label = Some(String::new());
+        pane.pane_label = None;
+        drop(labels);
+        let text = read_page(&mut fx);
+        assert!(
+            text.contains("<w2/w1:p1/seat-0b5a1c2e-1111-2222-3333-444455556666>"),
+            "registered {}: {text}",
+            registration.metadata().id
+        );
+        assert!(
+            !text.contains("tryout"),
+            "registered {}: {text}",
+            registration.metadata().id
+        );
+    }
+}
+
+#[test]
+fn display_context_unknown_human_or_wrong_generation_never_grants_agent_names() {
+    assert!(
+        crate::harness::registry::builtins()
+            .by_context_spelling("NotRegistered")
+            .is_err()
+    );
+    for context in [None, Some(("NotRegistered", 1)), Some(("Human", 1))] {
+        let root = NickScratch::new();
+        let (mut fx, _, _) = registered_display_fixture(&root, context, "w1");
+        let text = read_page(&mut fx);
+        let expected = if context == Some(("Human", 1)) {
+            "<tryout/alice·human>"
+        } else {
+            "<tryout/alice>"
+        };
+        assert!(text.contains(expected), "{context:?}: {text}");
+        assert!(
+            !text.contains("seat-0b5a1c2e-1111-2222-3333-444455556666"),
+            "{context:?}: {text}"
+        );
+    }
+    for registration in crate::harness::registry::builtins().registrations() {
+        let root = NickScratch::new();
+        let (mut fx, _, _) = registered_display_fixture(
+            &root,
+            Some((registration.metadata().context_spelling, 2)),
+            "w1",
+        );
+        let text = read_page(&mut fx);
+        assert!(
+            text.contains("<tryout/alice>"),
+            "wrong generation {}: {text}",
+            registration.metadata().id
+        );
+        assert!(
+            !text.contains('·'),
+            "wrong generation {}: {text}",
+            registration.metadata().id
+        );
+    }
+}

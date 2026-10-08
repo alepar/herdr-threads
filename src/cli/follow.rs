@@ -403,7 +403,7 @@ impl NickCache {
     ) -> Nick {
         let mut nick = Nick::seat(seat);
         nick.harness = self.harness(seat, generation).map(str::to_owned);
-        if matches!(nick.harness.as_deref(), Some("claude" | "codex")) {
+        if nick.is_agent() {
             if let Some(target) = target {
                 self.refresh_panes(
                     [target.as_str()],
