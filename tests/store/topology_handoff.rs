@@ -1130,3 +1130,5 @@ fn recovery_matching_created_and_cancelled_evidence_survive_reopen() {
 
 #[path = "topology_attachment.rs"]
 mod attachment;
+#[path = "topology_attempts.rs"]
+mod attempts;

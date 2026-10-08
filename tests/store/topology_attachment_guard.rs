@@ -12,7 +12,7 @@ use crate::{
     store::{handoff, topology_handoff},
 };
 
-fn attachment_fixture() -> (
+type AttachmentFixture = (
     StoreContext,
     Connection,
     PathBuf,
@@ -21,7 +21,11 @@ fn attachment_fixture() -> (
     CallBudget,
     BootstrapIdentity,
     BootstrapAttachment,
-) {
+);
+fn attachment_fixture() -> AttachmentFixture {
+    attachment_fixture_with_recording(false)
+}
+fn attachment_fixture_with_recording(real_writer: bool) -> AttachmentFixture {
     let (context, mut db, path, clock) = fixture(100);
     db.execute_batch("DELETE FROM seat_archival; DELETE FROM seats;")
         .unwrap();
@@ -96,12 +100,40 @@ fn attachment_fixture() -> (
         let tx = db.transaction().unwrap();
         topology_handoff::begin_pending(&tx, &id.payload.handoff.namespace, &id, UtcMillis(100))
             .unwrap();
-        tx.execute("UPDATE bootstrap_attempts SET state='created',creation_json=?1 WHERE parent_id=1 AND attempt=1",[serde_json::to_vec(&a.created).unwrap()]).unwrap();
-        tx.execute(
-            "UPDATE bootstrap_handoffs SET state='created' WHERE id=1",
-            [],
-        )
-        .unwrap();
+        if real_writer {
+            topology_handoff::attempts::reserve_attempt(
+                &tx,
+                &id.payload.handoff.namespace,
+                &ReserveBootstrapAttempt {
+                    identity: id.clone(),
+                    expected_attempt: BootstrapAttempt::first(),
+                    operation: BootstrapAttempt::first()
+                        .operation(&id.compound, "reserve")
+                        .unwrap(),
+                },
+            )
+            .unwrap();
+            topology_handoff::attempts::record_created(
+                &tx,
+                &id.payload.handoff.namespace,
+                &RecordBootstrapCreated {
+                    identity: id.clone(),
+                    expected_attempt: BootstrapAttempt::first(),
+                    operation: BootstrapAttempt::first()
+                        .operation(&id.compound, "record")
+                        .unwrap(),
+                    evidence: a.created.clone(),
+                },
+            )
+            .unwrap();
+        } else {
+            tx.execute("UPDATE bootstrap_attempts SET state='created',creation_json=?1 WHERE parent_id=1 AND attempt=1",[serde_json::to_vec(&a.created).unwrap()]).unwrap();
+            tx.execute(
+                "UPDATE bootstrap_handoffs SET state='created' WHERE id=1",
+                [],
+            )
+            .unwrap();
+        }
         tx.commit().unwrap();
     }
     (context, db, path, store, observation, budget, id, a)
@@ -541,3 +573,6 @@ fn topology_attachment_real_create_rolls_back_new_thread_and_both_links_on_late_
     drop(db);
     std::fs::remove_file(path).unwrap();
 }
+
+#[path = "topology_composition.rs"]
+mod composition;
