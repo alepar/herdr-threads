@@ -162,7 +162,51 @@ pub enum SemanticMutation {
         seat: SeatId,
         deadline_millis: Option<u64>,
     },
+    HandoffBootstrap(Box<BootstrapPlan>),
+    HandoffDelivery(Box<DeliveryPlan>),
 }
+
+/// Independent versioned immutable plans; old HandoffPlan stays byte-for-byte.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootstrapPlan {
+    pub version: u32,
+    pub payload: crate::protocol::handoff::BootstrapPayload,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliveryPlan {
+    pub version: u32,
+    pub payload: crate::protocol::handoff::HandoffPayload,
+    pub recipient: SeatId,
+}
+impl BootstrapPlan {
+    pub fn validate(&self) -> io::Result<()> {
+        if self.version != 1 {
+            return Err(invalid("unsupported bootstrap plan version"));
+        }
+        self.payload.validate().map_err(invalid)
+    }
+}
+impl DeliveryPlan {
+    pub fn validate(&self) -> io::Result<()> {
+        if self.version != 1 {
+            return Err(invalid("unsupported delivery plan version"));
+        }
+        self.payload.validate().map_err(invalid)
+    }
+}
+impl SemanticMutation {
+    pub fn namespace(&self) -> Option<&crate::protocol::handoff::HandoffNamespace> {
+        match self {
+            Self::HandoffBootstrap(p) => Some(&p.payload.handoff.namespace),
+            Self::HandoffDelivery(p) => Some(&p.payload.namespace),
+            Self::Frozen { mutation, .. } => mutation.namespace(),
+            _ => None,
+        }
+    }
+}
+
 impl SemanticMutation {
     pub fn freeze(mutation: Self, claim: CallerClaim) -> io::Result<Self> {
         if mutation.is_operator()
@@ -202,6 +246,8 @@ impl SemanticMutation {
         }
         match self {
             Self::Handoff(plan) => plan.validate(),
+            Self::HandoffBootstrap(plan) => plan.validate(),
+            Self::HandoffDelivery(plan) => plan.validate(),
             Self::Frozen { mutation, .. } => {
                 if mutation.is_operator()
                     || matches!(
@@ -215,7 +261,14 @@ impl SemanticMutation {
                 {
                     return Err(invalid("invalid nested cooperative mutation"));
                 }
-                mutation.validate()
+                mutation.validate()?;
+                if mutation
+                    .namespace()
+                    .is_some_and(|ns| ns.instance != self.frozen_claim().unwrap().instance)
+                {
+                    return Err(invalid("frozen namespace differs from original claim"));
+                }
+                Ok(())
             }
             Self::CooperativeCheckIn {
                 claim,
@@ -321,6 +374,8 @@ impl SemanticMutation {
     pub fn kind(&self) -> IntentKind {
         match self {
             Self::Handoff(_) => IntentKind::Handoff,
+            Self::HandoffBootstrap(_) => IntentKind::HandoffBootstrap,
+            Self::HandoffDelivery(_) => IntentKind::HandoffDelivery,
             Self::Frozen { mutation, .. } => mutation.kind(),
             Self::CooperativeCheckIn { .. } => IntentKind::CheckIn,
             Self::ResolveSeat { .. } => IntentKind::ResolveSeat,
@@ -348,6 +403,8 @@ impl SemanticMutation {
     pub fn thread(&self) -> Option<&ThreadId> {
         match self {
             Self::Handoff(plan) => plan.request.thread.as_ref(),
+            Self::HandoffBootstrap(plan) => plan.payload.handoff.channel.thread(),
+            Self::HandoffDelivery(plan) => plan.payload.channel.thread(),
             Self::Frozen { mutation, .. } => mutation.thread(),
             Self::Invite { thread, .. }
             | Self::Accept { thread }
@@ -375,6 +432,9 @@ impl SemanticMutation {
         };
         let command = match self {
             Self::Handoff(_) => return Err(invalid("handoff requires compound coordinator")),
+            Self::HandoffBootstrap(_) | Self::HandoffDelivery(_) => {
+                return Err(invalid("topology contract is inert"));
+            }
             Self::Frozen { claim, mutation } => {
                 return mutation.to_command(operation, Some(claim.clone()));
             }
@@ -1032,6 +1092,37 @@ impl Journal {
         File::open(&self.root)?.sync_all()?;
         Ok(reference)
     }
+    /// Read-only early gate probe. Legacy refs retain their existing daemon-first
+    /// error order; only validated additive kinds enter the inert boundary here.
+    pub(crate) fn new_handoff_retry(&self, recovery: &str) -> io::Result<Option<PendingIntent>> {
+        let Some(ordinal) = recovery
+            .strip_prefix("local:")
+            .and_then(|s| s.parse::<u64>().ok())
+        else {
+            return Ok(None);
+        };
+        if ordinal == 0 || recovery != format!("local:{ordinal}") {
+            return Ok(None);
+        }
+        for entry in fs::read_dir(&self.root)? {
+            let path = entry?.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("intent") {
+                continue;
+            }
+            let Some(header) = read_intent_header(&path) else {
+                continue;
+            };
+            if header.reference.ordinal == ordinal
+                && matches!(
+                    header.kind,
+                    IntentKind::HandoffBootstrap | IntentKind::HandoffDelivery
+                )
+            {
+                return self.load(&header.reference).map(Some);
+            }
+        }
+        Ok(None)
+    }
     pub fn load(&self, reference: &IntentRef) -> io::Result<PendingIntent> {
         let mut reader = BufReader::new(File::open(self.path(reference))?);
         let mut line = String::new();
@@ -1284,6 +1375,18 @@ impl Journal {
     }
 }
 fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
+    if let Some(namespace) = semantic.namespace() {
+        let instance = match scope {
+            IntentScope::Cooperative { instance, .. }
+            | IntentScope::Native { instance, .. }
+            | IntentScope::Operator { instance, .. }
+            | IntentScope::ServiceAllocation { instance, .. }
+            | IntentScope::Continuity { instance, .. } => instance,
+        };
+        if namespace.instance != *instance {
+            return false;
+        }
+    }
     match (scope, semantic) {
         (IntentScope::Cooperative { instance, seat }, semantic) => semantic
             .frozen_claim()
