@@ -1453,6 +1453,8 @@ struct Mailbox {
     /// Extra unavailability episodes of the seat itself (the digest reports
     /// 1 + this).
     own_episodes: std::sync::Mutex<u64>,
+    /// Notices become carriable independently of their immutable publication token.
+    pending_notices: std::sync::Mutex<usize>,
 }
 impl Mailbox {
     fn with(pending: &[&'static str], arriving: &[&'static str]) -> Self {
@@ -1521,14 +1523,18 @@ impl Mailbox {
 }
 impl crate::ports::LocalClient for Mailbox {
     crate::default_output_local_client!();
+    fn supports_capability(&self, name: &str, _budget: &crate::protocol::time::CallBudget) -> bool {
+        name == crate::protocol::capabilities::ATTENTION_NOTICE_DELIVERY
+    }
     fn call(
         &self,
         command: Command,
         _budget: &crate::protocol::time::CallBudget,
     ) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError> {
         use crate::protocol::results::CommandResult as R;
+        let delivery = matches!(&command, Command::AttentionDigestDelivery(_));
         match command {
-            Command::AttentionDigest(query) => {
+            Command::AttentionDigest(query) | Command::AttentionDigestDelivery(query) => {
                 self.calls.lock().unwrap().push("digest");
                 assert_eq!(query.seat.as_str(), "seat");
                 if self.fail_digest {
@@ -1539,7 +1545,14 @@ impl crate::ports::LocalClient for Mailbox {
                 let digest = self.digest();
                 let arriving: Vec<_> = self.arrive_after_digest.lock().unwrap().drain(..).collect();
                 self.arrive(&arriving);
-                Ok(R::AttentionDigest(digest))
+                if delivery {
+                    Ok(R::AttentionDigestDelivery {
+                        digest,
+                        notices_pending: *self.pending_notices.lock().unwrap() > 0,
+                    })
+                } else {
+                    Ok(R::AttentionDigest(digest))
+                }
             }
             Command::Directory(_) => Ok(R::Directory(empty())),
             Command::CheckIn(ci) => {
@@ -1551,7 +1564,22 @@ impl crate::ports::LocalClient for Mailbox {
                 {
                     claim.binding_generation = expected_binding_generation + 1;
                 }
-                let check = offer(claim, self.items());
+                let mut check = offer(claim, self.items());
+                let mut notices = self.pending_notices.lock().unwrap();
+                let carried = (*notices).min(crate::protocol::results::MAX_NOTICE_PAGE_ITEMS);
+                *notices -= carried;
+                check.notices.items = (0..carried)
+                    .map(|n| crate::protocol::results::WarningRef {
+                        warning: crate::protocol::ids::MessageId::new(format!(
+                            "notice-{}",
+                            *notices + n
+                        )),
+                        thread: crate::protocol::ids::ThreadId::new("t1"),
+                        sequence: 1,
+                        event_seq: 1,
+                    })
+                    .collect();
+                check.notices.has_more = *notices > 0;
                 let acked: Vec<_> = self.ack_after_check_in.lock().unwrap().drain(..).collect();
                 self.ack(&acked);
                 let arriving: Vec<_> = self
@@ -1636,6 +1664,31 @@ fn boundary(cj: &ContextJournal, client: &Mailbox, coalesce: bool) -> ToolBounda
 }
 fn tool_call(cj: &ContextJournal, client: &Mailbox) -> Vec<u8> {
     boundary(cj, client, true).text
+}
+
+// Logical attention can be unchanged while attribution finishes or a bounded
+// notice page remains. Deliver each page, then coalesce again without token edits.
+#[test]
+fn late_notice_projection_and_remaining_pages_survive_tool_coalescing() {
+    let (_root, j, cj, seed, event) = fixture();
+    let client = Mailbox::with(&[], &[]);
+    register(&j, &cj, &event, &seed, &client);
+    assert!(tool_call(&cj, &client).is_empty());
+    let execution = cj.current().unwrap().unwrap().execution;
+    let mark = cj.attention_mark(execution).unwrap();
+    *client.pending_notices.lock().unwrap() = 17;
+    let first = boundary(&cj, &client, true);
+    assert!(first.summary.unwrap().contains("offered notices:"));
+    assert_eq!(*client.pending_notices.lock().unwrap(), 1);
+    assert_eq!(cj.attention_mark(execution), Some(mark));
+    assert!(
+        boundary(&cj, &client, true)
+            .summary
+            .unwrap()
+            .contains("offered notices:")
+    );
+    assert_eq!(*client.pending_notices.lock().unwrap(), 0);
+    assert!(tool_call(&cj, &client).is_empty());
 }
 
 // Race, tool-boundary path: message B arrives after the CheckIn answered the

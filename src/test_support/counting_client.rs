@@ -170,6 +170,9 @@ impl CountingLocalClient {
 }
 
 impl LocalClient for CountingLocalClient {
+    fn supports_capability(&self, name: &str, _budget: &CallBudget) -> bool {
+        self.capabilities().supports(name)
+    }
     fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
         self.serve(command, |inner, command| inner.call(command, budget))
     }

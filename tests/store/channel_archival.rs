@@ -802,3 +802,127 @@ fn archival_connection_epoch_change_accepts_new_order_but_rejects_delayed_old_ep
         "delayed earlier connection cannot regain positive evidence"
     );
 }
+
+#[test]
+fn archival_startup_waits_for_canonical_host_instance() {
+    let db = Connection::open_in_memory().unwrap();
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    let mut rt = runtime(0);
+    rt.coherent = false;
+    assert_eq!(
+        archival::advance(&db, "i", &rt).unwrap(),
+        archival::Progress::default()
+    );
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM archival_instances", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "archival cannot manufacture canonical host state");
+    db.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES('i',0)",
+        [],
+    )
+    .unwrap();
+    thread(&db);
+    assert!(
+        archival::advance(&db, "i", &rt)
+            .unwrap()
+            .archived
+            .is_empty()
+    );
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM archival_instances", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "next pass resumes after canonical initialization");
+    assert!(!archived(&db));
+}
+
+#[test]
+fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
+    use herdr_threads::{
+        ports::StorePort,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+    };
+    let dir = super::handoff_fences::Directory(
+        std::env::temp_dir().join(format!("ht-archival-startup-{}", uuid::Uuid::new_v4())),
+    );
+    std::fs::create_dir(&dir.0).unwrap();
+    let path = dir.0.join("store.db");
+    let store = SqliteStore::new(
+        StoreContext::new(
+            path.clone(),
+            std::sync::Arc::new(herdr_threads::app::SystemClock::default()),
+        ),
+        "i",
+        StoreSettings::default(),
+    )
+    .unwrap();
+    let db = Connection::open(&path).unwrap();
+    let budget = herdr_threads::protocol::time::CallBudget {
+        deadline: herdr_threads::protocol::time::MonoInstant(
+            store.clock().monotonic_now().0 + 5000,
+        ),
+        cancellation: Default::default(),
+    };
+    let mut rt = runtime(0);
+    rt.coherent = false;
+    let mut identity = super::handoff_fences::identity();
+    identity.thread = None;
+    let hints = [herdr_threads::archival_legacy::Hint {
+        identity,
+        progress_thread: None,
+    }];
+    assert_eq!(
+        store.archival_pass(&rt, &hints, &budget).unwrap(),
+        archival::Progress::default()
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM channel_handoff_fences", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let next = store.archival_next(&rt, &budget).unwrap();
+    assert!(next.ticket.is_none());
+    assert!(!next.has_more);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM host_instances", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM archival_instances", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES('i',0)",
+        [],
+    )
+    .unwrap();
+    thread(&db);
+    assert!(
+        store
+            .archival_pass(&rt, &hints, &budget)
+            .unwrap()
+            .archived
+            .is_empty()
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM channel_handoff_fences", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "fresh retry imports the veto after canonical initialization"
+    );
+    assert!(store.archival_next(&rt, &budget).unwrap().ticket.is_none());
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM archival_instances", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert!(!archived(&db));
+}

@@ -1661,31 +1661,51 @@ impl Fixture {
     }
     fn assert_pending_intent_receipt(&self, message: &str) {
         self.world.pending_for(&self.b, message);
-        let receipt = || {
-            self.world.db().query_row(
-                "SELECT state,ack_actor_seat_id,ack_observation,acked_at FROM receipt_state WHERE seat_id=?1 AND message_id=?2",
-                [self.b.as_str(), message],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<i64>>(3)?)),
-            )
-        };
-        let until = Instant::now() + Duration::from_secs(10);
-        loop {
-            match receipt() {
-                Ok(row) => {
-                    assert_eq!(row, ("pending".to_owned(), None, None, None));
-                    break;
-                }
-                Err(error) => {
-                    assert!(
-                        Instant::now() < until,
-                        "timed out waiting for configured receipt row for {message} at {}: {error}",
-                        self.b
-                    );
-                    std::thread::sleep(Duration::from_millis(200));
-                }
-            }
-        }
+        assert_pending_intent_receipt_in(&self.world.db(), &self.b, message);
     }
+}
+
+fn assert_pending_intent_receipt_in(db: &rusqlite::Connection, seat: &str, message: &str) {
+    use herdr_threads::store::effective::{EffectiveReceiptState, effective_receipt};
+    // Canonical pending receipts include published manifests whose physical
+    // receipt_state projection has not run yet. One read transaction keeps all
+    // component lookups on the same view of the receipt and its provenance.
+    let tx = db.unchecked_transaction().unwrap();
+    let receipt = effective_receipt(&tx, message, seat)
+        .unwrap()
+        .expect("addressed receipt");
+    assert_eq!(receipt.state, EffectiveReceiptState::Pending);
+    assert_eq!(receipt.ack_actor_seat_id, None);
+    assert_eq!(receipt.ack_observation, None);
+    assert_eq!(receipt.acked_at, None);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn user_intent_pending_receipt_does_not_require_materialization() {
+    let fx = Fixture::intent_configuration();
+    let message = fx.intent_send(false, true, Some("request"), "unmaterialized request");
+    fx.world.pending_for(&fx.b, &message);
+    // An offline snapshot freezes the lifecycle; removing only its optional
+    // projection makes the pre-materialization boundary deterministic.
+    let snapshot = fx.world.root.join("receipt-snapshot.sqlite3");
+    fx.world
+        .db()
+        .execute("VACUUM INTO ?1", [snapshot.to_str().unwrap()])
+        .unwrap();
+    let db = rusqlite::Connection::open(&snapshot).unwrap();
+    db.execute("DELETE FROM receipt_state WHERE message_id=?1", [&message])
+        .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipt_state WHERE message_id=?1",
+            [&message],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_pending_intent_receipt_in(&db, &fx.b, &message);
 }
 
 fn assert_intent_claim(row: &Value, human: bool, relay: bool, intent: Option<&str>) {

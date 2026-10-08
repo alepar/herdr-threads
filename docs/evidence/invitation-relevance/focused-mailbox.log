@@ -1,0 +1,153 @@
+nice: setpriority: Operation not permitted
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.68s
+────────────
+ Nextest run ID 8dec08f9-14d2-4e5f-8654-456f34f01af9 with nextest profile: default
+    Starting 123 tests across 1 binary (2542 tests skipped)
+        PASS [   0.042s] (  1/123) herdr-threads protocol::output::tests::invitation_relevance_output_exposes_goal_or_exact_read_only_inspection
+        PASS [   0.136s] (  2/123) herdr-threads store::queries::tests::diagnostics_paginates_invitation_and_unprojected_manifest_overdue
+        PASS [   0.137s] (  3/123) herdr-threads store::queries::tests::diagnostics_overdue_listing_uses_the_effective_deadline
+        PASS [   0.144s] (  4/123) herdr-threads store::queries::tests::body_search_hidden_preparation_publishes_only_on_refresh
+        PASS [   0.144s] (  5/123) herdr-threads store::queries::tests::body_search_uses_immutable_decision_order_across_physical_insert_order
+        PASS [   0.148s] (  6/123) herdr-threads store::queries::tests::active_warnings_union_open_ledger_and_actionable_legacy_without_clear_fabrication
+        PASS [   0.149s] (  7/123) herdr-threads store::queries::tests::committed_retirement_preserves_ack_acceptance_and_orphanhood_during_cleanup_lag
+        PASS [   0.149s] (  8/123) herdr-threads store::queries::tests::continuation_context_is_budgeted_and_round_trips_special_path
+        PASS [   0.109s] (  9/123) herdr-threads store::queries::tests::directory_cursor_stales_only_on_relevant_member_revision
+        PASS [   0.159s] ( 10/123) herdr-threads store::queries::tests::delivery_inspect_and_recipients_show_the_same_deferral
+        PASS [   0.187s] ( 11/123) herdr-threads store::queries::tests::body_search_continuation_ignores_later_topic_edits
+        PASS [   0.080s] ( 12/123) herdr-threads store::queries::tests::directory_stale_restart_keeps_selected_context_and_filters
+        PASS [   0.105s] ( 13/123) herdr-threads store::queries::tests::directory_topic_filter_stales_after_topic_change
+        PASS [   0.113s] ( 14/123) herdr-threads store::queries::tests::full_bodies_inlines_complete_bodies_under_the_budget
+        PASS [   0.115s] ( 15/123) herdr-threads store::queries::tests::filtered_diagnostics_emits_parseable_contextual_continuation
+        PASS [   0.128s] ( 16/123) herdr-threads store::queries::tests::history_ranges_keep_direction_and_high_water_across_append
+        PASS [   0.125s] ( 17/123) herdr-threads store::queries::tests::history_rejects_cursor_with_changed_filter_digest
+        PASS [   0.119s] ( 18/123) herdr-threads store::queries::tests::history_shows_published_warning_before_projection
+        PASS [   0.094s] ( 19/123) herdr-threads store::queries::tests::hot_threads_empty_for_old_threads_and_unknown_seat_is_not_found
+        PASS [   0.106s] ( 20/123) herdr-threads store::queries::tests::hot_threads_order_receipts_by_deadline_then_attention_then_recency
+        PASS [   0.240s] ( 21/123) herdr-threads store::queries::tests::directory_pages_205_threads_with_fixed_high_water
+        PASS [   0.378s] ( 22/123) herdr-threads store::queries::tests::delivery_inspect_pages_recipients_with_exact_committed_count
+        PASS [   0.095s] ( 23/123) herdr-threads store::queries::tests::hot_threads_topic_is_stripped_and_cut_at_a_char_boundary
+        PASS [   0.135s] ( 24/123) herdr-threads store::queries::tests::hot_threads_limit_splits_overflow_in_order
+        PASS [   0.261s] ( 25/123) herdr-threads store::queries::tests::full_bodies_page_boundaries_match_pagefit_oracle
+        PASS [   0.108s] ( 26/123) herdr-threads store::queries::tests::hot_threads_window_boundary_is_exclusive
+        PASS [   0.085s] ( 27/123) herdr-threads store::queries::tests::inbox_batch_defers_later_arrivals_to_next_traversal
+        PASS [   0.282s] ( 28/123) herdr-threads store::queries::tests::history_pages_205_rows_and_refresh_finds_append
+        PASS [   0.111s] ( 29/123) herdr-threads store::queries::tests::inbox_batch_displays_pending_body_and_only_complete_agent_receipt_is_candidate
+        PASS [   0.095s] ( 30/123) herdr-threads store::queries::tests::inbox_batch_finds_unprojected_active_warning_for_frozen_member
+        FAIL [   0.097s] ( 31/123) herdr-threads store::queries::tests::inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projection
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projection ... FAILED
+
+    failures:
+
+    failures:
+        store::queries::tests::inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projection
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2664 filtered out; finished in 0.08s
+
+  stderr ───
+
+    thread 'store::queries::tests::inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projection' (8721805) panicked at src/store/../../tests/store/queries.rs:970:5:
+    assertion `left == right` failed: the clear remains until its own verified offer
+      left: ["warning-open-full", "warning-clear-full"]
+     right: ["warning-clear-full"]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.098s] ( 32/123) herdr-threads store::queries::tests::inbox_clear_recipient_is_frozen_at_close_decision_before_projection
+        PASS [   0.135s] ( 33/123) herdr-threads store::queries::tests::inbox_batch_partial_body_has_cursor_and_no_candidate_until_final_chunk
+        PASS [   0.087s] ( 34/123) herdr-threads store::queries::tests::inbox_counts_published_warning_and_receipt_in_same_snapshot
+        PASS [   0.117s] ( 35/123) herdr-threads store::queries::tests::inbox_continuation_survives_projection_of_already_published_receipt
+        PASS [   0.169s] ( 36/123) herdr-threads store::queries::tests::inbox_continuation_ignores_hidden_preparation_for_same_seat
+        PASS [   0.174s] ( 37/123) herdr-threads store::queries::tests::inbox_continuation_stales_at_committed_retirement_fence
+        PASS [   0.469s] ( 38/123) herdr-threads store::queries::tests::directory_default_pages_quiet_joined_invited_and_archived_memberships
+        PASS [   0.093s] ( 39/123) herdr-threads store::queries::tests::invitation_relevance_goal_yields_to_bounded_inspection_without_skipping
+        PASS [   0.180s] ( 40/123) herdr-threads store::queries::tests::inbox_continuation_stales_when_published_receipt_enters_examined_thread
+        PASS [   0.189s] ( 41/123) herdr-threads store::queries::tests::inbox_continuation_stales_on_new_invitation_in_examined_thread
+        PASS [   0.245s] ( 42/123) herdr-threads store::queries::tests::inbox_batch_pages_101_receipts_without_acknowledging_or_skipping
+        PASS [   0.089s] ( 43/123) herdr-threads store::queries::tests::invitation_relevance_inbox_supplies_canonical_goal_without_joining
+        PASS [   0.184s] ( 44/123) herdr-threads store::queries::tests::inbox_validation_pages_unrelated_publications_before_advancing
+        PASS [   0.107s] ( 45/123) herdr-threads store::queries::tests::operation_status_isolates_same_operator_key_by_instance
+        PASS [   0.129s] ( 46/123) herdr-threads store::queries::tests::ledger_only_warning_cursor_holds_high_water_across_append
+        PASS [   0.088s] ( 47/123) herdr-threads store::queries::tests::participant_stale_restart_uses_typed_thread_route
+        PASS [   0.104s] ( 48/123) herdr-threads store::queries::tests::operation_status_requires_trusted_actor_scope
+        PASS [   0.098s] ( 49/123) herdr-threads store::queries::tests::oversize_body_keeps_clipped_preview_and_cursor
+        PASS [   0.103s] ( 50/123) herdr-threads store::queries::tests::participants_and_thread_show_mark_the_caller_seat
+        PASS [   0.263s] ( 51/123) herdr-threads store::queries::tests::inbox_pages_205_invited_threads_without_skipping
+        PASS [   0.109s] ( 52/123) herdr-threads store::queries::tests::pending_receipts_attribute_a_programmatic_sender
+        PASS [   0.092s] ( 53/123) herdr-threads store::queries::tests::pending_receipts_show_frozen_effective_and_deferral_during_catch_up
+        PASS [   0.087s] ( 54/123) herdr-threads store::queries::tests::picker_directory_empty_thread_reports_creation_and_minimum_window
+        PASS [   0.104s] ( 55/123) herdr-threads store::queries::tests::physical_warning_with_ledger_only_recipient_is_reachable
+        PASS [   0.112s] ( 56/123) herdr-threads store::queries::tests::picker_directory_counts_only_effective_joined_nonretired_members
+        PASS [   0.102s] ( 57/123) herdr-threads store::queries::tests::picker_directory_exact_byte_cut_fits_final_bytes_envelope
+        PASS [   0.129s] ( 58/123) herdr-threads store::queries::tests::pending_scan_stops_at_100_physical_visits_without_end_probe
+        PASS [   0.098s] ( 59/123) herdr-threads store::queries::tests::picker_directory_exact_complete_envelope_accepts_all_fitting_rows
+        PASS [   0.226s] ( 60/123) herdr-threads store::queries::tests::pending_cursor_finds_old_id_behind_250_settled_rows
+        PASS [   0.089s] ( 61/123) herdr-threads store::queries::tests::picker_directory_keeps_full_topic_and_limits_huge_body_preview
+        PASS [   0.088s] ( 62/123) herdr-threads store::queries::tests::picker_directory_paging_is_bounded_and_anchor_excludes_new_threads
+        PASS [   0.261s] ( 63/123) herdr-threads store::queries::tests::participants_page_all_rows_and_expose_effective_retirement
+        PASS [   0.307s] ( 64/123) herdr-threads store::queries::tests::multibyte_body_continuation_reassembles_every_byte
+        PASS [   0.101s] ( 65/123) herdr-threads store::queries::tests::picker_directory_oldest_virtual_position_preserves_window_after_projection
+        PASS [   0.091s] ( 66/123) herdr-threads store::queries::tests::picker_directory_uses_virtual_warning_at_latest_canonical_position
+        PASS [   0.098s] ( 67/123) herdr-threads store::queries::tests::published_manifest_receipt_is_pending_before_projection
+        PASS [   0.021s] ( 68/123) herdr-threads store::queries::tests::recent_picker_public_syntax_and_wire
+        PASS [   0.077s] ( 69/123) herdr-threads store::queries::tests::recent_picker_materialized_activity_schema
+        PASS [   0.097s] ( 70/123) herdr-threads store::queries::tests::queued_close_hides_active_condition_without_inventing_clear_and_allows_reopen
+        PASS [   0.096s] ( 71/123) herdr-threads store::queries::tests::recent_picker_migration_backfills_committed_info_and_creation
+        PASS [   0.105s] ( 72/123) herdr-threads store::queries::tests::recent_picker_activity_and_rename_invalidate_only_selected_instance
+        PASS [   0.099s] ( 73/123) herdr-threads store::queries::tests::recent_picker_committed_notices_update_activity_duplicates_and_rollback_do_not
+        PASS [   0.179s] ( 74/123) herdr-threads store::queries::tests::picker_directory_samples_latest_512_positions_and_keeps_quiet_elapsed_time
+        PASS [   0.203s] ( 75/123) herdr-threads store::queries::tests::picker_directory_requirement_scan_skips_terminal_history
+        PASS [   0.086s] ( 76/123) herdr-threads store::queries::tests::retired_seat_has_no_actionable_pending_invitation_before_cleanup
+        PASS [   0.123s] ( 77/123) herdr-threads store::queries::tests::retirement_summary_finds_late_pending_failure_and_clears_after_completion
+        PASS [   0.104s] ( 78/123) herdr-threads store::queries::tests::retirement_summary_rejects_deadline_after_commit
+        PASS [   0.193s] ( 79/123) herdr-threads store::queries::tests::recent_picker_pages_all_archived_and_ties_with_index_seek
+        PASS [   0.111s] ( 80/123) herdr-threads store::queries::tests::retirement_summary_uses_one_snapshot_when_writer_commits_between_probes
+        PASS [   0.115s] ( 81/123) herdr-threads store::queries::tests::retirement_summary_rejects_cancellation_between_probes
+        PASS [   0.012s] ( 82/123) herdr-threads store::queries::tests::search_literal_match_crosses_chunk_boundary_and_exhausts_mid_scan
+        PASS [   0.092s] ( 83/123) herdr-threads store::queries::tests::search_clipped_budget_returns_same_position_contextual_retry
+        PASS [   0.112s] ( 84/123) herdr-threads store::queries::tests::search_cursor_tracks_only_relevant_topic_revision
+        PASS [   0.342s] ( 85/123) herdr-threads store::queries::tests::picker_directory_sql_work_does_not_grow_with_message_history
+        PASS [   0.017s] ( 86/123) herdr-threads store::queries::tests::seats_query_target_is_additive_on_the_wire
+        PASS [   0.245s] ( 87/123) herdr-threads store::queries::tests::recipients_page_205_rows_and_show_effective_retirement
+        PASS [   0.086s] ( 88/123) herdr-threads store::queries::tests::seat_inspect_shows_continuity_diagnostic
+        PASS [   0.230s] ( 89/123) herdr-threads store::queries::tests::retirement_jobs_page_205_scalar_rows
+        PASS [   0.107s] ( 90/123) herdr-threads store::queries::tests::seat_directory_excludes_retired_and_freezes_newest_first_page
+        PASS [   0.112s] ( 91/123) herdr-threads store::queries::tests::search_oversized_first_match_reports_minimum_without_skipping
+        PASS [   0.115s] ( 92/123) herdr-threads store::queries::tests::seat_inspect_reports_open_binding_and_none
+        PASS [   0.086s] ( 93/123) herdr-threads store::queries::tests::thread_names_active_match_wins_over_archived_history_without_joined_caller
+        PASS [   0.093s] ( 94/123) herdr-threads store::queries::tests::short_preview_detail_argv_preserves_output_context
+        PASS [   0.183s] ( 95/123) herdr-threads store::queries::tests::seat_inspect_pages_binding_and_repair_history
+        PASS [   0.188s] ( 96/123) herdr-threads store::queries::tests::seat_directory_pages_205_rows_without_offset
+        PASS [   0.104s] ( 97/123) herdr-threads store::queries::tests::thread_names_actual_caller_beats_inherited_target_and_foreign_target_is_ignored
+        PASS [   0.110s] ( 98/123) herdr-threads store::queries::tests::thread_names_archived_joined_match_wins_over_active_matches
+        PASS [   0.108s] ( 99/123) herdr-threads store::queries::tests::thread_names_digest_form_lookup_precedes_cli_misuse_hint
+        PASS [   0.188s] (100/123) herdr-threads store::queries::tests::sparse_literal_search_returns_work_continuation_then_match
+        PASS [   0.088s] (101/123) herdr-threads store::queries::tests::thread_names_no_caller_skips_archived_joined_tier
+        PASS [   0.098s] (102/123) herdr-threads store::queries::tests::thread_names_indexed_resolution_route_is_read_only
+        PASS [   0.120s] (103/123) herdr-threads store::queries::tests::thread_names_resolve_all_memberships_archives_ids_and_instances
+        PASS [   0.114s] (104/123) herdr-threads store::queries::tests::thread_pending_receipts_reaches_multiple_seats
+        PASS [   0.084s] (105/123) herdr-threads store::queries::tests::transaction_local_inbox_never_returns_zero_after_cancellation
+        PASS [   0.087s] (106/123) herdr-threads store::queries::tests::topic_search_reports_real_ordinary_system_and_joined_counts
+        PASS [   0.329s] (107/123) herdr-threads store::queries::tests::seat_target_filter_finds_live_seat_after_many_retired_seats_in_one_request
+        PASS [   0.110s] (108/123) herdr-threads store::queries::tests::unavailable_close_sweep_matches_exact_episode
+        PASS [   0.301s] (109/123) herdr-threads store::queries::tests::thread_names_conflicts_are_bounded_escaped_and_limited_to_winning_tier
+        PASS [   0.109s] (110/123) herdr-threads store::queries::tests::warning_continuations_keep_published_identity_during_projection
+        PASS [   0.104s] (111/123) herdr-threads store::queries::tests::warning_cursor_survives_projection_without_duplicate
+        PASS [   0.086s] (112/123) herdr-threads store::queries::tests::warning_recipients_use_historical_set_before_projection
+        PASS [   0.256s] (113/123) herdr-threads store::queries::tests::thread_show_repeats_metadata_and_pages_participants
+        PASS [   0.125s] (114/123) herdr-threads store::queries::tests::warning_recipient_scan_stops_at_100_visits_without_end_probe
+        PASS [   0.084s] (115/123) herdr-threads store::queries::tests::warnings_page_reaches_unprojected_warning_once
+        PASS [   0.312s] (116/123) herdr-threads store::queries::tests::thread_names_joined_tier_requires_resolved_instance_scoped_caller
+        PASS [   0.148s] (117/123) herdr-threads store::queries::tests::warning_recipients_page_205_historical_members
+        PASS [   0.109s] (118/123) herdr-threads store::queries::tests::warnings_sparse_scan_continues_after_candidate_cap
+        PASS [   0.196s] (119/123) herdr-threads store::queries::tests::warnings_pages_205_rows_without_duplication
+        PASS [   0.478s] (120/123) herdr-threads store::queries::tests::thread_names_joined_match_wins_over_large_lower_tiers
+        PASS [   2.765s] (121/123) herdr-threads store::queries::tests::body_paging_returns_complete_remainder_whenever_it_fits
+        PASS [   1.717s] (122/123) herdr-threads store::queries::tests::user_intent_inbox_canonical_claims_survive_full_and_chunked_output
+        PASS [   4.082s] (123/123) herdr-threads store::queries::tests::search_30000_sparse_nonmatches_remains_paged
+────────────
+     Summary [   5.089s] 123 tests run: 122 passed, 1 failed, 2542 skipped
+        FAIL [   0.097s] ( 31/123) herdr-threads store::queries::tests::inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projection
+error: test run failed

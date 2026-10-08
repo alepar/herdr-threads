@@ -276,10 +276,13 @@ impl NextActions {
 /// The ready-command block's first line; every item follows it as
 /// `- <label>: <command>`.
 pub const READY_HEADER: &str = "Ready commands (run exactly as written, in this pane):";
-/// Label of a plain (non-required) invitation accept: joining is the agent's
-/// choice, never an instruction (native matrix P1: models ran every listed
-/// accept "as instructed").
-pub const OPTIONAL_ACCEPT_LABEL: &str = "accept (optional, only if you intend to join)";
+/// Ordinary acceptance follows the top-level agent's topic/goal assessment;
+/// a ready command alone neither establishes relevance nor demands a human yes.
+pub const ORDINARY_INVITATION_INSTRUCTION: &str =
+    "Ordinary invites: inspect topic+goal/remit; accept relevant ones without another human yes.";
+
+/// Label of a conditional ordinary accept command.
+pub const OPTIONAL_ACCEPT_LABEL: &str = "accept (if topic and goal fit your role/remit)";
 /// At most this many invitations that carry no pending receipt and no
 /// requirement get an optional accept line; the continuation reaches the rest.
 pub const MAX_OPTIONAL_ACCEPTS: usize = 2;
@@ -334,6 +337,15 @@ pub fn next_actions(
             header.push_str(REQUIRED_INVITATION_INSTRUCTION);
             header.push('\n');
         }
+        if digest
+            .invitations
+            .items
+            .iter()
+            .any(|item| item.requirement.is_none())
+        {
+            header.push_str(ORDINARY_INVITATION_INSTRUCTION);
+            header.push('\n');
+        }
         let invitations: Vec<_> = digest
             .invitations
             .items
@@ -343,12 +355,8 @@ pub fn next_actions(
         // The accept line for one invitation: `None` when it carries an
         // unsafe requirement ID, which is never interpolated (and a plain
         // accept would be refused): the continuation reaches it.
-        // A plain accept inside a require-ACK handoff group is part of that
-        // handoff (native matrix S18: a skipped accept failed it), so only
-        // bare invitations are labelled optional.
-        let accept = |item: &crate::protocol::attention::AttentionRef, optional: bool| match &item
-            .requirement
-        {
+        // Addressed work affects ranking, not relevance or joining authority.
+        let accept = |item: &crate::protocol::attention::AttentionRef| match &item.requirement {
             Some(requirement) if command_safe_id(&requirement.id) => {
                 let revision = requirement.revision.to_string();
                 Some(format!(
@@ -368,11 +376,7 @@ pub fn next_actions(
             Some(_) => None,
             None => Some(format!(
                 "- {}: {}",
-                if optional {
-                    OPTIONAL_ACCEPT_LABEL
-                } else {
-                    "accept"
-                },
+                OPTIONAL_ACCEPT_LABEL,
                 run(&["accept", item.thread.as_str()])
             )),
         };
@@ -405,7 +409,7 @@ pub fn next_actions(
             if let Some(line) = invitations
                 .iter()
                 .find(|item| item.thread.as_str() == thread)
-                .and_then(|item| accept(item, false))
+                .and_then(|item| accept(item))
             {
                 items.push(line);
             }
@@ -416,7 +420,7 @@ pub fn next_actions(
             if listed.contains(&thread) {
                 continue;
             }
-            if let Some(line) = accept(item, false) {
+            if let Some(line) = accept(item) {
                 listed.push(thread);
                 items.push(line);
             }
@@ -447,7 +451,7 @@ pub fn next_actions(
                 more_invitations = true;
                 break;
             }
-            if let Some(line) = accept(item, true) {
+            if let Some(line) = accept(item) {
                 listed.push(thread);
                 items.push(line);
                 optional += 1;

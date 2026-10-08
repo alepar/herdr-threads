@@ -325,7 +325,7 @@ fn burst_lists_the_receipt_threads_older_invitation_first() {
             actions.items[..3],
             [
                 "- pending mail for th and other threads: herdr-threads inbox",
-                "- accept: herdr-threads accept th",
+                "- accept (if topic and goal fit your role/remit): herdr-threads accept th",
                 "- reply (replace <text>): herdr-threads send th --body '<text>'",
             ],
             "{burst}: {:?}",

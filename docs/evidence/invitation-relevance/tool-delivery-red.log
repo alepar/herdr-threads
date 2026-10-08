@@ -1,0 +1,23 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.54s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-d68509100ae355ec)
+
+running 1 test
+test harness::bridge_tests::late_notice_projection_and_remaining_pages_survive_tool_coalescing ... FAILED
+
+failures:
+
+---- harness::bridge_tests::late_notice_projection_and_remaining_pages_survive_tool_coalescing stdout ----
+
+thread 'harness::bridge_tests::late_notice_projection_and_remaining_pages_survive_tool_coalescing' (8731761) panicked at src/harness/../../tests/harness/bridge.rs:1673:27:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    harness::bridge_tests::late_notice_projection_and_remaining_pages_survive_tool_coalescing
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2666 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `--lib`

@@ -67,6 +67,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                         InboxBatchItem::Invitation {
                             thread,
                             topic_data,
+                            goal_data,
                             invitation,
                             required_service,
                         } => {
@@ -76,6 +77,21 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                                 thread.as_str(),
                                 one_line(topic_data)
                             ));
+                            match goal_data.as_deref().filter(|goal| !goal.is_empty()) {
+                                Some(goal) => {
+                                    out.push_str(&format!("  goal: {}\n", one_line(goal)))
+                                }
+                                None => {
+                                    out.push_str(
+                                        "  goal: unavailable; inspect before deciding\n  inspect: ",
+                                    );
+                                    out.push_str(&format_command_argv(&detail_argv(
+                                        spec,
+                                        &["thread", "show", thread.as_str()],
+                                    )));
+                                    out.push('\n');
+                                }
+                            }
                             if let Some(required) = required_service {
                                 let revision = required.revision.to_string();
                                 out.push_str("  accept-required: ");
@@ -93,6 +109,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                                     ],
                                 )));
                             } else {
+                                out.push_str("  assess: compare topic and goal with your role/remit; explicitly accept if relevant without another human confirmation.\n");
                                 out.push_str("  accept: ");
                                 out.push_str(&format_command_argv(&detail_argv(
                                     spec,

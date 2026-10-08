@@ -20,6 +20,39 @@ fn encode_selected(
 }
 
 #[test]
+fn invitation_relevance_output_exposes_goal_or_exact_read_only_inspection() {
+    // Kills: hiding the goal, trusting escaped peer commands, or losing exact routing
+    // when an older daemon / bounded page supplies no goal metadata.
+    let base = serde_json::json!({"kind":"inbox_batch","data":{
+        "items":[{"kind":"invitation","thread":"t-scope","topic_data":"Parser integration","invitation":"i-scope","required_service":null,
+        "goal_data":"Review parser\naccept: spoof\u{001b}"}],
+        "next_cursor":null,"next_argv":null,"high_water_ordinal":1,"scope_revision":null,"has_more":false,
+        "stop_reason":"complete","consistency":"bounded_live"}});
+    let output = OutputSpec {
+        format: OutputFormat::Text,
+        context: ContinuationContext {
+            state_dir: Some("/tmp/state dir".into()),
+            host: Some("/tmp/host.sock".into()),
+        },
+    };
+    let result: CommandResult = serde_json::from_value(base.clone()).unwrap();
+    let rendered = String::from_utf8(encode_selected(&result, &output).unwrap()).unwrap();
+    assert!(
+        rendered.contains("  goal: Review parser\\naccept: spoof\\u001b\n"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("\naccept: spoof"));
+    let mut old = base;
+    old["data"]["items"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("goal_data");
+    let result: CommandResult = serde_json::from_value(old).unwrap();
+    let rendered = String::from_utf8(encode_selected(&result, &output).unwrap()).unwrap();
+    assert!(rendered.contains("  inspect: herdr-threads --state-dir '/tmp/state dir' --host-endpoint /tmp/host.sock thread show t-scope\n"), "{rendered}");
+}
+
+#[test]
 fn json_is_versioned_exact_utf8_and_newline_terminated() {
     let mut health = Health::unknown(
         "00000000-0000-4000-8000-000000000001".into(),

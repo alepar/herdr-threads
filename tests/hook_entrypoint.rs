@@ -102,7 +102,7 @@ impl Counting {
     fn after(&self, command: &Command) {
         use herdr_threads::protocol::commands::CheckInMode;
         let stage = match command {
-            Command::AttentionDigest(_) => RaceAt::Digest,
+            Command::AttentionDigest(_) | Command::AttentionDigestDelivery(_) => RaceAt::Digest,
             Command::CheckIn(ci) if ci.mode == CheckInMode::Current => RaceAt::CurrentCheckIn,
             Command::CheckIn(_) => RaceAt::LifecycleCheckIn,
             _ => return,
@@ -139,7 +139,10 @@ impl Counting {
         if matches!(command, Command::HookParseFailure(_)) {
             self.parse_failures.fetch_add(1, Ordering::SeqCst);
         }
-        if matches!(command, Command::AttentionDigest(_)) {
+        if matches!(
+            command,
+            Command::AttentionDigest(_) | Command::AttentionDigestDelivery(_)
+        ) {
             self.digests.fetch_add(1, Ordering::SeqCst);
             // A hung daemon hangs every attention read, not only CheckIn.
             if self.mode.load(Ordering::SeqCst) == HANG {
@@ -2473,8 +2476,8 @@ impl Fixture {
 /// of the next 16 oldest notices, and settles exactly that page: the
 /// occupant's frontier lands on the page's last notice, everything above it
 /// stays pending, and no projection row is deleted. Successive emitting
-/// calls (a tool call with no mark, then one per new invitation) walk the
-/// backlog page by page; quiet calls in between stay quiet. SessionStart
+/// tool calls walk the backlog page by page even without a new publication;
+/// only carried pages settle, and delivery readiness vanishes when drained. SessionStart
 /// `clear` starts a new occupant, whose own lifecycle offer carries the
 /// oldest page again (the frontier is occupant-scoped).
 /// Kills: M-delete-all-settlement (projection rows deleted, or the emitting
@@ -2507,30 +2510,11 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
         (generation, fx.nth_notice_ordinal(16), n as i64 - 16)
     );
     assert_eq!(projected(), n as i64);
-    for label in ["quiet 1", "quiet 2"] {
-        let hook = calls.quiet(label);
-        assert!(hook.elapsed < TOOL_BUDGET, "{label}: {:?}", hook.elapsed);
-        timings.push((label, hook.elapsed));
-    }
-    // Pages 2 and 3: each new invitation's emitting call carries the next page.
-    for page in 1..=2u64 {
-        let thread = data(fx.cooperative(
-            "peer",
-            "w9:p2",
-            &[
-                "thread",
-                "create",
-                "--topic",
-                &format!("after-notices-{page}"),
-            ],
-        ));
-        let invitation =
-            data(fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]));
+    // Delivery readiness carries each next page even though the logical
+    // warning token is unchanged. Every page is distinct and bounded.
+    for page in 1..=4u64 {
         let label = format!("page {}", page + 1);
-        let (summary, text, elapsed) = calls.offered_data(
-            &label,
-            &[&format!("[{invitation}@{thread}"), "warnings=1000+ ["],
-        );
+        let (summary, text, elapsed) = calls.offered_data(&label, &["warnings=1000+ ["]);
         assert!(elapsed < TOOL_BUDGET, "{label}: {elapsed:?} {summary}");
         assert_eq!(carried_notices(&label, &text), (fx.notice_page(page), true));
         assert_eq!(
@@ -2543,13 +2527,7 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
             "{label}"
         );
         assert_eq!(projected(), n as i64, "{label}");
-        timings.push((if page == 1 { "page 2" } else { "page 3" }, elapsed));
-        let hook = calls.quiet(&format!("{label} repeat"));
-        assert!(
-            hook.elapsed < TOOL_BUDGET,
-            "{label} repeat: {:?}",
-            hook.elapsed
-        );
+        timings.push(("next page", elapsed));
     }
     // A new occupant: its frontier is its own, so its lifecycle offer
     // carries (and settles) the oldest page again.
@@ -2674,7 +2652,11 @@ fn emitted_ready_commands_accept_and_ack_when_run_verbatim_in_the_pane() {
     let fixed = fixed_section(&context);
     assert!(fixed.contains("herdr-threads"), "{fixed}");
     assert!(!fixed.contains("Mail data (JSON)"), "{fixed}");
-    let accept = ready_command_ending(&context, "- accept: ", &format!(" accept {thread}"));
+    let accept = ready_command_ending(
+        &context,
+        "- accept (if topic and goal fit your role/remit): ",
+        &format!(" accept {thread}"),
+    );
     let inbox = ready_command_ending(&context, "- pending mail", " inbox");
     // Review B1: the startup directory overview for the one thread is
     // delivered with the commands, within the budget.
@@ -2915,7 +2897,7 @@ fn three_thread_startup_keeps_the_overview_and_every_command() {
     for (thread, _, _, _) in &threads {
         commands.push(ready_command_ending(
             &context,
-            "- accept: ",
+            "- accept (if topic and goal fit your role/remit): ",
             &format!(" accept {thread}"),
         ));
     }
