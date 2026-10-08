@@ -5,6 +5,9 @@
 
 use std::collections::BTreeSet;
 
+/// Unadvertised until the actual guarded runtime handler is enabled in19.
+pub const BOOTSTRAP_GUARDED_RESOLUTION_V1: &str = "handoff.bootstrap_guarded_resolution_v1";
+
 pub const PICKER_DIRECTORY_V1: &str = "picker.directory_v1";
 
 pub const HISTORY_FULL_BODIES: &str = "history.full_bodies";

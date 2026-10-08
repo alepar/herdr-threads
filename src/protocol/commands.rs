@@ -106,6 +106,7 @@ pub enum Command {
     CompleteLinkedBootstrap(Box<crate::protocol::handoff::CompleteLinkedBootstrap>),
     CheckBootstrapSubmission(Box<crate::protocol::handoff::CheckBootstrapSubmission>),
     BootstrapStatus(Box<crate::protocol::handoff::BootstrapStatus>),
+    ResolveBootstrapSeat(Box<crate::protocol::handoff::ResolveBootstrapSeat>),
     RecoverBootstrap(Box<crate::protocol::handoff::RecoverBootstrap>),
 }
 
@@ -823,6 +824,7 @@ impl Command {
                 return Ok(());
             }
             Self::BootstrapStatus(v) => return v.identity.validate(),
+            Self::ResolveBootstrapSeat(v) => return v.validate(),
             Self::RecoverBootstrap(v) => {
                 v.identity.validate()?;
                 v.disposition.validate()?;

@@ -42,6 +42,37 @@ pub fn run_delivery_retry_to_writer<C: crate::ports::LocalClient + ?Sized, W: Wr
     )
 }
 
+/// Additive internal bootstrap consumer; public routing remains inert.
+#[allow(clippy::too_many_arguments)]
+pub fn run_bootstrap_retry<
+    C: crate::ports::LocalClient + ?Sized,
+    N: crate::ports::CreateTabPort + ?Sized,
+>(
+    journal: &Journal,
+    reference: &IntentRef,
+    actor: super::actor_route::InvocationActor,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    native: &N,
+    clock: &dyn crate::protocol::time::Clock,
+    submission: super::topology_handoff::BootstrapSubmissionInputs<'_>,
+) -> Result<crate::protocol::handoff::BootstrapResult, super::RunError> {
+    let context = crate::protocol::output::ContinuationContext {
+        state_dir: Some(namespace.state_dir.to_string_lossy().into_owned()),
+        host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
+    };
+    preflight_original_actor(journal.root(), &reference.recovery_ref(), actor, &context)?;
+    let original = load_original_for_actor(journal, &reference.recovery_ref())?;
+    if original.header.reference != *reference {
+        return Err(super::invalid_request(
+            "bootstrap original reference mismatch",
+        ));
+    }
+    super::topology_handoff::resume_to_attachment(
+        journal, reference, namespace, client, native, clock, submission,
+    )
+}
+
 /// The command runner owns the real client and output writer. A journal error
 /// returns before `submit`; every other error leaves the entry recoverable.
 pub fn run_new<P, S, O>(

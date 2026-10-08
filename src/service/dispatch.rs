@@ -237,6 +237,7 @@ impl LocalService for DomainService {
             | Command::CompleteLinkedBootstrap(_)
             | Command::CheckBootstrapSubmission(_)
             | Command::BootstrapStatus(_)
+            | Command::ResolveBootstrapSeat(_)
             | Command::RecoverBootstrap(_) => Err(error(
                 ErrorCode::Unsupported,
                 "bootstrap routes require canonical guards and original actor classification",

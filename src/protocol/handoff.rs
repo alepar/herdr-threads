@@ -247,6 +247,25 @@ pub struct BootstrapStatus {
     pub identity: BootstrapIdentity,
 }
 
+/// Bootstrap-only current exact-tab resolution, before ordinary allocation.
+/// Target and scope are obtained from canonical recorded creation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveBootstrapSeat {
+    pub identity: BootstrapIdentity,
+    pub expected_attempt: BootstrapAttempt,
+    pub operation: OperationId,
+}
+impl ResolveBootstrapSeat {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        self.identity.validate()?;
+        if self.operation != self.identity.payload.resolve_key {
+            return Err("bootstrap resolve key differs");
+        }
+        Ok(())
+    }
+}
+
 /// Only the first transition transaction returns this authorization. It is
 /// deliberately absent from BootstrapResult/status and completed replay.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
