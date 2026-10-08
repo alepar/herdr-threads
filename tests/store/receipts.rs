@@ -60,6 +60,7 @@ fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
 }
 fn send_request(explicit: Vec<&str>) -> SendMessage {
     SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("t"),
         body: "hello".into(),
         invited_recipients: explicit.into_iter().map(SeatId::new).collect(),

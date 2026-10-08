@@ -474,6 +474,7 @@ impl SemanticMutation {
                 relays_user,
                 user_intent,
             } => Command::SendMessage(SendMessage {
+                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 thread: thread.clone(),
                 body: body.clone(),
                 invited_recipients: invited_recipients.clone(),

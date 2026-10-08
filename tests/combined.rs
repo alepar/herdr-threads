@@ -25,6 +25,8 @@ mod handoff_fences;
 mod host_adapter;
 #[path = "installer_integrations.rs"]
 mod installer_integrations;
+#[path = "protocol/lazy_delivery.rs"]
+mod lazy_delivery;
 #[path = "lifecycle_ux.rs"]
 mod lifecycle_ux;
 #[path = "local_endpoint.rs"]

@@ -17,6 +17,10 @@ pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
 
 pub const INVITATION_REJECT: &str = "invitation.reject_v1";
 
+pub const LAZY_SEND: &str = "send.lazy_v1";
+pub const INBOX_BATCH_V2: &str = "inbox.batch_v2";
+pub const MESSAGE_DELIVERY_MODES: &str = "messages.delivery_modes_v1";
+
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
 
 /// Everything this daemon build serves. A capability is listed only once its

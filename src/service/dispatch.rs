@@ -235,6 +235,8 @@ impl LocalService for DomainService {
             | Command::SeatInspect(_)
             | Command::Inbox(_)
             | Command::InboxBatch(_)
+            | Command::InboxBatchV2(_)
+            | Command::MessageDeliveryModes(_)
             | Command::Warnings(_)
             | Command::ActiveWarnings(_)
             | Command::Thread(_)
@@ -251,6 +253,10 @@ impl LocalService for DomainService {
             | Command::Message(_)
             | Command::Diagnostics(_)
             | Command::RetirementJobs(_) => self.store.query(&command, &read, budget),
+            Command::CompleteInboxDelivery(_) => Err(error(
+                ErrorCode::Unsupported,
+                "inbox delivery completion is not implemented",
+            )),
             Command::OperationStatus(_) => Err(error(
                 ErrorCode::Unauthorized,
                 "verified operation scope required",
