@@ -949,7 +949,7 @@ pub(crate) fn store_pass(
                         rt.utc,
                     )?;
                 }
-                crate::archival_legacy::Hint::Bootstrap { identity, source } => {
+                crate::archival_legacy::Hint::Bootstrap { identity, source, retained_child, retained_completion } => {
                     validate_hint_source(tx, &store.instance, source)?;
                     if identity.claim.instance != store.instance {
                         return Err(api_error(
@@ -967,6 +967,21 @@ pub(crate) fn store_pass(
                             rt.legacy_source = None;
                         }
                         Some(status) => {
+                            if let Some((attachment, thread)) = retained_child.as_deref() {
+                                if status.attachment.as_ref().map(serde_json::to_value).transpose().map_err(|_| api_error(ErrorCode::StoreCorrupt, "cannot compare retained bootstrap evidence"))?
+                                    != Some(serde_json::to_value(attachment).map_err(|_| api_error(ErrorCode::StoreCorrupt, "cannot compare retained bootstrap evidence"))?) {
+                                    return Err(api_error(ErrorCode::InvalidRequest, "retained bootstrap child attachment differs from canonical attachment"));
+                                }
+                                if let Some(thread) = thread
+                                    && super::handoff::current(tx, &attachment.handoff)?.and_then(|child| child.thread).as_ref() != Some(thread) {
+                                    return Err(api_error(ErrorCode::InvalidRequest, "retained bootstrap child thread differs from canonical child"));
+                                }
+                            }
+                            if let Some(retained) = retained_completion
+                                && status.completed.as_ref().map(serde_json::to_value).transpose().map_err(|_| api_error(ErrorCode::StoreCorrupt, "cannot compare retained bootstrap evidence"))?
+                                    != Some(serde_json::to_value(retained).map_err(|_| api_error(ErrorCode::StoreCorrupt, "cannot compare retained bootstrap evidence"))?) {
+                                return Err(api_error(ErrorCode::InvalidRequest, "retained bootstrap completion differs from canonical completed result"));
+                            }
                             if let Some(done) = status.completed
                                 && super::handoff::current(tx, &done.attachment.handoff)?.as_ref()
                                     != Some(&done.legacy_result)
