@@ -4,6 +4,7 @@ Columns: date · title · relative link · one-line summary · status · tags.
 
 | Date | Title | Design | Summary | Status | Tags |
 |---|---|---|---|---|---|
+| 2026-10-07 | Lazy announcement delivery | [Design](2026-10-07-lazy-messages-design.md) | Durable explicit-inbox delivery without wake, notification or ACK obligations; separate delivery progress. | draft, approval pending | lazy, messages, inbox, cost |
 | 2026-10-04 | Human message attribution and intent | [Design](2026-10-04-user-message-intent-design.md) | Separate relay attribution from query, request and rule intent; define reviewed summary lifetimes and compatibility. | implemented | messages, attribution, summaries, rules |
 | 2026-10-03 | Daily thread overhead | [Design](2026-10-03-thread-overhead-design.md) | Batched inbox display ACKs, wake batching, warning transitions, and measured native scenarios. | implemented | inbox, scheduler, warnings |
 | 2026-09-27 | Herdr persistent threads | [Root design](../../design/herdr-threads/2026-09-27-herdr-threads-design.md) | Pane-bound seats, prelaunch handoffs, explicit receipts and compact native delivery. | draft | herdr-threads, root |
