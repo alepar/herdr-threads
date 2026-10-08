@@ -2,14 +2,14 @@
   {
     "id": "ht-qhz.9",
     "title": "Configuration smoke: pane-launch, new-tab and existing-peer",
-    "description": "Actually exercise all three command modes with explicit pinned routing and both Claude/Codex option payloads using owned model-free helpers. owns: mode matrix actual CLI fixtures and source-bound RED/GREEN smoke evidence; consumes: BootstrapPlan resume and DeliveryPlan execution. Files: tests/handoff_topology_cli.rs or combined module, tests/combined.rs only if needed, run smoke evidence. Acceptance: new-tab creates exactly one tab, legacy launch uses exact pane, existing-peer invokes zero start; retries do not duplicate topology/invites/messages/launch; isolated HOME/config dirs, test_support owned children stopped/reaped and UUID-scoped cleanup; no per-tab full suite.\nblocked-by ht-qhz.4: consumes BootstrapPlan resume\nblocked-by ht-qhz.5: consumes DeliveryPlan execution",
+    "description": "Actually exercise all three command modes with explicit pinned routing and both Claude/Codex option payloads using owned model-free helpers.\nowns: mode matrix actual CLI fixtures and source-bound RED/GREEN smoke evidence;\nconsumes: BootstrapPlan resume and DeliveryPlan execution.\nFiles: tests/handoff_topology_cli.rs or combined module, tests/combined.rs only if needed, run smoke evidence.\nAcceptance: new-tab creates exactly one tab, legacy launch uses exact pane, existing-peer invokes zero start; retries do not duplicate topology/invites/messages/launch; isolated HOME/config dirs, test_support owned children stopped/reaped and UUID-scoped cleanup; no per-tab full suite.\nblocked-by ht-qhz.4: consumes BootstrapPlan resume\nblocked-by ht-qhz.5: consumes DeliveryPlan execution",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:55:37Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:55:37Z",
+    "updated_at": "2026-10-08T05:57:26Z",
     "labels": [
       "sp:ht-qhz"
     ],
@@ -47,14 +47,14 @@
   {
     "id": "ht-qhz.8",
     "title": "Handoff-first operation guidance and CLI help",
-    "description": "Replace manual new-tab bootstrap recipes with practical handoff-first routing and preserve invitation relevance/ACK semantics. owns: integrations/skill/SKILL.md operation priorities, handoff help and pressure scenario inputs; consumes: approved topology/delivery/recovery grammar boundary contract. Files: integrations/skill/SKILL.md, src/cli/handoff.rs (help only), docs/cli.md or existing handoff doc after source audit, run pressure-scenarios.md. Acceptance: FIRSThandoff SECONDverifiedtopic-goal+participant send THIRDjoin/invite, ambiguous membership surfaces, existing peer no relaunch, human recovery argv honest, no installed-permission claim before peer approval; meaningful BEFORE/AFTER pressure evaluation is parent orchestrator-owned rather than implementer spawning agents.\nblocked-by ht-qhz.1: consumes boundary contract",
+    "description": "Replace manual new-tab bootstrap recipes with practical handoff-first routing and preserve invitation relevance/ACK semantics.\nowns: integrations/skill/SKILL.md operation priorities, handoff help and pressure scenario inputs;\nconsumes: approved topology/delivery/recovery grammar boundary contract.\nFiles: integrations/skill/SKILL.md, src/cli/handoff.rs (help only), docs/cli.md or existing handoff doc after source audit, run pressure-scenarios.md.\nAcceptance: FIRSThandoff SECONDverifiedtopic-goal+participant send THIRDjoin/invite, ambiguous membership surfaces, existing peer no relaunch, human recovery argv honest, no installed-permission claim before peer approval; meaningful BEFORE/AFTER pressure evaluation is parent orchestrator-owned rather than implementer spawning agents.\nblocked-by ht-qhz.1: consumes boundary contract",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:55:35Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:55:35Z",
+    "updated_at": "2026-10-08T05:57:27Z",
     "labels": [
       "sp:ht-qhz"
     ],
@@ -84,14 +84,14 @@
   {
     "id": "ht-qhz.7",
     "title": "Bootstrap and delivery legacy archival compatibility",
-    "description": "Extend bounded read-only importer for new identities/progress and exact namespace protection without granting topology submission or caller authority. owns: bootstrap/delivery legacy veto and terminal precedence integration; consumes: canonical bootstrap state transitions and new journal boundary contract. Files: src/archival_legacy.rs, src/store/archival.rs, tests/archival*.rs. Acceptance: RED/GREEN custom namespace/copiedUUID, malformed/inaccessible/oversized/symlink/partial scans, delayed scan after completed bootstrap, restart retained journal, atomic created-thread protection, delivery completed replay; zero old journal rewriting or revived fence.\nblocked-by ht-qhz.2: consumes canonical bootstrap state transitions",
+    "description": "Extend bounded read-only importer for new identities/progress and exact namespace protection without granting topology submission or caller authority.\nowns: bootstrap/delivery legacy veto and terminal precedence integration;\nconsumes: canonical bootstrap state transitions and new journal boundary contract.\nFiles: src/archival_legacy.rs, src/store/archival.rs, tests/archival*.rs.\nAcceptance: RED/GREEN custom namespace/copiedUUID, malformed/inaccessible/oversized/symlink/partial scans, delayed scan after completed bootstrap, restart retained journal, atomic created-thread protection, delivery completed replay; zero old journal rewriting or revived fence.\nblocked-by ht-qhz.2: consumes canonical bootstrap state transitions",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:55:34Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:55:34Z",
+    "updated_at": "2026-10-08T05:57:28Z",
     "labels": [
       "sp:ht-qhz"
     ],
@@ -121,14 +121,14 @@
   {
     "id": "ht-qhz.6",
     "title": "Explicit human uncertain-topology recovery",
-    "description": "Integrate human handoff recover through the approved peer InvocationActor/classify_original_actor boundary with separate operator scope and exact original bootstrap/attempt references. owns: administrative recovery dispatch and operator audit provenance; consumes: canonical bootstrap state transitions and peer human namespace actor classifier. Files: src/cli/topology_recover.rs, src/cli/commands.rs (peer-approved human handoff recovery integration), src/cli/retry.rs, TRUST-POLICY.md. Acceptance: RED/GREEN root refusal before ANY completed cleanup, created-pane ordinary structural/seat guards, not-created next-attempt authorization, contradictory/concurrent/repeated assertions, delayed prior creation conflict, completed absorbing refusal; never reclassifies frozen origin or performs downstream actions; document mistaken not-created accepted limit. Exact human integration is gated only on named peer source availability; no root --operator fallback.\nblocked-by ht-qhz.2: consumes canonical bootstrap state transitions",
+    "description": "Integrate human handoff recover through the approved peer InvocationActor/classify_original_actor boundary with separate operator scope and exact original bootstrap/attempt references.\nowns: administrative recovery dispatch and operator audit provenance;\nconsumes: canonical bootstrap state transitions and peer human namespace actor classifier.\nFiles: src/cli/topology_recover.rs, src/cli/commands.rs (peer-approved human handoff recovery integration), src/cli/retry.rs, TRUST-POLICY.md.\nAcceptance: RED/GREEN root refusal before ANY completed cleanup, created-pane ordinary structural/seat guards, not-created next-attempt authorization, contradictory/concurrent/repeated assertions, delayed prior creation conflict, completed absorbing refusal; never reclassifies frozen origin or performs downstream actions; document mistaken not-created accepted limit. Exact human integration is gated only on named peer source availability; no root --operator fallback.\nblocked-by ht-qhz.2: consumes canonical bootstrap state transitions",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:55:32Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:55:32Z",
+    "updated_at": "2026-10-08T05:57:28Z",
     "labels": [
       "sp:ht-qhz"
     ],
@@ -158,14 +158,14 @@
   {
     "id": "ht-qhz.5",
     "title": "Existing-peer delivery without native launch",
-    "description": "Implement HandoffDelivery immutable journal and exact staged create/invite/send composition without launch preflight, native start or registration. owns: DeliveryPlan execution and --existing grammar; consumes: topology/delivery boundary contract and existing canonical Handoff fences. Files: src/cli/handoff_delivery.rs, src/cli/handoff.rs (extract staged-work helper preserving serialization), src/cli/commands.rs (existing selector parser), src/cli/retry.rs. Acceptance: actual CLI RED/GREEN pane/seat modes, joined/invited/unbound recipient reporting, zero native launches, no seat allocation/rebind, exact keyed invite/send replay including reinvitation episode safety, canonical held/unresolved/retired refusal, historical Handoff golden unchanged.\nblocked-by ht-qhz.1: consumes boundary contract",
+    "description": "Implement HandoffDelivery immutable journal and exact staged create/invite/send composition without launch preflight, native start or registration.\nowns: DeliveryPlan execution and --existing grammar;\nconsumes: topology/delivery boundary contract and existing canonical Handoff fences.\nFiles: src/cli/handoff_delivery.rs, src/cli/handoff.rs (extract staged-work helper preserving serialization), src/cli/commands.rs (existing selector parser), src/cli/retry.rs.\nAcceptance: actual CLI RED/GREEN pane/seat modes, joined/invited/unbound recipient reporting, zero native launches, no seat allocation/rebind, exact keyed invite/send replay including reinvitation episode safety, canonical held/unresolved/retired refusal, historical Handoff golden unchanged.\nblocked-by ht-qhz.1: consumes boundary contract",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:55:30Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:55:30Z",
+    "updated_at": "2026-10-08T05:57:29Z",
     "labels": [
       "sp:ht-qhz"
     ],
@@ -195,14 +195,14 @@
   {
     "id": "ht-qhz.4",
     "title": "New-tab durable CLI bootstrap coordinator",
-    "description": "Implement new-tab grammar, frozen normalization, operation lock, canonical reserve before local possible-creation/native submission, exact CreatedTab recording and guarded seat/downstream handoff attachment. owns: BootstrapPlan publication/resume and new-tab dispatch; consumes: canonical bootstrap state transitions and typed CreatedTab/submission outcomes. Files: src/cli/topology_handoff.rs, src/cli/commands.rs (new-tab parser only), src/cli/mod.rs, src/cli/retry.rs. Acceptance: meaningful actual CLI RED/GREEN new-tab success/retry, concurrent invocation, reserve/host reply loss, save/output/removal failure; zero duplicated creates; exact state/socket/argv/options, restore holds/incarnation refusal; fence existing thread before create; never closes user topology; old pane handoff unchanged.\nblocked-by ht-qhz.2: consumes canonical bootstrap state transitions\nblocked-by ht-qhz.3: consumes typed CreatedTab/submission outcomes",
+    "description": "Implement new-tab grammar, frozen normalization, operation lock, canonical reserve before local possible-creation/native submission, exact CreatedTab recording and guarded seat/downstream handoff attachment.\nowns: BootstrapPlan publication/resume and new-tab dispatch;\nconsumes: canonical bootstrap state transitions and typed CreatedTab/submission outcomes.\nFiles: src/cli/topology_handoff.rs, src/cli/commands.rs (new-tab parser only), src/cli/mod.rs, src/cli/retry.rs.\nAcceptance: meaningful actual CLI RED/GREEN new-tab success/retry, concurrent invocation, reserve/host reply loss, save/output/removal failure; zero duplicated creates; exact state/socket/argv/options, restore holds/incarnation refusal; fence existing thread before create; never closes user topology; old pane handoff unchanged.\nblocked-by ht-qhz.2: consumes canonical bootstrap state transitions\nblocked-by ht-qhz.3: consumes typed CreatedTab/submission outcomes",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:55:28Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:55:28Z",
+    "updated_at": "2026-10-08T05:57:29Z",
     "labels": [
       "sp:ht-qhz"
     ],
@@ -240,14 +240,14 @@
   {
     "id": "ht-qhz.3",
     "title": "Witnessed bounded native tab creation",
-    "description": "Implement the exact audited tab.create socket request/result mapping under the existing host witness and budget machinery. owns: typed CreatedTab and submission outcome production boundary; consumes: topology boundary contract and adapter-owner launch/registry seam. Files: src/host/transport.rs, src/host/native.rs, src/host/mod.rs. Acceptance: recheck installed protocol/schema model-free; strict correlation, coherent tab/root_pane/workspace/incarnation; refusal before submission, cancellation/lost/malformed reply outcome_unknown; deterministic fake socket RED/GREEN; one owned isolated native fixture if available with read-only schema fallback documented, no real agent start/config write.\nblocked-by ht-qhz.1: consumes boundary contract",
+    "description": "Implement the exact audited tab.create socket request/result mapping under the existing host witness and budget machinery.\nowns: typed CreatedTab and submission outcome production boundary;\nconsumes: topology boundary contract and adapter-owner launch/registry seam.\nFiles: src/host/transport.rs, src/host/native.rs, src/host/mod.rs.\nAcceptance: recheck installed protocol/schema model-free; strict correlation, coherent tab/root_pane/workspace/incarnation; refusal before submission, cancellation/lost/malformed reply outcome_unknown; deterministic fake socket RED/GREEN; one owned isolated native fixture if available with read-only schema fallback documented, no real agent start/config write.\nblocked-by ht-qhz.1: consumes boundary contract",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:55:26Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:55:26Z",
+    "updated_at": "2026-10-08T05:57:30Z",
     "labels": [
       "sp:ht-qhz"
     ],
@@ -277,14 +277,14 @@
   {
     "id": "ht-qhz.2",
     "title": "Canonical bootstrap attempt fences and atomic attachment",
-    "description": "Implement canonical exact namespace identity, one-use Reserve authorization, durable creation evidence/attempt decisions and absorbing completion with indexed archival protection. owns: canonical bootstrap state transitions and submission permission; consumes: topology boundary contract. Files: src/store/topology_handoff.rs, src/store/mod.rs, src/store/control.rs, src/store/archival.rs, src/store/schema.rs, migrations/0028_handoff_topology.sql (number only after main allocation). Acceptance: meaningful RED/GREEN exact payload mismatch, concurrent reserve one permission, lost reserve replay no permission, creation attachment in deciding transaction, current A2 guards, completed current-state presentation and stale recovery conflict tests; one additive migration only; old migration bytes unchanged. Bound unique rows/indexes and replay statements.\nblocked-by ht-qhz.1: consumes boundary contract",
+    "description": "Implement canonical exact namespace identity, one-use Reserve authorization, durable creation evidence/attempt decisions and absorbing completion with indexed archival protection.\nowns: canonical bootstrap state transitions and submission permission;\nconsumes: topology boundary contract.\nFiles: src/store/topology_handoff.rs, src/store/mod.rs, src/store/control.rs, src/store/archival.rs, src/store/schema.rs, migrations/0028_handoff_topology.sql (number only after main allocation).\nAcceptance: meaningful RED/GREEN exact payload mismatch, concurrent reserve one permission, lost reserve replay no permission, creation attachment in deciding transaction, current A2 guards, completed current-state presentation and stale recovery conflict tests; one additive migration only; old migration bytes unchanged. Bound unique rows/indexes and replay statements.\nblocked-by ht-qhz.1: consumes boundary contract\nExternal source gate: main approved ONE additive topology migration0028 via mp6wXQY6o. This leaf must absorb actual reviewed migrations0026lazy and0027adapters before editing/applying0028; no fabricated placeholder predecessors or historical-byte changes. Parent scheduler parks only this leaf while actual predecessors are unavailable.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:55:25Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:55:25Z",
+    "updated_at": "2026-10-08T05:57:30Z",
     "labels": [
       "sp:ht-qhz"
     ],
@@ -314,14 +314,14 @@
   {
     "id": "ht-qhz.1",
     "title": "Seam contract: topology bootstrap and delivery identities",
-    "description": "Land only compilable additive BootstrapPlan/DeliveryPlan, state/result types and inert protocol/CLI/journal dispatch wiring without changing old Handoff serialization. owns: versioned topology and delivery boundary contract; consumes: existing CallerClaim, IntentScope, HandoffIdentity and peer actor-route/classify_original_actor seam. Files: src/protocol/handoff.rs, src/protocol/commands.rs, src/protocol/results.rs, src/cli/journal.rs, src/cli/commands.rs, src/ports.rs, src/cli/mod.rs. Acceptance: inert-by-default compiles, original actor classification runs before new journal retry, exact historical journal/digest golden unchanged; no topology effect or speculated human shortcut.",
+    "description": "Land only compilable additive BootstrapPlan/DeliveryPlan, state/result types and inert protocol/CLI/journal dispatch wiring without changing old Handoff serialization.\nowns: versioned topology and delivery boundary contract;\nconsumes: existing CallerClaim, IntentScope, HandoffIdentity and peer actor-route/classify_original_actor seam.\nFiles: src/protocol/handoff.rs, src/protocol/commands.rs, src/protocol/results.rs, src/cli/journal.rs, src/cli/commands.rs, src/ports.rs, src/cli/mod.rs.\nAcceptance: inert-by-default compiles, original actor classification runs before new journal retry, exact historical journal/digest golden unchanged; no topology effect or speculated human shortcut.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:55:24Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:55:24Z",
+    "updated_at": "2026-10-08T05:57:30Z",
     "labels": [
       "sp:ht-qhz"
     ],

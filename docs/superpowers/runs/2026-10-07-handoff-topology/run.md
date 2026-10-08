@@ -10,3 +10,6 @@ base: main
 
 spec: 2026-10-07-handoff-topology-design.md
 epic: ht-qhz
+
+approvals:
+- top-split · auto · ht-qhz.1 LEAF, ht-qhz.2 PROMOTE, ht-qhz.3 LEAF, ht-qhz.4 PROMOTE, ht-qhz.5 PROMOTE, ht-qhz.6 LEAF, ht-qhz.7 LEAF, ht-qhz.8 LEAF, ht-qhz.9 LEAF
