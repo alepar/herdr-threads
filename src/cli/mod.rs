@@ -4,6 +4,7 @@ pub mod doctor;
 pub mod exit;
 pub mod follow;
 pub mod handoff;
+pub mod handoff_delivery;
 pub mod hook;
 pub mod hook_evidence;
 pub mod human;

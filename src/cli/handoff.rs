@@ -104,6 +104,144 @@ struct Progress {
     launch: Option<serde_json::Value>,
 }
 
+/// Exact keyed durable work, independent of native launch and receipt actions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct StagedWork {
+    pub thread: Option<ThreadId>,
+    pub invitation: Option<CommandResult>,
+    pub message: Option<CommandResult>,
+    #[serde(default)]
+    pub invitation_attempted: bool,
+}
+pub(crate) struct Staging<'a> {
+    pub channel: &'a crate::protocol::handoff::HandoffChannel,
+    pub body: &'a str,
+    pub recipient: &'a SeatId,
+    pub create_key: &'a OperationId,
+    pub invite_key: &'a OperationId,
+    pub send_key: &'a OperationId,
+    pub skip_joined: bool,
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stage_work<C: LocalClient + ?Sized>(
+    plan: Staging<'_>,
+    progress: &mut StagedWork,
+    phase: &mut &'static str,
+    call: &dyn Fn(SemanticMutation, &OperationId) -> Result<CommandResult, RunError>,
+    save: &mut dyn FnMut(&StagedWork) -> Result<(), RunError>,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    use crate::protocol::handoff::HandoffChannel;
+    *phase = "create";
+    if progress.thread.is_none() {
+        progress.thread = Some(match plan.channel {
+            HandoffChannel::Existing { thread } => thread.clone(),
+            HandoffChannel::New { name, topic, goal } => match call(
+                SemanticMutation::CreateThread {
+                    name: name.clone(),
+                    topic: topic.clone(),
+                    goal: goal.clone(),
+                },
+                plan.create_key,
+            )? {
+                CommandResult::ThreadCreated(thread) => thread,
+                _ => return Err(super::invalid_request("unexpected create result")),
+            },
+        });
+        save(progress)?;
+    }
+    let thread = progress.thread.clone().unwrap();
+    *phase = "invite";
+    if progress.invitation.is_none() {
+        let result = if plan.skip_joined
+            && !progress.invitation_attempted
+            && recipient_joined(client, clock, &thread, plan.recipient)?
+        {
+            CommandResult::AlreadyJoined(crate::protocol::results::AlreadyJoined {
+                thread: thread.clone(),
+                seat: plan.recipient.clone(),
+            })
+        } else {
+            // Retain the keyed invitation decision before a possibly lost reply.
+            if plan.skip_joined {
+                progress.invitation_attempted = true;
+                save(progress)?;
+            }
+            call(
+                SemanticMutation::Invite {
+                    thread: thread.clone(),
+                    seat: plan.recipient.clone(),
+                    deadline_millis: None,
+                },
+                plan.invite_key,
+            )?
+        };
+        if !matches!(
+            result,
+            CommandResult::Invitation(_) | CommandResult::AlreadyJoined(_)
+        ) {
+            return Err(super::invalid_request("unexpected invite result"));
+        }
+        progress.invitation = Some(result);
+        save(progress)?;
+    }
+    *phase = "send";
+    if progress.message.is_none() {
+        let result = call(
+            SemanticMutation::SendMessage {
+                thread,
+                body: plan.body.into(),
+                invited_recipients: vec![plan.recipient.clone()],
+                deadline_millis: None,
+                relays_user: false,
+                user_intent: None,
+            },
+            plan.send_key,
+        )?;
+        if !matches!(result, CommandResult::MessageSent(_)) {
+            return Err(super::invalid_request("unexpected send result"));
+        }
+        progress.message = Some(result);
+        save(progress)?;
+    }
+    Ok(())
+}
+pub(crate) fn recipient_joined<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    thread: &ThreadId,
+    seat: &SeatId,
+) -> Result<bool, RunError> {
+    use crate::protocol::{
+        commands::ParticipantsQuery, pagination::PageRequest, results::MembershipStatus,
+    };
+    let mut page = PageRequest::default();
+    loop {
+        let CommandResult::Participants(found) = client.call(
+            Command::Participants(ParticipantsQuery {
+                thread: thread.clone(),
+                page: page.clone(),
+                caller: None,
+            }),
+            &super::cooperative_budget(clock),
+        )?
+        else {
+            return Err(super::invalid_request("unexpected participants result"));
+        };
+        if let Some(row) = found.items.iter().find(|row| &row.seat == seat) {
+            return Ok(row.joined
+                && !row.retired
+                && row.effective_state == MembershipStatus::Joined
+                && row.requirement.is_none());
+        }
+        match found.next_cursor {
+            Some(cursor) => page.cursor = Some(cursor),
+            None => return Ok(false),
+        }
+    }
+}
+
 /// Tests and production share this composition contract. Launch must recheck
 /// the frozen recipient and invoke the gate immediately before native submit.
 pub trait HandoffLauncher {
@@ -117,12 +255,19 @@ pub trait HandoffLauncher {
         gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
     ) -> Result<super::launch::LaunchReport, RunError>;
 }
-fn progress_path(journal: &Journal, reference: &IntentRef) -> std::path::PathBuf {
+pub(crate) fn progress_path(journal: &Journal, reference: &IntentRef) -> std::path::PathBuf {
     journal
         .root()
         .join(format!("handoff-{}.progress", reference.operation.as_str()))
 }
 fn save(journal: &Journal, reference: &IntentRef, progress: &Progress) -> io::Result<()> {
+    save_progress(journal, reference, progress)
+}
+pub(crate) fn save_progress<T: Serialize>(
+    journal: &Journal,
+    reference: &IntentRef,
+    progress: &T,
+) -> io::Result<()> {
     let temp = journal
         .root()
         .join(format!(".handoff-{}", uuid::Uuid::new_v4()));
@@ -137,13 +282,19 @@ fn save(journal: &Journal, reference: &IntentRef, progress: &Progress) -> io::Re
     File::open(journal.root())?.sync_all()
 }
 fn load(journal: &Journal, reference: &IntentRef) -> io::Result<Progress> {
+    load_progress(journal, reference)
+}
+pub(crate) fn load_progress<T: serde::de::DeserializeOwned + Default>(
+    journal: &Journal,
+    reference: &IntentRef,
+) -> io::Result<T> {
     let file = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(progress_path(journal, reference))
     {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Progress::default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(T::default()),
         Err(error) => return Err(error),
     };
     if !file.metadata()?.is_file() {
@@ -153,7 +304,7 @@ fn load(journal: &Journal, reference: &IntentRef) -> io::Result<Progress> {
     file.take(4 * 1024 * 1024).read_to_end(&mut bytes)?;
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
-fn lock(journal: &Journal, reference: &IntentRef) -> io::Result<File> {
+pub(crate) fn lock(journal: &Journal, reference: &IntentRef) -> io::Result<File> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -170,7 +321,7 @@ fn lock(journal: &Journal, reference: &IntentRef) -> io::Result<File> {
     Ok(file)
 }
 
-fn membership<C: LocalClient + ?Sized>(
+pub(crate) fn membership<C: LocalClient + ?Sized>(
     client: &C,
     thread: &ThreadId,
     claim: &CallerClaim,
@@ -313,62 +464,45 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
         )?)
     };
     let attempt = (|| -> Result<(), RunError> {
-        if progress.thread.is_none() {
-            progress.thread = match &plan.request.thread {
-                Some(thread) => Some(thread.clone()),
-                None => match call(
-                    SemanticMutation::CreateThread {
-                        name: plan.request.thread_name.clone(),
-                        topic: plan.request.topic.clone().unwrap(),
-                        goal: plan.request.goal.clone().unwrap(),
-                    },
-                    &plan.create_key,
-                )? {
-                    CommandResult::ThreadCreated(thread) => Some(thread),
-                    _ => return Err(super::invalid_request("unexpected create result")),
-                },
-            };
-            save(journal, reference, &progress)?;
-        }
-        let thread = progress.thread.clone().unwrap();
-        phase = "invite";
-        if progress.invitation.is_none() {
-            let result = call(
-                SemanticMutation::Invite {
-                    thread: thread.clone(),
-                    seat: plan.recipient.clone(),
-                    deadline_millis: None,
-                },
-                &plan.invite_key,
-            )?;
-            if !matches!(
-                result,
-                CommandResult::Invitation(_) | CommandResult::AlreadyJoined(_)
-            ) {
-                return Err(super::invalid_request("unexpected invite result"));
-            }
-            progress.invitation = Some(result);
-            save(journal, reference, &progress)?;
-        }
-        phase = "send";
-        if progress.message.is_none() {
-            let result = call(
-                SemanticMutation::SendMessage {
-                    thread: thread.clone(),
-                    body: plan.request.body.clone(),
-                    invited_recipients: vec![plan.recipient.clone()],
-                    deadline_millis: None,
-                    relays_user: false,
-                    user_intent: None,
-                },
-                &plan.send_key,
-            )?;
-            if !matches!(result, CommandResult::MessageSent(_)) {
-                return Err(super::invalid_request("unexpected send result"));
-            }
-            progress.message = Some(result);
-            save(journal, reference, &progress)?;
-        }
+        let channel = match &plan.request.thread {
+            Some(thread) => crate::protocol::handoff::HandoffChannel::Existing {
+                thread: thread.clone(),
+            },
+            None => crate::protocol::handoff::HandoffChannel::New {
+                name: plan.request.thread_name.clone(),
+                topic: plan.request.topic.clone().unwrap(),
+                goal: plan.request.goal.clone().unwrap(),
+            },
+        };
+        let mut staged = StagedWork {
+            thread: progress.thread.clone(),
+            invitation: progress.invitation.clone(),
+            message: progress.message.clone(),
+            invitation_attempted: false,
+        };
+        stage_work(
+            Staging {
+                channel: &channel,
+                body: &plan.request.body,
+                recipient: &plan.recipient,
+                create_key: &plan.create_key,
+                invite_key: &plan.invite_key,
+                send_key: &plan.send_key,
+                skip_joined: false,
+            },
+            &mut staged,
+            &mut phase,
+            &call,
+            &mut |staged| {
+                progress.thread = staged.thread.clone();
+                progress.invitation = staged.invitation.clone();
+                progress.message = staged.message.clone();
+                save(journal, reference, &progress).map_err(RunError::from)
+            },
+            client,
+            clock,
+        )?;
+        let thread = staged.thread.clone().unwrap();
         phase = "launch";
         if progress.launch.is_some() || progress.possible_start {
             return Ok(());
@@ -537,9 +671,24 @@ fn fence<C: LocalClient + ?Sized>(
     complete: bool,
 ) -> Result<crate::protocol::handoff::HandoffResult, RunError> {
     let phase = if complete { "complete" } else { "begin" };
+    keyed_fence(
+        client,
+        clock,
+        identity,
+        OperationId::new(format!("handoff:{phase}:{}", identity.compound.as_str())),
+        complete,
+    )
+}
+pub(crate) fn keyed_fence<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    identity: &crate::protocol::handoff::HandoffIdentity,
+    operation: OperationId,
+    complete: bool,
+) -> Result<crate::protocol::handoff::HandoffResult, RunError> {
     let mutation = crate::protocol::handoff::HandoffMutation {
         identity: identity.clone(),
-        operation: OperationId::new(format!("handoff:{phase}:{}", identity.compound.as_str())),
+        operation,
     };
     let command = if complete {
         Command::CompleteHandoff(mutation)
