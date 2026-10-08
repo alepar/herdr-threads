@@ -1,4 +1,5 @@
 //! Typed CLI client, selected renderer and local journal composition.
+pub mod actor_route;
 pub mod commands;
 pub mod doctor;
 pub mod exit;
