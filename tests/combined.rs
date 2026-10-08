@@ -71,3 +71,6 @@ fn every_top_level_test_file_is_built() {
 
 #[path = "store/lazy_publication.rs"]
 mod lazy_publication;
+
+#[path = "store/lazy_metadata.rs"]
+mod lazy_metadata;

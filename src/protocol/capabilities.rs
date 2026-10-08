@@ -44,6 +44,7 @@ pub const ADVERTISED: &[&str] = &[
     PARTICIPANT_LOCATIONS,
     PICKER_DIRECTORY_V1,
     ATTENTION_NOTICE_DELIVERY,
+    MESSAGE_DELIVERY_MODES,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set
