@@ -1639,8 +1639,15 @@ mod live {
         let mut source = composition_source(&f);
         let mut pages = 0;
         let mut count = 0;
+        let mut reads = 0;
+        let mut maximum_capacity = 0;
         loop {
             let scan = source.scan(|| false).unwrap();
+            let statistics = source.last_reads;
+            assert!(statistics[0] <= 3, "one original/submission/child bundle");
+            assert_eq!(statistics[2], statistics[1] + statistics[0]);
+            reads += statistics[0];
+            maximum_capacity = maximum_capacity.max(statistics[2]);
             pages += 1;
             count += scan
                 .hints
@@ -1661,6 +1668,10 @@ mod live {
         assert_eq!(
             count, 2,
             "parent and independently validated child each yield exact hint"
+        );
+        assert_eq!(reads, 6, "metadata lookup never rereads child wire bytes");
+        eprintln!(
+            "COMPOSITION_LOOKUP unrelated_names=700 pages={pages} hints={count} full_reads={reads} max_page_buffer_capacity={maximum_capacity}"
         );
         let original = f.journal.root().join(format!(
             "{:020}-{}.intent",
