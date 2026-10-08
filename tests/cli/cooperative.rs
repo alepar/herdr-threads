@@ -69,6 +69,15 @@ fn selected_service_mapping_rejects_wrong_target_and_repair_hold() {
 
 #[test]
 fn selected_first_lifecycle_uses_service_generation_and_persists_context() {
+    selected_first_lifecycle_fixture(false);
+}
+
+#[test]
+fn actor_boundary_explicit_agent_selection_survives() {
+    selected_first_lifecycle_fixture(true);
+}
+
+fn selected_first_lifecycle_fixture(replace_human: bool) {
     use crate::cli::commands::CooperativeSelection;
     use crate::harness::context::{Harness as ContextHarness, Role};
     use crate::protocol::{
@@ -178,6 +187,23 @@ fn selected_first_lifecycle_uses_service_generation_and_persists_context() {
         calls: Default::default(),
         generation: std::sync::atomic::AtomicU64::new(1),
     };
+    let contexts = crate::cli::seat_contexts(&paths, instance, &selection.seat).unwrap();
+    if replace_human {
+        let execution = uuid::Uuid::new_v4();
+        contexts
+            .install_reattached(crate::harness::context::OccupantContext {
+                format_version: 1,
+                instance,
+                seat: selection.seat.as_str().into(),
+                target: selection.target.as_str().into(),
+                harness: ContextHarness::Human,
+                binding_generation: 1,
+                execution,
+                session: crate::harness::context::SessionReference::PluginContext(execution),
+                role: Role::TopLevel,
+            })
+            .unwrap();
+    }
     let parsed = crate::cli::commands::parse_argv([
         "herdr-threads",
         "check-in",
@@ -196,6 +222,10 @@ fn selected_first_lifecycle_uses_service_generation_and_persists_context() {
         &mut output,
     )
     .unwrap();
+    assert_eq!(
+        contexts.current().unwrap().unwrap().harness,
+        ContextHarness::Codex
+    );
     assert!(!output.is_empty());
     assert_eq!(client.calls.lock().unwrap().len(), 2);
     let ack = crate::cli::commands::parse_argv(["herdr-threads", "ack", "message"]).unwrap();
@@ -1053,7 +1083,7 @@ fn cooperative_reader_enforces_selected_page_budget_before_writing() {
 }
 
 #[test]
-fn inbox_display_ack_waits_for_complete_write_and_flush() {
+fn actor_boundary_human_own_inbox_never_display_acks() {
     use crate::harness::context::{
         ContextJournal, Harness as ContextHarness, OccupantContext, Role, SessionReference,
     };
@@ -1108,6 +1138,16 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
                         },
                     },
                 )),
+                Command::Inbox(_) => Ok(CommandResult::Inbox(Page {
+                    items: vec![],
+                    next_cursor: None,
+                    next_argv: None,
+                    high_water_ordinal: 1,
+                    scope_revision: None,
+                    has_more: false,
+                    stop_reason: StopReason::Complete,
+                    consistency: Consistency::BoundedLive,
+                })),
                 Command::InboxBatch(query) => {
                     assert_eq!(query.seat.as_ref().map(SeatId::as_str), Some("seat-test"));
                     Ok(CommandResult::InboxBatch(Page {
@@ -1314,7 +1354,7 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
     client.calls.lock().unwrap().clear();
     let mut human_output = Vec::new();
     crate::cli::run_cooperative(
-        crate::cli::commands::parse_argv(["herdr-threads", "inbox"]).unwrap(),
+        crate::cli::commands::parse_argv(["herdr-threads", "human", "inbox"]).unwrap(),
         &journal,
         &contexts,
         None,
@@ -1334,6 +1374,65 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
         2,
         "human text inbox is content read-only"
     );
+    let before_context = serde_json::to_vec(&contexts.current().unwrap()).unwrap();
+    let before_intents: Vec<_> = std::fs::read_dir(root.join("intents"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    for args in [
+        vec!["ht", "check-in"],
+        vec!["ht", "inbox"],
+        vec!["ht", "inbox", "--human"],
+    ] {
+        client.calls.lock().unwrap().clear();
+        let mut output = Vec::new();
+        let error = crate::cli::run_cooperative(
+            crate::cli::commands::parse_argv(args).unwrap(),
+            &journal,
+            &contexts,
+            None,
+            Role::TopLevel,
+            &client,
+            &crate::app::SystemClock::new(),
+            &mut output,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, crate::cli::RunError::Api(ref e) if e.code == crate::protocol::results::ErrorCode::InvalidRequest),
+            "{error:?}"
+        );
+        assert!(client.calls.lock().unwrap().is_empty());
+        assert!(output.is_empty());
+        assert_eq!(
+            serde_json::to_vec(&contexts.current().unwrap()).unwrap(),
+            before_context
+        );
+        let after_intents: Vec<_> = std::fs::read_dir(root.join("intents"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(after_intents, before_intents);
+    }
+    for flag in ["--human", "--machine", "--json"] {
+        client.calls.lock().unwrap().clear();
+        crate::cli::run_cooperative(
+            crate::cli::commands::parse_argv(["ht", "human", "inbox", flag]).unwrap(),
+            &journal,
+            &contexts,
+            None,
+            Role::TopLevel,
+            &client,
+            &crate::app::SystemClock::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let calls = client.calls.lock().unwrap();
+        assert!(!calls.is_empty());
+        assert!(calls.iter().all(|call| matches!(
+            call,
+            Command::Capabilities | Command::InboxBatch(_) | Command::Inbox(_)
+        )));
+    }
     std::fs::remove_dir_all(root).unwrap();
 }
 /// Kills the review N1 mutation of the `run_cooperative` `Retry` arm
@@ -2122,6 +2221,9 @@ mod scoped_runtime {
             }
         }
         fn install_context(&self, target: &str) {
+            self.install_context_harness(target, crate::harness::context::Harness::Codex);
+        }
+        fn install_context_harness(&self, target: &str, harness: crate::harness::context::Harness) {
             let execution = uuid::Uuid::new_v4();
             crate::cli::seat_contexts(
                 &self.paths,
@@ -2134,7 +2236,7 @@ mod scoped_runtime {
                 instance: self._lock.instance_uuid(),
                 seat: "recipient".into(),
                 target: target.into(),
-                harness: crate::harness::context::Harness::Codex,
+                harness,
                 binding_generation: 1,
                 execution,
                 session: crate::harness::context::SessionReference::PluginContext(execution),
@@ -2156,13 +2258,21 @@ mod scoped_runtime {
         ) -> Result<(), crate::cli::RunError> {
             let state = self.root.join("state");
             let host = self.root.join("host.sock");
-            let mut argv = vec![
-                "ht".to_owned(),
+            let (human, args) = if args.first() == Some(&"human") {
+                (true, &args[1..])
+            } else {
+                (false, args)
+            };
+            let mut argv = vec!["ht".to_owned()];
+            if human {
+                argv.push("human".into());
+            }
+            argv.extend([
                 "--state-dir".into(),
                 state.to_str().unwrap().into(),
                 "--host-endpoint".into(),
                 host.to_str().unwrap().into(),
-            ];
+            ]);
             if json {
                 argv.push("--json".into());
             }
@@ -2170,6 +2280,44 @@ mod scoped_runtime {
             crate::cli::run_in_pane(argv, Some(caller), &mut Vec::new())
         }
     }
+    #[test]
+    fn actor_boundary_root_human_refuses_before_retirement() {
+        let runtime = Runtime::new(snapshot());
+        runtime.install_context_harness("w1:p2", crate::harness::context::Harness::Human);
+        let contexts = crate::cli::seat_contexts(
+            &runtime.paths,
+            runtime._lock.instance_uuid(),
+            &SeatId::new("recipient"),
+        )
+        .unwrap();
+        let before = serde_json::to_vec(&contexts.current().unwrap()).unwrap();
+        let error = runtime
+            .run_mode_in_pane(
+                &["check-in", "--lifecycle-event", "human-root"],
+                false,
+                "w1:p2",
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::cli::RunError::Api(ref e) if e.code == crate::protocol::results::ErrorCode::InvalidRequest && e.detail.contains("herdr-threads human")),
+            "{error:?}"
+        );
+        assert_eq!(
+            serde_json::to_vec(&contexts.current().unwrap()).unwrap(),
+            before
+        );
+        assert!(!runtime.paths.instance_dir.join("intents").exists());
+        assert!(
+            runtime
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|call| matches!(call, Command::Seats(_)))
+        );
+        assert!(runtime.host_calls.lock().unwrap().is_empty());
+    }
+
     impl Drop for Runtime {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::SeqCst);
@@ -2193,6 +2341,7 @@ mod scoped_runtime {
         let runtime = Runtime::new(snapshot());
         runtime
             .run(&[
+                "human",
                 "invite",
                 "t123",
                 "--tab",
@@ -2277,6 +2426,7 @@ mod scoped_runtime {
                 "pane" => {
                     host["panes"][1]["label"] = json!("w1:p999");
                     vec![
+                        "human",
                         "seat",
                         "rebind",
                         "s123",
@@ -2290,6 +2440,7 @@ mod scoped_runtime {
                 "agent" => {
                     host["agents"] = json!([{"pane_id":"w1:p2","name":"w1:p999"}]);
                     vec![
+                        "human",
                         "invite",
                         "t123",
                         "--tab",
@@ -2353,6 +2504,7 @@ mod scoped_runtime {
         }
         runtime
             .run(&[
+                "human",
                 "invite",
                 "review",
                 "--tab",
@@ -2625,4 +2777,90 @@ mod scoped_runtime {
         );
         assert!(runtime.calls.lock().unwrap().is_empty());
     }
+}
+
+#[test]
+fn actor_boundary_root_human_refuses_before_journal() {
+    actor_boundary_selected(false);
+}
+
+#[test]
+fn actor_boundary_human_explicit_agent_mismatch() {
+    actor_boundary_selected(true);
+}
+
+fn actor_boundary_selected(human_route: bool) {
+    use crate::cli::commands::CooperativeSelection;
+    use crate::harness::context::{Harness, Role};
+    struct NoCalls(std::sync::atomic::AtomicUsize);
+    impl crate::ports::LocalClient for NoCalls {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.call(command, budget)
+        }
+        fn call(
+            &self,
+            _: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::protocol::results::ApiError::not_found(
+                "boundary fixture",
+            ))
+        }
+    }
+    let root = std::env::temp_dir().join(format!("actor-boundary-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let runtime = crate::daemon::paths::RuntimeContext::explicit(
+        root.join("state"),
+        root.join("host.sock"),
+        None,
+    )
+    .unwrap();
+    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let argv = if human_route {
+        vec!["ht", "human", "check-in"]
+    } else {
+        vec!["ht", "check-in"]
+    };
+    let parsed = crate::cli::commands::parse_argv(argv).unwrap();
+    let selection = CooperativeSelection {
+        seat: SeatId::new("seat"),
+        target: HostTargetId::new("w1:p1"),
+        harness: if human_route {
+            Harness::Codex
+        } else {
+            Harness::Human
+        },
+        role: Role::TopLevel,
+    };
+    let client = NoCalls(std::sync::atomic::AtomicUsize::new(0));
+    let mut output = Vec::new();
+    let error = crate::cli::run_selected(
+        parsed,
+        &selection,
+        &paths,
+        uuid::Uuid::from_u128(1),
+        &client,
+        &crate::app::SystemClock::new(),
+        &mut output,
+    )
+    .unwrap_err();
+    assert_eq!(
+        client.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "actor refusal must precede service proof and mutation calls"
+    );
+    assert!(
+        matches!(error, crate::cli::RunError::Api(ref e) if e.code == crate::protocol::results::ErrorCode::InvalidRequest),
+        "{error:?}"
+    );
+    assert!(!paths.instance_dir.join("intents").exists());
+    assert!(!paths.instance_dir.join("contexts").exists());
+    assert!(output.is_empty());
+    std::fs::remove_dir_all(root).unwrap();
 }
