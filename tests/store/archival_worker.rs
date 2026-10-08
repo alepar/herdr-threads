@@ -217,6 +217,123 @@ fn archival_worker_initial_unknown_does_not_read_host_and_parked_lane_stops() {
     assert!(!status.lane_dead());
     assert_eq!(host.calls.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn archival_worker_before_host_admission_waits_for_safety_tick() {
+    use herdr_threads::{
+        service::{
+            kicks::{CommitKicks, Lane},
+            pacer::Pacer,
+            workers::WorkerStatus,
+        },
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+    };
+    use std::{
+        sync::{atomic::AtomicU64, mpsc},
+        time::{Duration, Instant},
+    };
+
+    struct ManualClock(AtomicU64);
+    impl Clock for ManualClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.0.load(Ordering::SeqCst) as i64)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.load(Ordering::SeqCst))
+        }
+    }
+    struct OwnedLane(Cancellation, Option<std::thread::JoinHandle<()>>);
+    impl Drop for OwnedLane {
+        fn drop(&mut self) {
+            self.0.cancel();
+            self.1.take().unwrap().join().unwrap();
+        }
+    }
+
+    let directory = super::handoff_fences::Directory(
+        std::env::temp_dir().join(format!("archival-startup-{}", uuid::Uuid::new_v4())),
+    );
+    std::fs::create_dir(&directory.0).unwrap();
+    let path = directory.0.join("store.db");
+    let clock = Arc::new(ManualClock(AtomicU64::new(100)));
+    let cancellation = Cancellation::default();
+    let pacer = Arc::new(Pacer::new("archival", clock.clone(), cancellation.clone()));
+    let kicks = Arc::new(CommitKicks::default());
+    kicks.register(Lane::Archival, pacer.clone());
+    let store = SqliteStore::new(
+        StoreContext::new(path.clone(), clock.clone()),
+        "i",
+        StoreSettings::default(),
+    )
+    .unwrap()
+    .with_commit_kicks(kicks);
+    let db = rusqlite::Connection::open(path).unwrap();
+    let (mut worker, host, db, _directory) =
+        worker_fixture_from_store(super::handoff_fences::StoreFixture {
+            store,
+            db,
+            _directory: directory,
+        });
+    worker.cancellation = cancellation.clone();
+    worker.reachability.mark_archival_uncertain();
+    let store = worker.store.clone();
+    let (idle_tx, idle_rx) = mpsc::channel();
+    pacer.set_idle_hook(Box::new(move |n| {
+        let _ = idle_tx.send(n);
+    }));
+    let status = Arc::new(WorkerStatus::default());
+    let lane = OwnedLane(
+        cancellation.clone(),
+        Some(
+            herdr_threads::service::archival::start(worker, pacer.clone(), status.clone()).unwrap(),
+        ),
+    );
+    idle_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let count = || {
+        db.query_row("SELECT count(*) FROM archival_instances", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(count(), 0, "boot pass precedes canonical host admission");
+    store
+        .begin_host_observation(
+            "i",
+            &CallBudget {
+                deadline: MonoInstant(10_000),
+                cancellation,
+            },
+        )
+        .unwrap();
+    let evaluations = pacer.evaluations();
+    clock.0.store(5_100, Ordering::SeqCst);
+    pacer.clock_advanced();
+    let until = Instant::now() + Duration::from_secs(2);
+    while pacer.evaluations() <= evaluations {
+        assert!(
+            Instant::now() < until,
+            "lane did not evaluate advanced clock"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        count(),
+        0,
+        "host admission does not kick the parked archival lane"
+    );
+    assert_eq!(pacer.wakes(), 0, "five seconds is before the safety tick");
+    clock.0.store(60_100, Ordering::SeqCst);
+    pacer.clock_advanced();
+    idle_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        count(),
+        1,
+        "safety tick initializes after real host admission"
+    );
+    assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+    assert!(status.health().is_none());
+    drop(lane);
+}
 #[test]
 fn archival_worker_failure_reports_health_and_cancellation_ends_backoff() {
     let (worker, host, db, _directory) = worker_fixture();
