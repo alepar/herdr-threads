@@ -1,0 +1,20 @@
+[
+  {
+    "claim": "Recipient ordinal and publication decision high waters are not required to be captured atomically from one database view.",
+    "location": "Explicit inbox and delivery progress",
+    "category": "domain:bounded cursor pagination",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Captured recipient-ordinal and publication-decision high waters with arrivals after capture next traversal; concurrent staging/publication between separate captures leaves no single cutoff.",
+    "id": 2
+  },
+  {
+    "claim": "No minimum output budget or terminal error covers published lazy item framing plus next UTF-8 character that cannot fit.",
+    "location": "Explicit inbox and delivery progress",
+    "category": "domain:bounded cursor pagination",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Bounded output fitting and work-limited empty continuations are specified; unpublished skips advance cursor, but published unfit item can repeat unchanged continuation or be skipped without explicit progress rule.",
+    "id": 3
+  }
+]

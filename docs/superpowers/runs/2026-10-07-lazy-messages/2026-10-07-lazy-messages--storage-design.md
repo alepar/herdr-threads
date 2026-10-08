@@ -18,7 +18,7 @@ Adopt the parent design unchanged: separate per-message recipient progress and e
 
 ## Decision points
 
-Use the existing journaled mutation envelope and full frozen actor/claim/scope rather than invent another provenance or namespace. Use composable narrow accessors behind the seam contract rather than broad changes to legacy v1 responses. Migration numbering remains owner-coordinated and unallocated until top-level confirms; inert contract code never needs the slot. Operational deployment and main release gates remain with the caller.
+Use the existing journaled mutation envelope and full frozen actor/claim/scope rather than invent another provenance or namespace. Use composable narrow accessors behind the seam contract rather than broad changes to legacy v1 responses. Top-level confirmed warning25 → lazy26 → adapters27. Storage26 consumes independently seam-reviewed immutable warning prerequisite8106f5cade8ac9d4c2dd8e9b3281e8df05abd8ab; protocol contract remains slot-independent. Owner successor correcting stale handoff_fences.rs411 schema expectation gates eventual landing rather than this storage work. Operational deployment and main release gates remain with the caller.
 
 ## Deliverables and acceptance
 
@@ -28,7 +28,7 @@ Introduce the additive mode/recipient schema, immutable identity triggers, pendi
 owns: stored delivery mode; lazy recipient DDL and ordinal/progress accessors; policy bookkeeping definitions.
 consumes: delivery-mode and lazy recipient boundary types.
 Files: src/store/schema.rs, migration registry plus new store lazy-delivery module, TRUST-POLICY.md.
-Acceptance: owner-confirmed migration slot only, ordinary rows default ordinary, DDL audit, exact-ID mode lookup, bounded recipient and unpublished scans seek candidate before publication test, work counts and continuation stable, large displayed/unpublished query-plan tests; no receipt fields/provenance.
+Acceptance: confirmed lazy migration26 after real warning25 prerequisite, ordinary rows default ordinary, DDL audit, exact-ID mode lookup, bounded recipient and unpublished scans seek candidate before publication test, work counts and continuation stable, large displayed/unpublished query-plan tests; no receipt fields/provenance.
 
 ### Bounded lazy preparation publication and cleanup
 

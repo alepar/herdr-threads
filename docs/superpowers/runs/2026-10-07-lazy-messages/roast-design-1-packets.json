@@ -1,0 +1,188 @@
+[
+  {
+    "finding": {
+      "claim": "Legacy v1 recipient explicit inbox cannot discover lazy messages and the spec does not explicitly state the compatibility limit.",
+      "location": "Goal and Explicit inbox and delivery progress; legacy compatibility",
+      "category": "premortem",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "Goal promises existing participants next explicit inbox; v2 is required, v1 inbox remains actionable-only; history/body discovery is not inbox delivery.",
+      "id": 0
+    },
+    "votes": [
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Spec29 explicitly assigns lazy discovery to capability-gated v2 new CLI;47 preserves v1 shapes and ordinary behavior with lazy bodies readable as text. Accepted compatibility scope bounds broad Goal3; no legacy inbox guarantee."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Checks a\u2013d: explicit v2 discovery and legacy ordinary behavior specify the compatibility tradeoff. Requiring lazy v1 inbox delivery overrides chosen contract; body/history is not inbox delivery but not needed for refutation."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Whole-spec search v1/v2/upgrade/capability/inbox:29 new CLI capability-gated batch and47 legacy unchanged contract bound Goal3. Limit is stated."
+      }
+    ],
+    "tier": "panel",
+    "valid": 3,
+    "defaultRoute": "rejected"
+  },
+  {
+    "finding": {
+      "claim": "No source fairness rule prevents repeated retained ordinary items from starving lazy content on fresh explicit checks.",
+      "location": "Explicit inbox and delivery progress",
+      "category": "premortem",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "Separate lazy source, bounded output and source-phase continuation are specified, but no reserved lazy selection or scheduling rule across fresh checks.",
+      "id": 1
+    },
+    "votes": [
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Finite retained invitation set can fill fresh first pages, but source-phase continuations31 reach lazy without accepting invitations. Skipped chunks/lost cursors39 explicitly leave pending; no guarantee every fresh first page contains all sources. Failure story abandons continuations, not completed traversal."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Continuations bind source phase/high waters and advance to lazy; lost cursor/cancel leaves pending by39. No fresh-traversal resumability or every-source-in-first-page guarantee; no within-traversal starvation demonstrated."
+      },
+      {
+        "verdict": "CONFIRM",
+        "severity": "Blocking",
+        "evidence": "Read whole spec and searched fairness/starvation/ordering/source phases/reservation/scheduling/budgets/continuations/retained items. Goal3 next natural explicit inbox;31 separate sources bounded output source-phase continuations but no reserved lazy output/progress across fresh checks. Readonly29 never settles,43 retains ordinary work; ordinary-first can repeatedly fill fresh check budget. Continuations can reach lazy but fresh checks need not resume it;35 mixed pages permitted not required;53\u201354 paging tests omit fairness."
+      }
+    ],
+    "tier": "panel",
+    "valid": 3,
+    "defaultRoute": "rejected"
+  },
+  {
+    "finding": {
+      "claim": "Recipient ordinal and publication decision high waters are not required to be captured atomically from one database view.",
+      "location": "Explicit inbox and delivery progress",
+      "category": "domain:bounded cursor pagination",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "Captured recipient-ordinal and publication-decision high waters with arrivals after capture next traversal; concurrent staging/publication between separate captures leaves no single cutoff.",
+      "id": 2
+    },
+    "votes": [
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Concrete dual-read inconsistent pair exists: A ordinal10 captured; B ordinal11 publishes then A publishes before publication capture. But no specified snapshot-equivalent membership requirement; both publications precede capture completion and B arrived during check. Independent pending retention prevents loss; logical high-water contract still satisfied."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Captured paired high waters and arrivals-after-capture-next-traversal31 already specify boundary, not a mandatory read transaction. Atomic publication21 applies individual manifest, not inbox transaction. No permanent loss or changing frozen boundary shown."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Search whole spec capture/high-water/atomic: capture publication high water first then recipient ordinal; already published rows necessarily staged before publication21, intervening new rows excluded by earlier publication bound. Logical cutoff achievable without atomic dual read; proposed mechanism unnecessary."
+      }
+    ],
+    "tier": "panel",
+    "valid": 3,
+    "defaultRoute": "rejected"
+  },
+  {
+    "finding": {
+      "claim": "No minimum output budget or terminal error covers published lazy item framing plus next UTF-8 character that cannot fit.",
+      "location": "Explicit inbox and delivery progress",
+      "category": "domain:bounded cursor pagination",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "Bounded output fitting and work-limited empty continuations are specified; unpublished skips advance cursor, but published unfit item can repeat unchanged continuation or be skipped without explicit progress rule.",
+      "id": 3
+    },
+    "votes": [
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Failure requires accepted budget smaller than lazy framing plus UTF8 character. Spec31 reuses ordinary bounded chunking/budget and53 verifies paging UTF8 limits. Tiny accepted budget or unchanged continuation does not follow from spec; requirement violation unproven."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Spec31 reuses ordinary bounded chunking and selected budget. Ordinary unfit positive-length chunk terminates invalid budget on empty page; later candidate after existing page items stays continuation. Work-limited empties concern scanning. No guarantee arbitrary tiny budget succeeds; no extra lazy minimum required."
+      },
+      {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Whole-spec search budget/fit/minimum/progress/error/chunk/UTF/empty:29 full lazy-body discovery,31 bounded fitting/work-limited empty continuation but no explicit minimum sufficient for distinct lazy framing+nextUTF8 or terminal failure. Ordinary reuse does not state guarantee covers lazy variant;25 advances unpublished skips but no unfit published rule. Keeping offset can repeat, advancing skips; materially unclear contract."
+      }
+    ],
+    "tier": "panel",
+    "valid": 3,
+    "defaultRoute": "rejected"
+  },
+  {
+    "finding": {
+      "claim": "Multi-message completion has no specified all-or-nothing transaction or exact partial-result contract.",
+      "location": "Explicit inbox and delivery progress: CompleteInboxDelivery and mixed recovery",
+      "category": "failure-mode",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "Exact fully displayed IDs; changes pending progress; clear successfully settled set. Atomic publication specified for send, not completion. Failure after some IDs changes leaves immediate cleanup contract unspecified.",
+      "id": 4
+    },
+    "votes": [
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "After fully displayed A/B journal exact intent33, A settles then DB failure prevents B. Retain entire completion intent and both proofs35/39; independent ACK success cleans ACK set only. Idempotent retry A/B leaves A completed and settles B; monotonic progress39 hides none. No partial subset response needed."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Successfully settled set35 distinguishes independent ACK versus completion submissions. On partially progressed failed completion retain entire frozen intent/local state; exact idempotent replay33 finishes. Spec promises per-message recovery not atomic visibility or immediate per-ID cleanup; no loss."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Whole-spec search atomic/transaction/partial/completion/retry:33\u201339 exact IDs, idempotence, durable frozen intents and failed/uncertain exact retries allow retaining whole set then replay. Immediate per-ID partial cleanup not promised. Literal missing transaction prescription not material."
+      }
+    ],
+    "tier": "panel",
+    "valid": 3,
+    "defaultRoute": "rejected"
+  },
+  {
+    "finding": {
+      "claim": "Failure fetching one lazy body has no specified isolation behavior for otherwise readable actionable items in mixed v2 traversal.",
+      "location": "Explicit inbox and delivery progress: v2 source walks and body chunks",
+      "category": "failure-mode",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "V2 preserves invitations/receipt/warnings, adds lazy source with bounded chunks, but no behavior for unreadable lazy body; possible full batch failure or loss of ordinary output.",
+      "id": 5
+    },
+    "votes": [
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Mixed body-fetch abort possible but spec does not show difference from existing ordinary inbox behavior or promise successful partial output on failed selected body. Independent mixed mutation recovery35 occurs after display. Stated preservation not contradicted without evidence; new partial-success guarantee required."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "Preservation31/45, same ordinary chunking handling. No explicit unreadable-body tradeoff, but new item-level fault isolation guarantee beyond reuse not required; full display before completion33, incomplete presentation pending39 and attention separate21/45 prevent ordinary loss. Actual material regression unestablished."
+      },
+      {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Whole-spec search failure/unreadability/isolation/preservation/mixed/bodies:31 preserves existing ordinary handling but no lazy fetch error ordinary partial-result/item-error/abort or continuation contract. Mutation isolation35 covers after display and partial write/flush39 covers presentation, not retrieval. Unreadable lazy item could repeatedly prevent readable actionable output, violating preservation. Specify bounded item error and retain lazy pending."
+      }
+    ],
+    "tier": "panel",
+    "valid": 3,
+    "defaultRoute": "rejected"
+  }
+]
