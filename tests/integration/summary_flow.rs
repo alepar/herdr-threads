@@ -1761,10 +1761,23 @@ fn user_intent_configuration_smoke() {
         let body = fx.world.cli(None, None, &["body", message]).data("body");
         assert_intent_claim(&body["summary"], *human, *relay, *intent);
         assert_eq!(body["content"]["body_data"], *text, "{body}");
-        let search = fx
-            .world
-            .cli(None, None, &["search", text, "--thread", &fx.thread])
-            .data("search");
+        // This checks stored projections, not search latency. The bounded
+        // read may honestly exhaust its budget under parallel CI load; retry
+        // only that read-only outcome, with a finite fixture deadline.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let search = loop {
+            let out = fx
+                .world
+                .cli(None, None, &["search", text, "--thread", &fx.thread]);
+            if out.code != 0
+                && out.stderr.contains("(read_budget_exhausted)")
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            break out.data("search");
+        };
         let matches = search["matches"]["items"].as_array().unwrap();
         assert_eq!(matches.len(), 1, "{search}");
         assert_eq!(matches[0]["data"]["message"], *message);
