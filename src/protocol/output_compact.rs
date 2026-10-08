@@ -20,8 +20,9 @@ use super::{
 use crate::protocol::{
     pagination::Page,
     results::{
-        CheckInResult, CommandResult, InboxBatchItem, InboxItem, MessageContent, MessageDetails,
-        MessageKind, MessageSummary, Participant, PendingReceipt, ThreadDetails, WarningRef,
+        CheckInResult, CommandResult, InboxBatchItem, InboxBatchV2Item, InboxItem, MessageContent,
+        MessageDetails, MessageKind, MessageSummary, Participant, PendingReceipt, ThreadDetails,
+        WarningRef,
     },
     service::EventAuthor,
     time::UtcMillis,
@@ -56,6 +57,103 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
         CommandResult::Inbox(page) => {
             out.push_str("inbox\n");
             inbox_rows(page, spec, &mut out);
+            next("next", page, &mut out);
+        }
+        CommandResult::InboxBatchV2(page) => {
+            if page.items.is_empty() && !page.has_more {
+                out.push_str("empty\n");
+            }
+            for item in &page.items {
+                let lazy = matches!(item, InboxBatchV2Item::LazyMessage { .. });
+                let ordinary = match item {
+                    InboxBatchV2Item::Invitation {
+                        thread,
+                        topic_data,
+                        invitation,
+                        required_service,
+                    } => InboxBatchItem::Invitation {
+                        thread: thread.clone(),
+                        topic_data: topic_data.clone(),
+                        goal_data: None,
+                        invitation: invitation.clone(),
+                        required_service: required_service.clone(),
+                    },
+                    InboxBatchV2Item::Message {
+                        thread,
+                        topic_data,
+                        message,
+                        sequence,
+                        sender,
+                        author_role,
+                        relays_user,
+                        user_intent,
+                        author_role_backfilled,
+                        body,
+                        body_start,
+                        body_end,
+                        body_len,
+                        ..
+                    }
+                    | InboxBatchV2Item::LazyMessage {
+                        thread,
+                        topic_data,
+                        message,
+                        sequence,
+                        sender,
+                        author_role,
+                        relays_user,
+                        user_intent,
+                        author_role_backfilled,
+                        body,
+                        body_start,
+                        body_end,
+                        body_len,
+                    } => InboxBatchItem::Message {
+                        thread: thread.clone(),
+                        topic_data: topic_data.clone(),
+                        message: message.clone(),
+                        sequence: *sequence,
+                        sender: sender.clone(),
+                        author_role: *author_role,
+                        relays_user: *relays_user,
+                        user_intent: *user_intent,
+                        author_role_backfilled: *author_role_backfilled,
+                        body: body.clone(),
+                        body_start: *body_start,
+                        body_end: *body_end,
+                        body_len: *body_len,
+                        ack_candidate: None,
+                    },
+                    InboxBatchV2Item::Warning {
+                        thread,
+                        topic_data,
+                        warning,
+                        sequence,
+                    } => InboxBatchItem::Warning {
+                        thread: thread.clone(),
+                        topic_data: topic_data.clone(),
+                        warning: warning.clone(),
+                        sequence: *sequence,
+                    },
+                };
+                let one = Page {
+                    items: vec![ordinary],
+                    next_cursor: None,
+                    next_argv: None,
+                    high_water_ordinal: 0,
+                    scope_revision: None,
+                    has_more: false,
+                    stop_reason: crate::protocol::pagination::StopReason::Complete,
+                    consistency: crate::protocol::pagination::Consistency::BoundedLive,
+                };
+                let rendered = render(&CommandResult::InboxBatch(one), spec)
+                    .expect("v1 compact inbox renderer");
+                if lazy {
+                    out.push_str(&rendered.replacen(" from ", " [lazy] from ", 1));
+                } else {
+                    out.push_str(&rendered);
+                }
+            }
             next("next", page, &mut out);
         }
         CommandResult::InboxBatch(page) => {

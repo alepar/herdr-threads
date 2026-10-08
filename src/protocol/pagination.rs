@@ -31,7 +31,11 @@ impl PageRequest {
             return Err("invalid page byte bound");
         }
         if let Some(cursor) = &self.cursor {
-            Cursor::decode(cursor)?;
+            if cursor.starts_with(INBOX_V2_PREFIX) {
+                InboxBatchV2CursorState::decode(cursor)?;
+            } else {
+                Cursor::decode(cursor)?;
+            }
         }
         Ok(())
     }
@@ -140,17 +144,16 @@ pub struct InboxCursorState {
     pub warning_after_offset: i64,
 }
 
-/// Future v2 continuation state, separate from the v1 Cursor codec and flags.
-/// Its eventual codec must enforce MAX_CURSOR_BYTES; output inherits PageRequest
-/// bounds. Canonical binding identity, source and high waters must be checked by
-/// the v2 handler, including the message's UTF-8 body boundary and length.
+/// V2 continuation state, separate from the v1 Cursor codec and flags.
+/// The ib2 compact codec enforces MAX_CURSOR_BYTES; the handler validates the
+/// canonical binding and captured body length and UTF-8 boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InboxBatchV2CursorState {
     #[serde(rename = "s")]
     pub seat: crate::protocol::ids::SeatId,
     /// Both identity fields are absent for an unbound read-only recipient.
-    /// A future handler validates their pairing against the canonical binding.
+    /// The handler validates their pairing against the canonical binding.
     #[serde(rename = "g", default, skip_serializing_if = "Option::is_none")]
     pub binding_generation: Option<u64>,
     #[serde(rename = "e", default, skip_serializing_if = "Option::is_none")]
@@ -200,6 +203,261 @@ impl InboxBatchV2BodyPosition {
         }
         Ok(())
     }
+}
+
+/// V2 has a distinct namespace and binding tag. Never reinterpret a c2/c3 token.
+pub const INBOX_V2_PREFIX: &str = "ib2:";
+impl InboxBatchV2CursorState {
+    pub fn encode(&self, instance: &str) -> Result<String, &'static str> {
+        self.validate()?;
+        let mut bytes = self.compact_payload()?;
+        bytes.extend_from_slice(&binding_tag(
+            instance,
+            self.seat.as_str(),
+            "inbox_batch_v2",
+            &bytes,
+        ));
+        let encoded = format!("{INBOX_V2_PREFIX}{}", base64url_encode(&bytes));
+        if encoded.len() > MAX_CURSOR_BYTES {
+            return Err("cursor exceeds byte bound");
+        }
+        Ok(encoded)
+    }
+    pub fn decode(encoded: &str) -> Result<Self, &'static str> {
+        let (state, _) = Self::decode_parts(encoded)?;
+        state.validate()?;
+        Ok(state)
+    }
+    pub fn decode_for(
+        encoded: &str,
+        instance: &str,
+        seat: &crate::protocol::ids::SeatId,
+    ) -> Result<Self, &'static str> {
+        let (state, bytes) = Self::decode_parts(encoded)?;
+        state.validate()?;
+        let (payload, tag) = bytes.split_at(bytes.len() - CURSOR_TAG_BYTES);
+        if &state.seat != seat
+            || tag != binding_tag(instance, seat.as_str(), "inbox_batch_v2", payload)
+        {
+            return Err("v2 cursor binding mismatch");
+        }
+        Ok(state)
+    }
+    fn decode_parts(encoded: &str) -> Result<(Self, Vec<u8>), &'static str> {
+        if encoded.len() > MAX_CURSOR_BYTES {
+            return Err("cursor exceeds byte bound");
+        }
+        let bytes = base64url_decode(
+            encoded
+                .strip_prefix(INBOX_V2_PREFIX)
+                .ok_or("not a v2 cursor")?,
+        )?;
+        if bytes.len() <= CURSOR_TAG_BYTES {
+            return Err("truncated v2 cursor");
+        }
+        let payload = &bytes[..bytes.len() - CURSOR_TAG_BYTES];
+        let mut input = Reader(payload);
+        if input.byte()? != 1 {
+            return Err("unknown v2 cursor version");
+        }
+        let source = match input.byte()? {
+            0 => InboxBatchV2Source::Lazy,
+            1 => InboxBatchV2Source::Invitations,
+            2 => InboxBatchV2Source::Receipts,
+            3 => InboxBatchV2Source::Warnings,
+            _ => return Err("invalid v2 source"),
+        };
+        let flags = input.byte()?;
+        if flags & !63 != 0 {
+            return Err("invalid v2 flags");
+        }
+        let seat = crate::protocol::ids::SeatId::new(v2_string(&mut input)?);
+        let (binding_generation, execution) = if flags & 1 != 0 {
+            (
+                Some(input.unsigned()?),
+                Some(crate::protocol::ids::ExecutionId::new(v2_string(
+                    &mut input,
+                )?)),
+            )
+        } else {
+            (None, None)
+        };
+        let lazy_after_ordinal = input.unsigned()?;
+        let lazy_high_water_ordinal = lazy_after_ordinal
+            .checked_add(input.unsigned()?)
+            .ok_or("invalid v2 bound")?;
+        let publication_decision_high_water = input.unsigned()?;
+        let invitation_after_ordinal = input.signed()?;
+        let invitation_high = invitation_after_ordinal
+            .checked_add(input.signed()?)
+            .ok_or("invalid v2 bound")?;
+        let physical_after = input.signed()?;
+        let physical_high_water = physical_after
+            .checked_add(input.signed()?)
+            .ok_or("invalid v2 bound")?;
+        let manifest_after = input.signed()?;
+        let manifest_high_water = manifest_after
+            .checked_add(input.signed()?)
+            .ok_or("invalid v2 bound")?;
+        let physical_warning_after = input.signed()?;
+        let manifest_warning_after = input.signed()?;
+        let offered = input.signed()?;
+        let body = if flags & 2 != 0 {
+            Some(InboxBatchV2BodyPosition {
+                message: crate::protocol::ids::MessageId::new(v2_string(&mut input)?),
+                offset: input.unsigned()?,
+                body_len: input.unsigned()?,
+            })
+        } else {
+            None
+        };
+        let state = Self {
+            seat,
+            binding_generation,
+            execution,
+            source,
+            lazy_after_ordinal,
+            lazy_high_water_ordinal,
+            publication_decision_high_water,
+            body,
+            attention: SeatAttentionCursorState {
+                invitation_after_seq: invitation_after_ordinal,
+                invitation_after_ordinal,
+                invitations_done: flags & 4 != 0,
+                has_pending_invitation: false,
+                invitation_frontier: Some((0, invitation_high)),
+                receipts: Some(ReceiptAttentionCursorState {
+                    physical_after,
+                    manifest_after,
+                    physical_high_water,
+                    manifest_high_water,
+                    next_manifest: flags & 32 != 0,
+                }),
+                receipts_done: flags & 8 != 0,
+                has_pending_receipt: false,
+                receipt_frontier_seq: Some(publication_decision_high_water as i64),
+                physical_warning_after,
+                physical_warning_high_water: publication_decision_high_water as i64,
+                manifest_warning_after,
+                manifest_warning_high_water: publication_decision_high_water as i64,
+                next_manifest_warning: flags & 16 != 0,
+                latest_warning_seq: None,
+                latest_warning_offset: Some(offered),
+            },
+        };
+        if !input.0.is_empty() || state.compact_payload()?.as_slice() != payload {
+            return Err("noncanonical v2 cursor");
+        }
+        Ok((state, bytes))
+    }
+    fn compact_payload(&self) -> Result<Vec<u8>, &'static str> {
+        self.validate()?;
+        let a = &self.attention;
+        let r = a.receipts.as_ref().ok_or("missing receipt bounds")?;
+        let source = match self.source {
+            InboxBatchV2Source::Lazy => 0,
+            InboxBatchV2Source::Invitations => 1,
+            InboxBatchV2Source::Receipts => 2,
+            InboxBatchV2Source::Warnings => 3,
+        };
+        let flags = u8::from(self.binding_generation.is_some())
+            | (u8::from(self.body.is_some()) << 1)
+            | (u8::from(a.invitations_done) << 2)
+            | (u8::from(a.receipts_done) << 3)
+            | (u8::from(a.next_manifest_warning) << 4)
+            | (u8::from(r.next_manifest) << 5);
+        let mut out = Compact(vec![1, source, flags]);
+        v2_write_string(&mut out, self.seat.as_str())?;
+        if let Some(generation) = self.binding_generation {
+            out.unsigned(generation);
+            v2_write_string(
+                &mut out,
+                self.execution.as_ref().ok_or("missing execution")?.as_str(),
+            )?;
+        }
+        out.unsigned(self.lazy_after_ordinal);
+        out.unsigned(self.lazy_high_water_ordinal - self.lazy_after_ordinal);
+        out.unsigned(self.publication_decision_high_water);
+        out.signed(a.invitation_after_ordinal);
+        out.signed(
+            a.invitation_frontier.ok_or("missing invitation bounds")?.1
+                - a.invitation_after_ordinal,
+        );
+        out.signed(r.physical_after);
+        out.signed(r.physical_high_water - r.physical_after);
+        out.signed(r.manifest_after);
+        out.signed(r.manifest_high_water - r.manifest_after);
+        out.signed(a.physical_warning_after);
+        out.signed(a.manifest_warning_after);
+        out.signed(a.latest_warning_offset.ok_or("missing warning offer")?);
+        if let Some(body) = &self.body {
+            v2_write_string(&mut out, body.message.as_str())?;
+            out.unsigned(body.offset);
+            out.unsigned(body.body_len);
+        }
+        Ok(out.0)
+    }
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let a = &self.attention;
+        let Some(r) = a.receipts.as_ref() else {
+            return Err("missing receipt bounds");
+        };
+        if self.seat.as_str().is_empty()
+            || self.binding_generation.is_some() != self.execution.is_some()
+            || self.binding_generation == Some(0)
+            || self.lazy_after_ordinal > self.lazy_high_water_ordinal
+            || self.lazy_high_water_ordinal > i64::MAX as u64
+            || self.publication_decision_high_water > i64::MAX as u64
+            || a.receipt_frontier_seq != Some(self.publication_decision_high_water as i64)
+            || a.physical_warning_high_water != self.publication_decision_high_water as i64
+            || a.invitation_after_ordinal < 0
+            || a.invitation_after_seq != a.invitation_after_ordinal
+            || a.invitation_frontier
+                .is_none_or(|(low, high)| low != 0 || high < a.invitation_after_ordinal)
+            || r.physical_after < 0
+            || r.manifest_after < 0
+            || r.physical_high_water < r.physical_after
+            || r.manifest_high_water < r.manifest_after
+            || a.physical_warning_after < 0
+            || a.physical_warning_after > a.physical_warning_high_water
+            || a.manifest_warning_after < -1
+            || a.manifest_warning_high_water != self.publication_decision_high_water as i64
+            || a.has_pending_invitation
+            || a.has_pending_receipt
+            || a.latest_warning_seq.is_some()
+            || a.latest_warning_offset.is_none_or(|n| n < 0)
+            || self.body.as_ref().is_some_and(|b| {
+                b.validate().is_err()
+                    || b.message.as_str().is_empty()
+                    || (self.source == InboxBatchV2Source::Lazy
+                        && self.lazy_after_ordinal >= self.lazy_high_water_ordinal)
+                    || (self.source == InboxBatchV2Source::Receipts && a.receipts_done)
+                    || !matches!(
+                        self.source,
+                        InboxBatchV2Source::Receipts | InboxBatchV2Source::Lazy
+                    )
+            })
+        {
+            return Err("invalid v2 position");
+        }
+        Ok(())
+    }
+}
+
+fn v2_write_string(out: &mut Compact, value: &str) -> Result<(), &'static str> {
+    if value.is_empty() || value.len() > 128 {
+        return Err("invalid v2 identifier length");
+    }
+    out.unsigned(value.len() as u64);
+    out.0.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+fn v2_string(input: &mut Reader<'_>) -> Result<String, &'static str> {
+    let len = usize::try_from(input.unsigned()?).map_err(|_| "invalid v2 identifier")?;
+    if len == 0 || len > 128 {
+        return Err("invalid v2 identifier length");
+    }
+    String::from_utf8(input.take(len)?.to_vec()).map_err(|_| "invalid v2 identifier UTF8")
 }
 
 /// Exact bounded wake-attention continuation. Short wire keys keep the whole

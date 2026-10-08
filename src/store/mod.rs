@@ -1477,18 +1477,11 @@ impl StorePort for SqliteStore {
                 "cooperative permit instance mismatch",
             ));
         }
-        if matches!(command, PermitMutation::CompleteInboxDelivery(_)) {
-            return Err(api_error(
-                ErrorCode::Unsupported,
-                "inbox delivery completion is not implemented",
-            ));
-        }
         let mut writer = self.writer(budget)?;
         match command {
-            PermitMutation::CompleteInboxDelivery(_) => Err(api_error(
-                ErrorCode::Unsupported,
-                "inbox delivery completion is not implemented",
-            )),
+            PermitMutation::CompleteInboxDelivery(v) => {
+                control::complete_inbox_delivery(&self.context, &mut writer, budget, &v, permit)
+            }
             PermitMutation::CheckIn(_) => Err(api_error(
                 ErrorCode::InvalidRequest,
                 "check-in requires verified registration and read context",

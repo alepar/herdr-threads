@@ -789,6 +789,13 @@ impl Command {
     pub fn validate(&self) -> Result<(), &'static str> {
         if let Some(page) = self.page() {
             page.validate()?;
+            if let Some(raw) = &page.cursor {
+                if matches!(self, Self::InboxBatchV2(_)) {
+                    crate::protocol::pagination::InboxBatchV2CursorState::decode(raw)?;
+                } else {
+                    Cursor::decode(raw)?;
+                }
+            }
         }
         let claim = match self {
             Self::CheckIn(v) | Self::OperatorCheckIn(v) => Some(&v.claim),

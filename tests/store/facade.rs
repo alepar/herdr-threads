@@ -1838,10 +1838,10 @@ fn accept_hints_summary_only_once_the_thread_holds_a_full_chunk() {
     }
 }
 
-// Catches completion accidentally entering receipt/accountable transaction paths
-// before the real handler exists. The observer detects every canonical write.
+// Invalid unaddressed completion remains write-free after handler activation.
+// The observer detects every canonical write.
 #[test]
-fn inert_inbox_completion_writes_no_state() {
+fn invalid_inbox_completion_writes_no_state() {
     use crate::protocol::{
         authority::ObligationRef, commands::CompleteInboxDelivery, ids::MessageId,
     };
@@ -1892,7 +1892,7 @@ fn inert_inbox_completion_writes_no_state() {
     );
     assert_eq!(
         store.mutate(mutation, permit, &budget).unwrap_err().code,
-        ErrorCode::Unsupported
+        ErrorCode::CallerUnverified
     );
     assert_eq!(
         db.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))

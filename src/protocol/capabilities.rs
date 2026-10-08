@@ -45,6 +45,8 @@ pub const ADVERTISED: &[&str] = &[
     PICKER_DIRECTORY_V1,
     ATTENTION_NOTICE_DELIVERY,
     MESSAGE_DELIVERY_MODES,
+    LAZY_SEND,
+    INBOX_BATCH_V2,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set
