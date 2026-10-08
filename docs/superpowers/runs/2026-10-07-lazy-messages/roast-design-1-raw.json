@@ -1,0 +1,56 @@
+[
+  {
+    "claim": "Legacy v1 recipient explicit inbox cannot discover lazy messages and the spec does not explicitly state the compatibility limit.",
+    "location": "Goal and Explicit inbox and delivery progress; legacy compatibility",
+    "category": "premortem",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Goal promises existing participants next explicit inbox; v2 is required, v1 inbox remains actionable-only; history/body discovery is not inbox delivery.",
+    "id": 0
+  },
+  {
+    "claim": "No source fairness rule prevents repeated retained ordinary items from starving lazy content on fresh explicit checks.",
+    "location": "Explicit inbox and delivery progress",
+    "category": "premortem",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Separate lazy source, bounded output and source-phase continuation are specified, but no reserved lazy selection or scheduling rule across fresh checks.",
+    "id": 1
+  },
+  {
+    "claim": "Recipient ordinal and publication decision high waters are not required to be captured atomically from one database view.",
+    "location": "Explicit inbox and delivery progress",
+    "category": "domain:bounded cursor pagination",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Captured recipient-ordinal and publication-decision high waters with arrivals after capture next traversal; concurrent staging/publication between separate captures leaves no single cutoff.",
+    "id": 2
+  },
+  {
+    "claim": "No minimum output budget or terminal error covers published lazy item framing plus next UTF-8 character that cannot fit.",
+    "location": "Explicit inbox and delivery progress",
+    "category": "domain:bounded cursor pagination",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Bounded output fitting and work-limited empty continuations are specified; unpublished skips advance cursor, but published unfit item can repeat unchanged continuation or be skipped without explicit progress rule.",
+    "id": 3
+  },
+  {
+    "claim": "Multi-message completion has no specified all-or-nothing transaction or exact partial-result contract.",
+    "location": "Explicit inbox and delivery progress: CompleteInboxDelivery and mixed recovery",
+    "category": "failure-mode",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Exact fully displayed IDs; changes pending progress; clear successfully settled set. Atomic publication specified for send, not completion. Failure after some IDs changes leaves immediate cleanup contract unspecified.",
+    "id": 4
+  },
+  {
+    "claim": "Failure fetching one lazy body has no specified isolation behavior for otherwise readable actionable items in mixed v2 traversal.",
+    "location": "Explicit inbox and delivery progress: v2 source walks and body chunks",
+    "category": "failure-mode",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "V2 preserves invitations/receipt/warnings, adds lazy source with bounded chunks, but no behavior for unreadable lazy body; possible full batch failure or loss of ordinary output.",
+    "id": 5
+  }
+]

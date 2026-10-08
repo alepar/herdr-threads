@@ -354,6 +354,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
         if progress.message.is_none() {
             let result = call(
                 SemanticMutation::SendMessage {
+                    delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                     thread: thread.clone(),
                     body: plan.request.body.clone(),
                     invited_recipients: vec![plan.recipient.clone()],

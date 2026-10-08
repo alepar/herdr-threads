@@ -604,7 +604,10 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
         plugin.pending_for(&b, &kept).is_some(),
         "leave keeps the obligation"
     );
-    let after = plugin.ok(Some(author), &["send", &thread, "--body", "after leave"]);
+    let after = plugin.ok(
+        Some(author),
+        &["send", &thread, "--body", "after leave", "--nudge"],
+    );
     assert!(plugin.pending_for(&b, after.as_str().unwrap()).is_none());
     let (code, _, stderr) = plugin.command(
         Some(author),
@@ -643,7 +646,10 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
     assert_eq!(plugin.kind(Some(top), &["accept", &thread]), "accepted");
     assert_eq!(membership(&plugin, top, &thread, &b), "joined");
     assert_eq!(plugin.kind(Some(author), &["reopen", &thread]), "reopened");
-    let reopened = plugin.ok(Some(author), &["send", &thread, "--body", "reopened"]);
+    let reopened = plugin.ok(
+        Some(author),
+        &["send", &thread, "--body", "reopened", "--nudge"],
+    );
     let pending: Vec<Value> = plugin.pending(&b);
     assert_eq!(pending.len(), 1, "{pending:?}");
     assert_eq!(

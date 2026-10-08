@@ -284,6 +284,7 @@ where
         )));
     }
     output(&result).map_err(RetryFailure::Local)?;
+    clear_display_proofs(journal, &pending.semantic).map_err(RetryFailure::Local)?;
     journal.complete(reference).map_err(RetryFailure::Local)?;
     Ok(result)
 }
@@ -329,6 +330,23 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
         return matches_result(mutation, result);
     }
 
+    if let SemanticMutation::AckDisplayed { messages } = request {
+        let CommandResult::Acknowledged(ack) = result else {
+            return false;
+        };
+        let mut returned = ack
+            .acknowledged
+            .iter()
+            .chain(&ack.already_acknowledged)
+            .collect::<Vec<_>>();
+        let mut requested = messages.iter().collect::<Vec<_>>();
+        returned.sort();
+        requested.sort();
+        return returned == requested;
+    }
+    if let SemanticMutation::CompleteInboxDelivery { messages } = request {
+        return matches!(result, CommandResult::InboxDeliveryCompleted(completed) if completed == messages);
+    }
     matches!(
         (request, result),
         (
@@ -357,10 +375,7 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
                 SemanticMutation::SendMessage { .. },
                 CommandResult::MessageSent(_)
             )
-            | (
-                SemanticMutation::Ack { .. } | SemanticMutation::AckDisplayed { .. },
-                CommandResult::Acknowledged(_)
-            )
+            | (SemanticMutation::Ack { .. }, CommandResult::Acknowledged(_))
             | (SemanticMutation::Reject { .. }, CommandResult::Rejected(_))
             | (SemanticMutation::Leave { .. }, CommandResult::Left(_))
             | (
@@ -394,4 +409,61 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
                 CommandResult::OperatorInvited(_)
             )
     )
+}
+
+/// Read the immutable origin before any service, selection or completion effects.
+pub fn preflight_original_actor(
+    root: impl AsRef<std::path::Path>,
+    recovery: &str,
+    actor: super::actor_route::InvocationActor,
+    context: &crate::protocol::output::ContinuationContext,
+) -> io::Result<super::journal::OriginalActor> {
+    let journal = Journal::read_only(root)?;
+    let reference = journal.resolve_recovery_ref(recovery)?;
+    let pending = journal.load(&reference)?;
+    let original =
+        super::journal::classify_original_actor(&pending.header.scope, &pending.semantic)?;
+    if original == super::journal::OriginalActor::HumanOrOperator
+        && actor == super::actor_route::InvocationActor::Agent
+    {
+        let mut argv = super::hook::cli_prefix(context);
+        argv.insert(1, "human".into());
+        argv.extend(["retry".into(), recovery.into()]);
+        let command = argv
+            .iter()
+            .map(|token| {
+                shlex::try_quote(token)
+                    .map(|quoted| quoted.into_owned())
+                    .map_err(io::Error::other)
+            })
+            .collect::<io::Result<Vec<_>>>()?
+            .join(" ");
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("person/operator retry requires immediate human namespace; use {command}"),
+        ));
+    }
+    Ok(original)
+}
+
+// Clear only the exact successfully submitted frozen set. On local cleanup
+// failure the intent remains, so canonical idempotency can finish cleanup later.
+fn clear_display_proofs(journal: &Journal, semantic: &SemanticMutation) -> io::Result<()> {
+    let SemanticMutation::Frozen { claim, mutation } = semantic else {
+        return Ok(());
+    };
+    match mutation.as_ref() {
+        SemanticMutation::AckDisplayed { messages } => {
+            for message in messages {
+                journal.clear_displayed_chunk(claim, message)?;
+            }
+        }
+        SemanticMutation::CompleteInboxDelivery { messages } => {
+            for message in messages {
+                journal.clear_lazy_displayed_chunk(claim, message)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }

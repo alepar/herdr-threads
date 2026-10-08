@@ -1348,9 +1348,15 @@ fn cooperative_typed_rejection_discards_intent_but_transport_failure_keeps_it() 
         let mut out = vec![];
         run_hook_event(&j, &cj, &event, Some(&seed), 1, &check, &Clock, &mut out).unwrap();
         let before = j.page(&Default::default()).unwrap().items.len();
-        let parsed =
-            crate::cli::commands::parse_argv(["herdr-threads", "send", "t1", "--body", "hi"])
-                .unwrap();
+        let parsed = crate::cli::commands::parse_argv([
+            "herdr-threads",
+            "send",
+            "t1",
+            "--body",
+            "hi",
+            "--nudge",
+        ])
+        .unwrap();
         let expected = match &answer {
             Ok(Err(e)) | Err(e) => e.code.clone(),
             Ok(Ok(_)) => unreachable!(),

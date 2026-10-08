@@ -213,7 +213,7 @@ fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane()
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            25
+            26
         );
         wait("archival worker initialization", || {
             db.query_row(
@@ -373,6 +373,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
     );
     let message = w.call(
         SemanticMutation::SendMessage {
+            delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: plan.request.body.clone(),
             invited_recipients: vec![plan.recipient.clone()],

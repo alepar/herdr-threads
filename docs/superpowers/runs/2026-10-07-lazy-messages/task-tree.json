@@ -1,0 +1,771 @@
+[
+  {
+    "id": "ht-big.10",
+    "title": "Integration sweep: passive lazy mail through complete explicit inbox",
+    "description": "Verify lazy-send to explicit-inbox main flows end to end with focused tests, fix small wiring gaps and record final merge-readiness evidence.\nowns: cross-tree seam sweep; focused fmt/diff/clippy/default-feature checks and evidence; prerequisite exact successor inclusion and owner-coordinated handoff guide readiness.\nconsumes: all feature leaf artifacts; independently reviewed prerequisite8106 plus8265 and installer frozen actor classifier integration.\nFiles: focused lazy integration tests/evidence, docs/TRUST policy/guide only in coordinated scope, narrow fixes when needed.\nAcceptance: tests no per-seam bead covers; no unwired parameters/interfaces; full-body lazy no-attention/readonly/settlement/retry and ordinary positive controls; cargo fmt, git diff --check, nice cargo clippy --locked --all-targets --all-features -- -D warnings and nice scripts/check-default-features; main/caller owns full-suite, independent code review and main landing after release freeze, never worker full-suite. Isolated HOME/private server only, test_support-owned children and run-ID leak cleanup. Do not repeat already valid gates without code change; big gaps filed blockers. Exact warning successor8265da8a008cac2c401ca5d05059ed699651afa0 must be present before final readiness.\nblocked-by ht-big.9: consumes all leaves (integration sweep)\nblocked-by ht-big.5.2: consumes all leaves (integration sweep)\nblocked-by ht-big.5.1: consumes all leaves (integration sweep)\nblocked-by ht-big.4.2: consumes all leaves (integration sweep)\nblocked-by ht-big.4.1: consumes all leaves (integration sweep)\nblocked-by ht-big.2.2: consumes all leaves (integration sweep)\nblocked-by ht-big.2.1: consumes all leaves (integration sweep)\nblocked-by ht-big.8: consumes all leaves (integration sweep)\nblocked-by ht-big.7: consumes all leaves (integration sweep)\nblocked-by ht-big.6: consumes all leaves (integration sweep)\nblocked-by ht-big.3: consumes all leaves (integration sweep)\nblocked-by ht-big.1: consumes all leaves (integration sweep)",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:01:06Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:01:06Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.4.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:10Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.8",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:14Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:16Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:17Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.7",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:15Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.4.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:11Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:12Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.9",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:07Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.5.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:08Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.5.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:09Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.2.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:13Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big.6",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:15Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.10",
+        "depends_on_id": "ht-big",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:01:06Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 12,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-big"
+  },
+  {
+    "id": "ht-big.9",
+    "title": "Integrate frozen warning migration25 prerequisite on isolated branch",
+    "description": "Integrate exact warning prerequisite8106f5cade8ac9d4c2dd8e9b3281e8df05abd8ab after independent actual-main97fb seam review, to provide real migration25 before lazy26.\nowns: isolated warning25 base integration and frozen revision evidence.\nconsumes: top-level owner-authorized immutable prerequisite; actual base seam.\nFiles: prerequisite cherry-pick delta and focused seam proof artifacts, no main edits.\nAcceptance: independently reviewed isolated integration compiles with real25; preserve prerequisite immutable; no fake25/no guessed slot; do not wait for unrelated stale handoff_fences.rs411 hardcoded24 correction. Main landing requires later exact independently reviewed successor test delta, owned by top-level coordination. If exact source unavailable, read-only git-show seam audit fallback records blocker rather than inventing source.\nMerge actual main exact97fb9cf20ca4b5e344602fe386d39f59954f4a6e into isolated task branch before cherry-picking8106; review full consumed diff (79-file warning prerequisite). No shared main mutation. Successor test delta integrated once owner supplies exact independently reviewed revision.\nSuccessor now frozen: consume exact8265da8a008cac2c401ca5d05059ed699651afa0 after8106 before schema26; test-only actualv22 fixture expectation24→25, owner independent APPROVE with RED/GREEN44/44 and clippy/default/fmt/diff, leak0, artifact docs/evidence/handoff-upgrade-successor. Exclude broader topology run commits.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:07Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:00:32Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.9",
+        "depends_on_id": "ht-big",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:07Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-big"
+  },
+  {
+    "id": "ht-big.5.2",
+    "title": "Independent frozen ACK and lazy completion intent recovery",
+    "description": "Persist both frozen intents before either submission; submit independently despite peer failures; retain exact retry refs on partial journal failure or lost reply and clear successful set only; lazy IDs never ACK. Preserve saved SemanticMutation+CallerClaim harness+IntentScope before replay/completed-result presentation/cleanup. Canonical completion idempotent; human top-level allowed, declared subagents read-only.\nowns: completion SemanticMutation/journal envelope; independent settlement/retry/cleanup; frozen actor routing.\nconsumes: fully displayed candidate journal; canonical completion handler; installer classifier seam.\nFiles: CLI journal mutation retry and thin inbox settlement plus injected failure tests.\nSpec: docs/superpowers/runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--cli-delivery-design.md\nblocked-by ht-big.5.1: consumes fully displayed candidate journal interface\nRequires artifact (needs: ht-big.5.1).\nblocked-by ht-big.3: consumes canonical completion handler\nNamed installer seams: cli::actor_route::InvocationActor {Agent,Human}; split_actor_argv; journal::classify_original_actor(\u0026IntentScope,\u0026SemanticMutation)-\u003eio::Result\u003cOriginalActor\u003e. Classify before try_completed_retry, preserve frozen actor through completed display and cleanup.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:04Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:55:06Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.5.2",
+        "depends_on_id": "ht-big.5",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:04Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.5.2",
+        "depends_on_id": "ht-big.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:55:05Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.5.2",
+        "depends_on_id": "ht-big.5.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:55:05Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-big.5"
+  },
+  {
+    "id": "ht-big.5.1",
+    "title": "V2 explicit inbox output and contiguous display journal",
+    "description": "Render bounded v2 lazy chunks and continuation pages; produce durable occupant-bound fully-displayed candidates only after full selected page write/flush, contiguous offset zero through length. JSON/machine/explicit-seat remain read-only; skips/partial writes/flush failure/cancel/binding change leave pending.\nowns: v2 CLI output; occupant-bound contiguous chunk proof and fully-displayed candidate interface.\nconsumes: v2 batch handler.\nFiles: CLI inbox output and isolated chunk journal plus failure tests.\nSpec: docs/superpowers/runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--cli-delivery-design.md\nblocked-by ht-big.3: consumes canonical v2 batch handler\nRequires artifact (needs: ht-big.3).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:02Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:55:02Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.5.1",
+        "depends_on_id": "ht-big.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:55:03Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.5.1",
+        "depends_on_id": "ht-big.5",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:02Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-big.5"
+  },
+  {
+    "id": "ht-big.4.2",
+    "title": "Read-only lazy markers on history body search pages",
+    "description": "Annotate selected history/body/search pages using ≤100 exact-ID canonical mode queries; preserve old-daemon ordinary read-only fallback and complete-content summary inclusion with no renderer/chunker/cache/lease or model-work changes.\nowns: canonical CLI [lazy] selected-page annotation.\nconsumes: MessageDeliveryModes handler.\nFiles: CLI history/body/search printing and focused compatibility tests.\nSpec: docs/superpowers/runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--cli-discovery-design.md\nblocked-by ht-big.8: consumes canonical message-mode handler\nRequires artifact (needs: ht-big.8).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:00Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:55:00Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.4.2",
+        "depends_on_id": "ht-big.4",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:00Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.4.2",
+        "depends_on_id": "ht-big.8",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:55:01Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-big.4"
+  },
+  {
+    "id": "ht-big.4.1",
+    "title": "Lazy send CLI validation and compatibility refusal",
+    "description": "Expose --lazy on native send with CLI validation and unsupported-daemon refusal before intent; preserve ordinary omission/digest and frozen actor classification, keep service-owner/compound handoffs ordinary.\nowns: CLI lazy send validation and capability preflight.\nconsumes: lazy send boundary contract.\nFiles: CLI send parsing/execution; narrow owner-coordinated grammar and guide paragraph.\nSpec: docs/superpowers/runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--cli-discovery-design.md\nblocked-by ht-big.1: consumes boundary contract\nRequires artifact (needs: ht-big.1).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:54:58Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:54:58Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.4.1",
+        "depends_on_id": "ht-big.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:54:59Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.4.1",
+        "depends_on_id": "ht-big.4",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:54:58Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-big.4"
+  },
+  {
+    "id": "ht-big.2.2",
+    "title": "Bounded lazy preparation publication and cleanup",
+    "description": "Reject incompatible lazy ACK/deadline options canonically, then stage frozen audiences and publish manifest-visible deliveries without attention.\nowns: canonical daemon lazy ACK-seat/pane/deadline rejection before preparation; frozen audience with postjoin/retired-seat exclusion; bounded publish/cleanup.\nconsumes: schema and recipient accessors.\nFiles: src/store send/preparation/messages modules plus focused store tests.\nAcceptance: daemon independently rejects lazy with ACK seats/panes/deadline; sealed joined nonretired excluding author includes human/unavailable excludes invitees; revision fences/replay/restart; zero receipt/warning/send_attention; cleanup unpublished one bounded unit; ordinary digest and publication positive controls unchanged.\nSpec: docs/superpowers/runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--storage-design.md\nblocked-by ht-big.2.1: consumes persisted lazy recipient schema/accessors\nRequires artifact (needs: ht-big.2.1).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:54:16Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:59:50Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.2.2",
+        "depends_on_id": "ht-big.2",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:54:16Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.2.2",
+        "depends_on_id": "ht-big.2.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:54:17Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-big.2"
+  },
+  {
+    "id": "ht-big.2.1",
+    "title": "Audited lazy-delivery schema and store accessors",
+    "description": "Introduce the additive mode/recipient schema, immutable identity triggers, pending indexes and bounded accessors with canonical trust bookkeeping documentation.\nowns: stored mode; immutable recipient identity/progress; bounded accessors preserving addressed rows across leaving/retirement/archive.\nconsumes: delivery-mode and lazy recipient boundary types.\nFiles: src/store/schema.rs, migration registry plus new store lazy-delivery module, TRUST-POLICY.md.\nAcceptance: confirmed lazy migration26 after actual warning25 prerequisite, adapters27 remains owner-coordinated, ordinary rows default ordinary, DDL audit, exact-ID mode lookup, bounded recipient and unpublished scans seek candidate before publication test, work counts and continuation stable, large displayed/unpublished query-plan tests; no receipt fields/provenance.\nSpec: docs/superpowers/runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--storage-design.md\nblocked-by ht-big.1: consumes boundary contract\nRequires artifact (needs: ht-big.1).\nblocked-by ht-big.9: consumes real warning migration25\nRequires actual migration25 (needs: ht-big.9).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:54:14Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:00:23Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.2.1",
+        "depends_on_id": "ht-big.9",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:55:08Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.2.1",
+        "depends_on_id": "ht-big.2",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:54:14Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.2.1",
+        "depends_on_id": "ht-big.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:54:15Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-big.2"
+  },
+  {
+    "id": "ht-big.8",
+    "title": "Canonical message delivery-mode metadata query",
+    "description": "Implement bounded MessageDeliveryModes query and handler advertisement without changing v1 message shapes or summaries.\nowns: canonical exact-ID recorded-mode lookup and metadata capability.\nconsumes: MessageDeliveryModes boundary contract; stored mode accessors.\nFiles: daemon metadata handler, src/store query module and focused compatibility tests.\nAcceptance: at most 100 exact canonical IDs within instance, bounded selected-page annotations, read-only no delivery or ACK progress; no summary cache invalidation or model work.\nblocked-by ht-big.1: consumes boundary contract\nblocked-by ht-big.2.1: consumes stored delivery-mode accessors",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:53:10Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:03:12Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.8",
+        "depends_on_id": "ht-big.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:53:11Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.8",
+        "depends_on_id": "ht-big.2.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:03:12Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.8",
+        "depends_on_id": "ht-big",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:53:10Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-big"
+  },
+  {
+    "id": "ht-big.7",
+    "title": "Configuration smoke: text JSON machine explicit-seat and legacy compatibility",
+    "description": "Exercise each supported inbox mode and compatibility configuration early as runnable focused integration tests.\nowns: configuration smoke matrix with one concrete CLI invocation per mode/version.\nconsumes: completed lazy CLI send/metadata, daemon v2 and default text journal flows.\nFiles: tests focused lazy CLI integration modules and existing compatibility fixtures.\nAcceptance: run inbox default text, inbox --json, inbox --machine and explicit-seat selector; current CLI/current daemon sees lazy bodies, only text settles; current CLI/v1 daemon preserves ordinary readonly and refuses lazy send before intent; v1 client/current daemon reads ordinary-compatible shapes and lazy bodies; postjoin/no backlog, human/unavailable and restart configurations; adapt exact flags to existing CLI. Focused tests, no full-suite worker run.\nSpec: docs/superpowers/specs/2026-10-07-lazy-messages-design.md\nblocked-by ht-big.3: consumes canonical v2 batch and completion handlers\nblocked-by ht-big.4.1: consumes lazy send CLI\nblocked-by ht-big.4.2: consumes canonical read markers\nblocked-by ht-big.5.2: consumes frozen text settlement/retry workflow",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:49:47Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:03:19Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.7",
+        "depends_on_id": "ht-big.4.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:03:16Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.7",
+        "depends_on_id": "ht-big.5.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:03:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.7",
+        "depends_on_id": "ht-big.4.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:03:16Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.7",
+        "depends_on_id": "ht-big",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:49:47Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.7",
+        "depends_on_id": "ht-big.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:47Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 4,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-big"
+  },
+  {
+    "id": "ht-big.6",
+    "title": "Prove lazy mail never creates attention across lifecycle",
+    "description": "Prove no attention and addressed delivery retention across restart, postjoin, leaving, retirement and archival with ordinary positive controls.\nowns: no-attention regression suite; postjoin exclusion and addressed delivery preservation across leaving/retirement/archive.\nconsumes: published lazy recipient behavior and daemon v2 completion.\nFiles: tests lazy delivery/attention modules via tests/combined.rs unless process-wide state requires explicit target; attention/hook/wake modules only for narrow defects.\nAcceptance: repeated Current/Startup callbacks preserve counts/tokens/ready offers, zero wake/poke/prompt/retry/deadline/warning fanout or indirect outstanding-send attention; lazy backlog does not block archival; mixed ordinary invitation/receipt/warning retains positive-control behavior; summary/history reads never settle; isolated HOME/private Herdr and test_support-owned children cleaned on all paths.\nSpec: docs/superpowers/specs/2026-10-07-lazy-messages-design.md\nblocked-by ht-big.3: consumes canonical v2 batch and completion handlers\nblocked-by ht-big.2.2: consumes published lazy recipient lifecycle",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:49:44Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:03:14Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.6",
+        "depends_on_id": "ht-big.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:03:14Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.6",
+        "depends_on_id": "ht-big.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:46Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.6",
+        "depends_on_id": "ht-big",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:49:44Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-big"
+  },
+  {
+    "id": "ht-big.5",
+    "title": "Journal and settle complete default text inbox delivery",
+    "description": "Implement explicit CLI v2 inbox with durable contiguous display journal and independent frozen ACK/completion intent recovery.\nowns: v2 CLI selected output and continuation rendering; chunk journal proof bound to canonical occupant; separate fully-displayed completion intent versus ACK intent; frozen actor claim/harness/scope through result presentation and cleanup.\nconsumes: v2 batch and CompleteInboxDelivery interfaces; canonical completion implementation.\nFiles: src/cli/{inbox,journal,mutations}.rs or isolated inbox modules; output/retry integration and focused CLI failure tests.\nAcceptance: machine/JSON/explicit selectors readonly; only default text after complete selected page write+flush and contiguous zero-to-length journal settles exact IDs; partial/flush/skipped/cancel/binding change remain pending; mixed ACK/completion intents persisted first then independently submitted even after peer failure; report exact retry references on partial intent-record failure/lost reply and clear only successful set; preserve frozen Human/agent namespace through retry per parent-coordinated installer contract.\nSpec: docs/superpowers/specs/2026-10-07-lazy-messages-design.md\nblocked-by ht-big.1: consumes boundary contract\nblocked-by ht-big.3: consumes canonical v2 batch and completion handlers\nInstaller contract: immediate argv[1] human for Human/operator-origin retries, route flags afterward; --human is formatting only. Classify from saved SemanticMutation, frozen CallerClaim harness and IntentScope before replay, completed-result display or cleanup, never rewrite wire/digest/provenance. Parent coordinates active owner integration; no namespace redesign.",
+    "spec_id": "docs/superpowers/runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--cli-delivery-design.md",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:49:41Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:55:01Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 3
+    },
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.5",
+        "depends_on_id": "ht-big.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:43Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.5",
+        "depends_on_id": "ht-big.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:42Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.5",
+        "depends_on_id": "ht-big",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:49:41Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-big"
+  },
+  {
+    "id": "ht-big.4",
+    "title": "Expose lazy send and read-only metadata markers",
+    "description": "Implement send --lazy validation and capability refusal plus canonical lazy markers on selected history/body/search pages while keeping summaries stable.\nowns: CLI send mode/ACK-seat/pane/deadline validation; old daemon lazy-send refusal before intent; canonical metadata annotation with read-only fallback; user guidance and owner-coordinated docs.\nconsumes: optional send mode serialization and bounded MessageDeliveryModes interface.\nFiles: src/cli/send/history/body/search paths; CLI parse/print modules; focused CLI tests and public docs excluding owner-overlapping handoff skills.\nAcceptance: normal sends/digests and old-daemon operation unchanged; daemon rejects forbidden combinations independently; service-owner/compound handoffs stay ordinary; preserve summary rendering/chunk versions/cache blocks/leased formats and summary inclusion; peer content cannot forge canonical marker; metadata flags never change actor classification or intent lifetime.\nSpec: docs/superpowers/specs/2026-10-07-lazy-messages-design.md\nblocked-by ht-big.1: consumes boundary contract\nProvide narrow --lazy grammar and lazy-delivery guide paragraph to top-level for handoff owner integration; do not silently edit shared guide.",
+    "spec_id": "docs/superpowers/runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--cli-discovery-design.md",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:49:39Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:54:58Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 2
+    },
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.4",
+        "depends_on_id": "ht-big",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:49:39Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.4",
+        "depends_on_id": "ht-big.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:40Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-big"
+  },
+  {
+    "id": "ht-big.3",
+    "title": "Implement daemon v2 inbox and delivery completion",
+    "description": "Serve bounded separate lazy-source v2 inbox chunks and canonical exact-ID idempotent completion without ACK evidence.\nowns: bounded v2/continuation and canonical completion preserving addressed rows across leaving/retirement/archive.\nconsumes: v2 wire contract; persisted recipient scan/progress accessors.\nFiles: src/store inbox/query/control modules; daemon request handlers; focused protocol/store tests.\nAcceptance: source work/output limits, UTF-8/body chunk limits, empty continuation versus empty inbox, arrivals after snapshot, concurrent/restart traversal, archived/leaving addressed delivery, retired send exclusion; no receipt/provenance/adoption events; human top-level allowed, declared subagents refused; only advertise fully installed handlers.\nSpec: docs/superpowers/specs/2026-10-07-lazy-messages-design.md\nblocked-by ht-big.1: consumes boundary contract\nblocked-by ht-big.2.2: consumes published recipient preparation/publication\nImplementation selection acceptance: bounded round-robin source scheduling gives lazy source a scan/chunk opportunity on fresh v2 checks before retained ordinary content can monopolize output; each continuation advances its captured source/offset or returns the existing invalid-budget error. Preserve ordinary source handling and budget guarantees; no legacy inbox delivery guarantee or requirement to fit all sources in every first page.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:49:36Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:08:58Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.3",
+        "depends_on_id": "ht-big.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:37Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.3",
+        "depends_on_id": "ht-big.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:03:10Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.3",
+        "depends_on_id": "ht-big",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:49:36Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 6,
+    "comment_count": 0,
+    "parent": "ht-big"
+  },
+  {
+    "id": "ht-big.2",
+    "title": "Persist and publish bounded lazy recipient deliveries",
+    "description": "Implement additive audited DDL and bounded lazy recipient staging, publication and preparation cleanup with no receipts/warnings/send_attention.\nowns: recorded mode column; immutable recipient identity versus pending/displayed progress; pending-only indexed ordinal scans; published decision high water; storage accessors.\nconsumes: delivery mode and completion/v2 boundary contract.\nFiles: src/store/{schema,messages,send,preparations}.rs and focused store modules/tests (actual paths resolved during implementation).\nAcceptance: seal joined nonretired excluding author including unavailable/human, no invitees; preserve revision fencing/replay/restart; bound unpublished candidate scanning before manifest testing and cleanup; audit indexes/query plans with large displayed/unpublished backlog; main allocates migration number after adapter coordination. Update TRUST-POLICY delivery bookkeeping definitions without changing canonical authority.\nSpec: docs/superpowers/specs/2026-10-07-lazy-messages-design.md\nblocked-by ht-big.1: consumes boundary contract",
+    "spec_id": "docs/superpowers/runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--storage-design.md",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:49:35Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:54:13Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 1
+    },
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.2",
+        "depends_on_id": "ht-big.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:35Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-big.2",
+        "depends_on_id": "ht-big",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:49:35Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-big"
+  },
+  {
+    "id": "ht-big.1",
+    "title": "Seam contract: lazy delivery types and compatibility dispatch",
+    "description": "Expose compilable inert-by-default lazy mode, v2 batch, exact-ID mode metadata and CompleteInboxDelivery boundary types and route declarations while retaining ordinary digest/v1 compatibility.\nowns: delivery mode serialization; v2 batch/continuation/completion/message-mode wire interfaces; default inert store and CLI dispatch hooks.\nconsumes: existing canonical CallerClaim and journal envelope.\nFiles: src/protocol/{commands,results,capabilities,pagination}.rs; thin src/cli/mod.rs and src/daemon dispatch declarations.\nAcceptance: ordinary serialization omits mode and keeps digest fixtures; new entry points compile and are not advertised until real handlers land; exact metadata request capped at 100 IDs; freeze interface names/limits with parent coordination, never allocate migration slot. Contract contains only unblocking types/stubs plus own focused compatibility tests.\nSpec: docs/superpowers/specs/2026-10-07-lazy-messages-design.md",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:49:34Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:49:34Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-big.1",
+        "depends_on_id": "ht-big",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:49:34Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 8,
+    "comment_count": 0,
+    "parent": "ht-big"
+  },
+  {
+    "id": "ht-big",
+    "title": "Lazy messages: explicit discovery without attention",
+    "description": "Implement the approved lazy delivery design. Goal: important nonurgent announcements reach frozen existing participants only at natural explicit inbox, with no attention or ACK obligation. Spec: docs/superpowers/specs/2026-10-07-lazy-messages-design.md. This root owns only merge-ready feature work, not deployment or main release operations.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:49:32Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:49:32Z",
+    "labels": [
+      "sp:ht-big"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]

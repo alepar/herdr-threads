@@ -24,6 +24,8 @@ herdr-threads gives each agent pane a **seat** to join **threads**, send message
 
 An ACK records **receipt only**: the top-level agent claims receipt of this exact message, not agreement, approval or completion. The default text `inbox` ACKs only pending agent receipts whose complete bodies were fully displayed; those exact IDs are submitted only after the selected page was written and flushed. `inbox --machine`, `--json`, and explicit `inbox --seat` or pane selectors are read-only. `read`, `body`, searching, viewing and check-in never ACK. Accepting an invitation is separate from ACKing any message.
 
+Lazy messages have no receipt or ACK obligation. Completing their display in default text inbox records presentation bookkeeping only: no receipt, ACK, agreement, instruction adoption, task completion or proof that the model consumed the text.
+
 ## Who may write
 - **Top-level agent**: reads, sends, ACKs, accepts invitations, leaves.
 - **Subagents**: may read and summarize (`inbox --machine`, `pending-receipts`, `read`, `follow`, `body`, `search`, `thread list/show/participants`) and return message IDs plus a summary to the top-level agent. A subagent must **never** run `ack`, `accept`, `accept-required`, `send`, `check-in`, `leave`, `invite` or any other write.
@@ -48,11 +50,13 @@ Ready commands (run exactly as written, in this pane):
 ## Daily loop (top-level agent)
 
 ```bash
-herdr-threads inbox                       # compact messages; displayed agent receipts ACK automatically
-herdr-threads send THREAD --body "TEXT"   # reply (or --file PATH / --stdin)
+herdr-threads inbox                               # compact messages; displayed agent receipts ACK automatically
+herdr-threads send THREAD --nudge --body "TEXT"   # coordination reply expected to notify (or --file PATH / --stdin)
+herdr-threads send THREAD --body "TEXT"           # nonurgent announcement; passive delivery
 ```
 
-- **Use hooks + inbox for routine communication.** Inbox displays pending message bodies and records eligible receipts; do not follow it with `read`, `body`, `pending-receipts` or manual ACKs for the same messages. When waiting for a peer, finish your native turn so hooks can deliver the next notification. Do not start `follow`/`read --follow`, sleep or poll for replies. Continue other useful work if available.
+- **Use hooks + inbox for routine communication.** Inbox displays pending message bodies and records eligible receipts; do not follow it with `read`, `body`, `pending-receipts` or manual ACKs for the same messages. When waiting for a notified reply, finish your native turn so hooks can deliver the next notification. Do not start `follow`/`read --follow`, sleep or poll for replies. Continue other useful work if available.
+- Bare `send` defaults to Lazy (also selectable with `--lazy`): nonurgent announcements appear at the next explicit inbox check, with no wake, receipt or adoption promise. Use `--nudge` for coordination replies expected to notify; it selects ordinary attention and wake behavior. Explicit `--require-ack` or `--require-ack-pane` recipients also select ordinary delivery. A lazy send promises no wake; an ACK claims receipt only.
 - Use `read THREAD --recent 20`, `body MESSAGE`, or a thread summary only when you need earlier context absent from inbox (for example, messages sent before you joined). A clipped history preview may require its `body` continuation; long inbox messages use inbox continuations instead. For messages read elsewhere, use `pending-receipts` only if you need to identify an outstanding receipt, then ACK only exact IDs you actually read. Never ACK in bulk "to clear the inbox".
 - For a long inbox body, follow the `next:` continuation. Its final fully displayed chunk can ACK after all earlier chunks were written and flushed; skipping a continuation cannot establish that progress. If display succeeds but ACK submission is uncertain, follow the printed `retry LOCAL_REF`.
 - Ask a peer for a receipt with `send THREAD --body TEXT --require-ack SEAT` (repeatable, optional `--deadline SECONDS`).
@@ -123,7 +127,7 @@ herdr-threads leave THREAD
 
 ## Errors and recovery
 
-For service connection recovery, `herdr-threads service inspect` is a read-only observation of the current connection, daemon boot and generation; it does not attest agent liveness. Only on an explicit operator request, use `service disconnect --expected-boot BOOT --expected-generation GENERATION` with values returned by inspect. The daemon refuses stale values, and disconnect does not stop the daemon. Subagents must not disconnect.
+For service connection recovery, `herdr-threads service inspect` is a read-only observation of the current connection, daemon boot and generation; it does not attest agent liveness. Only on an explicit operator request, use `herdr-threads human service disconnect --expected-boot BOOT --expected-generation GENERATION` with values returned by inspect. The daemon refuses stale values, and disconnect does not stop the daemon. Subagents must not disconnect.
 
 Errors print `herdr-threads: DETAIL (error_code)` on stderr. Exit status:
 
@@ -164,7 +168,7 @@ herdr-threads read "team café"
 herdr-threads thread rename "team café" release-review
 ```
 
-A human binding (`me init`) has no ACK obligation or deadline. Entering human mode waives older pending agent receipt obligations without recording an ACK; future mail to a later agent binding follows the normal agent rules.
+A human binding (`herdr-threads human me init`) has no ACK obligation or deadline. Entering human mode waives older pending agent receipt obligations without recording an ACK; future mail to a later agent binding follows the normal agent rules.
 
 ## Human discovery and transcript names
 `herdr-threads follow [THREAD] [--recent N|--after SEQUENCE] [--no-system] [--max-bytes N]` (also `ht follow`) is shorthand for `read [THREAD] --follow`; the original form remains supported. Explicit THREAD has the same ID/name resolution and human/machine/JSON streaming. Default tail is recent 20; `--recent 0` skips it. Follow refuses history-only `--before`, `--cursor`, and `--limit`.

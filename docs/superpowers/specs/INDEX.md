@@ -4,6 +4,7 @@ Columns: date · title · relative link · one-line summary · status · tags.
 
 | Date | Title | Design | Summary | Status | Tags |
 |---|---|---|---|---|---|
+| 2026-10-07 | Lazy announcement delivery | [Design](2026-10-07-lazy-messages-design.md) | Durable explicit-inbox delivery without wake, notification or ACK obligations; separate delivery progress. | draft, approval pending | lazy, messages, inbox, cost |
 | 2026-10-04 | Human message attribution and intent | [Design](2026-10-04-user-message-intent-design.md) | Separate relay attribution from query, request and rule intent; define reviewed summary lifetimes and compatibility. | implemented | messages, attribution, summaries, rules |
 | 2026-10-03 | Daily thread overhead | [Design](2026-10-03-thread-overhead-design.md) | Batched inbox display ACKs, wake batching, warning transitions, and measured native scenarios. | implemented | inbox, scheduler, warnings |
 | 2026-09-27 | Herdr persistent threads | [Root design](../../design/herdr-threads/2026-09-27-herdr-threads-design.md) | Pane-bound seats, prelaunch handoffs, explicit receipts and compact native delivery. | draft | herdr-threads, root |
@@ -33,3 +34,18 @@ Columns: date · title · relative link · one-line summary · status · tags.
 | 2026-10-04 | Channel UX | [Design](2026-10-04-channel-ux-design.md) | Recipient-local commands, joined/active/history resolution and conservative one-hour archival. | implemented | cli, channels, lifecycle |
 
 | 2026-10-05 | Harness version independence | [Design](2026-10-05-harness-versionless-design.md) | Contract-based core admission; optional honest metadata, strict payload decoding and scoped operational diagnostics. | Task1–3 source reviewed; final review/merge pending | harness, wrappers, admission, evidence |
+| 2026-10-07 | Lazy messages — storage | [Design](../runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--storage-design.md) | Persist frozen lazy audiences atomically with bounded preparation, cleanup and pending scans, without creating actionable work. | draft | lazy-messages |
+| 2026-10-07 | Lazy messages — cli-discovery | [Design](../runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--cli-discovery-design.md) | Expose lazy sends and canonical read-only markers without changing ordinary sends or summary rendering/cache. | draft | lazy-messages |
+| 2026-10-07 | Lazy messages — cli-delivery | [Design](../runs/2026-10-07-lazy-messages/2026-10-07-lazy-messages--cli-delivery-design.md) | Default text inbox settles only fully flushed contiguous lazy bodies with independent durable frozen-origin recovery. | draft | lazy-messages |
+
+| 2026-10-07 | Installer permissions and explicit human commands | [Design](../runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions-design.md) | Owned Claude/Codex grants, immediate human namespace and frozen replay origin. | designed | installer-human-permissions, installer, permissions, trust |
+
+| 2026-10-07 | Installer permissions: runtime-actor-routing | [Design](../runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--runtime-actor-routing-design.md) | Root accountable commands refuse inferred Human before effects; human communication and check-in retain honest existing provenance and canonical guards. | designed | installer-human-permissions, ht-uwd.3 |
+
+| 2026-10-07 | Installer permissions: claude-permission-migration | [Design](../runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--claude-permission-migration-design.md) | Claude grants positive ordinary forms independently of hooks, with exact recoverable migration of owned historical broad rules and no foreign-policy adoption. | designed | installer-human-permissions, ht-uwd.5 |
+
+| 2026-10-07 | Installer permissions: claude-permission-migration--transfer | [Design](../runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--claude-permission-migration--transfer-design.md) | Interrupted Claude permission transfers retain exact ownership and resume safely; independent lifecycle never restores broad grants or removes foreign policy. | designed | installer-human-permissions, ht-uwd.5.3 |
+
+| 2026-10-07 | Installer permissions: setup-permission-lifecycle | [Design](../runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--setup-permission-lifecycle-design.md) | Explicit setup/status/unsetup and requested doctor fix manage an independent permission component; hook ownership never authorizes a missing grant. | designed | installer-human-permissions, ht-uwd.7 |
+
+| 2026-10-07 | Installer permissions: installer-permission-gateway | [Design](../runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--installer-permission-gateway-design.md) | Installer delivers only its validated owned executable spellings to independently consented native permission setup, with truthful update/removal and gateway evidence. | designed | installer-human-permissions, ht-uwd.8 |

@@ -56,6 +56,7 @@ fn setup(iso: &TestIsolation) -> (StoreContext, Connection) {
 
 fn send_request() -> SendMessage {
     SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("t"),
         body: "hello".into(),
         invited_recipients: vec![],
@@ -257,6 +258,90 @@ fn user_intent_send_payload_preserves_legacy_digest() {
         let digest = canonical_digest(&payload).unwrap();
         assert!(!digests.contains(&digest));
         digests.push(digest);
+    }
+}
+
+// Catches omitting lazy from frozen replay identity or changing ordinary digests.
+#[test]
+fn lazy_send_payload_changes_digest_only_for_lazy_mode() {
+    use crate::protocol::{commands::DeliveryMode, summary::UserIntent};
+    use crate::store::schema::canonical_digest;
+    let mut request = send_request();
+    request.relays_user = true;
+    request.user_intent = Some(UserIntent::Rule);
+    let legacy = serde_json::json!({"kind":"send_message","thread":"t","body":"hello",
+        "invited_recipients":[],"deadline_millis":null,"claim":request.claim,
+        "relays_user":true,"user_intent":"rule"});
+    let ordinary_digest = canonical_digest(&legacy).unwrap();
+    assert_eq!(
+        canonical_digest(&messages::send_payload(&request)).unwrap(),
+        ordinary_digest
+    );
+    request.delivery_mode = DeliveryMode::Lazy;
+    let mut expected_lazy = legacy;
+    expected_lazy["delivery_mode"] = serde_json::json!("lazy");
+    let lazy_digest = canonical_digest(&messages::send_payload(&request)).unwrap();
+    assert_eq!(lazy_digest, canonical_digest(&expected_lazy).unwrap());
+    assert_ne!(lazy_digest, ordinary_digest);
+}
+
+// Catches publishing valid lazy mail through the ordinary attention path.
+#[test]
+fn lazy_send_publishes_without_attention() {
+    use crate::{ports::DurableWorkAdmission, protocol::commands::DeliveryMode};
+    let iso = TestIsolation::new("lazy-send");
+    let (context, mut conn) = setup(&iso);
+    let mut request = send_request();
+    request.delivery_mode = DeliveryMode::Lazy;
+    let preparation = messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget(),
+        DurableWorkAdmission::new(16).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        preparation,
+        crate::ports::SendPreparationProgress::Ready { .. }
+    ));
+    let publication = messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget(),
+        || messages::MAX_BODY_BYTES,
+    )
+    .unwrap();
+    assert!(matches!(
+        publication,
+        crate::protocol::results::CommandResult::MessageSent(_)
+    ));
+    assert_eq!(
+        conn.query_row("SELECT delivery_mode FROM messages", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "lazy"
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM send_manifests", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    for table in [
+        "receipts",
+        "work_jobs",
+        "prepared_recipients",
+        "prepared_unavailable_warnings",
+        "warning_conditions",
+    ] {
+        let rows: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "{table} must stay empty");
     }
 }
 

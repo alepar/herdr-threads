@@ -1,0 +1,119 @@
+{
+  "verdict": "Blocking (3 confirmed)",
+  "reportMarkdown": "super-roast verdict: Blocking (3 confirmed)\nmode: pr        iteration: 2 of 3\nprofile (assumed): Durable local coordination software used on real developer sessions. Trust is cooperative and same-user, with canonical daemon authority and honest receipt and actor provenance. Real data loss, migration corruption and forced attention violations matter; no network-adversarial caller model is assumed. Main owns the final integrated suite and release/install; this is isolated source review.\ninputs: super-auto/lazy-messages@64b3dabb3642f2024d7c17c5eeb52de497f0206e vs main@4f7cad2ddadf0f3e9bf917a36917624821b3be77\ndelta vs prior: 3 new confirmed (1 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 2 resolved \u00b7 0 regressed (0 Blocking) \u00b7 3 punch-listed (open)\ncoverage: scouts 13/13 (correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, regression, data-migrations, deploy-safety, api-contract, observability, testing, hygiene-docs) \u00b7 raw 3 \u2192 deduped 3 \u2192 panel 3 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion 100% \u00b7 remainder-capped: 0\nindependence: same-family (OpenAI) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nseat-agreement: panels 3 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=3) \u00b7 reproduce 3/0/0 \u00b7 refute 3/0/0 \u00b7 ground 3/0/0\nlane-yield (found/confirmed/unique/refuted): correctness 1/1/1/0 \u00b7 security 0/0/0/0 \u00b7 premortem 0/0/0/0 \u00b7 simplicity-design 0/0/0/0 \u00b7 hot-path-perf 0/0/0/0 \u00b7 concurrency-async 0/0/0/0 \u00b7 regression 0/0/0/0 \u00b7 data-migrations 0/0/0/0 \u00b7 deploy-safety 0/0/0/0 \u00b7 api-contract 1/1/1/0 \u00b7 observability 0/0/0/0 \u00b7 testing 0/0/0/0 \u00b7 hygiene-docs 1/1/1/0\n\nPrior confirmed status:\n- [Blocking] src/store/queries.rs:5959 \u2014 Explicit-seat and machine read-only continuation selector loss: resolved; not re-surfaced by the completed current scouts and panels. The current legacy-cursor finding concerns protocol selection, not lost selectors or settlement.\n- [Should-fix] src/cli/mod.rs:2057; src/store/queries.rs:5959 \u2014 Human continuation namespace loss: resolved; not re-surfaced by the completed current scouts and panels.\n- [Should-fix] src/protocol/output_compact.rs:77; src/protocol/results.rs:896 \u2014 Missing invitation goal payload: punch-listed (open), see iteration 1. The caller deliberately left this unfixed; absence from current packets is not resolution.\n- [Should-fix] src/cli/follow.rs:813 \u2014 Serial per-message delivery-mode RPCs: punch-listed (open), see iteration 1. The caller deliberately left this unfixed; absence from current packets is not resolution.\n- [Nit] src/cli/journal.rs:688 \u2014 Retained abandoned lazy display proofs and allocation scan growth: punch-listed (open), see iteration 1. The caller deliberately left this unfixed; absence from current packets is not resolution.\n\n## Confirmed findings\n- [Blocking] src/store/queries.rs:5720 \u2014 A lazy send to an otherwise quiet joined thread makes the recipient's Compact/Resume/Clear hook demand thread-summary work before continuing, without an explicit inbox check. (new) [lanes: correctness]\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats verify src/store/messages.rs:738 publishes Lazy with kind='ordinary'. HotThreads at src/store/queries.rs:5717-5726 selects ordinary-kind messages without filtering delivery_mode; :5740-5742 adds Recent for a joined nonarchived thread solely because of the fresh lazy publication.\n  evidence: With prior activity outside the default 24-hour window and no receipts, invitations or warnings, the lazy publication alone changes an empty recovery result into a hot thread. src/cli/hook.rs:1955-1978 reads it on top-level Compact/Resume/Clear; src/harness/mod.rs:576-599 retains Recent and :554-558 requires the thread-summary procedure for each hot thread before continuing. src/cli/hook.rs:483,518-521 emits this instruction before any inbox read.\n  evidence: Reproduce, refute and ground distinguish the emitted work obligation from a wake RPC or guaranteed model execution. They address the permitted inclusion in summary sources: permission to read lazy content does not authorize new recovery work caused solely by its arrival.\n  severity floor: The approved lazy design's Goal requires natural explicit-inbox delivery, and docs/superpowers/specs/2026-10-07-lazy-messages-design.md:19 explicitly forbids lazy arrival requiring new model work. The unsolicited mandatory recovery instruction violates this artifact's core passive-delivery purpose. This Blocking floor overrides the three Should-fix seat labels.\n  fix-shape hint: Exclude lazy-only arrivals from recency-driven recovery obligations while retaining lazy content in explicitly requested timelines and summaries.\n\n- [Should-fix] src/cli/mod.rs:908 \u2014 The CLI upgrades legacy inbox cursor continuations to v2 solely on daemon capability, making the v1 continuations still emitted by bounded check-in inbox pages fail instead of reaching the remaining items. (new) [lanes: api-contract]\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats trace the same-build failure. src/store/mod.rs:1704-1715 retains the actionable-only legacy check-in inbox with a default 20-item bound. src/store/queries.rs:4838-4861 creates its legacy c3 cursor, :5422-5435 emits inbox --seat SEAT --cursor TOKEN, and src/protocol/output_compact.rs:811-813 prints inbox.next.\n  evidence: For more than 20 actionable threads, following that command reaches run_wire. src/cli/mod.rs:907-913 changes Inbox to InboxBatchV2 solely on the advertised capability while retaining c3. src/protocol/commands.rs:792-794 and src/store/queries.rs:6287 require the v2 decoder; src/protocol/pagination.rs:248-255 rejects c3 as not a v2 cursor.\n  evidence: Refute confirms selector and actor preservation at src/cli/output.rs:84-160 does not preserve cursor protocol. Base run_wire sent the legacy command unchanged. The approved design at :29-31 retains v1 hook/check-in handling, so the advertised continuation must remain executable.\n  severity: This is an actionable-page compatibility failure with a fresh-inbox workaround; the evidence establishes no read-only settlement, lost data or violation of passive lazy arrival. Should-fix stands.\n  fix-shape hint: Respect the supplied cursor namespace when selecting the inbox protocol, preserving legacy continuations against v2-capable daemons.\n\n- [Should-fix] src/cli/commands.rs:2191 \u2014 The embedded daily-loop guide still teaches bare replies followed by waiting for hook notification, although those replies now default to lazy delivery and produce no notification. (new) [lanes: hygiene-docs]\n  verdict: confirmed (reproduce \u2713 / refute \u2717-survived / ground \u2713)\n  evidence: All three seats verify integrations/skill/SKILL.md:52 teaches bare send THREAD --body TEXT; :55 tells waiting peers to finish their turn for hook notification and forbids follow, sleeping and polling. The embedded guide contains no lazy or --nudge explanation. src/cli/skill.rs:9 embeds it, src/cli/mod.rs:351-354 prints it, and src/cli/commands.rs:827 advertises it.\n  evidence: src/cli/commands.rs:2191-2199 now selects Lazy for the exact documented reply. src/store/messages.rs:549-570 stages a lazy recipient before ordinary receipt preparation; :762-778 creates send_attention only for Ordinary. A waiting peer with no unrelated attention receives no reply-triggered notification, leaving the documented loop stalled until an independent explicit inbox check.\n  evidence: Refute and ground address owner coordination: docs/evidence/lazy-messages/send-guide-handoff.md:12-38 supplies correct default/nudge wording and integration-readiness.md:20 reports adoption, but neither changes compiled guide bytes. Base bare replies created attention, so the changed default introduces the mismatch.\n  severity: The runtime correctly preserves the core lazy passivity contract. The defect is contradictory shipped operational guidance for replies intended to notify; Should-fix stands.\n  fix-shape hint: Reconcile the embedded guide with the active owner and explain --nudge for replies expected to notify a waiting peer while preserving passive announcements.\n\n## Not verified (beyond panel cap)\n- none\n\n## Not verified (dedupe failed or judge lost)\n- none\n\n## Beyond remainder cap (count only)\n- none\n\n## Rejected (with reason)\n- [FYI] src/store/schema.rs:513 \u2014 Opening an existing store with this build permanently raises its schema version to 26, preventing binary-only rollback to the exact base daemon against the same store. (previously rejected; rejection preserved)\n  verdict: rejected in iteration 1 (reproduce REJECT / refute CONFIRM / ground REJECT); not re-judged this round.\n  reason: The prior reproduce and ground evidence establishes the expected forward-only migration boundary, not a violated rollback requirement. The approved design requires additive migration26; docs/operations.md:151 documents forward-only startup migrations. No current packet supplies materially changed evidence, data loss or failed migration.\n  pre-existing on base: src/store/schema.rs:403-408,482-510; src/store/connection.rs:125-130.\n  dissent: The prior refute seat confirmed the factual binary-only rollback limit at FYI and explicitly called it pre-existing. The majority addressed that evidence; the rejection stands.\n\n## Unverified nits (spot-checked)\n- [FYI] src/cli/journal.rs:697 \u2014 record_lazy_displayed_chunk duplicates the existing journal's durable contiguous-display algorithm and file transaction instead of sharing their implementation. (prior spot history retained; not re-judged this round)\n  spot outcome: REJECT in iteration 1; retained as an unverified-nit entry, not promoted to panel verification.\n  reason: The prior refute evidence at src/cli/journal.rs:742-747,995-1003 identifies duplication but no incorrect advancement, missing durability barrier or failed recovery. Full-claim identity, different read caps and the ordinary complete-body shortcut are semantic differences. Shared implementation remains optional refactoring; the approved reuse requirement concerns send preparation and publication.\n\n## Escalations (need human)\n- none\n",
+  "confirmedCount": 3,
+  "escalations": [],
+  "reporterFailed": false,
+  "enforcement": [
+    "lanes: 3 confirmed entries tagged",
+    "header: lane-yield inserted"
+  ],
+  "fixRegressions": [],
+  "coverage": {
+    "triageDead": false,
+    "scoutsDispatched": 13,
+    "scoutsDead": 0,
+    "unknownLanes": [],
+    "domainsDropped": [],
+    "rawFindings": 3,
+    "dedupedFindings": 3,
+    "dedupeOrphans": 0,
+    "beyondCap": 0,
+    "beyondPanelCap": 0,
+    "dedupeDead": false,
+    "panelCount": 3,
+    "spotCount": 0,
+    "promotedCount": 0,
+    "judgeLost": 0,
+    "spotLost": 0,
+    "laneYield": {
+      "correctness": {
+        "found": 1,
+        "confirmed": 1,
+        "unique": 1,
+        "refuted": 0
+      },
+      "security": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "premortem": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "simplicity-design": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "hot-path-perf": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "concurrency-async": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "regression": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "data-migrations": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "deploy-safety": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "api-contract": {
+        "found": 1,
+        "confirmed": 1,
+        "unique": 1,
+        "refuted": 0
+      },
+      "observability": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "testing": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "hygiene-docs": {
+        "found": 1,
+        "confirmed": 1,
+        "unique": 1,
+        "refuted": 0
+      }
+    },
+    "judgeCompletionPct": 100,
+    "lowCoverage": false,
+    "panelCappedTag": "",
+    "emptyLateRound": false,
+    "convergenceEligible": true
+  },
+  "routeCounts": {
+    "confirmed": 3
+  },
+  "seatAgreement": "seat-agreement: panels 3 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=3) \u00b7 reproduce 3/0/0 \u00b7 refute 3/0/0 \u00b7 ground 3/0/0"
+}
