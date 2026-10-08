@@ -689,6 +689,10 @@ pub struct PendingIntent {
     pub operation: OperationId,
 }
 pub type PendingPage = Page<LocalIntent>;
+// Compact published semantic and header each fit the canonical identity envelope;
+// fixed reference/digest/header fields have 4096 bytes of additional headroom.
+pub(crate) const MAX_BOOTSTRAP_ORIGIN_BYTES: usize =
+    2 * crate::store::topology_handoff::MAX_IDENTITY_BYTES + 4096;
 pub struct Journal {
     root: PathBuf,
 }
@@ -1192,42 +1196,89 @@ impl Journal {
     }
     /// Exact bounded original bytes for delivery-only terminal cleanup recovery.
     pub(crate) fn snapshot_delivery_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(self.path(reference))?;
-        if !file.metadata()?.is_file() || file.metadata()?.len() > 65536 {
-            return Err(invalid("unsafe or oversized delivery origin"));
-        }
-        let mut bytes = Vec::new();
-        file.take(65537).read_to_end(&mut bytes)?;
-        Self::decode_delivery_origin(reference, &bytes)?;
-        Ok(bytes)
+        self.snapshot_origin(reference, IntentKind::HandoffDelivery, 65536, "delivery")
     }
     pub(crate) fn decode_delivery_origin(
         reference: &IntentRef,
         bytes: &[u8],
     ) -> io::Result<PendingIntent> {
-        if bytes.len() > 65536
+        Self::decode_origin(
+            reference,
+            bytes,
+            IntentKind::HandoffDelivery,
+            65536,
+            "delivery",
+        )
+    }
+    /// Typed bounded bootstrap original; exact historical bytes are retained.
+    pub(crate) fn snapshot_bootstrap_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
+        self.snapshot_origin(
+            reference,
+            IntentKind::HandoffBootstrap,
+            MAX_BOOTSTRAP_ORIGIN_BYTES,
+            "bootstrap",
+        )
+    }
+    pub(crate) fn decode_bootstrap_origin(
+        reference: &IntentRef,
+        bytes: &[u8],
+    ) -> io::Result<PendingIntent> {
+        Self::decode_origin(
+            reference,
+            bytes,
+            IntentKind::HandoffBootstrap,
+            MAX_BOOTSTRAP_ORIGIN_BYTES,
+            "bootstrap",
+        )
+    }
+    fn snapshot_origin(
+        &self,
+        reference: &IntentRef,
+        kind: IntentKind,
+        limit: usize,
+        label: &str,
+    ) -> io::Result<Vec<u8>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(self.path(reference))?;
+        if !file.metadata()?.is_file() || file.metadata()?.len() > limit as u64 {
+            return Err(invalid(format!("unsafe or oversized {label} origin")));
+        }
+        let mut bytes = Vec::new();
+        file.take((limit + 1) as u64).read_to_end(&mut bytes)?;
+        Self::decode_origin(reference, &bytes, kind, limit, label)?;
+        Ok(bytes)
+    }
+    fn decode_origin(
+        reference: &IntentRef,
+        bytes: &[u8],
+        kind: IntentKind,
+        limit: usize,
+        label: &str,
+    ) -> io::Result<PendingIntent> {
+        if bytes.len() > limit
             || reference.ordinal == 0
             || Uuid::parse_str(reference.operation.as_str()).is_err()
         {
-            return Err(invalid("invalid retained delivery origin"));
+            return Err(invalid(format!("invalid retained {label} origin")));
         }
         let pending = Self::decode_reader(reference, BufReader::new(bytes))?;
-        if pending.header.kind != IntentKind::HandoffDelivery {
-            return Err(invalid("retained origin is not delivery"));
+        if pending.header.kind != kind {
+            return Err(invalid(format!("retained origin is not {label}")));
         }
         let original = std::str::from_utf8(bytes).map_err(invalid)?;
         let (header, body) = original
             .split_once('\n')
-            .ok_or_else(|| invalid("missing delivery origin header"))?;
+            .ok_or_else(|| invalid(format!("missing {label} origin header")))?;
         if serde_json::from_str::<serde_json::Value>(header)?
             != serde_json::to_value(&pending.header)?
             || serde_json::from_str::<serde_json::Value>(body)?
                 != serde_json::to_value(&pending.semantic)?
         {
-            return Err(invalid("unexpected retained delivery origin fields"));
+            return Err(invalid(format!(
+                "unexpected retained {label} origin fields"
+            )));
         }
         Ok(pending)
     }

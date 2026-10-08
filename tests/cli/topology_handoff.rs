@@ -489,6 +489,10 @@ mod live {
         AttachReply,
         MovedResolveTab,
         MovedAttachTab,
+        CompleteBefore,
+        CompleteReply,
+        StatusUnavailable,
+        TerminalSave,
     }
     struct State {
         db: rusqlite::Connection,
@@ -513,7 +517,7 @@ mod live {
         ) -> Result<CommandResult, ApiError> {
             self.call(command, budget)
         }
-        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
             let mut s = self.state.lock().unwrap();
             let role = match &command {
                 Command::Capabilities => "capabilities",
@@ -525,9 +529,27 @@ mod live {
                 Command::RecordBootstrapNotSubmitted(_) => "not_submitted",
                 Command::ResolveBootstrapSeat(_) => "resolve",
                 Command::AttachBootstrapHandoff(_) => "attach",
+                Command::BeginHandoff(_) => "child_begin",
+                Command::CompleteLinkedBootstrap(_) => "linked_complete",
+                Command::CreateThread(_) => "create_child",
+                Command::Invite(_) => "invite_child",
+                Command::SendMessage(_) => "send_child",
                 _ => panic!("unapproved live route {command:?}"),
             };
             s.calls.push(role);
+            if role == "status" && s.fault == Fault::StatusUnavailable {
+                return Err(ApiError::host_unavailable("status unavailable"));
+            }
+            if matches!(role, "create_child" | "invite_child" | "send_child") {
+                drop(s);
+                return self.durable_child(command, budget);
+            }
+            if role == "linked_complete" && s.fault == Fault::CompleteBefore {
+                s.fault = Fault::None;
+                return Err(ApiError::host_unavailable(
+                    "crash before wrapper deciding transaction",
+                ));
+            }
             if role == "capabilities" {
                 if s.fault == Fault::OldCapability {
                     return Err(ApiError::unsupported("older daemon"));
@@ -615,7 +637,35 @@ mod live {
                             .map(|v| CommandResult::Bootstrap(Box::new(v)))
                     }
                     Command::BootstrapStatus(r) => canonical::current(&tx, ns, &r.identity)
-                        .map(|v| CommandResult::Bootstrap(Box::new(v.unwrap()))),
+                        .and_then(|v| {
+                            v.map(|v| CommandResult::Bootstrap(Box::new(v)))
+                                .ok_or_else(|| {
+                                    ApiError::new(ErrorCode::NotFound, "bootstrap absent")
+                                })
+                        }),
+                    Command::BeginHandoff(r) => {
+                        let parent = canonical::current(&tx, ns, &self.identity)?.unwrap();
+                        assert_eq!(&r.identity, &parent.attachment.unwrap().handoff);
+                        assert_ne!(r.identity.compound, self.reference.operation);
+                        assert_ne!(r.identity.digest, self.identity.digest);
+                        assert_eq!(r.operation, self.identity.payload.handoff.keys.begin);
+                        crate::store::handoff::begin_linked_pending(
+                            &tx,
+                            ns,
+                            &r.identity,
+                            UtcMillis(1),
+                        )
+                        .map(CommandResult::Handoff)
+                    }
+                    Command::CompleteLinkedBootstrap(r) => {
+                        assert_eq!(r.operation, self.identity.payload.linked_complete_key);
+                        assert_eq!(
+                            r.legacy_completion.operation,
+                            self.identity.payload.handoff.keys.complete
+                        );
+                        canonical::complete_linked_pending(&tx, ns, &r, UtcMillis(2))
+                            .map(|done| CommandResult::LinkedBootstrapCompleted(Box::new(done)))
+                    }
                     Command::ReserveBootstrapAttempt(r) => {
                         canonical::attempts::reserve_attempt(&tx, ns, &r)
                             .map(|v| CommandResult::BootstrapReserved(Box::new(v)))
@@ -635,6 +685,19 @@ mod live {
                     _ => unreachable!(),
                 };
                 tx.commit().unwrap();
+                if role == "linked_complete" && s.fault == Fault::TerminalSave {
+                    std::fs::create_dir(self.journal.join(format!(
+                        "bootstrap-{:020}-{}.terminal",
+                        self.reference.ordinal,
+                        self.reference.operation.as_str()
+                    )))
+                    .unwrap();
+                    s.fault = Fault::None;
+                }
+                if role == "linked_complete" && s.fault == Fault::CompleteReply {
+                    s.fault = Fault::None;
+                    return Err(ApiError::unknown_outcome("committed wrapper reply lost"));
+                }
                 if role == "reserve" && s.fault == Fault::Check {
                     s.db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002' WHERE seat_id='sender'", []).unwrap();
                 }
@@ -652,6 +715,74 @@ mod live {
         }
     }
     impl Peer {
+        fn durable_child(
+            &self,
+            command: Command,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            use crate::ports::StorePort;
+            let context = crate::store::connection::StoreContext::new(
+                self.journal.parent().unwrap().join("canonical.db"),
+                Arc::new(crate::app::SystemClock::new()),
+            );
+            let store = crate::store::SqliteStore::new(
+                crate::store::connection::StoreContext::new(
+                    self.journal.parent().unwrap().join("canonical.db"),
+                    Arc::new(crate::app::SystemClock::new()),
+                ),
+                "i",
+                Default::default(),
+            )?;
+            let mutation = crate::protocol::commands::PermitMutation::try_from(command).unwrap();
+            let claim = match &mutation {
+                crate::protocol::commands::PermitMutation::CreateThread(r) => {
+                    assert_eq!(r.operation, self.identity.payload.handoff.keys.create);
+                    &r.claim
+                }
+                crate::protocol::commands::PermitMutation::Invite(r) => {
+                    assert_eq!(r.operation, self.identity.payload.handoff.keys.invite);
+                    &r.claim
+                }
+                crate::protocol::commands::PermitMutation::SendMessage(r) => {
+                    assert_eq!(r.operation, self.identity.payload.handoff.keys.send);
+                    assert_eq!(r.body, self.identity.payload.handoff.body);
+                    &r.claim
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(claim, &self.identity.claim);
+            if let crate::protocol::commands::PermitMutation::SendMessage(send) = &mutation {
+                loop {
+                    match store.prepare_send_step(
+                        send,
+                        crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                        budget,
+                    )? {
+                        crate::ports::SendPreparationProgress::Ready { .. } => break,
+                        crate::ports::SendPreparationProgress::More { .. } => {}
+                        crate::ports::SendPreparationProgress::Committed(result) => {
+                            return Ok(result);
+                        }
+                    }
+                }
+            }
+            let permit = store.issue_cooperative_permit(
+                crate::store::cooperative_permit_request(&mutation)?,
+                budget,
+            )?;
+            if let crate::protocol::commands::PermitMutation::CreateThread(create) = &mutation {
+                crate::store::control::create_thread_in_namespace(
+                    &context,
+                    &mut context.open_writer()?,
+                    budget,
+                    create,
+                    permit,
+                    &self.identity.payload.handoff.namespace,
+                )
+            } else {
+                store.mutate(mutation, permit, budget)
+            }
+        }
         fn progress(&self) -> std::path::PathBuf {
             self.journal.join(format!(
                 "handoff-{}.progress",
@@ -753,8 +884,26 @@ mod live {
     }
     impl Fixture {
         fn new(fault: Fault) -> Self {
+            Self::with_request(fault, request(), None)
+        }
+        fn downstream(fault: Fault) -> Self {
+            Self::with_request(
+                fault,
+                request(),
+                Some(vec![
+                    "--config".into(),
+                    "quoted $HOME".into(),
+                    "--model".into(),
+                    "saved value".into(),
+                ]),
+            )
+        }
+        fn with_request(fault: Fault, request: Request, argv: Option<Vec<String>>) -> Self {
             let temp = Temp::new();
-            let mut identity = prepared(&request(), temp.path()).unwrap();
+            let mut identity = prepared(&request, temp.path()).unwrap();
+            if let Some(argv) = argv {
+                identity.payload.launch.argv = argv;
+            }
             identity.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
             identity.digest = identity.semantic_digest().unwrap();
             let journal =
@@ -812,6 +961,1051 @@ mod live {
                 },
             )
         }
+    }
+    #[derive(Default)]
+    struct DownstreamLauncher {
+        starts: usize,
+        unknown: bool,
+        crash_after_gate: bool,
+        crash_after_start: bool,
+        invalid_report: bool,
+        oversized_report: bool,
+        report_save_loss: Option<std::path::PathBuf>,
+        not_submitted: bool,
+        change_binding_before_gate: Option<std::path::PathBuf>,
+    }
+    impl super::super::super::handoff::HandoffLauncher for DownstreamLauncher {
+        fn preflight(
+            &mut self,
+            _: &super::super::super::launch::LaunchRequest,
+        ) -> Result<SeatId, RunError> {
+            panic!("attachment must not allocate or preflight another recipient")
+        }
+        fn launch(
+            &mut self,
+            request: &super::super::super::launch::LaunchRequest,
+            seat: &SeatId,
+            gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
+        ) -> Result<super::super::super::launch::LaunchReport, RunError> {
+            let argv = crate::harness::launch::compose_native_argv(
+                crate::protocol::authority::Harness::Codex,
+                request.argv.clone(),
+                vec![],
+            )?;
+            if let Some(path) = &self.change_binding_before_gate {
+                rusqlite::Connection::open(path).unwrap().execute("UPDATE occupant_bindings SET execution_id='changed-before-launch' WHERE seat_id='sender'",[]).unwrap();
+            }
+            gate(true)?;
+            if self.not_submitted {
+                gate(false)?;
+                self.not_submitted = false;
+                return Err(
+                    ApiError::host_unavailable("adapter proven no native submission").into(),
+                );
+            }
+            assert!(
+                !self.crash_after_gate,
+                "crash after possible-start persistence"
+            );
+            self.starts += 1;
+            assert!(
+                !self.crash_after_start,
+                "crash after native start before report save"
+            );
+            if let Some(root) = &self.report_save_loss {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o500)).unwrap();
+            }
+            let mut report = serde_json::json!({"outcome":if self.unknown {"outcome_unknown"} else {"started"},"pane":request.target,"seat":seat,"harness":"codex","argv":argv});
+            if self.invalid_report {
+                report["seat"] = serde_json::json!("different-seat");
+            }
+            if self.oversized_report {
+                report["padding"] = serde_json::json!("x".repeat(1024 * 1024));
+            }
+            Ok(super::super::super::launch::LaunchReport {
+                report,
+                exit: if self.unknown { 5 } else { 0 },
+            })
+        }
+    }
+
+    fn downstream<W: std::io::Write>(
+        f: &Fixture,
+        launcher: &mut DownstreamLauncher,
+        writer: &mut W,
+    ) -> Result<BootstrapResult, RunError> {
+        super::super::super::retry::run_bootstrap_retry_to_writer(
+            &f.journal,
+            &f.peer.reference,
+            super::super::super::actor_route::InvocationActor::Agent,
+            &f.peer.identity.payload.handoff.namespace,
+            f.peer.as_ref(),
+            f.peer.as_ref(),
+            launcher,
+            &f.clock,
+            BootstrapSubmissionInputs {
+                witness: &f.witness,
+                context: &f.context,
+            },
+            &crate::protocol::output::OutputSpec {
+                format: crate::protocol::output::OutputFormat::Json,
+                ..Default::default()
+            },
+            writer,
+        )
+    }
+    #[test]
+    fn downstream_atomic_completion_runs_exact_child_then_flushes_success() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        let mut output = vec![];
+        let result = downstream(&f, &mut launcher, &mut output).unwrap();
+        assert_eq!(
+            result.state,
+            BootstrapState::Completed,
+            "attachment alone does not complete downstream"
+        );
+        assert_eq!(launcher.starts, 1);
+        let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(report["handoff"]["outcome"], "started");
+        assert!(f.journal.load(&f.peer.reference).is_err());
+    }
+    #[test]
+    fn downstream_original_agent_after_intent_removed_replays_history() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        let mut first = vec![];
+        downstream(&f, &mut launcher, &mut first).unwrap();
+        f.peer.state.lock().unwrap().calls.clear();
+        let mut replay = vec![];
+        let result = downstream(&f, &mut launcher, &mut replay);
+        assert!(
+            result.is_ok(),
+            "retained Agent original must survive intent cleanup: {result:?}"
+        );
+        assert_eq!(replay, first);
+        assert_eq!(launcher.starts, 1);
+        assert!(
+            f.peer
+                .state
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .all(|role| *role == "status")
+        );
+    }
+    #[test]
+    fn downstream_original_human_after_intent_removed_refuses_root_before_effects() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        downstream(&f, &mut launcher, &mut vec![]).unwrap();
+        let path = terminal_path(&f.journal, &f.peer.reference);
+        let mut terminal: BootstrapTerminal =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        // A structurally valid retained Human original is an origin selection
+        // fixture. The root classifier must refuse BEFORE a canonical query.
+        let pending = super::super::super::journal::Journal::decode_bootstrap_origin(
+            &f.peer.reference,
+            terminal.original.as_bytes(),
+        )
+        .unwrap();
+        let mut identity = terminal.completed.identity.clone();
+        identity.claim.harness = crate::protocol::authority::Harness::Human;
+        identity.digest = identity.semantic_digest().unwrap();
+        let plan = downstream_plan(
+            &identity,
+            &terminal.completed.attachment.created,
+            &terminal.completed.attachment.resolved_seat,
+        )
+        .unwrap();
+        terminal.completed.identity = identity.clone();
+        terminal.completed.attachment.handoff = downstream_identity(&identity, &plan).unwrap();
+        let semantic = super::super::super::journal::SemanticMutation::freeze(
+            super::super::super::journal::SemanticMutation::HandoffBootstrap(Box::new(
+                super::super::super::journal::BootstrapPlan {
+                    version: 1,
+                    payload: identity.payload.clone(),
+                },
+            )),
+            identity.claim.clone(),
+        )
+        .unwrap();
+        let mut header = pending.header;
+        header.semantic_digest = identity.digest;
+        terminal.original = format!(
+            "{}\n{}",
+            serde_json::to_string(&header).unwrap(),
+            serde_json::to_string(&semantic).unwrap()
+        );
+        std::fs::write(path, serde_json::to_vec(&terminal).unwrap()).unwrap();
+        f.peer.state.lock().unwrap().calls.clear();
+        let before = std::fs::read_dir(f.journal.root()).unwrap().count();
+        let mut output = vec![];
+        let result = downstream(&f, &mut launcher, &mut output);
+        assert!(
+            format!("{result:?}")
+                .contains("person/operator retry requires immediate human namespace"),
+            "retained Human root gate missing: {result:?}"
+        );
+        assert!(f.peer.state.lock().unwrap().calls.is_empty());
+        assert!(output.is_empty());
+        assert_eq!(std::fs::read_dir(f.journal.root()).unwrap().count(), before);
+        assert_eq!(launcher.starts, 1);
+    }
+    fn assert_downstream_once(f: &Fixture, launcher: &DownstreamLauncher) {
+        let state = f.peer.state.lock().unwrap();
+        assert_eq!(state.native_calls, 1);
+        assert_eq!(launcher.starts, 1);
+        assert_eq!(
+            state
+                .db
+                .query_row(
+                    "SELECT count(*) FROM messages WHERE actor_seat_id='sender' AND kind='ordinary'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            state
+                .db
+                .query_row("SELECT count(*) FROM invitations", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+    #[test]
+    fn downstream_new_thread_create_links_parent_child_in_same_real_transaction() {
+        let mut request = request();
+        request.thread = None;
+        request.thread_name = Some("new-channel".into());
+        request.topic = Some("new topic".into());
+        request.goal = Some("new goal".into());
+        let f = Fixture::with_request(Fault::CompleteBefore, request, Some(vec![]));
+        let mut launcher = DownstreamLauncher::default();
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        let saved_parent = f.peer.status();
+        let state = f.peer.state.lock().unwrap();
+        let child = crate::store::handoff::current(
+            &state.db,
+            &saved_parent.attachment.as_ref().unwrap().handoff,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(child.state, HandoffState::Live);
+        assert!(child.thread.is_some());
+        assert_eq!(
+            state
+                .db
+                .query_row("SELECT thread_id FROM bootstrap_handoffs", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            child.thread.unwrap().as_str()
+        );
+        assert_eq!(
+            state
+                .db
+                .query_row(
+                    "SELECT count(*) FROM threads WHERE name='new-channel'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        drop(state);
+        assert_eq!(
+            downstream(&f, &mut launcher, &mut vec![]).unwrap().state,
+            BootstrapState::Completed
+        );
+        assert_downstream_once(&f, &launcher);
+    }
+    #[test]
+    fn downstream_wrapper_before_call_failure_retries_cached_real_report_only() {
+        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut launcher = DownstreamLauncher::default();
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        let parent = f.peer.status();
+        assert_eq!(parent.state, BootstrapState::Attached);
+        assert_eq!(
+            crate::store::handoff::current(
+                &f.peer.state.lock().unwrap().db,
+                &parent.attachment.unwrap().handoff
+            )
+            .unwrap()
+            .unwrap()
+            .state,
+            HandoffState::Live
+        );
+        let parent_progress: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(f.peer.progress()).unwrap()).unwrap();
+        assert_eq!(parent_progress["possible_creation"], true);
+        assert!(parent_progress.get("possible_start").is_none());
+        let child: ChildProgress = serde_json::from_slice(
+            &std::fs::read(child_progress_path(&f.journal, &f.peer.reference)).unwrap(),
+        )
+        .unwrap();
+        assert!(child.progress.possible_start);
+        assert_eq!(child.progress.launch.unwrap()["outcome"], "started");
+        f.peer.state.lock().unwrap().calls.clear();
+        downstream(&f, &mut launcher, &mut vec![]).unwrap();
+        assert!(!f.peer.state.lock().unwrap().calls.iter().any(|r| matches!(
+            *r,
+            "invite_child" | "send_child" | "create_child" | "native" | "resolve" | "attach"
+        )));
+        assert_downstream_once(&f, &launcher);
+    }
+    #[test]
+    fn downstream_wrapper_reply_loss_recovers_atomic_canonical_report() {
+        let f = Fixture::downstream(Fault::CompleteReply);
+        let mut launcher = DownstreamLauncher::default();
+        let done = downstream(&f, &mut launcher, &mut vec![]).unwrap();
+        assert_eq!(done.state, BootstrapState::Completed);
+        assert_eq!(
+            done.completed.unwrap().legacy_result.state,
+            HandoffState::Completed
+        );
+        assert_downstream_once(&f, &launcher);
+    }
+    #[test]
+    fn downstream_crash_before_or_after_native_start_never_relaunches() {
+        for after_start in [false, true] {
+            let f = Fixture::downstream(Fault::None);
+            let mut launcher = DownstreamLauncher {
+                crash_after_gate: !after_start,
+                crash_after_start: after_start,
+                ..Default::default()
+            };
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| downstream(
+                    &f,
+                    &mut launcher,
+                    &mut vec![]
+                )))
+                .is_err()
+            );
+            launcher.crash_after_gate = false;
+            launcher.crash_after_start = false;
+            let starts = launcher.starts;
+            unknown(downstream(&f, &mut launcher, &mut vec![]));
+            assert_eq!(launcher.starts, starts);
+            assert_eq!(f.peer.status().state, BootstrapState::Attached);
+            assert!(
+                !f.peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .contains(&"linked_complete")
+            );
+        }
+    }
+    #[test]
+    fn downstream_unknown_launch_never_becomes_success_or_clears_fence() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher {
+            unknown: true,
+            ..Default::default()
+        };
+        unknown(downstream(&f, &mut launcher, &mut vec![]));
+        launcher.unknown = false;
+        unknown(downstream(&f, &mut launcher, &mut vec![]));
+        assert_downstream_once(&f, &launcher);
+        assert_eq!(f.peer.status().state, BootstrapState::Attached);
+        assert!(!terminal_path(&f.journal, &f.peer.reference).exists());
+    }
+    #[test]
+    fn downstream_adapter_proven_not_submitted_can_retry_start_without_restage() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher {
+            not_submitted: true,
+            ..Default::default()
+        };
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        let child: ChildProgress = serde_json::from_slice(
+            &std::fs::read(child_progress_path(&f.journal, &f.peer.reference)).unwrap(),
+        )
+        .unwrap();
+        assert!(!child.progress.possible_start);
+        downstream(&f, &mut launcher, &mut vec![]).unwrap();
+        assert_downstream_once(&f, &launcher);
+    }
+    #[test]
+    fn downstream_launch_report_save_loss_retains_possible_start_after_reopen() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher {
+            report_save_loss: Some(f.journal.root().into()),
+            ..Default::default()
+        };
+        let failed = downstream(&f, &mut launcher, &mut vec![]);
+        std::fs::set_permissions(f.journal.root(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(failed, Err(RunError::Io(_))), "{failed:?}");
+        let saved: ChildProgress = serde_json::from_slice(
+            &std::fs::read(child_progress_path(&f.journal, &f.peer.reference)).unwrap(),
+        )
+        .unwrap();
+        assert!(saved.progress.possible_start);
+        assert!(saved.progress.launch.is_none());
+        launcher.report_save_loss = None;
+        unknown(downstream(&f, &mut launcher, &mut vec![]));
+        assert_downstream_once(&f, &launcher);
+    }
+    struct FailingOutput {
+        bytes: Vec<u8>,
+        write: bool,
+    }
+    impl std::io::Write for FailingOutput {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.write {
+                return Err(std::io::Error::other("injected output write loss"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("injected output flush loss"))
+        }
+    }
+    #[test]
+    fn downstream_failed_output_reopen_archive_depart_binding_changes_are_history_only() {
+        for write in [false, true] {
+            let f = Fixture::downstream(Fault::None);
+            let mut launcher = DownstreamLauncher::default();
+            let mut failed = FailingOutput {
+                bytes: vec![],
+                write,
+            };
+            assert!(downstream(&f, &mut launcher, &mut failed).is_err());
+            assert_eq!(f.peer.status().state, BootstrapState::Completed);
+            let original = f
+                .journal
+                .snapshot_bootstrap_origin(&f.peer.reference)
+                .unwrap();
+            let mut state = f.peer.state.lock().unwrap();
+            state.db.execute_batch("UPDATE threads SET archived=1; DELETE FROM memberships WHERE seat_id='sender'; UPDATE occupant_bindings SET execution_id='changed',generation=generation+1 WHERE seat_id='sender'; UPDATE seats SET state='unresolved',unresolved_reason='other' WHERE id='sender'").unwrap();
+            state.db = rusqlite::Connection::open(f._temp.path().join("canonical.db")).unwrap();
+            state.calls.clear();
+            drop(state);
+            let journal = super::super::super::journal::Journal::open(f.journal.root()).unwrap();
+            let mut output = vec![];
+            super::super::super::retry::run_bootstrap_retry_to_writer(
+                &journal,
+                &f.peer.reference,
+                super::super::super::actor_route::InvocationActor::Agent,
+                &f.peer.identity.payload.handoff.namespace,
+                f.peer.as_ref(),
+                f.peer.as_ref(),
+                &mut launcher,
+                &f.clock,
+                BootstrapSubmissionInputs {
+                    witness: &f.witness,
+                    context: &f.context,
+                },
+                &crate::protocol::output::OutputSpec {
+                    format: crate::protocol::output::OutputFormat::Json,
+                    ..Default::default()
+                },
+                &mut output,
+            )
+            .unwrap();
+            if !write {
+                assert_eq!(output, failed.bytes);
+            }
+            assert_eq!(
+                read_terminal(&journal, &f.peer.reference)
+                    .unwrap()
+                    .unwrap()
+                    .original
+                    .as_bytes(),
+                original
+            );
+            assert!(
+                f.peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .iter()
+                    .all(|r| *r == "status")
+            );
+            assert_downstream_once(&f, &launcher);
+        }
+    }
+    #[test]
+    fn downstream_terminal_save_loss_recovers_canonical_success_without_effects() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        let path = terminal_path(&f.journal, &f.peer.reference);
+        std::fs::create_dir(&path).unwrap();
+        // A malformed existing retained origin must refuse before any effect.
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        assert!(f.peer.state.lock().unwrap().calls.is_empty());
+        std::fs::remove_dir(&path).unwrap();
+        // Native/semantic work completes, then a terminal-local write obstacle
+        // is installed at wrapper commit, outside the local origin preflight.
+        f.peer.state.lock().unwrap().fault = Fault::TerminalSave;
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        assert_eq!(f.peer.status().state, BootstrapState::Completed);
+        std::fs::remove_dir(&path).unwrap();
+        f.peer.state.lock().unwrap().calls.clear();
+        downstream(&f, &mut launcher, &mut vec![]).unwrap();
+        assert!(
+            f.peer
+                .state
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .all(|r| *r == "status")
+        );
+        assert_downstream_once(&f, &launcher);
+    }
+    #[test]
+    fn downstream_invalid_or_oversized_success_report_refuses_before_wrapper_commit() {
+        for oversized in [false, true] {
+            let f = Fixture::downstream(Fault::None);
+            let mut launcher = DownstreamLauncher {
+                invalid_report: !oversized,
+                oversized_report: oversized,
+                ..Default::default()
+            };
+            assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+            assert_eq!(f.peer.status().state, BootstrapState::Attached);
+            assert!(
+                !f.peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .contains(&"linked_complete")
+            );
+            assert_eq!(launcher.starts, 1);
+        }
+    }
+    #[test]
+    fn downstream_canonical_accepted_escaped_origin_exceeding_delivery_bound_replays() {
+        let argv = vec![format!("--config={}", "\"".repeat(3800)); 16];
+        let f = Fixture::with_request(Fault::None, request(), Some(argv));
+        let original = f
+            .journal
+            .snapshot_bootstrap_origin(&f.peer.reference)
+            .unwrap();
+        assert!(original.len() > 65536);
+        assert!(original.len() < super::super::super::journal::MAX_BOOTSTRAP_ORIGIN_BYTES);
+        canonical::encode_identity(&f.peer.identity.payload.handoff.namespace, &f.peer.identity)
+            .unwrap();
+        let mut launcher = DownstreamLauncher::default();
+        let mut first = vec![];
+        downstream(&f, &mut launcher, &mut first).unwrap();
+        let mut second = vec![];
+        downstream(&f, &mut launcher, &mut second).unwrap();
+        assert_eq!(first, second);
+        assert_downstream_once(&f, &launcher);
+        assert_eq!(
+            read_terminal(&f.journal, &f.peer.reference)
+                .unwrap()
+                .unwrap()
+                .original
+                .as_bytes(),
+            original
+        );
+    }
+    #[test]
+    fn downstream_original_binding_change_at_native_gate_stops_start() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher {
+            change_binding_before_gate: Some(f._temp.path().join("canonical.db")),
+            ..Default::default()
+        };
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        assert_eq!(
+            launcher.starts, 0,
+            "fresh canonical original actor guard must precede native start"
+        );
+        assert_eq!(f.peer.status().state, BootstrapState::Attached);
+    }
+    struct CleanupLoss {
+        root: std::path::PathBuf,
+        reference: super::super::super::journal::IntentRef,
+        mode: &'static str,
+    }
+    impl std::io::Write for CleanupLoss {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            use std::os::unix::fs::PermissionsExt;
+            if self.mode == "child" {
+                let path = self.root.join(format!(
+                    "bootstrap-child-{}.progress",
+                    self.reference.operation.as_str()
+                ));
+                std::fs::remove_file(&path)?;
+                std::fs::create_dir(path)?;
+            } else {
+                for path in [
+                    self.root.join(format!(
+                        "bootstrap-child-{}.progress",
+                        self.reference.operation.as_str()
+                    )),
+                    self.root.join(format!(
+                        "handoff-{}.progress",
+                        self.reference.operation.as_str()
+                    )),
+                ] {
+                    std::fs::remove_file(path)?;
+                }
+                std::fs::set_permissions(
+                    &self.root,
+                    std::fs::Permissions::from_mode(if self.mode == "intent" {
+                        0o500
+                    } else {
+                        0o300
+                    }),
+                )?;
+            }
+            Ok(())
+        }
+    }
+    #[test]
+    fn downstream_child_intent_and_directory_sync_cleanup_loss_replays_only_history() {
+        use std::os::unix::fs::PermissionsExt;
+        for mode in ["child", "intent", "sync"] {
+            let f = Fixture::downstream(Fault::None);
+            let mut launcher = DownstreamLauncher::default();
+            let mut writer = CleanupLoss {
+                root: f.journal.root().into(),
+                reference: f.peer.reference.clone(),
+                mode,
+            };
+            let failed = downstream(&f, &mut launcher, &mut writer);
+            std::fs::set_permissions(f.journal.root(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            assert!(matches!(failed, Err(RunError::Io(_))), "{mode}: {failed:?}");
+            if mode == "child" {
+                std::fs::remove_dir(child_progress_path(&f.journal, &f.peer.reference)).unwrap();
+            }
+            f.peer.state.lock().unwrap().calls.clear();
+            downstream(&f, &mut launcher, &mut vec![]).unwrap();
+            assert!(
+                f.peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .iter()
+                    .all(|r| *r == "status")
+            );
+            assert_downstream_once(&f, &launcher);
+        }
+    }
+    #[test]
+    fn downstream_retained_origin_damage_or_ambiguity_refuses_before_client_or_output() {
+        for damage in [
+            "missing",
+            "malformed",
+            "oversized",
+            "symlink",
+            "unknown-top",
+            "unknown-nested",
+            "missing-optional",
+            "origin-unknown",
+            "origin-oversized",
+            "report-digest",
+            "argv",
+            "cross-kind",
+            "cross-operation",
+            "intent-kind",
+            "duplicate-intent",
+            "conflicting-intent",
+        ] {
+            let f = Fixture::downstream(Fault::None);
+            let mut launcher = DownstreamLauncher::default();
+            downstream(&f, &mut launcher, &mut vec![]).unwrap();
+            let path = terminal_path(&f.journal, &f.peer.reference);
+            let bytes = std::fs::read(&path).unwrap();
+            let mut saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let original = saved["original"].as_str().unwrap().to_owned();
+            let intent = f.journal.root().join(format!(
+                "{:020}-{}.intent",
+                f.peer.reference.ordinal,
+                f.peer.reference.operation.as_str()
+            ));
+            match damage {
+                "missing" => std::fs::remove_file(&path).unwrap(),
+                "malformed" => std::fs::write(&path, b"{broken").unwrap(),
+                "oversized" => {
+                    std::fs::write(&path, vec![b' '; MAX_BOOTSTRAP_TERMINAL_BYTES + 1]).unwrap()
+                }
+                "symlink" => {
+                    std::fs::remove_file(&path).unwrap();
+                    std::os::unix::fs::symlink(f._temp.path().join("canonical.db"), &path).unwrap();
+                }
+                "unknown-top" => saved["unknown"] = serde_json::json!(true),
+                "unknown-nested" => {
+                    saved["completed"]["identity"]["scope"]["unknown"] = serde_json::json!(true)
+                }
+                "missing-optional" => {
+                    saved["completed"]["attachment"]["handoff"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("thread");
+                }
+                "origin-unknown" => {
+                    let (header, body) = original.split_once('\n').unwrap();
+                    let mut header: serde_json::Value = serde_json::from_str(header).unwrap();
+                    header["unknown"] = serde_json::json!(true);
+                    saved["original"] = serde_json::json!(format!("{}\n{body}", header));
+                }
+                "origin-oversized" => {
+                    saved["original"] = serde_json::json!(format!(
+                        "{original}{}",
+                        " ".repeat(super::super::super::journal::MAX_BOOTSTRAP_ORIGIN_BYTES + 1)
+                    ))
+                }
+                "report-digest" => {
+                    saved["completed"]["retained"]["report_digest"] =
+                        serde_json::json!("0".repeat(64))
+                }
+                "argv" => {
+                    saved["completed"]["retained"]["report"]["argv"] =
+                        serde_json::json!(["wrong-argv"]);
+                    use sha2::{Digest, Sha256};
+                    saved["completed"]["retained"]["report_digest"] = serde_json::json!(format!(
+                        "{:x}",
+                        Sha256::digest(
+                            serde_json::to_vec(&saved["completed"]["retained"]["report"]).unwrap()
+                        )
+                    ));
+                }
+                "cross-kind" => {
+                    std::fs::write(
+                        f.journal.root().join(format!(
+                            "delivery-{:020}-{}.terminal",
+                            f.peer.reference.ordinal,
+                            f.peer.reference.operation.as_str()
+                        )),
+                        &bytes,
+                    )
+                    .unwrap();
+                }
+                "cross-operation" => {
+                    std::fs::write(
+                        f.journal.root().join(format!(
+                            "bootstrap-{:020}-{}.terminal",
+                            f.peer.reference.ordinal,
+                            uuid::Uuid::new_v4()
+                        )),
+                        &bytes,
+                    )
+                    .unwrap();
+                }
+                "intent-kind" => {
+                    let (header, _) = original.split_once('\n').unwrap();
+                    let mut header: super::super::super::journal::IntentHeader =
+                        serde_json::from_str(header).unwrap();
+                    let mutation = super::super::super::journal::SemanticMutation::freeze(
+                        super::super::super::journal::SemanticMutation::SetTopic {
+                            thread: ThreadId::new("canonical-thread"),
+                            topic: "other".into(),
+                        },
+                        f.peer.identity.claim.clone(),
+                    )
+                    .unwrap();
+                    use sha2::{Digest, Sha256};
+                    header.kind = mutation.kind();
+                    header.thread = mutation.thread().cloned();
+                    header.semantic_digest = format!(
+                        "{:x}",
+                        Sha256::digest(serde_json::to_vec(&mutation).unwrap())
+                    );
+                    std::fs::write(
+                        &intent,
+                        format!(
+                            "{}\n{}",
+                            serde_json::to_string(&header).unwrap(),
+                            serde_json::to_string(&mutation).unwrap()
+                        ),
+                    )
+                    .unwrap();
+                }
+                "duplicate-intent" => {
+                    std::fs::write(&intent, &original).unwrap();
+                    std::fs::write(
+                        f.journal.root().join(format!(
+                            "{:020}-{}.intent",
+                            f.peer.reference.ordinal,
+                            uuid::Uuid::new_v4()
+                        )),
+                        &original,
+                    )
+                    .unwrap();
+                }
+                "conflicting-intent" => {
+                    let (header, body) = original.split_once('\n').unwrap();
+                    let mut header: serde_json::Value = serde_json::from_str(header).unwrap();
+                    header["created_at_millis"] = serde_json::json!(999);
+                    std::fs::write(&intent, format!("{}\n{body}", header)).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            if matches!(
+                damage,
+                "unknown-top"
+                    | "unknown-nested"
+                    | "missing-optional"
+                    | "origin-unknown"
+                    | "origin-oversized"
+                    | "report-digest"
+                    | "argv"
+            ) {
+                std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+            }
+            f.peer.state.lock().unwrap().calls.clear();
+            let mut output = vec![];
+            assert!(
+                downstream(&f, &mut launcher, &mut output).is_err(),
+                "{damage} accepted"
+            );
+            assert!(
+                f.peer.state.lock().unwrap().calls.is_empty(),
+                "{damage} reached client"
+            );
+            assert!(output.is_empty());
+            assert_eq!(launcher.starts, 1);
+        }
+    }
+    #[test]
+    fn downstream_terminal_namespace_mismatch_refuses_even_after_cleanup() {
+        for field in ["instance", "state", "host", "state-spelling"] {
+            let f = Fixture::downstream(Fault::None);
+            let mut launcher = DownstreamLauncher::default();
+            downstream(&f, &mut launcher, &mut vec![]).unwrap();
+            let mut namespace = f.peer.identity.payload.handoff.namespace.clone();
+            match field {
+                "instance" => namespace.instance = "different".into(),
+                "state" => namespace.state_dir = f._temp.path().join("different-state"),
+                "host" => namespace.host_endpoint = f._temp.path().join("different-host"),
+                "state-spelling" => {
+                    namespace.state_dir =
+                        std::path::PathBuf::from(format!("{}//", namespace.state_dir.display()))
+                }
+                _ => unreachable!(),
+            }
+            f.peer.state.lock().unwrap().calls.clear();
+            let mut output = vec![];
+            assert!(
+                super::super::super::retry::run_bootstrap_retry_to_writer(
+                    &f.journal,
+                    &f.peer.reference,
+                    super::super::super::actor_route::InvocationActor::Agent,
+                    &namespace,
+                    f.peer.as_ref(),
+                    f.peer.as_ref(),
+                    &mut launcher,
+                    &f.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &f.witness,
+                        context: &f.context
+                    },
+                    &Default::default(),
+                    &mut output
+                )
+                .is_err()
+            );
+            assert!(f.peer.state.lock().unwrap().calls.is_empty());
+            assert!(output.is_empty());
+        }
+    }
+    #[test]
+    fn downstream_retained_terminal_requires_exact_canonical_completed_report() {
+        for damage in [
+            "missing-report",
+            "report-corrupt",
+            "report-mismatch",
+            "nonterminal",
+            "unavailable",
+        ] {
+            let f = Fixture::downstream(Fault::None);
+            let mut launcher = DownstreamLauncher::default();
+            downstream(&f, &mut launcher, &mut vec![]).unwrap();
+            let mut state = f.peer.state.lock().unwrap();
+            // Isolated database corruption fixtures deliberately bypass the
+            // immutable SQL triggers; no production migration is changed.
+            if damage != "unavailable" {
+                state.db.execute_batch("DROP TRIGGER bootstrap_report_immutable; DROP TRIGGER bootstrap_report_retained; DROP TRIGGER bootstrap_terminal").unwrap();
+            }
+            match damage {
+                "missing-report" => {
+                    state
+                        .db
+                        .execute("DELETE FROM bootstrap_reports", [])
+                        .unwrap();
+                }
+                "report-corrupt" => {
+                    state
+                        .db
+                        .execute(
+                            "UPDATE bootstrap_reports SET completed_json=?1",
+                            [b"{broken".as_slice()],
+                        )
+                        .unwrap();
+                }
+                "report-mismatch" => {
+                    let bytes: Vec<u8> = state
+                        .db
+                        .query_row("SELECT completed_json FROM bootstrap_reports", [], |r| {
+                            r.get(0)
+                        })
+                        .unwrap();
+                    let mut done: CompletedBootstrapResult =
+                        serde_json::from_slice(&bytes).unwrap();
+                    done.retained.report["unexpected-detail"] =
+                        serde_json::json!("valid-different-history");
+                    use sha2::{Digest, Sha256};
+                    done.retained.report_digest = format!(
+                        "{:x}",
+                        Sha256::digest(serde_json::to_vec(&done.retained.report).unwrap())
+                    );
+                    state
+                        .db
+                        .execute(
+                            "UPDATE bootstrap_reports SET completed_json=?1",
+                            [serde_json::to_vec(&done).unwrap()],
+                        )
+                        .unwrap();
+                }
+                "nonterminal" => {
+                    state
+                        .db
+                        .execute(
+                            "UPDATE bootstrap_handoffs SET state='attached',terminal_at=NULL",
+                            [],
+                        )
+                        .unwrap();
+                }
+                "unavailable" => state.fault = Fault::StatusUnavailable,
+                _ => unreachable!(),
+            }
+            state.calls.clear();
+            drop(state);
+            let mut output = vec![];
+            assert!(
+                downstream(&f, &mut launcher, &mut output).is_err(),
+                "{damage} accepted"
+            );
+            assert!(
+                f.peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .iter()
+                    .all(|r| *r == "status")
+            );
+            assert!(output.is_empty());
+            assert_eq!(launcher.starts, 1);
+        }
+    }
+    #[test]
+    fn downstream_partial_terminal_with_live_original_refuses_before_any_effect() {
+        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut launcher = DownstreamLauncher::default();
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        let path = terminal_path(&f.journal, &f.peer.reference);
+        std::fs::write(&path, b"{partial").unwrap();
+        f.peer.state.lock().unwrap().calls.clear();
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        assert!(f.peer.state.lock().unwrap().calls.is_empty());
+        assert_downstream_once(&f, &launcher);
+    }
+    #[test]
+    fn downstream_child_progress_corruption_or_oversize_never_clears_launch_fence() {
+        for damage in ["unknown", "identity", "oversized"] {
+            let f = Fixture::downstream(Fault::CompleteBefore);
+            let mut launcher = DownstreamLauncher::default();
+            assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+            let path = child_progress_path(&f.journal, &f.peer.reference);
+            let mut saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            if damage == "unknown" {
+                saved["progress"]["unknown"] = serde_json::json!(true);
+            } else {
+                saved["identity"]["digest"] = serde_json::json!("0".repeat(64));
+            }
+            std::fs::write(
+                &path,
+                if damage == "oversized" {
+                    vec![b' '; MAX_LINKED_LOCAL_BYTES + 1]
+                } else {
+                    serde_json::to_vec(&saved).unwrap()
+                },
+            )
+            .unwrap();
+            f.peer.state.lock().unwrap().calls.clear();
+            assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+            assert_eq!(launcher.starts, 1);
+            assert!(
+                !f.peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .contains(&"linked_complete")
+            );
+        }
+    }
+    #[test]
+    fn downstream_retained_identity_alternate_path_spelling_is_corruption() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        downstream(&f, &mut launcher, &mut vec![]).unwrap();
+        let path = terminal_path(&f.journal, &f.peer.reference);
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let exact =
+            saved["completed"]["identity"]["payload"]["handoff"]["namespace"]["host_endpoint"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        saved["completed"]["identity"]["payload"]["handoff"]["namespace"]["host_endpoint"] =
+            serde_json::json!(format!("{exact}//"));
+        std::fs::write(path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        f.peer.state.lock().unwrap().calls.clear();
+        assert!(
+            downstream(&f, &mut launcher, &mut vec![]).is_err(),
+            "retained frozen path spelling changed without changing original digest"
+        );
+        assert!(
+            f.peer.state.lock().unwrap().calls.is_empty(),
+            "corrupt retained identity reached canonical client"
+        );
+    }
+    #[test]
+    fn downstream_delivery_terminal_with_live_bootstrap_origin_refuses_before_client() {
+        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut launcher = DownstreamLauncher::default();
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        let foreign = f.journal.root().join(format!(
+            "delivery-{:020}-{}.terminal",
+            f.peer.reference.ordinal,
+            f.peer.reference.operation.as_str()
+        ));
+        std::fs::write(foreign, b"{partial foreign kind").unwrap();
+        f.peer.state.lock().unwrap().calls.clear();
+        let mut output = vec![];
+        let result = downstream(&f, &mut launcher, &mut output);
+        assert!(
+            result.is_err(),
+            "live bootstrap ignored another kind's retained original"
+        );
+        assert!(f.peer.state.lock().unwrap().calls.is_empty());
+        assert!(output.is_empty());
     }
     fn unknown(result: Result<BootstrapResult, RunError>) {
         assert!(
