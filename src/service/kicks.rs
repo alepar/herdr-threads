@@ -140,6 +140,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "harness_unattributed",
     "harness_version_evidence",
     "host_instances",
+    // Passive inbox progress never schedules attention or deadlines.
+    "lazy_recipients",
     "membership_intervals",
     "memberships",
     "messages",

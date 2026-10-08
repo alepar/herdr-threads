@@ -179,3 +179,13 @@ fn lane_spawn_failure_marks_the_lane_failed() {
     status.record_success(UtcMillis(1));
     assert!(status.health().is_some());
 }
+
+/// Lazy progress must be classified without waking any daemon lane. Removing
+/// its classification trips the same assertion used by the SQLite update hook.
+#[test]
+fn lazy_recipient_publication_and_completion_kick_no_lane() {
+    assert_eq!(lanes_for_table("lazy_recipients"), LaneSet::EMPTY);
+    // A meaningful ordinary control still activates both attention consumers.
+    assert!(lanes_for_table("receipts").contains(Lane::Deadlines));
+    assert!(lanes_for_table("wake_work").contains(Lane::Wakes));
+}
