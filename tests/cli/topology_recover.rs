@@ -714,3 +714,168 @@ fn wrong_original_kind_harness_or_exact_scope_never_becomes_recovery() {
     );
     assert!(SemanticMutation::freeze(semantic, env.identity.claim.clone()).is_err());
 }
+
+#[derive(Clone, Copy, Debug)]
+enum OriginalDamage {
+    Missing,
+    Ambiguous,
+    Malformed,
+    ConflictingTerminal,
+    Changed,
+}
+#[derive(Clone, Copy, Debug)]
+enum RecoveryEntry {
+    Publish,
+    RetryWrapper,
+    Consumer,
+}
+
+fn invalid_retained_original_is_read_only(damage: OriginalDamage, entry: RecoveryEntry) {
+    let env = Env::new();
+    let plan = env.noncreation();
+    plan.validate().unwrap();
+    // Publish the valid operator payload directly for retry setup, without the
+    // operation lock whose creation this regression exercises.
+    let operator_ref = env
+        .journal
+        .record(
+            IntentScope::Operator {
+                instance: env.canonical.namespace.instance.clone(),
+                local_user_uid: plan.operator_uid,
+            },
+            SemanticMutation::OperatorRecoverBootstrap(Box::new(plan.clone())),
+            2,
+        )
+        .unwrap();
+    let original_path = env.journal.root().join(format!(
+        "{:020}-{}.intent",
+        env.reference.ordinal,
+        env.reference.operation.as_str()
+    ));
+    let original_lock = env
+        .journal
+        .root()
+        .join(format!("handoff-{}.lock", env.reference.operation.as_str()));
+    assert!(!original_lock.exists());
+    match damage {
+        OriginalDamage::Missing => std::fs::remove_file(&original_path).unwrap(),
+        OriginalDamage::Ambiguous => {
+            let duplicate = env.journal.root().join(format!(
+                "{:020}-{}.intent",
+                env.reference.ordinal,
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::copy(&original_path, duplicate).unwrap();
+        }
+        OriginalDamage::Malformed => std::fs::write(
+            &original_path,
+            b"malformed original header\nmalformed semantic",
+        )
+        .unwrap(),
+        OriginalDamage::ConflictingTerminal => {
+            let conflict = env.journal.root().join(format!(
+                "delivery-{:020}-{}.terminal",
+                env.reference.ordinal,
+                env.reference.operation.as_str()
+            ));
+            std::fs::write(conflict, b"{}").unwrap();
+        }
+        OriginalDamage::Changed => {
+            use sha2::{Digest, Sha256};
+            let pending = env.journal.load(&env.reference).unwrap();
+            let SemanticMutation::Frozen { claim, mutation } = pending.semantic else {
+                panic!("fixture original must be frozen")
+            };
+            let SemanticMutation::HandoffBootstrap(mut bootstrap) = *mutation else {
+                panic!("fixture original must be bootstrap")
+            };
+            bootstrap.payload.handoff.body =
+                "changed original after operator plan was frozen".into();
+            let semantic =
+                SemanticMutation::freeze(SemanticMutation::HandoffBootstrap(bootstrap), claim)
+                    .unwrap();
+            let mut header = pending.header;
+            header.semantic_digest = format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&semantic).unwrap())
+            );
+            std::fs::write(
+                &original_path,
+                format!(
+                    "{}\n{}",
+                    serde_json::to_string(&header).unwrap(),
+                    serde_json::to_string(&semantic).unwrap()
+                ),
+            )
+            .unwrap();
+            let changed = env
+                .journal
+                .load(&env.reference)
+                .expect("changed original remains valid, unique and self-consistent");
+            assert_ne!(changed.header.semantic_digest, plan.request.identity.digest);
+        }
+    }
+    let before = env.snapshot();
+    let canonical_before = env.status();
+    let mut output = Vec::new();
+    let refused = match entry {
+        RecoveryEntry::Publish => {
+            publish(&env.journal, &plan, &env.canonical.namespace, 3).is_err()
+        }
+        RecoveryEntry::RetryWrapper => env.retry(&operator_ref, &mut output).is_err(),
+        RecoveryEntry::Consumer => retry_to_writer(
+            &env.journal,
+            &operator_ref,
+            &env.canonical.namespace,
+            &env.canonical,
+            &crate::app::SystemClock::new(),
+            &OutputSpec::default(),
+            &mut output,
+        )
+        .is_err(),
+    };
+    assert!(
+        refused,
+        "{entry:?}/{damage:?} must refuse invalid retained original"
+    );
+    assert!(output.is_empty());
+    assert_eq!(env.canonical.calls.load(Ordering::Relaxed), 0);
+    assert_eq!(env.status(), canonical_before);
+    assert!(
+        !original_lock.exists(),
+        "{entry:?}/{damage:?} refusal created original operation lock"
+    );
+    assert_eq!(
+        env.snapshot(),
+        before,
+        "{entry:?}/{damage:?} refusal mutated local intent/state"
+    );
+    assert!(
+        env.journal.load(&operator_ref).is_ok(),
+        "refusal cleaned the operator decision"
+    );
+}
+
+macro_rules! retained_original_refusal_tests {
+    ($($name:ident:$damage:ident,$entry:ident;)*) => {$ (
+        #[test]
+        fn $name() {invalid_retained_original_is_read_only(OriginalDamage::$damage,RecoveryEntry::$entry);}
+    )*};
+}
+retained_original_refusal_tests! {
+    invalid_retained_original_missing_publication:Missing,Publish;
+    invalid_retained_original_ambiguous_publication:Ambiguous,Publish;
+    invalid_retained_original_malformed_publication:Malformed,Publish;
+    invalid_retained_original_conflicting_publication:ConflictingTerminal,Publish;
+    invalid_retained_original_changed_publication:Changed,Publish;
+    invalid_retained_original_missing_retry_wrapper:Missing,RetryWrapper;
+    invalid_retained_original_ambiguous_retry_wrapper:Ambiguous,RetryWrapper;
+    invalid_retained_original_malformed_retry_wrapper:Malformed,RetryWrapper;
+    invalid_retained_original_conflicting_retry_wrapper:ConflictingTerminal,RetryWrapper;
+    invalid_retained_original_changed_retry_wrapper:Changed,RetryWrapper;
+    invalid_retained_original_missing_consumer:Missing,Consumer;
+    invalid_retained_original_ambiguous_consumer:Ambiguous,Consumer;
+    invalid_retained_original_malformed_consumer:Malformed,Consumer;
+    invalid_retained_original_conflicting_consumer:ConflictingTerminal,Consumer;
+    invalid_retained_original_changed_consumer:Changed,Consumer;
+}

@@ -201,7 +201,10 @@ pub fn publish(
     namespace: &HandoffNamespace,
     created_at_millis: i64,
 ) -> Result<IntentRef, RunError> {
+    // Refuse an invalid retained original before the lock can create a file.
+    validate_original(journal, plan, namespace)?;
     let _lock = super::handoff::lock(journal, &plan.original_ref)?;
+    // Recheck after exclusion to cover changes between validation and locking.
     validate_original(journal, plan, namespace)?;
     Ok(journal.record(
         IntentScope::Operator {
@@ -237,6 +240,9 @@ pub(crate) fn retry_to_writer<C: crate::ports::LocalClient + ?Sized, W: Write>(
     let SemanticMutation::OperatorRecoverBootstrap(plan) = pending.semantic else {
         return Err(super::invalid_request("not an operator bootstrap recovery"));
     };
+    // The operator origin alone does not validate the retained agent original.
+    // Check it before the operation lock can create any local state.
+    validate_original(journal, &plan, namespace)?;
     let _lock = super::handoff::lock(journal, &plan.original_ref)?;
     validate_original(journal, &plan, namespace)?;
     let result = client.call(
