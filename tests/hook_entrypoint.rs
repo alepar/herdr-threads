@@ -85,6 +85,202 @@ enum RaceAt {
 }
 type Race = Arc<std::sync::Mutex<Option<(RaceAt, Box<dyn FnOnce() + Send>)>>>;
 
+const HOOK_PHASE_CAP: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HookPhase {
+    OuterStart,
+    CommandBuildStart,
+    CommandBuildComplete,
+    SpawnComplete,
+    StdinComplete,
+    WrapperComplete,
+    OuterComplete,
+    HandlerEnter {
+        site: &'static str,
+        kind: std::mem::Discriminant<Command>,
+        label: &'static str,
+        token: usize,
+    },
+    HandlerExit {
+        token: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HookPhaseEvent {
+    at: Instant,
+    phase: HookPhase,
+}
+
+#[derive(Debug)]
+struct HookPhaseCapture {
+    generation: u64,
+    events: [Option<HookPhaseEvent>; HOOK_PHASE_CAP],
+    len: usize,
+    overflow: bool,
+    invalid_generation: bool,
+    inflight: usize,
+}
+impl HookPhaseCapture {
+    fn empty(generation: u64) -> Self {
+        Self {
+            generation,
+            events: [None; HOOK_PHASE_CAP],
+            len: 0,
+            overflow: false,
+            invalid_generation: false,
+            inflight: 0,
+        }
+    }
+    fn push(&mut self, at: Instant, phase: HookPhase) {
+        if self.len == HOOK_PHASE_CAP {
+            self.overflow = true;
+        } else {
+            self.events[self.len] = Some(HookPhaseEvent { at, phase });
+            self.len += 1;
+        }
+    }
+    fn events(&self) -> impl Iterator<Item = &HookPhaseEvent> {
+        self.events[..self.len].iter().flatten()
+    }
+    fn assert_valid(&self, started: Instant, outer: Duration) {
+        assert!(!self.overflow, "hook phase capacity exceeded: {self:?}");
+        assert!(!self.invalid_generation, "hook phase generation mismatch");
+        assert_eq!(self.inflight, 0, "hook endpoint still has active handlers");
+        assert!(
+            self.events()
+                .all(|event| { event.at >= started && event.at <= started + outer }),
+            "hook phase outside captured functional interval: {self:?}"
+        );
+    }
+    fn at(&self, phase: HookPhase) -> Instant {
+        let mut matching = self.events().filter(|event| event.phase == phase);
+        let at = matching.next().expect("missing hook phase").at;
+        assert!(matching.next().is_none(), "duplicate hook phase");
+        at
+    }
+}
+
+struct HookPhaseState {
+    active: bool,
+    capture: HookPhaseCapture,
+}
+struct HookPhases(std::sync::Mutex<HookPhaseState>);
+impl Default for HookPhases {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(HookPhaseState {
+            active: false,
+            capture: HookPhaseCapture::empty(0),
+        }))
+    }
+}
+impl HookPhases {
+    fn arm(&self) -> u64 {
+        let mut state = self.0.lock().unwrap();
+        // Include inactive handlers in this count: setup or a late exit must
+        // never be reassigned to the next measured invocation.
+        let ready = !state.active && state.capture.inflight == 0;
+        if !ready {
+            drop(state);
+            panic!("cannot rearm hook phases with an open window or handler");
+        }
+        let generation = state.capture.generation.checked_add(1).unwrap();
+        state.capture = HookPhaseCapture::empty(generation);
+        state.active = true;
+        generation
+    }
+    fn active_generation(&self) -> Option<u64> {
+        let state = self.0.lock().unwrap();
+        state.active.then_some(state.capture.generation)
+    }
+    fn record(&self, generation: u64, at: Instant, phase: HookPhase) {
+        let mut state = self.0.lock().unwrap();
+        if !state.active || state.capture.generation != generation {
+            state.capture.invalid_generation = true;
+            return;
+        }
+        state.capture.push(at, phase);
+    }
+    fn enter(&self, site: &'static str, command: &Command) -> HookHandlerPhase<'_> {
+        let entered = Instant::now();
+        let mut state = self.0.lock().unwrap();
+        state.capture.inflight += 1;
+        let generation = state.capture.generation;
+        let token = state.active.then_some(state.capture.len);
+        if let Some(token) = token {
+            let label = match command {
+                Command::Health => "health",
+                Command::Capabilities => "capabilities",
+                Command::CheckIn(_) => "check_in",
+                Command::AttentionDigest(_) => "attention_digest",
+                Command::AttentionDigestDelivery(_) => "attention_digest_delivery",
+                Command::HarnessEvidence(_) => "harness_evidence",
+                Command::HookParseFailure(_) => "hook_parse_failure",
+                _ => "other",
+            };
+            state.capture.push(
+                entered,
+                HookPhase::HandlerEnter {
+                    site,
+                    kind: std::mem::discriminant(command),
+                    label,
+                    token,
+                },
+            );
+        }
+        HookHandlerPhase {
+            phases: self,
+            generation,
+            token,
+        }
+    }
+    fn finish(&self, generation: u64, started: Instant, outer: Duration) -> HookPhaseCapture {
+        let mut state = self.0.lock().unwrap();
+        if !state.active || state.capture.generation != generation {
+            state.capture.invalid_generation = true;
+        }
+        state
+            .capture
+            .push(started + outer, HookPhase::OuterComplete);
+        state.active = false;
+        // Preserve inflight in state until late guards exit, so rearm cannot
+        // overwrite the old generation even after an invalid snapshot.
+        HookPhaseCapture {
+            generation: state.capture.generation,
+            events: state.capture.events,
+            len: state.capture.len,
+            overflow: state.capture.overflow,
+            invalid_generation: state.capture.invalid_generation,
+            inflight: state.capture.inflight,
+        }
+    }
+}
+
+struct HookHandlerPhase<'a> {
+    phases: &'a HookPhases,
+    generation: u64,
+    token: Option<usize>,
+}
+impl Drop for HookHandlerPhase<'_> {
+    fn drop(&mut self) {
+        let exited = Instant::now();
+        let mut state = self.phases.0.lock().unwrap();
+        if state.capture.generation != self.generation {
+            state.capture.invalid_generation = true;
+            return;
+        }
+        state.capture.inflight -= 1;
+        if let Some(token) = self.token {
+            if state.active {
+                state.capture.push(exited, HookPhase::HandlerExit { token });
+            } else {
+                state.capture.invalid_generation = true;
+            }
+        }
+    }
+}
+
 struct Counting {
     inner: Arc<dyn herdr_threads::ports::LocalService>,
     check_ins: Arc<AtomicU64>,
@@ -97,6 +293,7 @@ struct Counting {
     /// answered and before its response is returned, so it lands strictly
     /// between that call and the hook's next one.
     race: Race,
+    phases: Arc<HookPhases>,
 }
 impl Counting {
     fn after(&self, command: &Command) {
@@ -182,6 +379,7 @@ impl herdr_threads::ports::LocalService for Counting {
         gate: &herdr_threads::service::live_gate::LiveServiceGate,
         budget: &CallBudget,
     ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        let _phase = self.phases.enter("service_control", &command);
         self.withhold_capabilities(&command);
         if matches!(command, Command::HookParseFailure(_)) {
             self.parse_failures.fetch_add(1, Ordering::SeqCst);
@@ -218,6 +416,7 @@ impl herdr_threads::ports::LocalService for Counting {
         peer: herdr_threads::protocol::authority::PeerIdentity,
         budget: &CallBudget,
     ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        let _phase = self.phases.enter("handle", &command);
         self.observe(&command)?;
         let result = self.inner.handle(command.clone(), peer, budget);
         if result.is_ok() {
@@ -232,6 +431,7 @@ impl herdr_threads::ports::LocalService for Counting {
         budget: &CallBudget,
         output: &herdr_threads::protocol::output::OutputSpec,
     ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        let _phase = self.phases.enter("handle_with_output", &command);
         self.observe(&command)?;
         let result = self
             .inner
@@ -248,6 +448,7 @@ struct Hook {
     stdout: Vec<u8>,
     stderr: String,
     elapsed: Duration,
+    timeout_scale: Option<Option<std::ffi::OsString>>,
 }
 impl Hook {
     fn context(&self) -> serde_json::Value {
@@ -287,12 +488,34 @@ fn run_hook(command: &str, pane: &str, host: &Path, stdin: &[u8]) -> Hook {
 /// `scaled: false` runs the hook with the production wall-clock budgets
 /// (no HT_TEST_TIMEOUT_SCALE), for the tests that pin the watchdog itself.
 fn run_hook_with(command: &str, pane: &str, host: &Path, stdin: &[u8], scaled: bool) -> Hook {
+    run_hook_traced(command, pane, host, stdin, scaled, None)
+}
+
+fn run_hook_traced(
+    command: &str,
+    pane: &str,
+    host: &Path,
+    stdin: &[u8],
+    scaled: bool,
+    phases: Option<&HookPhases>,
+) -> Hook {
     let started = Instant::now();
+    let recording = phases.and_then(|phases| {
+        phases
+            .active_generation()
+            .map(|generation| (phases, generation))
+    });
+    let record = |at, phase| {
+        if let Some((phases, generation)) = recording {
+            phases.record(generation, at, phase);
+        }
+    };
+    record(started, HookPhase::CommandBuildStart);
     let mut command_line = scrubbed_command("/bin/sh");
     if !scaled {
         command_line.env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV);
     }
-    let mut child = command_line
+    command_line
         .arg("-c")
         .arg(command)
         .env("HERDR_ENV", "1")
@@ -303,16 +526,30 @@ fn run_hook_with(command: &str, pane: &str, host: &Path, stdin: &[u8], scaled: b
         .env_remove("HERDR_BIN_PATH")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn_owned()
-        .unwrap();
+        .stderr(Stdio::piped());
+    // Inspect after the final tag; spawn_owned repeats this idempotent tag.
+    herdr_threads::test_support::spawn::tag(&mut command_line);
+    let timeout_scale = command_line
+        .get_envs()
+        .find(|(key, _)| *key == herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV)
+        .map(|(_, value)| value.map(std::ffi::OsStr::to_os_string));
+    record(Instant::now(), HookPhase::CommandBuildComplete);
+    let mut child = command_line.spawn_owned().unwrap();
+    record(Instant::now(), HookPhase::SpawnComplete);
     child.stdin.take().unwrap().write_all(stdin).unwrap();
+    record(Instant::now(), HookPhase::StdinComplete);
     let output = child.wait_with_output().unwrap();
+    let code = output.status.code();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    // Capture the original wrapper endpoint before recording/finalization.
+    let elapsed = started.elapsed();
+    record(started + elapsed, HookPhase::WrapperComplete);
     Hook {
-        code: output.status.code(),
+        code,
         stdout: output.stdout,
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        elapsed: started.elapsed(),
+        stderr,
+        elapsed,
+        timeout_scale,
     }
 }
 
@@ -525,6 +762,7 @@ struct Fixture {
     digests: Arc<AtomicU64>,
     mode: Arc<AtomicU8>,
     race: Race,
+    phases: Arc<HookPhases>,
     /// Legacy Claude registration used for tests spanning callback classes.
     command: String,
     /// The Codex hook command built from the same installed argv contract.
@@ -582,6 +820,8 @@ impl Fixture {
         let withholding_started = Arc::clone(&withheld_capabilities_started);
         let mode = Arc::new(AtomicU8::new(PASS));
         let race: Race = Arc::default();
+        let phases = Arc::new(HookPhases::default());
+        let worker_phases = Arc::clone(&phases);
         let digests = Arc::new(AtomicU64::new(0));
         let digested = Arc::clone(&digests);
         let (counted, moded, raced) =
@@ -667,6 +907,7 @@ impl Fixture {
                             digests: digested,
                             mode: moded,
                             race: raced,
+                            phases: worker_phases,
                         }) as Arc<dyn LocalService>)
                     },
                     move |descriptor| {
@@ -701,13 +942,21 @@ impl Fixture {
             digests,
             mode,
             race,
+            phases,
             command,
             codex,
             _gate: gate,
         }
     }
     fn hook(&self, pane: &str, stdin: &[u8]) -> Hook {
-        run_hook(&self.command, pane, &self.host, stdin)
+        run_hook_traced(
+            &self.command,
+            pane,
+            &self.host,
+            stdin,
+            true,
+            Some(&self.phases),
+        )
     }
     /// Setup, not the subject: SessionStart registers `session` for the pane's
     /// seat. A hook that fails open on a starved machine (exit 0, nothing
@@ -1623,6 +1872,10 @@ impl Calls<'_> {
     /// Emitted: the digest summary (naming `expect`), the offered data and
     /// the call's wall time.
     fn offered_data(&self, label: &str, expect: &[&str]) -> (String, String, Duration) {
+        let (summary, data, hook) = self.offered_hook(label, expect);
+        (summary, data, hook.elapsed)
+    }
+    fn offered_hook(&self, label: &str, expect: &[&str]) -> (String, String, Hook) {
         let hook = self.call();
         assert!(!hook.stdout.is_empty(), "{label}: suppressed");
         let context = context_of(&hook);
@@ -1641,7 +1894,7 @@ impl Calls<'_> {
                 "{label}: {needle} not in {summary}"
             );
         }
-        (summary, data, hook.elapsed)
+        (summary, data, hook)
     }
 }
 
@@ -2304,6 +2557,58 @@ impl Fixture {
     }
 }
 
+fn record_hook_timing(
+    label: &str,
+    rows: u64,
+    bridge: (std::time::SystemTime, Instant, std::time::SystemTime),
+    outer: Duration,
+    started: Instant,
+    hook: &Hook,
+    phases: Option<&HookPhaseCapture>,
+) {
+    // Functional elapsed has already been stored. Diagnostics do not charge
+    // formatting/file writes to its original outer budget.
+    let mut report = format!(
+        "HOOK_TRACE pid={} label={label:?} rows={rows} bridge={bridge:?} actual_started={started:?} start_from_bridge={:?} outer={outer:?} wrapper={:?} remainder={:?} command_at_spawn_timeout_scale={:?}\n",
+        std::process::id(),
+        started.saturating_duration_since(bridge.1),
+        hook.elapsed,
+        outer.saturating_sub(hook.elapsed),
+        hook.timeout_scale,
+    );
+    if let Some(phases) = phases {
+        report.push_str(&format!(
+            "HOOK_PHASE_CAPTURE generation={} count={} overflow={} invalid_generation={} inflight={}\n",
+            phases.generation, phases.len, phases.overflow, phases.invalid_generation, phases.inflight,
+        ));
+        for event in phases.events() {
+            report.push_str(&format!(
+                "HOOK_PHASE at={:?} from_start={:?} phase={:?}\n",
+                event.at,
+                event.at.checked_duration_since(started),
+                event.phase,
+            ));
+        }
+    }
+    if let Some(dir) = std::env::var_os("HT_FOUR_DIAGNOSTICS_DIR") {
+        let stamp = bridge
+            .2
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        fs::write(
+            PathBuf::from(dir).join(format!("hook-{}-{stamp}.log", std::process::id())),
+            &report,
+        )
+        .unwrap();
+    }
+    eprint!("{report}");
+    // Invalid evidence fails after the functional endpoint and its one flush.
+    if let Some(phases) = phases {
+        phases.assert_valid(started, outer);
+    }
+}
+
 /// Wave-2 fix1 (a) acceptance, built binary: `seat` gains `n` pending items
 /// on `axis` (invitations or receipts) through the production writers. The
 /// first tool call after the history offers it within the tool budget, with
@@ -2349,10 +2654,30 @@ fn pending_axis_stays_bounded_and_emits_new_invitation(axis: PendingAxis, n: u64
         session: "sess-1",
     };
     let mut timings = vec![("history written", written)];
+    let bridge = (
+        std::time::SystemTime::now(),
+        Instant::now(),
+        std::time::SystemTime::now(),
+    );
+    let generation = std::env::var_os("HT_FOUR_DIAGNOSTICS_DIR").map(|_| fx.phases.arm());
     let started = Instant::now();
-    calls.offered("pending history", &[&format!("{expect} [")]);
-    timings.push(("history offered", started.elapsed()));
-    assert!(started.elapsed() < TOOL_BUDGET, "{:?}", started.elapsed());
+    if let Some(generation) = generation {
+        fx.phases.record(generation, started, HookPhase::OuterStart);
+    }
+    let (_, _, hook) = calls.offered_hook("pending history", &[&format!("{expect} [")]);
+    let outer = started.elapsed();
+    let phases = generation.map(|generation| fx.phases.finish(generation, started, outer));
+    timings.push(("history offered", outer));
+    record_hook_timing(
+        "pending history",
+        n,
+        bridge,
+        outer,
+        started,
+        &hook,
+        phases.as_ref(),
+    );
+    assert!(outer < TOOL_BUDGET, "{outer:?}");
     for label in ["history 1", "history 2", "history 3"] {
         let hook = calls.quiet(label);
         assert!(hook.elapsed < TOOL_BUDGET, "{label}: {:?}", hook.elapsed);
@@ -2369,14 +2694,31 @@ fn pending_axis_stays_bounded_and_emits_new_invitation(axis: PendingAxis, n: u64
     } else {
         format!("invitations=1 [{invitation}@{thread}")
     };
-    let started = Instant::now();
-    let summary = calls.offered("invitation after pending history", &[&invitations]);
-    timings.push(("invitation", started.elapsed()));
-    assert!(
-        started.elapsed() < TOOL_BUDGET,
-        "{:?} {summary}",
-        started.elapsed()
+    let bridge = (
+        std::time::SystemTime::now(),
+        Instant::now(),
+        std::time::SystemTime::now(),
     );
+    let generation = std::env::var_os("HT_FOUR_DIAGNOSTICS_DIR").map(|_| fx.phases.arm());
+    let started = Instant::now();
+    if let Some(generation) = generation {
+        fx.phases.record(generation, started, HookPhase::OuterStart);
+    }
+    let (summary, _, hook) =
+        calls.offered_hook("invitation after pending history", &[&invitations]);
+    let outer = started.elapsed();
+    let phases = generation.map(|generation| fx.phases.finish(generation, started, outer));
+    timings.push(("invitation", outer));
+    record_hook_timing(
+        "invitation after pending history",
+        n,
+        bridge,
+        outer,
+        started,
+        &hook,
+        phases.as_ref(),
+    );
+    assert!(outer < TOOL_BUDGET, "{outer:?} {summary}");
     let hook = calls.quiet("invitation repeat");
     assert!(hook.elapsed < TOOL_BUDGET, "{:?}", hook.elapsed);
     timings.push(("invitation repeat", hook.elapsed));
@@ -2394,6 +2736,181 @@ fn pending_axis_stays_bounded_and_emits_new_invitation(axis: PendingAxis, n: u64
     if let Some(path) = std::env::var_os("HT_DIGEST_TIMINGS") {
         std::fs::write(path, format!("{axis:?} {n} {timings:?}\n")).unwrap();
     }
+}
+
+#[test]
+fn hook_outer_measurement_distinguishes_response_and_post_child_delay() {
+    for response_delay in [false, true] {
+        let fx = Fixture::start();
+        fx.register("w9:p1", "sess-1");
+        fx.register("w9:p2", "peer-sess");
+        fx.pending_axis_history(PendingAxis::Receipts, 1);
+        if response_delay {
+            *fx.race.lock().unwrap() = Some((
+                RaceAt::Digest,
+                Box::new(|| std::thread::sleep(Duration::from_millis(1550))),
+            ));
+        }
+        let calls = Calls {
+            fx: &fx,
+            session: "sess-1",
+        };
+        let bridge = (
+            std::time::SystemTime::now(),
+            Instant::now(),
+            std::time::SystemTime::now(),
+        );
+        let generation = fx.phases.arm();
+        let started = Instant::now();
+        fx.phases.record(generation, started, HookPhase::OuterStart);
+        let (_, _, hook) = calls.offered_hook("delay control", &["receipts=1 ["]);
+        if !response_delay {
+            std::thread::sleep(Duration::from_millis(1550));
+        }
+        let outer = started.elapsed();
+        let phases = fx.phases.finish(generation, started, outer);
+        record_hook_timing(
+            if response_delay {
+                "response delay control"
+            } else {
+                "post-child delay control"
+            },
+            1,
+            bridge,
+            outer,
+            started,
+            &hook,
+            Some(&phases),
+        );
+        assert!(outer >= TOOL_BUDGET);
+        let ordered = [
+            HookPhase::OuterStart,
+            HookPhase::CommandBuildStart,
+            HookPhase::CommandBuildComplete,
+            HookPhase::SpawnComplete,
+            HookPhase::StdinComplete,
+            HookPhase::WrapperComplete,
+            HookPhase::OuterComplete,
+        ]
+        .map(|phase| phases.at(phase));
+        assert!(ordered.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(ordered[0], started);
+        assert_eq!(ordered[6], started + outer);
+        assert_eq!(ordered[5].duration_since(ordered[1]), hook.elapsed);
+        let mut digest_interval = None;
+        let mut entered = 0;
+        let mut exited = 0;
+        for event in phases.events() {
+            match event.phase {
+                HookPhase::HandlerEnter { token, label, .. } => {
+                    entered += 1;
+                    let exit = phases.at(HookPhase::HandlerExit { token });
+                    assert!(event.at >= ordered[1] && event.at <= exit && exit <= ordered[5]);
+                    if label == "attention_digest" || label == "attention_digest_delivery" {
+                        let duration = exit.duration_since(event.at);
+                        digest_interval = Some(
+                            digest_interval.map_or(duration, |old: Duration| old.max(duration)),
+                        );
+                    }
+                }
+                HookPhase::HandlerExit { token } => {
+                    exited += 1;
+                    assert_eq!(phases.events().filter(|event| {
+                        matches!(event.phase, HookPhase::HandlerEnter { token: entry, .. } if entry == token)
+                    }).count(), 1);
+                }
+                _ => (),
+            }
+        }
+        assert!(entered > 0, "missing actual service handler phases");
+        assert_eq!(entered, exited, "unpaired service handler phases");
+        let digest_interval = digest_interval.expect("missing actual digest handler phases");
+        if response_delay {
+            assert!(
+                hook.elapsed >= TOOL_BUDGET,
+                "real service response delay belongs to child interval"
+            );
+            assert!(
+                digest_interval >= TOOL_BUDGET,
+                "digest handler exit must follow its response-delay race"
+            );
+        } else {
+            assert!(
+                outer.saturating_sub(hook.elapsed) >= TOOL_BUDGET,
+                "post-child delay belongs only to outer remainder"
+            );
+            assert!(
+                ordered[6].duration_since(ordered[5]) >= TOOL_BUDGET,
+                "post-child delay must follow wrapper complete and all handler exits"
+            );
+        }
+        assert!(
+            std::panic::catch_unwind(|| assert!(outer < TOOL_BUDGET, "{outer:?}")).is_err(),
+            "both over-budget paths must still fail the outer1.5s contract"
+        );
+    }
+}
+
+#[test]
+fn hook_phase_capture_rejects_overflow_and_cross_window_handlers() {
+    let phases = HookPhases::default();
+    let generation = phases.arm();
+    let started = Instant::now();
+    for _ in 0..HOOK_PHASE_CAP - 1 {
+        phases.record(generation, Instant::now(), HookPhase::CommandBuildStart);
+    }
+    let outer = started.elapsed();
+    let full = phases.finish(generation, started, outer);
+    assert_eq!(full.len, HOOK_PHASE_CAP);
+    full.assert_valid(started, outer);
+
+    let generation = phases.arm();
+    let started = Instant::now();
+    for _ in 0..HOOK_PHASE_CAP {
+        phases.record(generation, Instant::now(), HookPhase::CommandBuildStart);
+    }
+    let outer = started.elapsed();
+    let overflow = phases.finish(generation, started, outer);
+    assert!(overflow.overflow);
+    assert!(std::panic::catch_unwind(|| overflow.assert_valid(started, outer)).is_err());
+
+    // Inactive setup handlers also prevent the next window from opening.
+    let setup = phases.enter("setup control", &Command::Capabilities);
+    assert!(std::panic::catch_unwind(|| phases.arm()).is_err());
+    drop(setup);
+    let generation_a = phases.arm();
+    let started = Instant::now();
+    let handler_a = phases.enter("late control", &Command::Capabilities);
+    let outer = started.elapsed();
+    let live = phases.finish(generation_a, started, outer);
+    assert_eq!(live.inflight, 1);
+    assert!(std::panic::catch_unwind(|| live.assert_valid(started, outer)).is_err());
+    assert!(std::panic::catch_unwind(|| phases.arm()).is_err());
+    drop(handler_a);
+    let generation_b = phases.arm();
+    assert!(generation_b > generation_a);
+    let started = Instant::now();
+    // A stale guard is impossible through arm's quiescence check. Inject one
+    // explicitly to prove the generation fence never appends it into B.
+    drop(HookHandlerPhase {
+        phases: &phases,
+        generation: generation_a,
+        token: Some(0),
+    });
+    let outer = started.elapsed();
+    let stale = phases.finish(generation_b, started, outer);
+    assert!(stale.invalid_generation);
+    assert_eq!(stale.inflight, 0);
+    assert_eq!(stale.len, 1, "stale A exit must not be recorded in B");
+    assert!(std::panic::catch_unwind(|| stale.assert_valid(started, outer)).is_err());
+    let generation = phases.arm();
+    let started = Instant::now();
+    let handler = phases.enter("fresh control", &Command::Capabilities);
+    drop(handler);
+    let outer = started.elapsed();
+    let fresh = phases.finish(generation, started, outer);
+    fresh.assert_valid(started, outer);
+    assert_eq!(fresh.len, 3, "new capture must reset prior evidence");
 }
 
 // Default-run size (debug): 2,000 items per pending axis, past the 1,000 cap.
@@ -3275,6 +3792,7 @@ fn run_hook_outside_pane_killed_after(
         stdout: output.stdout,
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         elapsed: started.elapsed(),
+        timeout_scale: None,
     }
 }
 
