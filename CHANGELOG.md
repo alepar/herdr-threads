@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.2.11
+
+- **Guarded startup enrollment.** Top-level Claude and Codex SessionStart hooks reuse an existing seat or create one for a genuinely new Herdr pane. Resume recovery runs first; ambiguous recovery, unresolved targets and recovery holds refuse allocation. Child, tool-boundary and unregistered events remain passive.
+
 ## v0.2.10
 
 - **Agent seat nicknames.** Human transcripts and follow output show `<space name>/<seat name>/<seatid>` for agent seats, removing the Claude/Codex suffix. Missing host names use existing ID fallbacks; the full canonical seat ID stays visible. Labels remain advisory and do not change identity or receipt semantics.
