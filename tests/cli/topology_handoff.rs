@@ -504,6 +504,7 @@ mod live {
         state: Mutex<State>,
         identity: BootstrapIdentity,
         journal: std::path::PathBuf,
+        database_path: std::path::PathBuf,
         reference: super::super::super::journal::IntentRef,
         native_marker: Option<std::path::PathBuf>,
         block_native: bool,
@@ -722,12 +723,12 @@ mod live {
         ) -> Result<CommandResult, ApiError> {
             use crate::ports::StorePort;
             let context = crate::store::connection::StoreContext::new(
-                self.journal.parent().unwrap().join("canonical.db"),
+                self.database_path.clone(),
                 Arc::new(crate::app::SystemClock::new()),
             );
             let store = crate::store::SqliteStore::new(
                 crate::store::connection::StoreContext::new(
-                    self.journal.parent().unwrap().join("canonical.db"),
+                    self.database_path.clone(),
                     Arc::new(crate::app::SystemClock::new()),
                 ),
                 "i",
@@ -899,6 +900,24 @@ mod live {
             )
         }
         fn with_request(fault: Fault, request: Request, argv: Option<Vec<String>>) -> Self {
+            Self::with_layout(fault, request, argv, false, false)
+        }
+        fn aligned(fault: Fault, argv: Option<Vec<String>>) -> Self {
+            Self::with_layout(
+                fault,
+                request(),
+                argv.or_else(|| Some(vec!["--model".into(), "saved value".into()])),
+                true,
+                false,
+            )
+        }
+        fn with_layout(
+            fault: Fault,
+            request: Request,
+            argv: Option<Vec<String>>,
+            aligned: bool,
+            maximal: bool,
+        ) -> Self {
             let temp = Temp::new();
             let mut identity = prepared(&request, temp.path()).unwrap();
             if let Some(argv) = argv {
@@ -906,10 +925,68 @@ mod live {
             }
             identity.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
             identity.digest = identity.semantic_digest().unwrap();
-            let journal =
-                super::super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+            let (journal_root, database_path) = if aligned {
+                std::fs::create_dir_all(&identity.payload.handoff.namespace.state_dir).unwrap();
+                let runtime = crate::daemon::paths::RuntimeContext::explicit(
+                    identity.payload.handoff.namespace.state_dir.clone(),
+                    identity.payload.handoff.namespace.host_endpoint.clone(),
+                    None,
+                )
+                .unwrap();
+                let paths =
+                    crate::daemon::paths::InstancePaths::resolve_read_only(&runtime).unwrap();
+                std::fs::create_dir_all(&paths.instance_dir).unwrap();
+                identity.payload.handoff.namespace.state_dir = runtime.state_dir.clone();
+                identity.payload.handoff.namespace.host_endpoint = runtime.host_endpoint.clone();
+                identity.digest = identity.semantic_digest().unwrap();
+                (paths.instance_dir.join("intents"), paths.database_path)
+            } else {
+                (
+                    temp.path().join("intents"),
+                    temp.path().join("canonical.db"),
+                )
+            };
+            if maximal {
+                identity.payload.launch.argv.push("--config=".into());
+                let mut created = crate::protocol::handoff::topology_contract_tests::created();
+                created.witness.endpoint = identity.payload.handoff.namespace.host_endpoint.clone();
+                created.correlation =
+                    crate::protocol::ids::HostCallId::new("00000000-0000-4000-8000-000000000001");
+                let sample = BootstrapProgress {
+                    version: 1,
+                    identity: identity.clone(),
+                    attempt: BootstrapAttempt::first(),
+                    possible_creation: true,
+                    request: Some(crate::ports::CreateTabRequest {
+                        correlation: created.correlation.clone(),
+                        workspace: identity.payload.workspace.clone(),
+                        cwd: identity.payload.cwd.clone(),
+                        label: identity.payload.label.clone(),
+                        focus: false,
+                        env: identity.payload.env.clone(),
+                        expected_witness: created.witness.clone(),
+                    }),
+                    creation: Some(created),
+                    not_submitted: false,
+                };
+                let length = serde_json::to_vec(&sample).unwrap().len();
+                assert!(length < MAX_BOOTSTRAP_PROGRESS);
+                let room = MAX_BOOTSTRAP_PROGRESS - length;
+                let last = identity.payload.launch.argv.last_mut().unwrap();
+                last.push_str(&"\u{1}".repeat(room / 6));
+                last.push_str(&"x".repeat(room % 6));
+                assert!(last.len() <= 4096);
+                identity.digest = identity.semantic_digest().unwrap();
+                assert!(
+                    canonical::encode_identity(&identity.payload.handoff.namespace, &identity)
+                        .unwrap()
+                        .len()
+                        < canonical::MAX_IDENTITY_BYTES
+                );
+            }
+            let journal = super::super::super::journal::Journal::open(&journal_root).unwrap();
             let reference = publish(&journal, &identity, 1).unwrap();
-            let db = rusqlite::Connection::open(temp.path().join("canonical.db")).unwrap();
+            let db = rusqlite::Connection::open(&database_path).unwrap();
             schema::initialize(&db, || UtcMillis(0)).unwrap();
             let created = crate::protocol::handoff::topology_contract_tests::created();
             let boot = &created.host_incarnation;
@@ -936,7 +1013,8 @@ mod live {
                         fault,
                     }),
                     identity,
-                    journal: temp.path().join("intents"),
+                    journal: journal_root,
+                    database_path,
                     reference,
                     native_marker: None,
                     block_native: false,
@@ -970,6 +1048,8 @@ mod live {
         crash_after_start: bool,
         invalid_report: bool,
         oversized_report: bool,
+        report_padding: usize,
+        max_report: bool,
         report_save_loss: Option<std::path::PathBuf>,
         not_submitted: bool,
         change_binding_before_gate: Option<std::path::PathBuf>,
@@ -1020,6 +1100,19 @@ mod live {
             if self.invalid_report {
                 report["seat"] = serde_json::json!("different-seat");
             }
+            if self.max_report {
+                report["padding"] = serde_json::json!("");
+                let room = 1024 * 1024 - serde_json::to_vec(&report).unwrap().len();
+                report["padding"] = serde_json::json!(format!(
+                    "{}{}",
+                    "\u{1}".repeat(room / 6),
+                    "x".repeat(room % 6)
+                ));
+                assert_eq!(serde_json::to_vec(&report).unwrap().len(), 1024 * 1024);
+            }
+            if self.report_padding > 0 {
+                report["padding"] = serde_json::json!("x".repeat(self.report_padding));
+            }
             if self.oversized_report {
                 report["padding"] = serde_json::json!("x".repeat(1024 * 1024));
             }
@@ -1054,6 +1147,883 @@ mod live {
             },
             writer,
         )
+    }
+    fn composition_source(f: &Fixture) -> crate::archival_legacy::Source {
+        let ns = &f.peer.identity.payload.handoff.namespace;
+        let runtime = crate::daemon::paths::RuntimeContext::explicit(
+            ns.state_dir.clone(),
+            ns.host_endpoint.clone(),
+            None,
+        )
+        .unwrap();
+        let paths = crate::daemon::paths::InstancePaths::resolve_read_only(&runtime).unwrap();
+        assert_eq!(paths.database_path, f.peer.database_path);
+        assert_eq!(paths.instance_dir.join("intents"), f.journal.root());
+        crate::archival_legacy::Source::new(
+            &paths,
+            "i".into(),
+            crate::protocol::output::ContinuationContext {
+                state_dir: Some(ns.state_dir.to_string_lossy().into()),
+                host: Some(ns.host_endpoint.to_string_lossy().into()),
+            },
+        )
+    }
+    fn composition_scan(f: &Fixture) -> crate::archival_legacy::Scan {
+        let mut source = composition_source(f);
+        let mut result = crate::archival_legacy::Scan::default();
+        for _ in 0..100 {
+            let page = source.scan(|| false).unwrap();
+            result.hints.extend(page.hints);
+            if !page.pending {
+                result.coverage = page.coverage;
+                return result;
+            }
+        }
+        panic!("bounded source did not finish");
+    }
+    fn composition_import(
+        f: &Fixture,
+        scan: &crate::archival_legacy::Scan,
+    ) -> Result<(), ApiError> {
+        let store = crate::store::SqliteStore::new(
+            crate::store::connection::StoreContext::new(
+                f.peer.database_path.clone(),
+                Arc::new(crate::app::SystemClock::new()),
+            ),
+            "i",
+            Default::default(),
+        )
+        .unwrap();
+        composition_pass(&store, scan)
+    }
+    fn composition_pass(
+        store: &crate::store::SqliteStore,
+        scan: &crate::archival_legacy::Scan,
+    ) -> Result<(), ApiError> {
+        use crate::ports::StorePort;
+        let rt = crate::store::archival::Runtime {
+            boot: "composition".into(),
+            mono: 0,
+            utc: UtcMillis(0),
+            after_ms: 60000,
+            host_generation: 0,
+            coherent: false,
+            valid_until_mono: None,
+            legacy_source: scan.coverage.clone(),
+        };
+        let budget = super::super::super::cooperative_budget(store.clock());
+        store.archival_pass(&rt, &scan.hints, &budget).map(|_| ())
+    }
+    #[test]
+    fn composition_canonical_created_actual_request_none_establishes_coverage() {
+        let f = Fixture::aligned(Fault::ResolveUnsupported, None);
+        assert!(f.run().is_err());
+        std::fs::remove_file(f.peer.progress()).unwrap();
+        assert!(f.run().is_err());
+        let saved = load_bootstrap_progress(&f.journal, &f.peer.reference, &f.peer.identity)
+            .unwrap()
+            .unwrap();
+        assert!(saved.request.is_none());
+        assert!(saved.creation.is_some());
+        let before = f.peer.status();
+        let scan = composition_scan(&f);
+        assert!(
+            scan.coverage.is_some(),
+            "actual canonical-created requestNone must compose"
+        );
+        assert_eq!(scan.hints.len(), 1);
+        composition_import(&f, &scan).unwrap();
+        assert_eq!(f.peer.status(), before);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+    }
+    #[test]
+    fn composition_no_effect_request_none_vetoes_without_advancing_attempt() {
+        let f = Fixture::aligned(Fault::HostReply, None);
+        unknown(f.run());
+        let before = f.peer.status();
+        let mut saved = load_bootstrap_progress(&f.journal, &f.peer.reference, &f.peer.identity)
+            .unwrap()
+            .unwrap();
+        saved.request = None;
+        saved.not_submitted = true;
+        save_bootstrap_progress(&f.journal, &f.peer.reference, &saved).unwrap();
+        assert!(f.run().is_err());
+        let scan = composition_scan(&f);
+        assert!(
+            scan.coverage.is_none(),
+            "impossible no-effect requestNone must veto"
+        );
+        composition_import(&f, &scan).unwrap();
+        assert_eq!(f.peer.status(), before);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+    }
+    #[test]
+    fn composition_actual_retained_child_establishes_coverage_without_authority() {
+        let f = Fixture::aligned(Fault::None, None);
+        let mut launcher = DownstreamLauncher {
+            unknown: true,
+            ..Default::default()
+        };
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        assert!(child_progress_path(&f.journal, &f.peer.reference).exists());
+        let before = f.peer.status();
+        let child = &before.attachment.as_ref().unwrap().handoff;
+        assert_ne!(child.compound, f.peer.reference.operation);
+        assert_ne!(child.compound, f.peer.identity.compound);
+        let scan = composition_scan(&f);
+        assert!(
+            scan.coverage.is_some(),
+            "actual retained child must be validated"
+        );
+        composition_import(&f, &scan).unwrap();
+        assert_eq!(f.peer.status(), before);
+        assert_eq!(launcher.starts, 1);
+    }
+    #[test]
+    fn composition_actual_large_retained_terminal_and_survivors_establish_coverage() {
+        let argv = vec![format!("--config={}", "\"".repeat(3800)); 16];
+        let f = Fixture::aligned(Fault::None, Some(argv));
+        let original = f
+            .journal
+            .snapshot_bootstrap_origin(&f.peer.reference)
+            .unwrap();
+        assert!(original.len() > 65536);
+        let mut launcher = DownstreamLauncher {
+            report_padding: 200000,
+            ..Default::default()
+        };
+        let mut output = FailingOutput {
+            bytes: vec![],
+            write: true,
+        };
+        assert!(downstream(&f, &mut launcher, &mut output).is_err());
+        let terminal = std::fs::read(terminal_path(&f.journal, &f.peer.reference)).unwrap();
+        let child = std::fs::read(child_progress_path(&f.journal, &f.peer.reference)).unwrap();
+        assert!(terminal.len() > 262144);
+        assert!(child.len() > 262144);
+        let before = f.peer.status();
+        let scan = composition_scan(&f);
+        assert!(
+            scan.coverage.is_some(),
+            "legal large complete bundle must compose"
+        );
+        composition_import(&f, &scan).unwrap();
+        assert_eq!(f.peer.status(), before);
+        assert_eq!(
+            f.journal
+                .snapshot_bootstrap_origin(&f.peer.reference)
+                .unwrap(),
+            original
+        );
+        assert_eq!(launcher.starts, 1);
+    }
+    #[test]
+    fn composition_retained_completion_requires_full_canonical_equality() {
+        let f = Fixture::aligned(Fault::None, None);
+        downstream(&f, &mut DownstreamLauncher::default(), &mut vec![]).unwrap();
+        let path = terminal_path(&f.journal, &f.peer.reference);
+        let mut terminal = read_terminal(&f.journal, &f.peer.reference)
+            .unwrap()
+            .unwrap();
+        terminal.completed.retained.report["extra"] =
+            serde_json::json!("different local retained report");
+        terminal.completed.retained.report_digest = format!(
+            "{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(
+                serde_json::to_vec(&terminal.completed.retained.report).unwrap()
+            )
+        );
+        std::fs::write(path, terminal_bytes(&terminal).unwrap()).unwrap();
+        let before = f.peer.status();
+        let scan = composition_scan(&f);
+        assert!(
+            scan.coverage.is_some(),
+            "locally valid report must reach deciding comparison"
+        );
+        assert!(
+            composition_import(&f, &scan).is_err(),
+            "full canonical retained report mismatch must refuse"
+        );
+        assert_eq!(f.peer.status(), before);
+    }
+    #[test]
+    fn composition_retained_child_requires_exact_canonical_attachment() {
+        let f = Fixture::aligned(Fault::None, None);
+        let mut launcher = DownstreamLauncher {
+            unknown: true,
+            ..Default::default()
+        };
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        let path = child_progress_path(&f.journal, &f.peer.reference);
+        let mut child: ChildProgress =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        child.attachment.created.correlation =
+            crate::protocol::ids::HostCallId::new("different-canonical-correlation");
+        super::super::super::handoff::save_progress_at(&f.journal, &path, &child).unwrap();
+        std::fs::remove_file(f.peer.progress()).unwrap();
+        let before = f.peer.status();
+        let scan = composition_scan(&f);
+        assert!(
+            scan.coverage.is_some(),
+            "locally coherent attachment reaches deciding comparison"
+        );
+        assert!(
+            composition_import(&f, &scan).is_err(),
+            "local child cannot replace canonical attachment"
+        );
+        assert_eq!(f.peer.status(), before);
+    }
+    struct CompositionHost;
+    impl crate::ports::HostPort for CompositionHost {
+        fn native_launch_capability(&self) -> crate::ports::NativeLaunchCapability {
+            crate::ports::NativeLaunchCapability::Unsupported
+        }
+        fn observe_current_target(
+            &self,
+            _: &HostTargetId,
+            _: &HostCallContext,
+        ) -> Result<crate::ports::HostObservation, ApiError> {
+            panic!("incoherent archival never observes")
+        }
+        fn observe_current_target_for_archival(
+            &self,
+            _: &HostTargetId,
+            _: &HostCallContext,
+        ) -> Result<crate::ports::ComposerObservation, ApiError> {
+            panic!("incoherent archival never observes")
+        }
+        fn enumerate_targets(
+            &self,
+            _: &HostCallContext,
+        ) -> Result<crate::ports::HostSnapshot, ApiError> {
+            panic!("archival never enumerates")
+        }
+        fn safe_wake_target(
+            &self,
+            _: &SeatId,
+            _: &crate::ports::HostObservation,
+        ) -> Option<crate::ports::SafeWakeTarget> {
+            None
+        }
+        fn submit_prompt(
+            &self,
+            _: &crate::ports::SafeWakeTarget,
+            _: &str,
+            _: &HostCallContext,
+        ) -> Result<crate::ports::PromptOutcome, ApiError> {
+            panic!("archival never submits")
+        }
+        fn launch_native(
+            &self,
+            _: crate::ports::NativeLaunchRequest,
+            _: &HostCallContext,
+        ) -> Result<crate::ports::NativeLaunchOutcome, ApiError> {
+            panic!("archival never launches")
+        }
+        fn pane_agent_state(
+            &self,
+            _: &crate::ports::SafeWakeTarget,
+            _: &HostCallContext,
+        ) -> Result<crate::ports::AgentComposerState, ApiError> {
+            panic!("archival never reads agent")
+        }
+        fn send_submit_key(
+            &self,
+            _: &crate::ports::SafeWakeTarget,
+            _: &HostCallContext,
+        ) -> Result<(), ApiError> {
+            panic!("archival never types")
+        }
+    }
+    fn composition_worker(f: &Fixture) -> crate::service::archival::ArchivalWorker {
+        crate::service::archival::ArchivalWorker {
+            store: Arc::new(
+                crate::store::SqliteStore::new(
+                    crate::store::connection::StoreContext::new(
+                        f.peer.database_path.clone(),
+                        Arc::new(crate::app::SystemClock::new()),
+                    ),
+                    "i",
+                    Default::default(),
+                )
+                .unwrap(),
+            ),
+            host: Arc::new(CompositionHost),
+            writer: Arc::new(crate::service::fair_writer::FairWriter::new(32)),
+            reachability: Arc::new(crate::service::host_reachability::HostReachability::default()),
+            source: composition_source(f),
+            boot: "composition-worker".into(),
+            after_ms: 60000,
+            cancellation: Default::default(),
+        }
+    }
+    fn composition_drain(worker: &mut crate::service::archival::ArchivalWorker) {
+        for _ in 0..200 {
+            if !worker.run_page().unwrap() {
+                return;
+            }
+        }
+        panic!("worker traversal failed to terminate");
+    }
+    fn composition_veto(f: &Fixture) -> bool {
+        f.peer
+            .state
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT bootstrap_veto FROM archival_instances WHERE instance_id='i'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+    #[test]
+    fn composition_actual_large_bundle_worker_admission_loss_stays_sticky_then_fresh_recovers() {
+        let f = Fixture::aligned(
+            Fault::None,
+            Some(vec![format!("--config={}", "\"".repeat(3800)); 16]),
+        );
+        let mut launcher = DownstreamLauncher {
+            report_padding: 200000,
+            ..Default::default()
+        };
+        assert!(
+            downstream(
+                &f,
+                &mut launcher,
+                &mut FailingOutput {
+                    bytes: vec![],
+                    write: true
+                }
+            )
+            .is_err()
+        );
+        let before = f.peer.status();
+        let mut worker = composition_worker(&f);
+        worker.writer = Arc::new(crate::service::fair_writer::FairWriter::new(0));
+        assert_eq!(worker.run_page().unwrap_err().code, ErrorCode::StoreBusy);
+        worker.writer = Arc::new(crate::service::fair_writer::FairWriter::new(32));
+        composition_drain(&mut worker);
+        assert!(
+            composition_veto(&f),
+            "consumed bundle must retain traversal veto at EOF"
+        );
+        composition_drain(&mut worker);
+        assert!(
+            !composition_veto(&f),
+            "fresh admitted traversal must recover"
+        );
+        assert_eq!(f.peer.status(), before);
+        assert_eq!(launcher.starts, 1);
+    }
+    #[test]
+    fn composition_actual_retained_bundle_cap_and_corruption_controls() {
+        for control in [
+            "child_version",
+            "child_unknown",
+            "terminal_version",
+            "terminal_unknown",
+            "origin_contradiction",
+            "child_contradiction",
+            "child_orphan",
+            "child_wrong_local",
+            "origin_overflow",
+            "submission_overflow",
+            "child_overflow",
+            "terminal_overflow",
+            "embedded_origin_overflow",
+        ] {
+            let f = Fixture::aligned(Fault::None, None);
+            assert!(
+                downstream(
+                    &f,
+                    &mut DownstreamLauncher::default(),
+                    &mut FailingOutput {
+                        bytes: vec![],
+                        write: true
+                    }
+                )
+                .is_err()
+            );
+            let original = f.journal.root().join(format!(
+                "{:020}-{}.intent",
+                f.peer.reference.ordinal,
+                f.peer.reference.operation.as_str()
+            ));
+            let child = child_progress_path(&f.journal, &f.peer.reference);
+            let terminal = terminal_path(&f.journal, &f.peer.reference);
+            match control {
+                "child_version" | "child_unknown" | "child_contradiction" => {
+                    let mut value: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(&child).unwrap()).unwrap();
+                    if control == "child_version" {
+                        value["version"] = serde_json::json!(2);
+                    } else if control == "child_unknown" {
+                        value["unknown"] = serde_json::json!(true);
+                    } else {
+                        value["progress"]["launch"]["extra"] = serde_json::json!("contradiction");
+                    }
+                    std::fs::write(&child, serde_json::to_vec(&value).unwrap()).unwrap();
+                }
+                "terminal_version" | "terminal_unknown" | "embedded_origin_overflow" => {
+                    let mut value: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(&terminal).unwrap()).unwrap();
+                    if control == "terminal_version" {
+                        value["version"] = serde_json::json!(2);
+                    } else if control == "terminal_unknown" {
+                        value["unknown"] = serde_json::json!(true);
+                    } else {
+                        value["original"] =
+                            serde_json::json!("x".repeat(
+                                super::super::super::journal::MAX_BOOTSTRAP_ORIGIN_BYTES + 1
+                            ));
+                    }
+                    std::fs::write(&terminal, serde_json::to_vec(&value).unwrap()).unwrap();
+                }
+                "origin_contradiction" => {
+                    let mut data = std::fs::read(&original).unwrap();
+                    data.push(b' ');
+                    std::fs::write(&original, data).unwrap();
+                }
+                "child_orphan" => {
+                    std::fs::remove_file(&terminal).unwrap();
+                    std::fs::remove_file(&original).unwrap();
+                }
+                "child_wrong_local" => {
+                    std::fs::rename(
+                        &child,
+                        f.journal
+                            .root()
+                            .join(format!("bootstrap-child-{}.progress", uuid::Uuid::new_v4())),
+                    )
+                    .unwrap();
+                }
+                "origin_overflow" => std::fs::write(
+                    &original,
+                    vec![b'x'; super::super::super::journal::MAX_BOOTSTRAP_ORIGIN_BYTES + 1],
+                )
+                .unwrap(),
+                "submission_overflow" => {
+                    std::fs::write(f.peer.progress(), vec![b'x'; MAX_BOOTSTRAP_PROGRESS + 1])
+                        .unwrap()
+                }
+                "child_overflow" => {
+                    std::fs::write(&child, vec![b'x'; MAX_LINKED_LOCAL_BYTES + 1]).unwrap()
+                }
+                "terminal_overflow" => {
+                    std::fs::write(&terminal, vec![b'x'; MAX_BOOTSTRAP_TERMINAL_BYTES + 1]).unwrap()
+                }
+                _ => unreachable!(),
+            }
+            let before = f.peer.status();
+            let scan = composition_scan(&f);
+            assert!(
+                scan.coverage.is_none(),
+                "control {control} must veto complete coverage"
+            );
+            assert_eq!(f.peer.status(), before);
+        }
+    }
+    #[test]
+    fn composition_child_lookup_many_names_and_modern_header_progress() {
+        let f = Fixture::aligned(Fault::None, None);
+        let mut launcher = DownstreamLauncher {
+            unknown: true,
+            ..Default::default()
+        };
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        for n in 0..700 {
+            std::fs::write(f.journal.root().join(format!(".intent-noise-{n}")), []).unwrap();
+        }
+        let mut source = composition_source(&f);
+        let mut pages = 0;
+        let mut count = 0;
+        loop {
+            let scan = source.scan(|| false).unwrap();
+            pages += 1;
+            count += scan
+                .hints
+                .iter()
+                .filter(|h| matches!(h, crate::archival_legacy::Hint::Bootstrap { .. }))
+                .count();
+            if !scan.pending {
+                assert!(scan.coverage.is_some());
+                break;
+            }
+            assert!(scan.coverage.is_none());
+            assert!(pages < 100);
+        }
+        assert!(
+            pages > 40,
+            "both directory and bounded lookup must make incremental progress"
+        );
+        assert_eq!(
+            count, 2,
+            "parent and independently validated child each yield exact hint"
+        );
+        let original = f.journal.root().join(format!(
+            "{:020}-{}.intent",
+            f.peer.reference.ordinal,
+            f.peer.reference.operation.as_str()
+        ));
+        let mut data = std::fs::read(&original).unwrap();
+        data.splice(0..0, vec![b' '; 5000]);
+        std::fs::write(&original, data).unwrap();
+        assert!(
+            composition_scan(&f).coverage.is_some(),
+            "typed Bootstrap decoder has no independent4096 header cap"
+        );
+    }
+    #[test]
+    fn composition_cancel_between_reads_vetoes_consumed_large_bundle() {
+        let f = Fixture::aligned(
+            Fault::None,
+            Some(vec![format!("--config={}", "\"".repeat(3800)); 16]),
+        );
+        assert!(
+            downstream(
+                &f,
+                &mut DownstreamLauncher::default(),
+                &mut FailingOutput {
+                    bytes: vec![],
+                    write: true
+                }
+            )
+            .is_err()
+        );
+        let before = f.peer.status();
+        let mut source = composition_source(&f);
+        let calls = std::cell::Cell::new(0);
+        let error = source
+            .scan(|| {
+                calls.set(calls.get() + 1);
+                calls.get() >= 6
+            })
+            .err()
+            .expect("cancel during consumed bundle");
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(f.peer.status(), before);
+    }
+    #[cfg(target_os = "macos")]
+    fn composition_heap_statistics() -> [usize; 3] {
+        #[repr(C)]
+        #[derive(Default)]
+        struct Statistics {
+            blocks: u32,
+            in_use: usize,
+            maximum_touched: usize,
+            allocated: usize,
+        }
+        unsafe extern "C" {
+            fn malloc_zone_statistics(zone: *mut std::ffi::c_void, stats: *mut Statistics);
+        }
+        let mut stats = Statistics::default();
+        // SDK malloc.h: NULL sums all zones; max_size_in_use is touched-memory
+        // high water, separate from the sampled current live allocation count.
+        unsafe {
+            malloc_zone_statistics(std::ptr::null_mut(), &mut stats);
+        }
+        [stats.in_use, stats.maximum_touched, stats.allocated]
+    }
+    #[cfg(target_os = "macos")]
+    struct CompositionSampler {
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        peak: Arc<std::sync::atomic::AtomicUsize>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    #[cfg(target_os = "macos")]
+    impl CompositionSampler {
+        fn new(baseline: usize) -> Self {
+            use std::sync::atomic::Ordering;
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let peak = Arc::new(std::sync::atomic::AtomicUsize::new(baseline));
+            let thread = {
+                let stop = stop.clone();
+                let peak = peak.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        peak.fetch_max(composition_heap_statistics()[0], Ordering::Relaxed);
+                        std::thread::sleep(std::time::Duration::from_micros(50));
+                    }
+                })
+            };
+            Self {
+                stop,
+                peak,
+                thread: Some(thread),
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    impl Drop for CompositionSampler {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                thread.join().unwrap();
+            }
+        }
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn composition_maximum_legal_escaped_serializer_memory_and_budgets() {
+        use crate::ports::StorePort;
+        use std::sync::atomic::Ordering;
+        let f = Fixture::with_layout(
+            Fault::None,
+            request(),
+            Some(vec![format!("--config={}", "\u{1}".repeat(1250)); 16]),
+            true,
+            true,
+        );
+        let mut launcher = DownstreamLauncher {
+            max_report: true,
+            ..Default::default()
+        };
+        assert!(
+            downstream(
+                &f,
+                &mut launcher,
+                &mut FailingOutput {
+                    bytes: vec![],
+                    write: true
+                }
+            )
+            .is_err()
+        );
+        let before = f.peer.status();
+        assert_eq!(
+            before.state,
+            BootstrapState::Completed,
+            "maximum report must actually canonically complete"
+        );
+        let child = std::fs::metadata(child_progress_path(&f.journal, &f.peer.reference))
+            .unwrap()
+            .len();
+        let terminal = std::fs::metadata(terminal_path(&f.journal, &f.peer.reference))
+            .unwrap()
+            .len();
+        let original = f
+            .journal
+            .snapshot_bootstrap_origin(&f.peer.reference)
+            .unwrap()
+            .len();
+        let submission = std::fs::metadata(f.peer.progress()).unwrap().len();
+        assert_eq!(submission as usize, MAX_BOOTSTRAP_PROGRESS);
+        let identity = canonical::encode_identity(
+            &f.peer.identity.payload.handoff.namespace,
+            &f.peer.identity,
+        )
+        .unwrap()
+        .len();
+        let report = serde_json::to_vec(&before.completed.as_ref().unwrap().retained.report)
+            .unwrap()
+            .len();
+        let baseline = composition_heap_statistics();
+        let sampler = CompositionSampler::new(baseline[0]);
+        let store = Arc::new(
+            crate::store::SqliteStore::new(
+                crate::store::connection::StoreContext::new(
+                    f.peer.database_path.clone(),
+                    Arc::new(crate::app::SystemClock::new()),
+                ),
+                "i",
+                Default::default(),
+            )
+            .unwrap(),
+        );
+        let writer = Arc::new(crate::service::fair_writer::FairWriter::new(32));
+        let mut source = composition_source(&f);
+        let started = std::time::Instant::now();
+        let mut pages = 0;
+        let mut reads = 0;
+        let mut maximum_capacity = 0;
+        let mut maximum_scan = std::time::Duration::ZERO;
+        let mut maximum_deciding = std::time::Duration::ZERO;
+        let mut maximum_foreground = std::time::Duration::ZERO;
+        loop {
+            let page_start = std::time::Instant::now();
+            let scan = source.scan(|| false).unwrap();
+            maximum_scan = maximum_scan.max(page_start.elapsed());
+            let statistics = source.last_reads;
+            reads += statistics[0];
+            maximum_capacity = maximum_capacity.max(statistics[2]);
+            assert!(statistics[0] <= 4, "one oversized bundle per page");
+            assert!(statistics[1] <= 5_390_340);
+            assert_eq!(
+                statistics[2],
+                statistics[1] + statistics[0],
+                "fixed metadata+1 buffer allocations"
+            );
+            let budget = super::super::super::cooperative_budget(store.clock());
+            let turn = writer.enter_background(&budget, store.clock()).unwrap();
+            let (ready, waiting) = std::sync::mpsc::sync_channel(0);
+            let contender = {
+                let writer = writer.clone();
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    let budget = super::super::super::cooperative_budget(store.clock());
+                    let start = std::time::Instant::now();
+                    ready.send(()).unwrap();
+                    let _turn = writer.enter_foreground(&budget, store.clock()).unwrap();
+                    start.elapsed()
+                })
+            };
+            waiting.recv().unwrap();
+            let deciding_start = std::time::Instant::now();
+            composition_pass(&store, &scan).unwrap();
+            maximum_deciding = maximum_deciding.max(deciding_start.elapsed());
+            drop(turn);
+            maximum_foreground = maximum_foreground.max(contender.join().unwrap());
+            pages += 1;
+            if !scan.pending {
+                assert!(scan.coverage.is_some());
+                break;
+            }
+            assert!(pages < 100);
+        }
+        let sampled_peak = sampler.peak.load(Ordering::Relaxed);
+        drop(sampler);
+        let after = composition_heap_statistics();
+        eprintln!(
+            "COMPOSITION_MAX identity={identity} report={report} original={original} submission={submission} child={child} terminal={terminal} pages={pages} reads={reads} max_page_buffer_capacity={maximum_capacity} scan_max_ms={} deciding_max_ms={} foreground_wait_max_ms={} total_ms={} baseline_live={} sampled_peak_live={} all_zone_touched_highwater={} allocated_after={}",
+            maximum_scan.as_millis(),
+            maximum_deciding.as_millis(),
+            maximum_foreground.as_millis(),
+            started.elapsed().as_millis(),
+            baseline[0],
+            sampled_peak,
+            after[1],
+            after[2]
+        );
+        assert_eq!(f.peer.status(), before);
+        assert_eq!(launcher.starts, 1);
+    }
+    #[test]
+    fn composition_actual_terminal_after_cleanup_matches_human_original_and_worker() {
+        let f = Fixture::aligned(Fault::None, None);
+        let pending = f.journal.load(&f.peer.reference).unwrap();
+        downstream(&f, &mut DownstreamLauncher::default(), &mut vec![]).unwrap();
+        assert!(f.journal.load(&f.peer.reference).is_err());
+        let retained = super::super::super::retry::load_original_for_actor(
+            &f.journal,
+            &f.peer.reference.recovery_ref(),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&retained.header).unwrap(),
+            serde_json::to_value(&pending.header).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&retained.semantic).unwrap(),
+            serde_json::to_value(&pending.semantic).unwrap()
+        );
+        assert_eq!(
+            super::super::super::journal::classify_original_actor(
+                &retained.header.scope,
+                &retained.semantic
+            )
+            .unwrap(),
+            super::super::super::journal::OriginalActor::Agent
+        );
+        let before = f.peer.status();
+        let scan = composition_scan(&f);
+        assert!(scan.coverage.is_some());
+        assert_eq!(scan.hints.len(), 1);
+        let mut worker = composition_worker(&f);
+        composition_drain(&mut worker);
+        assert!(!composition_veto(&f));
+        assert_eq!(f.peer.status(), before);
+    }
+    #[test]
+    fn composition_absent_parent_and_foreign_database_cannot_be_authorized_locally() {
+        let f = Fixture::aligned(Fault::None, None);
+        let scan = composition_scan(&f);
+        assert!(scan.coverage.is_some());
+        composition_import(&f, &scan).unwrap();
+        assert!(composition_veto(&f));
+        assert_eq!(
+            f.peer
+                .state
+                .lock()
+                .unwrap()
+                .db
+                .query_row("SELECT count(*) FROM bootstrap_handoffs", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let other = Fixture::aligned(Fault::None, None);
+        assert!(
+            composition_import(&other, &scan).is_err(),
+            "database_list must reject another aligned path"
+        );
+        assert_eq!(other.peer.state.lock().unwrap().native_calls, 0);
+    }
+    #[test]
+    fn composition_actual_new_thread_child_requires_canonical_created_thread() {
+        let mut request = request();
+        request.thread = None;
+        let f = Fixture::with_layout(
+            Fault::None,
+            request,
+            Some(vec!["--model".into(), "saved value".into()]),
+            true,
+            false,
+        );
+        let mut launcher = DownstreamLauncher {
+            unknown: true,
+            ..Default::default()
+        };
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        let path = child_progress_path(&f.journal, &f.peer.reference);
+        let mut child: ChildProgress =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(child.attachment.handoff.thread.is_none());
+        assert!(child.progress.thread.is_some());
+        let scan = composition_scan(&f);
+        assert!(scan.coverage.is_some());
+        composition_import(&f, &scan).unwrap();
+        child.progress.thread = Some(ThreadId::new("wrong-new-thread"));
+        super::super::super::handoff::save_progress_at(&f.journal, &path, &child).unwrap();
+        let scan = composition_scan(&f);
+        assert!(scan.coverage.is_some());
+        assert!(composition_import(&f, &scan).is_err());
+        assert_eq!(launcher.starts, 1);
+    }
+    #[test]
+    fn composition_terminal_surviving_submission_must_match_completed_attempt_and_creation() {
+        for control in ["creation", "attempt"] {
+            let f = Fixture::aligned(Fault::None, None);
+            assert!(
+                downstream(
+                    &f,
+                    &mut DownstreamLauncher::default(),
+                    &mut FailingOutput {
+                        bytes: vec![],
+                        write: true
+                    }
+                )
+                .is_err()
+            );
+            let mut progress =
+                load_bootstrap_progress(&f.journal, &f.peer.reference, &f.peer.identity)
+                    .unwrap()
+                    .unwrap();
+            if control == "creation" {
+                progress.request = None;
+                progress.creation.as_mut().unwrap().correlation =
+                    crate::protocol::ids::HostCallId::new("contradictory-retained-creation");
+            } else {
+                progress.attempt = BootstrapAttempt::new(2).unwrap();
+            }
+            save_bootstrap_progress(&f.journal, &f.peer.reference, &progress).unwrap();
+            let scan = composition_scan(&f);
+            assert!(
+                scan.coverage.is_none(),
+                "terminal surviving submission {control} contradiction must veto"
+            );
+        }
     }
     #[test]
     fn downstream_atomic_completion_runs_exact_child_then_flushes_success() {
@@ -2178,6 +3148,7 @@ mod live {
             }),
             identity,
             journal: journal_root,
+            database_path: root.join("canonical.db"),
             reference,
             native_marker: Some(root.join("native-calls")),
             block_native: input["block"].as_bool().unwrap(),
@@ -2473,7 +3444,7 @@ mod live {
     ) {
         use crate::ports::*;
         let context = crate::store::connection::StoreContext::new(
-            peer.journal.parent().unwrap().join("canonical.db"),
+            peer.database_path.clone(),
             Arc::new(crate::app::SystemClock::new()),
         );
         let budget = super::super::super::cooperative_budget(context.clock());
