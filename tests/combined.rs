@@ -88,3 +88,6 @@ mod lazy_display;
 
 #[path = "cli/lazy_settlement.rs"]
 mod lazy_settlement;
+
+#[path = "integration/lazy_attention.rs"]
+mod lazy_attention;
