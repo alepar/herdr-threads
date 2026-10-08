@@ -372,6 +372,11 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   remains silent. No wrapper or global configuration change is made by enrollment. The actual
   pane environment must come from the user's foreground harness configuration; enrollment
   cannot infer a different attaching TUI pane or turn a shared-server environment into proof.
+- **Hermes enrolls only through `launch`.** Startup enrollment stays Claude/Codex only. A Hermes
+  session started outside `launch --kind hermes` gets no seat and no context: the bridge's hooks
+  find no resolved seat for the pane, and Herdr does not recognize the bare process as an agent
+  without the guarded launch process hint. Delegated Hermes children are answered locally with the
+  subagent restriction and never reach the daemon.
 - **Foreground harness execution is user managed.** Hooks and tools must inherit the TUI
   pane's `HERDR_PANE_ID`. A shared harness server started in another pane can instead supply
   its own pane environment; herdr-threads does not recover the attaching TUI pane from

@@ -407,9 +407,15 @@ class BridgeTests(unittest.TestCase):
         payload = dict(self.callbacks["qualified"])
         del payload["parent_session_id"]
         self.assertIsNone(self.request(payload=payload))
+        # Native delegate_task children call with platform "subagent" (Hermes 0.21.5).
         child = self.request(payload=self.callbacks["child"])
         self.assertIn("never check in", child["context"])
         self.assertIn("forbidden to subagents", child["context"])
+        self.assertEqual(self.request(payload={**self.callbacks["child"], "platform": "cli"}), child)
+        self.assertIsNone(self.request(payload={**self.callbacks["child"], "parent_session_id": ""}))
+        subagent = {**self.callbacks["tool"], "platform": "subagent", "parent_session_id": "session-Ω"}
+        for callback in ("post_tool_call", "on_session_start"):
+            self.assertIsNone(self.request(callback, subagent))
         for field in ("session_id", "turn_id", "task_id", "tool_call_id", "api_request_id"):
             self.assertIsNone(self.request(payload={**self.callbacks["qualified"], field: "bad\nvalue"}))
         self.assertIsNone(self.request(payload={**self.callbacks["qualified"], "platform": "gateway"}))

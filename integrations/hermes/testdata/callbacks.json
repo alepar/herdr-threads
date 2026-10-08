@@ -17,7 +17,7 @@
     "telemetry_schema_version": "hermes.observer.v1"
   },
   "child": {
-    "platform": "cli",
+    "platform": "subagent",
     "session_id": "child",
     "parent_session_id": "session-Ω",
     "turn_id": "turn-child",

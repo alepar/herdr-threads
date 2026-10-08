@@ -1,0 +1,7 @@
+seat_id|generation|native_session|observation_provenance|open
+s3nPSfn5E|2|launch:2701f2c8-cbfc-45c7-b179-ff8e21fe5fb5|managed_launch|0
+s3nPSfn5E|3|20261008_123622_4576ef|cooperative_top_level|0
+s3nPSfn5E|4|20261008_124047_d7f255|cooperative_top_level|0
+s3nPSfn5E|5|20261008_124548_fe23bc|cooperative_top_level|0
+s3nPSfn5E|6|20261008_124802_19fa8a|cooperative_top_level|1
+sU0FQbSus|2|plugin_context:0be51ede-73e5-4db7-8bdf-80690c8bfffa|operator_human|1

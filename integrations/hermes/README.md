@@ -1,9 +1,10 @@
 # Hermes experimental adapter
 
 The adapter, owned Python plugin and bounded driver are implemented and tested with
-source-shaped synthetic APIs. One live native run (2026-10-08, Hermes 0.21.5, private
-modified Herdr) passed setup, launch, recognition, context delivery, model
-accept/inbox/read/ACK and reset; see
+source-shaped synthetic APIs. Two live native runs (2026-10-08, Hermes 0.21.5, private
+modified Herdr) passed setup, launch, recognition, context delivery (including a
+turn driven by context alone), model accept/inbox/read/ACK, relaunch, child
+restriction and reset; see
 `docs/evidence/harness-adapters/native-acceptance/`. Do not treat setup, an
 enabled config entry, a fixture or a replay as a native PASS.
 
@@ -35,6 +36,10 @@ HERMES_ACCEPT_HOOKS or hooks_auto_accept is inserted. A private modified Herdr m
 advertise the actual guarded process-hint capability; a hint remains cooperative
 recognition input. A successful managed launch is wake-only, unregistered, and is
 not a hook check-in or receipt. Hermes has no composer provider or in-turn poke.
+Hermes joins threads only through managed launch: a bare `hermes` started in a pane
+gets no seat and no context (TRUST-POLICY accepted limits). Native `delegate_task`
+children run with platform `subagent`; their parented `pre_llm_call` gets the
+subagent restriction locally and every other subagent callback is ignored.
 
 ## Runtime and evidence
 

@@ -3,11 +3,28 @@
   "date": "2026-10-08",
   "evidence_stage": "native_measurement",
   "native_scope": "live",
-  "threads": {
-    "base_commit": "33a5c88971b4bf536f51015a7fc55af6534b669f",
-    "change": "PROBE_LIMIT 15s (this commit)",
-    "binary_sha256": "258868fb5550cbecc0b27166ead9d2defee5a31c881e5ea8fc166e5418a74768"
-  },
+  "runs": [
+    {
+      "run": 1,
+      "threads": {
+        "base_commit": "33a5c88971b4bf536f51015a7fc55af6534b669f",
+        "change": "PROBE_LIMIT 15s",
+        "binary_sha256": "258868fb5550cbecc0b27166ead9d2defee5a31c881e5ea8fc166e5418a74768",
+        "plugin_init_sha256": "b47623b7be91d22d5ad40469cb6350eb82bbf9e4250799bab57d6fb04e5511ce"
+      }
+    },
+    {
+      "run": 2,
+      "threads": {
+        "base_commit": "82ba030c",
+        "change": "subagent platform child restriction (this commit)",
+        "binary_sha256_before_fix": "258868fb5550cbecc0b27166ead9d2defee5a31c881e5ea8fc166e5418a74768",
+        "binary_sha256": "09afd22ae2f9eb81c2d6faf863f659e9a57aaf9eb71897a773a830f324038e48",
+        "plugin_init_sha256": "9ed5e59acd5f2774cde6df1d8ccb3d3671d49433740ddacfaeaec2ef4f8366fd"
+      },
+      "settings": {"wake_batch_delay_ms": 180000}
+    }
+  ],
   "host": {
     "modified": true,
     "source_commit": "6c00655e787f14b84755461bf94762a8a791331d",
@@ -18,28 +35,31 @@
     "version": "0.21.5+3962.g37daf85",
     "commit": "37daf85b2ad0ee50ed45d7234dc47b7fa24cec09",
     "profile": "default",
+    "profile_copy_change": "delegation toolset enabled (run 2)",
     "provider": "openrouter",
     "model": "deepseek-v4.1-flash",
-    "plugin_init_sha256": "b47623b7be91d22d5ad40469cb6350eb82bbf9e4250799bab57d6fb04e5511ce",
     "plugin_yaml_sha256": "ae1c731f8d1fea31e3a31a96f2dff35d03ee871ac635aaafb23d73643d03e162"
   },
   "matrix": [
-    {"stage": "plugin_discovery", "verdict": "PASS", "reason": "owned_setup_against_real_profile"},
-    {"stage": "enablement", "verdict": "PASS", "reason": "native_plugins_enable_and_setup_status"},
-    {"stage": "guarded_launch", "verdict": "PASS", "reason": "managed_launch_prelaunch_observed"},
-    {"stage": "recognition", "verdict": "PASS", "reason": "private_host_agent_hermes_with_native_session"},
-    {"stage": "callback_context", "verdict": "PASS", "reason": "journal_startup_and_tool_turns_and_native_user_api_content"},
-    {"stage": "child", "verdict": "SKIPPED", "reason": "profile_has_no_delegation_toolset"},
-    {"stage": "model_accept", "verdict": "PASS", "reason": "invitation_accepted_gen3_cooperative_top_level"},
-    {"stage": "model_inbox", "verdict": "PASS", "reason": "model_terminal_call_inbox"},
-    {"stage": "model_read", "verdict": "PASS", "reason": "model_terminal_call_read_and_reply"},
-    {"stage": "model_ack", "verdict": "PASS", "reason": "receipt_acked_gen3_cooperative_top_level"},
-    {"stage": "reset", "verdict": "PASS", "reason": "declared_reset_consumed_clear_gen4_same_seat"}
+    {"stage": "plugin_discovery", "verdict": "PASS", "runs": [1, 2], "reason": "owned_setup_against_real_profile"},
+    {"stage": "enablement", "verdict": "PASS", "runs": [1, 2], "reason": "native_plugins_enable_and_setup_status"},
+    {"stage": "guarded_launch", "verdict": "PASS", "runs": [1, 2], "reason": "managed_launch_prelaunch_observed"},
+    {"stage": "recognition", "verdict": "PASS", "runs": [1, 2], "reason": "private_host_agent_hermes_with_native_session"},
+    {"stage": "callback_context", "verdict": "PASS", "runs": [1, 2], "reason": "journal_startup_and_tool_turns_and_native_user_api_content"},
+    {"stage": "context_only_turn", "verdict": "PASS", "runs": [2], "reason": "neutral_prompt_accept_reply_ack_before_any_wake_reservation"},
+    {"stage": "model_accept", "verdict": "PASS", "runs": [1, 2], "reason": "invitation_accepted_gen3_cooperative_top_level"},
+    {"stage": "model_inbox", "verdict": "PASS", "runs": [1, 2], "reason": "model_terminal_call_inbox"},
+    {"stage": "model_read", "verdict": "PASS", "runs": [1], "reason": "model_terminal_call_read_and_reply"},
+    {"stage": "model_ack", "verdict": "PASS", "runs": [1, 2], "reason": "receipt_acked_gen3_cooperative_top_level"},
+    {"stage": "relaunch", "verdict": "PASS", "runs": [2], "reason": "old_generation_ended_next_bound_to_new_native_session"},
+    {"stage": "child", "verdict": "PASS", "runs": [2], "reason": "subagent_user_api_content_carries_restriction_after_fix"},
+    {"stage": "reset", "verdict": "PASS", "runs": [1, 2], "reason": "declared_reset_consumed_clear_next_generation_same_seat"},
+    {"stage": "bare_start", "verdict": "LIMIT", "runs": [2], "reason": "no_host_agent_no_seat_no_context_outside_launch"}
   ],
   "limits": [
-    "first model turn started by the daemon wake prompt; context-only attribution not isolated",
-    "single run, single model and profile, macOS only",
-    "private modified Herdr host, not a released Herdr"
+    "two runs, single model and profile, macOS only",
+    "private modified Herdr host, not a released Herdr",
+    "one earlier managed session without first-turn context, not reproduced on a fresh root"
   ],
-  "cleanup": {"verdict": "PASS", "reason": "no_process_referencing_isolated_root"}
+  "cleanup": {"verdict": "PASS", "reason": "no_process_referencing_isolated_root; roots_deleted; real_launchers_unchanged"}
 }

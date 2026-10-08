@@ -458,9 +458,14 @@ class Bridge:
         if not opaque(session):
             return None
         platform = kwargs.get("platform")
-        if platform not in (None, "", "cli"):
-            return None
         parent = kwargs.get("parent_session_id")
+        # Native delegate_task children run with platform "subagent". Only their
+        # parented pre_llm_call is answered, locally, with the child restriction.
+        if platform == "subagent":
+            if name != "pre_llm_call" or not opaque(parent):
+                return None
+        elif platform not in (None, "", "cli"):
+            return None
         # Reset association clearing remains independent of delivery/reader state.
         if name == "on_session_reset":
             if kwargs.get("reason") != "new_session" or not self.reset_roles(session):
