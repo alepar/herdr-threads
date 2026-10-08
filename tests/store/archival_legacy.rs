@@ -3,7 +3,7 @@ use herdr_threads::{
     daemon::paths::{InstancePaths, RuntimeContext},
     protocol::output::ContinuationContext,
 };
-struct Temp(std::path::PathBuf);
+pub(super) struct Temp(std::path::PathBuf);
 impl Temp {
     fn path(&self) -> &std::path::Path {
         &self.0
@@ -14,7 +14,7 @@ impl Drop for Temp {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-fn source() -> (Temp, InstancePaths, Source) {
+pub(super) fn source() -> (Temp, InstancePaths, Source) {
     let dir = Temp(std::env::temp_dir().join(format!("ht-archive-{}", uuid::Uuid::new_v4())));
     std::fs::create_dir(&dir.0).unwrap();
     let context =
@@ -117,7 +117,7 @@ fn context(paths: &InstancePaths) -> ContinuationContext {
         host: Some(paths.locator.clone()),
     }
 }
-fn compound(paths: &InstancePaths) -> herdr_threads::cli::journal::IntentRef {
+pub(super) fn compound(paths: &InstancePaths) -> herdr_threads::cli::journal::IntentRef {
     compound_in(paths, context(paths))
 }
 fn compound_in(
@@ -435,7 +435,7 @@ fn archival_legacy_captured_hint_cannot_revive_completion() {
     tx.commit().unwrap();
 }
 
-fn modern_compound(
+pub(super) fn modern_compound(
     paths: &InstancePaths,
     bootstrap: bool,
     new_thread: bool,
@@ -519,7 +519,7 @@ fn archival_legacy_delivery_uses_its_own_frozen_identity_without_launch() {
     );
 }
 
-fn scanner_store(
+pub(super) fn scanner_store(
     paths: &InstancePaths,
 ) -> (herdr_threads::store::SqliteStore, rusqlite::Connection) {
     use herdr_threads::store::{SqliteStore, StoreSettings, connection::StoreContext};
@@ -1687,6 +1687,24 @@ fn archival_legacy_queued_final_coverage_observes_earlier_deciding_veto() {
         })
         .unwrap(),
         "queued final coverage must observe the earlier deciding veto"
+    );
+    std::fs::remove_dir_all(paths.instance_dir.join("intents")).unwrap();
+    let fresh_absence = source.scan(|| false).unwrap();
+    assert!(fresh_absence.coverage.is_some());
+    import_scan(&store, &fresh_absence).unwrap();
+    assert!(
+        !db.query_row("SELECT bootstrap_veto FROM archival_instances", [], |r| {
+            r.get::<_, bool>(0)
+        })
+        .unwrap()
+    );
+    import_scan(&store, pages.last().unwrap()).unwrap();
+    assert!(
+        db.query_row("SELECT bootstrap_veto FROM archival_instances", [], |r| {
+            r.get::<_, bool>(0)
+        })
+        .unwrap(),
+        "fresh absent traversal cannot clear a queued old page's marker"
     );
 }
 

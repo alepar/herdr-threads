@@ -244,6 +244,16 @@ impl Source {
     pub fn validate(&self, coverage: &str) -> bool {
         self.generation().is_ok_and(|current| current == coverage)
     }
+    /// A consumed page that never reaches a deciding store is still uncertain.
+    /// Preserve its cursor and marker; only a fresh traversal can clear the veto.
+    pub(crate) fn veto_traversal(&self) {
+        self.deciding_veto.store(true, Ordering::Release);
+    }
+    /// Revalidate outside writer ownership before each coverage consumer. A
+    /// deciding store can veto an already sampled coverage stamp through the Arc.
+    pub(crate) fn filter_coverage(&self, coverage: Option<String>) -> Option<String> {
+        coverage.filter(|stamp| !self.deciding_veto.load(Ordering::Acquire) && self.validate(stamp))
+    }
     pub fn scan(&mut self, cancelled: impl Fn() -> bool) -> io::Result<Scan> {
         let result = self.scan_page(&cancelled);
         if result.is_err() {
@@ -270,6 +280,11 @@ impl Source {
             self.has_hints = false;
         }
         if generation.starts_with("absent:") {
+            // Each absence sample completes a fresh traversal. Keep delayed
+            // samples' old Arc intact while replacing current uncertainty.
+            self.deciding_veto = Arc::new(AtomicBool::new(false));
+            self.veto = false;
+            self.has_hints = false;
             return Ok(Scan {
                 coverage: Some(generation),
                 ..Scan::default()
