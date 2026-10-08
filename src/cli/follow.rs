@@ -707,29 +707,52 @@ fn render_history_with(
     style: &Style,
 ) -> Result<(), RunError> {
     let thread = query.thread.clone();
+    let max_bytes = query.page.max_bytes;
     query.full_bodies = full_bodies;
-    let result = client.call_with_output(
-        Command::History(query),
-        spec,
-        &budget(cache.clock.as_ref(), 5_000, &cache.cancel),
-    )?;
-    let CommandResult::History(page) = selected_result(&result, spec) else {
-        return Err(RunError::Api(ApiError::store_corrupt(
-            "daemon returned no history page",
-        )));
-    };
-    let lookup_spec = text_spec(spec);
-    cache.prefetch(client, &thread, &page, &lookup_spec);
-    let mut lookup = LiveLookup {
-        client,
-        cache,
-        spec: &lookup_spec,
-    };
-    let text = irc::render_page(&page, &mut lookup, style);
-    lookup.cache.page_panes_read = None;
-    writer.write_all(text.as_bytes())?;
-    writer.flush()?;
-    Ok(())
+    loop {
+        let result = client.call_with_output(
+            Command::History(query.clone()),
+            spec,
+            &budget(cache.clock.as_ref(), 5_000, &cache.cancel),
+        )?;
+        let CommandResult::History(page) = selected_result(&result, spec) else {
+            return Err(RunError::Api(ApiError::store_corrupt(
+                "daemon returned no history page",
+            )));
+        };
+        let modes = output::ReadModes::lookup(
+            &CommandResult::History(page.clone()),
+            spec,
+            client,
+            &budget(cache.clock.as_ref(), 5_000, &cache.cancel),
+        )?;
+        let lookup_spec = text_spec(spec);
+        cache.prefetch(client, &thread, &page, &lookup_spec);
+        let mut lookup = LiveLookup {
+            client,
+            cache,
+            spec: &lookup_spec,
+        };
+        let text = irc::render_page(&page, &mut lookup, style);
+        lookup.cache.page_panes_read = None;
+        let len = modes.annotate(text.as_bytes().to_vec()).len();
+        if modes.is_empty() || len <= max_bytes as usize {
+            modes.write(text.into_bytes(), max_bytes, writer)?;
+            return Ok(());
+        }
+        let overflow = u32::try_from(len - max_bytes as usize).unwrap_or(u32::MAX);
+        let next = query
+            .page
+            .max_bytes
+            .saturating_sub(overflow.max(query.page.max_bytes / 4));
+        if next < 256 {
+            return Err(RunError::Api(
+                ApiError::invalid_budget("annotated history exceeds byte budget")
+                    .with_required_minimum_bytes(len.try_into().unwrap_or(u32::MAX)),
+            ));
+        }
+        query.page.max_bytes = next;
+    }
 }
 
 /// How the follower prints records.
@@ -775,6 +798,34 @@ impl Printer<'_> {
                 line.push('\n');
                 line
             }
+        };
+        let text = if self.form == Form::Human {
+            let result = CommandResult::History(Page {
+                items: vec![summary.clone()],
+                next_cursor: None,
+                next_argv: None,
+                high_water_ordinal: summary.sequence,
+                scope_revision: None,
+                has_more: false,
+                stop_reason: crate::protocol::pagination::StopReason::Complete,
+                consistency: crate::protocol::pagination::Consistency::BoundedLive,
+            });
+            let modes = output::ReadModes::lookup(
+                &result,
+                &text_spec(spec),
+                client,
+                &budget(cache.clock.as_ref(), 5_000, &cache.cancel),
+            )
+            .map_err(|error| io::Error::other(error.detail))?;
+            let bytes = modes.annotate(text.into_bytes());
+            if !modes.is_empty() && bytes.len() > MAX_PAGE_BYTES as usize {
+                return Err(io::Error::other(
+                    "annotated follow record exceeds byte budget",
+                ));
+            }
+            String::from_utf8(bytes).expect("annotated transcript is UTF-8")
+        } else {
+            text
         };
         self.writer.write_all(text.as_bytes())?;
         self.writer.flush()
@@ -1323,3 +1374,181 @@ mod read_cost_names;
 #[cfg(test)]
 #[path = "../../tests/cli/read_cost_seam.rs"]
 mod read_cost_seam;
+
+#[cfg(test)]
+mod lazy_marker_follow_tests {
+    use super::*;
+    use crate::protocol::{
+        commands::{DeliveryMode, MessageDeliveryModesQuery},
+        ids::MessageId,
+        pagination::{Consistency, StopReason},
+        results::MessageDeliveryMode,
+        time::UtcMillis,
+    };
+    use std::sync::Mutex;
+    struct Modes {
+        calls: Mutex<Vec<Command>>,
+        advertised: bool,
+    }
+    fn summary() -> MessageSummary {
+        MessageSummary {
+            message: MessageId::new("m2"),
+            thread: ThreadId::new("t"),
+            author: None,
+            event_author: None,
+            author_role: None,
+            relays_user: false,
+            user_intent: None,
+            author_role_backfilled: false,
+            kind: MessageKind::Ordinary,
+            sequence: 2,
+            created_at: UtcMillis(0),
+            actor_label: Some("alice".into()),
+            preview_data: "full lazy body".into(),
+            preview_omitted: false,
+            preview_detail_argv: None,
+        }
+    }
+    impl LocalClient for Modes {
+        fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+            self.advertised && name == crate::protocol::capabilities::MESSAGE_DELIVERY_MODES
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.calls.lock().unwrap().push(command.clone());
+            Ok(match command {
+                Command::MessageDeliveryModes(MessageDeliveryModesQuery { messages }) => {
+                    CommandResult::MessageDeliveryModes(
+                        messages
+                            .into_iter()
+                            .map(|message| MessageDeliveryMode {
+                                message,
+                                delivery_mode: DeliveryMode::Lazy,
+                            })
+                            .collect(),
+                    )
+                }
+                Command::History(_) => CommandResult::History(Page {
+                    items: vec![summary()],
+                    next_cursor: None,
+                    next_argv: None,
+                    high_water_ordinal: 2,
+                    scope_revision: None,
+                    has_more: false,
+                    stop_reason: StopReason::Complete,
+                    consistency: Consistency::BoundedLive,
+                }),
+                _ => panic!("unexpected {command:?}"),
+            })
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+    struct NoPanes;
+    impl PaneNameSource for NoPanes {
+        fn pane_names(&self, _: &CallBudget) -> Result<Vec<PaneName>, ApiError> {
+            Ok(vec![])
+        }
+    }
+    fn cache() -> NickCache {
+        let root = PathBuf::from("/nonexistent-lazy-follow-cache");
+        let paths = InstancePaths {
+            instance_dir: root.clone(),
+            socket_path: root.join("s"),
+            lock_path: root.join("l"),
+            descriptor_path: root.join("d"),
+            locator_path: root.join("loc"),
+            namespace_path: root.join("n"),
+            database_path: root.join("db"),
+            locator: "test".into(),
+        };
+        let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
+        NickCache::with_pane_source(Box::new(NoPanes), &paths, uuid::Uuid::nil(), &clock)
+    }
+    #[test]
+    fn human_history_canonical_lazy_marker_and_old_daemon_bytes() {
+        let spec = OutputSpec {
+            format: OutputFormat::Text,
+            context: Default::default(),
+        };
+        let mut current = Vec::new();
+        let mut old = Vec::new();
+        for (advertised, out) in [(true, &mut current), (false, &mut old)] {
+            let client = Modes {
+                calls: Mutex::new(vec![]),
+                advertised,
+            };
+            render_history_with(
+                &client,
+                true,
+                HistoryQuery {
+                    thread: ThreadId::new("t"),
+                    page: PageRequest {
+                        cursor: None,
+                        limit: 100,
+                        max_bytes: 1024,
+                    },
+                    initial: None,
+                    full_bodies: false,
+                },
+                &spec,
+                &mut cache(),
+                out,
+                &Style::plain(),
+            )
+            .unwrap();
+            assert_eq!(
+                client
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|c| matches!(c, Command::MessageDeliveryModes(_)))
+                    .count(),
+                usize::from(advertised)
+            );
+        }
+        assert!(current.starts_with(b"[lazy] m2\n"));
+        assert_eq!(&current[b"[lazy] m2\n".len()..], old);
+    }
+    #[test]
+    fn follow_human_marks_exact_message_but_json_lines_stay_unchanged() {
+        let spec = OutputSpec {
+            format: OutputFormat::Text,
+            context: Default::default(),
+        };
+        for form in [Form::Human, Form::Lines] {
+            let client = Modes {
+                calls: Mutex::new(vec![]),
+                advertised: true,
+            };
+            let mut out = vec![];
+            let mut err = vec![];
+            let mut printer = Printer {
+                form,
+                style: Style::plain(),
+                no_system: false,
+                writer: &mut out,
+                errors: &mut err,
+            };
+            printer
+                .message(&summary(), &client, &mut cache(), &spec)
+                .unwrap();
+            if form == Form::Human {
+                assert!(out.starts_with(b"[lazy] m2\n"));
+                assert!(String::from_utf8(out).unwrap().contains("full lazy body"));
+            } else {
+                assert_eq!(out, format!("{}\n", json_line(&summary())).as_bytes());
+            }
+            assert_eq!(
+                client.calls.lock().unwrap().len(),
+                usize::from(form == Form::Human)
+            );
+        }
+    }
+}

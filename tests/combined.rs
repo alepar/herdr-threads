@@ -79,3 +79,6 @@ mod lazy_metadata;
 mod lazy_inbox;
 #[path = "protocol/lazy_inbox_v2.rs"]
 mod lazy_inbox_v2;
+
+#[path = "cli/lazy_markers.rs"]
+mod lazy_markers;

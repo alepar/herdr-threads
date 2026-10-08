@@ -869,11 +869,7 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     budget: &dyn Fn() -> CallBudget,
     writer: &mut W,
 ) -> Result<(), RunError> {
-    let max_bytes = command
-        .page()
-        .map_or(crate::protocol::pagination::MAX_PAGE_BYTES, |page| {
-            page.max_bytes
-        });
+    let max_bytes = read_byte_bound(&command);
     let participant_thread = match &command {
         Command::Participants(query) => Some(query.thread.clone()),
         Command::Thread(query) => Some(query.thread.clone()),
@@ -890,10 +886,11 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
         command,
         Command::ServiceInspect | Command::ServiceDisconnect(_)
     ) {
-        client.call(command, &budget())?
+        client.call(command.clone(), &budget())?
     } else {
-        client.call_with_output(command, output_spec, &budget())?
+        client.call_with_output(command.clone(), output_spec, &budget())?
     };
+    let (result, modes) = fit_annotated_read(command, result, output_spec, client, budget)?;
     let peer_hints = if output_spec.format == OutputFormat::Text && peer_locations::active() {
         let location_budget = budget();
         peer_locations::prepare(
@@ -932,11 +929,58 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
             } else if peer_hints.unavailable && output_spec.format == OutputFormat::Text {
                 bytes.extend_from_slice(b"location unavailable\n");
             }
-            writer.write_all(&bytes)?;
-            writer.flush()?;
+            modes.write(bytes, max_bytes, writer)?;
         }
     };
     Ok(())
+}
+
+fn read_byte_bound(command: &Command) -> u32 {
+    match command {
+        Command::Message(q) => q.body.max_bytes,
+        _ => command
+            .page()
+            .map_or(crate::protocol::pagination::MAX_PAGE_BYTES, |p| p.max_bytes),
+    }
+}
+
+/// Reserve annotation bytes by reselecting the same read at a smaller bound.
+/// The daemon, rather than the CLI, supplies any body/page continuation: never
+/// trim printed body bytes or synthesize a cursor after selection.
+fn fit_annotated_read<C: LocalClient + ?Sized>(
+    mut command: Command,
+    mut result: CommandResult,
+    spec: &OutputSpec,
+    client: &C,
+    budget: &dyn Fn() -> CallBudget,
+) -> Result<(CommandResult, output::ReadModes), RunError> {
+    let max_bytes = read_byte_bound(&command);
+    loop {
+        let modes = output::ReadModes::lookup(&result, spec, client, &budget())?;
+        if modes.is_empty() {
+            return Ok((result, modes));
+        }
+        let len = modes.annotate(output::emitted_bytes(&result, spec)?).len();
+        if len <= max_bytes as usize {
+            return Ok((result, modes));
+        }
+        let current = read_byte_bound(&command);
+        let overflow = u32::try_from(len - max_bytes as usize).unwrap_or(u32::MAX);
+        let next = current.saturating_sub(overflow.max(current / 4));
+        if next < 256 {
+            return Err(RunError::Api(
+                ApiError::invalid_budget("annotated read exceeds byte budget")
+                    .with_required_minimum_bytes(len.try_into().unwrap_or(u32::MAX)),
+            ));
+        }
+        match &mut command {
+            Command::History(q) => q.page.max_bytes = next,
+            Command::Search(q) => q.page.max_bytes = next,
+            Command::Message(q) => q.body.max_bytes = next,
+            _ => unreachable!("only selected message reads carry lazy markers"),
+        }
+        result = client.call_with_output(command.clone(), spec, &budget())?;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

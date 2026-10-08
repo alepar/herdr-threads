@@ -166,6 +166,128 @@ pub fn write_selected<W: Write>(
     Ok(bytes.len())
 }
 
+/// Canonical CLI-only annotation of selected read records. This never changes
+/// the v1 result, saved summary content, or delivery progress.
+#[derive(Default)]
+pub(crate) struct ReadModes {
+    lazy: Vec<crate::protocol::ids::MessageId>,
+}
+
+impl ReadModes {
+    pub(crate) fn lookup<C: crate::ports::LocalClient + ?Sized>(
+        result: &CommandResult,
+        spec: &OutputSpec,
+        client: &C,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<Self, ApiError> {
+        use crate::protocol::{
+            capabilities::MESSAGE_DELIVERY_MODES,
+            commands::{Command, DeliveryMode, MessageDeliveryModesQuery},
+            output::selected_result,
+            results::SearchHit,
+        };
+        if spec.format != OutputFormat::Text {
+            return Ok(Self::default());
+        }
+        let selected = selected_result(result, spec);
+        let ids: Vec<_> = match &selected {
+            CommandResult::History(page) => page.items.iter().map(|m| m.message.clone()).collect(),
+            CommandResult::Message(detail) => vec![detail.summary.message.clone()],
+            CommandResult::Search(search) => search
+                .matches
+                .items
+                .iter()
+                .filter_map(|hit| match hit {
+                    SearchHit::Body(m) => Some(m.message.clone()),
+                    SearchHit::Topic(_) => None,
+                })
+                .collect(),
+            _ => return Ok(Self::default()),
+        };
+        if ids.is_empty() || !client.supports_capability(MESSAGE_DELIVERY_MODES, budget) {
+            return Ok(Self::default());
+        }
+        let mut lazy = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let ids: Vec<_> = ids
+            .into_iter()
+            .filter(|id| seen.insert(id.clone()))
+            .collect();
+        for batch in ids.chunks(100) {
+            let result = match client.call(
+                Command::MessageDeliveryModes(MessageDeliveryModesQuery {
+                    messages: batch.to_vec(),
+                }),
+                budget,
+            ) {
+                // An optional read extension may be unavailable even when a
+                // cached capability list advertises it. Keep the legacy read
+                // rendering; never infer a mode or perform a mutation.
+                Err(error) if error.code == crate::protocol::results::ErrorCode::Unsupported => {
+                    return Ok(Self::default());
+                }
+                result => result?,
+            };
+            let CommandResult::MessageDeliveryModes(modes) = result else {
+                return Err(ApiError::store_corrupt("daemon returned no message modes"));
+            };
+            if modes.len() != batch.len()
+                || modes
+                    .iter()
+                    .zip(batch)
+                    .any(|(mode, id)| &mode.message != id)
+            {
+                return Err(ApiError::store_corrupt(
+                    "daemon returned mismatched message modes",
+                ));
+            }
+            lazy.extend(
+                modes
+                    .into_iter()
+                    .filter(|mode| mode.delivery_mode == DeliveryMode::Lazy)
+                    .map(|mode| mode.message),
+            );
+        }
+        Ok(Self { lazy })
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.lazy.is_empty()
+    }
+
+    /// A service-generated row preceding the unchanged selected encoding.
+    /// Peer text cannot fabricate this column-zero row (body lines are indented,
+    /// and history/search peer fields are escaped by the established encoder).
+    pub(crate) fn annotate(&self, bytes: Vec<u8>) -> Vec<u8> {
+        if self.is_empty() {
+            return bytes;
+        }
+        let mut out = Vec::new();
+        for id in &self.lazy {
+            out.extend_from_slice(format!("[lazy] {}\n", id.as_str()).as_bytes());
+        }
+        out.extend_from_slice(&bytes);
+        out
+    }
+
+    pub(crate) fn write<W: Write + ?Sized>(
+        &self,
+        bytes: Vec<u8>,
+        max_bytes: u32,
+        writer: &mut W,
+    ) -> Result<(), OutputError> {
+        let bytes = self.annotate(bytes);
+        if !self.is_empty() && bytes.len() > max_bytes as usize {
+            return Err(OutputError::Api(
+                ApiError::invalid_budget("annotated read exceeds byte budget")
+                    .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX)),
+            ));
+        }
+        writer.write_all(&bytes).map_err(OutputError::Io)?;
+        writer.flush().map_err(OutputError::Io)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/cli/output.rs"));
