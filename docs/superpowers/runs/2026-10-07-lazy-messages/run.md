@@ -50,3 +50,4 @@ codeBuckets:
   worktreesKept:
   processSweep: stopped 0 · survived 0
 roastCodeRound: 1
+roast-code: 2026-10-07-lazy-messages-roast-pr-1.md
