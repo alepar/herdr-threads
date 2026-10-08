@@ -259,6 +259,16 @@ pub fn query_with_output(
             super::attention::seat_digest(&db, instance, &q.seat, &|| db.check_budget())
                 .map(|run| CommandResult::AttentionDigest(run.digest))
         }
+        Command::AttentionDigestDelivery(q) => {
+            let digest =
+                super::attention::seat_digest(&db, instance, &q.seat, &|| db.check_budget())?
+                    .digest;
+            let notices_pending = super::attention::seat_has_pending_notices(&db, q.seat.as_str())?;
+            Ok(CommandResult::AttentionDigestDelivery {
+                digest,
+                notices_pending,
+            })
+        }
         _ => Err(api_error(
             ErrorCode::Unsupported,
             "query route not implemented",
@@ -5095,10 +5105,17 @@ fn inbox_batch(
                             r.state == crate::protocol::service::RequirementState::Pending
                                 && r.invitation.as_str() == id
                         });
-                        let topic_data = batch_topic(db, &thread)?;
+                        let (topic_data, goal_data): (String, String) = db
+                            .query_row(
+                                "SELECT topic,goal FROM threads WHERE id=?1",
+                                [&thread],
+                                |r| Ok((r.get(0)?, r.get(1)?)),
+                            )
+                            .map_err(store_error)?;
                         Some(InboxBatchItem::Invitation {
                             thread: ThreadId::new(thread),
                             topic_data,
+                            goal_data: Some(goal_data),
                             invitation: crate::protocol::ids::InvitationId::new(id),
                             required_service,
                         })
@@ -5308,7 +5325,12 @@ fn inbox_batch(
                     if let Some(warning) = warning
                         && is_warning_recipient(db, &candidate.id, seat.as_str())?
                         && warning_condition_actionable(db, &warning)?
-                        && warning.event_seq > offered_warning_through
+                        && super::attention::informational_notice_pending(
+                            db,
+                            seat.as_str(),
+                            &candidate.id,
+                        )?
+                        .unwrap_or(warning.event_seq > offered_warning_through)
                     {
                         Some(InboxBatchItem::Warning {
                             thread: ThreadId::new(&candidate.thread_id),
@@ -5325,12 +5347,29 @@ fn inbox_batch(
                 }
             }
         };
-        if let Some(item) = item {
+        if let Some(mut item) = item {
             if at_limit {
                 stop = StopReason::Rows;
                 break;
             }
-            let trial_items = [items.clone(), vec![item.clone()]].concat();
+            let mut trial_items = [items.clone(), vec![item.clone()]].concat();
+            if matches!(
+                &item,
+                InboxBatchItem::Invitation {
+                    goal_data: Some(_),
+                    ..
+                }
+            ) && !batch_fits(&trial_items, &after, seat, &q.page, output)?
+                && !batch_fits(std::slice::from_ref(&item), &after, seat, &q.page, output)?
+            {
+                // Never truncate scope into misleading relevance evidence.
+                // Only omit a goal that cannot fit even on its own page;
+                // the renderer supplies exact read-only inspection routing.
+                if let InboxBatchItem::Invitation { goal_data, .. } = &mut item {
+                    *goal_data = None;
+                }
+                trial_items = [items.clone(), vec![item.clone()]].concat();
+            }
             if !batch_fits(&trial_items, &after, seat, &q.page, output)? {
                 if items.is_empty() {
                     return Err(ApiError::invalid_budget("inbox batch item cannot fit"));

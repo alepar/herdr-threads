@@ -552,6 +552,93 @@ fn inbox_counts_published_warning_and_receipt_in_same_snapshot() {
 }
 
 #[test]
+fn invitation_relevance_inbox_supplies_canonical_goal_without_joining() {
+    // Kills: fetching only the topic, inferring the goal from it, or accepting on read.
+    let (store, db) = fixture();
+    db.execute("UPDATE threads SET topic='Parser integration',goal='Organize holiday catering' WHERE id='t'", []).unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv-relevance','t','s',1,'pending',0,300,300,1)", []).unwrap();
+    let result = query(
+        &store,
+        "i",
+        &Command::InboxBatch(InboxQuery {
+            seat: Some(SeatId::new("s")),
+            page: PageRequest::default(),
+        }),
+        &budget(),
+    )
+    .unwrap();
+    let raw = serde_json::to_value(result).unwrap();
+    assert_eq!(raw["data"]["items"][0]["topic_data"], "Parser integration");
+    assert_eq!(
+        raw["data"]["items"][0]["goal_data"],
+        "Organize holiday catering"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT state FROM invitations WHERE id='inv-relevance'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "pending"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM memberships WHERE thread_id='t' AND seat_id='s'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn invitation_relevance_goal_yields_to_bounded_inspection_without_skipping() {
+    // Kills: metadata growth making a previously fitting invitation unreadable,
+    // or a truncated goal masquerading as complete scope.
+    let (store, db) = fixture();
+    db.execute(
+        "UPDATE threads SET goal=?1 WHERE id='t'",
+        ["\u{001b}".repeat(1024)],
+    )
+    .unwrap();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv-bounded','t','s',1,'pending',0,300,300,1)", []).unwrap();
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        let output = OutputSpec {
+            format,
+            ..OutputSpec::default()
+        };
+        let result = query_with_output(
+            &store,
+            "i",
+            &Command::InboxBatch(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                page: PageRequest {
+                    max_bytes: 2048,
+                    ..PageRequest::default()
+                },
+            }),
+            &output,
+            &budget(),
+        )
+        .unwrap();
+        let raw = serde_json::to_value(&result).unwrap();
+        assert_eq!(raw["data"]["items"][0]["invitation"], "inv-bounded");
+        assert!(raw["data"]["items"][0]["goal_data"].is_null(), "{raw}");
+        let encoded = crate::protocol::output::encode_selected(&result, &output).unwrap();
+        assert!(encoded.len() <= 2048);
+        if format == OutputFormat::Text {
+            assert!(
+                String::from_utf8(encoded)
+                    .unwrap()
+                    .contains("inspect: herdr-threads thread show t")
+            );
+        }
+    }
+}
+
+#[test]
 fn inbox_batch_displays_pending_body_and_only_complete_agent_receipt_is_candidate() {
     let (store, db) = fixture();
     bind_query_agent(&db);
@@ -882,18 +969,27 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
     };
     assert_eq!(
         inbox().iter().map(MessageId::as_str).collect::<Vec<_>>(),
-        vec!["warning-clear-full"],
-        "the clear remains until its own verified offer"
+        vec!["warning-open-full", "warning-clear-full"],
+        "a global decision watermark cannot settle uncarried transitions"
     );
     db.execute(
         "UPDATE warning_offer SET offered_through_seq=3 WHERE seat_id='s'",
         [],
     )
     .unwrap();
-    assert!(
-        inbox().is_empty(),
-        "offered open and clear notifications leave the compact inbox"
+    assert_eq!(inbox().len(), 2, "unprojected events remain deliverable");
+    db.execute_batch("INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('warning-open-full','s',1),('warning-clear-full','s',1);").unwrap();
+    let offered = crate::store::attention::notice_offer_page(&db, "s", 1).unwrap();
+    assert_eq!(offered[0].notice.warning.as_str(), "warning-open-full");
+    crate::store::attention::settle_offered_notices(&db, "s", 1, "exec", &offered).unwrap();
+    assert_eq!(
+        inbox().iter().map(MessageId::as_str).collect::<Vec<_>>(),
+        vec!["warning-clear-full"],
+        "only the exact carried open event settles"
     );
+    let offered = crate::store::attention::notice_offer_page(&db, "s", 1).unwrap();
+    crate::store::attention::settle_offered_notices(&db, "s", 1, "exec", &offered).unwrap();
+    assert!(inbox().is_empty(), "both exact carried events leave inbox");
 }
 
 #[test]

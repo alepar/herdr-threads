@@ -1,0 +1,56 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.60s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-d68509100ae355ec)
+
+running 47 tests
+test store::cooperative_checkin_tests::continuity_candidates_ignore_managed_launch_bindings ... ok
+test store::cooperative_checkin_tests::additive_index_wrong_shape_is_rejected_without_replacing_it ... ok
+test store::cooperative_checkin_tests::agent_lifecycle_check_ins_on_own_target_always_replace ... ok
+test store::cooperative_checkin_tests::alternate_uuid_spellings_reject_without_binding_or_operation_changes ... ok
+test store::cooperative_checkin_tests::accept_issuer_freezes_invitation_episode_and_rejects_successor_race ... ok
+test store::cooperative_checkin_tests::cooperative_accept_and_ack_are_explicit_and_preserve_started_deadlines ... ok
+test store::cooperative_checkin_tests::builtin_warning_dedup_recipients_and_successor_have_independent_frontiers ... ok
+test store::cooperative_checkin_tests::canonical_factory_matches_invite_topic_archive_reopen_and_leave_decisions ... ok
+test store::cooperative_checkin_tests::builtin_warning_dedup_open_clear_and_new_episode_are_offered_once ... ok
+test store::cooperative_checkin_tests::builtin_warning_dedup_upgrade_backfills_existing_attributed_transitions ... ok
+test store::cooperative_checkin_tests::builtin_warning_dedup_settles_only_carried_page_and_late_projection ... ok
+test store::cooperative_checkin_tests::cooperative_binding_records_observation_evidence_and_refuses_without_it ... ok
+test store::cooperative_checkin_tests::cooperative_ack_budget_remains_live_during_sqlite_writer_wait ... ok
+test store::cooperative_checkin_tests::current_check_in_never_adopts_a_managed_launch_binding ... ok
+test store::cooperative_checkin_tests::cooperative_operation_reuse_across_control_kinds_is_rejected ... ok
+test store::cooperative_checkin_tests::cooperative_offer_failure_rolls_back_binding_anchor_frontier_and_operation ... ok
+test store::cooperative_checkin_tests::cooperative_send_uses_claim_context_and_keeps_exact_replay ... ok
+test store::cooperative_checkin_tests::budget_cancellation_and_deadline_interrupt_sqlite_begin_without_publication ... ok
+test store::cooperative_checkin_tests::ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced ... ok
+test store::cooperative_checkin_tests::cooperative_fixture_removes_sqlite_artifacts_after_normal_and_panic_drop ... ok
+test store::cooperative_checkin_tests::fixture_directory_lives_until_worker_and_reopened_connections_close ... ok
+test store::cooperative_checkin_tests::expired_permit_after_sqlite_writer_wait_cannot_publish ... ok
+test store::cooperative_checkin_tests::human_lifecycle_check_in_over_cooperative_top_level_binding_is_refused ... ok
+test store::cooperative_checkin_tests::human_check_in_over_a_managed_launch_needs_the_operator ... ok
+test store::cooperative_checkin_tests::human_to_agent_lifecycle_check_in_still_replaces_human_binding ... ok
+test store::cooperative_checkin_tests::historical_accountable_replay_obeys_its_independent_current_call_budget ... ok
+test store::cooperative_checkin_tests::legacy_v1_startup_adds_index_and_preserves_rows_for_bounded_execution_lookup ... ok
+test store::cooperative_checkin_tests::legacy_check_in_result_diagnostic_preserves_digest_conflict_precedence ... ok
+test store::cooperative_checkin_tests::lifecycle_cas_conflict_and_non_uuid_execution_are_rejected ... ok
+test store::cooperative_checkin_tests::lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors ... ok
+test store::cooperative_checkin_tests::lifecycle_generation_exceeds_seat_and_binding_history_maximum ... ok
+test store::cooperative_checkin_tests::dual_budget_final_validation_and_postdecision_outcomes_are_preserved ... ok
+test store::cooperative_checkin_tests::managed_launch_on_an_unbound_seat_opens_an_unregistered_binding ... ok
+test store::cooperative_checkin_tests::mapped_generation_zero_can_issue_cooperative_permit_without_native_attestation ... ok
+test store::cooperative_checkin_tests::operator_human_override_replaces_agent_binding_and_is_audited ... ok
+test store::cooperative_checkin_tests::managed_launch_leaves_an_open_binding_unchanged ... ok
+test store::cooperative_checkin_tests::partial_legacy_context_is_unsupported_without_reconstruction ... ok
+test store::cooperative_checkin_tests::recorded_context_without_disposition_is_presented_from_locked_occupancy ... ok
+test store::cooperative_checkin_tests::decision_rechecks_permit_expiry_retirement_hold_mapping_and_known_invalidation ... ok
+test store::cooperative_checkin_tests::dual_budget_progress_interrupts_validation_and_keeps_writer_reusable ... ok
+test store::cooperative_checkin_tests::replay_metadata_preserves_stored_domain_result_and_selected_output_bounds ... ok
+test store::cooperative_checkin_tests::lifecycle_check_in_replaces_a_managed_launch_binding ... ok
+test store::cooperative_checkin_tests::programmatic_notices_settle_page_by_page_for_the_current_occupant ... ok
+test store::cooperative_checkin_tests::stored_noncanonical_context_replay_is_exact_without_normalizing_history ... ok
+test store::cooperative_checkin_tests::execution_index_rejects_incompatible_key_metadata_without_replacing_it ... ok
+test store::cooperative_checkin_tests::managed_launch_is_refused_when_evidence_differs_from_the_canonical_view ... ok
+test store::cooperative_checkin_tests::independent_current_and_issuance_budgets_stop_accountable_sqlite_waits ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 2616 filtered out; finished in 1.55s
+

@@ -163,7 +163,7 @@ pub fn load_candidate(
     };
     let offer:Option<(i64,String,i64)>=db.query_row("SELECT binding_generation,execution_id,offered_through_seq FROM warning_offer WHERE seat_id=?1",
         [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
-    let warning_offer = offer
+    let mut warning_offer = offer
         .map(|(generation, execution, seq)| {
             Ok(WarningOfferFrontier {
                 generation: nonnegative(generation)?,
@@ -172,6 +172,27 @@ pub fn load_candidate(
             })
         })
         .transpose()?;
+    if warning_offer.is_some() && attention.latest_warning_seq.is_some() {
+        // Informational delivery is exact-page based. A newer, already
+        // covered legacy warning must not hide an older unoffered notice.
+        // One seat-leading indexed probe, then only the bounded attribution
+        // backlog if needed: independent of retained warning history.
+        let mut unoffered = super::attention::seat_has_pending_notices(db, seat.as_str())?;
+        if !unoffered {
+            let backlog = super::attention::warning_backlog(db, seat.as_str(), &|| Ok(()))?;
+            for warning in backlog.items {
+                if super::attention::informational_notice_pending(db, seat.as_str(), &warning.id)?
+                    == Some(true)
+                {
+                    unoffered = true;
+                    break;
+                }
+            }
+        }
+        if unoffered {
+            warning_offer = None;
+        }
+    }
     let latest_warning_seq = attention.latest_warning_seq.map(nonnegative).transpose()?;
     let witness = WakeAttentionWitness::from_complete(
         instance.into(),

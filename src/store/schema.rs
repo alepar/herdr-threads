@@ -60,7 +60,8 @@ const V21: &str = include_str!("../../migrations/0021_invitation_rejections.sql"
 const V22: &str = include_str!("../../migrations/0022_user_message_intent.sql");
 const V23: &str = include_str!("../../migrations/0023_channel_archival.sql");
 const V24: &str = include_str!("../../migrations/0024_harness_contract_diagnostics.sql");
-pub(crate) const LATEST_VERSION: i64 = 24;
+const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sql");
+pub(crate) const LATEST_VERSION: i64 = 25;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -158,6 +159,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V22))
                 .and_then(|_| conn.execute_batch(V23))
                 .and_then(|_| conn.execute_batch(V24))
+                .and_then(|_| conn.execute_batch(V25))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -398,7 +400,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=24 => verify_existing(conn),
+        18..=25 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -491,7 +493,47 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_existing_v24(conn)
+    verify_existing_v24(conn)?;
+    if (1..=24).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V25)
+            .and_then(|_| conn.pragma_update(None, "user_version", 25));
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(store_error(error));
+            }
+        }
+    }
+    verify_existing_v25(conn)
+}
+
+fn verify_existing_v25(conn: &Connection) -> Result<(), ApiError> {
+    let expected = V25
+        .split("\n\n")
+        .find_map(|statement| {
+            let start = statement.find("CREATE TRIGGER ")?;
+            Some(statement[start..].trim().trim_end_matches(';'))
+        })
+        .ok_or_else(|| {
+            api_error(
+                ErrorCode::IncompatibleSchema,
+                "missing warning delivery DDL",
+            )
+        })?;
+    let actual: Option<String> = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='digest_transition_warning_projected'",
+        [], |row| row.get(0),
+    ).optional().map_err(store_error)?;
+    if actual.as_deref().map(str::trim) != Some(expected) {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered warning delivery projection",
+        ));
+    }
+    Ok(())
 }
 
 fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {

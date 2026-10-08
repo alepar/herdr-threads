@@ -1938,6 +1938,574 @@ fn names(notices: &[MessageId]) -> Vec<String> {
     notices.iter().map(|m| m.as_str().to_owned()).collect()
 }
 
+fn drain_warning_dedup_attribution(conn: &mut Connection, clock: &dyn Clock, warning: &MessageId) {
+    while crate::store::materialization::advance_work(
+        conn,
+        &format!("work:{}", warning.as_str()),
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+        &budget(),
+        clock,
+    )
+    .unwrap()
+    .has_more
+    {}
+}
+
+fn open_warning_dedup_invitation(conn: &mut Connection, episode: i64) -> MessageId {
+    let invitation = InvitationId::new(format!("dedup-invitation-{episode}"));
+    let tx = conn.transaction().unwrap();
+    tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,'dedup','s',?2,'pending',0,1,50,50)", rusqlite::params![invitation.as_str(),episode]).unwrap();
+    let outcome = schema::record_overdue_if_pending(
+        &tx,
+        &ObligationRef::Invitation(invitation.clone()),
+        &crate::ports::TimeBasis::Decision,
+        UtcMillis(100),
+    )
+    .unwrap();
+    assert!(outcome.inserted);
+    let replay = schema::record_overdue_if_pending(
+        &tx,
+        &ObligationRef::Invitation(invitation),
+        &crate::ports::TimeBasis::Decision,
+        UtcMillis(100),
+    )
+    .unwrap();
+    assert!(!replay.inserted);
+    assert_eq!(outcome.warning, replay.warning);
+    tx.commit().unwrap();
+    outcome.warning.unwrap()
+}
+
+fn seed_warning_dedup_thread(conn: &Connection) {
+    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('dedup','i','warning dedup','g',0,0,1);").unwrap();
+}
+
+// Kills retaining delivered transitions in the legacy "pending" sources:
+// after enough history they saturate an empty count and make its work grow.
+#[test]
+fn builtin_warning_projection_cleanup_keeps_delivered_history_out_of_pending_walks() {
+    let (store, mut conn, clock, _) = fixture_with_context();
+    seed_warning_dedup_thread(&conn);
+    let first = check_in(&store, lifecycle(claim(), "cleanup-initial")).unwrap();
+    let mut small_work = None;
+    for episode in 1..=1001 {
+        let warning = open_warning_dedup_invitation(&mut conn, episode);
+        drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
+        if episode % 16 == 0 || episode == 1001 {
+            let operation = format!("cleanup-page-{episode}");
+            let offer = check_in(&store, current(&first.context, &operation)).unwrap();
+            assert!(!offer.notices.items.is_empty());
+            assert!(!offer.notices.has_more);
+            let pending =
+                crate::store::attention::seat_pending_warnings(&conn, "s", &|| Ok(())).unwrap();
+            if episode == 16 {
+                small_work = Some(pending.work_steps);
+            }
+            if episode == 1001 {
+                assert_eq!(
+                    pending.count(),
+                    (0, false),
+                    "delivered history must never saturate pending warnings"
+                );
+                assert_eq!(
+                    pending.work_steps,
+                    small_work.unwrap(),
+                    "pending work must stay flat as delivered history grows"
+                );
+            }
+        }
+    }
+    for table in [
+        "messages",
+        "warning_conditions",
+        "warning_recipients",
+        "digest_programmatic_warnings",
+    ] {
+        let count = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count, 1001,
+            "{table} retains immutable event/recipient and delivery history"
+        );
+    }
+}
+
+// Kills dropping another recipient when the first attributed recipient moves
+// the shared transition out of the legacy projection. Backlog attribution,
+// not that legacy parent, keeps the affected recipient's event pending.
+#[test]
+fn builtin_warning_projection_cleanup_preserves_late_independent_recipient() {
+    let (store, mut conn, clock, _) = fixture_with_context();
+    seed_warning_dedup_thread(&conn);
+    conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('observer','i','resolved','native','observer-pane',0,0,0);
+        INSERT INTO memberships(thread_id,seat_id,state) VALUES ('dedup','observer','joined');
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('dedup','observer',1,1);").unwrap();
+    let first = check_in(&store, lifecycle(claim(), "cleanup-initial")).unwrap();
+    let warning = open_warning_dedup_invitation(&mut conn, 1);
+    crate::store::materialization::advance_work(
+        &mut conn,
+        &format!("work:{}", warning.as_str()),
+        crate::ports::DurableWorkAdmission { max_units: 1 },
+        &budget(),
+        clock.as_ref(),
+    )
+    .unwrap();
+    assert!(crate::store::attention::seat_has_pending_notices(&conn, "observer").unwrap());
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM digest_open_warnings WHERE warning_id=?1",
+            [warning.as_str()],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "first attribution removes the legacy parent, preventing trigger-order reinsertion"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM digest_open_warning_recipients WHERE warning_id=?1",
+            [warning.as_str()],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        crate::store::attention::seat_pending_warnings(&conn, "s", &|| Ok(()))
+            .unwrap()
+            .count(),
+        (1, false)
+    );
+    let before = check_in(&store, current(&first.context, "cleanup-before-own-fanout")).unwrap();
+    assert!(before.notices.is_empty());
+    drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
+    assert!(crate::store::attention::seat_has_pending_notices(&conn, "s").unwrap());
+    let after = check_in(&store, current(&first.context, "cleanup-own-fanout")).unwrap();
+    assert_eq!(
+        carried(&after),
+        (names(std::slice::from_ref(&warning)), false)
+    );
+    assert_eq!(
+        crate::store::attention::seat_pending_warnings(&conn, "s", &|| Ok(()))
+            .unwrap()
+            .count(),
+        (0, false)
+    );
+    assert_eq!(
+        crate::store::attention::seat_pending_warnings(&conn, "observer", &|| Ok(()))
+            .unwrap()
+            .count(),
+        (1, false)
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",
+            [warning.as_str()],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+}
+
+// Kills settlement scoped only to service warnings, clearing the historical
+// event instead of its delivery state, and suppression keyed by thread rather
+// than the unique open/clear event. The real overdue writer and fanout worker
+// create the same built-in transition events as production.
+#[test]
+fn builtin_warning_dedup_open_clear_and_new_episode_are_offered_once() {
+    let (store, mut conn, clock, _) = fixture_with_context();
+    seed_warning_dedup_thread(&conn);
+    let first = check_in(&store, lifecycle(claim(), "dedup-initial")).unwrap();
+    let open = open_warning_dedup_invitation(&mut conn, 1);
+    drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &open);
+    let offer = check_in(&store, current(&first.context, "dedup-open")).unwrap();
+    assert_eq!(carried(&offer), (names(std::slice::from_ref(&open)), false));
+    for operation in ["dedup-current-1", "dedup-current-2", "dedup-wake-current"] {
+        let repeated = check_in(&store, current(&first.context, operation)).unwrap();
+        assert!(repeated.notices.is_empty(), "{operation}");
+        assert_eq!(repeated.warning_count, 0, "{operation}");
+    }
+    let tx = conn.transaction().unwrap();
+    tx.execute("UPDATE invitations SET state='recipient_retired',retired_at=100 WHERE id='dedup-invitation-1'", []).unwrap();
+    assert!(
+        schema::clear_warning_condition_for_invitation(&tx, "dedup-invitation-1", UtcMillis(100))
+            .unwrap()
+    );
+    let clear = MessageId::new(
+        tx.query_row(
+            "SELECT clear_warning_id FROM warning_conditions WHERE open_warning_id=?1",
+            [open.as_str()],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    );
+    tx.commit().unwrap();
+    drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &clear);
+    let offer = check_in(&store, current(&first.context, "dedup-clear")).unwrap();
+    assert_eq!(
+        carried(&offer),
+        (names(std::slice::from_ref(&clear)), false)
+    );
+    let repeated = check_in(&store, current(&first.context, "dedup-clear-repeat")).unwrap();
+    assert!(repeated.notices.is_empty());
+    assert_eq!(repeated.warning_count, 0);
+    let next = open_warning_dedup_invitation(&mut conn, 2);
+    assert_ne!(next, open);
+    drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &next);
+    let offer = check_in(&store, current(&first.context, "dedup-new-obligation")).unwrap();
+    assert_eq!(carried(&offer), (names(std::slice::from_ref(&next)), false));
+    let CommandResult::Warnings(history) = crate::store::queries::warnings_in_transaction(
+        &conn,
+        "i",
+        &crate::protocol::commands::WarningsQuery {
+            seat: SeatId::new("s"),
+            page: Default::default(),
+        },
+        &Default::default(),
+    )
+    .unwrap() else {
+        panic!("wrong result")
+    };
+    let ids: Vec<_> = history.items.iter().map(|item| &item.warning).collect();
+    for retained in [&open, &clear, &next] {
+        assert!(ids.contains(&retained));
+    }
+}
+
+// Kills the coarse decision-sequence cutoff: the second page and an event
+// whose attribution lagged the offer must remain deliverable afterward.
+#[test]
+fn builtin_warning_dedup_settles_only_carried_page_and_late_projection() {
+    let (store, mut conn, clock, _) = fixture_with_context();
+    seed_warning_dedup_thread(&conn);
+    let first = check_in(&store, lifecycle(claim(), "dedup-initial")).unwrap();
+    let mut events = Vec::new();
+    for episode in 1..=18 {
+        let warning = open_warning_dedup_invitation(&mut conn, episode);
+        if episode <= 17 {
+            drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
+        }
+        events.push(warning);
+    }
+    let page1 = check_in(&store, current(&first.context, "dedup-page1")).unwrap();
+    assert_eq!(carried(&page1), (names(&events[..16]), true));
+    assert!(crate::store::attention::seat_has_pending_notices(&conn, "s").unwrap());
+    let page2 = check_in(&store, current(&first.context, "dedup-page2")).unwrap();
+    assert_eq!(carried(&page2), (names(&events[16..17]), false));
+    assert!(!crate::store::attention::seat_has_pending_notices(&conn, "s").unwrap());
+    assert_eq!(page2.warning_count, 2);
+    drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &events[17]);
+    assert!(crate::store::attention::seat_has_pending_notices(&conn, "s").unwrap());
+    let late = check_in(&store, current(&first.context, "dedup-late")).unwrap();
+    assert_eq!(carried(&late), (names(&events[17..]), false));
+    let quiet = check_in(&store, current(&first.context, "dedup-quiet")).unwrap();
+    assert!(quiet.notices.is_empty());
+    assert!(!crate::store::attention::seat_has_pending_notices(&conn, "s").unwrap());
+    assert_eq!(quiet.warning_count, 0);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM messages WHERE thread_id='dedup' AND kind='warn'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        18
+    );
+}
+
+// Kills delivery state shared across recipients, and verifies that replacing
+// the occupant retains the existing per-binding informational replay model.
+#[test]
+fn builtin_warning_dedup_recipients_and_successor_have_independent_frontiers() {
+    let (store, mut conn, clock, _) = fixture_with_context();
+    seed_warning_dedup_thread(&conn);
+    conn.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('observer','i','resolved','native','observer-pane',0,0,0);
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','observer-pane','b',1,0,1,'fresh','unknown','unknown',0,0,'observer-terminal','inc','coherent_enumeration',1);
+        INSERT INTO memberships(thread_id,seat_id,state) VALUES ('dedup','observer','joined');
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('dedup','observer',1,1);").unwrap();
+    let a = check_in(&store, lifecycle(claim(), "dedup-a")).unwrap();
+    let mut observer = claim();
+    observer.seat = SeatId::new("observer");
+    observer.target = HostTargetId::new("observer-pane");
+    observer.execution = ExecutionId::new("00000000-0000-4000-8000-000000000099");
+    let b = check_in(&store, lifecycle(observer, "dedup-b")).unwrap();
+    let warning = open_warning_dedup_invitation(&mut conn, 1);
+    drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
+    let offered = check_in(&store, current(&a.context, "dedup-a-offer")).unwrap();
+    assert_eq!(
+        carried(&offered),
+        (names(std::slice::from_ref(&warning)), false)
+    );
+    assert_eq!(
+        crate::store::attention::seat_pending_warnings(&conn, "observer", &|| Ok(()))
+            .unwrap()
+            .count(),
+        (1, false)
+    );
+    let offered = check_in(&store, current(&b.context, "dedup-b-offer")).unwrap();
+    assert_eq!(
+        carried(&offered),
+        (names(std::slice::from_ref(&warning)), false)
+    );
+    for (context, operation) in [(&a.context, "dedup-a-again"), (&b.context, "dedup-b-again")] {
+        let repeated = check_in(&store, current(context, operation)).unwrap();
+        assert!(repeated.notices.is_empty());
+        assert_eq!(repeated.warning_count, 0);
+    }
+    let mut successor = a.context.clone();
+    successor.execution = ExecutionId::new("00000000-0000-4000-8000-000000000098");
+    let replaced = check_in(&store, lifecycle(successor, "dedup-successor")).unwrap();
+    assert_eq!(
+        carried(&replaced),
+        (names(std::slice::from_ref(&warning)), false)
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",
+            [warning.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+}
+
+// Kills a migration that updates only the new-event trigger: already recorded
+// canonical built-in events must gain delivery rows without deleting history.
+#[test]
+fn builtin_warning_dedup_upgrade_backfills_existing_attributed_transitions() {
+    let (store, mut conn, clock, _) = fixture_with_context();
+    seed_warning_dedup_thread(&conn);
+    let first = check_in(&store, lifecycle(claim(), "dedup-initial")).unwrap();
+    let warning = open_warning_dedup_invitation(&mut conn, 1);
+    drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
+    conn.execute_batch(
+        "DROP TRIGGER digest_transition_warning_projected;
+        DELETE FROM digest_programmatic_warnings;
+        INSERT OR IGNORE INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id) SELECT 'job',ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id FROM warning_jobs;
+        INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT wr.seat_id,d.warning_id,d.thread_id,d.source,d.source_ordinal FROM digest_open_warnings d JOIN warning_recipients wr ON wr.warning_id=d.warning_id;
+        PRAGMA user_version=24;",
+    )
+    .unwrap();
+    schema::initialize(&conn, || UtcMillis(100)).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM digest_open_warnings WHERE warning_id=?1",
+            [warning.as_str()],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "upgrade removes backfilled canonical transitions from legacy pending walks"
+    );
+    let upgraded = check_in(&store, current(&first.context, "dedup-upgraded")).unwrap();
+    assert_eq!(
+        carried(&upgraded),
+        (names(std::slice::from_ref(&warning)), false)
+    );
+    let repeated = check_in(&store, current(&first.context, "dedup-upgraded-repeat")).unwrap();
+    assert!(repeated.notices.is_empty());
+    assert_eq!(repeated.warning_count, 0);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM warning_conditions WHERE open_warning_id=?1",
+            [warning.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    conn.execute_batch("DROP TRIGGER digest_transition_warning_projected;")
+        .unwrap();
+    assert_eq!(
+        schema::initialize(&conn, || UtcMillis(100))
+            .unwrap_err()
+            .code,
+        ErrorCode::IncompatibleSchema
+    );
+}
+
+// Kills wake selection that treats a global check-in decision watermark as
+// evidence a still-unprojected (or late-projected) notice was carried.
+#[test]
+fn builtin_warning_dedup_wake_keeps_unprojected_and_late_projected_events() {
+    let (store, mut conn, clock, _) = fixture_with_context();
+    seed_warning_dedup_thread(&conn);
+    let first = check_in(&store, lifecycle(claim(), "dedup-initial")).unwrap();
+    let warning = open_warning_dedup_invitation(&mut conn, 1);
+    assert!(!crate::store::attention::seat_has_pending_notices(&conn, "s").unwrap());
+    let empty_offer = check_in(&store, current(&first.context, "dedup-before-fanout")).unwrap();
+    assert!(empty_offer.notices.is_empty());
+    assert!(!crate::store::attention::seat_has_pending_notices(&conn, "s").unwrap());
+    let candidates = StorePort::wake_candidates(&*store, Default::default(), &budget()).unwrap();
+    let candidate = candidates
+        .items
+        .iter()
+        .find(|candidate| candidate.seat.as_str() == "s")
+        .unwrap();
+    assert!(candidate.actionable_warning_seq.is_some());
+    assert!(
+        !candidate.warning_offered_for_current_occupant(),
+        "unprojected event was not carried"
+    );
+    let attention_before: i64 = conn
+        .query_row(
+            "SELECT COALESCE((SELECT attention_version FROM wake_work WHERE seat_id='s'),0)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
+    assert!(crate::store::attention::seat_has_pending_notices(&conn, "s").unwrap());
+    let attention_after: i64 = conn
+        .query_row(
+            "SELECT COALESCE((SELECT attention_version FROM wake_work WHERE seat_id='s'),0)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        attention_after > attention_before,
+        "late exact-pending attribution must kick wake work"
+    );
+    let candidates = StorePort::wake_candidates(&*store, Default::default(), &budget()).unwrap();
+    let candidate = candidates
+        .items
+        .iter()
+        .find(|candidate| candidate.seat.as_str() == "s")
+        .unwrap();
+    assert!(
+        !candidate.warning_offered_for_current_occupant(),
+        "late projection must stay deliverable"
+    );
+    let carried_offer = check_in(&store, current(&first.context, "dedup-after-fanout")).unwrap();
+    assert_eq!(
+        carried(&carried_offer),
+        (names(std::slice::from_ref(&warning)), false)
+    );
+    assert!(!crate::store::attention::seat_has_pending_notices(&conn, "s").unwrap());
+    let candidates = StorePort::wake_candidates(&*store, Default::default(), &budget()).unwrap();
+    let candidate = candidates
+        .items
+        .iter()
+        .find(|candidate| candidate.seat.as_str() == "s")
+        .unwrap();
+    assert!(candidate.actionable_warning_seq.is_none());
+    assert!(candidate.has_pending_invitation);
+    assert!(candidate.has_actionable_work());
+}
+
+// Kills a wake bypass that checks only the newest warning: an older pending
+// informational event must survive a newer coarsely offered legacy warning.
+#[test]
+fn builtin_warning_dedup_wake_older_notice_survives_newer_covered_legacy_warning() {
+    let (store, mut conn, clock, _) = fixture_with_context();
+    seed_warning_dedup_thread(&conn);
+    let first = check_in(&store, lifecycle(claim(), "dedup-initial")).unwrap();
+    let warning = open_warning_dedup_invitation(&mut conn, 1);
+    let tx = conn.transaction().unwrap();
+    tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('legacy-invitation','dedup','s',2,'pending',0,1,50,50)",[]).unwrap();
+    let (legacy, inserted) = schema::append_event_once(
+        &tx,
+        schema::EventInput {
+            thread: &ThreadId::new("dedup"),
+            key: "legacy-warning",
+            kind: "warn",
+            payload_json: r#"{"event":"overdue"}"#,
+            decision_at: UtcMillis(100),
+            source_message: None,
+            source_invitation: Some(&InvitationId::new("legacy-invitation")),
+        },
+    )
+    .unwrap();
+    assert!(inserted);
+    let seq: i64 = tx
+        .query_row(
+            "SELECT decision_seq FROM messages WHERE id=?1",
+            [legacy.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    tx.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,status,phase) VALUES (?1,?2,'dedup',0,'s','invitation','legacy-invitation','complete','complete')",rusqlite::params![legacy.as_str(),seq]).unwrap();
+    tx.execute(
+        "INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES (?1,'s',?2)",
+        rusqlite::params![legacy.as_str(), seq],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    check_in(&store, current(&first.context, "dedup-legacy-covered")).unwrap();
+    for projected in [false, true] {
+        if projected {
+            drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
+        }
+        let candidates =
+            StorePort::wake_candidates(&*store, Default::default(), &budget()).unwrap();
+        let candidate = candidates
+            .items
+            .iter()
+            .find(|candidate| candidate.seat.as_str() == "s")
+            .unwrap();
+        assert_eq!(candidate.actionable_warning_seq, Some(seq as u64));
+        assert!(
+            !candidate.warning_offered_for_current_occupant(),
+            "projected={projected}"
+        );
+    }
+    check_in(
+        &store,
+        current(&first.context, "dedup-informational-carried"),
+    )
+    .unwrap();
+    let candidates = StorePort::wake_candidates(&*store, Default::default(), &budget()).unwrap();
+    let candidate = candidates
+        .items
+        .iter()
+        .find(|candidate| candidate.seat.as_str() == "s")
+        .unwrap();
+    assert_eq!(candidate.actionable_warning_seq, Some(seq as u64));
+    assert!(
+        candidate.warning_offered_for_current_occupant(),
+        "legacy-only cutoff is preserved"
+    );
+}
+
+// Kills delivery that requires a physical messages row: published unavailable
+// warnings retain their manifest-backed identity before physical projection.
+#[test]
+fn builtin_warning_dedup_manifest_backed_transition_is_carried_without_message_row() {
+    let (store, conn, _, _) = fixture_with_context();
+    seed_warning_dedup_thread(&conn);
+    let first = check_in(&store, lifecycle(claim(), "dedup-initial")).unwrap();
+    conn.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('manifest','i','actor','op',zeroblob(32),'dedup',0,0,0,0,0,0,1,'sealed');
+        INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('manifest','dedup','s',1,300,0);
+        INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('manifest','manifest-key','manifest-warning','s',1,1,'{\"event\":\"unavailable\"}');
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('manifest-message','i','dedup',1,'ordinary','s','b',100,10);
+        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('manifest','manifest-message','i','dedup',10,100,1,0,1,1);
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,episode,open_warning_id,opened_seq) VALUES ('unavailable','dedup','manifest-key','s',1,'manifest-warning',10);
+        INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('manifest-warning','s',10);
+        UPDATE host_instances SET decision_seq=10 WHERE id='i';
+        UPDATE threads SET next_sequence=3 WHERE id='dedup';").unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM messages WHERE id='manifest-warning'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let offer = check_in(&store, current(&first.context, "dedup-manifest-offer")).unwrap();
+    assert_eq!(carried(&offer), (vec!["manifest-warning".into()], false));
+    assert_eq!(offer.notices.items[0].sequence, 2);
+    let repeated = check_in(&store, current(&first.context, "dedup-manifest-repeat")).unwrap();
+    assert!(repeated.notices.is_empty());
+    assert_eq!(repeated.warning_count, 0);
+}
+
 // Wave-2 fix2 root decision (a), through the real check-in writer: settlement
 // is the occupant-scoped monotone offered frontier. Each committed offer
 // (Current or lifecycle) carries the capped page of the oldest notices above
@@ -1986,13 +2554,21 @@ fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
     let offer = check_in(&store, current(&first.context, "current-3")).unwrap();
     assert_eq!(carried(&offer), (vec![], false));
     assert_eq!(pending_notices(&conn), ((0, false), 20));
-    // Every notice, settled or not, stays in the offer's warning history.
-    let history: Vec<&str> = offer
-        .warnings
-        .items
-        .iter()
-        .map(|w| w.warning.as_str())
-        .collect();
+    // Settled history is available explicitly, never repeated in fresh offers.
+    assert!(offer.warnings.items.is_empty());
+    let CommandResult::Warnings(history) = crate::store::queries::warnings_in_transaction(
+        &conn,
+        "i",
+        &crate::protocol::commands::WarningsQuery {
+            seat: SeatId::new("s"),
+            page: Default::default(),
+        },
+        &Default::default(),
+    )
+    .unwrap() else {
+        panic!("wrong result")
+    };
+    let history: Vec<&str> = history.items.iter().map(|w| w.warning.as_str()).collect();
     for notice in &all {
         assert!(history.contains(&notice.as_str()), "{history:?}");
     }

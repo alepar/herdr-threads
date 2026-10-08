@@ -1,0 +1,11 @@
+nice: setpriority: Operation not permitted
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.53s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-d68509100ae355ec)
+
+running 2 tests
+test store::connection::tests::task3_versionless_schema24_upgrades_preserves_history_and_audits_objects ... ok
+test store::connection::tests::task3_versionless_schema24_rejects_altered_table_and_missing_index ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2665 filtered out; finished in 0.14s
+

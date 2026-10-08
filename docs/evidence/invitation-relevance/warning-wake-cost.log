@@ -1,0 +1,16 @@
+nice: setpriority: Operation not permitted
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.81s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-d68509100ae355ec)
+
+running 7 tests
+test store::discovery_cost::every_access_path_prepares_indexed_by ... ok
+test store::discovery_cost_tests::pre_change_work_cursor_still_validates ... ok
+test store::discovery_cost_tests::recovery_walk_is_flat_in_retired_and_unreserved_rows ... ok
+test store::discovery_cost_tests::observation_walk_is_flat_in_retired_seats_and_superseded_generations ... ok
+test store::discovery_cost_tests::work_discovery_is_flat_in_completed_jobs ... ok
+test store::discovery_cost::wake_discovery_scales_with_live_seats_only ... ok
+test store::discovery_cost::wake_discovery_is_flat_in_settled_history ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 2660 filtered out; finished in 0.38s
+

@@ -1,0 +1,42 @@
+nice: setpriority: Operation not permitted
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-d68509100ae355ec)
+
+running 34 tests
+test store::wake_tests::legacy_wake_cursor_is_invalid_cursor ... ok
+test store::wake_tests::batch_window_ignores_human_waived_receipts_and_clears_last_required_waiver ... ok
+test store::wake_tests::durable_batch_window_enumeration_pages_only_retained_windows ... ok
+test store::wake_tests::cooperative_wake_requires_an_open_binding ... ok
+test store::wake_tests::fence_miss_restores_nothing_and_keeps_the_advanced_step ... ok
+test store::wake_tests::human_bound_seat_with_pending_acks_is_never_a_wake_candidate ... ok
+test store::wake_tests::completion_cas_ignores_old_attempt_and_releases_matching_attempt_without_losing_history ... ok
+test store::wake_tests::human_bound_seat_never_in_a_candidate_page ... ok
+test store::wake_tests::durable_batch_uses_oldest_saturated_publication_and_clears_when_work_drains ... ok
+test store::wake_tests::cooperative_reservation_carries_bound_harness ... ok
+test store::wake_tests::human_bound_seat_with_agent_in_pane_gets_no_wake_authority ... ok
+test store::wake_tests::canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window ... ok
+test store::wake_tests::pending_invitation_is_a_wake_candidate_before_work_row_projection ... ok
+test store::wake_tests::non_refused_completions_ignore_a_supplied_restore_and_report_no_match ... ok
+test store::wake_tests::matching_completion_records_submitted_and_retains_zero_reason_history ... ok
+test store::wake_tests::managed_launch_binding_reserves_a_cooperative_wake ... ok
+test store::wake_tests::recovery_page_includes_retired_zero_reason_attempt_without_stealing_current_boot ... ok
+test store::wake_tests::recovery_walk_equals_the_old_walk ... ok
+test store::wake_tests::recognized_idle_unregistered_occupant_gets_recovery_hint_reservation ... ok
+test store::wake_tests::multi_page_recovery_walk_round_trips_its_cursor ... ok
+test store::wake_tests::refused_completion_of_a_different_boot_matches_nothing ... ok
+test store::wake_tests::reservation_after_a_decision_commit_is_refused ... ok
+test store::wake_tests::second_published_receipt_advances_wake_frontier_before_projection ... ok
+test store::wake_tests::unresolved_recovery_hold_blocks_candidate_continuity_even_with_fresh_target ... ok
+test store::wake_tests::old_boot_recovery_is_exact_preserves_history_and_cannot_clear_successor ... ok
+test store::wake_tests::seat_mid_reservation_when_it_settles_is_reached_by_recovery ... ok
+test store::wake_tests::trailing_retired_seats_do_not_leave_a_dangling_cursor ... ok
+test store::wake_tests::wake_candidate_finds_unprojected_manifest_receipt_and_warning ... ok
+test store::wake_tests::settled_seat_leaves_the_page_and_keeps_its_wake_work_row ... ok
+test store::wake_tests::wake_candidate_is_found_past_one_hundred_settled_receipts ... ok
+test store::wake_tests::reservation_persists_daemon_boot_attempt_and_delay_then_ignores_late_completion ... ok
+test store::wake_tests::wake_page_requires_its_complete_encoded_page_budget ... ok
+test store::wake_tests::refused_completion_restores_the_prior_ladder_in_the_fenced_update ... ok
+test store::wake_tests::unverified_execution_gets_structural_cooperative_reservation ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 2632 filtered out; finished in 1.00s
+
