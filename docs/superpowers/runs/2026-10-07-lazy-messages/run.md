@@ -50,7 +50,7 @@ codeBuckets:
   worktreesKept:
   processSweep: stopped 0 · survived 0
 roastCodeRound: 2
-roast-code: 2026-10-07-lazy-messages-roast-pr-1.md
+roast-code: 2026-10-07-lazy-messages-roast-pr-1.md, 2026-10-07-lazy-messages-roast-pr-2.md
 stepBackCode-round-1: patch — preserve invocation context consistently across continuations; independent payload/batching/proof-retention claims.
 scopeFilter-round-1: [Blocking] src/store/queries.rs:5959 in-scope — Blocking, always in-scope
 scopeFilter-round-1: [Should-fix] src/cli/mod.rs:2057; src/store/queries.rs:5959 in-scope — Incorrect behavior in the goal-named explicit inbox path: the supplied human continuation prevents the originating participant from completing the displayed announcement body.
@@ -58,3 +58,5 @@ scopeFilter-round-1: [Should-fix] src/protocol/output_compact.rs:77; src/protoco
 scopeFilter-round-1: [Should-fix] src/cli/follow.rs:813 punch-list — Batching delivery-mode lookups in human follow is a performance improvement outside the goal-named natural explicit inbox delivery behavior, with no correctness defect established.
 scopeFilter-round-1: [Nit] src/cli/journal.rs:688 punch-list — Bounded cleanup of abandoned local display proofs is extra hardening; the finding establishes retained files and scan work, not incorrect delivery or violation of the goal's attention boundary.
 scope-filter: 2 in-scope · 3 punch-listed
+roastCodeExit: thrash
+roastCodeCapped: [Blocking] src/store/queries.rs:5720 · 2026-10-07-lazy-messages-roast-pr-2.md · operator disposition of bounded-loop exit before further source fixes; main retains landing/release gates
