@@ -1,7 +1,7 @@
 # Hermes experimental adapter
 
 The adapter, owned Python plugin and bounded driver are implemented and tested with
-source-shaped synthetic APIs. Two live native runs (2026-10-08, Hermes 0.21.5, private
+source-shaped synthetic APIs. Three live native runs (2026-10-08, Hermes 0.21.5, private
 modified Herdr) passed setup, launch, recognition, context delivery (including a
 turn driven by context alone), model accept/inbox/read/ACK, relaunch, child
 restriction and reset; see
