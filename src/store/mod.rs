@@ -8,6 +8,7 @@ pub mod effective;
 pub mod handoff;
 pub mod harness_evidence;
 pub mod invitation_due;
+pub mod lazy_delivery;
 pub mod materialization;
 pub mod messages;
 pub mod operator;
