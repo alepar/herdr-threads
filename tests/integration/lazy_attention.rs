@@ -131,6 +131,9 @@ impl Fixture {
             relays_user: false,
             user_intent: None,
         };
+        self.publish(request)
+    }
+    fn publish(&self, request: SendMessage) -> MessageId {
         for _ in 0..100 {
             if matches!(
                 self.store
@@ -289,6 +292,122 @@ fn execution(seat: &str) -> &'static str {
 fn offer_attention(offer: &CheckInResult) -> serde_json::Value {
     // Binding generations may advance on startup; actionable offer must not.
     serde_json::json!({"count":offer.warning_count,"more":offer.warning_count_has_more,"inbox":offer.inbox,"warnings":offer.warnings,"notices":offer.notices})
+}
+
+fn parsed_send(f: &Fixture, words: Vec<String>, operation: &str) -> SendMessage {
+    use herdr_threads::cli::commands::{CliAction, parse_argv};
+    let parsed = parse_argv(words).unwrap();
+    let CliAction::Mutation(spec) = parsed.action else {
+        panic!("expected send mutation")
+    };
+    let Command::SendMessage(send) = spec
+        .into_command(Some(f.claim("author")), OperationId::new(operation))
+        .unwrap()
+    else {
+        panic!("expected send command")
+    };
+    send
+}
+
+/// Catches a shipped coordination-reply recipe selecting passive delivery
+/// despite promising hook notification. Run the compiled guide, parse its
+/// actual recipe, and publish it through the canonical store, not a prose snapshot.
+#[test]
+fn guide_daily_loop_reply_creates_notification_attention() {
+    let mut output = Vec::new();
+    herdr_threads::cli::run_in_pane(["herdr-threads", "skill"], None, &mut output).unwrap();
+    let guide = String::from_utf8(output).unwrap();
+    let daily = guide
+        .split_once("## Daily loop (top-level agent)")
+        .unwrap()
+        .1;
+    let recipe = daily
+        .split_once("```bash\n")
+        .unwrap()
+        .1
+        .split_once("```")
+        .unwrap()
+        .0
+        .lines()
+        .find(|line| line.starts_with("herdr-threads send "))
+        .expect("coordination reply recipe");
+    let words = shlex::split(recipe.split('#').next().unwrap()).unwrap();
+    let words = words
+        .into_iter()
+        .map(|word| if word == "THREAD" { "t".into() } else { word })
+        .collect();
+    let f = Fixture::new();
+    let request = parsed_send(&f, words, "guide-reply");
+    let mode = request.delivery_mode;
+    let id = f.publish(request);
+    assert!(
+        attention::wake_seat_attention(&f.db, "agent")
+            .unwrap()
+            .attention
+            .has_pending_receipt,
+        "compiled daily-loop recipe selected {mode:?} and created no recipient receipt attention: {recipe}"
+    );
+    assert!(
+        f.store
+            .wake_candidates(PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .iter()
+            .any(|candidate| candidate.has_actionable_work()),
+        "coordination reply must be eligible for ordinary wake"
+    );
+    assert!(f.inbox("agent").is_empty(), "{id:?} must not be lazy mail");
+}
+
+/// Catches the parser adding attention to a bare announcement or failing
+/// to promote an explicit receipt request through the real publication path.
+#[test]
+fn guide_send_passive_and_explicit_receipt_controls() {
+    for (options, ordinary) in [
+        (vec![], false),
+        (vec!["--lazy"], false),
+        (vec!["--nudge"], true),
+        (vec!["--require-ack", "agent"], true),
+    ] {
+        let f = Fixture::new();
+        let mut words = vec!["herdr-threads", "send", "t", "--body", "announcement"];
+        words.extend(options);
+        let request = parsed_send(
+            &f,
+            words.into_iter().map(str::to_owned).collect(),
+            "control",
+        );
+        let id = f.publish(request);
+        if ordinary {
+            assert!(
+                attention::wake_seat_attention(&f.db, "agent")
+                    .unwrap()
+                    .attention
+                    .has_pending_receipt
+            );
+            assert!(
+                f.store
+                    .wake_candidates(PageRequest::default(), &budget())
+                    .unwrap()
+                    .items
+                    .iter()
+                    .any(|candidate| candidate.has_actionable_work())
+            );
+        } else {
+            f.assert_passive();
+            assert_eq!(f.inbox("agent").as_slice(), std::slice::from_ref(&id));
+            f.mutate(PermitMutation::CompleteInboxDelivery(
+                CompleteInboxDelivery {
+                    messages: vec![id],
+                    operation: OperationId::new("display-complete"),
+                    claim: f.claim("agent"),
+                },
+            ))
+            .unwrap();
+            assert!(f.inbox("agent").is_empty());
+            f.assert_passive();
+        }
+    }
 }
 
 /// Catches lazy publication making a quiet joined thread Recent, replacing
