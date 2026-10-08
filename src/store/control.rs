@@ -1245,7 +1245,29 @@ pub fn create_thread(
     conn: &mut Connection,
     budget: &CallBudget,
     command: &CreateThread,
+    permit: MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    create_thread_impl(context, conn, budget, command, permit, None)
+}
+/// Bootstrap CREATE seam. `canonical` must come from the daemon's independently
+/// selected InstancePaths; this adds no wire mode or runtime admission.
+pub fn create_thread_in_namespace(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    command: &CreateThread,
+    permit: MutationPermit,
+    canonical: &crate::protocol::handoff::HandoffNamespace,
+) -> Result<CommandResult, ApiError> {
+    create_thread_impl(context, conn, budget, command, permit, Some(canonical))
+}
+fn create_thread_impl(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    command: &CreateThread,
     mut permit: MutationPermit,
+    canonical: Option<&crate::protocol::handoff::HandoffNamespace>,
 ) -> Result<CommandResult, ApiError> {
     if command.topic.is_empty() || command.topic.len() > 1024 || command.goal.len() > 1024 {
         return Err(api_error(
@@ -1293,6 +1315,16 @@ pub fn create_thread(
                     |r| r.get(0),
                 )
                 .map_err(store_error)?;
+            if let Some(canonical) = canonical {
+                super::topology_handoff::validate_create_command(tx, canonical, command)?;
+            } else {
+                super::topology_handoff::guard_unscoped_create(
+                    tx,
+                    &instance,
+                    &scope,
+                    command.operation.as_str(),
+                )?;
+            }
             let thread = ThreadId::new(crate::store::public_ids::fresh(
                 tx,
                 prefix::THREAD,
@@ -1304,13 +1336,24 @@ pub fn create_thread(
             // Attach protection in this exact CREATE transaction. Historical
             // pre-fence CREATE results are reconciled by Begin/import instead.
             if super::handoff::installed(tx)? {
-                super::handoff::attach_created(
-                    tx,
-                    &instance,
-                    &scope,
-                    command.operation.as_str(),
-                    &thread,
-                )?;
+                if let Some(canonical) = canonical {
+                    super::topology_handoff::attach_created(
+                        tx,
+                        canonical,
+                        &instance,
+                        &scope,
+                        command.operation.as_str(),
+                        &thread,
+                    )?;
+                } else {
+                    super::handoff::attach_created(
+                        tx,
+                        &instance,
+                        &scope,
+                        command.operation.as_str(),
+                        &thread,
+                    )?;
+                }
             }
             tx.execute("INSERT INTO memberships(thread_id, seat_id, state, joined_at) VALUES (?1,?2,'joined',?3)",
                 params![thread.as_str(), seat.as_str(), decision.utc.0]).map_err(store_error)?;

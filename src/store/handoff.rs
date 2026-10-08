@@ -178,6 +178,15 @@ pub fn begin_pending(
     identity: &HandoffIdentity,
     now: UtcMillis,
 ) -> Result<HandoffResult, ApiError> {
+    super::topology_handoff::guard_child_begin(tx, identity)?;
+    begin_pending_impl(tx, identity, now)
+}
+
+pub(crate) fn begin_pending_impl(
+    tx: &Transaction<'_>,
+    identity: &HandoffIdentity,
+    now: UtcMillis,
+) -> Result<HandoffResult, ApiError> {
     if let Some(mut result) = current(tx, identity)? {
         if result.state == HandoffState::Completed {
             return Ok(result);
@@ -209,7 +218,29 @@ pub fn begin_pending(
     })
 }
 
+/// Explicit daemon-selected namespace seam for a newly linked child. Public
+/// activation must pass its actual InstancePaths, never the retained parent.
+pub fn begin_linked_pending(
+    tx: &Transaction<'_>,
+    canonical: &crate::protocol::handoff::HandoffNamespace,
+    identity: &HandoffIdentity,
+    now: UtcMillis,
+) -> Result<HandoffResult, ApiError> {
+    super::topology_handoff::guard_linked_begin(tx, canonical, identity)?;
+    begin_pending_impl(tx, identity, now)
+}
+
 pub fn complete_pending(
+    tx: &Transaction<'_>,
+    identity: &HandoffIdentity,
+    now: UtcMillis,
+) -> Result<HandoffResult, ApiError> {
+    super::topology_handoff::guard_bare_completion(tx, identity)?;
+    complete_linked_child(tx, identity, now)
+}
+
+/// Internal wrapper seam; the caller validates and completes both linked fences.
+pub(crate) fn complete_linked_child(
     tx: &Transaction<'_>,
     identity: &HandoffIdentity,
     now: UtcMillis,
@@ -252,6 +283,7 @@ pub fn import_hint(
         }
         return Ok(result);
     }
+    super::topology_handoff::guard_child_begin(tx, identity)?;
     let created = recorded_create(tx, identity)?;
     let thread = identity
         .thread
@@ -289,6 +321,16 @@ pub fn import_hint(
 /// Called by CREATE inside its deciding transaction. Exact scoped keys couple
 /// the new channel to protection with no crash window after the channel exists.
 pub fn attach_created(
+    tx: &Transaction<'_>,
+    instance: &str,
+    actor_scope: &str,
+    create_key: &str,
+    thread: &ThreadId,
+) -> Result<(), ApiError> {
+    super::topology_handoff::guard_unscoped_create(tx, instance, actor_scope, create_key)?;
+    attach_created_legacy(tx, instance, actor_scope, create_key, thread)
+}
+pub(crate) fn attach_created_legacy(
     tx: &Transaction<'_>,
     instance: &str,
     actor_scope: &str,

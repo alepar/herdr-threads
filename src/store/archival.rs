@@ -186,7 +186,8 @@ fn cheap_blocker(
  OR EXISTS(SELECT 1 FROM catch_up WHERE thread_id=?2 AND state='active')
  OR EXISTS(SELECT 1 FROM summary_jobs WHERE thread_id=?2 AND block_id IS NULL AND lease_token IS NOT NULL AND lease_until>?3)
  OR EXISTS(SELECT 1 FROM channel_handoff_fences WHERE thread_id=?2 AND state='live')
- OR EXISTS(SELECT 1 FROM channel_handoff_fences WHERE instance_id=?1 AND thread_id IS NULL AND state='live')",params![instance,thread,now],|r|r.get(0)).map_err(store_error)
+ OR EXISTS(SELECT 1 FROM channel_handoff_fences WHERE instance_id=?1 AND thread_id IS NULL AND state='live')
+ OR EXISTS(SELECT 1 FROM bootstrap_handoffs WHERE instance_id=?1 AND (thread_id=?2 OR thread_id IS NULL) AND state NOT IN ('completed','cancelled'))",params![instance,thread,now],|r|r.get(0)).map_err(store_error)
 }
 
 fn advance_channel(

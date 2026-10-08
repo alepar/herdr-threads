@@ -1270,6 +1270,80 @@ impl OrdinaryResolutionGuard {
         &self.operation
     }
 }
+/// One qualified pane.get response and its structural workspace/tab fields.
+/// The native integration must construct this from the SAME response as the
+/// observation, never labels, a cached scan or frozen creation evidence.
+#[derive(Debug)]
+pub struct BootstrapPaneObservation {
+    observation: HostObservation,
+    workspace: HostTargetId,
+    tab: HostTargetId,
+}
+impl BootstrapPaneObservation {
+    /// Publish this same response before deriving its canonical attachment guard.
+    pub fn observation(&self) -> &HostObservation {
+        &self.observation
+    }
+
+    // Inert until the native pane.get producer is wired by daemon integration.
+    #[allow(dead_code)]
+    pub(crate) fn try_new(
+        observation: HostObservation,
+        workspace: HostTargetId,
+        tab: HostTargetId,
+    ) -> Result<Self, &'static str> {
+        let prefix = format!("{}:", workspace.as_str());
+        if observation.provenance != ObservationProvenance::FreshCurrentTarget
+            || observation.verified_structural_proof().is_none()
+            || workspace.as_str().is_empty()
+            || workspace.as_str().contains(':')
+            || !observation.target.as_str().starts_with(&prefix)
+            || !tab.as_str().starts_with(&prefix)
+            || tab == observation.target
+        {
+            return Err("bootstrap requires qualified same-response pane scope");
+        }
+        Ok(Self {
+            observation,
+            workspace,
+            tab,
+        })
+    }
+}
+/// Sealed fresh tab-scope evidence paired to the exact ordinary resolution
+/// proof and admission. It confers no seat allocation or receipt authority.
+#[derive(Debug)]
+pub struct BootstrapAttachmentGuard {
+    ordinary: OrdinaryResolutionGuard,
+    workspace: HostTargetId,
+    tab: HostTargetId,
+}
+impl BootstrapAttachmentGuard {
+    // The public route remains inert until the native producer is wired.
+    #[allow(dead_code)]
+    pub(crate) fn try_new(
+        request: &ResolveSeat,
+        pane: BootstrapPaneObservation,
+        admission: &HostObservationAdmission,
+    ) -> Result<Self, &'static str> {
+        let ordinary = OrdinaryResolutionGuard::try_new(request, pane.observation, admission)?;
+        Ok(Self {
+            ordinary,
+            workspace: pane.workspace,
+            tab: pane.tab,
+        })
+    }
+    pub fn ordinary(&self) -> &OrdinaryResolutionGuard {
+        &self.ordinary
+    }
+    pub fn workspace(&self) -> &HostTargetId {
+        &self.workspace
+    }
+    pub fn tab(&self) -> &HostTargetId {
+        &self.tab
+    }
+}
+
 #[derive(Debug)]
 // Allowed: a transient per-resolution value; boxing the guard would change the port API.
 #[allow(clippy::large_enum_variant)]
@@ -3377,6 +3451,65 @@ mod allocation_tests {
             OperatorRequest::OrphanInvite(orphan),
             OperatorRequest::OrphanInvite(..)
         ));
+    }
+
+    #[test]
+    fn bootstrap_pane_scope_requires_qualified_same_response_structure() {
+        let mut observation = operator_observation("w1:p2");
+        observation.terminal = Some(TerminalId::new("terminal"));
+        observation.observation_sequence = 1;
+        observation.incarnation = IncarnationEvidence::Verified {
+            identity: "inc".into(),
+            evidence_kind: EvidenceKind::NativeCurrentTarget,
+        };
+        let request = ResolveSeat {
+            target: HostTargetId::new("w1:p2"),
+            operation: OperationId::new("resolve"),
+        };
+        let admission = HostObservationAdmission {
+            instance: "i".into(),
+            sequence: 1,
+            expected_active: None,
+            expected_boot: Some(HostBootId::new("b1")),
+            expected_epoch: 4,
+            lifecycle_revision: 0,
+            invalidation_revision: 0,
+        };
+        for change in [
+            "valid",
+            "workspace",
+            "tab",
+            "target",
+            "terminal",
+            "cache",
+            "unknown",
+        ] {
+            let mut current = observation.clone();
+            let mut workspace = HostTargetId::new("w1");
+            let mut tab = HostTargetId::new("w1:t2");
+            match change {
+                "workspace" => workspace = HostTargetId::new("w2"),
+                "tab" => tab = HostTargetId::new("w2:t2"),
+                "target" => current.target = HostTargetId::new("w2:p2"),
+                "terminal" => current.terminal = None,
+                "cache" => current.provenance = ObservationProvenance::UncharacterizedCache,
+                "unknown" => current.incarnation = IncarnationEvidence::Unknown,
+                _ => {}
+            }
+            let proof = BootstrapPaneObservation::try_new(current, workspace, tab);
+            if change == "valid" {
+                let guard = BootstrapAttachmentGuard::try_new(&request, proof.unwrap(), &admission)
+                    .unwrap();
+                assert_eq!(guard.workspace().as_str(), "w1");
+                assert_eq!(guard.tab().as_str(), "w1:t2");
+                assert_eq!(
+                    guard.ordinary().structural_proof().target().as_str(),
+                    "w1:p2"
+                );
+            } else {
+                assert!(proof.is_err(), "{change}");
+            }
+        }
     }
 
     fn operator_observation(target: &str) -> HostObservation {

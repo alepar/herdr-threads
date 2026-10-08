@@ -24,13 +24,13 @@ pub const MAX_ATTACHMENT_BYTES: usize = 128 * 1024;
 pub const MAX_RECOVERY_BYTES: usize = 256 * 1024;
 pub const MAX_COMPLETED_BYTES: usize = 2 * 1024 * 1024;
 
-fn corrupt() -> ApiError {
+pub(super) fn corrupt() -> ApiError {
     api_error(
         ErrorCode::StoreCorrupt,
         "invalid canonical bootstrap records",
     )
 }
-fn scope(identity: &BootstrapIdentity) -> String {
+pub(super) fn scope(identity: &BootstrapIdentity) -> String {
     format!("seat:{}", identity.claim.seat.as_str())
 }
 fn parent_keys(identity: &BootstrapIdentity) -> [(&'static str, &OperationId); 10] {
@@ -49,7 +49,10 @@ fn parent_keys(identity: &BootstrapIdentity) -> [(&'static str, &OperationId); 1
         ("linked_complete", &payload.linked_complete_key),
     ]
 }
-fn decode<T: DeserializeOwned + Serialize>(bytes: &[u8], limit: usize) -> Result<T, ApiError> {
+pub(super) fn decode<T: DeserializeOwned + Serialize>(
+    bytes: &[u8],
+    limit: usize,
+) -> Result<T, ApiError> {
     if bytes.len() > limit {
         return Err(corrupt());
     }
@@ -60,7 +63,7 @@ fn decode<T: DeserializeOwned + Serialize>(bytes: &[u8], limit: usize) -> Result
     }
     Ok(decoded)
 }
-fn same<T: Serialize>(left: &T, right: &T) -> Result<bool, ApiError> {
+pub(super) fn same<T: Serialize>(left: &T, right: &T) -> Result<bool, ApiError> {
     Ok(serde_json::to_value(left).map_err(|_| corrupt())?
         == serde_json::to_value(right).map_err(|_| corrupt())?)
 }
@@ -80,6 +83,7 @@ struct Parent {
     reserve: Option<String>,
     record: Option<String>,
     check: Option<String>,
+    not_submitted: Option<String>,
     terminal_at: Option<i64>,
     administrative_revision: i64,
 }
@@ -93,9 +97,9 @@ pub fn current(
 ) -> Result<Option<BootstrapResult>, ApiError> {
     encode_identity(canonical, identity)?;
     let row = db.query_row(
-        "SELECT p.id,substr(p.identity_json,1,?6),p.digest,p.create_key,p.original_thread,p.thread_id,p.state,p.current_attempt,a.state,substr(a.creation_json,1,?7),p.latest_recovery_operation,a.reserve_key,a.record_key,a.check_key,p.terminal_at,p.administrative_revision FROM bootstrap_handoffs p LEFT JOIN bootstrap_attempts a ON a.parent_id=p.id AND a.attempt=p.current_attempt WHERE p.instance_id=?1 AND p.state_dir=?2 AND p.host_endpoint=?3 AND p.actor_scope=?4 AND p.compound=?5",
+        "SELECT p.id,substr(p.identity_json,1,?6),p.digest,p.create_key,p.original_thread,p.thread_id,p.state,p.current_attempt,a.state,substr(a.creation_json,1,?7),p.latest_recovery_operation,a.reserve_key,a.record_key,a.check_key,p.terminal_at,p.administrative_revision,a.not_submitted_key FROM bootstrap_handoffs p LEFT JOIN bootstrap_attempts a ON a.parent_id=p.id AND a.attempt=p.current_attempt WHERE p.instance_id=?1 AND p.state_dir=?2 AND p.host_endpoint=?3 AND p.actor_scope=?4 AND p.compound=?5",
         params![canonical.instance,canonical.state_dir.to_str(),canonical.host_endpoint.to_str(),scope(identity),identity.compound.as_str(),(MAX_IDENTITY_BYTES+1) as u32,(MAX_CREATION_BYTES+1) as u32],
-        |r| Ok(Parent { id:r.get(0)?,identity:r.get(1)?,digest:r.get(2)?,create_key:r.get(3)?,original_thread:r.get(4)?,thread:r.get(5)?,state:r.get(6)?,attempt:r.get(7)?,attempt_state:r.get(8)?,creation:r.get(9)?,latest_recovery:r.get(10)?,reserve:r.get(11)?,record:r.get(12)?,check:r.get(13)?,terminal_at:r.get(14)?,administrative_revision:r.get(15)? }),
+        |r| Ok(Parent { id:r.get(0)?,identity:r.get(1)?,digest:r.get(2)?,create_key:r.get(3)?,original_thread:r.get(4)?,thread:r.get(5)?,state:r.get(6)?,attempt:r.get(7)?,attempt_state:r.get(8)?,creation:r.get(9)?,latest_recovery:r.get(10)?,reserve:r.get(11)?,record:r.get(12)?,check:r.get(13)?,terminal_at:r.get(14)?,administrative_revision:r.get(15)?,not_submitted:r.get(16)? }),
     ).optional().map_err(store_error)?;
     let Some(row) = row else {
         return Ok(None);
@@ -146,6 +150,7 @@ pub fn current(
         ("reserve", row.reserve.as_deref()),
         ("record", row.record.as_deref()),
         ("check", row.check.as_deref()),
+        ("not_submitted", row.not_submitted.as_deref()),
     ] {
         if saved
             != Some(
@@ -185,7 +190,11 @@ pub fn current(
             attachment.validate(identity).map_err(|_| corrupt())?;
             if i64::from(saved_attempt) != row.attempt
                 || attachment.attempt != attempt
-                || row.thread.as_deref() != attachment.handoff.thread.as_ref().map(ThreadId::as_str)
+                || attachment
+                    .handoff
+                    .thread
+                    .as_ref()
+                    .is_some_and(|thread| row.thread.as_deref() != Some(thread.as_str()))
                 || creation
                     .as_ref()
                     .is_none_or(|created| !same(created, &attachment.created).unwrap_or(false))
@@ -213,9 +222,10 @@ pub fn current(
                 .is_none_or(|a| !same(a, &result.attachment).unwrap_or(false))
                 || result.legacy_result.state != HandoffState::Completed
                 || result.legacy_result.compound != result.attachment.handoff.compound
-                || result.legacy_result.thread != result.attachment.handoff.thread
+                || result.legacy_result.thread.as_ref().map(ThreadId::as_str)
+                    != row.thread.as_deref()
                 || result.retained.launch != identity.payload.launch
-                || result.attachment.handoff.thread.as_ref() != Some(&result.retained.thread)
+                || row.thread.as_deref() != Some(result.retained.thread.as_str())
                 || result.retained.recipient != result.attachment.resolved_seat
                 || result.retained.pane != result.attachment.created.root_pane
                 || result.retained.terminal != result.attachment.created.terminal
@@ -226,58 +236,31 @@ pub fn current(
             Ok(Box::new(result))
         })
         .transpose()?;
+    let snapshot = BootstrapResult {
+        compound: identity.compound.clone(),
+        attempt,
+        attempt_state,
+        state,
+        creation: creation.clone(),
+        attachment: attachment.clone(),
+        completed: completed.clone(),
+        recovery: None,
+    };
+    let current_decisions = decision_history(db, canonical, identity, row.id, &snapshot, attempt)?;
+    if !current_decisions.is_empty()
+        && !row.latest_recovery.as_ref().is_some_and(|key| {
+            current_decisions
+                .iter()
+                .any(|r| r.operation.as_str() == key)
+        })
+    {
+        return Err(corrupt());
+    }
     let recovery = row.latest_recovery.as_ref().map(|operation| {
-        let saved: Option<(u32,Vec<u8>)> = db.query_row(
-            "SELECT attempt,substr(result_json,1,?3) FROM bootstrap_recovery_decisions WHERE parent_id=?1 AND operation=?2",
-            params![row.id,operation,(MAX_RECOVERY_BYTES+1) as u32], |r|Ok((r.get(0)?,r.get(1)?)),
-        ).optional().map_err(store_error)?;
-        let (saved_attempt,bytes) = saved.ok_or_else(corrupt)?;
-        let result: BootstrapRecoveryResult = decode(&bytes,MAX_RECOVERY_BYTES)?;
-        compare_identity(canonical,&row.identity,&result.identity).map_err(|_| corrupt())?;
-        result.disposition.validate().map_err(|_| corrupt())?;
-        if result.attempt.get() != saved_attempt || i64::from(saved_attempt) > row.attempt
-            || result.operation.as_str() != operation
-            || result.operator_provenance != format!("operator:local-user:{}",result.operator_uid)
-        { return Err(corrupt()); }
-        let decision = RecoverBootstrap {identity:result.identity.clone(),expected_attempt:result.attempt,operation:result.operation.clone(),disposition:result.disposition.clone()};
-        if decision.decision_operation().map_err(|_| corrupt())? != result.operation { return Err(corrupt()); }
-        // A decision key excludes the result's creation and snapshot state.
-        // Compare against its referenced attempt, never a later current attempt.
-        let saved_attempt_record: Option<(String,Option<Vec<u8>>)> = db.query_row(
-            "SELECT state,substr(creation_json,1,?3) FROM bootstrap_attempts WHERE parent_id=?1 AND attempt=?2",
-            params![row.id,saved_attempt,(MAX_CREATION_BYTES+1) as u32], |r|Ok((r.get(0)?,r.get(1)?)),
-        ).optional().map_err(store_error)?;
-        let (saved_state,saved_creation_bytes) = saved_attempt_record.ok_or_else(corrupt)?;
-        let saved_creation: Option<CreatedTab> = saved_creation_bytes.as_deref()
-            .map(|b| decode(b,MAX_CREATION_BYTES)).transpose()?;
-        for created in result.creation.iter().chain(saved_creation.iter()) {
-            created.validate().map_err(|_| corrupt())?;
-            if created.workspace != identity.payload.workspace
-                || created.witness.endpoint.as_os_str() != canonical.host_endpoint.as_os_str()
-            { return Err(corrupt()); }
-        }
-        if !same(&result.creation,&saved_creation)?
-            || !matches!(saved_state.as_str(),"prepared"|"possible_creation"|"not_submitted"|"outcome_unknown"|"created")
-            || (saved_state=="created") != saved_creation.is_some()
-        { return Err(corrupt()); }
-        let coherent_recovery = match &result.disposition {
-            BootstrapRecoveryDisposition::CreatedPane { evidence,.. } => {
-                result.state==BootstrapState::Created && saved_state=="created"
-                    && result.attempt==attempt
-                    && result.creation.as_ref().is_some_and(|c|same(c,evidence).unwrap_or(false))
-            }
-            BootstrapRecoveryDisposition::NotCreated { .. } => {
-                // Inspection is not proof of non-submission: retain any defined
-                // non-Created attempt state, closed before a distinct later attempt.
-                result.state==BootstrapState::Prepared && result.creation.is_none()
-                    && saved_state!="created" && result.attempt<attempt
-            }
-            BootstrapRecoveryDisposition::Cancelled { .. } => {
-                result.state==BootstrapState::Cancelled && state==BootstrapState::Cancelled
-            }
-        };
-        if !coherent_recovery { return Err(corrupt()); }
-        Ok(Box::new(result))
+        let saved_attempt: Option<u32> = db.query_row("SELECT attempt FROM bootstrap_recovery_decisions WHERE parent_id=?1 AND operation=?2",params![row.id,operation],|r|r.get(0)).optional().map_err(store_error)?;
+        let saved_attempt=BootstrapAttempt::new(saved_attempt.ok_or_else(corrupt)?).map_err(|_|corrupt())?;
+        let decisions=if saved_attempt==attempt {current_decisions.clone()} else {decision_history(db,canonical,identity,row.id,&snapshot,saved_attempt)?};
+        decisions.into_iter().find(|r|r.operation.as_str()==operation).map(Box::new).ok_or_else(corrupt)
     }).transpose()?;
     let coherent = match state {
         BootstrapState::Prepared => {
@@ -299,7 +282,6 @@ pub fn current(
         BootstrapState::Completed => completed.is_some(),
         BootstrapState::Cancelled => {
             completed.is_none()
-                && attachment.is_none()
                 && recovery.as_ref().is_some_and(|r| {
                     r.state == BootstrapState::Cancelled
                         && r.attempt == attempt
@@ -325,6 +307,163 @@ pub fn current(
     }))
 }
 
+/// Validate at most two immutable administrative slots at one exact attempt.
+/// The third-row sentinel rejects corrupt excess slots without a history scan.
+/// Both table records and their namespace/scope/role registry entries must agree.
+pub(super) fn decision_history(
+    db: &Connection,
+    canonical: &HandoffNamespace,
+    identity: &BootstrapIdentity,
+    parent: i64,
+    current: &BootstrapResult,
+    attempt: BootstrapAttempt,
+) -> Result<Vec<BootstrapRecoveryResult>, ApiError> {
+    let mut stmt=db.prepare("SELECT decision_kind,operation,substr(result_json,1,?3) FROM bootstrap_recovery_decisions WHERE parent_id=?1 AND attempt=?2 LIMIT 3").map_err(store_error)?;
+    let rows = stmt
+        .query_map(
+            params![parent, attempt.get(), (MAX_RECOVERY_BYTES + 1) as u32],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?;
+    if rows.len() > 2 {
+        return Err(corrupt());
+    }
+    let mut expected = Vec::new();
+    let mut decisions = Vec::new();
+    if !rows.is_empty() {
+        let referenced:Option<(String,Option<Vec<u8>>)>=db.query_row("SELECT state,substr(creation_json,1,?3) FROM bootstrap_attempts WHERE parent_id=?1 AND attempt=?2",params![parent,attempt.get(),(MAX_CREATION_BYTES+1) as u32],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
+        let (saved_state, bytes) = referenced.ok_or_else(corrupt)?;
+        let saved_creation: Option<CreatedTab> = bytes
+            .as_deref()
+            .map(|b| decode(b, MAX_CREATION_BYTES))
+            .transpose()?;
+        for (kind, operation, bytes) in rows {
+            let result: BootstrapRecoveryResult = decode(&bytes, MAX_RECOVERY_BYTES)?;
+            compare_identity(
+                canonical,
+                &serde_json::to_vec(&result.identity).map_err(|_| corrupt())?,
+                identity,
+            )
+            .map_err(|_| corrupt())?;
+            result.disposition.validate().map_err(|_| corrupt())?;
+            if result.attempt != attempt
+                || result.attempt > current.attempt
+                || result.operation.as_str() != operation
+                || result.operator_provenance
+                    != format!("operator:local-user:{}", result.operator_uid)
+            {
+                return Err(corrupt());
+            }
+            let decision = RecoverBootstrap {
+                identity: result.identity.clone(),
+                expected_attempt: result.attempt,
+                operation: result.operation.clone(),
+                disposition: result.disposition.clone(),
+            };
+            if decision.decision_operation().map_err(|_| corrupt())? != result.operation {
+                return Err(corrupt());
+            }
+            for created in result.creation.iter().chain(saved_creation.iter()) {
+                created.validate().map_err(|_| corrupt())?;
+                if created.workspace != identity.payload.workspace
+                    || created.witness.endpoint.as_os_str() != canonical.host_endpoint.as_os_str()
+                {
+                    return Err(corrupt());
+                }
+            }
+            if !same(&result.creation, &saved_creation)?
+                || !matches!(
+                    saved_state.as_str(),
+                    "prepared"
+                        | "possible_creation"
+                        | "not_submitted"
+                        | "outcome_unknown"
+                        | "created"
+                )
+                || (saved_state == "created") != saved_creation.is_some()
+            {
+                return Err(corrupt());
+            }
+            let (role, coherent) = match &result.disposition {
+                BootstrapRecoveryDisposition::CreatedPane { evidence, .. } => (
+                    "recovery",
+                    kind == "recovery"
+                        && result.state == BootstrapState::Created
+                        && saved_state == "created"
+                        && result.attempt == current.attempt
+                        && result
+                            .creation
+                            .as_ref()
+                            .is_some_and(|c| same(c, evidence).unwrap_or(false)),
+                ),
+                BootstrapRecoveryDisposition::NotCreated { .. } => (
+                    "recovery",
+                    kind == "recovery"
+                        && result.state == BootstrapState::Prepared
+                        && result.creation.is_none()
+                        && saved_state != "created"
+                        && result.attempt < current.attempt,
+                ),
+                BootstrapRecoveryDisposition::Cancelled { child_guard, .. } => (
+                    "cancel",
+                    kind == "cancellation"
+                        && result.state == BootstrapState::Cancelled
+                        && current.state == BootstrapState::Cancelled
+                        && result.attempt == current.attempt
+                        && same(
+                            &child_guard.attached_child.as_ref(),
+                            &current.attachment.as_ref().map(|a| &a.handoff),
+                        )?,
+                ),
+            };
+            if !coherent {
+                return Err(corrupt());
+            }
+            expected.push((role.to_owned(), operation));
+            decisions.push(result);
+        }
+    }
+    let mut stmt=db.prepare("SELECT role,operation_key,instance_id,state_dir,host_endpoint,actor_scope FROM bootstrap_child_keys INDEXED BY bootstrap_keys_attempt WHERE parent_id=?1 AND attempt=?2 AND role IN ('recovery','cancel') LIMIT 3").map_err(store_error)?;
+    let mut registered = Vec::new();
+    for row in stmt
+        .query_map(params![parent, attempt.get()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })
+        .map_err(store_error)?
+    {
+        let (role, key, instance, state, endpoint, actor) = row.map_err(store_error)?;
+        if instance != canonical.instance
+            || Some(state.as_str()) != canonical.state_dir.to_str()
+            || Some(endpoint.as_str()) != canonical.host_endpoint.to_str()
+            || actor != scope(identity)
+        {
+            return Err(corrupt());
+        }
+        registered.push((role, key));
+    }
+    expected.sort();
+    registered.sort();
+    if expected != registered {
+        return Err(corrupt());
+    }
+    Ok(decisions)
+}
+
 fn check_registry(
     db: &Connection,
     canonical: &HandoffNamespace,
@@ -336,7 +475,7 @@ fn check_registry(
         .into_iter()
         .map(|(role, key)| (role.to_owned(), 0, key.as_str().to_owned()))
         .collect::<Vec<_>>();
-    for phase in ["reserve", "record", "check"] {
+    for phase in ["reserve", "record", "check", "not_submitted"] {
         expected.push((
             phase.to_owned(),
             attempt.get(),
@@ -347,7 +486,7 @@ fn check_registry(
                 .to_owned(),
         ));
     }
-    let mut statement=db.prepare("SELECT role,attempt,operation_key FROM bootstrap_child_keys INDEXED BY bootstrap_keys_attempt WHERE parent_id=?1 AND instance_id=?2 AND state_dir=?3 AND host_endpoint=?4 AND actor_scope=?5 AND role!='recovery' AND attempt IN (0,?6) LIMIT 14").map_err(store_error)?;
+    let mut statement=db.prepare("SELECT role,attempt,operation_key FROM bootstrap_child_keys INDEXED BY bootstrap_keys_attempt WHERE parent_id=?1 AND instance_id=?2 AND state_dir=?3 AND host_endpoint=?4 AND actor_scope=?5 AND role NOT IN ('recovery','cancel') AND attempt IN (0,?6) LIMIT 15").map_err(store_error)?;
     let mut saved = statement
         .query_map(
             params![
@@ -377,7 +516,7 @@ fn check_registry(
     Ok(())
 }
 
-fn validate_live(
+pub(super) fn validate_live(
     db: &Connection,
     canonical: &HandoffNamespace,
     identity: &BootstrapIdentity,
@@ -416,7 +555,7 @@ fn validate_live(
     }
     Ok(())
 }
-fn insertion_error(error: rusqlite::Error) -> ApiError {
+pub(super) fn insertion_error(error: rusqlite::Error) -> ApiError {
     if matches!(error,rusqlite::Error::SqliteFailure(ref failure,_) if failure.code==rusqlite::ErrorCode::ConstraintViolation)
     {
         api_error(
@@ -465,7 +604,7 @@ pub fn begin_pending(
             tx.execute("INSERT INTO bootstrap_child_keys(parent_id,instance_id,state_dir,host_endpoint,actor_scope,operation_key,role,attempt) VALUES(?1,?2,?3,?4,?5,?6,?7,0)",params![parent,canonical.instance,canonical.state_dir.to_str(),canonical.host_endpoint.to_str(),scope(identity),key.as_str(),role]).map_err(insertion_error)?;
         }
         let attempt = BootstrapAttempt::first();
-        tx.execute("INSERT INTO bootstrap_attempts(parent_id,attempt,state,reserve_key,record_key,check_key) VALUES(?1,1,'prepared',?2,?3,?4)",params![parent,attempt.operation(&identity.compound,"reserve").map_err(|_| corrupt())?.as_str(),attempt.operation(&identity.compound,"record").map_err(|_| corrupt())?.as_str(),attempt.operation(&identity.compound,"check").map_err(|_| corrupt())?.as_str()]).map_err(insertion_error)?;
+        tx.execute("INSERT INTO bootstrap_attempts(parent_id,attempt,state,reserve_key,record_key,check_key,not_submitted_key) VALUES(?1,1,'prepared',?2,?3,?4,?5)",params![parent,attempt.operation(&identity.compound,"reserve").map_err(|_| corrupt())?.as_str(),attempt.operation(&identity.compound,"record").map_err(|_| corrupt())?.as_str(),attempt.operation(&identity.compound,"check").map_err(|_| corrupt())?.as_str(),attempt.operation(&identity.compound,"not_submitted").map_err(|_| corrupt())?.as_str()]).map_err(insertion_error)?;
         current(tx, canonical, identity)?.ok_or_else(corrupt)
     })();
     match result {

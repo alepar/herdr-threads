@@ -139,7 +139,7 @@ impl BootstrapAttempt {
         compound: &OperationId,
         phase: &str,
     ) -> Result<OperationId, &'static str> {
-        if !matches!(phase, "reserve" | "record" | "check") {
+        if !matches!(phase, "reserve" | "record" | "check" | "not_submitted") {
             return Err("invalid attempt phase");
         }
         use sha2::{Digest, Sha256};
@@ -203,6 +203,16 @@ pub struct BeginBootstrap {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReserveBootstrapAttempt {
+    pub identity: BootstrapIdentity,
+    pub operation: OperationId,
+    pub expected_attempt: BootstrapAttempt,
+}
+/// Cooperative original-caller report of the actual typed transport's zero-byte
+/// branch, never a human assertion or an error-code inference. Public dispatch
+/// stays inert until the real producer and canonical guards are integrated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordBootstrapNotSubmitted {
     pub identity: BootstrapIdentity,
     pub operation: OperationId,
     pub expected_attempt: BootstrapAttempt,
@@ -631,12 +641,10 @@ impl BootstrapAttachment {
             || self.handoff.create_key != identity.payload.handoff.keys.create
             || self.handoff.invite_key != identity.payload.handoff.keys.invite
             || self.handoff.send_key != identity.payload.handoff.keys.send
-            || identity
-                .payload
-                .handoff
-                .channel
-                .thread()
-                .is_some_and(|t| self.handoff.thread.as_ref() != Some(t))
+            || match &identity.payload.handoff.channel {
+                HandoffChannel::Existing { thread } => self.handoff.thread.as_ref() != Some(thread),
+                HandoffChannel::New { .. } => self.handoff.thread.is_some(),
+            }
         {
             return Err("bootstrap attachment mismatch");
         }
@@ -652,7 +660,13 @@ impl CompleteLinkedBootstrap {
             || self.legacy_completion.identity != self.attachment.handoff
             || self.legacy_completion.operation != self.identity.payload.handoff.keys.complete
             || self.retained.launch != self.identity.payload.launch
-            || self.attachment.handoff.thread.as_ref() != Some(&self.retained.thread)
+            || match &self.identity.payload.handoff.channel {
+                HandoffChannel::Existing { thread } => {
+                    self.attachment.handoff.thread.as_ref() != Some(thread)
+                        || thread != &self.retained.thread
+                }
+                HandoffChannel::New { .. } => self.attachment.handoff.thread.is_some(),
+            }
             || self.retained.recipient != self.attachment.resolved_seat
             || self.retained.pane != self.attachment.created.root_pane
             || self.retained.terminal != self.attachment.created.terminal
@@ -827,6 +841,13 @@ pub(crate) mod topology_contract_tests {
                 expected_attempt: attempt,
                 operation: attempt.operation(&identity().compound, "reserve").unwrap(),
             })),
+            Command::RecordBootstrapNotSubmitted(Box::new(RecordBootstrapNotSubmitted {
+                identity: identity(),
+                expected_attempt: attempt,
+                operation: attempt
+                    .operation(&identity().compound, "not_submitted")
+                    .unwrap(),
+            })),
             Command::RecordBootstrapCreated(Box::new(RecordBootstrapCreated {
                 identity: identity(),
                 expected_attempt: attempt,
@@ -981,6 +1002,35 @@ pub(crate) mod topology_contract_tests {
             serde_json::to_string(&completion().legacy_completion).unwrap(),
             LEGACY_CHILD
         );
+        assert_eq!(
+            format!(
+                "{:x}",
+                sha2::Sha256::digest(
+                    serde_json::to_vec(&serde_json::json!([
+                        "complete_handoff",
+                        completion().legacy_completion
+                    ]))
+                    .unwrap()
+                )
+            ),
+            "c9722e3662c4af0d69f1da919f03984d14d8ae9bbddca3a69f63fea9ace15524"
+        );
+        assert_eq!(
+            crate::store::control::cooperative_payload_hash(
+                "complete_handoff",
+                &completion().legacy_completion
+            )
+            .unwrap()
+            .to_vec(),
+            sha2::Sha256::digest(
+                serde_json::to_vec(&serde_json::json!([
+                    "complete_handoff",
+                    completion().legacy_completion
+                ]))
+                .unwrap()
+            )
+            .to_vec()
+        );
         let status = BootstrapResult {
             compound: identity().compound,
             attempt: BootstrapAttempt::first(),
@@ -995,5 +1045,13 @@ pub(crate) mod topology_contract_tests {
         assert_eq!(value["state"], "cancelled");
         assert!(value.get("authorization").is_none());
         assert!(value.get("submission_authorization").is_none());
+    }
+    #[test]
+    fn topology_not_submitted_wire_has_a_distinct_exact_attempt_key() {
+        use crate::protocol::commands::Command;
+        let raw = serde_json::json!({"kind":"record_bootstrap_not_submitted","args":{"identity":identity(),"expected_attempt":1,"operation":"bootstrap-7346d63b10526b3971fe0392dfb17c4ecafc7453a6383f2336ec0d67a89f1aa3"}});
+        let command: Command = serde_json::from_value(raw)
+            .expect("proven non-submission needs its own additive typed command");
+        command.validate().unwrap();
     }
 }

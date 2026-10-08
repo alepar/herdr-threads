@@ -89,7 +89,13 @@ pub fn compare_identity(
     Ok(())
 }
 
+mod attachment;
 mod persistence;
+pub use attachment::{attach_created, attach_pending, complete_linked_pending};
+pub(crate) use attachment::{
+    guard_bare_completion, guard_child_begin, guard_linked_begin, guard_unscoped_create,
+    validate_create_command,
+};
 pub use persistence::{
     MAX_ATTACHMENT_BYTES, MAX_COMPLETED_BYTES, MAX_CREATION_BYTES, MAX_RECOVERY_BYTES,
     begin_pending, current,

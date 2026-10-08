@@ -9408,3 +9408,6 @@ fn invitation_rejection_human_retains_declared_human_provenance() {
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
+
+#[path = "topology_attachment_guard.rs"]
+mod topology_attachment;

@@ -34,15 +34,17 @@ CREATE TABLE bootstrap_child_keys (
     host_endpoint TEXT NOT NULL,
     actor_scope TEXT NOT NULL,
     operation_key TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('compound','begin','create','invite','send','complete','handoff','resolve','attach','linked_complete','reserve','record','check','recovery')),
+    role TEXT NOT NULL CHECK(role IN ('compound','begin','create','invite','send','complete','handoff','resolve','attach','linked_complete','reserve','record','check','not_submitted','recovery','cancel')),
     attempt INTEGER NOT NULL CHECK(attempt BETWEEN 0 AND 4294967295),
     PRIMARY KEY(instance_id,state_dir,host_endpoint,actor_scope,operation_key),
     UNIQUE(parent_id,role,attempt),
     FOREIGN KEY(parent_id,instance_id,state_dir,host_endpoint,actor_scope) REFERENCES bootstrap_handoffs(id,instance_id,state_dir,host_endpoint,actor_scope),
-    CHECK((role IN ('reserve','record','check','recovery'))=(attempt>0))
+    CHECK((role IN ('reserve','record','check','not_submitted','recovery','cancel'))=(attempt>0))
 ) STRICT;
 -- Current-key replay must not walk all historical attempt keys for a parent.
 CREATE INDEX bootstrap_keys_attempt ON bootstrap_child_keys(parent_id,attempt,role);
+-- Unscoped legacy callers can only conservatively refuse foreign matches.
+CREATE INDEX bootstrap_keys_legacy_lookup ON bootstrap_child_keys(instance_id,actor_scope,operation_key);
 CREATE TABLE bootstrap_attempts (
     parent_id INTEGER NOT NULL REFERENCES bootstrap_handoffs(id),
     attempt INTEGER NOT NULL CHECK(attempt BETWEEN 1 AND 4294967295),
@@ -50,19 +52,22 @@ CREATE TABLE bootstrap_attempts (
     reserve_key TEXT NOT NULL,
     record_key TEXT NOT NULL,
     check_key TEXT NOT NULL,
+    not_submitted_key TEXT NOT NULL,
     reserved_administrative_revision INTEGER CHECK(reserved_administrative_revision>=0),
     creation_json BLOB CHECK(length(creation_json)<=131072),
     PRIMARY KEY(parent_id,attempt),
     CHECK((state='created')=(creation_json IS NOT NULL)),
-    CHECK(reserve_key!=record_key AND reserve_key!=check_key AND record_key!=check_key)
+    CHECK(reserve_key!=record_key AND reserve_key!=check_key AND record_key!=check_key
+      AND not_submitted_key!=reserve_key AND not_submitted_key!=record_key AND not_submitted_key!=check_key)
 ) STRICT;
 CREATE TABLE bootstrap_recovery_decisions (
     parent_id INTEGER NOT NULL REFERENCES bootstrap_handoffs(id),
     attempt INTEGER NOT NULL,
     operation TEXT NOT NULL,
+    decision_kind TEXT NOT NULL DEFAULT 'recovery' CHECK(decision_kind IN ('recovery','cancellation')),
     result_json BLOB NOT NULL CHECK(length(result_json)<=262144),
     PRIMARY KEY(parent_id,operation),
-    UNIQUE(parent_id,attempt),
+    UNIQUE(parent_id,attempt,decision_kind),
     FOREIGN KEY(parent_id,attempt) REFERENCES bootstrap_attempts(parent_id,attempt)
 ) STRICT;
 CREATE TABLE bootstrap_attachments (
@@ -91,7 +96,7 @@ CREATE TRIGGER bootstrap_retained BEFORE DELETE ON bootstrap_handoffs
 BEGIN SELECT RAISE(ABORT,'bootstrap identity retained'); END;
 CREATE TRIGGER bootstrap_attempt_identity BEFORE UPDATE ON bootstrap_attempts
 WHEN NEW.parent_id!=OLD.parent_id OR NEW.attempt!=OLD.attempt OR NEW.reserve_key!=OLD.reserve_key
- OR NEW.record_key!=OLD.record_key OR NEW.check_key!=OLD.check_key
+ OR NEW.record_key!=OLD.record_key OR NEW.check_key!=OLD.check_key OR NEW.not_submitted_key!=OLD.not_submitted_key
  OR (OLD.creation_json IS NOT NULL AND NEW.creation_json IS NOT OLD.creation_json)
 BEGIN SELECT RAISE(ABORT,'immutable bootstrap attempt identity'); END;
 CREATE TRIGGER bootstrap_attempt_retained BEFORE DELETE ON bootstrap_attempts
@@ -100,9 +105,10 @@ CREATE TRIGGER bootstrap_attempt_keys AFTER INSERT ON bootstrap_attempts BEGIN
  INSERT INTO bootstrap_child_keys SELECT NEW.parent_id,instance_id,state_dir,host_endpoint,actor_scope,NEW.reserve_key,'reserve',NEW.attempt FROM bootstrap_handoffs WHERE id=NEW.parent_id;
  INSERT INTO bootstrap_child_keys SELECT NEW.parent_id,instance_id,state_dir,host_endpoint,actor_scope,NEW.record_key,'record',NEW.attempt FROM bootstrap_handoffs WHERE id=NEW.parent_id;
  INSERT INTO bootstrap_child_keys SELECT NEW.parent_id,instance_id,state_dir,host_endpoint,actor_scope,NEW.check_key,'check',NEW.attempt FROM bootstrap_handoffs WHERE id=NEW.parent_id;
+ INSERT INTO bootstrap_child_keys SELECT NEW.parent_id,instance_id,state_dir,host_endpoint,actor_scope,NEW.not_submitted_key,'not_submitted',NEW.attempt FROM bootstrap_handoffs WHERE id=NEW.parent_id;
 END;
 CREATE TRIGGER bootstrap_recovery_key AFTER INSERT ON bootstrap_recovery_decisions BEGIN
- INSERT INTO bootstrap_child_keys SELECT NEW.parent_id,instance_id,state_dir,host_endpoint,actor_scope,NEW.operation,'recovery',NEW.attempt FROM bootstrap_handoffs WHERE id=NEW.parent_id;
+ INSERT INTO bootstrap_child_keys SELECT NEW.parent_id,instance_id,state_dir,host_endpoint,actor_scope,NEW.operation,CASE NEW.decision_kind WHEN 'cancellation' THEN 'cancel' ELSE 'recovery' END,NEW.attempt FROM bootstrap_handoffs WHERE id=NEW.parent_id;
 END;
 CREATE TRIGGER bootstrap_keys_immutable BEFORE UPDATE ON bootstrap_child_keys
 BEGIN SELECT RAISE(ABORT,'immutable bootstrap child key'); END;
