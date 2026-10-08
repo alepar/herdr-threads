@@ -57,6 +57,10 @@ own startup-qualification status and does not consume this evidence.
 - The Herdr host is the private modified build with the guarded process-hint
   capability (`agent_start_process_hint_v1`), not a released Herdr.
 - `api_content` is preserved for the measured turns, not for every turn.
+- Context delivery is bounded by the bridge's `pre_llm_call` budget (about 1.2 s)
+  and fails open: on a saturated machine (test runs at load 40+ on 12 cores) the
+  hook can miss it and that turn carries no context; the next qualified turn
+  delivers it. This is a plausible cause of the unexplained first-turn miss above.
 
 ## Defects found and fixed
 
