@@ -939,6 +939,55 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     Ok(())
 }
 
+const INBOX_DISPLAY_PAGE_READ_LIMIT: usize = 8;
+
+fn select_display_inbox_page<C: LocalClient + ?Sized>(
+    query: &crate::protocol::commands::InboxQuery,
+    output_spec: &OutputSpec,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<CommandResult, RunError> {
+    let mut request = query.clone();
+    let selection_budget = cooperative_budget(clock);
+    let mut result = client.call_with_output(
+        Command::InboxBatch(request.clone()),
+        output_spec,
+        &selection_budget,
+    )?;
+    // Source pages have their own bounded candidate walk. Retained, settled
+    // history can fill that walk without producing anything to display. Keep
+    // one bounded selection window, then present its actual continuation.
+    for _ in 1..INBOX_DISPLAY_PAGE_READ_LIMIT {
+        let CommandResult::InboxBatch(page) = &result else {
+            break;
+        };
+        if !page.items.is_empty()
+            || page.stop_reason != crate::protocol::pagination::StopReason::Work
+            || !page.has_more
+            || selection_budget.is_exhausted(clock)
+        {
+            break;
+        }
+        let next = page.next_cursor.as_ref().ok_or_else(|| {
+            RunError::Api(ApiError::store_corrupt(
+                "inbox work page has no continuation",
+            ))
+        })?;
+        if request.page.cursor.as_ref() == Some(next) {
+            return Err(RunError::Api(ApiError::store_corrupt(
+                "inbox work continuation did not advance",
+            )));
+        }
+        request.page.cursor = Some(next.clone());
+        result = client.call_with_output(
+            Command::InboxBatch(request.clone()),
+            output_spec,
+            &selection_budget,
+        )?;
+    }
+    Ok(result)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
     query: &crate::protocol::commands::InboxQuery,
@@ -981,11 +1030,7 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
             "this daemon does not support compact inbox display ACK; upgrade the daemon or use inbox --machine for a read-only view",
         ));
     }
-    let result = client.call_with_output(
-        Command::InboxBatch(request),
-        output_spec,
-        &cooperative_budget(clock),
-    )?;
+    let result = select_display_inbox_page(&request, output_spec, client, clock)?;
     let CommandResult::InboxBatch(page) = &result else {
         return Err(RunError::Api(ApiError::store_corrupt(
             "daemon returned no inbox batch",

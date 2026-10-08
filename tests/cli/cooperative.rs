@@ -1110,6 +1110,25 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
                 )),
                 Command::InboxBatch(query) => {
                     assert_eq!(query.seat.as_ref().map(SeatId::as_str), Some("seat-test"));
+                    if query.page.cursor.as_deref() != Some("empty-two") {
+                        return Ok(CommandResult::InboxBatch(Page {
+                            items: vec![],
+                            next_cursor: Some(
+                                if query.page.cursor.is_none() {
+                                    "empty-one"
+                                } else {
+                                    "empty-two"
+                                }
+                                .into(),
+                            ),
+                            next_argv: Some(vec!["hidden-continuation".into()]),
+                            high_water_ordinal: 1,
+                            scope_revision: None,
+                            has_more: true,
+                            stop_reason: StopReason::Work,
+                            consistency: Consistency::BoundedLive,
+                        }));
+                    }
                     Ok(CommandResult::InboxBatch(Page {
                         items: vec![InboxBatchItem::Message {
                             thread: ThreadId::new("thread-original"),
@@ -1270,7 +1289,7 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
         assert!(outcome.is_err());
         assert_eq!(
             client.calls.lock().unwrap().len(),
-            2,
+            4,
             "no ACK after output failure: {outcome:?}"
         );
         assert!(journal.page(&Default::default()).unwrap().items.is_empty());
@@ -1292,7 +1311,7 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
         &mut writer,
     )
     .unwrap();
-    assert_eq!(client.calls.lock().unwrap().len(), 3);
+    assert_eq!(client.calls.lock().unwrap().len(), 5);
     assert!(
         String::from_utf8(writer.bytes)
             .unwrap()
@@ -1331,7 +1350,7 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
     );
     assert_eq!(
         client.calls.lock().unwrap().len(),
-        2,
+        4,
         "human text inbox is content read-only"
     );
     std::fs::remove_dir_all(root).unwrap();
@@ -2624,5 +2643,183 @@ mod scoped_runtime {
                 .is_err()
         );
         assert!(runtime.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn inbox_empty_work_selection_preserves_bounds_and_continuations() {
+    use crate::protocol::{
+        commands::InboxQuery,
+        output::OutputSpec,
+        pagination::{Consistency, Page, PageRequest, StopReason},
+        results::{ApiError, InboxBatchItem},
+        time::{CallBudget, Clock, MonoInstant, UtcMillis},
+    };
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    };
+    struct Time(AtomicU64);
+    impl Clock for Time {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.load(Ordering::SeqCst))
+        }
+    }
+    struct Client<'a> {
+        clock: &'a Time,
+        step: u64,
+        pages: Mutex<std::collections::VecDeque<Page<InboxBatchItem>>>,
+        requests: Mutex<Vec<InboxQuery>>,
+    }
+    impl crate::ports::LocalClient for Client<'_> {
+        fn call(&self, _: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            panic!("selection must only read inbox pages")
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            let Command::InboxBatch(query) = command else {
+                panic!("selection must not ACK")
+            };
+            assert_eq!(
+                budget.deadline,
+                MonoInstant(5000),
+                "all reads share one deadline"
+            );
+            assert_eq!(query.seat.as_ref().map(SeatId::as_str), Some("seat"));
+            assert_eq!((query.page.limit, query.page.max_bytes), (1, 1024));
+            self.requests.lock().unwrap().push(query);
+            self.clock.0.fetch_add(self.step, Ordering::SeqCst);
+            Ok(CommandResult::InboxBatch(
+                self.pages
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("unexpected extra read"),
+            ))
+        }
+    }
+    let work = |cursor: &str| Page {
+        items: vec![],
+        next_cursor: Some(cursor.into()),
+        next_argv: Some(vec!["exact-route".into(), cursor.into()]),
+        high_water_ordinal: 123,
+        scope_revision: None,
+        has_more: true,
+        stop_reason: StopReason::Work,
+        consistency: Consistency::BoundedLive,
+    };
+    let mut partial = work("partial");
+    partial.stop_reason = StopReason::Bytes;
+    partial.items.push(InboxBatchItem::Message {
+        thread: ThreadId::new("thread"),
+        topic_data: "topic".into(),
+        message: MessageId::new("message"),
+        sequence: 1,
+        sender: None,
+        author_role: None,
+        relays_user: false,
+        user_intent: None,
+        author_role_backfilled: false,
+        body: "first chunk".into(),
+        body_start: 0,
+        body_end: 11,
+        body_len: 100,
+        ack_candidate: None,
+    });
+    let mut useful_work = partial.clone();
+    useful_work.stop_reason = StopReason::Work;
+    let mut malformed = work("missing");
+    malformed.next_cursor = None;
+    let mut complete = work("unused");
+    complete.has_more = false;
+    complete.next_cursor = None;
+    complete.next_argv = None;
+    complete.stop_reason = StopReason::Complete;
+    let mut rows = work("rows");
+    rows.stop_reason = StopReason::Rows;
+    let mut bytes = work("bytes");
+    bytes.stop_reason = StopReason::Bytes;
+    // Each expected selected page and count is independent of the helper.
+    for (pages, step, count, expected, error) in [
+        (
+            vec![work("one"), complete.clone()],
+            0,
+            2,
+            complete.clone(),
+            false,
+        ),
+        (
+            vec![work("one"), partial.clone()],
+            0,
+            2,
+            partial.clone(),
+            false,
+        ),
+        (
+            vec![work("one"), useful_work.clone()],
+            0,
+            2,
+            useful_work,
+            false,
+        ),
+        (vec![malformed.clone()], 0, 1, malformed, true),
+        (vec![rows.clone()], 0, 1, rows, false),
+        (vec![bytes.clone()], 0, 1, bytes, false),
+        (
+            (1..=9).map(|n| work(&n.to_string())).collect(),
+            0,
+            8,
+            work("8"),
+            false,
+        ),
+        (
+            vec![work("one"), work("two"), work("three")],
+            2000,
+            3,
+            work("three"),
+            false,
+        ),
+        (vec![work("one"), work("one")], 0, 2, work("one"), true),
+    ] {
+        let first_cursor = pages[0].next_cursor.clone();
+        let time = Time(AtomicU64::new(0));
+        let client = Client {
+            clock: &time,
+            step,
+            pages: Mutex::new(pages.into()),
+            requests: Mutex::new(vec![]),
+        };
+        let request = InboxQuery {
+            seat: Some(SeatId::new("seat")),
+            page: PageRequest {
+                cursor: None,
+                limit: 1,
+                max_bytes: 1024,
+            },
+        };
+        let result =
+            super::select_display_inbox_page(&request, &OutputSpec::default(), &client, &time);
+        assert_eq!(client.requests.lock().unwrap().len(), count);
+        if error {
+            assert!(
+                matches!(result, Err(super::RunError::Api(ref e)) if e.code == crate::protocol::results::ErrorCode::StoreCorrupt)
+            );
+        } else {
+            let CommandResult::InboxBatch(actual) = result.unwrap() else {
+                panic!("wrong result")
+            };
+            assert_eq!(actual, expected);
+            let requests = client.requests.lock().unwrap();
+            if requests.len() > 1 {
+                assert_eq!(requests[1].page.cursor, first_cursor);
+            }
+        }
     }
 }
