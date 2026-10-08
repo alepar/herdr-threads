@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.2.13
+
+- **Relevant invitation acceptance.** Agents assess a channel's topic and goal, then explicitly accept relevant invitations without asking for another human confirmation. Acceptance remains separate from message receipts; startup never silently joins a channel.
+- **Warning delivery once per occupant.** Open and clear warning offers settle once for the exact occupant, avoiding repeated attention nudges for already offered or nondisplayable warnings. Retained retries and warning history preserve their original attribution.
+- **Coordinated upgrade.** Store schema 25 and the additive `attention.notice_delivery_v1` capability support bounded warning delivery. Upgrade the CLI and daemon together; existing receipt and membership semantics remain unchanged.
+
 ## v0.2.12
 
 - **Installed `ht` alias.** The installer links `ht` beside `herdr-threads`, preserves unrelated commands even with `--force`, removes only its exact owned link on uninstall, and explains PATH shadowing. `ht skill` and `ht follow` use the same CLI.
