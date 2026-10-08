@@ -402,7 +402,22 @@ impl NickCache {
         generation: u64,
     ) -> Nick {
         let mut nick = Nick::seat(seat);
-        if let Some(target) = target
+        nick.harness = self.harness(seat, generation).map(str::to_owned);
+        if matches!(nick.harness.as_deref(), Some("claude" | "codex")) {
+            if let Some(target) = target {
+                self.refresh_panes(
+                    [target.as_str()],
+                    &budget(self.clock.as_ref(), 2_000, &self.cancel),
+                );
+            }
+            let pane = target.and_then(|target| {
+                self.labels
+                    .as_ref()?
+                    .iter()
+                    .find(|pane| pane.target == *target)
+            });
+            nick.name = irc::agent_seat_nick(seat, pane);
+        } else if let Some(target) = target
             && let Some(label) = self.pane_label(
                 target.as_str(),
                 &budget(self.clock.as_ref(), 2_000, &self.cancel),
@@ -410,7 +425,6 @@ impl NickCache {
         {
             nick.name = label;
         }
-        nick.harness = self.harness(seat, generation).map(str::to_owned);
         self.nicks
             .insert(seat.clone(), (Instant::now(), nick.clone()));
         nick

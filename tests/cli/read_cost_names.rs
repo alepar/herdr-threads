@@ -382,6 +382,102 @@ fn scoped_labels(index: usize, workspace: &str, tab: &str) -> SeatHostLabels {
         pane_label: Some("alice".into()),
     }
 }
+
+/// Real private contexts identify the occupant kind only; the daemon mapping
+/// still chooses which host label is rendered.
+struct NickScratch(std::path::PathBuf);
+impl NickScratch {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!("ht-nicks-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        Self(root.canonicalize().unwrap())
+    }
+}
+impl Drop for NickScratch {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+fn agent_contexts(fx: &mut Fixture, root: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fx.cache.paths.instance_dir = root.to_owned();
+    fx.cache.instance = uuid::Uuid::new_v4();
+    for (index, harness) in [(0, "Claude"), (1, "Codex")] {
+        let seat = seat(index);
+        let dir = root
+            .join("contexts")
+            .join(format!("{:x}", Sha256::digest(seat.as_str().as_bytes())));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let state = serde_json::json!({
+            "version": 1, "instance": fx.cache.instance, "seat": seat,
+            "current": {
+                "format_version": 1, "instance": fx.cache.instance, "seat": seat,
+                // Deliberately different from the daemon's canonical target.
+                "target": "w9:p99", "harness": harness, "binding_generation": 1,
+                "execution": uuid::Uuid::new_v4(),
+                "session": {"PluginContext": uuid::Uuid::new_v4()}, "role": "TopLevel"
+            },
+            "pending": null, "completed": []
+        });
+        let file = dir.join("context.json");
+        std::fs::write(&file, state.to_string()).unwrap();
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+#[test]
+fn agent_nicknames_use_canonical_targets_space_pane_and_full_seat_ids() {
+    let root = NickScratch::new();
+    let mut fx = fixture(standard_daemon(vec![
+        message(1, seat(0)),
+        message(2, seat(1)),
+    ]));
+    agent_contexts(&mut fx, &root.0);
+    let labels = Arc::new(Mutex::new(Some(vec![
+        scoped_labels(0, "w1", "t1"),
+        scoped_labels(1, "w2", "t2"),
+    ])));
+    fx.cache.host = Box::new(ScopedPanes {
+        labels: Arc::clone(&labels),
+    });
+    fx.cache = fx.cache.with_caller(Some(target(0).as_str()));
+    let shown = read_page(&mut fx);
+    assert!(shown.contains("<project/alice/seat-Author00>"), "{shown}");
+    assert!(shown.contains("<project/alice/seat-Author01>"), "{shown}");
+    assert!(!shown.contains('·'), "{shown}");
+    // A host rename refreshes display only, without changing the seat ID.
+    labels.lock().unwrap().as_mut().unwrap()[0].workspace_label = Some("renamed".into());
+    fx.cache.panes = None;
+    assert!(read_page(&mut fx).contains("<renamed/alice/seat-Author00>"));
+    *labels.lock().unwrap() = None;
+    fx.cache.panes = None;
+    let shown = read_page(&mut fx);
+    assert!(shown.contains("<seat-Author00>"), "{shown}");
+    assert!(!shown.contains("project/alice"), "{shown}");
+}
+
+#[test]
+fn agent_event_recipient_missing_names_uses_host_ids_without_tab_alias() {
+    let root = NickScratch::new();
+    let mut warning = message(1, seat(0));
+    warning.kind = MessageKind::Warn;
+    warning.preview_data = "{\"obligation\":\"receipt\",\"seat\":\"seat-Author01\"}".into();
+    let mut fx = fixture(standard_daemon(vec![warning]));
+    agent_contexts(&mut fx, &root.0);
+    let mut recipient = scoped_labels(1, "w2", "t2");
+    recipient.workspace_label = None;
+    recipient.pane_label = None;
+    fx.cache.host = Box::new(ScopedPanes {
+        labels: Arc::new(Mutex::new(Some(vec![recipient]))),
+    });
+    let shown = read_page(&mut fx);
+    assert!(
+        shown.contains("w2/w1:p1/seat-Author01 is overdue"),
+        "{shown}"
+    );
+}
 #[test]
 fn relative_nick_scope_uses_ids_refreshes_caller_move_and_survives_host_failure() {
     let mut fx = fixture(standard_daemon(hundred_messages()));
