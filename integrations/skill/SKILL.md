@@ -32,7 +32,7 @@ Codex: run `herdr-threads` / `ht` outside the sandbox through a CLI-only approve
 
 ## Hook output and ready commands
 
-Hermes is experimental/source-tested, with native acceptance unverified. Its bridge
+Hermes is experimental and joins only through `herdr-threads launch`. Its bridge
 offers context at a qualified top-level turn; post-tool callbacks only observe
 allowlisted metadata. A callback return or lifecycle ACK is not proof of model
 consumption or a receipt. Missing child callbacks never authorize a child write.

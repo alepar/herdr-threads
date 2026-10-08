@@ -229,6 +229,23 @@ pub mod synthetic_fourth {
             }
             root(environment).map(ResolvedSetupScope::ConfigRoot)
         }
+        fn observe_daemon(
+            &self,
+            env: &InstallEnvironment,
+            budget: &CallBudget,
+        ) -> DaemonObservation {
+            // Without an explicit fixture directory the stand-in is absent, not
+            // refused: it must not degrade daemon health in test-support builds.
+            if env.config_root.is_none() {
+                return DaemonObservation {
+                    status: HarnessStatus::NotInstalled(
+                        "synthetic fourth: no explicit fixture binary directory".into(),
+                    ),
+                    ..Default::default()
+                };
+            }
+            observe_daemon_default(self, env, budget)
+        }
         fn observe_install(&self, env: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
             // No generic PATH/default-config guess. Tests explicitly pass a
             // fixture binary directory; the stand-in is never executed here.

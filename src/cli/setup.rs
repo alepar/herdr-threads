@@ -81,7 +81,7 @@ Scope (user level, like Herdr's own agent hooks):
           owned values and refuses edited ownership records. Codex runs user hooks only once
           you trust them: the next interactive `codex` start lists them for review (or use
           /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.
-  hermes  Experimental/source-tested; native acceptance remains unverified. Select
+  hermes  Experimental; natively measured on 0.21.5 with a private Herdr build. Select
           `setup hermes --profile NAME` (or explicit default when omitted). --profile
           requires a named harness and is refused for bare multi-harness commands.
           The captured official resolver selects lexical/physical HERMES_HOME; no

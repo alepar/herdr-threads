@@ -35,7 +35,9 @@ Output is deterministic and written atomically only after validation, within
 80% of the reader's 262144-byte limit; oversized protected history fails without
 replacing the previous output. Publication remains a separate coordinator action.
 
-Hermes is implemented experimental/source-tested, with native acceptance unverified.
+Hermes is implemented experimental. Native core-flow evidence on 0.21.5 with a private
+Herdr build is in [native acceptance](../evidence/harness-adapters/native-acceptance/README.md);
+Hermes joins only through `launch --kind hermes`.
 `native_callback`/`native_shape_observation` and `bridge_envelope`/`bridge_envelope`
 remain independent domains; `qualified_turn` and `qualified_post_tool` must be
 measured separately for each exact runtime/contract. Native loader gate and timely

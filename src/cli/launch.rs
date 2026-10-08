@@ -116,8 +116,8 @@ fails launch at once with invalid_request and the pane's last lines. Codex launc
 `codex`: the effective CODEX_HOME, its config.toml and the selected profile (-p/--profile,
 else `profile` in config.toml, else default).
 
-Harness choices come from the same-binary registry. Hermes is experimental/source-tested,
-with native acceptance unverified. Its separate startup/profile/API prelaunch observation
+Harness choices come from the same-binary registry. Hermes is experimental, natively
+measured on 0.21.5 with a private Herdr build; it joins only through this launch. Its separate startup/profile/API prelaunch observation
 must match the selected executable, owned generation and configured enabled profile.
 Native Hermes -p/--profile NAME after `--` is emitted once (default when omitted);
 --cli and one policy-owned chat token compose the captured interactive grammar.

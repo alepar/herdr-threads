@@ -104,7 +104,7 @@ Herdr Threads coordinates cooperative agents running under one local account. A 
 | --- | --- |
 | Claude Code | Implemented. Native core-flow evidence includes 2.1.287; earlier captures cover 2.1.283–2.1.286. |
 | Codex | Implemented. Native core-flow evidence includes 0.159.3; approved CLI execution was separately measured on 0.160.0. |
-| Hermes | Implemented experimental adapter and Python bridge; source/synthetic tests only, native acceptance unverified. [Scope and operator guide](integrations/hermes/README.md). |
+| Hermes | Experimental adapter and Python bridge. Native core-flow evidence on 0.21.5 with a private Herdr build that advertises the guarded launch process hint; join through `herdr-threads launch --kind hermes`. [Scope and operator guide](integrations/hermes/README.md), [native evidence](docs/evidence/harness-adapters/native-acceptance/README.md). |
 | Antigravity (`agy`) | Planned. |
 | Pi | Planned. |
 | OpenCode | Planned. |

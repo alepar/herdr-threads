@@ -49,55 +49,7 @@ pub trait HarnessAdapter: Send + Sync + 'static {
         None
     }
     fn observe_daemon(&self, env: &InstallEnvironment, budget: &CallBudget) -> DaemonObservation {
-        let installed = self.observe_install(env, budget);
-        let identity = match &installed {
-            InstallObservation::Available { identity, .. } => Some(identity.clone()),
-            InstallObservation::CodexWitness(version) => {
-                RuntimeIdentity::stable_release(version.as_str(), "installed_probe").ok()
-            }
-            _ => None,
-        };
-        let status = match &installed {
-            InstallObservation::Unavailable { diagnostic } => {
-                HarnessStatus::Refused(diagnostic.clone())
-            }
-            InstallObservation::Unsupported(operation) => {
-                HarnessStatus::Refused(operation.to_string())
-            }
-            _ => match self.admit(
-                &AdmissionRequest {
-                    installed,
-                    input: None,
-                    runtime_candidate: None,
-                },
-                budget,
-            ) {
-                AdmissionDecision::ContractDeclared { recipe, .. } => {
-                    HarnessStatus::ContractDeclared {
-                        detail: format!(
-                            "{recipe}; contract_declared; runtime metadata unavailable; rich optional capabilities unavailable"
-                        ),
-                    }
-                }
-                AdmissionDecision::Listed { recipe, .. } => HarnessStatus::Cooperative {
-                    detail: recipe.into(),
-                    live_unverified: false,
-                },
-                AdmissionDecision::SchemaMatched { recipe, .. } => HarnessStatus::Cooperative {
-                    detail: recipe.into(),
-                    live_unverified: true,
-                },
-                AdmissionDecision::Optimistic { diagnostic, .. } => {
-                    HarnessStatus::Optimistic(diagnostic)
-                }
-                AdmissionDecision::Refused { diagnostic } => HarnessStatus::Refused(diagnostic),
-            },
-        };
-        DaemonObservation {
-            status,
-            identity,
-            ..Default::default()
-        }
+        observe_daemon_default(self, env, budget)
     }
     fn admit(
         &self,
@@ -957,6 +909,59 @@ impl DecodedEvent {
                 self.intent,
                 EventIntent::Lifecycle(_) | EventIntent::Current | EventIntent::QualifiedTurn(_)
             )
+    }
+}
+
+/// The default daemon observation: install availability, then admission.
+pub fn observe_daemon_default<A: HarnessAdapter + ?Sized>(
+    adapter: &A,
+    env: &InstallEnvironment,
+    budget: &CallBudget,
+) -> DaemonObservation {
+    let installed = adapter.observe_install(env, budget);
+    let identity = match &installed {
+        InstallObservation::Available { identity, .. } => Some(identity.clone()),
+        InstallObservation::CodexWitness(version) => {
+            RuntimeIdentity::stable_release(version.as_str(), "installed_probe").ok()
+        }
+        _ => None,
+    };
+    let status = match &installed {
+        InstallObservation::Unavailable { diagnostic } => {
+            HarnessStatus::Refused(diagnostic.clone())
+        }
+        InstallObservation::Unsupported(operation) => HarnessStatus::Refused(operation.to_string()),
+        _ => match adapter.admit(
+            &AdmissionRequest {
+                installed,
+                input: None,
+                runtime_candidate: None,
+            },
+            budget,
+        ) {
+            AdmissionDecision::ContractDeclared { recipe, .. } => HarnessStatus::ContractDeclared {
+                detail: format!(
+                    "{recipe}; contract_declared; runtime metadata unavailable; rich optional capabilities unavailable"
+                ),
+            },
+            AdmissionDecision::Listed { recipe, .. } => HarnessStatus::Cooperative {
+                detail: recipe.into(),
+                live_unverified: false,
+            },
+            AdmissionDecision::SchemaMatched { recipe, .. } => HarnessStatus::Cooperative {
+                detail: recipe.into(),
+                live_unverified: true,
+            },
+            AdmissionDecision::Optimistic { diagnostic, .. } => {
+                HarnessStatus::Optimistic(diagnostic)
+            }
+            AdmissionDecision::Refused { diagnostic } => HarnessStatus::Refused(diagnostic),
+        },
+    };
+    DaemonObservation {
+        status,
+        identity,
+        ..Default::default()
     }
 }
 
