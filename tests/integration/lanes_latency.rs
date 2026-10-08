@@ -33,10 +33,17 @@ use std::{
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 
-/// A stand-in agent named `claude`, which Herdr classifies as an agent: it
-/// echoes every line typed into it, so each wake prompt is visible once.
-const STAND_IN: &str = "#!/bin/sh\necho HT-STANDIN-START\n\
-    while IFS= read -r line; do echo \"HT-RECEIVED:$line\"; done\n";
+/// A stand-in agent named `claude`, which Herdr classifies as an agent. Its
+/// empty composer and footer admit native wakes and place each consumed line
+/// above the read-only submission check. The rules fit the narrow split panes.
+const STAND_IN: &str = r#"#!/bin/sh
+echo HT-STANDIN-START
+while :; do
+    printf '%s\n' '──────────' '❯' '──────────' '  footer'
+    IFS= read -r line || break
+    echo "HT-RECEIVED:$line"
+done
+"#;
 
 #[derive(Clone)]
 pub(crate) struct Caller {
