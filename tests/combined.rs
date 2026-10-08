@@ -33,6 +33,8 @@ mod local_endpoint;
 mod read_picker_pty;
 #[path = "setup_cli.rs"]
 mod setup_cli;
+#[path = "store/topology_handoff.rs"]
+mod topology_handoff;
 #[path = "view.rs"]
 mod view;
 

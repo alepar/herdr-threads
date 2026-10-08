@@ -1,9 +1,10 @@
-//! Source-only frozen bootstrap identity encoding and comparison.
+//! Frozen bootstrap identity and transaction-local canonical persistence.
 //!
 //! A future daemon consumer must supply its actual daemon-selected namespace,
 //! never a namespace inferred from a caller, original intent or frozen identity.
 //! These helpers confer no A2, submission or receipt authority and return no
-//! authoritative state. Persistence and deciding-transaction guards are pending.
+//! submission permission. Public dispatch/permits and startup registration remain
+//! gated; Begin reuses existing live mapping/member guards in its caller transaction.
 use super::connection::api_error;
 use crate::protocol::{
     handoff::{BootstrapIdentity, HandoffNamespace},
@@ -87,6 +88,12 @@ pub fn compare_identity(
     }
     Ok(())
 }
+
+mod persistence;
+pub use persistence::{
+    MAX_ATTACHMENT_BYTES, MAX_COMPLETED_BYTES, MAX_CREATION_BYTES, MAX_RECOVERY_BYTES,
+    begin_pending, current,
+};
 
 #[cfg(test)]
 mod tests {

@@ -363,6 +363,19 @@ sync failure, at the cost of retained local disk records. It is not live archiva
 malformed or contradictory records conservatively refuse, and canonical terminal state dominates
 stale archival scans. New public modes remain inert until those production guards are integrated.
 
+Canonical topology storage has encoded-byte ceilings for retained bootstrap envelopes:
+128 KiB for the full frozen identity, creation evidence and attachment; 256 KiB for
+an immutable recovery decision; and 2 MiB for the full completed result, including
+identity, attachment, launcher report and legacy result. The launch report's inner
+JSON retains its independent 1 MiB protocol bound. JSON escaping and repeated nested
+fields count toward the storage ceiling; a protocol-shaped envelope need not fit.
+Oversized writes must refuse before effects and preserve existing records; bounded
+reads of oversized or corrupt data must refuse, never present clipped data or grant
+submission permission. Records are never truncated to fit. These limits neither
+change attribution nor authorize from a client-local journal or today's occupant.
+Public activation and future transition writers must retain the canonical guards
+and enforce the same limits.
+
 These are decisions, not bugs. Each is safe to rely on only as stated.
 
 - **Global hooks enroll supported top-level Herdr sessions.** A user-level Claude/Codex hook
