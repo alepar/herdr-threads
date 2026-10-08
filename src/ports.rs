@@ -3986,7 +3986,7 @@ impl CreatedTab {
         );
         let prefix = format!("{}:", self.workspace.as_str());
         if w.schema != 1
-            || !matches!(w.platform.as_str(), "macos" | "linux")
+            || w.platform != "macos-proc-bsdinfo-v1"
             || w.peer_pid == 0
             || w.start_seconds == 0
             || w.start_microseconds >= 1_000_000

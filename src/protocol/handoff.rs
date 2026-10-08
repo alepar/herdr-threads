@@ -743,7 +743,7 @@ pub(crate) mod topology_contract_tests {
             host_incarnation: HostBootId::new("herdr-server:pid=42:start=1.000002:uid=501"),
             witness: LocalEndpointWitness {
                 schema: 1,
-                platform: "macos".into(),
+                platform: "macos-proc-bsdinfo-v1".into(),
                 endpoint: "/host.sock".into(),
                 peer_uid: 501,
                 peer_pid: 42,
@@ -905,6 +905,15 @@ pub(crate) mod topology_contract_tests {
         assert!(cancel("é".repeat(2049)).validate().is_err());
         assert!(cancel("x".repeat(4096)).validate().is_ok());
         assert!(cancel("x".repeat(4097)).validate().is_err());
+        assert!(created().validate().is_ok());
+        for platform in ["macos", "linux", "linux-proc-stat-v1", "unknown"] {
+            let mut bad = created();
+            bad.witness.platform = platform.into();
+            assert!(
+                bad.validate().is_err(),
+                "unproduced platform admitted: {platform}"
+            );
+        }
         let mut bad = created();
         bad.witness.peer_pid = 0;
         assert!(bad.validate().is_err());
