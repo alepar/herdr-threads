@@ -261,6 +261,9 @@ impl LocalSocketClient {
     }
 }
 impl LocalClient for LocalSocketClient {
+    fn supports_capability(&self, name: &str, budget: &CallBudget) -> bool {
+        self.capabilities(budget).supports(name)
+    }
     fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

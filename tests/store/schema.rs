@@ -5059,7 +5059,7 @@ fn recent_activity_writer_rejects_missing_or_null_default() {
 // and incomplete public migration chaining from any supported historical version.
 #[test]
 fn adapter_migration_preserves_all_supported_history_and_rejection_overlay() {
-    for version in 1..=24 {
+    for version in 1..=25 {
         let db = adapter_historical_database(version);
         db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (7,'s',1,'p','b',0,'codex','session','execution','cooperative_top_level',1,1,'term','inc');").unwrap();
         db.execute_batch("INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at) VALUES (90,'s',2,'p','b',0,'codex','deleted','deleted','cooperative_top_level',2,3); DELETE FROM occupant_bindings WHERE ordinal=90;").unwrap();
@@ -5262,6 +5262,7 @@ fn adapter_historical_database(version: usize) -> Connection {
         include_str!("../../migrations/0022_user_message_intent.sql"),
         include_str!("../../migrations/0023_channel_archival.sql"),
         include_str!("../../migrations/0024_harness_contract_diagnostics.sql"),
+        include_str!("../../migrations/0025_warning_notice_delivery.sql"),
     ];
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
@@ -5275,7 +5276,7 @@ fn adapter_historical_database(version: usize) -> Connection {
 
 #[test]
 fn adapter_migration_failure_rolls_back_rebuilt_tables_and_schema_version() {
-    let db = adapter_historical_database(24);
+    let db = adapter_historical_database(25);
     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES (7,'s',1,'p','b',0,'codex','launch:n','launch:e','managed_launch',0); UPDATE sqlite_sequence SET seq=90 WHERE name='occupant_bindings'; CREATE TABLE harness_runtime_identities(collision INTEGER);").unwrap();
     let original: String = db
         .query_row(
@@ -5290,7 +5291,7 @@ fn adapter_migration_failure_rolls_back_rebuilt_tables_and_schema_version() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        24
+        25
     );
     assert_eq!(
         db.query_row(
@@ -5779,7 +5780,7 @@ fn archival_schema_audit_preserves_case_sensitive_terminal_state_literals() {
 
 // A binding table rebuild must retain canonical archival invalidation and queue producers.
 #[test]
-fn adapter_migration_main24_to25_preserves_archival_guards_and_intent_history() {
+fn adapter_migration_main24_to26_preserves_archival_guards_and_intent_history() {
     let db = adapter_historical_database(24);
     user_intent_seed(&db);
     db.execute_batch(r#"INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES(7,'s',1,'p','host',1,'codex','session','execution','cooperative_top_level',0,1);
@@ -5948,7 +5949,7 @@ fn task3_versionless_schema24_upgrades_preserves_history_and_audits_objects() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        25
+        schema::LATEST_VERSION
     );
     db.execute_batch("DROP TABLE harness_contract_diagnostics")
         .unwrap();
@@ -5957,56 +5958,205 @@ fn task3_versionless_schema24_upgrades_preserves_history_and_audits_objects() {
 
 // The successor must consume actual main24 without rewriting its diagnostic history.
 #[test]
-fn absorption_main24_to25_preserves_diagnostics_and_matches_fresh_catalog() {
-    let db = adapter_historical_database(23);
-    db.execute_batch(include_str!(
-        "../../migrations/0024_harness_contract_diagnostics.sql"
-    ))
-    .unwrap();
-    db.pragma_update(None, "user_version", 24).unwrap();
-    db.execute_batch("INSERT INTO harness_contract_diagnostics VALUES('codex','old-session','0123456789abcdef','1Start','field',7,11)").unwrap();
-    let guards = binding_archival_guards(&db);
-    schema::initialize(&db, || UtcMillis(100)).unwrap();
+fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog() {
+    for version in [24, 25] {
+        let db = adapter_historical_database(version);
+        db.execute_batch("INSERT INTO harness_contract_diagnostics VALUES('codex','old-session','0123456789abcdef','1Start','field',7,11)").unwrap();
+        let guards = binding_archival_guards(&db);
+        schema::initialize(&db, || UtcMillis(100)).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            schema::LATEST_VERSION
+        );
+        assert_eq!(binding_archival_guards(&db), guards);
+        assert_eq!(
+            db.query_row(
+                "SELECT event,first_seen_at,last_seen_at FROM harness_contract_diagnostics",
+                [],
+                |r| Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?
+                ))
+            )
+            .unwrap(),
+            ("1Start".into(), 7, 11)
+        );
+        db.execute_batch("INSERT INTO harness_contract_diagnostics VALUES('fourth_agent','new-session','0123456789abcdef','Session_Start','field',12,13)").unwrap();
+        for harness in ["human", "Upper", "1agent", "has.dot", ""] {
+            assert!(db.execute("INSERT INTO harness_contract_diagnostics VALUES(?1,'invalid','0123456789abcdef','SessionStart','field',12,13)",[harness]).is_err(),"{harness}");
+        }
+        let fresh = Connection::open_in_memory().unwrap();
+        schema::initialize(&fresh, || UtcMillis(0)).unwrap();
+        let catalog = |db: &Connection| {
+            db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
+            .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('\"',"")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+        };
+        assert_eq!(catalog(&db), catalog(&fresh));
+        assert_eq!(
+            catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
+            67
+        );
+        assert_eq!(
+            catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
+            133
+        );
+        assert_eq!(
+            catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
+            157
+        );
+    }
+}
+
+// An unpublished adapter schema25 is not the immutable published main25.
+#[test]
+fn absorption_rejects_development_adapter25_without_writing() {
+    let db = adapter_historical_database(24);
+    db.execute_batch(include_str!("../../migrations/0026_harness_adapters.sql"))
+        .unwrap();
+    db.pragma_update(None, "user_version", 25).unwrap();
+    let before: String = db
+        .query_row(
+            "SELECT group_concat(sql, char(10)) FROM (SELECT sql FROM sqlite_master ORDER BY name)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+        ErrorCode::IncompatibleSchema
+    );
+    let after: String = db
+        .query_row(
+            "SELECT group_concat(sql, char(10)) FROM (SELECT sql FROM sqlite_master ORDER BY name)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(before, after);
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
         25
     );
-    assert_eq!(binding_archival_guards(&db), guards);
+}
+
+#[test]
+fn absorption_main25_missing_warning_guard_refuses_before_adapter_rebuild() {
+    let db = adapter_historical_database(25);
+    db.execute_batch("DROP TRIGGER digest_transition_warning_projected")
+        .unwrap();
+    assert_eq!(
+        schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+        ErrorCode::IncompatibleSchema
+    );
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        25
+    );
     assert_eq!(
         db.query_row(
-            "SELECT event,first_seen_at,last_seen_at FROM harness_contract_diagnostics",
+            "SELECT count(*) FROM sqlite_master WHERE name='harness_runtime_identities'",
             [],
-            |r| Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?
-            ))
+            |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        ("1Start".into(), 7, 11)
+        0
     );
-    db.execute_batch("INSERT INTO harness_contract_diagnostics VALUES('fourth_agent','new-session','0123456789abcdef','Session_Start','field',12,13)").unwrap();
-    for harness in ["human", "Upper", "1agent", "has.dot", ""] {
-        assert!(db.execute("INSERT INTO harness_contract_diagnostics VALUES(?1,'invalid','0123456789abcdef','SessionStart','field',12,13)",[harness]).is_err(),"{harness}");
-    }
-    let fresh = Connection::open_in_memory().unwrap();
-    schema::initialize(&fresh, || UtcMillis(0)).unwrap();
-    let catalog = |db: &Connection| {
-        db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
-            .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('\"',"")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+}
+
+// Genuine immutable main24 data must traverse warning25 before adapter26;
+// neither a rewritten version stamp nor adapter tables are used as the precursor.
+#[test]
+fn absorption_main24_backfills_warning_delivery_before_adapter26() {
+    let mut db = adapter_historical_database(24);
+    user_intent_seed(&db);
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('upgrade-warning','t','s',1,'pending',0,1,50,50)").unwrap();
+    let tx = db.transaction().unwrap();
+    let warning = schema::record_overdue_if_pending(
+        &tx,
+        &crate::protocol::authority::ObligationRef::Invitation(
+            crate::protocol::ids::InvitationId::new("upgrade-warning"),
+        ),
+        &crate::ports::TimeBasis::Decision,
+        UtcMillis(100),
+    )
+    .unwrap()
+    .warning
+    .unwrap();
+    tx.commit().unwrap();
+    let budget = CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
     };
-    assert_eq!(catalog(&db), catalog(&fresh));
+    while crate::store::materialization::advance_work(
+        &mut db,
+        &format!("work:{}", warning.as_str()),
+        crate::ports::DurableWorkAdmission { max_units: 16 },
+        &budget,
+        &FixedClock,
+    )
+    .unwrap()
+    .has_more
+    {}
     assert_eq!(
-        catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-        67
+        db.query_row(
+            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",
+            [warning.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
     );
     assert_eq!(
-        catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-        133
+        db.query_row(
+            "SELECT count(*) FROM digest_programmatic_warnings",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    schema::initialize(&db, || UtcMillis(100)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        26
+    );
+    let offered = crate::store::attention::notice_offer_page(&db, "s", 16).unwrap();
+    assert_eq!(offered.len(), 1);
+    assert_eq!(offered[0].notice.warning, warning);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",
+            [warning.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
     );
     assert_eq!(
-        catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-        156
+        db.query_row(
+            "SELECT count(*) FROM warning_conditions WHERE open_warning_id=?1",
+            [warning.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    schema::initialize(&db, || UtcMillis(101)).unwrap();
+    assert_eq!(
+        crate::store::attention::notice_offer_page(&db, "s", 16).unwrap(),
+        offered
     );
 }

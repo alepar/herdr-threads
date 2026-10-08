@@ -3083,6 +3083,10 @@ pub trait NotificationPort: Send + Sync {
 
 /// Local client and service share the same typed command/result envelope.
 pub trait LocalClient: Send + Sync {
+    /// Optional read extensions must be advertised; legacy clients support none.
+    fn supports_capability(&self, _name: &str, _budget: &CallBudget) -> bool {
+        false
+    }
     fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError>;
     /// A selected read must carry its output context through the transport so
     /// server-generated continuation argv uses the same selectors.

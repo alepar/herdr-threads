@@ -1,0 +1,11 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.65s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-d68509100ae355ec)
+
+running 2 tests
+test store::cooperative_checkin_tests::builtin_warning_dedup_open_clear_and_new_episode_are_offered_once ... ok
+test store::cooperative_checkin_tests::builtin_warning_dedup_settles_only_carried_page_and_late_projection ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2659 filtered out; finished in 0.13s
+

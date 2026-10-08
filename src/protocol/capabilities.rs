@@ -20,6 +20,7 @@ pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
 pub const INVITATION_REJECT: &str = "invitation.reject_v1";
 
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
+pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 
 /// Everything this daemon build serves. A capability is listed only once its
 /// handler has landed (ht-p03.105): `HISTORY_FULL_BODIES` landed with
@@ -42,6 +43,7 @@ pub const ADVERTISED: &[&str] = &[
     INVITATION_REJECT,
     PARTICIPANT_LOCATIONS,
     PICKER_DIRECTORY_V1,
+    ATTENTION_NOTICE_DELIVERY,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

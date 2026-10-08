@@ -361,7 +361,9 @@ fn attribute(tx: &Connection, warning: &str, seat: &str, event_seq: i64) -> Resu
             ));
         }
     }
-    if inserted > 0 && actionable(tx, warning, seat)? && !offered(tx, seat, event_seq)? {
+    let unoffered = super::attention::informational_notice_pending(tx, seat, warning)?
+        .unwrap_or(!offered(tx, seat, event_seq)?);
+    if inserted > 0 && actionable(tx, warning, seat)? && unoffered {
         bump(tx, seat)?;
     }
     Ok(())
@@ -561,7 +563,9 @@ fn service_notification_unit(
             |r| r.get(0),
         )
         .map_err(store_error)?;
-    if inserted > 0 && !retired && !offered(tx, &seat, seq)? {
+    let unoffered = super::attention::informational_notice_pending(tx, &seat, &message)?
+        .unwrap_or(!offered(tx, &seat, seq)?);
+    if inserted > 0 && !retired && unoffered {
         bump(tx, &seat)?;
     }
     Ok((ordinal as u64, false))

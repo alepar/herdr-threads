@@ -16,7 +16,7 @@
 //!
 //! Walks run newest-first by logical publication key where the projection
 //! holds it (invitations, materialized manifest receipts), otherwise by
-//! insertion ordinal (programmatic warnings, above the occupant's offered
+//! insertion ordinal (informational warnings, above the occupant's offered
 //! notice frontier; staged manifest receipts, physical receipts,
 //! open-condition warnings, the backlog), which follows publication order
 //! except for a preparation staged before, and published after, a full
@@ -29,14 +29,15 @@
 //!   (not yet materialized, published only), plus pending physical rows, each
 //!   judged by `effective_receipt`;
 //! - warnings:
-//!   - programmatic service warnings above the seat's current occupant's
+//!   - informational warnings (programmatic service notices and canonical
+//!     condition transitions) above the seat's current occupant's
 //!     offered notice frontier (`digest_programmatic_warnings` rows whose
 //!     projection ordinal exceeds `digest_notice_offer.offered_ordinal`, the
 //!     occupant-scoped monotone frontier; wave-2 fix2 root decision (a)). A
 //!     check-in offer settles only the capped page of notices it actually
 //!     carries (`notice_offer_page`, `settle_offered_notices`): one O(1)
 //!     frontier write, never a delete of the backlog;
-//!   - attributed recipients of open-condition warnings
+//!   - attributed recipients of legacy open-condition warnings
 //!     (`digest_open_warning_recipients`), and open-condition warnings naming
 //!     the seat as affected (`digest_open_warnings`), each judged by
 //!     `warning_condition_actionable`;
@@ -493,6 +494,17 @@ fn judged_warning(
     warning_id: &str,
     seat_id: Option<&str>,
 ) -> Result<Option<PendingItem>, ApiError> {
+    // Attributed transitions use only the bounded notice delivery page.
+    // Legacy condition/backlog walks must not revive already carried events.
+    if let Some(seat_id) = seat_id {
+        let projected_transition: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings d WHERE d.seat_id=?1 AND d.warning_id=?2 AND EXISTS(SELECT 1 FROM warning_conditions c WHERE c.open_warning_id=d.warning_id OR c.clear_warning_id=d.warning_id))",
+            params![seat_id,warning_id], |r| r.get(0),
+        ).map_err(store_error)?;
+        if projected_transition {
+            return Ok(None);
+        }
+    }
     let Some(warning) = effective::effective_warning_by_id(db, warning_id)? else {
         return Ok(None);
     };
@@ -536,7 +548,7 @@ fn judged_warning(
 }
 
 /// The seat's current occupant's offered notice frontier: the projection
-/// ordinal of the last programmatic notice carried by a committed check-in
+/// ordinal of the last informational notice carried by a committed check-in
 /// offer to that exact occupant (binding generation and execution), else 0.
 /// A frontier recorded for another occupant (a predecessor) covers nothing.
 pub fn notice_frontier(db: &Connection, seat_id: &str) -> Result<i64, ApiError> {
@@ -551,7 +563,45 @@ pub fn notice_frontier(db: &Connection, seat_id: &str) -> Result<i64, ApiError> 
     Ok(frontier.unwrap_or(0))
 }
 
-/// One programmatic notice of a check-in's offered page, with its
+/// Informational warnings settle only when their exact attributed delivery
+/// row was carried. Missing projection remains pending; legacy warnings keep
+/// their original condition/offer semantics (`None`).
+pub fn informational_notice_pending(
+    db: &Connection,
+    seat_id: &str,
+    warning_id: &str,
+) -> Result<Option<bool>, ApiError> {
+    let informational: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM warning_conditions c WHERE c.open_warning_id=?1 OR c.clear_warning_id=?1) OR EXISTS(SELECT 1 FROM messages m JOIN service_notification_publications p ON p.message_id=m.id WHERE m.id=?1 AND m.kind='warn' AND m.author_kind='programmatic')",
+        [warning_id], |r| r.get(0),
+    ).map_err(store_error)?;
+    if !informational {
+        return Ok(None);
+    }
+    let ordinal: Option<i64> = db
+        .query_row(
+            "SELECT ordinal FROM digest_programmatic_warnings WHERE seat_id=?1 AND warning_id=?2",
+            params![seat_id, warning_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let frontier = notice_frontier(db, seat_id)?;
+    Ok(Some(ordinal.is_none_or(|ordinal| ordinal > frontier)))
+}
+
+/// One seat-leading indexed probe of attributed notices above the exact
+/// current occupant's carried frontier. Projection backlog is intentionally
+/// absent: it cannot be carried by a CheckIn until attribution publishes it.
+pub fn seat_has_pending_notices(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
+    let frontier = notice_frontier(db, seat_id)?;
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2)",
+        params![seat_id,frontier], |r| r.get(0),
+    ).map_err(store_error)
+}
+
+/// One informational notice of a check-in's offered page, with its
 /// projection ordinal (the frontier key).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OfferedNotice {
@@ -559,7 +609,7 @@ pub struct OfferedNotice {
     pub ordinal: i64,
 }
 
-/// The next page of programmatic notices not yet offered to the seat's
+/// The next page of informational notices not yet offered to the seat's
 /// current occupant: one indexed walk of at most `limit` rows above the
 /// occupant's frontier, oldest first by projection ordinal. Only a prefix of
 /// this page that a check-in actually carries may be settled.
@@ -568,7 +618,7 @@ pub fn notice_offer_page(
     seat_id: &str,
     limit: usize,
 ) -> Result<Vec<OfferedNotice>, ApiError> {
-    const PAGE: &str = "SELECT w.ordinal,w.warning_id,w.thread_id,m.sequence,w.event_seq FROM (SELECT ordinal,warning_id,thread_id,event_seq FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2 ORDER BY ordinal LIMIT ?3) w JOIN messages m ON m.id=w.warning_id ORDER BY w.ordinal";
+    const PAGE: &str = "SELECT w.ordinal,w.warning_id,w.thread_id,COALESCE(m.sequence,(SELECT sm.base_sequence+pw.warning_offset FROM prepared_unavailable_warnings pw JOIN send_manifests sm ON sm.preparation_id=pw.preparation_id WHERE pw.warning_id=w.warning_id)),w.event_seq FROM (SELECT ordinal,warning_id,thread_id,event_seq FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2 ORDER BY ordinal LIMIT ?3) w LEFT JOIN messages m ON m.id=w.warning_id ORDER BY w.ordinal";
     let frontier = notice_frontier(db, seat_id)?;
     let limit = i64::try_from(limit)
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid notice page limit"))?;
@@ -597,7 +647,7 @@ pub fn notice_offer_page(
         .collect()
 }
 
-/// Settle exactly the programmatic notices a committed check-in offer
+/// Settle exactly the informational notices a committed check-in offer
 /// carried to the seat's occupant (`generation`, `execution`): advance that
 /// occupant's monotone frontier to the last carried notice's projection
 /// ordinal (wave-2 fix2 root decision (a)). `offered` must be the carried
@@ -741,10 +791,10 @@ pub fn warning_backlog(
 }
 
 /// The seat's projected pending warnings (optionally in one thread), apart
-/// from the backlog: `WINDOW` walks of programmatic notices above the current
+/// from the backlog: `WINDOW` walks of informational notices above the current
 /// occupant's offered notice frontier (newest first by projection ordinal),
 /// of attributed
-/// open-condition warning recipients and of open-condition warnings naming
+/// legacy open-condition warning recipients and of open-condition warnings naming
 /// the seat as affected (each newest first by source ordinal, per source,
 /// judged by `warning_condition_actionable`).
 pub fn projected_pending_warnings(
@@ -819,7 +869,7 @@ pub fn projected_pending_warnings(
             gather.window(window.len());
             for warning in window {
                 gather.steps += 1;
-                if let Some(item) = judged_warning(db, &warning, None)? {
+                if let Some(item) = judged_warning(db, &warning, Some(seat_id))? {
                     gather.add(item);
                 }
             }
@@ -832,7 +882,7 @@ pub fn projected_pending_warnings(
 /// The seat's pending warnings (optionally in one thread): the projected
 /// walks plus the request's `backlog` (read once by `warning_backlog`). This
 /// is the canonical pending-warning set that the digest, check-in and inbox
-/// count (wave-2 (a); a programmatic notice settles when a committed offer
+/// count (wave-2 (a); an informational notice settles when a committed offer
 /// carries it, wave-2 fix2 (a)).
 pub fn pending_warnings(
     db: &Connection,

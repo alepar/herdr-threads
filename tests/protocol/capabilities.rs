@@ -278,7 +278,8 @@ fn capability_constants_are_stable() {
             "inbox.batch_v1",
             "invitation.reject_v1",
             "participants.locations_v1",
-            "picker.directory_v1"
+            "picker.directory_v1",
+            "attention.notice_delivery_v1"
         ]
     );
 }
@@ -303,6 +304,24 @@ fn every_advertised_capability_has_a_handler() {
             INVITATION_REJECT => probe_invitation_reject(),
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
+            ATTENTION_NOTICE_DELIVERY => {
+                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let command = Command::AttentionDigestDelivery(
+                    crate::protocol::commands::AttentionDigestQuery {
+                        seat: crate::protocol::ids::SeatId::new("s"),
+                    },
+                );
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }
@@ -362,7 +381,8 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "inbox.batch_v1",
             "invitation.reject_v1",
             "participants.locations_v1",
-            "picker.directory_v1"
+            "picker.directory_v1",
+            "attention.notice_delivery_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);

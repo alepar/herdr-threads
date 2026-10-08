@@ -60,8 +60,9 @@ const V21: &str = include_str!("../../migrations/0021_invitation_rejections.sql"
 const V22: &str = include_str!("../../migrations/0022_user_message_intent.sql");
 const V23: &str = include_str!("../../migrations/0023_channel_archival.sql");
 const V24: &str = include_str!("../../migrations/0024_harness_contract_diagnostics.sql");
-const V25: &str = include_str!("../../migrations/0025_harness_adapters.sql");
-pub(crate) const LATEST_VERSION: i64 = 25;
+const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sql");
+const V26: &str = include_str!("../../migrations/0026_harness_adapters.sql");
+pub(crate) const LATEST_VERSION: i64 = 26;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -160,6 +161,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V23))
                 .and_then(|_| conn.execute_batch(V24))
                 .and_then(|_| conn.execute_batch(V25))
+                .and_then(|_| conn.execute_batch(V26))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -400,7 +402,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=25 => verify_existing(conn),
+        18..=26 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -503,11 +505,26 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
             .execute_batch(V25)
+            .and_then(|_| conn.pragma_update(None, "user_version", 25));
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(store_error(error));
+            }
+        }
+    }
+    verify_existing_v25(conn)?;
+    if (1..=25).contains(&version) {
+        verify_existing_v24(conn)?;
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V26)
             .map_err(store_error)
             .and_then(|_| verify_existing_v23(conn))
-            .and_then(|_| verify_existing_v25(conn))
+            .and_then(|_| verify_existing_v26(conn))
             .and_then(|_| {
-                conn.pragma_update(None, "user_version", 25)
+                conn.pragma_update(None, "user_version", 26)
                     .map_err(store_error)
             });
         match result {
@@ -519,7 +536,33 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_existing_v23(conn)?;
-    verify_existing_v25(conn)
+    verify_existing_v26(conn)
+}
+
+fn verify_existing_v25(conn: &Connection) -> Result<(), ApiError> {
+    let expected = V25
+        .split("\n\n")
+        .find_map(|statement| {
+            let start = statement.find("CREATE TRIGGER ")?;
+            Some(statement[start..].trim().trim_end_matches(';'))
+        })
+        .ok_or_else(|| {
+            api_error(
+                ErrorCode::IncompatibleSchema,
+                "missing warning delivery DDL",
+            )
+        })?;
+    let actual: Option<String> = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='digest_transition_warning_projected'",
+        [], |row| row.get(0),
+    ).optional().map_err(store_error)?;
+    if actual.as_deref().map(str::trim) != Some(expected) {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered warning delivery projection",
+        ));
+    }
+    Ok(())
 }
 
 /// Audit every additive archival object, including immutable/absorbing guards.
@@ -655,7 +698,7 @@ fn verify_existing_v22(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn verify_existing_v25(conn: &Connection) -> Result<(), ApiError> {
+fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
     let normalize = |sql: &str| {
         sql.split_whitespace()
             .collect::<String>()
@@ -663,7 +706,7 @@ fn verify_existing_v25(conn: &Connection) -> Result<(), ApiError> {
             .replace('"', "")
             .to_ascii_lowercase()
     };
-    for statement in V25.split(';') {
+    for statement in V26.split(';') {
         let clean = statement
             .lines()
             .filter(|line| !line.trim_start().starts_with("--"))
@@ -707,7 +750,7 @@ fn verify_existing_v25(conn: &Connection) -> Result<(), ApiError> {
         if actual.as_deref().map(normalize) != Some(normalize(&expected)) {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
-                format!("incompatible v25 {kind} {installed_name}"),
+                format!("incompatible v26 {kind} {installed_name}"),
             ));
         }
     }
@@ -1026,9 +1069,9 @@ fn verify_v12_harness_evidence(conn: &Connection) -> Result<(), ApiError> {
     if conn
         .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
         .map_err(store_error)?
-        >= 25
+        >= 26
     {
-        return verify_existing_v25(conn);
+        return verify_existing_v26(conn);
     }
     let normalize = |sql: &str| {
         sql.trim()
@@ -1591,9 +1634,9 @@ fn verify_existing_v9(conn: &Connection) -> Result<(), ApiError> {
     if conn
         .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
         .map_err(store_error)?
-        >= 25
+        >= 26
     {
-        return verify_existing_v25(conn);
+        return verify_existing_v26(conn);
     }
     let sql: Option<String> = conn
         .query_row(

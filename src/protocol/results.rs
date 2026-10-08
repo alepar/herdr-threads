@@ -48,6 +48,10 @@ pub enum CommandResult {
     DeliveryInspect(DeliveryInspection),
     PendingReceipts(Page<PendingReceipt>),
     AttentionDigest(crate::protocol::attention::AttentionDigest),
+    AttentionDigestDelivery {
+        digest: crate::protocol::attention::AttentionDigest,
+        notices_pending: bool,
+    },
     /// Hot threads for the context-recovery hook text (spec §9).
     HotThreads(HotThreads),
     Summary(crate::protocol::summary::SummaryOutcome),
@@ -1028,6 +1032,10 @@ pub enum InboxBatchItem {
     Invitation {
         thread: ThreadId,
         topic_data: String,
+        /// Complete canonical goal when it fits the selected page. Older
+        /// daemons and byte-constrained pages omit it; inspect before deciding.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        goal_data: Option<String>,
         invitation: InvitationId,
         required_service: Option<RequiredMembership>,
     },
@@ -1070,13 +1078,13 @@ fn is_false(value: &bool) -> bool {
 /// complete warning history stays available through the paginated, read-only
 /// `warnings` continuation.
 pub const MAX_PENDING_WARNING_COUNT: u64 = 1_000;
-/// Most programmatic service notices one check-in offer carries (and so
+/// Most informational warning notices one check-in offer carries (and so
 /// settles): the offered page is capped per request, so settlement is O(cap)
 /// whatever the undelivered backlog (wave-2 fix2 root decision (a)). The page
 /// is further trimmed to the offer's selected output bound.
 pub const MAX_NOTICE_PAGE_ITEMS: usize = 16;
 
-/// The page of programmatic service warn notices a check-in offer carries to
+/// The page of service and built-in warning-transition notices a check-in carries to
 /// the seat's current occupant, oldest first above that occupant's offered
 /// frontier. A committed offer settles exactly these notices, whether or not
 /// its output later reaches the agent (notices are informational, not
@@ -1485,7 +1493,7 @@ pub struct CheckInResult {
     /// Pending (actionable) warnings addressed to the seat at this check-in
     /// decision, capped at `MAX_PENDING_WARNING_COUNT`: warnings whose subject
     /// obligation (invitation or addressed receipt) is still pending, whose
-    /// unavailability episode is still open, or that are programmatic service
+    /// unavailability episode is still open, or informational service/transition
     /// warnings not yet carried by an offer to the seat's current occupant
     /// (this offer's `notices` included). Not a historical total; a
     /// bounded-read failure rolls back.
@@ -1494,10 +1502,10 @@ pub struct CheckInResult {
     /// (`warning_count` then equals the cap).
     #[serde(default)]
     pub warning_count_has_more: bool,
-    /// First page of the seat's full warning history (settled or not), with a
-    /// continuation into the same canonical, read-only seatwide `warnings` route.
+    /// Retained wire field; new offers leave it empty to avoid replaying history.
+    /// The explicit read-only `warnings` route retains complete warning history.
     pub warnings: Page<WarningRef>,
-    /// The capped page of programmatic notices this offer carries and settles
+    /// The capped page of informational notices this offer carries and settles
     /// (at most `MAX_NOTICE_PAGE_ITEMS`); omitted on the wire when empty.
     #[serde(default, skip_serializing_if = "NoticeOffer::is_empty")]
     pub notices: NoticeOffer,

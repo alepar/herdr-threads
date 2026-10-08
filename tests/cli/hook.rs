@@ -499,7 +499,7 @@ fn ready_commands_ride_the_fixed_section_in_both_paths() {
     let actions = next_actions(&prefix("/tmp/state dir"), Some(&digest));
     let cli = "herdr-threads --state-dir '/tmp/state dir'";
     let expected = [
-        format!("- accept: {cli} accept thread-1"),
+        format!("- {OPTIONAL_ACCEPT_LABEL}: {cli} accept thread-1"),
         format!("- pending mail for thread-1 and other threads: {cli} inbox"),
         format!("{cli} inbox"),
     ];
@@ -777,14 +777,14 @@ fn burst_digest_ranks_the_require_ack_handoff_first() {
         actions.header
     );
     // The invited handoff thread keeps its accept inside its group, and that
-    // accept is part of the handoff, never labelled optional (native matrix
-    // S18: a skipped handoff accept). Kills: labelling it optional.
+    // accept remains ranked with the handoff. Receipt urgency does not replace
+    // the ordinary invitation's topic/goal relevance assessment.
     let mut invited = digest.clone();
     invited.invitations.items[3].thread = crate::protocol::ids::ThreadId::new(handoff.clone());
     let actions = next_actions(&prefix(REAL_STATE), Some(&invited));
     assert_eq!(
         actions.items[1],
-        format!("- accept: {cli} accept {handoff}")
+        format!("- {OPTIONAL_ACCEPT_LABEL}: {cli} accept {handoff}")
     );
     assert_eq!(actions.pinned, 1, "{:?}", actions.items);
 }

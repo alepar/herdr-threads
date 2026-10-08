@@ -1160,13 +1160,52 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     let claim = caller_claim(&saved)?;
     let stored = contexts.attention_mark(saved.execution);
     let last = if coalesce { stored } else { None };
-    let digest = read_digest(client, &claim.seat, budget);
+    // Delivery readiness can advance when attribution finishes or a bounded
+    // page remains, independently of the immutable logical publication token.
+    // The separate advertised envelope leaves legacy digest wire shapes intact.
+    let (digest, notices_pending) = if client.supports_capability(
+        crate::protocol::capabilities::ATTENTION_NOTICE_DELIVERY,
+        budget,
+    ) {
+        match client.call(
+            Command::AttentionDigestDelivery(crate::protocol::commands::AttentionDigestQuery {
+                seat: claim.seat.clone(),
+            }),
+            budget,
+        ) {
+            Ok(CommandResult::AttentionDigestDelivery {
+                digest,
+                notices_pending,
+            }) => {
+                let valid = digest
+                    .validate()
+                    .map_err(ApiError::store_corrupt)
+                    .and_then(|()| {
+                        if digest.seat == claim.seat {
+                            Ok(digest)
+                        } else {
+                            Err(ApiError::store_corrupt("attention digest for another seat"))
+                        }
+                    });
+                (valid, notices_pending)
+            }
+            Ok(_) => (
+                Err(ApiError::store_corrupt(
+                    "service returned no delivery digest",
+                )),
+                false,
+            ),
+            Err(error) => (Err(error), false),
+        }
+    } else {
+        (read_digest(client, &claim.seat, budget), false)
+    };
     let mut mark = None;
     if let Ok(digest) = &digest {
         let advanced = match &last {
-            Some(last) => digest.token.advanced_beyond(last),
+            Some(last) => digest.token.advanced_beyond(last) || notices_pending,
             // No mark (first call, or a compaction): present what is pending.
-            None => !digest.is_empty(),
+            None => !digest.is_empty() || notices_pending,
         };
         // The stored mark only grows, whatever the coalescing decision.
         let next = stored.map_or(digest.token, |stored| stored.join(&digest.token));

@@ -2368,6 +2368,9 @@ pub struct SelectedSocketClient<'a> {
     pub output: &'a OutputSpec,
 }
 impl LocalClient for SelectedSocketClient<'_> {
+    fn supports_capability(&self, name: &str, budget: &CallBudget) -> bool {
+        self.client.supports_capability(name, budget)
+    }
     fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
         if matches!(
             command,

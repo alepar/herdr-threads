@@ -1,0 +1,23 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.90s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-d68509100ae355ec)
+
+running 1 test
+test store::cooperative_checkin_tests::builtin_warning_dedup_wake_keeps_unprojected_and_late_projected_events ... FAILED
+
+failures:
+
+---- store::cooperative_checkin_tests::builtin_warning_dedup_wake_keeps_unprojected_and_late_projected_events stdout ----
+
+thread 'store::cooperative_checkin_tests::builtin_warning_dedup_wake_keeps_unprojected_and_late_projected_events' (8718799) panicked at src/store/../../tests/store/cooperative_checkin.rs:2198:5:
+unprojected event was not carried
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    store::cooperative_checkin_tests::builtin_warning_dedup_wake_keeps_unprojected_and_late_projected_events
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2663 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `--lib`
