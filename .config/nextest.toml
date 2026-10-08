@@ -36,6 +36,12 @@ binary(integration) & test(/::(herdr_stopped_freezes_wake_lane|herdr_stopped_log
 """
 priority = 90
 
+# This CPU-heavy oracle can exceed 90 s on CI. Start it beside the long
+# clock-wait tests rather than letting it become a late tail of the run.
+[[profile.default.overrides]]
+filter = "test(=store::page_fit::tests::differential_matches_greedy_for_every_site)"
+priority = 90
+
 [[profile.default.overrides]]
 filter = "binary(hook_entrypoint)"
 priority = 80
@@ -46,6 +52,7 @@ filter = """
 binary(integration) & test(/^(lanes_latency|lane_wiring|sweep_remaining)::/)
 & !test(/::(herdr_stopped_freezes_wake_lane|idle_daemon_commits_nothing_from_deadline_wake_request_for_30s|retention_runs_alongside_the_wake_idle_bound|idle_five_lanes_30s|injected_lane_failure_logs_and_degrades_then_clears)$/)
 """
+priority = 70
 test-group = "integration-daemon"
 
 [[profile.default.overrides]]
@@ -53,6 +60,7 @@ filter = """
 binary(service) & test(/^(resolution|composition|operator|graph_d2)::/)
 & !test(/::(elected_health_does_not_keep_verified_host_after_errored_capture|elected_health_keeps_unavailable_host_after_errored_capture|elected_hung_snapshot_keeps_health_deadlines_and_owner_until_physical_join|real_cli_resolve_discards_intent_only_after_correlated_definitive_rejection|elected_driver_periodically_refreshes_without_target_requests|elected_wake_hang_allows_health_deadlines_and_retains_owner_until_joined)$/)
 """
+priority = 70
 test-group = "service-daemon"
 
 # CI: a JUnit report (per-test times; success output kept for the
