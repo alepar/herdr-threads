@@ -1,4 +1,4 @@
-use super::{created, fixture, identity, namespace};
+use super::{created, fixture, identity, namespace, saved_recovery};
 use herdr_threads::{
     protocol::{handoff::*, ids::*, time::UtcMillis},
     store::{handoff, topology_handoff},
@@ -16,7 +16,7 @@ fn child(id: &BootstrapIdentity) -> HandoffIdentity {
         send_key: id.payload.handoff.keys.send.clone(),
     }
 }
-fn linked(tx: &rusqlite::Transaction<'_>, id: &BootstrapIdentity) -> BootstrapAttachment {
+fn attached_fixture(tx: &rusqlite::Transaction<'_>, id: &BootstrapIdentity) -> BootstrapAttachment {
     topology_handoff::begin_pending(tx, &namespace(), id, UtcMillis(0)).unwrap();
     let a = BootstrapAttachment {
         attempt: BootstrapAttempt::first(),
@@ -36,6 +36,10 @@ fn linked(tx: &rusqlite::Transaction<'_>, id: &BootstrapIdentity) -> BootstrapAt
         [],
     )
     .unwrap();
+    a
+}
+fn linked(tx: &rusqlite::Transaction<'_>, id: &BootstrapIdentity) -> BootstrapAttachment {
+    let a = attached_fixture(tx, id);
     handoff::begin_linked_pending(tx, &namespace(), &a.handoff, UtcMillis(1)).unwrap();
     a
 }
@@ -553,6 +557,108 @@ fn completed_wrapper_reopens_historically_and_corruption_never_revives_protectio
         )
         .unwrap(),
         0
+    );
+    tx.commit().unwrap();
+}
+
+/// Schema-state control only: the real cancellation writer/order race is the
+/// parent's cross-leaf composition gate, never reimplemented by this fixture.
+#[test]
+fn cancelled_attached_fixture_retains_evidence_and_refuses_later_linked_begin_or_import() {
+    let mut db = fixture();
+    let id = identity();
+    let tx = db.transaction().unwrap();
+    let a = attached_fixture(&tx, &id);
+    let retained = saved_recovery(
+        &tx,
+        &id,
+        BootstrapRecoveryDisposition::Cancelled {
+            reason: "inspected lost pane before child begin".into(),
+            quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+            child_guard: BootstrapCancellationGuard {
+                attached_child: Some(a.handoff.clone()),
+            },
+        },
+        BootstrapState::Cancelled,
+        Some(a.created.clone()),
+    );
+    tx.execute(
+        "UPDATE bootstrap_handoffs SET state='cancelled',terminal_at=2 WHERE id=1",
+        [],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let status = topology_handoff::current(&db, &namespace(), &id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.state, BootstrapState::Cancelled);
+    assert_eq!(status.attachment, Some(a.clone()));
+    assert_eq!(status.creation, Some(a.created.clone()));
+    assert_eq!(status.recovery, Some(Box::new(retained)));
+    let tx = db.transaction().unwrap();
+    assert!(handoff::begin_linked_pending(&tx, &namespace(), &a.handoff, UtcMillis(3)).is_err());
+    assert!(handoff::begin_pending(&tx, &a.handoff, UtcMillis(3)).is_err());
+    assert!(
+        handoff::import_hint(
+            &tx,
+            &a.handoff,
+            a.handoff.thread.as_ref(),
+            "delayed",
+            UtcMillis(3)
+        )
+        .is_err()
+    );
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM channel_handoff_fences", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM bootstrap_attachments", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        topology_handoff::current(&tx, &namespace(), &id)
+            .unwrap()
+            .unwrap()
+            .state,
+        BootstrapState::Cancelled
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn begin_first_live_child_remains_live_and_import_never_suppresses_it() {
+    let mut db = fixture();
+    let tx = db.transaction().unwrap();
+    let id = identity();
+    let a = linked(&tx, &id);
+    let original = handoff::current(&tx, &a.handoff).unwrap().unwrap();
+    assert_eq!(original.state, HandoffState::Live);
+    assert_eq!(
+        handoff::import_hint(
+            &tx,
+            &a.handoff,
+            a.handoff.thread.as_ref(),
+            "delayed",
+            UtcMillis(3)
+        )
+        .unwrap(),
+        original
+    );
+    assert_eq!(
+        handoff::current(&tx, &a.handoff).unwrap().unwrap(),
+        original
+    );
+    assert_eq!(
+        topology_handoff::current(&tx, &namespace(), &id)
+            .unwrap()
+            .unwrap()
+            .state,
+        BootstrapState::Attached
     );
     tx.commit().unwrap();
 }
