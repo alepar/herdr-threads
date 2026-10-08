@@ -59,7 +59,7 @@ impl Style {
 pub struct Nick {
     /// Pane name, label or short seat ID (untrusted; escaped on display).
     pub name: String,
-    /// The seat's current binding harness (`claude`, `codex`, `human`).
+    /// The seat's canonical registered agent ID, or `human`.
     pub harness: Option<String>,
 }
 
@@ -71,10 +71,18 @@ impl Nick {
         }
     }
 
+    /// Display classification requires a validated catalog member, never only
+    /// a plausible spelling or a local claim of non-human occupancy.
+    pub(crate) fn is_agent(&self) -> bool {
+        self.harness
+            .as_deref()
+            .is_some_and(|id| crate::harness::registry::builtins().agent(id).is_ok())
+    }
+
     /// Agent names are already bounded per host component; preserve their
     /// complete canonical seat ID. Human names retain the harness suffix.
     pub fn display(&self) -> String {
-        let agent = matches!(self.harness.as_deref(), Some("claude" | "codex"));
+        let agent = self.is_agent();
         let bound = if self.name.contains('/') {
             (NICK_MAX + 1) * 3 + 2
         } else {
