@@ -232,6 +232,7 @@ impl LocalService for DomainService {
             Command::BeginBootstrap(_)
             | Command::ReserveBootstrapAttempt(_)
             | Command::RecordBootstrapCreated(_)
+            | Command::RecordBootstrapNotSubmitted(_)
             | Command::AttachBootstrapHandoff(_)
             | Command::CompleteLinkedBootstrap(_)
             | Command::CheckBootstrapSubmission(_)

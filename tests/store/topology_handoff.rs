@@ -109,7 +109,7 @@ fn begin_installs_attempt_one_and_thread_protection_without_delivery() {
     assert_eq!(result.state, BootstrapState::Prepared);
     assert_eq!(result.attempt, BootstrapAttempt::first());
     assert_eq!(result.attempt_state, BootstrapAttemptState::Prepared);
-    assert_eq!(counts(&tx), (1, 1, 13, 0));
+    assert_eq!(counts(&tx), (1, 1, 14, 0));
     assert_eq!(
         tx.query_row(
             "SELECT thread_id FROM bootstrap_handoffs WHERE state='prepared'",
@@ -133,7 +133,7 @@ fn begin_installs_attempt_one_and_thread_protection_without_delivery() {
         topology_handoff::begin_pending(&tx, &namespace(), &identity(), UtcMillis(9)).unwrap(),
         result
     );
-    assert_eq!(counts(&tx), (1, 1, 13, 0));
+    assert_eq!(counts(&tx), (1, 1, 14, 0));
     tx.commit().unwrap();
 }
 
@@ -193,7 +193,7 @@ fn canonical_namespace_and_full_identity_conflicts_leave_rows_unchanged() {
             .code,
         ErrorCode::OperationPayloadMismatch
     );
-    assert_eq!(counts(&tx), (1, 1, 13, 0));
+    assert_eq!(counts(&tx), (1, 1, 14, 0));
     tx.commit().unwrap();
 }
 
@@ -231,7 +231,7 @@ fn live_begin_and_replay_recheck_a2_archive_and_membership() {
             );
             assert_eq!(
                 counts(&tx),
-                if replay { (1, 1, 13, 0) } else { (0, 0, 0, 0) }
+                if replay { (1, 1, 14, 0) } else { (0, 0, 0, 0) }
             );
             tx.commit().unwrap();
         }
@@ -263,7 +263,7 @@ fn new_channel_retains_frozen_create_key_without_creating_channel() {
             .unwrap(),
         1
     );
-    assert_eq!(counts(&tx), (1, 1, 13, 0));
+    assert_eq!(counts(&tx), (1, 1, 14, 0));
 }
 
 #[test]
@@ -288,7 +288,7 @@ fn retained_identity_and_attempt_survive_database_reopen() {
         topology_handoff::current(&db, &namespace(), &identity()).unwrap(),
         Some(expected)
     );
-    assert_eq!(counts(&db), (1, 1, 13, 0));
+    assert_eq!(counts(&db), (1, 1, 14, 0));
 }
 
 #[test]
@@ -319,9 +319,9 @@ fn registry_refuses_cross_role_collisions_and_invalid_attempts_atomically() {
             .code,
         ErrorCode::Conflict
     );
-    assert_eq!(counts(&tx), (1, 1, 13, 0));
-    assert!(tx.execute("INSERT INTO bootstrap_attempts(parent_id,attempt,state,reserve_key,record_key,check_key) VALUES(1,0,'prepared','r0','d0','c0')",[]).is_err());
-    assert!(tx.execute("INSERT INTO bootstrap_attempts(parent_id,attempt,state,reserve_key,record_key,check_key) VALUES(1,1,'prepared','r1','d1','c1')",[]).is_err());
+    assert_eq!(counts(&tx), (1, 1, 14, 0));
+    assert!(tx.execute("INSERT INTO bootstrap_attempts(parent_id,attempt,state,reserve_key,record_key,check_key,not_submitted_key) VALUES(1,0,'prepared','r0','d0','c0','n0')",[]).is_err());
+    assert!(tx.execute("INSERT INTO bootstrap_attempts(parent_id,attempt,state,reserve_key,record_key,check_key,not_submitted_key) VALUES(1,1,'prepared','r1','d1','c1','n1')",[]).is_err());
     assert!(
         tx.execute("UPDATE bootstrap_handoffs SET current_attempt=99", [])
             .is_ok()
@@ -445,7 +445,7 @@ fn cancelled_replay_preserves_original_identity_without_current_live_authority()
         creation: None,
         state: BootstrapState::Cancelled,
     };
-    tx.execute("INSERT INTO bootstrap_recovery_decisions(parent_id,attempt,operation,result_json) VALUES(1,1,?1,?2)",rusqlite::params![decision.operation.as_str(),serde_json::to_vec(&retained).unwrap()]).unwrap();
+    tx.execute("INSERT INTO bootstrap_recovery_decisions(parent_id,attempt,operation,result_json,decision_kind) VALUES(1,1,?1,?2,'cancellation')",rusqlite::params![decision.operation.as_str(),serde_json::to_vec(&retained).unwrap()]).unwrap();
     tx.execute("UPDATE bootstrap_handoffs SET state='cancelled',terminal_at=2,latest_recovery_operation=?1 WHERE id=1",[decision.operation.as_str()]).unwrap();
     tx.execute_batch("UPDATE seats SET generation=2; UPDATE threads SET archived=1")
         .unwrap();
@@ -468,7 +468,7 @@ fn cancelled_replay_preserves_original_identity_without_current_live_authority()
             .code,
         ErrorCode::OperationPayloadMismatch
     );
-    assert_eq!(counts(&tx), (1, 1, 14, 0));
+    assert_eq!(counts(&tx), (1, 1, 15, 0));
     tx.commit().unwrap();
     drop(db);
     let db = Connection::open(path).unwrap();
@@ -558,7 +558,7 @@ fn live_new_channel_replay_checks_its_recorded_thread_after_creation() {
                 .code,
             expected
         );
-        assert_eq!(counts(&tx), (1, 1, 13, 0));
+        assert_eq!(counts(&tx), (1, 1, 14, 0));
         tx.commit().unwrap();
     }
 }
@@ -773,7 +773,7 @@ fn current_key_lookup_stays_bounded_after_many_retained_attempts() {
         .unwrap();
         for number in 2..=1001 {
             let attempt = BootstrapAttempt::new(number).unwrap();
-            tx.execute("INSERT INTO bootstrap_attempts(parent_id,attempt,state,reserve_key,record_key,check_key) VALUES(1,?1,?2,?3,?4,?5)",rusqlite::params![number,if number==1001 {"prepared"}else{"not_submitted"},attempt.operation(&id.compound,"reserve").unwrap().as_str(),attempt.operation(&id.compound,"record").unwrap().as_str(),attempt.operation(&id.compound,"check").unwrap().as_str()]).unwrap();
+            tx.execute("INSERT INTO bootstrap_attempts(parent_id,attempt,state,reserve_key,record_key,check_key,not_submitted_key) VALUES(1,?1,?2,?3,?4,?5,?6)",rusqlite::params![number,if number==1001 {"prepared"}else{"not_submitted"},attempt.operation(&id.compound,"reserve").unwrap().as_str(),attempt.operation(&id.compound,"record").unwrap().as_str(),attempt.operation(&id.compound,"check").unwrap().as_str(),attempt.operation(&id.compound,"not_submitted").unwrap().as_str()]).unwrap();
         }
         tx.execute(
             "UPDATE bootstrap_handoffs SET current_attempt=1001 WHERE id=1",
@@ -836,7 +836,7 @@ fn saved_recovery(
         creation,
         state,
     };
-    tx.execute("INSERT INTO bootstrap_recovery_decisions(parent_id,attempt,operation,result_json) VALUES(1,1,?1,?2)",rusqlite::params![result.operation.as_str(),serde_json::to_vec(&result).unwrap()]).unwrap();
+    tx.execute("INSERT INTO bootstrap_recovery_decisions(parent_id,attempt,operation,result_json,decision_kind) VALUES(1,1,?1,?2,?3)",rusqlite::params![result.operation.as_str(),serde_json::to_vec(&result).unwrap(),if matches!(result.disposition,BootstrapRecoveryDisposition::Cancelled{..}) {"cancellation"}else{"recovery"}]).unwrap();
     tx.execute(
         "UPDATE bootstrap_handoffs SET latest_recovery_operation=?1 WHERE id=1",
         [result.operation.as_str()],
@@ -855,7 +855,7 @@ fn cancellation() -> BootstrapRecoveryDisposition {
 }
 fn next_prepared(tx: &rusqlite::Transaction<'_>, id: &BootstrapIdentity) {
     let attempt = BootstrapAttempt::new(2).unwrap();
-    tx.execute("INSERT INTO bootstrap_attempts(parent_id,attempt,state,reserve_key,record_key,check_key) VALUES(1,2,'prepared',?1,?2,?3)",rusqlite::params![attempt.operation(&id.compound,"reserve").unwrap().as_str(),attempt.operation(&id.compound,"record").unwrap().as_str(),attempt.operation(&id.compound,"check").unwrap().as_str()]).unwrap();
+    tx.execute("INSERT INTO bootstrap_attempts(parent_id,attempt,state,reserve_key,record_key,check_key,not_submitted_key) VALUES(1,2,'prepared',?1,?2,?3,?4)",rusqlite::params![attempt.operation(&id.compound,"reserve").unwrap().as_str(),attempt.operation(&id.compound,"record").unwrap().as_str(),attempt.operation(&id.compound,"check").unwrap().as_str(),attempt.operation(&id.compound,"not_submitted").unwrap().as_str()]).unwrap();
     tx.execute(
         "UPDATE bootstrap_handoffs SET current_attempt=2,state='prepared' WHERE id=1",
         [],
