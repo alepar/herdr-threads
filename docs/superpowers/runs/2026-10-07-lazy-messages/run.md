@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-07-lazy-messages
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: roast-design
+phase: code
 codeMechanism: ordinary-subagents
 
 idea: lgtm, let's $super-auto this, fully autonomous, both roasts are on
