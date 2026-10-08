@@ -164,13 +164,16 @@ pub(super) struct World {
 }
 impl World {
     pub(super) fn new() -> Self {
+        Self::with_routing_names("state", "h.sock")
+    }
+    pub(super) fn with_routing_names(state_name: &str, host_name: &str) -> Self {
         let root = PathBuf::from(format!(
             "/private/tmp/htlc-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let scratch = Scratch(root.clone());
-        let host = root.join("h.sock");
+        let host = root.join(host_name);
         let fake = FakeHost::start(
             &host,
             (1..=4)
@@ -179,7 +182,7 @@ impl World {
         );
         let mut w = Self {
             root: root.clone(),
-            state: root.join("state"),
+            state: root.join(state_name),
             host,
             seats: vec![],
             thread: String::new(),

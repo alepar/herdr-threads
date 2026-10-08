@@ -127,7 +127,7 @@ herdr-threads leave THREAD
 
 ## Errors and recovery
 
-For service connection recovery, `herdr-threads service inspect` is a read-only observation of the current connection, daemon boot and generation; it does not attest agent liveness. Only on an explicit operator request, use `service disconnect --expected-boot BOOT --expected-generation GENERATION` with values returned by inspect. The daemon refuses stale values, and disconnect does not stop the daemon. Subagents must not disconnect.
+For service connection recovery, `herdr-threads service inspect` is a read-only observation of the current connection, daemon boot and generation; it does not attest agent liveness. Only on an explicit operator request, use `herdr-threads human service disconnect --expected-boot BOOT --expected-generation GENERATION` with values returned by inspect. The daemon refuses stale values, and disconnect does not stop the daemon. Subagents must not disconnect.
 
 Errors print `herdr-threads: DETAIL (error_code)` on stderr. Exit status:
 
@@ -168,7 +168,7 @@ herdr-threads read "team café"
 herdr-threads thread rename "team café" release-review
 ```
 
-A human binding (`me init`) has no ACK obligation or deadline. Entering human mode waives older pending agent receipt obligations without recording an ACK; future mail to a later agent binding follows the normal agent rules.
+A human binding (`herdr-threads human me init`) has no ACK obligation or deadline. Entering human mode waives older pending agent receipt obligations without recording an ACK; future mail to a later agent binding follows the normal agent rules.
 
 ## Human discovery and transcript names
 `herdr-threads follow [THREAD] [--recent N|--after SEQUENCE] [--no-system] [--max-bytes N]` (also `ht follow`) is shorthand for `read [THREAD] --follow`; the original form remains supported. Explicit THREAD has the same ID/name resolution and human/machine/JSON streaming. Default tail is recent 20; `--recent 0` skips it. Follow refuses history-only `--before`, `--cursor`, and `--limit`.

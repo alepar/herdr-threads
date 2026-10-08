@@ -153,7 +153,7 @@ where
                     error.kind(),
                     format!(
                         "inbox page displayed; settlement intent recording failed: {error}{}",
-                        recovery_commands(&refs, human)
+                        recovery_commands(&refs, human, output)
                     ),
                 )));
             }
@@ -172,7 +172,7 @@ where
         ) {
             failures.push(format!(
                 "{error:?}{}",
-                recovery_commands(&[reference], human)
+                recovery_commands(&[reference], human, output)
             ));
         }
     }
@@ -185,13 +185,27 @@ where
         ))))
     }
 }
-fn recovery_commands(refs: &[crate::cli::journal::IntentRef], human: bool) -> String {
+fn recovery_commands(
+    refs: &[crate::cli::journal::IntentRef],
+    human: bool,
+    output: &OutputSpec,
+) -> String {
     refs.iter()
         .map(|r| {
+            let mut argv = vec!["herdr-threads".to_owned()];
+            if human {
+                argv.push("human".into());
+            }
+            if let Some(state_dir) = &output.context.state_dir {
+                argv.extend(["--state-dir".into(), state_dir.clone()]);
+            }
+            if let Some(host) = &output.context.host {
+                argv.extend(["--host-endpoint".into(), host.clone()]);
+            }
+            argv.extend(["retry".into(), r.recovery_ref()]);
             format!(
-                "; retry herdr-threads {}retry {}",
-                if human { "human " } else { "" },
-                r.recovery_ref()
+                "; retry {}",
+                crate::protocol::output::format_command_argv(&argv)
             )
         })
         .collect()

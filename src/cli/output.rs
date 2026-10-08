@@ -268,9 +268,9 @@ impl From<ApiError> for OutputError {
 
 /// Write the selected encoding of `result` and return the number of bytes
 /// written. For a machine consumer those are exactly the bytes the shared
-/// encoder measured. For a person at a terminal they are the human rendering
-/// instead, which is not measured: `max_bytes` is enforced on the machine
-/// encoding only, so the human text may be longer or shorter than the budget.
+/// encoder measured. Human inbox output also measures the final rendered bytes
+/// against `max_bytes`. Other human renderers retain the machine-encoding budget
+/// check only, so their final text may be longer or shorter than the budget.
 /// The caller keeps any durable intent pending until this returns
 /// successfully.
 pub fn write_selected<W: Write>(

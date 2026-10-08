@@ -957,7 +957,7 @@ enum Top {
     },
     /// Inspect or disconnect the live service connection for recovery.
     #[command(
-        after_help = "Recovery workflow:\n  herdr-threads service inspect\n  herdr-threads service disconnect --expected-boot BOOT --expected-generation GENERATION\n\nUse the boot and generation returned by inspect. Disconnect revokes that exact connection; it does not stop the daemon."
+        after_help = "Recovery workflow:\n  herdr-threads service inspect\n  herdr-threads human service disconnect --expected-boot BOOT --expected-generation GENERATION\n\nUse the boot and generation returned by inspect. Disconnect revokes that exact connection; it does not stop the daemon."
     )]
     Service {
         #[command(subcommand)]

@@ -96,7 +96,13 @@ impl Proxy {
                                 )
                             });
                             write_frame(&mut s, &serde_json::to_vec(&v).unwrap());
-                        } else if mode == 2 && q["command"]["kind"] == "complete_inbox_delivery" { // canonical commit, lost reply
+                        } else if (mode == 2 && q["command"]["kind"] == "complete_inbox_delivery")
+                            || (mode == 3
+                                && matches!(
+                                    q["command"]["kind"].as_str(),
+                                    Some("ack_displayed" | "complete_inbox_delivery")
+                                ))
+                        { // canonical commit, lost reply
                         } else {
                             write_frame(&mut s, &reply);
                         }

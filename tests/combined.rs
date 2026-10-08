@@ -29,6 +29,8 @@ mod inbox_continuation_context;
 mod installer_integrations;
 #[path = "protocol/lazy_delivery.rs"]
 mod lazy_delivery;
+#[path = "cli/lazy_recovery_context.rs"]
+mod lazy_recovery_context;
 #[path = "store/lazy_schema.rs"]
 mod lazy_schema;
 #[path = "cli/lazy_send.rs"]

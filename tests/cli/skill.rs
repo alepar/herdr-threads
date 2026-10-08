@@ -6,6 +6,121 @@ fn run(words: &[&str]) -> String {
     String::from_utf8(out).unwrap()
 }
 
+fn operator_recipe(recipe: &str, disconnect: bool) {
+    use crate::cli::{
+        actor_route::InvocationActor,
+        commands::{CliAction, parse_argv},
+    };
+    use crate::protocol::commands::Command;
+    let boot = "00000000-0000-4000-8000-000000000001";
+    let mut words = shlex::split(recipe).unwrap();
+    if words[0] != "herdr-threads" {
+        words.insert(0, "herdr-threads".into());
+    }
+    for word in &mut words {
+        match word.as_str() {
+            "BOOT" => *word = boot.into(),
+            "GENERATION" => *word = "7".into(),
+            _ => {}
+        }
+    }
+    // Feed the shipped command directly to the production actor parser before
+    // adding any context. A missing immediate namespace must fail this test.
+    let parsed = parse_argv(words.clone())
+        .unwrap_or_else(|error| panic!("compiled recipe refused: {recipe}: {error:?}"));
+    assert_eq!(parsed.actor, InvocationActor::Human);
+    let mut rooted = words.clone();
+    rooted.remove(1);
+    assert!(
+        parse_argv(rooted.clone()).is_err(),
+        "root Agent must refuse person/operator action"
+    );
+    rooted.insert(1, "--human".into());
+    assert!(
+        parse_argv(rooted).is_err(),
+        "output-only --human grants no actor authority"
+    );
+    words.splice(
+        2..2,
+        [
+            "--state-dir".into(),
+            "/private/tmp/state's $` dir".into(),
+            "--host-endpoint".into(),
+            "/private/tmp/host' $.sock".into(),
+            "--human".into(),
+        ],
+    );
+    let routed = parse_argv(words).unwrap();
+    assert_eq!(routed.actor, InvocationActor::Human);
+    assert_eq!(
+        routed.output.context.state_dir.as_deref(),
+        Some("/private/tmp/state's $` dir")
+    );
+    assert_eq!(
+        routed.output.context.host.as_deref(),
+        Some("/private/tmp/host' $.sock")
+    );
+    if disconnect {
+        assert!(
+            matches!(routed.action, CliAction::Wire(Command::ServiceDisconnect(request)) if request.expected_boot == boot && request.expected_generation == 7)
+        );
+    } else {
+        assert!(matches!(routed.action, CliAction::MeInit { .. }));
+    }
+}
+
+// Catches compiled recovery instructions that the enforced actor parser refuses.
+// These tests parse administrative recipes; they never execute those actions.
+#[test]
+fn final_wave_compiled_guide_service_recovery_is_lawful() {
+    let guide = run(&["herdr-threads", "skill"]);
+    let paragraph = guide
+        .lines()
+        .find(|line| line.starts_with("For service connection recovery,"))
+        .unwrap();
+    let recipe = paragraph
+        .split('`')
+        .find(|part| part.contains("service disconnect"))
+        .unwrap();
+    operator_recipe(recipe, true);
+    let inspect = paragraph
+        .split('`')
+        .find(|part| part.contains("service inspect"))
+        .unwrap();
+    assert!(matches!(
+        crate::cli::commands::parse_argv(shlex::split(inspect).unwrap())
+            .unwrap()
+            .action,
+        crate::cli::commands::CliAction::Wire(crate::protocol::commands::Command::ServiceInspect)
+    ));
+}
+
+#[test]
+fn final_wave_compiled_guide_human_binding_is_lawful() {
+    let guide = run(&["herdr-threads", "skill"]);
+    let paragraph = guide
+        .lines()
+        .find(|line| line.starts_with("A human binding ("))
+        .unwrap();
+    let recipe = paragraph
+        .split('`')
+        .find(|part| part.contains("me init"))
+        .unwrap();
+    operator_recipe(recipe, false);
+}
+
+#[test]
+fn final_wave_compiled_service_help_recovery_is_lawful() {
+    let help = run(&["herdr-threads", "service", "--help"]);
+    let recipe = help
+        .lines()
+        .find(|line| {
+            line.trim_start().starts_with("herdr-threads") && line.contains("service disconnect")
+        })
+        .unwrap();
+    operator_recipe(recipe.trim(), true);
+}
+
 // Kills: printing anything but the checked-in file, or `--skill` diverging
 // from `skill`, or either needing a daemon/state context (no pane, no state
 // directory here).
