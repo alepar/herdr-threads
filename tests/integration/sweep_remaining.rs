@@ -61,65 +61,445 @@ impl Scene {
         &self.0.session
     }
 
-    /// Sends one message and returns the time from the send's own
-    /// request-origin commit to the wake lane's first commit after it (the
-    /// attempt), which must come through the deadline lane's wake kick and not
-    /// the 5 s tick. `recipient` is used once.
+    /// Measures from the send's first request commit to the wake producer
+    /// after writer release, before host handling. Its bounded read proves the
+    /// exact active reservation; the endpoint precedes that read and excludes
+    /// observer scheduling. Each recipient must be fresh.
     fn send_to_wake_attempt(&self, recipient: usize, body: &str) -> Duration {
         let s = self.session();
         s.wait_commits_quiet("wake", Duration::from_millis(1500));
-        let baseline = s.commits("wake");
-        let stop = Arc::new(AtomicBool::new(false));
-        let attempted_at: Arc<Mutex<Option<Instant>>> = Arc::default();
-        let poller = {
-            let (probe, stop, slot) = (
-                s.probe.clone(),
-                Arc::clone(&stop),
-                Arc::clone(&attempted_at),
-            );
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::SeqCst) {
-                    if probe.commit_counts().get("wake").copied().unwrap_or(0) > baseline {
-                        *slot.lock().unwrap() = Some(Instant::now());
-                        return;
+        let (caller, thread) = &self.0.recipients[recipient];
+        let db = s.db();
+        let target = WakeTarget::fresh(&db, &caller.seat, thread, &self.0.sender.seat, body);
+        let db = rusqlite::Connection::open_with_flags(
+            db.path().expect("isolated database path"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        db.busy_timeout(Duration::from_millis(50)).unwrap();
+        let db = Mutex::new(db);
+        let attempted: Arc<Mutex<Option<Result<WakeAttempt, String>>>> = Arc::default();
+        let slot = attempted.clone();
+        let _observer = s
+            .probe
+            .observe_lane_commits(
+                Lane::Wakes,
+                Box::new(move |at| {
+                    let mut slot = slot.lock().unwrap();
+                    if slot.is_none() {
+                        match target.read_attempt(&db.lock().unwrap(), at) {
+                            Ok(Some(attempt)) => *slot = Some(Ok(attempt)),
+                            Ok(None) => {}
+                            Err(error) => *slot = Some(Err(error.to_string())),
+                        }
                     }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            })
-        };
+                }),
+            )
+            .expect("exclusive measured wake observer");
         let sent_after = Instant::now();
-        self.0.send(recipient, body, &[]);
+        let sent = self.0.send(recipient, body, &[]);
+        let message = sent.as_str().expect("sent message ID");
         let until = Instant::now() + Duration::from_secs(3);
-        while attempted_at.lock().unwrap().is_none() && Instant::now() < until {
+        loop {
+            let kicks: Vec<_> = s
+                .probe
+                .kick_log()
+                .into_iter()
+                .filter(|(_, _, at)| *at >= sent_after)
+                .collect();
+            if let Some(attempt) = attempted.lock().unwrap().as_ref() {
+                let attempt = attempt
+                    .as_ref()
+                    .unwrap_or_else(|error| panic!("target proof read: {error}"));
+                if let Some(latency) = fenced_send_measurement(&kicks, Some(attempt), message) {
+                    return latency;
+                }
+            }
+            assert!(
+                Instant::now() < until,
+                "no correlated recipient attempt and materialization kick within 3 s: recipient {}, message {message}, proof {:?}, kicks {kicks:?}",
+                caller.seat,
+                attempted.lock().unwrap()
+            );
             std::thread::sleep(Duration::from_millis(1));
         }
-        stop.store(true, Ordering::SeqCst);
-        poller.join().unwrap();
-        let kicks: Vec<_> = s
-            .probe
-            .kick_log()
-            .into_iter()
-            .filter(|(_, _, at)| *at >= sent_after)
-            .collect();
-        let attempted = attempted_at.lock().unwrap().unwrap_or_else(|| {
-            panic!(
-                "the wake lane never attempted the send within 3 s: commits {:?}, kicks {kicks:?}",
-                s.probe.commit_counts()
-            )
-        });
-        let (_, _, committed_at) = kicks
-            .iter()
-            .find(|(_, origin, _)| origin.is_none())
-            .unwrap_or_else(|| panic!("no request-origin commit after the send: {kicks:?}"));
-        assert!(
-            kicks
-                .iter()
-                .any(|(lanes, origin, _)| lanes.contains(Lane::Wakes)
-                    && *origin == Some(Lane::Deadlines)),
-            "the deadline lane's materialization kicks the wake lane: {kicks:?}"
-        );
-        attempted.saturating_duration_since(*committed_at)
     }
+}
+
+#[derive(Debug)]
+struct WakeAttempt {
+    message: String,
+    // Captured on the producer after writer release, before exact-target read.
+    proved_at: Instant,
+}
+
+struct WakeTarget {
+    seat: String,
+    thread: String,
+    sender: String,
+    body: String,
+    after_seq: i64,
+}
+
+impl WakeTarget {
+    fn fresh(
+        db: &rusqlite::Connection,
+        seat: &str,
+        thread: &str,
+        sender: &str,
+        body: &str,
+    ) -> Self {
+        let competing: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM wake_work WHERE seat_id=?1 AND
+                (reserved_at_utc IS NOT NULL OR last_reserved_at_utc IS NOT NULL OR completed_at_utc IS NOT NULL))
+             OR EXISTS(SELECT 1 FROM prepared_recipients r JOIN send_manifests m ON m.preparation_id=r.preparation_id WHERE r.seat_id=?1)
+             OR EXISTS(SELECT 1 FROM receipt_state WHERE seat_id=?1 AND state='pending')
+             OR EXISTS(SELECT 1 FROM digest_pending_invitations WHERE seat_id=?1)
+             OR EXISTS(SELECT 1 FROM digest_open_warning_recipients WHERE seat_id=?1)
+             OR EXISTS(SELECT 1 FROM digest_programmatic_warnings WHERE seat_id=?1)",
+            [seat], |row| row.get(0)).unwrap();
+        assert!(
+            !competing,
+            "measured recipient {seat} has prior attempts or competing attention"
+        );
+        let after_seq = db.query_row("SELECT decision_seq FROM host_instances WHERE id=(SELECT instance_id FROM seats WHERE id=?1)", [seat], |row| row.get(0)).unwrap();
+        Self {
+            seat: seat.into(),
+            thread: thread.into(),
+            sender: sender.into(),
+            body: body.into(),
+            after_seq,
+        }
+    }
+
+    fn read_attempt(
+        &self,
+        db: &rusqlite::Connection,
+        proved_at: Instant,
+    ) -> rusqlite::Result<Option<WakeAttempt>> {
+        use rusqlite::OptionalExtension;
+        // One snapshot proves the sole new Ordinary publication, canonical
+        // Agent binding, frozen ACK recipient, completed materialization job,
+        // exact pending receipt and first ACTIVE target reservation. Observe
+        // on the producer before host refusal can restore its prior frontier;
+        // completed timestamps never stand in for a target association.
+        let message: Option<String> = db.query_row(
+            "SELECT m.id FROM messages m
+             JOIN send_manifests sm ON sm.message_id=m.id
+             JOIN prepared_recipients r ON r.preparation_id=sm.preparation_id AND r.seat_id=?1
+             JOIN work_jobs j ON j.subject_id=sm.preparation_id AND j.kind='send_attention' AND j.status='complete'
+             JOIN receipt_state rs ON rs.message_id=m.id AND rs.seat_id=r.seat_id
+             JOIN occupant_bindings b ON b.seat_id=r.seat_id AND b.ended_at IS NULL AND b.harness!='human'
+             JOIN seats s ON s.id=b.seat_id AND s.generation=b.generation AND s.state='resolved'
+             JOIN wake_work w ON w.seat_id=r.seat_id AND w.binding_generation=b.generation
+             WHERE m.thread_id=?2 AND m.actor_seat_id=?3 AND m.body=?4 AND m.decision_seq>?5
+               AND m.kind='ordinary' AND m.delivery_mode='ordinary'
+               AND sm.recipient_count=1 AND sm.warning_count=0
+               AND r.ack_required=1 AND r.eligible_at_snapshot=1 AND r.frozen_duration_ms=300000
+               AND rs.state='pending' AND rs.ack_required=1 AND rs.acked_at IS NULL
+               AND w.reservation_id IS NOT NULL AND w.reservation_boot IS NOT NULL
+               AND w.last_receipt_seq=m.decision_seq AND w.last_receipt_offset=m.event_offset
+               AND (SELECT count(*) FROM prepared_recipients pr JOIN send_manifests pm ON pm.preparation_id=pr.preparation_id WHERE pr.seat_id=?1)=1
+               AND (SELECT count(*) FROM receipt_state WHERE seat_id=?1 AND state='pending')=1
+               AND NOT EXISTS(SELECT 1 FROM digest_pending_invitations WHERE seat_id=?1)
+               AND NOT EXISTS(SELECT 1 FROM digest_open_warning_recipients WHERE seat_id=?1)
+               AND NOT EXISTS(SELECT 1 FROM digest_programmatic_warnings WHERE seat_id=?1)",
+            rusqlite::params![self.seat, self.thread, self.sender, self.body, self.after_seq],
+            |row| row.get(0)).optional()?;
+        Ok(message.map(|message| WakeAttempt { message, proved_at }))
+    }
+}
+
+fn fenced_send_measurement(
+    kicks: &[herdr_threads::app::KickRecord],
+    attempted: Option<&WakeAttempt>,
+    message: &str,
+) -> Option<Duration> {
+    let attempted = attempted?;
+    assert_eq!(
+        attempted.message, message,
+        "producer proof must identify the returned send"
+    );
+    // Publication schedules send_attention on Deadlines. Its writer's kick
+    // must be flushed, as must the materializer's Deadlines -> Wakes kick.
+    if !kicks
+        .iter()
+        .any(|(lanes, origin, _)| origin.is_none() && lanes.contains(Lane::Deadlines))
+        || !kicks.iter().any(|(lanes, origin, _)| {
+            *origin == Some(Lane::Deadlines) && lanes.contains(Lane::Wakes)
+        })
+    {
+        return None;
+    }
+    let (_, _, committed_at) = kicks.iter().find(|(_, origin, _)| origin.is_none())?;
+    // The preparation commit may precede publication: retaining the original
+    // earliest-request anchor makes the unchanged 100 ms check stricter.
+    Some(attempted.proved_at.saturating_duration_since(*committed_at))
+}
+
+// Ordering control: real ordinary publication/materialization, no daemon or host.
+#[test]
+fn retention_observer_waits_for_correlated_materialization_kick() {
+    use herdr_threads::{
+        app::SystemClock,
+        ports::{DurableWorkAdmission, SendPreparationProgress, StorePort},
+        protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            commands::{DeliveryMode, PermitMutation, SendMessage},
+            ids::*,
+            pagination::PageRequest,
+            results::CommandResult,
+            time::{CallBudget, Cancellation, Clock, MonoInstant},
+        },
+        service::kicks::enter_lane,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let iso = TestIsolation::new("retention-observer-ordering");
+    let clock = Arc::new(SystemClock::new());
+    let budget = || CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 3000),
+        cancellation: Cancellation::default(),
+    };
+    let context = StoreContext::new(iso.path("store.db"), clock.clone());
+    let db = context.open_writer().unwrap();
+    db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'b',1,1);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','ordering','ordering',0,0);").unwrap();
+    for seat in ["a", "b", "c"] {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES(?1,'i','resolved','native',?2,1,1,0)", rusqlite::params![seat,format!("p-{seat}")]).unwrap();
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i',?1,'b',1,1,1,'fresh',0,?2,'inc','coherent_enumeration',1)",rusqlite::params![format!("p-{seat}"),format!("term-{seat}")]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES(?1,1,?2,'b',1,1,'codex',?3,?5,'cooperative_top_level',0,0,?4,'inc')",rusqlite::params![seat,format!("p-{seat}"),format!("session-{seat}"),format!("term-{seat}"),format!("00000000-0000-4000-8000-0000000000{seat}1")]).unwrap();
+        if seat != "c" {
+            db.execute(
+                "INSERT INTO memberships(thread_id,seat_id,state) VALUES('t',?1,'joined')",
+                [seat],
+            )
+            .unwrap();
+            db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t',?1,1,1)",[seat]).unwrap();
+        }
+    }
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES('unrelated','t','c',1,'pending',0,1,300000,300000);").unwrap();
+    let store = Arc::new(
+        SqliteStore::new(
+            context,
+            "i",
+            StoreSettings {
+                daemon_boot: Some(uuid::Uuid::new_v4()),
+                wake_batch_delay_ms: 0,
+                ..StoreSettings::default()
+            },
+        )
+        .unwrap(),
+    );
+    let kicks: Arc<Mutex<Vec<herdr_threads::app::KickRecord>>> = Arc::default();
+    let recorded = kicks.clone();
+    store.set_kick_sink(Box::new(move |lanes, origin| {
+        recorded
+            .lock()
+            .unwrap()
+            .push((lanes, origin, Instant::now()))
+    }));
+    let target = WakeTarget::fresh(&db, "b", "t", "a", "ordering target");
+    let request = SendMessage {
+        delivery_mode: DeliveryMode::Ordinary,
+        user_intent: None,
+        thread: ThreadId::new("t"),
+        body: "ordering target".into(),
+        invited_recipients: vec![SeatId::new("b")],
+        deadline_millis: None,
+        relays_user: false,
+        operation: OperationId::new("send"),
+        claim: CallerClaim {
+            instance: "i".into(),
+            seat: SeatId::new("a"),
+            target: HostTargetId::new("p-a"),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("session-a"),
+            execution: ExecutionId::new("00000000-0000-4000-8000-0000000000a1"),
+        },
+    };
+    while !matches!(
+        StorePort::prepare_send_step(
+            &*store,
+            &request,
+            DurableWorkAdmission::new(16).unwrap(),
+            &budget()
+        )
+        .unwrap(),
+        SendPreparationProgress::Ready { .. }
+    ) {}
+    let mutation = PermitMutation::SendMessage(request);
+    let permit = StorePort::issue_cooperative_permit(
+        &*store,
+        herdr_threads::store::cooperative_permit_request(&mutation).unwrap(),
+        &budget(),
+    )
+    .unwrap();
+    let CommandResult::MessageSent(message) =
+        StorePort::mutate(&*store, mutation, permit, &budget()).unwrap()
+    else {
+        panic!("message")
+    };
+    let job:String = db.query_row("SELECT w.id FROM work_jobs w JOIN send_manifests m ON m.preparation_id=w.subject_id WHERE m.message_id=?1 AND w.kind='send_attention'",[message.as_str()],|r|r.get(0)).unwrap();
+    assert!(
+        target.read_attempt(&db, Instant::now()).unwrap().is_none(),
+        "publication without materialization is not an attempt"
+    );
+    let baseline = store.commit_counts()["wake"];
+    let (paused_tx, paused_rx) = std::sync::mpsc::sync_channel(1);
+    let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+    let resume_rx = Mutex::new(resume_rx);
+    let armed = AtomicBool::new(true);
+    store.set_kick_pause(Box::new(move || {
+        if herdr_threads::service::kicks::current_origin() == Some(Lane::Deadlines)
+            && armed.swap(false, Ordering::SeqCst)
+        {
+            paused_tx.send(()).unwrap();
+            resume_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap();
+        }
+    }));
+    struct PausedWriter {
+        resume: Option<std::sync::mpsc::SyncSender<()>>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for PausedWriter {
+        fn drop(&mut self) {
+            if let Some(tx) = self.resume.take() {
+                let _ = tx.send(());
+            }
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+    let worker_store = store.clone();
+    let worker_job = job.clone();
+    let thread = std::thread::spawn(move || {
+        let _origin = enter_lane(Lane::Deadlines);
+        let clock = SystemClock::new();
+        let budget = CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 3000),
+            cancellation: Cancellation::default(),
+        };
+        let progress = StorePort::advance_work(
+            &*worker_store,
+            &worker_job,
+            DurableWorkAdmission::new(16).unwrap(),
+            &budget,
+        )
+        .unwrap();
+        assert!(!progress.has_more);
+    });
+    let paused = PausedWriter {
+        resume: Some(resume_tx),
+        thread: Some(thread),
+    };
+    paused_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert_eq!(db.query_row("SELECT count(*) FROM receipt_state WHERE message_id=?1 AND seat_id='b' AND ack_required=1",[message.as_str()],|r|r.get::<_,i64>(0)).unwrap(),1);
+    let candidate = StorePort::wake_candidates(&*store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|c| c.seat.as_str() == "c")
+        .unwrap();
+    {
+        let _origin = enter_lane(Lane::Wakes);
+        assert!(
+            StorePort::reserve_wake(&*store, &candidate, &budget())
+                .unwrap()
+                .is_some()
+        );
+    }
+    assert!(store.commit_counts()["wake"] > baseline);
+    let before = kicks.lock().unwrap().clone();
+    assert!(
+        target.read_attempt(&db, Instant::now()).unwrap().is_none(),
+        "unrelated c's reservation cannot prove b's attempt"
+    );
+    assert!(fenced_send_measurement(&before, None, message.as_str()).is_none());
+    println!(
+        "CONTROL unrelated c incremented global wake count; target {message:?}/b remains unreserved; kicks={before:?}"
+    );
+
+    // A real delayed target reservation, still within the original 3 s
+    // convergence bound, must fail the original 100 ms latency budget.
+    std::thread::sleep(Duration::from_millis(120));
+    let producer_store = store.clone();
+    let path = iso.path("store.db");
+    let attempted = std::thread::spawn(move || {
+        let _origin = enter_lane(Lane::Wakes);
+        let clock = SystemClock::new();
+        let budget = CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 3000),
+            cancellation: Cancellation::default(),
+        };
+        let candidate =
+            StorePort::wake_candidates(&*producer_store, PageRequest::default(), &budget)
+                .unwrap()
+                .items
+                .into_iter()
+                .find(|c| c.seat.as_str() == "b")
+                .unwrap();
+        assert!(
+            StorePort::reserve_wake(&*producer_store, &candidate, &budget)
+                .unwrap()
+                .is_some()
+        );
+        let db =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        target
+            .read_attempt(&db, Instant::now())
+            .unwrap()
+            .expect("exact b publication/receipt/frontier after producer reservation")
+    })
+    .join()
+    .unwrap();
+    assert!(
+        fenced_send_measurement(&before, Some(&attempted), message.as_str()).is_none(),
+        "even target proof cannot bypass the paused materialization kick"
+    );
+    drop(paused);
+    let after = kicks.lock().unwrap().clone();
+    let latency = fenced_send_measurement(&after, Some(&attempted), message.as_str()).unwrap();
+    let without_publication: Vec<_> = after
+        .iter()
+        .copied()
+        .filter(|(_, origin, _)| origin.is_some())
+        .collect();
+    assert!(
+        fenced_send_measurement(&without_publication, Some(&attempted), message.as_str()).is_none(),
+        "a flushed publication request kick is also required"
+    );
+    assert!(
+        latency >= Duration::from_millis(100),
+        "control must really delay the target attempt: {latency:?}"
+    );
+    assert!(
+        std::panic::catch_unwind(|| assert!(
+            latency < Duration::from_millis(100),
+            "commit to wake attempt took {latency:?}"
+        ))
+        .is_err(),
+        "real >100 ms must remain rejected"
+    );
+    // Deliberately delay the observer after the producer transferred its
+    // proof. The producer endpoint, hence measured duration, stays identical.
+    std::thread::sleep(Duration::from_millis(120));
+    assert_eq!(
+        fenced_send_measurement(&after, Some(&attempted), message.as_str()),
+        Some(latency)
+    );
+    assert!(attempted.proved_at.elapsed() >= Duration::from_millis(100));
+    println!(
+        "CONTROL target={message:?}/b exact materialization/reservation; released deadline kick={after:?}; producer upper bound={latency:?}; delayed observer leaves endpoint unchanged"
+    );
 }
 
 /// Waits until every lane has finished a pass (the registry's Pacers).
