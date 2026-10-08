@@ -2725,34 +2725,7 @@ pub fn resolve_seat(
                     "resolution guard request mismatch",
                 ));
             }
-            if current_resolution_owner(tx, instance, &guard)?.is_none() {
-                // A previously unowned target can allocate only before a known
-                // lifecycle change after this explicit read. A concurrent new
-                // allocation is handled by the valid existing-owner branch.
-                let lifecycle: i64 = tx
-                    .query_row(
-                        "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
-                        [instance],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                let published_lifecycle =
-                    checked_host_number(guard.admission().lifecycle_revision)?
-                        .checked_add(1)
-                        .ok_or_else(|| {
-                            api_error(
-                                ErrorCode::SequenceExhausted,
-                                "resolution lifecycle revision exhausted",
-                            )
-                        })?;
-                if lifecycle != published_lifecycle {
-                    return Err(api_error(
-                        ErrorCode::TargetUnresolved,
-                        "allocation observation predates a lifecycle change",
-                    ));
-                }
-                validate_resolution_allocation(tx, instance, guard.structural_proof())?;
-            }
+            validate_bootstrap_creation(tx, instance, &guard)?;
             Ok(())
         },
         |tx, at| {
