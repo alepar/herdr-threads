@@ -1,7 +1,7 @@
 //! ht-4is.6.7: read-only requests stay fast under a multi-agent party with a
 //! slow Herdr host. Five stand-in seats check in, send required-ACK messages
 //! and ACK them concurrently through the installed executable while every
-//! host call (`ping`, `session.snapshot`, `pane.get`, `agent.get`,
+//! host call (`ping`, `session.snapshot`, `pane.get`, `agent.get`, `agent.read`,
 //! `agent.prompt`) is slow, up to 1.5 s, and due wakes are prompted. History
 //! and Health latency is measured end to end (including process start); a
 //! follower running far longer than one request budget must keep printing
@@ -130,6 +130,18 @@ impl SlowHost {
                         "agent.prompt" => match find("target") {
                             Some(agent) => {
                                 json!({"id":id,"result":{"type":"agent_prompted","agent":agent}})
+                            }
+                            None => {
+                                json!({"id":id,"error":{"code":"agent_not_found","message":"no agent"}})
+                            }
+                        },
+                        "agent.read" => match find("target") {
+                            Some(pane) => {
+                                let text = include_str!(
+                                    "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
+                                );
+                                json!({"id":id,"result":{"type":"pane_read","read":{
+                                    "pane_id":pane["pane_id"],"source":"detection","text":text}}})
                             }
                             None => {
                                 json!({"id":id,"error":{"code":"agent_not_found","message":"no agent"}})

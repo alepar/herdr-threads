@@ -296,7 +296,7 @@ fn sent_and_verified_advances_one_step() {
 }
 
 #[test]
-fn unsubmitted_after_retry_reports_unsubmitted_and_advances_exactly_one_step() {
+fn held_prompt_reports_unsubmitted_and_advances_exactly_one_step() {
     let seam = Seam::new(vec![
         AgentComposerState::HoldingPrompt,
         AgentComposerState::HoldingPrompt,
@@ -318,8 +318,8 @@ fn unsubmitted_after_retry_reports_unsubmitted_and_advances_exactly_one_step() {
         assert_eq!(seam.host.prompts.load(Ordering::SeqCst), 1);
         assert_eq!(
             seam.host.submit_keys.load(Ordering::SeqCst),
-            1,
-            "single submit-key retry"
+            0,
+            "verification never submits a user draft"
         );
 
         // Within the ladder delay nothing is sent again.

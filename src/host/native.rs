@@ -18,9 +18,10 @@ use crate::protocol::{
     time::{CallBudget, Clock},
 };
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -61,12 +62,22 @@ const COMPOSER_SETTLE_MILLIS: u64 = 250;
 /// the pane; a submitted one is pushed above the empty composer box.
 const COMPOSER_TAIL_LINES: usize = 4;
 
+const FOCUSED_EMPTY_MILLIS: u64 = 60_000;
+const MAX_EMPTY_WINDOWS: usize = 1_024;
+
+struct EmptyComposerWindow {
+    target: SafeWakeTarget,
+    since: u64,
+    last: u64,
+}
+
 pub struct NativeCli {
     socket: PathBuf,
     clock: Arc<dyn Clock>,
     epoch: AtomicU64,
     /// Observation order within one (boot, epoch). Never reused by this adapter.
     sequence: AtomicU64,
+    empty_windows: Mutex<HashMap<SeatId, EmptyComposerWindow>>,
 }
 
 /// Server-process incarnation bound to the actual response connections of one
@@ -443,6 +454,7 @@ impl NativeCli {
             clock,
             epoch: AtomicU64::new(1),
             sequence: AtomicU64::new(1),
+            empty_windows: Mutex::new(HashMap::new()),
         }
     }
 
@@ -943,10 +955,9 @@ impl HostPort for NativeCli {
     /// native execution, so the target is structural (a fresh current-target
     /// read of the same terminal in the same verified server incarnation, no
     /// positive evidence of an empty shell, active turn or blocked UI). Typed
-    /// composer input never refuses an ordinary wake (TRUST-POLICY A4): it
-    /// merges with the draft, as before the composer reader existed. Whether
-    /// the occupant is a recognized idle harness is rechecked
-    /// by `submit_prompt` immediately before submission.
+    /// composer is classified by `submit_prompt` immediately before delivery.
+    /// A nonempty/unreadable composer refuses delivery; focused empty panes
+    /// must qualify through a minute of process-local observations.
     fn safe_wake_target(
         &self,
         seat: &SeatId,
@@ -1268,6 +1279,49 @@ fn cooperative_wake_ready(
 }
 
 impl NativeCli {
+    /// Empty samples are process-local, bounded, and tied to the same target.
+    /// Missing samples for over a minute restart qualification. These are
+    /// screen observations, not a claim that no keyboard activity occurred.
+    fn focused_empty_ready(
+        &self,
+        target: &SafeWakeTarget,
+        focused: bool,
+        previous: Option<EmptyComposerWindow>,
+    ) -> bool {
+        if !focused {
+            return true;
+        }
+        let now = self.clock.monotonic_now().0;
+        let mut identity = target.clone();
+        // This counter orders reads, not the identity of the composer.
+        identity.observation_sequence = 0;
+        let since = previous
+            .filter(|window| {
+                window.target == identity
+                    && now >= window.last
+                    && now - window.last <= FOCUSED_EMPTY_MILLIS
+            })
+            .map_or(now, |window| window.since);
+        if now.saturating_sub(since) >= FOCUSED_EMPTY_MILLIS {
+            return true;
+        }
+        let Ok(mut windows) = self.empty_windows.lock() else {
+            return false;
+        };
+        windows.retain(|_, window| now >= window.last && now - window.last <= FOCUSED_EMPTY_MILLIS);
+        if windows.len() < MAX_EMPTY_WINDOWS {
+            windows.insert(
+                target.seat.clone(),
+                EmptyComposerWindow {
+                    target: identity,
+                    since,
+                    last: now,
+                },
+            );
+        }
+        false
+    }
+
     fn submit_prompt_mode(
         &self,
         target: &SafeWakeTarget,
@@ -1275,6 +1329,18 @@ impl NativeCli {
         context: &HostCallContext,
         during_turn: bool,
     ) -> Result<ports::PromptOutcome, ApiError> {
+        // Taking the sample first makes every failed identity/status/read reset
+        // the window. Only a successful focused-empty sample below retains it.
+        let previous = self
+            .empty_windows
+            .lock()
+            .map_err(|_| {
+                error(
+                    ErrorCode::TargetUnsafe,
+                    "composer observation lock unavailable",
+                )
+            })?
+            .remove(&target.seat);
         let refuse = |detail: &str| {
             error(
                 ErrorCode::TargetUnsafe,
@@ -1338,6 +1404,25 @@ impl NativeCli {
             .ok_or_else(|| refuse("unreadable agent recheck"))?;
         if let Err(detail) = cooperative_wake_ready(&agent, target, during_turn) {
             return Err(refuse(&detail));
+        }
+        let harness = target
+            .bound_harness
+            .as_deref()
+            .and_then(bound_harness)
+            .ok_or_else(|| refuse("no bound harness for composer read"))?;
+        let focused = agent
+            .get("focused")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| refuse("unreadable pane focus"))?;
+        if self.read_composer(&target.target, harness, context)? != ComposerRead::Empty {
+            return Err(refuse("composer is nonempty or unreadable"));
+        }
+        self.check_epoch(target.epoch)?;
+        self.check_context(context)?;
+        if !self.focused_empty_ready(target, focused, previous) {
+            return Err(refuse(
+                "focused composer has not been observed empty for one minute",
+            ));
         }
         if budget.cancellation.is_cancelled() {
             return Err(error(ErrorCode::Cancelled, "wake prompt cancelled"));
@@ -1424,8 +1509,8 @@ impl NativeCli {
     /// One fresh witnessed read. Only `composer_ui` (a soft-deadline poke)
     /// spends the composer read that classifies the UI; an ordinary wake never
     /// does, so a composer read that Herdr cannot answer cannot change a wake
-    /// decision or slow it, and it decides on `agent_status` and structure
-    /// alone as before the composer reader existed (TRUST-POLICY A4).
+    /// structural selection. Ordinary delivery still requires its own final
+    /// composer read in `submit_prompt_mode`.
     fn observe_target(
         &self,
         target: &HostTargetId,
@@ -1449,6 +1534,8 @@ impl NativeCli {
         } else {
             status_ui(&pane)
         };
+        let reset_empty = !matches!(pane.status.as_str(), "idle" | "done")
+            || (composer_ui && ui != HostUiState::Idle);
         let sequence = self.next_sequence();
         let mut observation = self.observation(
             pane,
@@ -1460,6 +1547,9 @@ impl NativeCli {
             sequence,
         );
         observation.ui = ui;
+        if reset_empty || !observation.focused {
+            self.reset_empty_windows(target);
+        }
         Ok(observation)
     }
 
@@ -1484,6 +1574,25 @@ impl NativeCli {
     /// One bounded `agent read --source detection`, composer-parsed. The pane
     /// width is not in Herdr's pane record; Claude's rule length stands in.
     fn read_composer(
+        &self,
+        target: &HostTargetId,
+        harness: Harness,
+        context: &HostCallContext,
+    ) -> Result<ComposerRead, ApiError> {
+        let result = self.read_composer_text(target, harness, context);
+        if !matches!(result, Ok(ComposerRead::Empty)) {
+            self.reset_empty_windows(target);
+        }
+        result
+    }
+
+    fn reset_empty_windows(&self, target: &HostTargetId) {
+        if let Ok(mut windows) = self.empty_windows.lock() {
+            windows.retain(|_, window| &window.target.target != target);
+        }
+    }
+
+    fn read_composer_text(
         &self,
         target: &HostTargetId,
         harness: Harness,
@@ -2759,6 +2868,211 @@ mod tests {
         (result, methods)
     }
 
+    /// Catches an ordinary native wake bypassing the composer and submitting a draft.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nudge_safety_refuses_nonempty_or_unreadable_composer() {
+        for text in [
+            claude_screen(&["unfinished user draft"]),
+            "unknown layout".into(),
+        ] {
+            // Answer either read or prompt so the pre-fix test fails on behavior,
+            // rather than panicking inside its transport fixture.
+            let screen: Exchange = Box::new(move |stream, request| {
+                answer(
+                    stream,
+                    &request,
+                    json!({"type":"pane_read","read":{
+                    "pane_id":"w4:p1","source":"detection","text":text}}),
+                );
+            });
+            let (result, methods) = cooperative_wake(vec![
+                recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+                screen,
+            ]);
+            assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+            assert_eq!(
+                *methods.lock().unwrap(),
+                ["pane.get", "agent.get", "agent.read"]
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nudge_safety_focused_empty_composer_starts_waiting_without_prompt() {
+        let mut agent = wake_agent("idle", Some("claude"), "term_1");
+        agent["focused"] = json!(true);
+        let screen: Exchange = Box::new(|stream, request| {
+            answer(
+                stream,
+                &request,
+                json!({"type":"pane_read","read":{
+                "pane_id":"w4:p1","source":"detection","text":claude_screen(&[""])}}),
+            );
+        });
+        let (result, methods) = cooperative_wake(vec![recheck_exchange(agent), screen]);
+        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(
+            *methods.lock().unwrap(),
+            ["pane.get", "agent.get", "agent.read"]
+        );
+    }
+
+    struct NudgeClock(AtomicU64);
+    impl Clock for NudgeClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.0.load(Ordering::SeqCst).try_into().unwrap())
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.load(Ordering::SeqCst))
+        }
+    }
+
+    /// Catches premature admission, stale-window reuse and identity leakage.
+    #[test]
+    fn nudge_safety_empty_window_boundaries_and_resets() {
+        let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
+        let cli = NativeCli::new(PathBuf::from("/unused-nudge-test"), clock.clone());
+        let target = composer_target();
+        let sample = |at: u64, target: &SafeWakeTarget, focused: bool| {
+            clock.0.store(at, Ordering::SeqCst);
+            let prior = cli.empty_windows.lock().unwrap().remove(&target.seat);
+            cli.focused_empty_ready(target, focused, prior)
+        };
+        assert!(!sample(0, &target, true));
+        assert!(!sample(59_999, &target, true));
+        assert!(sample(60_000, &target, true));
+        assert!(
+            !sample(60_001, &target, true),
+            "successful wake resets the wait"
+        );
+        assert!(
+            !sample(120_002, &target, true),
+            "missing samples restart the wait"
+        );
+        assert!(
+            !sample(120_001, &target, true),
+            "clock reversal restarts the wait"
+        );
+        let mut moved = target.clone();
+        moved.terminal = TerminalId::new("replacement");
+        assert!(
+            !sample(180_001, &moved, true),
+            "replacement cannot inherit idle time"
+        );
+        assert!(
+            sample(180_002, &moved, false),
+            "unfocused empty pane wakes immediately"
+        );
+        assert!(!sample(180_003, &moved, true), "refocus starts a new wait");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nudge_safety_focused_empty_wakes_after_one_minute() {
+        let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
+        let mut focused = wake_agent("idle", Some("claude"), "term_1");
+        focused["focused"] = json!(true);
+        let mut exchanges = vec![pane_exchange()];
+        for _ in 0..3 {
+            exchanges.push(recheck_exchange(focused.clone()));
+            exchanges.push(detection_exchange(claude_screen(&[""])));
+        }
+        exchanges.push(prompt_exchange("wake marker"));
+        let (socket, mut cli, worker) = serve_sequence(exchanges);
+        cli.clock = clock.clone();
+        let observation = cli
+            .observe_current_target(&HostTargetId::new("w4:p1"), &pane_agent_context())
+            .unwrap();
+        let mut target = cli
+            .safe_wake_target(&SeatId::new("seat_1"), &observation)
+            .unwrap();
+        target.bound_harness = Some("claude".into());
+        for at in [0, 59_999, 60_000] {
+            clock.0.store(at, Ordering::SeqCst);
+            let mut context = wake_context(&observation);
+            context.budget.deadline = MonoInstant(at + 10_000);
+            let result = cli.submit_prompt(&target, "wake marker", &context);
+            if at < 60_000 {
+                assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+            } else {
+                assert_eq!(result.unwrap(), ports::PromptOutcome::Submitted);
+            }
+        }
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+    }
+
+    #[test]
+    fn nudge_safety_intervening_observed_draft_resets_empty_window() {
+        for screen in [claude_screen(&["draft"]), "unreadable".into()] {
+            let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
+            let (socket, mut cli, worker) =
+                serve_sequence(vec![pane_exchange_with("idle"), detection_exchange(screen)]);
+            cli.clock = clock.clone();
+            let target = composer_target();
+            assert!(!cli.focused_empty_ready(&target, true, None));
+            clock.0.store(30_000, Ordering::SeqCst);
+            let observation = cli
+                .observe_current_target_for_poke(
+                    &target.target,
+                    &HostCallContext {
+                        budget: CallBudget {
+                            deadline: MonoInstant(40_000),
+                            cancellation: Cancellation::default(),
+                        },
+                        expected_boot: None,
+                        expected_epoch: None,
+                    },
+                )
+                .unwrap();
+            assert_ne!(observation.ui, HostUiState::Idle);
+            clock.0.store(60_000, Ordering::SeqCst);
+            let previous = cli.empty_windows.lock().unwrap().remove(&target.seat);
+            assert!(
+                !cli.focused_empty_ready(&target, true, previous),
+                "an observed draft restarts the minute"
+            );
+            worker.join().unwrap();
+            fs::remove_file(socket).unwrap();
+        }
+    }
+
+    #[test]
+    fn nudge_safety_status_only_idle_read_preserves_empty_window() {
+        let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
+        let pane: Exchange = Box::new(|stream, request| {
+            answer(
+                stream,
+                &request,
+                json!({"type":"pane_info","pane":{
+                "pane_id":"w4:p1","terminal_id":"term_1","workspace_id":"w4","tab_id":"w4:t1",
+                "focused":true,"agent":"claude","agent_status":"idle","revision":2}}),
+            );
+        });
+        let (socket, mut cli, worker) = serve_sequence(vec![pane]);
+        cli.clock = clock.clone();
+        let target = composer_target();
+        assert!(!cli.focused_empty_ready(&target, true, None));
+        let observation = cli
+            .observe_current_target(&target.target, &pane_agent_context())
+            .unwrap();
+        assert_eq!(
+            observation.ui,
+            HostUiState::Unknown,
+            "plain read has no composer evidence"
+        );
+        clock.0.store(60_000, Ordering::SeqCst);
+        let previous = cli.empty_windows.lock().unwrap().remove(&target.seat);
+        assert!(
+            cli.focused_empty_ready(&target, true, previous),
+            "status-only idle read cannot erase valid samples"
+        );
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+    }
+
     /// Idle and done agents of a recognized harness are prompted only after
     /// a fresh recheck, and `Submitted` is transport submission only.
     #[cfg(target_os = "macos")]
@@ -2785,6 +3099,11 @@ mod tests {
             let (result, methods) = cooperative_wake_with(
                 vec![
                     recheck_exchange(wake_agent(status, Some(kind), "term_1")),
+                    detection_exchange(if kind == "claude" {
+                        claude_screen(&[""])
+                    } else {
+                        CODEX_EMPTY.into()
+                    }),
                     prompt,
                 ],
                 None,
@@ -2797,7 +3116,7 @@ mod tests {
             );
             assert_eq!(
                 *methods.lock().unwrap(),
-                ["pane.get", "agent.get", "agent.prompt"],
+                ["pane.get", "agent.get", "agent.read", "agent.prompt"],
                 "the recheck immediately precedes the prompt"
             );
         }
@@ -2884,6 +3203,11 @@ mod tests {
             let (result, methods) = cooperative_wake_with(
                 vec![
                     recheck_exchange(wake_agent("idle", Some(kind), "term_1")),
+                    detection_exchange(if kind == "claude" {
+                        claude_screen(&[""])
+                    } else {
+                        CODEX_EMPTY.into()
+                    }),
                     prompt,
                 ],
                 None,
@@ -2892,7 +3216,7 @@ mod tests {
             assert_eq!(result.unwrap(), ports::PromptOutcome::Submitted, "{kind}");
             assert_eq!(
                 *methods.lock().unwrap(),
-                ["pane.get", "agent.get", "agent.prompt"],
+                ["pane.get", "agent.get", "agent.read", "agent.prompt"],
                 "{kind}"
             );
         }
@@ -2973,6 +3297,7 @@ mod tests {
         });
         let (result, _) = cooperative_wake(vec![
             recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+            detection_exchange(claude_screen(&[""])),
             blocked,
         ]);
         assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
@@ -2983,10 +3308,11 @@ mod tests {
         });
         let (result, methods) = cooperative_wake(vec![
             recheck_exchange(wake_agent("done", Some("claude"), "term_1")),
+            detection_exchange(claude_screen(&[""])),
             lost,
         ]);
         assert_eq!(result.unwrap(), ports::PromptOutcome::OutcomeUnknown);
-        assert_eq!(methods.lock().unwrap().len(), 3, "never replayed");
+        assert_eq!(methods.lock().unwrap().len(), 4, "never replayed");
 
         let other_terminal: Exchange = Box::new(|stream: &mut UnixStream, request: Value| {
             answer(
@@ -2997,6 +3323,7 @@ mod tests {
         });
         let (result, _) = cooperative_wake(vec![
             recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+            detection_exchange(claude_screen(&[""])),
             other_terminal,
         ]);
         assert_eq!(result.unwrap(), ports::PromptOutcome::OutcomeUnknown);
@@ -3181,12 +3508,13 @@ mod tests {
         });
         let (result, methods) = cooperative_wake(vec![
             recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+            detection_exchange(claude_screen(&[""])),
             weird,
         ]);
         assert_eq!(result.unwrap(), ports::PromptOutcome::OutcomeUnknown);
         assert_eq!(
             *methods.lock().unwrap(),
-            ["pane.get", "agent.get", "agent.prompt"],
+            ["pane.get", "agent.get", "agent.read", "agent.prompt"],
             "never replayed"
         );
     }
@@ -3417,6 +3745,7 @@ mod tests {
                 clear_exchange(),
                 detection_exchange(CLAUDE_EMPTY),
                 recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+                detection_exchange(CLAUDE_EMPTY),
                 prompt_exchange("poke text"),
                 retype_exchange("hello world one", true),
             ],
@@ -3441,6 +3770,7 @@ mod tests {
                 "pane.send_keys",
                 "agent.read",
                 "agent.get",
+                "agent.read",
                 "agent.prompt",
                 "pane.send_text",
             ],
@@ -3607,7 +3937,12 @@ mod tests {
     fn active_turn_poke_uses_the_declared_primitive() {
         let working = || recheck_exchange(wake_agent("working", Some("claude"), "term_1"));
         let ((ordinary, during_turn), methods) = poke_session(
-            vec![working(), working(), prompt_exchange("poke text")],
+            vec![
+                working(),
+                working(),
+                detection_exchange(CLAUDE_EMPTY),
+                prompt_exchange("poke text"),
+            ],
             |cli, target, context| {
                 (
                     cli.submit_prompt(target, "poke text", context),
@@ -3621,7 +3956,13 @@ mod tests {
         assert_eq!(during_turn.unwrap(), ports::PromptOutcome::Submitted);
         assert_eq!(
             methods,
-            ["pane.get", "agent.get", "agent.get", "agent.prompt"],
+            [
+                "pane.get",
+                "agent.get",
+                "agent.get",
+                "agent.read",
+                "agent.prompt"
+            ],
             "the ordinary wake sent no prompt"
         );
     }

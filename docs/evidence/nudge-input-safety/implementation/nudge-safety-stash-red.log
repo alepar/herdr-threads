@@ -1,0 +1,22 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.12 (/Users/alepar/AleCode/herdr-threads/.worktrees/nudge-input-safety)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.55s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-aa425b885727aee3)
+
+running 1 test
+
+thread 'scheduler::tests::nudge_safety_pokes_never_stash_user_input' (9483896) panicked at src/scheduler/../../tests/scheduler/dispatch.rs:5797:21:
+assertion `left == right` failed: HumanInput focused=false turn=Unsupported stash=Supported
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scheduler::tests::nudge_safety_pokes_never_stash_user_input ... FAILED
+
+failures:
+
+failures:
+    scheduler::tests::nudge_safety_pokes_never_stash_user_input
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2657 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

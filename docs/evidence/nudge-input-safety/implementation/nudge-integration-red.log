@@ -1,0 +1,22 @@
+   Compiling herdr-threads v0.2.12 (/Users/alepar/AleCode/herdr-threads/.worktrees/nudge-input-safety)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.27s
+     Running tests/integration.rs (target/debug/deps/integration-4af53d42e594f6a8)
+
+running 1 test
+test trust_policy::codex_reattachment_without_herdr_hint_then_wake ... FAILED
+
+failures:
+
+---- trust_policy::codex_reattachment_without_herdr_hint_then_wake stdout ----
+
+thread 'trust_policy::codex_reattachment_without_herdr_hint_then_wake' (9543516) panicked at tests/integration/trust_policy.rs:469:13:
+timed out waiting for both wake attempts
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    trust_policy::codex_reattachment_without_herdr_hint_then_wake
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 130 filtered out; finished in 32.24s
+
+error: test failed, to rerun pass `--test integration`
