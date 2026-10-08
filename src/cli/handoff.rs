@@ -96,12 +96,12 @@ impl HandoffPlan {
     }
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct Progress {
-    thread: Option<ThreadId>,
-    invitation: Option<CommandResult>,
-    message: Option<CommandResult>,
-    possible_start: bool,
-    launch: Option<serde_json::Value>,
+pub(crate) struct Progress {
+    pub thread: Option<ThreadId>,
+    pub invitation: Option<CommandResult>,
+    pub message: Option<CommandResult>,
+    pub possible_start: bool,
+    pub launch: Option<serde_json::Value>,
 }
 
 /// Exact keyed durable work, independent of native launch and receipt actions.
@@ -268,6 +268,13 @@ pub(crate) fn save_progress<T: Serialize>(
     reference: &IntentRef,
     progress: &T,
 ) -> io::Result<()> {
+    save_progress_at(journal, &progress_path(journal, reference), progress)
+}
+pub(crate) fn save_progress_at<T: Serialize>(
+    journal: &Journal,
+    path: &std::path::Path,
+    progress: &T,
+) -> io::Result<()> {
     let temp = journal
         .root()
         .join(format!(".handoff-{}", uuid::Uuid::new_v4()));
@@ -278,7 +285,7 @@ pub(crate) fn save_progress<T: Serialize>(
         .open(&temp)?;
     serde_json::to_writer(&mut file, progress)?;
     file.sync_all()?;
-    fs::rename(temp, progress_path(journal, reference))?;
+    fs::rename(temp, path)?;
     File::open(journal.root())?.sync_all()
 }
 fn load(journal: &Journal, reference: &IntentRef) -> io::Result<Progress> {
@@ -456,6 +463,65 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
         }
     }
     let mut progress = load(journal, reference)?;
+    let (phase, attempt) = execute_steps(
+        &plan,
+        &claim,
+        &mut progress,
+        &mut |progress| save(journal, reference, progress).map_err(RunError::from),
+        client,
+        launcher,
+        clock,
+        &mut || Ok(()),
+    );
+    let unknown = progress.possible_start
+        && progress
+            .launch
+            .as_ref()
+            .is_none_or(|value| value["outcome"] != "started");
+    let report = report(
+        reference,
+        &plan,
+        &progress,
+        phase,
+        attempt.is_err(),
+        unknown,
+        &claim,
+    );
+    let bytes = if output.format == crate::protocol::output::OutputFormat::Json {
+        format!("{}\n", serde_json::json!({"handoff": report})).into_bytes()
+    } else {
+        super::setup::render_text(&report).into_bytes()
+    };
+    writer.write_all(&bytes)?;
+    writer.flush()?;
+    if unknown {
+        return Err(RunError::Exit(5));
+    }
+    attempt?;
+    complete_with(
+        &identity,
+        OperationId::new(format!("handoff:complete:{}", identity.compound.as_str())),
+        &progress,
+        &mut |mutation, _, _| {
+            keyed_fence(client, clock, &mutation.identity, mutation.operation, true)
+        },
+    )?;
+    journal.complete(reference)?;
+    Ok(())
+}
+/// Shared legacy launch machinery, with a caller-owned durable progress record.
+/// The save callback must persist possible-start before native submission.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
+    plan: &HandoffPlan,
+    claim: &CallerClaim,
+    progress: &mut Progress,
+    save: &mut dyn FnMut(&Progress) -> Result<(), RunError>,
+    client: &C,
+    launcher: &mut dyn HandoffLauncher,
+    clock: &dyn Clock,
+    before_start: &mut dyn FnMut() -> Result<(), ApiError>,
+) -> (&'static str, Result<(), RunError>) {
     let mut phase = "create";
     let call = |semantic: SemanticMutation, key: &OperationId| -> Result<CommandResult, RunError> {
         Ok(client.call(
@@ -497,7 +563,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
                 progress.thread = staged.thread.clone();
                 progress.invitation = staged.invitation.clone();
                 progress.message = staged.message.clone();
-                save(journal, reference, &progress).map_err(RunError::from)
+                save(progress)
             },
             client,
             clock,
@@ -513,58 +579,63 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
             .push(bootstrap(&thread, &plan.context, &claim.instance));
         let launched = launcher.launch(&request, &plan.recipient, &mut |possible| {
             if possible {
+                // Linked bootstrap revalidates the original canonical caller at
+                // the actual launcher boundary; standalone retains its contract.
+                before_start()?;
                 // A failed write may already have published the fence: retain
                 // the conservative in-memory outcome as well.
                 progress.possible_start = true;
-                save(journal, reference, &progress)
+                save(progress)
             } else {
                 // Only adapter-proven NotSubmitted reaches this branch. Keep
                 // the old in-memory fence unless its reset is durably saved.
                 let mut reset = progress.clone();
                 reset.possible_start = false;
-                save(journal, reference, &reset).map(|()| progress = reset)
+                save(&reset).map(|()| *progress = reset)
             }
             .map_err(|e| ApiError::new(ErrorCode::StoreCorrupt, e.to_string()))
         });
         match launched {
             Ok(report) => {
                 progress.launch = Some(report.report);
-                save(journal, reference, &progress)?;
+                save(progress)?;
             }
             Err(error) => return Err(error),
         }
         Ok(())
     })();
-    let unknown = progress.possible_start
-        && progress
-            .launch
-            .as_ref()
-            .is_none_or(|value| value["outcome"] != "started");
-    let report = report(
-        reference,
-        &plan,
-        &progress,
-        phase,
-        attempt.is_err(),
-        unknown,
-        &claim,
-    );
-    let bytes = if output.format == crate::protocol::output::OutputFormat::Json {
-        format!("{}\n", serde_json::json!({"handoff": report})).into_bytes()
-    } else {
-        super::setup::render_text(&report).into_bytes()
-    };
-    writer.write_all(&bytes)?;
-    writer.flush()?;
-    if unknown {
-        return Err(RunError::Exit(5));
-    }
-    attempt?;
-    {
-        fence(client, clock, &identity, true)?;
-    }
-    journal.complete(reference)?;
-    Ok(())
+    (phase, attempt)
+}
+/// Internal completion callback; it never derives identity from a local ref.
+/// Linked callers pass the frozen legacy child key and commit both fences in
+/// their callback; standalone handoff retains its historical completion command.
+pub(crate) fn complete_with<T>(
+    identity: &crate::protocol::handoff::HandoffIdentity,
+    operation: OperationId,
+    progress: &Progress,
+    complete: &mut dyn FnMut(
+        crate::protocol::handoff::HandoffMutation,
+        &ThreadId,
+        &serde_json::Value,
+    ) -> Result<T, RunError>,
+) -> Result<T, RunError> {
+    let thread = progress
+        .thread
+        .as_ref()
+        .ok_or_else(|| super::invalid_request("handoff has no retained thread"))?;
+    let launch = progress
+        .launch
+        .as_ref()
+        .filter(|v| v["outcome"] == "started")
+        .ok_or_else(|| super::invalid_request("handoff requires its retained successful report"))?;
+    complete(
+        crate::protocol::handoff::HandoffMutation {
+            identity: identity.clone(),
+            operation,
+        },
+        thread,
+        launch,
+    )
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_completed_retry<C: LocalClient + ?Sized, W: Write>(
