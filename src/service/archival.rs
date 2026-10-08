@@ -84,54 +84,65 @@ impl ArchivalWorker {
             )
         });
         let scan = scan.unwrap_or_default();
-        // Source validation is filesystem I/O and deliberately precedes writer
-        // admission. New protocol compounds are protected canonically before effects.
-        let coverage = scan.coverage.filter(|stamp| self.source.validate(stamp));
-        let budget = self.budget();
-        let progress = self.deciding(&budget, coverage.clone(), |rt| {
-            self.store.archival_pass(rt, &scan.hints, &budget)
-        })?;
-        if let Some(error) = scan_error {
-            return Err(error);
-        }
-        let mut has_more = scan.pending || progress.has_more;
-        let state = self
-            .reachability
-            .archival_state(self.store.clock().monotonic_now().0);
-        if !state.coherent {
-            return Ok(has_more);
-        }
-        let work = self.deciding(&budget, coverage.clone(), |rt| {
-            self.store.archival_next(rt, &budget)
-        })?;
-        has_more |= work.has_more;
-        if let Some(ticket) = work.ticket {
-            let context = ticket.host_context(budget.clone());
-            let sample = self
-                .host
-                .observe_current_target_for_archival(ticket.target(), &context);
-            // A host failure breaks global continuity. A successful nonidle
-            // observation vetoes only that seat's channels in the deciding write.
-            // This lane is single-owner: no subsequent archive decision can run
-            // until that write succeeds, or the failure below installs uncertainty.
-            if sample.is_err() {
-                self.reachability.mark_archival_uncertain();
+        let result = (|| {
+            // Source validation is filesystem I/O and deliberately precedes writer
+            // admission. New protocol compounds are protected canonically before effects.
+            let coverage = self.source.filter_coverage(scan.coverage);
+            let budget = self.budget();
+            let progress = self.deciding(&budget, coverage.clone(), |rt| {
+                self.store.archival_pass(rt, &scan.hints, &budget)
+            })?;
+            if let Some(error) = scan_error {
+                return Err(error);
             }
-            let persisted = self.deciding(&budget, coverage, |rt| {
-                let mut rt = rt.clone();
-                // A transient outage/recovery entirely inside the host call also
-                // breaks continuity, even if the current reachability is back up.
-                rt.coherent &= rt.host_generation as u64 == state.generation;
-                self.store
-                    .archival_sample(&rt, &ticket, sample.as_ref().ok(), &budget)
-            });
-            if persisted.is_err() {
-                self.reachability.mark_archival_uncertain();
+            let mut has_more = scan.pending || progress.has_more;
+            let state = self
+                .reachability
+                .archival_state(self.store.clock().monotonic_now().0);
+            if !state.coherent {
+                return Ok(has_more);
             }
-            persisted?;
-            sample?;
+            let coverage = self.source.filter_coverage(coverage);
+            let work = self.deciding(&budget, coverage.clone(), |rt| {
+                self.store.archival_next(rt, &budget)
+            })?;
+            has_more |= work.has_more;
+            if let Some(ticket) = work.ticket {
+                let context = ticket.host_context(budget.clone());
+                let sample = self
+                    .host
+                    .observe_current_target_for_archival(ticket.target(), &context);
+                // A host failure breaks global continuity. A successful nonidle
+                // observation vetoes only that seat's channels in the deciding write.
+                // This lane is single-owner: no subsequent archive decision can run
+                // until that write succeeds, or the failure below installs uncertainty.
+                if sample.is_err() {
+                    self.reachability.mark_archival_uncertain();
+                }
+                let coverage = self.source.filter_coverage(coverage);
+                let persisted = self.deciding(&budget, coverage, |rt| {
+                    let mut rt = rt.clone();
+                    // A transient outage/recovery entirely inside the host call also
+                    // breaks continuity, even if the current reachability is back up.
+                    rt.coherent &= rt.host_generation as u64 == state.generation;
+                    self.store
+                        .archival_sample(&rt, &ticket, sample.as_ref().ok(), &budget)
+                });
+                if persisted.is_err() {
+                    self.reachability.mark_archival_uncertain();
+                }
+                persisted?;
+                sample?;
+            }
+            Ok(has_more)
+        })();
+        // The source cursor advanced before outer writer admission. Every error
+        // after consumption must keep that traversal uncertain, including errors
+        // that never call the store. Preserve the original error and cursor.
+        if result.is_err() {
+            self.source.veto_traversal();
         }
-        Ok(has_more)
+        result
     }
 }
 pub fn start(
