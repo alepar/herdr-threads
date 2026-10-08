@@ -411,7 +411,7 @@ fn exact_ack_materializes_one_typed_batch() {
 #[test]
 fn operator_invite_materializes_only_operator_variant() {
     let parsed = parse_argv([
-        "herdr-threads",
+        "herdr-threads", "human",
         "invite",
         "t1",
         "--seat",
@@ -550,9 +550,9 @@ fn operator_service_recovery_uses_observed_boot_and_generation() {
     let inspect = parse_argv(["herdr-threads", "service", "inspect"]).unwrap();
     assert!(matches!(inspect.action, CliAction::Wire(Command::ServiceInspect)));
     let boot = "00000000-0000-4000-8000-000000000001";
-    let disconnect = parse_argv(["herdr-threads", "service", "disconnect", "--expected-boot", boot, "--expected-generation", "7"]).unwrap();
+    let disconnect = parse_argv(["herdr-threads", "human", "service", "disconnect", "--expected-boot", boot, "--expected-generation", "7"]).unwrap();
     assert!(matches!(disconnect.action, CliAction::Wire(Command::ServiceDisconnect(request)) if request.expected_boot == boot && request.expected_generation == 7));
-    assert!(parse_argv(["herdr-threads", "service", "disconnect", "--expected-boot", boot]).is_err());
+    assert!(parse_argv(["herdr-threads", "human", "service", "disconnect", "--expected-boot", boot]).is_err());
 }
 
 #[test]
@@ -861,7 +861,7 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
     let mut stub = Stub(vec![]);
     for &(args, expected) in rows {
         let parsed =
-            parse_argv(std::iter::once("herdr-threads").chain(args.iter().copied())).unwrap();
+            parse_argv(std::iter::once("herdr-threads").chain(expected.starts_with("operator_").then_some("human")).chain(args.iter().copied())).unwrap();
         assert!(matches!(parsed.action, CliAction::Mutation(_)), "{args:?}");
         dispatch(
             freeze_thread_id(parsed),
@@ -1189,7 +1189,7 @@ fn copied_compact_and_persisted_ids_parse_as_command_inputs() {
     }
     for seat in ["sAb12Cd34", "seat-Ab12Cd34"] {
         assert!(
-            parse_argv(["herdr-threads", "seat", "retire", seat, "--operator"]).is_ok()
+            parse_argv(["herdr-threads", "human", "seat", "retire", seat, "--operator"]).is_ok()
         );
     }
 }
@@ -1340,9 +1340,9 @@ fn exit_status_help_names_both_exit_3_remedies() {
 
 #[test]
 fn seat_retire_requires_operator_flag() {
-    let error = parse_argv(["herdr-threads", "seat", "retire", "s1"]).unwrap_err();
+    let error = parse_argv(["herdr-threads", "human", "seat", "retire", "s1"]).unwrap_err();
     assert!(error.detail.contains("operator required"), "{}", error.detail);
-    let parsed = parse_argv(["herdr-threads", "seat", "retire", "s1", "--operator"]).unwrap();
+    let parsed = parse_argv(["herdr-threads", "human", "seat", "retire", "s1", "--operator"]).unwrap();
     assert!(
         matches!(&parsed.action, CliAction::Mutation(MutationSpec::Retire(seat)) if seat.as_str() == "s1"),
         "{:?}",
@@ -1353,7 +1353,7 @@ fn seat_retire_requires_operator_flag() {
 #[test]
 fn seat_rebind_replace_parses_to_operator_replace() {
     let parsed = parse_argv([
-        "herdr-threads",
+        "herdr-threads", "human",
         "seat",
         "rebind",
         "s1",
@@ -1371,14 +1371,14 @@ fn seat_rebind_replace_parses_to_operator_replace() {
         parsed.action
     );
     // Without --replace the same form stays a plain rebind; --replace needs --operator.
-    let plain = parse_argv(["herdr-threads", "seat", "rebind", "s1", "--pane", "p1", "--operator"])
+    let plain = parse_argv(["herdr-threads", "human", "seat", "rebind", "s1", "--pane", "p1", "--operator"])
         .unwrap();
     assert!(matches!(
         plain.action,
         CliAction::Mutation(MutationSpec::Rebind { .. })
     ));
     assert!(
-        parse_argv(["herdr-threads", "seat", "rebind", "s1", "--pane", "p1", "--replace", "s2"])
+        parse_argv(["herdr-threads", "human", "seat", "rebind", "s1", "--pane", "p1", "--replace", "s2"])
             .is_err()
     );
 }
@@ -1717,4 +1717,50 @@ fn handoff_existing_target_matrix_and_no_launch_options() {
     assert_eq!(request.argv,vec!["--model","$HOME","--model"]);
     assert_eq!(request.body,"literal body");
     assert!(parsed.thread_selector.is_none());
+}
+
+// Removing immediate actor routing would reject honest Human invocations and
+// accept ordinary Agent person/account actions; these are real parser calls.
+#[test]
+fn actor_prerequisite_human_grammar_preserves_routing_and_format() {
+    let parsed = parse_argv(["ht", "human", "--state-dir", "state space", "--host-endpoint=host space", "--machine", "me", "init"]).unwrap();
+    assert!(matches!(parsed.action, CliAction::MeInit { .. }));
+    assert_eq!(parsed.output.context.state_dir.as_deref(), Some("state space"));
+    assert_eq!(parsed.output.context.host.as_deref(), Some("host space"));
+    for argv in [
+        vec!["ht", "me", "init"],
+        vec!["ht", "--human", "me", "init"],
+        vec!["ht", "seat", "retire", "seat-1", "--operator"],
+        vec!["ht", "service", "disconnect", "--expected-boot", "00000000-0000-4000-8000-000000000001", "--expected-generation", "7"],
+        vec!["ht", "seat", "rebind", "seat-1", "--pane", "pane", "--operator"],
+        vec!["ht", "seat", "resolve", "--pane", "pane", "--new-seat", "--operator"],
+        vec!["ht", "invite", "thread-1", "--seat", "seat-1", "--operator"],
+    ] {
+        let failure = parse_argv(argv).unwrap_err();
+        assert!(failure.detail.contains("immediate human namespace"), "{failure:?}");
+    }
+    let failure = parse_argv(["ht binary", "--state-dir", "state space", "--host-endpoint", "host space", "human", "me", "init"]).unwrap_err();
+    assert!(failure.detail.contains("'ht binary' human --state-dir 'state space' --host-endpoint 'host space' me init"), "{failure:?}");
+    assert!(parse_argv(["ht", "--state-dir", "human", "--human", "inbox"]).is_ok());
+    assert!(parse_argv(["ht", "human", "--state-dir", "a", "me", "init", "--state-dir", "b"]).unwrap_err().detail.contains("conflicting values"));
+}
+
+#[test]
+fn actor_prerequisite_human_refuses_cooperative_agent_selectors() {
+    let failure = parse_argv(["ht", "human", "--cooperative-seat", "seat", "--cooperative-target", "pane", "--cooperative-harness", "codex", "--cooperative-role", "top-level", "ack", "message"]).unwrap_err();
+    assert!(failure.detail.contains("cannot be mixed with cooperative agent selectors"), "{failure:?}");
+}
+
+#[test]
+fn actor_prerequisite_real_os_parser_keeps_human_data_and_opaque_guidance() {
+    use crate::cli::actor_route::InvocationActor;
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let parsed = parse_argv(["ht", "--state-dir", "human", "--human", "inbox"]).unwrap();
+    assert_eq!(parsed.actor, InvocationActor::Agent);
+    let parsed = parse_argv(["ht", "human", "--json", "inbox"]).unwrap();
+    assert_eq!(parsed.actor, InvocationActor::Human);
+    let argv = vec![OsString::from_vec(vec![b'h', 0xff]), "--state-dir".into(), "state space".into(), "human".into(), "me".into(), "init".into()];
+    let error = parse_argv(argv).unwrap_err();
+    assert!(error.detail.contains("opaque argv cannot be rendered as UTF-8"), "{error:?}");
 }
