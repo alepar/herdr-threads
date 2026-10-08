@@ -233,6 +233,23 @@ pub fn query_with_output(
             pending_receipts(&db, instance, q, store.clock().utc_now(), output)
         }
         Command::Message(q) => message(&db, instance, q, output),
+        Command::MessageDeliveryModes(q) => {
+            // validate() bounds this exact-ID batch to 1..=100. Preserve the
+            // requested order (including repeats) within this read snapshot;
+            // absent and foreign IDs follow the ordinary Message convention.
+            let mut modes = Vec::with_capacity(q.messages.len());
+            for message in &q.messages {
+                db.check_budget()?;
+                let delivery_mode = super::lazy_delivery::recorded_mode(&db, instance, message)?
+                    .ok_or_else(|| api_error(ErrorCode::NotFound, "message not found"))?;
+                modes.push(crate::protocol::results::MessageDeliveryMode {
+                    message: message.clone(),
+                    delivery_mode,
+                });
+            }
+            db.check_budget()?;
+            Ok(CommandResult::MessageDeliveryModes(modes))
+        }
         Command::Search(q) => search(&db, store, instance, q, output, &active_budget),
         Command::Directory(q) => directory(&db, instance, q, output),
         Command::PickerDirectory(q) => {

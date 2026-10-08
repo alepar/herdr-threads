@@ -130,7 +130,8 @@ fn inert_lazy_routes_are_not_advertised() {
         store::{SqliteStore, StoreSettings, connection::StoreContext},
     };
     use std::sync::Arc;
-    for name in [LAZY_SEND, INBOX_BATCH_V2, MESSAGE_DELIVERY_MODES] {
+    assert!(ADVERTISED.contains(&MESSAGE_DELIVERY_MODES));
+    for name in [LAZY_SEND, INBOX_BATCH_V2] {
         assert!(
             !ADVERTISED.contains(&name),
             "inert capability {name} must not be advertised"
@@ -167,16 +168,20 @@ fn inert_lazy_routes_are_not_advertised() {
     let before: i64 = db
         .query_row("PRAGMA data_version", [], |r| r.get(0))
         .unwrap();
-    for value in [
-        serde_json::json!({"kind":"inbox_batch_v2","args":{"seat":"a","page":{"cursor":null,"limit":20,"max_bytes":16384}}}),
+    let value = serde_json::json!({"kind":"inbox_batch_v2","args":{"seat":"a","page":{"cursor":null,"limit":20,"max_bytes":16384}}});
+    let command: Command = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        store.query(&command, &read, &budget).unwrap_err().code,
+        ErrorCode::Unsupported
+    );
+    let metadata: Command = serde_json::from_value(
         serde_json::json!({"kind":"message_delivery_modes","args":{"messages":["m"]}}),
-    ] {
-        let command: Command = serde_json::from_value(value).unwrap();
-        assert_eq!(
-            store.query(&command, &read, &budget).unwrap_err().code,
-            ErrorCode::Unsupported
-        );
-    }
+    )
+    .unwrap();
+    assert_eq!(
+        store.query(&metadata, &read, &budget).unwrap_err().code,
+        ErrorCode::NotFound
+    );
     // Observe all database state, including non-message bookkeeping.
     assert_eq!(
         db.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))

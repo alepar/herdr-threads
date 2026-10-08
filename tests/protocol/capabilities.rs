@@ -277,7 +277,8 @@ fn capability_constants_are_stable() {
             "invitation.reject_v1",
             "participants.locations_v1",
             "picker.directory_v1",
-            "attention.notice_delivery_v1"
+            "attention.notice_delivery_v1",
+            "messages.delivery_modes_v1"
         ]
     );
 }
@@ -300,6 +301,7 @@ fn every_advertised_capability_has_a_handler() {
             INVITATION_REJECT => probe_invitation_reject(),
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
+            MESSAGE_DELIVERY_MODES => probe_message_delivery_modes(),
             ATTENTION_NOTICE_DELIVERY => {
                 let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
                 let command = Command::AttentionDigestDelivery(
@@ -1096,4 +1098,49 @@ fn picker_directory_wire_keeps_old_directory_shape_and_cursor_only_contract() {
     assert!(page.validate().is_err());
     page.stop_reason = StopReason::Complete;
     assert!(page.validate().is_ok());
+}
+
+fn probe_message_delivery_modes() {
+    use crate::{
+        ports::{ReadContext, StorePort},
+        protocol::{
+            commands::{DeliveryMode, MessageDeliveryModesQuery},
+            ids::MessageId,
+            output::OutputSpec,
+        },
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let iso = TestIsolation::new("cap-message-delivery-modes");
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    context.open_writer().unwrap().execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES('m','i','t',1,'ordinary',1,'ordinary body',0,'lazy');").unwrap();
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let command = Command::MessageDeliveryModes(MessageDeliveryModesQuery {
+        messages: vec![MessageId::new("m")],
+    });
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    let CommandResult::MessageDeliveryModes(modes) = store
+        .query(
+            &command,
+            &ReadContext {
+                instance: "i".into(),
+                output: OutputSpec::default(),
+                operation_scope: None,
+            },
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong metadata route")
+    };
+    assert_eq!(
+        modes,
+        vec![crate::protocol::results::MessageDeliveryMode {
+            message: MessageId::new("m"),
+            delivery_mode: DeliveryMode::Lazy
+        }]
+    );
 }
