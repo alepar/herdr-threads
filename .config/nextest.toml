@@ -42,6 +42,13 @@ priority = 90
 filter = "test(=store::page_fit::tests::differential_matches_greedy_for_every_site)"
 priority = 90
 
+# The send chain asserts commit-to-wake under 100 ms for three sends; beside
+# the full suite's process-heavy tests it missed that budget (120-260 ms) while
+# it measures ~15-25 ms alone or under synthetic CPU load. It runs alone.
+[[profile.default.overrides]]
+filter = "binary(integration) & test(=sweep_remaining::send_commit_wake_under_100ms_with_all_five_lanes)"
+threads-required = "num-test-threads"
+
 [[profile.default.overrides]]
 filter = "binary(hook_entrypoint)"
 priority = 80
