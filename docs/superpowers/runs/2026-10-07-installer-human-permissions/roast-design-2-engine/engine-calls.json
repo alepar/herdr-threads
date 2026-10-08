@@ -1,0 +1,13 @@
+[
+  "triage",
+  "scout:premortem",
+  "scout:completeness",
+  "scout:yagni",
+  "scout:failure-mode",
+  "scout:feasibility",
+  "scout:regression",
+  "scout:domain:auth",
+  "scout:domain:cli-permission-policy",
+  "scout:domain:filesystem-transactions",
+  "reporter"
+]

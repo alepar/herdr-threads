@@ -226,11 +226,11 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:56:01Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T06:14:16Z",
+    "updated_at": "2026-10-08T06:18:25Z",
     "metadata": {
       "files_touched": [
         "scripts/install.sh",
-        "tests/release/install_test.sh."
+        "tests/release/install_test.sh"
       ]
     },
     "labels": [
@@ -328,11 +328,11 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:54:55Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T06:14:16Z",
+    "updated_at": "2026-10-08T06:18:26Z",
     "metadata": {
       "files_touched": [
         "src/cli/installer.rs",
-        "tests/installer_integrations.rs."
+        "tests/installer_integrations.rs"
       ]
     },
     "labels": [
@@ -430,11 +430,11 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:53:46Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T06:14:14Z",
+    "updated_at": "2026-10-08T06:18:27Z",
     "metadata": {
       "files_touched": [
         "src/harness/permissions/claude.rs",
-        "tests/installer_integrations.rs."
+        "tests/installer_integrations.rs"
       ]
     },
     "labels": [
@@ -533,14 +533,14 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:52:41Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:33Z",
+    "updated_at": "2026-10-08T06:18:28Z",
     "metadata": {
       "sp_depth": 2,
       "sp_order": 1,
       "files_touched": [
         "src/harness/permissions/claude.rs",
         "src/harness/setup.rs",
-        "tests/installer_integrations.rs."
+        "tests/installer_integrations.rs"
       ]
     },
     "labels": [
@@ -731,12 +731,12 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:51:18Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:35Z",
+    "updated_at": "2026-10-08T06:18:29Z",
     "metadata": {
       "files_touched": [
         "src/cli/mod.rs",
         "tests/cli/cooperative.rs",
-        "tests/cli/human.rs."
+        "tests/cli/human.rs"
       ]
     },
     "labels": [
@@ -834,14 +834,15 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:49:04Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T06:14:17Z",
+    "updated_at": "2026-10-08T06:18:30Z",
     "metadata": {
       "files_touched": [
         "TRUST-POLICY.md",
         "docs/install.md",
         "src/cli/journal.rs",
         "src/cli/me.rs",
-        "src/cli/output.rs"
+        "src/cli/output.rs",
+        "src/protocol/output.rs"
       ]
     },
     "labels": [
@@ -928,7 +929,7 @@
   {
     "id": "ht-uwd.7",
     "title": "Independent setup lifecycle and permission consent",
-    "description": "Wire permissions beside hooks/skill for explicit setup/status/unsetup, installer-integrations reconciliation and requested doctor fix. Explicit permission consent names ordinary reads/writes and human/operator exclusion; hooks ownership alone never grants. Sequential shared-settings plans re-read exact inspected state after consent.\nowns: component lifecycle and consent.\nconsumes: Claude permission backend; Codex permission backend; permission component API.\nAcceptance: real Rust synthetic component path install/status/remove + absent/declined/noninteractive consent and mixed hook status, no clobber; isolated roots only.\nFiles: src/cli/setup.rs, src/cli/installer.rs, src/cli/doctor.rs, tests/installer_integrations.rs.\nblocked-by ht-uwd.5: consumes Claude narrow permissions and durable legacy ownership migration\nblocked-by ht-uwd.6: consumes Codex owned execpolicy backend\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.5).",
+    "description": "Wire permissions beside hooks/skill for explicit setup/status/unsetup, installer-integrations reconciliation and requested doctor fix. Explicit permission consent names ordinary reads/writes and human/operator exclusion; hooks ownership alone never grants. Sequential shared-settings plans re-read exact inspected state after consent.\nowns: component lifecycle and consent.\nconsumes: Claude permission backend; Codex permission backend; permission component API.\nAcceptance: real Rust synthetic component path install/status/remove + absent/declined/noninteractive consent and mixed hook status, no clobber; isolated roots only.\nFiles: src/cli/setup.rs, src/cli/installer.rs, src/cli/doctor.rs, tests/installer_integrations.rs.\nblocked-by ht-uwd.5: consumes Claude narrow permissions and durable legacy ownership migration\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.5).\nGraph pass: Codex backend dependency is carried by lifecycle leaf ht-uwd.7.1; reconciliation leaf ht-uwd.7.2 consumes its lifecycle API, not a separate direct backend wait.",
     "design": "Spec: docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--setup-permission-lifecycle-design.md; fresh review both children LEAF, COMPLETE.",
     "status": "open",
     "priority": 2,
@@ -936,7 +937,7 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:48:59Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:37Z",
+    "updated_at": "2026-10-08T06:24:05Z",
     "metadata": {
       "sp_depth": 1,
       "sp_order": 3,
@@ -944,21 +945,13 @@
         "src/cli/doctor.rs",
         "src/cli/installer.rs",
         "src/cli/setup.rs",
-        "tests/installer_integrations.rs."
+        "tests/installer_integrations.rs"
       ]
     },
     "labels": [
       "sp:ht-uwd"
     ],
     "dependencies": [
-      {
-        "issue_id": "ht-uwd.7",
-        "depends_on_id": "ht-uwd.6",
-        "type": "blocks",
-        "created_at": "2026-10-08T05:49:01Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
       {
         "issue_id": "ht-uwd.7",
         "depends_on_id": "ht-uwd",
@@ -976,7 +969,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 2,
+    "dependency_count": 1,
     "dependent_count": 3,
     "comment_count": 0,
     "parent": "ht-uwd"
@@ -1020,7 +1013,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 4,
+    "dependent_count": 3,
     "comment_count": 0,
     "parent": "ht-uwd"
   },
@@ -1035,7 +1028,7 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:48:56Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:38Z",
+    "updated_at": "2026-10-08T06:18:32Z",
     "metadata": {
       "sp_depth": 1,
       "sp_order": 2,
@@ -1043,7 +1036,7 @@
         "src/harness/claude.rs",
         "src/harness/permissions/claude.rs",
         "src/harness/setup.rs",
-        "tests/installer_integrations.rs."
+        "tests/installer_integrations.rs"
       ]
     },
     "labels": [
@@ -1075,14 +1068,14 @@
   {
     "id": "ht-uwd.4",
     "title": "Seam contract: owned permission component and validated executable inputs",
-    "description": "Deliver compilable inert-by-default permission module/API: bounded validated executable spellings and routing, inspect/plan/install/remove backend types, separate manifest/status/consent fields, module wiring. Only boundary code and its acceptance; no backend implementation/migration/polish.\nowns: PermissionInputs, PermissionPlan/Inspection and component manifest schema.\nconsumes: ordinary command catalog.\nAcceptance: compile, no silent grant, validated union rejects foreign/control/relative paths; stubs wired to consumer boundaries.\nFiles: src/harness/permissions.rs or permissions/mod.rs, src/harness/mod.rs, src/cli/setup.rs boundary declarations, src/cli/installer.rs boundary declarations.\nblocked-by ht-uwd.1: consumes Namespace grammar and ordinary command catalog\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.1).\nRound1 settled refinement: Owns additional minimal boundary: PermissionInspection states Missing/ExactHistoricalOwned/CurrentOwned/Conflict/Foreign and OwnedConfigWriteGuard signature/RAII primitive keyed by verified config identity. No grant expansion from executable ownership. Inert setup declarations; backend writers consume guard. Existing std File::try_lock/Drop unlock, bounded busy conflict; stable owned inode no unlink, symlink/foreign refusal. No general locking framework.",
+    "description": "Deliver compilable inert-by-default permission module/API: bounded validated executable spellings and routing, inspect/plan/install/remove backend types, separate manifest/status/consent fields, module wiring. Only boundary code and its acceptance; no backend implementation/migration/polish.\nowns: PermissionInputs, PermissionPlan/Inspection and component manifest schema.\nconsumes: ordinary command catalog.\nAcceptance: compile, no silent grant, validated union rejects foreign/control/relative paths; stubs wired to consumer boundaries.\nFiles: src/harness/permissions.rs or permissions/mod.rs, src/harness/mod.rs, src/cli/setup.rs boundary declarations, src/cli/installer.rs boundary declarations.\nblocked-by ht-uwd.1: consumes Namespace grammar and ordinary command catalog\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.1).\nRound1 settled refinement: Owns additional minimal boundary: PermissionInspection states Missing/ExactHistoricalOwned/CurrentOwned/Conflict/Foreign and OwnedConfigWriteGuard signature/RAII primitive keyed by verified config identity. No grant expansion from executable ownership. Inert setup declarations; backend writers consume guard. Existing std File::try_lock/Drop unlock, bounded busy conflict; stable owned inode no unlink, symlink/foreign refusal. No general locking framework.\nowns: OwnedConfigWriteGuard and PermissionInspection ownership states.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:48:54Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T06:14:13Z",
+    "updated_at": "2026-10-08T06:18:32Z",
     "metadata": {
       "files_touched": [
         "src/cli/installer.rs",
@@ -1128,14 +1121,14 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:48:52Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:39Z",
+    "updated_at": "2026-10-08T06:18:33Z",
     "metadata": {
       "sp_depth": 1,
       "sp_order": 1,
       "files_touched": [
         "src/cli/me.rs",
         "src/cli/mod.rs",
-        "tests/cli/cooperative.rs.",
+        "tests/cli/cooperative.rs",
         "tests/cli/human.rs"
       ]
     },
@@ -1221,14 +1214,13 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:48:49Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T06:00:59Z",
+    "updated_at": "2026-10-08T06:18:34Z",
     "metadata": {
       "files_touched": [
         "src/cli/actor_route.rs",
         "src/cli/commands.rs",
         "src/cli/mod.rs",
-        "src/cli/mod.rs.",
-        "tests/cli/commands.rs."
+        "tests/cli/commands.rs"
       ]
     },
     "labels": [
