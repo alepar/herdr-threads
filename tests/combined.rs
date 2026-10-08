@@ -25,6 +25,8 @@ mod handoff_fences;
 mod host_adapter;
 #[path = "installer_integrations.rs"]
 mod installer_integrations;
+#[path = "store/lazy26_prerequisite.rs"]
+mod lazy26_prerequisite;
 #[path = "lifecycle_ux.rs"]
 mod lifecycle_ux;
 #[path = "local_endpoint.rs"]
