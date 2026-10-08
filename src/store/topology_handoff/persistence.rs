@@ -24,13 +24,13 @@ pub const MAX_ATTACHMENT_BYTES: usize = 128 * 1024;
 pub const MAX_RECOVERY_BYTES: usize = 256 * 1024;
 pub const MAX_COMPLETED_BYTES: usize = 2 * 1024 * 1024;
 
-fn corrupt() -> ApiError {
+pub(super) fn corrupt() -> ApiError {
     api_error(
         ErrorCode::StoreCorrupt,
         "invalid canonical bootstrap records",
     )
 }
-fn scope(identity: &BootstrapIdentity) -> String {
+pub(super) fn scope(identity: &BootstrapIdentity) -> String {
     format!("seat:{}", identity.claim.seat.as_str())
 }
 fn parent_keys(identity: &BootstrapIdentity) -> [(&'static str, &OperationId); 10] {
@@ -49,7 +49,7 @@ fn parent_keys(identity: &BootstrapIdentity) -> [(&'static str, &OperationId); 1
         ("linked_complete", &payload.linked_complete_key),
     ]
 }
-fn decode<T: DeserializeOwned + Serialize>(bytes: &[u8], limit: usize) -> Result<T, ApiError> {
+pub(super) fn decode<T: DeserializeOwned + Serialize>(bytes: &[u8], limit: usize) -> Result<T, ApiError> {
     if bytes.len() > limit {
         return Err(corrupt());
     }
@@ -60,7 +60,7 @@ fn decode<T: DeserializeOwned + Serialize>(bytes: &[u8], limit: usize) -> Result
     }
     Ok(decoded)
 }
-fn same<T: Serialize>(left: &T, right: &T) -> Result<bool, ApiError> {
+pub(super) fn same<T: Serialize>(left: &T, right: &T) -> Result<bool, ApiError> {
     Ok(serde_json::to_value(left).map_err(|_| corrupt())?
         == serde_json::to_value(right).map_err(|_| corrupt())?)
 }
@@ -377,7 +377,7 @@ fn check_registry(
     Ok(())
 }
 
-fn validate_live(
+pub(super) fn validate_live(
     db: &Connection,
     canonical: &HandoffNamespace,
     identity: &BootstrapIdentity,
@@ -416,7 +416,7 @@ fn validate_live(
     }
     Ok(())
 }
-fn insertion_error(error: rusqlite::Error) -> ApiError {
+pub(super) fn insertion_error(error: rusqlite::Error) -> ApiError {
     if matches!(error,rusqlite::Error::SqliteFailure(ref failure,_) if failure.code==rusqlite::ErrorCode::ConstraintViolation)
     {
         api_error(
