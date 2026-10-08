@@ -241,6 +241,42 @@ pub fn current(
         { return Err(corrupt()); }
         let decision = RecoverBootstrap {identity:result.identity.clone(),expected_attempt:result.attempt,operation:result.operation.clone(),disposition:result.disposition.clone()};
         if decision.decision_operation().map_err(|_| corrupt())? != result.operation { return Err(corrupt()); }
+        // A decision key excludes the result's creation and snapshot state.
+        // Compare against its referenced attempt, never a later current attempt.
+        let saved_attempt_record: Option<(String,Option<Vec<u8>>)> = db.query_row(
+            "SELECT state,substr(creation_json,1,?3) FROM bootstrap_attempts WHERE parent_id=?1 AND attempt=?2",
+            params![row.id,saved_attempt,(MAX_CREATION_BYTES+1) as u32], |r|Ok((r.get(0)?,r.get(1)?)),
+        ).optional().map_err(store_error)?;
+        let (saved_state,saved_creation_bytes) = saved_attempt_record.ok_or_else(corrupt)?;
+        let saved_creation: Option<CreatedTab> = saved_creation_bytes.as_deref()
+            .map(|b| decode(b,MAX_CREATION_BYTES)).transpose()?;
+        for created in result.creation.iter().chain(saved_creation.iter()) {
+            created.validate().map_err(|_| corrupt())?;
+            if created.workspace != identity.payload.workspace
+                || created.witness.endpoint.as_os_str() != canonical.host_endpoint.as_os_str()
+            { return Err(corrupt()); }
+        }
+        if !same(&result.creation,&saved_creation)?
+            || !matches!(saved_state.as_str(),"prepared"|"possible_creation"|"not_submitted"|"outcome_unknown"|"created")
+            || (saved_state=="created") != saved_creation.is_some()
+        { return Err(corrupt()); }
+        let coherent_recovery = match &result.disposition {
+            BootstrapRecoveryDisposition::CreatedPane { evidence,.. } => {
+                result.state==BootstrapState::Created && saved_state=="created"
+                    && result.attempt==attempt
+                    && result.creation.as_ref().is_some_and(|c|same(c,evidence).unwrap_or(false))
+            }
+            BootstrapRecoveryDisposition::NotCreated { .. } => {
+                // Inspection is not proof of non-submission: retain any defined
+                // non-Created attempt state, closed before a distinct later attempt.
+                result.state==BootstrapState::Prepared && result.creation.is_none()
+                    && saved_state!="created" && result.attempt<attempt
+            }
+            BootstrapRecoveryDisposition::Cancelled { .. } => {
+                result.state==BootstrapState::Cancelled && state==BootstrapState::Cancelled
+            }
+        };
+        if !coherent_recovery { return Err(corrupt()); }
         Ok(Box::new(result))
     }).transpose()?;
     let coherent = match state {
@@ -266,6 +302,7 @@ pub fn current(
                 && attachment.is_none()
                 && recovery.as_ref().is_some_and(|r| {
                     r.state == BootstrapState::Cancelled
+                        && r.attempt == attempt
                         && matches!(
                             r.disposition,
                             BootstrapRecoveryDisposition::Cancelled { .. }

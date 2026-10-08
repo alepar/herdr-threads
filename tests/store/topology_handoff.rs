@@ -811,3 +811,319 @@ fn current_key_lookup_stays_bounded_after_many_retained_attempts() {
 
 #[path = "topology_handoff_schema.rs"]
 mod schema_tests;
+
+fn saved_recovery(
+    tx: &rusqlite::Transaction<'_>,
+    id: &BootstrapIdentity,
+    disposition: BootstrapRecoveryDisposition,
+    state: BootstrapState,
+    creation: Option<herdr_threads::ports::CreatedTab>,
+) -> BootstrapRecoveryResult {
+    let mut request = RecoverBootstrap {
+        identity: id.clone(),
+        expected_attempt: BootstrapAttempt::first(),
+        operation: OperationId::new("placeholder"),
+        disposition,
+    };
+    request.operation = request.decision_operation().unwrap();
+    let result = BootstrapRecoveryResult {
+        identity: id.clone(),
+        attempt: request.expected_attempt,
+        operation: request.operation,
+        disposition: request.disposition,
+        operator_uid: 501,
+        operator_provenance: "operator:local-user:501".into(),
+        creation,
+        state,
+    };
+    tx.execute("INSERT INTO bootstrap_recovery_decisions(parent_id,attempt,operation,result_json) VALUES(1,1,?1,?2)",rusqlite::params![result.operation.as_str(),serde_json::to_vec(&result).unwrap()]).unwrap();
+    tx.execute(
+        "UPDATE bootstrap_handoffs SET latest_recovery_operation=?1 WHERE id=1",
+        [result.operation.as_str()],
+    )
+    .unwrap();
+    result
+}
+fn cancellation() -> BootstrapRecoveryDisposition {
+    BootstrapRecoveryDisposition::Cancelled {
+        reason: "operator abandoned work".into(),
+        quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+        child_guard: BootstrapCancellationGuard {
+            attached_child: None,
+        },
+    }
+}
+fn next_prepared(tx: &rusqlite::Transaction<'_>, id: &BootstrapIdentity) {
+    let attempt = BootstrapAttempt::new(2).unwrap();
+    tx.execute("INSERT INTO bootstrap_attempts(parent_id,attempt,state,reserve_key,record_key,check_key) VALUES(1,2,'prepared',?1,?2,?3)",rusqlite::params![attempt.operation(&id.compound,"reserve").unwrap().as_str(),attempt.operation(&id.compound,"record").unwrap().as_str(),attempt.operation(&id.compound,"check").unwrap().as_str()]).unwrap();
+    tx.execute(
+        "UPDATE bootstrap_handoffs SET current_attempt=2,state='prepared' WHERE id=1",
+        [],
+    )
+    .unwrap();
+}
+#[test]
+fn recovery_cancelled_reopen_refuses_invalid_foreign_or_unrecorded_creation() {
+    let mut malformed = created();
+    malformed.witness.schema = 0;
+    let mut foreign_workspace = created();
+    foreign_workspace.workspace = HostTargetId::new("foreign");
+    foreign_workspace.tab = HostTargetId::new("foreign:t2");
+    foreign_workspace.root_pane = HostTargetId::new("foreign:p2");
+    foreign_workspace.validate().unwrap();
+    let mut foreign_endpoint = created();
+    foreign_endpoint.witness.endpoint = "/foreign.sock".into();
+    foreign_endpoint.validate().unwrap();
+    let mut results = Vec::new();
+    for evidence in [malformed, foreign_workspace, foreign_endpoint, created()] {
+        let (_directory, path, mut db) = file_fixture();
+        let id = identity();
+        let tx = db.transaction().unwrap();
+        topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+        saved_recovery(
+            &tx,
+            &id,
+            cancellation(),
+            BootstrapState::Cancelled,
+            Some(evidence),
+        );
+        tx.execute(
+            "UPDATE bootstrap_handoffs SET state='cancelled',terminal_at=1 WHERE id=1",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        drop(db);
+        let mut db = Connection::open(path).unwrap();
+        schema::initialize(&db, || UtcMillis(2)).unwrap();
+        let before = counts(&db);
+        results.push(
+            topology_handoff::current(&db, &namespace(), &id)
+                .err()
+                .map(|e| e.code),
+        );
+        let tx = db.transaction().unwrap();
+        results.push(
+            topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(3))
+                .err()
+                .map(|e| e.code),
+        );
+        tx.commit().unwrap();
+        assert_eq!(counts(&db), before);
+    }
+    assert_eq!(results, vec![Some(ErrorCode::StoreCorrupt); 8]);
+}
+#[test]
+fn recovery_cancelled_reopen_refuses_an_older_attempt_decision() {
+    let (_directory, path, mut db) = file_fixture();
+    let id = identity();
+    let tx = db.transaction().unwrap();
+    topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+    next_prepared(&tx, &id);
+    saved_recovery(&tx, &id, cancellation(), BootstrapState::Cancelled, None);
+    tx.execute(
+        "UPDATE bootstrap_handoffs SET state='cancelled',terminal_at=1 WHERE id=1",
+        [],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    drop(db);
+    let db = Connection::open(path).unwrap();
+    schema::initialize(&db, || UtcMillis(2)).unwrap();
+    assert_eq!(
+        topology_handoff::current(&db, &namespace(), &id)
+            .unwrap_err()
+            .code,
+        ErrorCode::StoreCorrupt
+    );
+}
+#[test]
+fn recovery_historical_noncreation_before_later_prepared_attempt_remains_valid() {
+    for historical_state in [
+        "prepared",
+        "possible_creation",
+        "not_submitted",
+        "outcome_unknown",
+    ] {
+        for later_created in [false, true] {
+            let (_directory, path, mut db) = file_fixture();
+            let id = identity();
+            let tx = db.transaction().unwrap();
+            topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+            tx.execute(
+                "UPDATE bootstrap_attempts SET state=?1 WHERE parent_id=1",
+                [historical_state],
+            )
+            .unwrap();
+            let result = saved_recovery(
+                &tx,
+                &id,
+                BootstrapRecoveryDisposition::NotCreated {
+                    quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+                },
+                BootstrapState::Prepared,
+                None,
+            );
+            next_prepared(&tx, &id);
+            if later_created {
+                tx.execute("UPDATE bootstrap_attempts SET state='created',creation_json=?1 WHERE parent_id=1 AND attempt=2", [serde_json::to_vec(&created()).unwrap()]).unwrap();
+                tx.execute(
+                    "UPDATE bootstrap_handoffs SET state='created' WHERE id=1",
+                    [],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+            drop(db);
+            let mut db = Connection::open(path).unwrap();
+            schema::initialize(&db, || UtcMillis(2)).unwrap();
+            let status = topology_handoff::current(&db, &namespace(), &id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(status.attempt, BootstrapAttempt::new(2).unwrap());
+            assert_eq!(
+                status.state,
+                if later_created {
+                    BootstrapState::Created
+                } else {
+                    BootstrapState::Prepared
+                }
+            );
+            assert_eq!(
+                status.creation,
+                if later_created { Some(created()) } else { None }
+            );
+            assert_eq!(status.recovery, Some(Box::new(result)));
+            let tx = db.transaction().unwrap();
+            assert_eq!(
+                topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(3)).unwrap(),
+                status
+            );
+            tx.commit().unwrap();
+        }
+    }
+}
+
+#[test]
+fn recovery_created_pane_refuses_result_state_or_normalized_evidence_mismatch() {
+    let mut failures = Vec::new();
+    for case in 0..5 {
+        let mut db = fixture();
+        let id = identity();
+        let tx = db.transaction().unwrap();
+        topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+        let mut normalized = created();
+        if case == 3 {
+            normalized.root_pane = HostTargetId::new("w:p3");
+        }
+        tx.execute(
+            "UPDATE bootstrap_attempts SET state='created',creation_json=?1 WHERE parent_id=1",
+            [serde_json::to_vec(&normalized).unwrap()],
+        )
+        .unwrap();
+        tx.execute(
+            "UPDATE bootstrap_handoffs SET state='created' WHERE id=1",
+            [],
+        )
+        .unwrap();
+        if case == 4 {
+            next_prepared(&tx, &id);
+        }
+        let mut evidence = created();
+        if case == 2 {
+            evidence.root_pane = HostTargetId::new("w:p4");
+        }
+        saved_recovery(
+            &tx,
+            &id,
+            BootstrapRecoveryDisposition::CreatedPane {
+                evidence,
+                structural_reference: HostCallId::new("inspection"),
+            },
+            if case == 1 {
+                BootstrapState::Prepared
+            } else {
+                BootstrapState::Created
+            },
+            if case == 0 { None } else { Some(created()) },
+        );
+        failures.push(
+            topology_handoff::current(&tx, &namespace(), &id)
+                .err()
+                .map(|e| e.code),
+        );
+    }
+    assert_eq!(failures, vec![Some(ErrorCode::StoreCorrupt); 5]);
+}
+
+#[test]
+fn recovery_noncreation_refuses_creation_or_wrong_snapshot_state() {
+    let mut failures = Vec::new();
+    for bad_creation in [true, false] {
+        let mut db = fixture();
+        let id = identity();
+        let tx = db.transaction().unwrap();
+        topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+        next_prepared(&tx, &id);
+        saved_recovery(
+            &tx,
+            &id,
+            BootstrapRecoveryDisposition::NotCreated {
+                quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+            },
+            if bad_creation {
+                BootstrapState::Prepared
+            } else {
+                BootstrapState::Created
+            },
+            if bad_creation { Some(created()) } else { None },
+        );
+        failures.push(
+            topology_handoff::current(&tx, &namespace(), &id)
+                .err()
+                .map(|e| e.code),
+        );
+    }
+    assert_eq!(failures, vec![Some(ErrorCode::StoreCorrupt); 2]);
+}
+#[test]
+fn recovery_matching_created_and_cancelled_evidence_survive_reopen() {
+    for cancelled in [false, true] {
+        let (_directory, path, mut db) = file_fixture();
+        let id = identity();
+        let tx = db.transaction().unwrap();
+        topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+        record_created(&tx);
+        let state = if cancelled {
+            BootstrapState::Cancelled
+        } else {
+            BootstrapState::Created
+        };
+        let disposition = if cancelled {
+            cancellation()
+        } else {
+            BootstrapRecoveryDisposition::CreatedPane {
+                evidence: created(),
+                structural_reference: HostCallId::new("inspection"),
+            }
+        };
+        let retained = saved_recovery(&tx, &id, disposition, state, Some(created()));
+        if cancelled {
+            tx.execute(
+                "UPDATE bootstrap_handoffs SET state='cancelled',terminal_at=1 WHERE id=1",
+                [],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        drop(db);
+        let db = Connection::open(path).unwrap();
+        schema::initialize(&db, || UtcMillis(2)).unwrap();
+        let result = topology_handoff::current(&db, &namespace(), &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.state, state);
+        assert_eq!(result.creation, Some(created()));
+        assert_eq!(result.recovery, Some(Box::new(retained)));
+    }
+}
