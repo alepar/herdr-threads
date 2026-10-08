@@ -1,15 +1,232 @@
 [
   {
+    "id": "ht-uwd.12",
+    "title": "Integration sweep: native ordinary grants and explicit human routing",
+    "description": "Verify integrated ordinary permission install/setup/status/unsetup and human namespace main flows using scope-bounded isolated focused fixtures; implement small missing seam coverage and file blockers for larger gaps.\nowns: terminal focused integration join and required final source checks.\nconsumes: all leaves (integration sweep).\nAcceptance: ordinary bare/ht/owned absolute/pinned communication allowed; human/operator/person withheld; --human formatting supported; lifecycle/consent/migration/refusal/retry invariants hold. Run focused fixture tests and common cargo fmt, nice cargo clippy --locked --all-targets --all-features -- -D warnings, nice scripts/check-default-features, diff checks and fresh UUID-scoped leak check; no full suite, native model, real config or shared Herdr. Coordinator owns integrated full suite/landing. Files: tests/permissions_smoke.rs, tests/installer_integrations.rs as needed; docs/superpowers/runs/2026-10-07-installer-human-permissions validation evidence.\nblocked-by ht-uwd.11: consumes all leaves (integration sweep)\nblocked-by ht-uwd.8.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.8.1: consumes all leaves (integration sweep)\nblocked-by ht-uwd.7.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.7.1: consumes all leaves (integration sweep)\nblocked-by ht-uwd.5.3.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.5.3.1: consumes all leaves (integration sweep)\nblocked-by ht-uwd.5.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.5.1: consumes all leaves (integration sweep)\nblocked-by ht-uwd.3.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.3.1: consumes all leaves (integration sweep)\nblocked-by ht-uwd.10: consumes all leaves (integration sweep)\nblocked-by ht-uwd.9: consumes all leaves (integration sweep)\nblocked-by ht-uwd.6: consumes all leaves (integration sweep)\nblocked-by ht-uwd.4: consumes all leaves (integration sweep)\nblocked-by ht-uwd.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.1: consumes all leaves (integration sweep)",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:02:24Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:02:24Z",
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:32Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.3.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.7.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:28Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.10",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:33Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.5.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:29Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.9",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:34Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.6",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:34Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:02:24Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:37Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.5.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:30Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:36Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.11",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:24Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.8.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:25Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.7.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:27Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.5.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.5.3.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:28Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.8.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:26Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.4",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:35Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 17,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.11",
+    "title": "Cross-record frozen retry and pre-effect refusal regressions",
+    "description": "Add cross-record integration regressions that execute real retry/caller preflight against retained synthetic journal/context records, beyond classifier unit tests.\nowns: frozen-origin and pre-effect integration regression fixtures.\nconsumes: frozen retry origin classifier and preflight; runtime actor boundary.\nAcceptance: causal RED/GREEN Human/operator root refusal before handoff completed output/cleanup/context retirement; human replay frozen bytes/scope/claim/digest/keys unchanged; completed agent retry after Human live binding remains root-valid; malformed/Native contradiction explicit; no effect on denied state.\nFiles: tests/cli/follow_retry.rs, tests/cli/journal.rs, tests/cli/cooperative.rs; stateless combined modules, test-support owned children only.\nblocked-by ht-uwd.2: consumes frozen retry origin classifier and preflight\nblocked-by ht-uwd.3.1: consumes runtime actor boundary\nAcceptance consumes original classifier (needs: ht-uwd.2).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:59:40Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:00:40Z",
+    "metadata": {
+      "files_touched": [
+        "tests/cli/cooperative.rs",
+        "tests/cli/follow_retry.rs",
+        "tests/cli/journal.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.11",
+        "depends_on_id": "ht-uwd.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:00:30Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.11",
+        "depends_on_id": "ht-uwd.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:00:27Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.11",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:59:40Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
     "id": "ht-uwd.8.2",
     "title": "Pass owned installer paths and consent through shell gateway",
-    "description": "Forward installed_binary/link_path/alias_path and pinned state/socket to actual installer-integrations consumer; update missing permission consent and truthful summaries/exit/next steps; preserve foreign/force/PATH protections and uninstall ownership.\nowns: shell inventory gateway and permission consent wording.\nconsumes: installer inventory validation/transport consumer.\nAcceptance: fake-host shell fixture actual gateway arguments plus Rust consumer round trip; fresh/update/uninstall/declined/no-setup/noninteractive/custom-prefix/foreign/symlink cases; no real config.\nFiles: scripts/install.sh, tests/release/install_test.sh.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.7: consumes component lifecycle and consent\nblocked-by ht-uwd.8.1: consumes installer inventory validation/transport consumer\nAcceptance consumes declared producer artifact (needs: ht-uwd.7).",
+    "description": "Exercise actual shell gateway to Rust consumer with isolated ownership/refusal/consent regressions, then implement owned path transport and truthful summaries. Forward installed_binary/link_path/alias_path and pinned state/socket to actual installer-integrations consumer; update missing permission consent and truthful summaries/exit/next steps; preserve foreign/force/PATH protections and uninstall ownership.\nowns: shell inventory gateway and permission consent wording.\nconsumes: installer inventory validation/transport consumer.\nAcceptance: fake-host shell fixture actual gateway arguments plus Rust consumer round trip; fresh/update/uninstall/declined/no-setup/noninteractive/custom-prefix/foreign/symlink cases; no real config.\nFiles: scripts/install.sh, tests/release/install_test.sh.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.7: consumes component lifecycle and consent\nblocked-by ht-uwd.8.1: consumes installer inventory validation/transport consumer\nAcceptance consumes declared producer artifact (needs: ht-uwd.7).",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:56:01Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:31Z",
+    "updated_at": "2026-10-08T05:59:35Z",
     "metadata": {
       "files_touched": [
         "scripts/install.sh",
@@ -46,7 +263,7 @@
       }
     ],
     "dependency_count": 2,
-    "dependent_count": 0,
+    "dependent_count": 1,
     "comment_count": 0,
     "parent": "ht-uwd.8"
   },
@@ -97,21 +314,21 @@
       }
     ],
     "dependency_count": 2,
-    "dependent_count": 1,
+    "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-uwd.8"
   },
   {
     "id": "ht-uwd.7.2",
     "title": "Installer component reconciliation and explicit permission consent",
-    "description": "Reconcile permissions separately from hooks/skill; require specific missing permission consent, retain ownership-only updates and truthful per-component state/exit. Reinspect exact state after consent and serialize JSON mutation plans.\nowns: independent permission consent/reconciliation.\nconsumes: explicit permission lifecycle API.\nAcceptance: missing/declined/noninteractive/hooks-owned cases; consent says ordinary reads AND writes, human/operator withheld; mixed hook/permission status and changed-during-consent refusal; Rust consumer witness.\nFiles: src/cli/installer.rs reconciliation, tests/installer_integrations.rs.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nblocked-by ht-uwd.7.1: consumes explicit permission lifecycle API\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4",
+    "description": "Add causal isolated missing/declined/noninteractive/hooks-owned consent fixtures at actual reconciliation entry point. Reconcile permissions separately from hooks/skill; require specific missing permission consent, retain ownership-only updates and truthful per-component state/exit. Reinspect exact state after consent and serialize JSON mutation plans.\nowns: independent permission consent/reconciliation.\nconsumes: explicit permission lifecycle API.\nAcceptance: missing/declined/noninteractive/hooks-owned cases; consent says ordinary reads AND writes, human/operator withheld; mixed hook/permission status and changed-during-consent refusal; Rust consumer witness.\nFiles: src/cli/installer.rs reconciliation, tests/installer_integrations.rs.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nblocked-by ht-uwd.7.1: consumes explicit permission lifecycle API\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:54:55Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:32Z",
+    "updated_at": "2026-10-08T05:59:36Z",
     "metadata": {
       "files_touched": [
         "src/cli/installer.rs",
@@ -148,7 +365,7 @@
       }
     ],
     "dependency_count": 2,
-    "dependent_count": 0,
+    "dependent_count": 1,
     "comment_count": 0,
     "parent": "ht-uwd.7"
   },
@@ -199,7 +416,7 @@
       }
     ],
     "dependency_count": 2,
-    "dependent_count": 1,
+    "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-uwd.7"
   },
@@ -250,7 +467,7 @@
       }
     ],
     "dependency_count": 2,
-    "dependent_count": 0,
+    "dependent_count": 1,
     "comment_count": 0,
     "parent": "ht-uwd.5.3"
   },
@@ -301,7 +518,7 @@
       }
     ],
     "dependency_count": 2,
-    "dependent_count": 1,
+    "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-uwd.5.3"
   },
@@ -406,7 +623,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 2,
+    "dependent_count": 3,
     "comment_count": 0,
     "parent": "ht-uwd.5"
   },
@@ -449,7 +666,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 2,
+    "dependent_count": 4,
     "comment_count": 0,
     "parent": "ht-uwd.5"
   },
@@ -500,7 +717,7 @@
       }
     ],
     "dependency_count": 2,
-    "dependent_count": 0,
+    "dependent_count": 1,
     "comment_count": 0,
     "parent": "ht-uwd.3"
   },
@@ -544,21 +761,21 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 1,
+    "dependent_count": 4,
     "comment_count": 0,
     "parent": "ht-uwd.3"
   },
   {
     "id": "ht-uwd.10",
     "title": "Configuration smoke: Claude/Codex, bare/ht/absolute/pinned, root/human",
-    "description": "Exercise isolated fixture entry points for both backend renderer/install/status/remove, all four spelling categories, supported pinned/output forms, quoted body and compounds. Run parse_argv fixtures for root/human, legacy/operator/inferred-Human refusal and --human formatting. Early verification is not terminal readiness only.\nowns: cross-configuration focused smoke fixtures.\nconsumes: native backends; namespace grammar; runtime actor boundary.\nAcceptance: named command/fixture per configuration, actual nonzero tests, model-free evidence labels, relevant RED/GREEN.\nFiles: tests/permissions_smoke.rs (combined module), tests/combined.rs registration; test-support required if spawning.\nblocked-by ht-uwd.3: consumes Runtime honest actor routing and human lifecycle\nblocked-by ht-uwd.5: consumes Claude narrow permissions and durable legacy ownership migration\nblocked-by ht-uwd.6: consumes Codex owned execpolicy backend\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.3).",
+    "description": "Run early isolated parse_argv and Claude/Codex renderer decisions for each bare/ht/canonical/link/alias/pinned, root/human, output/quoted-body/compound configuration. Run parse_argv fixtures for root/human, legacy/operator/inferred-Human refusal and --human formatting. Early verification is not terminal readiness only.\nowns: cross-configuration focused smoke fixtures.\nconsumes: Claude rule renderer and representability contract; Codex permission backend; namespace grammar; minimal runtime actor boundary.\nAcceptance: named command/fixture per configuration, actual nonzero tests, model-free evidence labels, relevant RED/GREEN.\nFiles: tests/permissions_smoke.rs (combined module), tests/combined.rs registration; test-support required if spawning.\nblocked-by ht-uwd.3.1: consumes runtime actor boundary\nblocked-by ht-uwd.5.1: consumes Claude rule renderer and representability contract\nblocked-by ht-uwd.6: consumes Codex owned execpolicy backend\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.3.1).",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:49:07Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:36Z",
+    "updated_at": "2026-10-08T05:59:28Z",
     "metadata": {
       "files_touched": [
         "tests/combined.rs",
@@ -571,6 +788,14 @@
     "dependencies": [
       {
         "issue_id": "ht-uwd.10",
+        "depends_on_id": "ht-uwd.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:59:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.10",
         "depends_on_id": "ht-uwd.6",
         "type": "blocks",
         "created_at": "2026-10-08T05:49:09Z",
@@ -579,9 +804,9 @@
       },
       {
         "issue_id": "ht-uwd.10",
-        "depends_on_id": "ht-uwd.3",
+        "depends_on_id": "ht-uwd.5.1",
         "type": "blocks",
-        "created_at": "2026-10-08T05:49:08Z",
+        "created_at": "2026-10-08T05:59:33Z",
         "created_by": "Alexey Parfenov",
         "metadata": "{}"
       },
@@ -592,32 +817,24 @@
         "created_at": "2026-10-08T05:49:07Z",
         "created_by": "Alexey Parfenov",
         "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-uwd.10",
-        "depends_on_id": "ht-uwd.5",
-        "type": "blocks",
-        "created_at": "2026-10-08T05:49:09Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
       }
     ],
     "dependency_count": 3,
-    "dependent_count": 0,
+    "dependent_count": 1,
     "comment_count": 0,
     "parent": "ht-uwd"
   },
   {
     "id": "ht-uwd.9",
     "title": "Human command guidance and immutable continuation rendering",
-    "description": "Update owned guidance, generated pending/retry/ready/continuation commands and TRUST-POLICY spelling/native limits. Human output ready argv preserves immediate human; no new strict OutputSpec/ContinuationContext wire field, digest rewrite, or blind replacement of peer/body text. Supply exact shared SKILL/handoff help wording to w4:pD0 via parent and consume only coordinated source.\nowns: lawful namespace suggestions and documentation.\nconsumes: InvocationActor route; frozen retry origin classifier; runtime actor boundary.\nAcceptance: valid legacy wire fixtures and generated human/agent continuation argv; precise suggestions and no peer/body rewriting.\nFiles: src/cli/output.rs, src/cli/journal.rs rendering, src/cli/me.rs help, TRUST-POLICY.md, docs/install.md; shared integrations/skill/SKILL.md and handoff help owner-coordinated.\nblocked-by ht-uwd.2: consumes Immutable original actor classification and retry preflight\nblocked-by ht-uwd.3: consumes Runtime honest actor routing and human lifecycle\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.2).\nOutputSpec/ContinuationContext deny_unknown_fields compatibility and frozen wire digest are immutable: build local namespace argv without serialized schema changes or blind text replacement.",
+    "description": "Update owned guidance, generated pending/retry/ready/continuation commands and TRUST-POLICY spelling/native limits. Human output ready argv preserves immediate human; no new strict OutputSpec/ContinuationContext wire field, digest rewrite, or blind replacement of peer/body text. Supply exact shared SKILL/handoff help wording to w4:pD0 via parent and consume only coordinated source.\nowns: lawful namespace suggestions and documentation.\nconsumes: InvocationActor route; frozen retry origin classifier; runtime actor boundary.\nAcceptance: valid legacy wire fixtures and generated human/agent continuation argv; precise suggestions and no peer/body rewriting.\nFiles: src/cli/output.rs, src/cli/journal.rs rendering, src/cli/me.rs help, TRUST-POLICY.md, docs/install.md; shared integrations/skill/SKILL.md and handoff help owner-coordinated.\nblocked-by ht-uwd.2: consumes Immutable original actor classification and retry preflight\nblocked-by ht-uwd.3: consumes Runtime honest actor routing and human lifecycle\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.2).\nOutputSpec/ContinuationContext deny_unknown_fields compatibility and frozen wire digest are immutable: build local namespace argv without serialized schema changes or blind text replacement.\nOutputSpec/ContinuationContext deny_unknown_fields compatibility and frozen wire digest are immutable: build local namespace argv without serialized schema changes or blind text replacement.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:49:04Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:36Z",
+    "updated_at": "2026-10-08T06:00:55Z",
     "metadata": {
       "files_touched": [
         "TRUST-POLICY.md",
@@ -657,7 +874,7 @@
       }
     ],
     "dependency_count": 2,
-    "dependent_count": 0,
+    "dependent_count": 1,
     "comment_count": 0,
     "parent": "ht-uwd"
   },
@@ -665,13 +882,14 @@
     "id": "ht-uwd.8",
     "title": "Installer validated owned paths and permission gateway",
     "description": "Pass canonical installed binary, owned herdr-threads link and ht alias plus pinned routing into component reconciliation. Reuse exact alias/foreign/force/PATH protection; update consent/exit/next steps for independent permissions, no unrelated PATH grant.\nowns: installer executable inventory transport.\nconsumes: independent component lifecycle and consent.\nAcceptance: actual installer shell fixture gateway plus Rust consumer, bare/absolute/custom-prefix paths and foreign/declined/update/uninstall preservation; installed path set verified.\nFiles: scripts/install.sh, tests/release/install_test.sh, src/cli/installer.rs input plumbing.\nblocked-by ht-uwd.7: consumes Independent setup lifecycle and permission consent\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.7).",
+    "design": "Spec: docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--installer-permission-gateway-design.md; fresh review both children LEAF, COMPLETE.",
     "status": "open",
     "priority": 2,
     "issue_type": "epic",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:49:02Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:36Z",
+    "updated_at": "2026-10-08T05:56:53Z",
     "metadata": {
       "sp_depth": 1,
       "sp_order": 4,
@@ -682,8 +900,7 @@
       ]
     },
     "labels": [
-      "sp:ht-uwd",
-      "sp:needs-design"
+      "sp:ht-uwd"
     ],
     "dependencies": [
       {
@@ -803,7 +1020,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 3,
+    "dependent_count": 4,
     "comment_count": 0,
     "parent": "ht-uwd"
   },
@@ -851,7 +1068,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 3,
+    "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-uwd"
   },
@@ -896,7 +1113,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 8,
+    "dependent_count": 9,
     "comment_count": 0,
     "parent": "ht-uwd"
   },
@@ -944,7 +1161,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 2,
+    "dependent_count": 1,
     "comment_count": 0,
     "parent": "ht-uwd"
   },
@@ -990,21 +1207,21 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 1,
+    "dependent_count": 3,
     "comment_count": 0,
     "parent": "ht-uwd"
   },
   {
     "id": "ht-uwd.1",
     "title": "Namespace grammar and ordinary command catalog",
-    "description": "Implement immediate raw argv[1] human route separate from output; reject legacy person/operator aliases/globals with correct replacement. Own commands.rs and new actor_route.rs (human.rs is output rendering). Export positive ordinary-family catalog for renderers, supported pinned/output spellings.\nowns: InvocationActor route and ordinary command catalog.\n\nAcceptance: meaningful parse RED/GREEN bare/ht/absolute, pinned globals, output --human, body data, all legacy operator/person aliases.\nFiles: src/cli/commands.rs, src/cli/actor_route.rs, tests/cli/commands.rs.\nNamespace owner reserves setup/internal installer parser args up front and owns only actor_route module declaration in src/cli/mod.rs. Preserve generic OsString/non-UTF8 parse behavior without lossy identity. Root ServiceDisconnect is Human administrative; launch and read-only discovery remain ordinary. Files: src/cli/mod.rs module declaration only.",
+    "description": "Implement immediate raw argv[1] human route separate from output; reject legacy person/operator aliases/globals with correct replacement. Own commands.rs and new actor_route.rs (human.rs is output rendering). Export positive ordinary-family catalog for renderers, supported pinned/output spellings.\nowns: InvocationActor route and ordinary command catalog.\n\nAcceptance: meaningful parse RED/GREEN bare/ht/absolute, pinned globals, output --human, body data, all legacy operator/person aliases.\nFiles: src/cli/commands.rs, src/cli/actor_route.rs, tests/cli/commands.rs.\nNamespace owner reserves setup/internal installer parser args up front and owns only actor_route module declaration in src/cli/mod.rs. Preserve generic OsString/non-UTF8 parse behavior without lossy identity. Root ServiceDisconnect is Human administrative; launch and read-only discovery remain ordinary.\nFiles: src/cli/mod.rs module declaration only.\nNamespace owner reserves setup/internal installer parser args up front and owns only actor_route module declaration in src/cli/mod.rs. Preserve generic OsString/non-UTF8 parse behavior without lossy identity. Root ServiceDisconnect is Human administrative; launch and read-only discovery remain ordinary. Files: src/cli/mod.rs module declaration only.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:48:49Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:40Z",
+    "updated_at": "2026-10-08T06:00:59Z",
     "metadata": {
       "files_touched": [
         "src/cli/actor_route.rs",
@@ -1028,7 +1245,7 @@
       }
     ],
     "dependency_count": 0,
-    "dependent_count": 5,
+    "dependent_count": 6,
     "comment_count": 0,
     "parent": "ht-uwd"
   },
