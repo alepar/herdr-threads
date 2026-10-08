@@ -971,3 +971,165 @@ fn lazy_inbox_completion_mismatched_permit_is_write_free() {
     );
     assert_eq!(conn.query_row("SELECT count(*) FROM operations WHERE operation_key IN ('original-done','changed-done')",[],|r|r.get::<_,i64>(0)).unwrap(),0);
 }
+
+#[test]
+fn lazy_inbox_fix_partial_concurrent_completion() {
+    let (iso, context, mut conn) = fixture("lazy-fix-partial");
+    let first = send(
+        &iso,
+        &context,
+        &mut conn,
+        "first",
+        &"界".repeat(3000),
+        DeliveryMode::Lazy,
+    );
+    let second = send(
+        &iso,
+        &context,
+        &mut conn,
+        "second",
+        "second intact",
+        DeliveryMode::Lazy,
+    );
+    let page = query(
+        &context,
+        PageRequest {
+            limit: 1,
+            max_bytes: 1200,
+            ..Default::default()
+        },
+        &OutputSpec::default(),
+    );
+    assert!(
+        matches!(&page.items[0], InboxBatchV2Item::LazyMessage { message, body_end, body_len, .. } if message == &first && body_end < body_len)
+    );
+    complete(
+        &iso,
+        CompleteInboxDelivery {
+            messages: vec![first],
+            operation: OperationId::new("concurrent"),
+            claim: claim(),
+        },
+    )
+    .unwrap();
+    let mut cursor = page.next_cursor;
+    let mut found = false;
+    for _ in 0..100 {
+        let page = query(
+            &context,
+            PageRequest {
+                cursor,
+                limit: 1,
+                max_bytes: 1200,
+            },
+            &OutputSpec::default(),
+        );
+        for item in &page.items {
+            if let InboxBatchV2Item::LazyMessage {
+                message,
+                body,
+                body_start,
+                ..
+            } = item
+                && message == &second
+            {
+                assert_eq!(*body_start, 0);
+                assert_eq!(body, "second intact");
+                found = true;
+            }
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert!(found);
+    assert!(cursor.is_none());
+}
+
+#[test]
+fn lazy_inbox_fix_partial_concurrent_ack() {
+    let (iso, context, mut conn) = fixture("ordinary-fix-partial");
+    let first = send(
+        &iso,
+        &context,
+        &mut conn,
+        "first",
+        &"界".repeat(3000),
+        DeliveryMode::Ordinary,
+    );
+    let second = send(
+        &iso,
+        &context,
+        &mut conn,
+        "second",
+        "second intact",
+        DeliveryMode::Ordinary,
+    );
+    let page = query(
+        &context,
+        PageRequest {
+            limit: 1,
+            max_bytes: 1200,
+            ..Default::default()
+        },
+        &OutputSpec::default(),
+    );
+    assert!(
+        matches!(&page.items[0], InboxBatchV2Item::Message { message, body_end, body_len, .. } if message == &first && body_end < body_len)
+    );
+    {
+        use herdr_threads::ports::StorePort;
+        let store = herdr_threads::store::SqliteStore::new(
+            StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)),
+            "i",
+            Default::default(),
+        )
+        .unwrap();
+        let mutation = PermitMutation::Ack(herdr_threads::protocol::commands::Ack {
+            messages: vec![first],
+            operation: OperationId::new("concurrent-ack"),
+            claim: claim(),
+        });
+        let permit = store
+            .issue_cooperative_permit(
+                herdr_threads::store::cooperative_permit_request(&mutation).unwrap(),
+                &budget(),
+            )
+            .unwrap();
+        store.mutate(mutation, permit, &budget()).unwrap();
+    }
+    let mut cursor = page.next_cursor;
+    let mut found = false;
+    for _ in 0..100 {
+        let page = query(
+            &context,
+            PageRequest {
+                cursor,
+                limit: 1,
+                max_bytes: 1200,
+            },
+            &OutputSpec::default(),
+        );
+        for item in &page.items {
+            if let InboxBatchV2Item::Message {
+                message,
+                body,
+                body_start,
+                ..
+            } = item
+                && message == &second
+            {
+                assert_eq!(*body_start, 0);
+                assert_eq!(body, "second intact");
+                found = true;
+            }
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert!(found);
+    assert!(cursor.is_none());
+}

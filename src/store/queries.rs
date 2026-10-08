@@ -6078,6 +6078,19 @@ mod inbox_v2 {
         let seat = &state.seat;
         match state.source {
             Source::Lazy => {
+                // A partial body pins an already validated addressed identity.
+                // Concurrent completion removes it from the pending index but
+                // must not apply its offset to the next pending message.
+                if let Some(body) = &state.body {
+                    let ordinal: i64 = db.query_row(
+                        "SELECT ordinal FROM lazy_recipients WHERE seat_id=?1 AND message_id=?2",
+                        params![seat.as_str(), body.message.as_str()],
+                        |r| r.get(0),
+                    ).map_err(store_error)?;
+                    let item = message(db, body.message.as_str(), true, false, state)?;
+                    state.lazy_after_ordinal = ordinal as u64;
+                    return Ok((item, 1));
+                }
                 let pending = super::super::lazy_delivery::pending_page(
                     db,
                     instance,
