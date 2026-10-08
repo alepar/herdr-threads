@@ -1,3 +1,4 @@
+use super::super::retry::run_delivery_retry_to_writer as retry_to_writer;
 use super::*;
 use crate::protocol::{
     commands::Command,
@@ -33,6 +34,7 @@ struct Client {
     calls: Mutex<Vec<Command>>,
     lost: Mutex<Option<&'static str>>,
     saved: Mutex<std::collections::HashMap<String, CommandResult>>,
+    completed: Mutex<bool>,
 }
 impl Client {
     fn new(joined: bool) -> Self {
@@ -42,6 +44,7 @@ impl Client {
             calls: Mutex::new(vec![]),
             lost: Mutex::new(None),
             saved: Mutex::new(Default::default()),
+            completed: Mutex::new(false),
         }
     }
 }
@@ -95,11 +98,22 @@ impl LocalClient for Client {
                     crate::protocol::handoff::HandoffResult {
                         compound: q.identity.compound,
                         thread: Some(ThreadId::new("t1")),
-                        state: HandoffState::Live,
+                        state: if *self.completed.lock().unwrap() {
+                            HandoffState::Completed
+                        } else {
+                            HandoffState::Live
+                        },
                     },
                 ));
             }
             Command::CompleteHandoff(q) => {
+                *self.completed.lock().unwrap() = true;
+                if std::mem::take(&mut *self.lost.lock().unwrap()) == Some("complete") {
+                    return Err(ApiError::new(
+                        ErrorCode::UnknownOutcome,
+                        "completion committed reply lost",
+                    ));
+                }
                 assert_eq!(q.identity.compound.as_str(), "canonical-compound");
                 return Ok(CommandResult::Handoff(
                     crate::protocol::handoff::HandoffResult {
@@ -307,7 +321,7 @@ fn unsafe_recipient_preparation_refuses_before_any_write() {
 struct TempRoot(std::path::PathBuf);
 impl TempRoot {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("ht-qhz5-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("sp-qhz8-fixture-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         Self(root)
     }
@@ -498,6 +512,19 @@ impl CanonicalInvites {
     fn canonical(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
         use crate::ports::StorePort;
         let mutation = crate::protocol::commands::PermitMutation::try_from(command).unwrap();
+        if let crate::protocol::commands::PermitMutation::SendMessage(send) = &mutation {
+            loop {
+                match self.store.prepare_send_step(
+                    send,
+                    crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                    budget,
+                )? {
+                    crate::ports::SendPreparationProgress::Ready { .. } => break,
+                    crate::ports::SendPreparationProgress::More { .. } => {}
+                    crate::ports::SendPreparationProgress::Committed(result) => return Ok(result),
+                }
+            }
+        }
         let request = crate::store::cooperative_permit_request(&mutation)?;
         let permit = self.store.issue_cooperative_permit(request, budget)?;
         self.store.mutate(mutation, permit, budget)
@@ -522,6 +549,20 @@ impl LocalClient for CanonicalInvites {
                     ErrorCode::UnknownOutcome,
                     "canonical invitation committed; lost reply",
                 ));
+            }
+            Ok(result)
+        } else if matches!(c, Command::BeginHandoff(_) | Command::CompleteHandoff(_)) {
+            let mut result = self.fake.call(c, b)?;
+            if let CommandResult::Handoff(fence) = &mut result {
+                let conn = self.context.open_writer().unwrap();
+                let thread: Option<String> = conn
+                    .query_row("SELECT id FROM threads LIMIT 1", [], |r| r.get(0))
+                    .ok();
+                if let Some(thread) = thread {
+                    fence.thread = Some(ThreadId::new(thread));
+                } else {
+                    fence.thread = None;
+                }
             }
             Ok(result)
         } else {
@@ -760,3 +801,649 @@ fn canonical_pending_invitation_is_reused_in_existing_channel() {
         }
     }
 }
+
+// A missing exact report field must refuse, rather than fabricate staged delivery.
+macro_rules! corrupt_report_test {
+    ($name:ident, $field:literal, $bad:expr) => {
+        #[test]
+        fn $name() {
+            let tmp = TempRoot::new();
+            let journal = Journal::open(tmp.0.join("intents")).unwrap();
+            let reference = record(&journal, plan());
+            let client = Client::new(false);
+            execute(&journal, &reference, &client, &TestClock).unwrap();
+            let mut progress: Progress = handoff::load_progress(&journal, &reference).unwrap();
+            progress.report.as_mut().unwrap()[$field] = $bad;
+            handoff::save_progress(&journal, &reference, &progress).unwrap();
+            client.calls.lock().unwrap().clear();
+            assert!(
+                execute(&journal, &reference, &client, &TestClock).is_err(),
+                "completed report corruption accepted: {}",
+                $field
+            );
+            assert!(journal.load(&reference).is_ok());
+            assert!(
+                client
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|c| matches!(c, Command::BeginHandoff(_)))
+            );
+        }
+    };
+}
+corrupt_report_test!(
+    completed_corrupt_compound_refuses,
+    "compound",
+    serde_json::json!("wrong")
+);
+corrupt_report_test!(
+    completed_corrupt_message_refuses,
+    "message",
+    serde_json::json!({"kind":"message_sent","data":"wrong"})
+);
+corrupt_report_test!(
+    completed_corrupt_invitation_refuses,
+    "invitation",
+    serde_json::json!(null)
+);
+corrupt_report_test!(
+    completed_corrupt_participation_refuses,
+    "participation",
+    serde_json::json!("working")
+);
+corrupt_report_test!(
+    completed_corrupt_reference_refuses,
+    "recovery_ref",
+    serde_json::json!("local:999")
+);
+corrupt_report_test!(
+    completed_unexpected_field_refuses,
+    "accepted",
+    serde_json::json!(true)
+);
+
+struct TerminalClient {
+    original: crate::protocol::handoff::HandoffIdentity,
+    calls: Mutex<usize>,
+}
+impl LocalClient for TerminalClient {
+    fn call_with_output(
+        &self,
+        c: Command,
+        _: &OutputSpec,
+        b: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(c, b)
+    }
+    fn call(&self, c: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        *self.calls.lock().unwrap() += 1;
+        let Command::BeginHandoff(q) = c else {
+            panic!("terminal retry attempted live effect/read: {c:?}")
+        };
+        assert_eq!(q.identity, self.original);
+        Ok(CommandResult::Handoff(
+            crate::protocol::handoff::HandoffResult {
+                compound: q.identity.compound,
+                thread: Some(ThreadId::new("t1")),
+                state: HandoffState::Completed,
+            },
+        ))
+    }
+}
+fn terminal_fixture(journal: &Journal) -> (IntentRef, TerminalClient) {
+    let reference = record(journal, plan());
+    let client = Client::new(false);
+    execute(journal, &reference, &client, &TestClock).unwrap();
+    let identity = client
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|c| {
+            if let Command::BeginHandoff(q) = c {
+                Some(q.identity.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    (
+        reference,
+        TerminalClient {
+            original: identity,
+            calls: Mutex::new(0),
+        },
+    )
+}
+#[derive(Default)]
+struct FailedWriter {
+    flush: bool,
+    bytes: Vec<u8>,
+}
+impl std::io::Write for FailedWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if !self.flush {
+            return Err(std::io::Error::other("failed write"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::other("failed flush"))
+    }
+}
+#[test]
+fn retry_completed_strict_client_after_journal_restart_cleans_only_local_files() {
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let (reference, client) = terminal_fixture(&journal);
+    drop(journal);
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let mut writer = Vec::new();
+    let report = retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec {
+            format: crate::protocol::output::OutputFormat::Json,
+            ..OutputSpec::default()
+        },
+        &mut writer,
+    )
+    .unwrap();
+    let output: serde_json::Value = serde_json::from_slice(&writer).unwrap();
+    assert_eq!(
+        output["delivery"]["message"],
+        serde_json::json!({"kind":"message_sent","data":"m1"})
+    );
+    assert_eq!(report["participation"], "invited_pending");
+    assert!(journal.load(&reference).is_err());
+    assert!(!handoff::progress_path(&journal, &reference).exists());
+    assert_eq!(*client.calls.lock().unwrap(), 1);
+}
+#[test]
+fn retry_failed_write_and_flush_retain_exact_report_and_original() {
+    for flush in [false, true] {
+        let tmp = TempRoot::new();
+        let journal = Journal::open(tmp.0.join("intents")).unwrap();
+        let (reference, client) = terminal_fixture(&journal);
+        let mut writer = FailedWriter {
+            flush,
+            ..Default::default()
+        };
+        let failed = retry_to_writer(
+            &journal,
+            &reference,
+            &plan().payload.namespace,
+            &client,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut writer,
+        );
+        assert!(
+            matches!(failed, Err(RunError::Io(_))),
+            "expected actual output failure: {failed:?}"
+        );
+        assert!(journal.load(&reference).is_ok());
+        assert!(handoff::progress_path(&journal, &reference).exists());
+        let mut writer = Vec::new();
+        retry_to_writer(
+            &journal,
+            &reference,
+            &plan().payload.namespace,
+            &client,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut writer,
+        )
+        .unwrap();
+        assert!(String::from_utf8(writer).unwrap().contains("m1"));
+    }
+}
+
+#[test]
+fn retry_copied_uuid_wrong_root_or_socket_refuses_before_client_or_output() {
+    for terminal in [false, true] {
+        for state in [false, true] {
+            let tmp = TempRoot::new();
+            let journal = Journal::open(tmp.0.join("intents")).unwrap();
+            let (reference, client) = terminal_fixture(&journal);
+            if terminal {
+                retry_to_writer(
+                    &journal,
+                    &reference,
+                    &plan().payload.namespace,
+                    &client,
+                    &TestClock,
+                    &OutputSpec::default(),
+                    &mut Vec::new(),
+                )
+                .unwrap();
+            }
+            *client.calls.lock().unwrap() = 0;
+            let mut namespace = plan().payload.namespace;
+            if state {
+                namespace.state_dir = "/copied-instance".into()
+            } else {
+                namespace.host_endpoint = "/another-host.sock".into()
+            }
+            let mut writer = Vec::new();
+            assert!(
+                retry_to_writer(
+                    &journal,
+                    &reference,
+                    &namespace,
+                    &client,
+                    &TestClock,
+                    &OutputSpec::default(),
+                    &mut writer
+                )
+                .is_err()
+            );
+            assert!(writer.is_empty());
+            assert_eq!(*client.calls.lock().unwrap(), 0);
+        }
+    }
+}
+#[test]
+fn retry_completion_reply_loss_replays_only_the_completed_fence() {
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let reference = record(&journal, plan());
+    let client = Client::new(false);
+    *client.lost.lock().unwrap() = Some("complete");
+    assert!(execute(&journal, &reference, &client, &TestClock).is_err());
+    client.calls.lock().unwrap().clear();
+    let report = retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(report["message"]["data"], "m1");
+    assert!(
+        client
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|c| matches!(c, Command::BeginHandoff(_)))
+    );
+}
+struct CleanupFailureWriter {
+    root: std::path::PathBuf,
+    path: Option<std::path::PathBuf>,
+    sync: bool,
+}
+impl std::io::Write for CleanupFailureWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(path) = &self.path {
+            std::fs::remove_file(path)?;
+            std::fs::create_dir(path)?;
+        } else if self.sync {
+            // Search/write permissions permit unlink, but opening the directory
+            // for fsync fails. No global failpoint or process state is used.
+            std::fs::set_permissions(&self.root, std::fs::Permissions::from_mode(0o300))?;
+        }
+        Ok(())
+    }
+}
+macro_rules! cleanup_failure_test {
+    ($name:ident, $intent:expr, $sync:expr) => {
+        #[test]
+        fn $name() {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = TempRoot::new();
+            let journal = Journal::open(tmp.0.join("intents")).unwrap();
+            let (reference, client) = terminal_fixture(&journal);
+            let original = journal.snapshot_delivery_origin(&reference).unwrap();
+            let path = if $sync {
+                None
+            } else if $intent {
+                Some(
+                    std::fs::read_dir(journal.root())
+                        .unwrap()
+                        .map(|e| e.unwrap().path())
+                        .find(|p| p.extension().is_some_and(|e| e == "intent"))
+                        .unwrap(),
+                )
+            } else {
+                Some(handoff::progress_path(&journal, &reference))
+            };
+            let mut writer = CleanupFailureWriter {
+                root: journal.root().into(),
+                path: path.clone(),
+                sync: $sync,
+            };
+            let failed = retry_to_writer(
+                &journal,
+                &reference,
+                &plan().payload.namespace,
+                &client,
+                &TestClock,
+                &OutputSpec::default(),
+                &mut writer,
+            );
+            std::fs::set_permissions(journal.root(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            assert!(
+                matches!(failed, Err(RunError::Io(_))),
+                "expected actual cleanup error: {failed:?}"
+            );
+            if let Some(path) = path {
+                std::fs::remove_dir(path).unwrap();
+            }
+            drop(journal);
+            let journal = Journal::open(tmp.0.join("intents")).unwrap();
+            let found = resolve_recovery_ref(&journal, &reference.recovery_ref()).unwrap();
+            assert_eq!(found, reference);
+            let pending = load_original(&journal, &found).unwrap();
+            assert_eq!(
+                pending.header.semantic_digest,
+                Journal::decode_delivery_origin(&reference, &original)
+                    .unwrap()
+                    .header
+                    .semantic_digest
+            );
+            let report = retry_to_writer(
+                &journal,
+                &found,
+                &plan().payload.namespace,
+                &client,
+                &TestClock,
+                &OutputSpec::default(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(report["message"]["data"], "m1");
+            assert!(journal.load(&reference).is_err());
+            assert!(!handoff::progress_path(&journal, &reference).exists());
+            assert!(terminal_path(&journal, &reference).is_file());
+        }
+    };
+}
+cleanup_failure_test!(retry_progress_removal_failure_is_replayable, false, false);
+cleanup_failure_test!(retry_intent_removal_failure_is_replayable, true, false);
+cleanup_failure_test!(
+    retry_directory_sync_failure_after_unlink_is_replayable,
+    false,
+    true
+);
+#[test]
+fn retry_terminal_corruption_refuses_without_output_or_client() {
+    for field in ["original", "report", "completed", "version"] {
+        let tmp = TempRoot::new();
+        let journal = Journal::open(tmp.0.join("intents")).unwrap();
+        let (reference, client) = terminal_fixture(&journal);
+        retry_to_writer(
+            &journal,
+            &reference,
+            &plan().payload.namespace,
+            &client,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let path = terminal_path(&journal, &reference);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        match field {
+            "original" => {
+                value["original"] = serde_json::json!(
+                    value["original"]
+                        .as_str()
+                        .unwrap()
+                        .replace("literal '$HOME' work", "tampered work")
+                )
+            }
+            "report" => {
+                value["progress"]["report"]["recipient"] = serde_json::json!("another-seat")
+            }
+            "completed" => value["completed"]["state"] = serde_json::json!("live"),
+            _ => value["version"] = serde_json::json!(2),
+        }
+        std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+        *client.calls.lock().unwrap() = 0;
+        let mut writer = Vec::new();
+        assert!(
+            retry_to_writer(
+                &journal,
+                &reference,
+                &plan().payload.namespace,
+                &client,
+                &TestClock,
+                &OutputSpec::default(),
+                &mut writer
+            )
+            .is_err()
+        );
+        assert!(writer.is_empty());
+        assert_eq!(*client.calls.lock().unwrap(), 0);
+    }
+}
+
+struct CanonicalDelivery {
+    base: CanonicalInvites,
+    terminal_only: bool,
+}
+impl LocalClient for CanonicalDelivery {
+    fn call_with_output(
+        &self,
+        c: Command,
+        _: &OutputSpec,
+        b: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(c, b)
+    }
+    fn call(&self, c: Command, b: &CallBudget) -> Result<CommandResult, ApiError> {
+        if self.terminal_only {
+            assert!(
+                matches!(c, Command::BeginHandoff(_)),
+                "historical retry attempted {c:?}"
+            );
+        }
+        if matches!(
+            c,
+            Command::BeginHandoff(_)
+                | Command::CompleteHandoff(_)
+                | Command::CreateThread(_)
+                | Command::Invite(_)
+                | Command::SendMessage(_)
+        ) {
+            self.base.fake.calls.lock().unwrap().push(c.clone());
+            self.base.canonical(c, b)
+        } else {
+            self.base.fake.call(c, b)
+        }
+    }
+}
+#[test]
+fn retry_canonical_completed_after_both_bindings_change_archive_and_store_restart() {
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let mut client = CanonicalDelivery {
+        base: CanonicalInvites::new(&tmp.0),
+        terminal_only: false,
+    };
+    let mut plan = plan();
+    plan.payload.channel = HandoffChannel::New {
+        name: None,
+        topic: "review".into(),
+        goal: "review changes".into(),
+    };
+    let reference = record(&journal, plan.clone());
+    let original_report = execute(&journal, &reference, &client, &TestClock).unwrap();
+    let conn = client.base.context.open_writer().unwrap();
+    conn.execute("UPDATE threads SET archived=1", []).unwrap();
+    conn.execute("UPDATE occupant_bindings SET generation=2", [])
+        .unwrap();
+    let before: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM invitations),(SELECT COUNT(*) FROM messages)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    drop(conn);
+    client.base.store = crate::store::SqliteStore::new(
+        crate::store::connection::StoreContext::new(
+            tmp.0.join("canonical.db"),
+            std::sync::Arc::new(TestClock),
+        ),
+        "i",
+        Default::default(),
+    )
+    .unwrap();
+    client.terminal_only = true;
+    client.base.fake.calls.lock().unwrap().clear();
+    let report = retry_to_writer(
+        &journal,
+        &reference,
+        &plan.payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(report, original_report);
+    let conn = client.base.context.open_writer().unwrap();
+    let after: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM invitations),(SELECT COUNT(*) FROM messages)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(before, after);
+    assert!(!client.base.fake.calls.lock().unwrap().is_empty());
+}
+
+fn terminal_unknown_field_refuses(header: bool) {
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let (reference, client) = terminal_fixture(&journal);
+    retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let path = terminal_path(&journal, &reference);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    if header {
+        let original = value["original"].as_str().unwrap();
+        let (line, body) = original.split_once('\n').unwrap();
+        let mut h: serde_json::Value = serde_json::from_str(line).unwrap();
+        h["authority_override"] = serde_json::json!("human");
+        value["original"] = serde_json::json!(format!("{}\n{}", h, body));
+    } else {
+        value["progress"]["staged"]["accepted"] = serde_json::json!(true);
+    }
+    std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(
+        load_original(&journal, &reference).is_err(),
+        "unknown original/staged field accepted, header={header}"
+    );
+}
+#[test]
+fn retry_terminal_unknown_nested_fields_refuse() {
+    terminal_unknown_field_refuses(false);
+}
+#[test]
+fn retry_terminal_unknown_header_fields_refuse() {
+    terminal_unknown_field_refuses(true);
+}
+
+#[test]
+fn retry_reference_refuses_conflicting_terminal_even_with_original_intent() {
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let (reference, client) = terminal_fixture(&journal);
+    let failed = retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut FailedWriter::default(),
+    );
+    assert!(matches!(failed, Err(RunError::Io(_))));
+    let second = IntentRef {
+        ordinal: reference.ordinal,
+        operation: OperationId::new(uuid::Uuid::new_v4().to_string()),
+    };
+    let mut terminal = read_terminal(&journal, &reference).unwrap().unwrap();
+    let (header, body) = terminal.original.split_once('\n').unwrap();
+    let mut header: serde_json::Value = serde_json::from_str(header).unwrap();
+    header["reference"] = serde_json::to_value(&second).unwrap();
+    terminal.original = format!("{}\n{}", header, body);
+    save_terminal(&journal, &second, &terminal).unwrap();
+    assert!(
+        resolve_recovery_ref(&journal, &reference.recovery_ref()).is_err(),
+        "original intent hid conflicting retained reference"
+    );
+}
+
+#[test]
+fn retry_terminal_changed_valid_participation_is_corrupt_history() {
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let (reference, client) = terminal_fixture(&journal);
+    retry_to_writer(
+        &journal,
+        &reference,
+        &plan().payload.namespace,
+        &client,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let path = terminal_path(&journal, &reference);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    value["progress"]["report"]["participation"] = serde_json::json!("joined");
+    std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    *client.calls.lock().unwrap() = 0;
+    let mut writer = Vec::new();
+    assert!(
+        retry_to_writer(
+            &journal,
+            &reference,
+            &plan().payload.namespace,
+            &client,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut writer
+        )
+        .is_err(),
+        "valid vocabulary silently changed historical report"
+    );
+    assert!(writer.is_empty());
+    assert_eq!(*client.calls.lock().unwrap(), 0);
+}
+corrupt_report_test!(
+    completed_changed_valid_participation_refuses,
+    "participation",
+    serde_json::json!("staged_unbound")
+);

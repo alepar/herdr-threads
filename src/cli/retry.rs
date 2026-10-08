@@ -10,6 +10,24 @@ use crate::{
 };
 use std::io::{self, Write};
 
+/// Additive internal delivery consumer. Public dispatch stays Unsupported until
+/// activation calls the shared original-actor gate on load_original's exact
+/// immutable bytes and supplies canonical namespace/current-recipient guards.
+#[allow(clippy::too_many_arguments)]
+pub fn run_delivery_retry_to_writer<C: crate::ports::LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    reference: &IntentRef,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    clock: &dyn crate::protocol::time::Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<serde_json::Value, super::RunError> {
+    super::handoff_delivery::retry_to_writer(
+        journal, reference, namespace, client, clock, output, writer,
+    )
+}
+
 /// The command runner owns the real client and output writer. A journal error
 /// returns before `submit`; every other error leaves the entry recoverable.
 pub fn run_new<P, S, O>(

@@ -353,6 +353,16 @@ an advertised read-only delivery hint lets hooks drain newly attributed and rema
 
 ## Accepted limits
 
+Delivery-only cleanup recovery retains a private, bounded versioned terminal record after
+intent/progress removal. It preserves exact original immutable intent bytes and the genuine
+completed fence result and staged-work report; it records no new provenance. This local
+record never authorizes live work or proves canonical completion: every replay must classify
+the original actor, compare the canonical namespace and obtain the exact canonical Completed
+fence before presentation or cleanup. It permits honest replay after output, unlink or directory
+sync failure, at the cost of retained local disk records. It is not live archival protection;
+malformed or contradictory records conservatively refuse, and canonical terminal state dominates
+stale archival scans. New public modes remain inert until those production guards are integrated.
+
 These are decisions, not bugs. Each is safe to rely on only as stated.
 
 - **Global hooks enroll supported top-level Herdr sessions.** A user-level Claude/Codex hook
