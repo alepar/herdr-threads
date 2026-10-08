@@ -458,3 +458,903 @@ fn publication_refuses_cwd_removed_after_preparation() {
     );
     assert!(journal.resolve_recovery_ref("local:1").is_err());
 }
+
+// Real canonical attempt writers and a private on-disk journal; native outcomes
+// are deterministic typed boundary doubles, without a model or Herdr process.
+mod live {
+    use super::*;
+    use crate::{
+        ports::{CreateTabOutcome, CreateTabPort, CreateTabRequest, HostCallContext},
+        protocol::{handoff::*, ids::*, results::ErrorCode, time::UtcMillis},
+        store::{schema, topology_handoff as canonical},
+    };
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Fault {
+        None,
+        ReserveReply,
+        HostReply,
+        NotSubmitted,
+        Check,
+        RecordReply,
+        SavePossible,
+        SaveCreated,
+        MissingCapability,
+    }
+    struct State {
+        db: rusqlite::Connection,
+        calls: Vec<&'static str>,
+        native_calls: usize,
+        fault: Fault,
+    }
+    struct Peer {
+        state: Mutex<State>,
+        identity: BootstrapIdentity,
+        journal: std::path::PathBuf,
+        reference: super::super::super::journal::IntentRef,
+        native_marker: Option<std::path::PathBuf>,
+        block_native: bool,
+    }
+    impl LocalClient for Peer {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            let mut s = self.state.lock().unwrap();
+            let role = match &command {
+                Command::Capabilities => "capabilities",
+                Command::BeginBootstrap(_) => "begin",
+                Command::BootstrapStatus(_) => "status",
+                Command::ReserveBootstrapAttempt(_) => "reserve",
+                Command::CheckBootstrapSubmission(_) => "check",
+                Command::RecordBootstrapCreated(_) => "record",
+                Command::RecordBootstrapNotSubmitted(_) => "not_submitted",
+                _ => panic!("unapproved live route {command:?}"),
+            };
+            s.calls.push(role);
+            if role == "capabilities" {
+                return Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList {
+                        capabilities: if s.fault == Fault::MissingCapability {
+                            vec![]
+                        } else {
+                            vec![
+                                crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1
+                                    .into(),
+                            ]
+                        },
+                    },
+                ));
+            }
+            if role == "check" && s.fault == Fault::Check {
+                return Err(ApiError::invalid_request("current authority changed"));
+            }
+            let ns = &self.identity.payload.handoff.namespace;
+            let tx =
+                s.db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .unwrap();
+            let result = match command {
+                Command::BeginBootstrap(r) => {
+                    assert_eq!(r.identity, self.identity);
+                    assert_eq!(r.operation, self.identity.payload.handoff.keys.begin);
+                    canonical::begin_pending(&tx, ns, &r.identity, UtcMillis(1))
+                        .map(|v| CommandResult::Bootstrap(Box::new(v)))
+                }
+                Command::BootstrapStatus(r) => canonical::current(&tx, ns, &r.identity)
+                    .map(|v| CommandResult::Bootstrap(Box::new(v.unwrap()))),
+                Command::ReserveBootstrapAttempt(r) => {
+                    canonical::attempts::reserve_attempt(&tx, ns, &r)
+                        .map(|v| CommandResult::BootstrapReserved(Box::new(v)))
+                }
+                Command::CheckBootstrapSubmission(r) => {
+                    canonical::attempts::check_submission(&tx, ns, &r)
+                        .map(CommandResult::BootstrapSubmissionChecked)
+                }
+                Command::RecordBootstrapCreated(r) => {
+                    canonical::attempts::record_created(&tx, ns, &r)
+                        .map(|v| CommandResult::Bootstrap(Box::new(v)))
+                }
+                Command::RecordBootstrapNotSubmitted(r) => {
+                    canonical::attempts::record_not_submitted(&tx, ns, &r)
+                        .map(|v| CommandResult::Bootstrap(Box::new(v)))
+                }
+                _ => unreachable!(),
+            };
+            tx.commit().unwrap();
+            if role == "reserve" && s.fault == Fault::SavePossible {
+                std::fs::create_dir(self.progress()).unwrap();
+            }
+            if (role == "reserve" && s.fault == Fault::ReserveReply)
+                || (role == "record" && s.fault == Fault::RecordReply)
+            {
+                s.fault = Fault::None;
+                return Err(ApiError::unknown_outcome("committed reply lost"));
+            }
+            result
+        }
+    }
+    impl Peer {
+        fn progress(&self) -> std::path::PathBuf {
+            self.journal.join(format!(
+                "handoff-{}.progress",
+                self.reference.operation.as_str()
+            ))
+        }
+        fn status(&self) -> BootstrapResult {
+            canonical::current(
+                &self.state.lock().unwrap().db,
+                &self.identity.payload.handoff.namespace,
+                &self.identity,
+            )
+            .unwrap()
+            .unwrap()
+        }
+    }
+    impl CreateTabPort for Peer {
+        fn create_tab(&self, r: &CreateTabRequest, _: &HostCallContext) -> CreateTabOutcome {
+            let mut s = self.state.lock().unwrap();
+            s.calls.push("native");
+            s.native_calls += 1;
+            let progress: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(self.progress()).unwrap()).unwrap();
+            assert_eq!(
+                progress["possible_creation"], true,
+                "durable possible-creation must precede native write"
+            );
+            assert_eq!(progress["request"], serde_json::to_value(r).unwrap());
+            let current = canonical::current(
+                &s.db,
+                &self.identity.payload.handoff.namespace,
+                &self.identity,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(current.state, BootstrapState::PossibleCreation);
+            assert_eq!(
+                s.calls[s.calls.len() - 2],
+                "check",
+                "fresh canonical check must immediately precede native call"
+            );
+            assert_eq!(r.workspace, self.identity.payload.workspace);
+            assert_eq!(r.cwd, self.identity.payload.cwd);
+            assert_eq!(r.label, self.identity.payload.label);
+            assert!(!r.focus);
+            assert!(r.env.is_empty());
+            if let Some(marker) = &self.native_marker {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(marker)
+                    .unwrap();
+                writeln!(file, "{}", r.correlation.as_str()).unwrap();
+                file.sync_all().unwrap();
+            }
+            if self.block_native {
+                use std::io::{Read, Write};
+                println!("QHZ9_NATIVE_READY");
+                std::io::stdout().flush().unwrap();
+                std::io::stdin().read_exact(&mut [0]).unwrap();
+            }
+            if s.fault == Fault::HostReply {
+                return CreateTabOutcome::OutcomeUnknown(ApiError::unknown_outcome(
+                    "host reply lost",
+                ));
+            }
+            if s.fault == Fault::NotSubmitted {
+                s.fault = Fault::None;
+                return CreateTabOutcome::NotSubmitted(ApiError::host_unavailable(
+                    "proven zero bytes",
+                ));
+            }
+            if s.fault == Fault::SaveCreated {
+                std::fs::remove_file(self.progress()).unwrap();
+                std::fs::create_dir(self.progress()).unwrap();
+            }
+            let mut created = crate::protocol::handoff::topology_contract_tests::created();
+            created.correlation = r.correlation.clone();
+            created.witness = r.expected_witness.clone();
+            CreateTabOutcome::Created(Box::new(created))
+        }
+    }
+    struct Fixture {
+        _temp: Temp,
+        journal: super::super::super::journal::Journal,
+        peer: Arc<Peer>,
+        clock: crate::app::SystemClock,
+        context: HostCallContext,
+        witness: crate::host::continuity::LocalEndpointWitness,
+    }
+    impl Fixture {
+        fn new(fault: Fault) -> Self {
+            let temp = Temp::new();
+            let mut identity = prepared(&request(), temp.path()).unwrap();
+            identity.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
+            identity.digest = identity.semantic_digest().unwrap();
+            let journal =
+                super::super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+            let reference = publish(&journal, &identity, 1).unwrap();
+            let db = rusqlite::Connection::open(temp.path().join("canonical.db")).unwrap();
+            schema::initialize(&db, || UtcMillis(0)).unwrap();
+            let created = crate::protocol::handoff::topology_contract_tests::created();
+            let boot = &created.host_incarnation;
+            db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,observation_sequence,observation_admission_sequence,observation_decided_sequence,lifecycle_revision,recovery_boot,recovery_epoch) VALUES('i',0,?1,1,1,1,1,1,?1,1)",[boot.as_str()]).unwrap();
+            db.execute("INSERT INTO snapshot_generations(id,instance_id,host_boot,epoch,observation_sequence,incarnation,expected_targets,staged_targets,status,captured_lifecycle_revision,captured_invalidation_revision,published_invalidation_revision,created_at) VALUES('g','i',?1,1,1,'structural-incarnation',0,0,'published',0,0,0,0)",[boot.as_str()]).unwrap();
+            db.execute_batch("UPDATE host_instances SET active_snapshot_id='g',recovery_baseline_generation_id='g'; INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('sender','i','resolved','native','w1:p1',1,0,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('canonical-thread','i','topic','goal',0,0); INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('canonical-thread','sender','joined',0)").unwrap();
+            db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('sender',1,'w1:p1',?1,1,'codex','session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,0)",[boot.as_str()]).unwrap();
+            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','w1:p1',?1,1,0,2,'fresh',0,'caller-terminal','structural-incarnation','native_current_target',1)",[boot.as_str()]).unwrap();
+            let clock = crate::app::SystemClock::new();
+            let context = HostCallContext {
+                budget: super::super::super::cooperative_budget(&clock),
+                expected_boot: Some(boot.clone()),
+                expected_epoch: Some(1),
+            };
+            let mut witness = created.witness;
+            witness.endpoint = identity.payload.handoff.namespace.host_endpoint.clone();
+            Self {
+                journal,
+                peer: Arc::new(Peer {
+                    state: Mutex::new(State {
+                        db,
+                        calls: vec![],
+                        native_calls: 0,
+                        fault,
+                    }),
+                    identity,
+                    journal: temp.path().join("intents"),
+                    reference,
+                    native_marker: None,
+                    block_native: false,
+                }),
+                _temp: temp,
+                clock,
+                context,
+                witness,
+            }
+        }
+        fn run(&self) -> Result<BootstrapResult, RunError> {
+            resume_to_attachment(
+                &self.journal,
+                &self.peer.reference,
+                &self.peer.identity.payload.handoff.namespace,
+                self.peer.as_ref(),
+                self.peer.as_ref(),
+                &self.clock,
+                BootstrapSubmissionInputs {
+                    witness: &self.witness,
+                    context: &self.context,
+                },
+            )
+        }
+    }
+    fn unknown(result: Result<BootstrapResult, RunError>) {
+        assert!(
+            matches!(
+                result,
+                Err(RunError::Api(ApiError {
+                    code: ErrorCode::UnknownOutcome,
+                    ..
+                }))
+            ),
+            "expected creation uncertainty, got {result:?}"
+        );
+    }
+    #[test]
+    fn live_created_is_durable_before_unprovided_exact_resolution_boundary() {
+        let f = Fixture::new(Fault::None);
+        let result = f.run();
+        assert_eq!(
+            f.peer.state.lock().unwrap().native_calls,
+            1,
+            "coordinator must submit exactly once"
+        );
+        assert_eq!(f.peer.status().state, BootstrapState::Created);
+        assert!(matches!(
+            result,
+            Err(RunError::Api(ApiError {
+                code: ErrorCode::Unsupported,
+                ..
+            }))
+        ));
+        assert_eq!(
+            f.peer.state.lock().unwrap().calls,
+            [
+                "capabilities",
+                "begin",
+                "reserve",
+                "check",
+                "native",
+                "record"
+            ]
+        );
+        let _ = f.run();
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+    }
+    #[test]
+    fn live_lost_reservation_reply_never_submits_on_retry() {
+        let f = Fixture::new(Fault::ReserveReply);
+        unknown(f.run());
+        unknown(f.run());
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 0);
+        assert_eq!(f.peer.status().state, BootstrapState::PossibleCreation);
+    }
+    #[test]
+    fn live_lost_host_reply_never_creates_twice() {
+        let f = Fixture::new(Fault::HostReply);
+        unknown(f.run());
+        unknown(f.run());
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+        assert!(f.peer.status().creation.is_none());
+    }
+    #[test]
+    fn live_only_typed_zero_submission_allocates_distinct_next_attempt() {
+        let f = Fixture::new(Fault::NotSubmitted);
+        let result = f
+            .run()
+            .expect("typed zero submission must close first attempt");
+        assert_eq!(result.attempt.get(), 2);
+        assert_eq!(result.state, BootstrapState::Prepared);
+        let _ = f.run();
+        assert_eq!(f.peer.status().attempt.get(), 2);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 2);
+        let s = f.peer.state.lock().unwrap();
+        let keys: Vec<String> =
+            s.db.prepare("SELECT reserve_key FROM bootstrap_attempts ORDER BY attempt")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+        assert_ne!(keys[0], keys[1]);
+    }
+    #[test]
+    fn live_fresh_authority_refusal_fences_submission() {
+        let f = Fixture::new(Fault::Check);
+        assert!(f.run().is_err());
+        assert!(
+            f.peer.state.lock().unwrap().calls.contains(&"check"),
+            "fresh canonical check was never reached"
+        );
+        assert_eq!(f.peer.status().state, BootstrapState::PossibleCreation);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 0);
+        f.peer.state.lock().unwrap().fault = Fault::None;
+        unknown(f.run());
+    }
+    #[test]
+    fn live_record_reply_loss_recovers_canonical_creation_without_resubmit() {
+        let f = Fixture::new(Fault::RecordReply);
+        let _ = f.run();
+        assert_eq!(
+            f.peer.state.lock().unwrap().native_calls,
+            1,
+            "creation must occur before lost record reply recovery"
+        );
+        assert_eq!(f.peer.status().state, BootstrapState::Created);
+        let _ = f.run();
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+    }
+    #[test]
+    fn live_possible_save_failure_never_reaches_native() {
+        let f = Fixture::new(Fault::SavePossible);
+        assert!(f.run().is_err());
+        assert!(
+            f.peer.state.lock().unwrap().calls.contains(&"reserve"),
+            "reservation must precede save failure"
+        );
+        assert_eq!(f.peer.status().state, BootstrapState::PossibleCreation);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 0);
+    }
+    #[test]
+    fn live_created_save_failure_is_unknown_without_record_or_resubmit() {
+        let f = Fixture::new(Fault::SaveCreated);
+        unknown(f.run());
+        assert_eq!(f.peer.status().state, BootstrapState::PossibleCreation);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+        std::fs::remove_dir(f.peer.progress()).unwrap();
+        unknown(f.run());
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+    }
+    #[test]
+    fn live_canonical_evidence_recovers_missing_progress_across_two_retries() {
+        let f = Fixture::new(Fault::None);
+        let _ = f.run();
+        std::fs::remove_file(f.peer.progress()).unwrap();
+        for _ in 0..2 {
+            let result = f.run();
+            assert!(
+                matches!(
+                    result,
+                    Err(RunError::Api(ApiError {
+                        code: ErrorCode::Unsupported,
+                        ..
+                    }))
+                ),
+                "canonical evidence recovery must reach the exact-resolution boundary: {result:?}"
+            );
+        }
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+    }
+    #[test]
+    fn live_possible_save_failure_reports_exact_uncertainty() {
+        let f = Fixture::new(Fault::SavePossible);
+        unknown(f.run());
+        std::fs::remove_dir(f.peer.progress()).unwrap();
+        unknown(f.run());
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 0);
+    }
+    #[test]
+    fn live_owned_child() {
+        let Ok(path) = std::env::var("HT_QHZ9_CHILD_INPUT") else {
+            return;
+        };
+        let input: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let root = std::path::PathBuf::from(input["root"].as_str().unwrap());
+        let identity: BootstrapIdentity =
+            serde_json::from_value(input["identity"].clone()).unwrap();
+        let reference = serde_json::from_value(input["reference"].clone()).unwrap();
+        let journal_root = std::path::PathBuf::from(input["journal"].as_str().unwrap());
+        let journal = super::super::super::journal::Journal::open(journal_root.clone()).unwrap();
+        let db = rusqlite::Connection::open(root.join("canonical.db")).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let peer = Peer {
+            state: Mutex::new(State {
+                db,
+                calls: vec![],
+                native_calls: 0,
+                fault: Fault::HostReply,
+            }),
+            identity,
+            journal: journal_root,
+            reference,
+            native_marker: Some(root.join("native-calls")),
+            block_native: input["block"].as_bool().unwrap(),
+        };
+        let clock = crate::app::SystemClock::new();
+        let context = HostCallContext {
+            budget: super::super::super::cooperative_budget(&clock),
+            expected_boot: Some(
+                crate::protocol::handoff::topology_contract_tests::created().host_incarnation,
+            ),
+            expected_epoch: Some(1),
+        };
+        let mut witness = crate::protocol::handoff::topology_contract_tests::created().witness;
+        witness.endpoint = peer
+            .identity
+            .payload
+            .handoff
+            .namespace
+            .host_endpoint
+            .clone();
+        let result = resume_to_attachment(
+            &journal,
+            &peer.reference,
+            &peer.identity.payload.handoff.namespace,
+            &peer,
+            &peer,
+            &clock,
+            BootstrapSubmissionInputs {
+                witness: &witness,
+                context: &context,
+            },
+        );
+        if input["expect_lock"].as_bool().unwrap() {
+            assert!(
+                matches!(result, Err(RunError::Io(_))),
+                "expected operation lock refusal, got {result:?}"
+            );
+            assert_eq!(peer.state.lock().unwrap().calls, ["capabilities"]);
+        } else {
+            unknown(result);
+        }
+    }
+    fn child(
+        f: &Fixture,
+        journal: &std::path::Path,
+        block: bool,
+        expect_lock: bool,
+        suffix: &str,
+    ) -> crate::test_support::spawn::OwnedChild {
+        use crate::test_support::spawn::SpawnOwned;
+        let input = f._temp.path().join(format!("child-{suffix}.json"));
+        std::fs::write(&input,serde_json::to_vec(&serde_json::json!({"root":f._temp.path(),"identity":f.peer.identity,"reference":f.peer.reference,"journal":journal,"block":block,"expect_lock":expect_lock})).unwrap()).unwrap();
+        let home = f._temp.path().join(format!("home-{suffix}"));
+        std::fs::create_dir_all(home.join("codex")).unwrap();
+        std::fs::create_dir_all(home.join("claude")).unwrap();
+        let mut command = crate::test_support::spawn::command(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "cli::topology_handoff::tests::live::live_owned_child",
+                "--nocapture",
+            ])
+            .env("HT_QHZ9_CHILD_INPUT", input)
+            .env("HOME", &home)
+            .env("CODEX_HOME", home.join("codex"))
+            .env("CLAUDE_CONFIG_DIR", home.join("claude"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        command.spawn_owned().unwrap()
+    }
+    fn duplicate_processes(copied: bool, crash: bool) {
+        use std::io::{BufRead, Write};
+        let f = Fixture::new(Fault::None);
+        let mut first = child(&f, f.journal.root(), true, false, "first");
+        let mut reader = std::io::BufReader::new(first.stdout.take().unwrap());
+        loop {
+            let mut line = String::new();
+            assert!(
+                reader.read_line(&mut line).unwrap() > 0,
+                "owned child ended before native boundary"
+            );
+            if line.contains("QHZ9_NATIVE_READY") {
+                break;
+            }
+        }
+        let second_root = if copied {
+            let root = f._temp.path().join("copied-intents");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::create_dir(&root).unwrap();
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+            for entry in std::fs::read_dir(f.journal.root()).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_file() {
+                    std::fs::copy(&path, root.join(path.file_name().unwrap())).unwrap();
+                }
+            }
+            root
+        } else {
+            f.journal.root().to_path_buf()
+        };
+        let second = child(&f, &second_root, false, !copied, "second")
+            .wait_with_output()
+            .unwrap();
+        assert!(
+            second.status.success(),
+            "duplicate child failed: {}",
+            String::from_utf8_lossy(&second.stderr)
+        );
+        if crash {
+            assert!(first.stop().is_some());
+        } else {
+            first.stdin.as_mut().unwrap().write_all(&[1]).unwrap();
+            let output = first.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "original child failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let retry = child(&f, &second_root, false, false, "retry")
+            .wait_with_output()
+            .unwrap();
+        assert!(
+            retry.status.success(),
+            "post-child retry failed: {}",
+            String::from_utf8_lossy(&retry.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(f._temp.path().join("native-calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            1,
+            "a second native submission escaped local/canonical exclusion"
+        );
+        assert_eq!(f.peer.status().state, BootstrapState::PossibleCreation);
+    }
+    #[test]
+    fn live_owned_process_duplicate_shared_journal_lock_no_second_submission() {
+        duplicate_processes(false, false);
+    }
+    #[test]
+    fn live_owned_process_copied_journal_canonical_uniqueness() {
+        duplicate_processes(true, false);
+    }
+    #[test]
+    fn live_owned_process_crash_during_write_no_second_submission() {
+        duplicate_processes(true, true);
+    }
+    #[test]
+    fn live_missing_guard_capability_refuses_before_any_mutation() {
+        let f = Fixture::new(Fault::MissingCapability);
+        let result = f.run();
+        assert!(matches!(
+            result,
+            Err(RunError::Api(ApiError {
+                code: ErrorCode::Unsupported,
+                ..
+            }))
+        ));
+        let s = f.peer.state.lock().unwrap();
+        assert_eq!(s.native_calls, 0, "capability absence must fence creation");
+        assert_eq!(
+            s.db.query_row("SELECT count(*) FROM bootstrap_handoffs", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(s.calls, ["capabilities"]);
+        assert!(!f.peer.progress().exists());
+    }
+    fn scoped_current(
+        f: &Fixture,
+    ) -> (
+        crate::store::connection::StoreContext,
+        crate::ports::HostObservation,
+        crate::ports::HostObservationAdmission,
+        CallBudget,
+    ) {
+        use crate::ports::*;
+        let context = crate::store::connection::StoreContext::new(
+            f._temp.path().join("canonical.db"),
+            Arc::new(crate::app::SystemClock::new()),
+        );
+        let budget = super::super::super::cooperative_budget(context.clock());
+        let mut s = f.peer.state.lock().unwrap();
+        let admission =
+            crate::store::seats::begin_host_observation(&context, &mut s.db, "i", &budget).unwrap();
+        let observed_at_mono = context.clock().monotonic_now();
+        let observation = HostObservation {
+            focused: false,
+            target: HostTargetId::new("w1:p2"),
+            host_boot: HostBootId::new("herdr-server:pid=42:start=1.000002:uid=501"),
+            epoch: 1,
+            generation: 1,
+            observed_at_utc: context.clock().utc_now(),
+            observed_at_mono,
+            provenance: ObservationProvenance::FreshCurrentTarget,
+            occupant: None,
+            ui: HostUiState::Unknown,
+            terminal: Some(TerminalId::new("terminal")),
+            occupancy: StructuralOccupancy::Unknown,
+            incarnation: IncarnationEvidence::Verified {
+                identity: "structural-incarnation".into(),
+                evidence_kind: EvidenceKind::NativeCurrentTarget,
+            },
+            execution: ExecutionEvidence::Unknown,
+            call_id: HostCallId::new(uuid::Uuid::new_v4().to_string()),
+            connection_epoch: 1,
+            observation_sequence: admission.sequence() + 2,
+            started_at_mono: observed_at_mono,
+            completed_at_mono: observed_at_mono,
+        };
+        assert!(
+            crate::store::seats::publish_current_target_observation(
+                &context,
+                &mut s.db,
+                &admission,
+                &observation,
+                &budget
+            )
+            .unwrap()
+        );
+        (context, observation, admission, budget)
+    }
+    fn scoped_guard(
+        f: &Fixture,
+        tab: &str,
+    ) -> (
+        crate::store::connection::StoreContext,
+        crate::ports::BootstrapAttachmentGuard,
+        CallBudget,
+    ) {
+        use crate::ports::*;
+        let (context, observation, admission, budget) = scoped_current(f);
+        let guard = BootstrapAttachmentGuard::try_new(
+            &crate::protocol::commands::ResolveSeat {
+                target: observation.target.clone(),
+                operation: f.peer.identity.payload.resolve_key.clone(),
+            },
+            BootstrapPaneObservation::try_new(
+                observation,
+                HostTargetId::new("w1"),
+                HostTargetId::new(tab),
+            )
+            .unwrap(),
+            &admission,
+        )
+        .unwrap();
+        (context, guard, budget)
+    }
+    fn resolve_request(f: &Fixture) -> ResolveBootstrapSeat {
+        ResolveBootstrapSeat {
+            identity: f.peer.identity.clone(),
+            expected_attempt: BootstrapAttempt::first(),
+            operation: f.peer.identity.payload.resolve_key.clone(),
+        }
+    }
+    fn counts(f: &Fixture) -> (i64, i64, i64) {
+        let s = f.peer.state.lock().unwrap();
+        s.db.query_row("SELECT (SELECT count(*) FROM seats WHERE target_id='w1:p2'),(SELECT count(*) FROM allocation_decisions WHERE target_id='w1:p2'),(SELECT count(*) FROM operations WHERE operation_key=?1)",[f.peer.identity.payload.resolve_key.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap()
+    }
+    fn resolve(
+        f: &Fixture,
+        request: &ResolveBootstrapSeat,
+        context: &crate::store::connection::StoreContext,
+        guard: &crate::ports::BootstrapAttachmentGuard,
+        budget: &CallBudget,
+    ) -> Result<SeatId, ApiError> {
+        crate::store::seats::resolve_bootstrap_seat(
+            context,
+            &mut f.peer.state.lock().unwrap().db,
+            &f.peer.identity.payload.handoff.namespace,
+            request,
+            guard,
+            budget,
+        )
+    }
+    #[test]
+    fn live_preallocation_moved_tab_refuses_with_zero_seats_and_operations() {
+        let f = Fixture::new(Fault::None);
+        let _ = f.run();
+        let (ctx, guard, budget) = scoped_guard(&f, "w1:t9");
+        let result = resolve(&f, &resolve_request(&f), &ctx, &guard, &budget);
+        assert!(result.is_err(), "moved tab allocated a seat: {result:?}");
+        assert_eq!(counts(&f), (0, 0, 0));
+        assert_eq!(f.peer.status().state, BootstrapState::Created);
+    }
+    #[test]
+    fn live_preallocation_same_response_allocates_once_and_keeps_old_digest() {
+        let f = Fixture::new(Fault::None);
+        let _ = f.run();
+        let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+        let recipient = resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).unwrap();
+        assert_eq!(counts(&f), (1, 1, 1));
+        let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+        assert_eq!(
+            resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).unwrap(),
+            recipient
+        );
+        assert_eq!(counts(&f), (1, 1, 1));
+        let s = f.peer.state.lock().unwrap();
+        let digest: Vec<u8> =
+            s.db.query_row(
+                "SELECT digest FROM operations WHERE operation_key=?1",
+                [f.peer.identity.payload.resolve_key.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            digest,
+            schema::canonical_digest(&("resolve_seat", "i", HostTargetId::new("w1:p2"))).unwrap()
+        );
+    }
+    #[test]
+    fn live_preallocation_stale_attempt_refuses_before_allocation() {
+        let f = Fixture::new(Fault::None);
+        let _ = f.run();
+        let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+        let mut r = resolve_request(&f);
+        r.expected_attempt = BootstrapAttempt::new(2).unwrap();
+        assert!(
+            resolve(&f, &r, &ctx, &guard, &budget).is_err(),
+            "stale attempt was allowed to resolve"
+        );
+        assert_eq!(counts(&f), (0, 0, 0));
+    }
+    fn preexisting_owner(f: &Fixture) -> SeatId {
+        use crate::ports::{
+            OrdinaryResolutionAttempt, OrdinaryResolutionGuard, OrdinaryResolutionOutcome,
+        };
+        let (ctx, observation, admission, budget) = scoped_current(f);
+        let request = crate::protocol::commands::ResolveSeat {
+            target: HostTargetId::new("w1:p2"),
+            operation: OperationId::new("preexisting-fixture"),
+        };
+        let guard = OrdinaryResolutionGuard::try_new(&request, observation, &admission).unwrap();
+        let OrdinaryResolutionOutcome::Resolved(seat) = crate::store::seats::resolve_seat(
+            &ctx,
+            &mut f.peer.state.lock().unwrap().db,
+            "i",
+            request,
+            OrdinaryResolutionAttempt::Observed(guard),
+            &budget,
+        )
+        .unwrap() else {
+            panic!("ordinary allocation missing")
+        };
+        seat
+    }
+    #[test]
+    fn live_preallocation_existing_owner_positive_uses_no_allocation_bump() {
+        let f = Fixture::new(Fault::None);
+        let _ = f.run();
+        let owner = preexisting_owner(&f);
+        let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+        assert_eq!(
+            resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).unwrap(),
+            owner
+        );
+        assert_eq!(counts(&f), (1, 1, 1));
+    }
+    #[test]
+    fn live_preallocation_lifecycle_only_change_refuses_existing_owner_fresh_key() {
+        let f = Fixture::new(Fault::None);
+        let _ = f.run();
+        let _ = preexisting_owner(&f);
+        let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+        f.peer
+            .state
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1 WHERE id='i'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).is_err(),
+            "owner bypassed lifecycle invalidation"
+        );
+        assert_eq!(counts(&f), (1, 1, 0));
+    }
+    #[test]
+    fn live_preallocation_lifecycle_only_change_refuses_exact_replay_and_preserves_row() {
+        let f = Fixture::new(Fault::None);
+        let _ = f.run();
+        let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+        let _ = resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).unwrap();
+        let before: (Vec<u8>, String) = f
+            .peer
+            .state
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT digest,result_json FROM operations WHERE operation_key=?1",
+                [f.peer.identity.payload.resolve_key.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+        f.peer
+            .state
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1 WHERE id='i'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).is_err(),
+            "historical result bypassed lifecycle invalidation"
+        );
+        let after: (Vec<u8>, String) = f
+            .peer
+            .state
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT digest,result_json FROM operations WHERE operation_key=?1",
+                [f.peer.identity.payload.resolve_key.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+        assert_eq!(counts(&f), (1, 1, 1));
+    }
+    #[test]
+    fn live_preallocation_own_extra_lifecycle_bump_rolls_back_allocation() {
+        let f = Fixture::new(Fault::None);
+        let _ = f.run();
+        let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
+        f.peer.state.lock().unwrap().db.execute_batch("CREATE TEMP TRIGGER extra_lifecycle AFTER INSERT ON allocation_decisions BEGIN UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1 WHERE id='i'; END;").unwrap();
+        assert!(
+            resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).is_err(),
+            "unexpected own-transaction lifecycle bump committed"
+        );
+        assert_eq!(counts(&f), (0, 0, 0));
+    }
+}

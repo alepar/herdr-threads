@@ -150,6 +150,48 @@ pub(crate) fn guard_bare_completion(
     guard_child_begin(db, child)
 }
 
+/// Bootstrap-only deciding preallocation/replay validation. The sealed guard
+/// carries workspace/tab from the SAME published fresh pane response.
+pub(crate) fn validate_bootstrap_resolution(
+    tx: &Transaction<'_>,
+    canonical: &HandoffNamespace,
+    request: &ResolveBootstrapSeat,
+    guard: &BootstrapAttachmentGuard,
+) -> Result<Option<crate::protocol::ids::SeatId>, ApiError> {
+    request
+        .validate()
+        .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
+    let status =
+        current(tx, canonical, &request.identity)?.ok_or_else(|| conflict("bootstrap missing"))?;
+    if status.attempt != request.expected_attempt
+        || !matches!(
+            status.state,
+            BootstrapState::Created | BootstrapState::Attached
+        )
+    {
+        return Err(conflict(
+            "bootstrap is not the active confirmed creation attempt",
+        ));
+    }
+    validate_live(tx, canonical, &request.identity)?;
+    let created = status.creation.as_ref().ok_or_else(corrupt)?;
+    let ordinary = guard.ordinary();
+    let proof = ordinary.structural_proof();
+    if ordinary.operation() != &request.operation
+        || guard.workspace() != &created.workspace
+        || guard.tab() != &created.tab
+        || proof.target() != &created.root_pane
+        || proof.terminal() != &created.terminal
+        || proof.host_boot() != &created.host_incarnation
+    {
+        return Err(api_error(
+            ErrorCode::StaleHostObservation,
+            "bootstrap current pane scope differs before allocation",
+        ));
+    }
+    Ok(status.attachment.map(|a| a.resolved_seat))
+}
+
 /// The ordinary resolver already decided this exact key/result. A fresh guard
 /// reconfirms the current owner; no allocation, movement or binding is performed.
 pub fn attach_pending(

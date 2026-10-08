@@ -252,6 +252,474 @@ pub fn publish(
     }
     Ok(reference)
 }
+/// Expected native endpoint witness captured by the actual qualified transport.
+/// The caller must admit the original actor before invoking this internal seam.
+pub struct BootstrapSubmissionInputs<'a> {
+    pub witness: &'a crate::host::continuity::LocalEndpointWitness,
+    pub context: &'a crate::ports::HostCallContext,
+}
+
+/// Internal live coordinator through canonical exact attachment. Public routes
+/// remain Unsupported; activation owns actor admission and the fresh daemon guard.
+#[allow(clippy::too_many_arguments)]
+pub fn resume_to_attachment<
+    C: crate::ports::LocalClient + ?Sized,
+    N: crate::ports::CreateTabPort + ?Sized,
+>(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    native: &N,
+    clock: &dyn crate::protocol::time::Clock,
+    submission: BootstrapSubmissionInputs<'_>,
+) -> Result<crate::protocol::handoff::BootstrapResult, RunError> {
+    use crate::{
+        ports::*,
+        protocol::{commands::Command, handoff::*, ids::HostCallId, results::CommandResult},
+    };
+    let pending = journal.load(reference)?;
+    let super::journal::SemanticMutation::Frozen { claim, mutation } = pending.semantic else {
+        return Err(super::invalid_request(
+            "bootstrap needs its original frozen caller",
+        ));
+    };
+    let super::journal::SemanticMutation::HandoffBootstrap(plan) = *mutation else {
+        return Err(super::invalid_request("not a bootstrap reference"));
+    };
+    let identity = BootstrapIdentity {
+        compound: plan.payload.handoff.keys.compound.clone(),
+        scope: pending.header.scope,
+        claim,
+        digest: pending.header.semantic_digest,
+        payload: plan.payload,
+    };
+    crate::store::topology_handoff::encode_identity(namespace, &identity)?;
+    match client.call(Command::Capabilities, &super::cooperative_budget(clock)) {
+        Ok(CommandResult::Capabilities(c))
+            if c.capabilities.iter().any(|name| {
+                name == crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1
+            }) => {}
+        _ => {
+            return Err(super::unsupported(
+                "daemon lacks guarded bootstrap resolution capability",
+            ));
+        }
+    }
+    let _lock = super::handoff::lock(journal, reference)?;
+    let mut progress = load_bootstrap_progress(journal, reference, &identity)?;
+    let call = |command| {
+        client
+            .call(command, &super::cooperative_budget(clock))
+            .map_err(RunError::from)
+    };
+    let status = || -> Result<BootstrapResult, RunError> {
+        bootstrap_result(
+            &identity,
+            call(Command::BootstrapStatus(Box::new(BootstrapStatus {
+                identity: identity.clone(),
+            })))?,
+        )
+    };
+    let begin = call(Command::BeginBootstrap(Box::new(BeginBootstrap {
+        operation: identity.payload.handoff.keys.begin.clone(),
+        identity: identity.clone(),
+    })));
+    let mut current = match begin {
+        Ok(v) => bootstrap_result(&identity, v)?,
+        Err(error) => match status() {
+            Ok(v) => v,
+            Err(_) => return Err(error),
+        },
+    };
+    if current.state == BootstrapState::Completed {
+        return Ok(current);
+    }
+    if current.state == BootstrapState::Cancelled {
+        return Err(super::invalid_request("bootstrap is cancelled"));
+    }
+    if let Some(local) = &progress {
+        if local.attempt > current.attempt
+            || (local.attempt < current.attempt && local.creation.is_some())
+        {
+            return Err(super::invalid_request(
+                "bootstrap local evidence contradicts canonical attempt",
+            ));
+        }
+        if local.attempt < current.attempt {
+            progress = None;
+        }
+    }
+    let mut local = progress.unwrap_or_else(|| BootstrapProgress {
+        version: 1,
+        identity: identity.clone(),
+        attempt: current.attempt,
+        possible_creation: false,
+        request: None,
+        creation: None,
+        not_submitted: false,
+    });
+    if let Some(created) = &current.creation {
+        if local
+            .creation
+            .as_ref()
+            .is_some_and(|saved| saved != created)
+        {
+            return Err(super::invalid_request(
+                "local and canonical creation evidence differ",
+            ));
+        }
+        local.possible_creation = true;
+        local.creation = Some(created.clone());
+        save_bootstrap_progress(journal, reference, &local)?;
+        return missing_resolution_boundary();
+    }
+    if local.not_submitted {
+        return close_not_submitted(&identity, local.attempt, &call);
+    }
+    if let Some(evidence) = &local.creation {
+        if local.request.is_none() {
+            return Err(creation_unknown(reference, &identity, local.attempt));
+        }
+        current = record_creation(&identity, local.attempt, evidence, &call, &status)?;
+        if current.creation.as_ref() != Some(evidence) {
+            return Err(super::invalid_request("canonical creation result differs"));
+        }
+        return missing_resolution_boundary();
+    }
+    if current.state != BootstrapState::Prepared || local.possible_creation {
+        return Err(creation_unknown(reference, &identity, current.attempt));
+    }
+    if submission.witness.endpoint.as_os_str() != namespace.host_endpoint.as_os_str() {
+        return Err(super::invalid_request(
+            "native submission endpoint differs from frozen namespace",
+        ));
+    }
+    let operation = current
+        .attempt
+        .operation(&identity.compound, "reserve")
+        .map_err(super::invalid_request)?;
+    let reserved = call(Command::ReserveBootstrapAttempt(Box::new(
+        ReserveBootstrapAttempt {
+            identity: identity.clone(),
+            operation: operation.clone(),
+            expected_attempt: current.attempt,
+        },
+    )));
+    let authorization = match reserved {
+        Ok(CommandResult::BootstrapReserved(result)) => match *result {
+            ReserveBootstrapResult::Authorized { authorization } => authorization,
+            ReserveBootstrapResult::Replay { status: replay } => {
+                let replay = bootstrap_result(&identity, CommandResult::Bootstrap(replay))?;
+                if replay.creation.is_some() {
+                    return missing_resolution_boundary();
+                }
+                return Err(creation_unknown(reference, &identity, replay.attempt));
+            }
+        },
+        Ok(_) => {
+            return Err(super::invalid_request(
+                "unexpected bootstrap reservation result",
+            ));
+        }
+        Err(error) => {
+            if let Ok(saved) = status() {
+                if saved.creation.is_some() {
+                    return missing_resolution_boundary();
+                }
+                if saved.state != BootstrapState::Prepared {
+                    return Err(creation_unknown(reference, &identity, saved.attempt));
+                }
+            }
+            return Err(error);
+        }
+    };
+    if authorization.compound != identity.compound
+        || authorization.attempt != current.attempt
+        || authorization.reservation != operation
+    {
+        return Err(super::invalid_request(
+            "bootstrap submission authorization differs",
+        ));
+    }
+    let request = CreateTabRequest {
+        correlation: HostCallId::new(uuid::Uuid::new_v4().to_string()),
+        workspace: identity.payload.workspace.clone(),
+        cwd: identity.payload.cwd.clone(),
+        label: identity.payload.label.clone(),
+        focus: identity.payload.focus,
+        env: identity.payload.env.clone(),
+        expected_witness: submission.witness.clone(),
+    };
+    local.possible_creation = true;
+    local.request = Some(request.clone());
+    save_bootstrap_progress(journal, reference, &local)
+        .map_err(|_| creation_unknown(reference, &identity, current.attempt))?;
+    let checked = call(Command::CheckBootstrapSubmission(Box::new(
+        CheckBootstrapSubmission {
+            identity: identity.clone(),
+            operation: current
+                .attempt
+                .operation(&identity.compound, "check")
+                .map_err(super::invalid_request)?,
+            expected_attempt: current.attempt,
+            expected_administrative_revision: authorization.administrative_revision,
+        },
+    )))?;
+    let CommandResult::BootstrapSubmissionChecked(checked) = checked else {
+        return Err(super::invalid_request(
+            "unexpected bootstrap submission check",
+        ));
+    };
+    if checked.compound != identity.compound
+        || checked.attempt != current.attempt
+        || checked.administrative_revision != authorization.administrative_revision
+    {
+        return Err(super::invalid_request(
+            "fresh bootstrap submission check differs",
+        ));
+    }
+    match native.create_tab(&request, submission.context) {
+        CreateTabOutcome::NotSubmitted(_) => {
+            local.not_submitted = true;
+            save_bootstrap_progress(journal, reference, &local)
+                .map_err(|_| creation_unknown(reference, &identity, current.attempt))?;
+            close_not_submitted(&identity, current.attempt, &call)
+        }
+        CreateTabOutcome::OutcomeUnknown(_) => {
+            Err(creation_unknown(reference, &identity, current.attempt))
+        }
+        CreateTabOutcome::Created(created) => {
+            if created.validate().is_err()
+                || created.correlation != request.correlation
+                || created.workspace != request.workspace
+                || created.witness != request.expected_witness
+            {
+                return Err(creation_unknown(reference, &identity, current.attempt));
+            }
+            local.creation = Some(*created);
+            save_bootstrap_progress(journal, reference, &local)
+                .map_err(|_| creation_unknown(reference, &identity, current.attempt))?;
+            let evidence = local.creation.as_ref().unwrap();
+            current = record_creation(&identity, current.attempt, evidence, &call, &status)?;
+            if current.creation.as_ref() != Some(evidence) {
+                return Err(super::invalid_request("canonical creation result differs"));
+            }
+            missing_resolution_boundary()
+        }
+    }
+}
+
+/// No ordinary resolver call: it lacks current tab scope before allocation.
+fn missing_resolution_boundary<T>() -> Result<T, RunError> {
+    Err(super::unsupported(
+        "bootstrap creation retained; fresh exact-tab preallocation resolver unavailable",
+    ))
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BootstrapProgress {
+    pub version: u32,
+    pub identity: crate::protocol::handoff::BootstrapIdentity,
+    pub attempt: crate::protocol::handoff::BootstrapAttempt,
+    pub possible_creation: bool,
+    pub request: Option<crate::ports::CreateTabRequest>,
+    pub creation: Option<crate::ports::CreatedTab>,
+    pub not_submitted: bool,
+}
+const MAX_BOOTSTRAP_PROGRESS: usize = 128 * 1024;
+fn save_bootstrap_progress(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    progress: &BootstrapProgress,
+) -> Result<(), RunError> {
+    if serde_json::to_vec(progress)
+        .map_err(std::io::Error::other)?
+        .len()
+        > MAX_BOOTSTRAP_PROGRESS
+    {
+        return Err(super::invalid_request("oversized bootstrap progress"));
+    }
+    super::handoff::save_progress(journal, reference, progress)?;
+    Ok(())
+}
+fn load_bootstrap_progress(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+) -> Result<Option<BootstrapProgress>, RunError> {
+    use std::{io::Read, os::unix::fs::OpenOptionsExt};
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(super::handoff::progress_path(journal, reference))
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(super::invalid_request("unsafe bootstrap progress"));
+    }
+    let mut bytes = Vec::new();
+    file.take((MAX_BOOTSTRAP_PROGRESS + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_BOOTSTRAP_PROGRESS {
+        return Err(super::invalid_request("oversized bootstrap progress"));
+    }
+    let progress: BootstrapProgress =
+        serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+    if serde_json::from_slice::<serde_json::Value>(&bytes).map_err(std::io::Error::other)?
+        != serde_json::to_value(&progress).map_err(std::io::Error::other)?
+        || progress.version != 1
+        || &progress.identity != identity
+        || (!progress.possible_creation
+            && (progress.request.is_some()
+                || progress.creation.is_some()
+                || progress.not_submitted))
+        || (progress.not_submitted && progress.creation.is_some())
+    {
+        return Err(super::invalid_request(
+            "bootstrap progress identity or state differs",
+        ));
+    }
+    if let Some(request) = &progress.request
+        && (request.workspace != identity.payload.workspace
+            || request.cwd != identity.payload.cwd
+            || request.label != identity.payload.label
+            || request.focus != identity.payload.focus
+            || request.env != identity.payload.env
+            || request.expected_witness.endpoint
+                != identity.payload.handoff.namespace.host_endpoint)
+    {
+        return Err(super::invalid_request(
+            "bootstrap saved native request differs",
+        ));
+    }
+    if let Some(created) = &progress.creation {
+        created.validate().map_err(super::invalid_request)?;
+        if created.workspace != identity.payload.workspace
+            || created.witness.endpoint != identity.payload.handoff.namespace.host_endpoint
+            || progress.request.as_ref().is_some_and(|r| {
+                r.correlation != created.correlation || r.expected_witness != created.witness
+            })
+        {
+            return Err(super::invalid_request("bootstrap saved creation differs"));
+        }
+    }
+    Ok(Some(progress))
+}
+fn bootstrap_result(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    result: crate::protocol::results::CommandResult,
+) -> Result<crate::protocol::handoff::BootstrapResult, RunError> {
+    use crate::protocol::{handoff::*, results::CommandResult};
+    let CommandResult::Bootstrap(result) = result else {
+        return Err(super::invalid_request("unexpected bootstrap result"));
+    };
+    if result.compound != identity.compound {
+        return Err(super::invalid_request(
+            "canonical bootstrap compound differs",
+        ));
+    }
+    if let Some(created) = &result.creation {
+        created.validate().map_err(super::invalid_request)?;
+        if created.workspace != identity.payload.workspace
+            || created.witness.endpoint != identity.payload.handoff.namespace.host_endpoint
+        {
+            return Err(super::invalid_request(
+                "canonical creation namespace differs",
+            ));
+        }
+    }
+    if let Some(attachment) = &result.attachment {
+        attachment
+            .validate(identity)
+            .map_err(super::invalid_request)?;
+        if attachment.attempt != result.attempt
+            || result.creation.as_ref() != Some(&attachment.created)
+        {
+            return Err(super::invalid_request(
+                "canonical attachment evidence differs",
+            ));
+        }
+    }
+    if matches!(
+        result.state,
+        BootstrapState::Created | BootstrapState::Attached | BootstrapState::Completed
+    ) && result.creation.is_none()
+    {
+        return Err(super::invalid_request(
+            "canonical bootstrap lacks creation evidence",
+        ));
+    }
+    Ok(*result)
+}
+fn record_creation(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    attempt: crate::protocol::handoff::BootstrapAttempt,
+    evidence: &crate::ports::CreatedTab,
+    call: &impl Fn(
+        crate::protocol::commands::Command,
+    ) -> Result<crate::protocol::results::CommandResult, RunError>,
+    status: &impl Fn() -> Result<crate::protocol::handoff::BootstrapResult, RunError>,
+) -> Result<crate::protocol::handoff::BootstrapResult, RunError> {
+    use crate::protocol::{commands::Command, handoff::*};
+    match call(Command::RecordBootstrapCreated(Box::new(
+        RecordBootstrapCreated {
+            identity: identity.clone(),
+            expected_attempt: attempt,
+            operation: attempt
+                .operation(&identity.compound, "record")
+                .map_err(super::invalid_request)?,
+            evidence: evidence.clone(),
+        },
+    ))) {
+        Ok(result) => bootstrap_result(identity, result),
+        Err(error) => match status() {
+            Ok(saved) if saved.attempt == attempt && saved.creation.as_ref() == Some(evidence) => {
+                Ok(saved)
+            }
+            _ => Err(error),
+        },
+    }
+}
+fn close_not_submitted(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    attempt: crate::protocol::handoff::BootstrapAttempt,
+    call: &impl Fn(
+        crate::protocol::commands::Command,
+    ) -> Result<crate::protocol::results::CommandResult, RunError>,
+) -> Result<crate::protocol::handoff::BootstrapResult, RunError> {
+    use crate::protocol::{commands::Command, handoff::*};
+    let result = bootstrap_result(
+        identity,
+        call(Command::RecordBootstrapNotSubmitted(Box::new(
+            RecordBootstrapNotSubmitted {
+                identity: identity.clone(),
+                expected_attempt: attempt,
+                operation: attempt
+                    .operation(&identity.compound, "not_submitted")
+                    .map_err(super::invalid_request)?,
+            },
+        )))?,
+    )?;
+    if result.attempt.get() <= attempt.get() {
+        return Err(super::invalid_request(
+            "zero submission did not allocate a distinct attempt",
+        ));
+    }
+    Ok(result)
+}
+fn creation_unknown(
+    reference: &super::journal::IntentRef,
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    attempt: crate::protocol::handoff::BootstrapAttempt,
+) -> RunError {
+    crate::protocol::results::ApiError::unknown_outcome(format!("bootstrap {} compound {} attempt {}: outcome_unknown; inspect original exact namespace before guarded recovery; no automatic creation", reference.recovery_ref(), identity.compound.as_str(), attempt.get())).into()
+}
+
 #[cfg(test)]
 #[path = "../../tests/cli/topology_handoff.rs"]
 mod tests;
