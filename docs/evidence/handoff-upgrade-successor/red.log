@@ -1,0 +1,29 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 1f38a03e-5f34-4f66-89e8-0a0d93946224 with nextest profile: default
+    Starting 1 test across 7 binaries (3213 tests skipped)
+        FAIL [   0.167s] (1/1) herdr-threads::combined handoff_fences::handoff_actual22_upgrade_imports_already_committed_create_then_replays_without_unattached_fence
+  stdout ───
+
+    running 1 test
+    test handoff_fences::handoff_actual22_upgrade_imports_already_committed_create_then_replays_without_unattached_fence ... FAILED
+
+    failures:
+
+    failures:
+        handoff_fences::handoff_actual22_upgrade_imports_already_committed_create_then_replays_without_unattached_fence
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 252 filtered out; finished in 0.16s
+
+  stderr ───
+
+    thread 'handoff_fences::handoff_actual22_upgrade_imports_already_committed_create_then_replays_without_unattached_fence' (8991003) panicked at tests/store/handoff_fences.rs:411:5:
+    assertion `left == right` failed
+      left: 25
+     right: 24
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.172s] 1 test run: 0 passed, 1 failed, 3213 skipped
+        FAIL [   0.167s] (1/1) herdr-threads::combined handoff_fences::handoff_actual22_upgrade_imports_already_committed_create_then_replays_without_unattached_fence
+error: test run failed

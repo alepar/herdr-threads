@@ -411,7 +411,7 @@ fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_withou
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        24
+        25
     );
     let tx = db.transaction().unwrap();
     let imported = handoff::import_hint(&tx, &id, None, "legacy22", UtcMillis(100)).unwrap();
