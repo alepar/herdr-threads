@@ -82,3 +82,6 @@ mod lazy_inbox_v2;
 
 #[path = "cli/lazy_markers.rs"]
 mod lazy_markers;
+
+#[path = "cli/lazy_display.rs"]
+mod lazy_display;

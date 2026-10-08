@@ -161,6 +161,12 @@ pub fn write_selected<W: Write>(
     } else {
         bytes
     };
+    if matches!(result, CommandResult::InboxBatchV2(_)) && bytes.len() > max_bytes as usize {
+        return Err(OutputError::Api(
+            ApiError::invalid_budget("selected v2 inbox output exceeds byte budget")
+                .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX)),
+        ));
+    }
     writer.write_all(&bytes).map_err(OutputError::Io)?;
     writer.flush().map_err(OutputError::Io)?;
     Ok(bytes.len())

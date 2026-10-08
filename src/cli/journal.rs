@@ -623,7 +623,110 @@ struct DisplayedProgress {
     body_len: u64,
     flushed_through: u64,
 }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LazyDisplayedProgress {
+    claim: CallerClaim,
+    message: MessageId,
+    body_len: u64,
+    flushed_through: u64,
+}
 impl Journal {
+    fn lazy_display_path(&self, claim: &CallerClaim, message: &MessageId) -> io::Result<PathBuf> {
+        let mut digest = Sha256::new();
+        digest.update(serde_json::to_vec(&(claim, message))?);
+        Ok(self
+            .root
+            .join(format!("display-lazy-{:x}.progress", digest.finalize())))
+    }
+    /// Cooperative display hint only; no receipt or canonical delivery mutation.
+    /// Full caller identity isolates progress across every occupant transition.
+    pub fn record_lazy_displayed_chunk(
+        &self,
+        claim: &CallerClaim,
+        message: &MessageId,
+        start: u64,
+        end: u64,
+        body_len: u64,
+    ) -> io::Result<bool> {
+        if start > end || end > body_len || (start == end && body_len != 0) {
+            return Err(invalid("invalid lazy inbox body span"));
+        }
+        let _lock = self.lock()?;
+        let path = self.lazy_display_path(claim, message)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        let prior: Option<LazyDisplayedProgress> = match options.open(&path) {
+            Ok(file) => {
+                let meta = file.metadata()?;
+                if !meta.is_file() || meta.len() > 16384 {
+                    return Err(invalid("unsafe lazy display progress"));
+                }
+                #[cfg(unix)]
+                if meta.permissions().mode() & 0o077 != 0 {
+                    return Err(invalid("lazy display progress is not private"));
+                }
+                let mut bytes = Vec::new();
+                file.take(16385).read_to_end(&mut bytes)?;
+                Some(
+                    serde_json::from_slice(&bytes)
+                        .map_err(|_| invalid("lazy display progress corrupt"))?,
+                )
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        if prior.as_ref().is_some_and(|p| {
+            p.claim != *claim
+                || p.message != *message
+                || p.body_len != body_len
+                || p.flushed_through > body_len
+        }) {
+            return Err(invalid("lazy display progress identity changed"));
+        }
+        let flushed = match &prior {
+            _ if start == 0 => prior.as_ref().map_or(end, |p| p.flushed_through.max(end)),
+            Some(p) if p.flushed_through == start => end,
+            Some(p) if p.flushed_through >= end => p.flushed_through,
+            _ => return Ok(false),
+        };
+        let progress = LazyDisplayedProgress {
+            claim: claim.clone(),
+            message: message.clone(),
+            body_len,
+            flushed_through: flushed,
+        };
+        let temp = self
+            .root
+            .join(format!(".display-lazy-{}.tmp", Uuid::new_v4()));
+        let result = (|| {
+            let mut file = private_new(&temp)?;
+            serde_json::to_writer(&mut file, &progress)?;
+            file.sync_all()?;
+            fs::rename(&temp, &path)?;
+            File::open(&self.root)?.sync_all()
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result?;
+        Ok(flushed == body_len)
+    }
+    /// Clear only the frozen occupant's successfully settled lazy body proof.
+    pub fn clear_lazy_displayed_chunk(
+        &self,
+        claim: &CallerClaim,
+        message: &MessageId,
+    ) -> io::Result<()> {
+        let _lock = self.lock()?;
+        match fs::remove_file(self.lazy_display_path(claim, message)?) {
+            Ok(()) => File::open(&self.root)?.sync_all(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
     pub(crate) fn root(&self) -> &Path {
         &self.root
     }
