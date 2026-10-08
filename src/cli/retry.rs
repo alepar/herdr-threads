@@ -395,3 +395,38 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
             )
     )
 }
+
+/// Read the immutable origin before any service, selection or completion effects.
+pub fn preflight_original_actor(
+    root: impl AsRef<std::path::Path>,
+    recovery: &str,
+    actor: super::actor_route::InvocationActor,
+    context: &crate::protocol::output::ContinuationContext,
+) -> io::Result<super::journal::OriginalActor> {
+    let journal = Journal::read_only(root)?;
+    let reference = journal.resolve_recovery_ref(recovery)?;
+    let pending = journal.load(&reference)?;
+    let original =
+        super::journal::classify_original_actor(&pending.header.scope, &pending.semantic)?;
+    if original == super::journal::OriginalActor::HumanOrOperator
+        && actor == super::actor_route::InvocationActor::Agent
+    {
+        let mut argv = super::hook::cli_prefix(context);
+        argv.insert(1, "human".into());
+        argv.extend(["retry".into(), recovery.into()]);
+        let command = argv
+            .iter()
+            .map(|token| {
+                shlex::try_quote(token)
+                    .map(|quoted| quoted.into_owned())
+                    .map_err(io::Error::other)
+            })
+            .collect::<io::Result<Vec<_>>>()?
+            .join(" ");
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("person/operator retry requires immediate human namespace; use {command}"),
+        ));
+    }
+    Ok(original)
+}
