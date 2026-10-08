@@ -1,6 +1,7 @@
 # super-auto run — 2026-10-07-lazy-messages
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
+resumeChange: 2026-10-08 direct user redesign of native send default — lazy by default, explicit --nudge for attention, ACK implies nudge; interim --ordinary superseded; applied within current code run, wire/saved omission stays Ordinary.
 phase: code
 codeMechanism: ordinary-subagents
 

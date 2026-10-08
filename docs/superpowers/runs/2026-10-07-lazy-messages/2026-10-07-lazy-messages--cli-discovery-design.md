@@ -1,12 +1,12 @@
 ## Goal
 
-Expose lazy sends and canonical read-only markers without changing ordinary sends or summary rendering/cache.
+Expose lazy-default native sends and canonical read-only markers while preserving explicit ordinary delivery and summary rendering/cache.
 
 Parent: [approved lazy design](../../specs/2026-10-07-lazy-messages-design.md). Bead: `ht-big.4`. Mode B.
 
 ## Problem description
 
-Implement send --lazy validation and capability refusal plus canonical lazy markers on selected history/body/search pages while keeping summaries stable.
+Implement default-lazy send, --nudge and ACK-implied ordinary selection, validation and capability refusal plus canonical lazy markers on selected history/body/search pages while keeping summaries stable.
 
 ## Main challenges
 
@@ -24,7 +24,7 @@ Separate output proof from mutation replay; reusing receipts would fabricate obl
 
 ### Lazy send CLI validation and compatibility refusal
 
-Expose --lazy on native send with CLI validation and unsupported-daemon refusal before intent; preserve ordinary omission/digest and frozen actor classification, keep service-owner/compound handoffs ordinary.
+Default native send to lazy, retain explicit --lazy, and select ordinary attention via --nudge or ACK options; reject conflicting explicit lazy or deadline-only requests before body I/O and unsupported lazy daemons before intent; preserve ordinary omission/digest and frozen actor classification, keep service-owner/compound handoffs ordinary.
 owns: CLI lazy send validation and capability preflight.
 consumes: lazy send boundary contract.
 Files: CLI send parsing/execution; narrow owner-coordinated grammar and guide paragraph.
@@ -41,3 +41,5 @@ Acceptance: preserve parent invariants; focused failing regression tests for the
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+2026-10-08: Latest direct user clarification supersedes initial opt-in default and interim --ordinary: default Lazy, --nudge Ordinary, ACK implies nudge. Historic omitted modes/digests and service/compound handoff semantics remain Ordinary. Exact reviewed grammar/help handoff: docs/evidence/lazy-messages/send-guide-handoff.md at task4 b19fc2b1. Shared skill/help remains active handoff-owner scope.
