@@ -2711,10 +2711,9 @@ fn inbox_first_useful_page_historical_only_reaches_empty() {
         out.code, out.stdout, out.stderr
     );
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(
-        !out.stdout.contains("next:"),
-        "historical-only fixture should reach empty state: {:?}",
-        out.stdout
+    assert_eq!(
+        out.stdout, "empty\n",
+        "historical-only fixture should report empty"
     );
     assert_eq!(
         fx.world
