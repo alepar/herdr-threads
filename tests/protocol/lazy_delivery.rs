@@ -118,7 +118,7 @@ fn inbox_batch_v2_continuation_type_round_trip_and_body_bounds() {
 }
 
 #[test]
-fn inert_lazy_routes_are_not_advertised() {
+fn activated_lazy_routes_are_advertised() {
     use herdr_threads::{
         ports::{ReadContext, StorePort},
         protocol::{
@@ -133,8 +133,8 @@ fn inert_lazy_routes_are_not_advertised() {
     assert!(ADVERTISED.contains(&MESSAGE_DELIVERY_MODES));
     for name in [LAZY_SEND, INBOX_BATCH_V2] {
         assert!(
-            !ADVERTISED.contains(&name),
-            "inert capability {name} must not be advertised"
+            ADVERTISED.contains(&name),
+            "installed capability {name} must be advertised"
         );
     }
     struct FixedClock;
@@ -172,7 +172,7 @@ fn inert_lazy_routes_are_not_advertised() {
     let command: Command = serde_json::from_value(value).unwrap();
     assert_eq!(
         store.query(&command, &read, &budget).unwrap_err().code,
-        ErrorCode::Unsupported
+        ErrorCode::NotFound
     );
     let metadata: Command = serde_json::from_value(
         serde_json::json!({"kind":"message_delivery_modes","args":{"messages":["m"]}}),

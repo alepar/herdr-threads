@@ -278,7 +278,9 @@ fn capability_constants_are_stable() {
             "participants.locations_v1",
             "picker.directory_v1",
             "attention.notice_delivery_v1",
-            "messages.delivery_modes_v1"
+            "messages.delivery_modes_v1",
+            "send.lazy_v1",
+            "inbox.batch_v2"
         ]
     );
 }
@@ -298,6 +300,40 @@ fn every_advertised_capability_has_a_handler() {
             HARNESS_STATES => probe_harness_states(),
             SEAT_MANAGED_LAUNCH => probe_seat_managed_launch(),
             INBOX_BATCH => probe_inbox_batch(),
+            INBOX_BATCH_V2 => {
+                let command = Command::InboxBatchV2(crate::protocol::commands::InboxQuery {
+                    seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
+                    page: Default::default(),
+                });
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap())
+                        .unwrap(),
+                    command
+                );
+                let isolation =
+                    crate::test_support::isolation::TestIsolation::new("lazy-capability");
+                let context = crate::store::connection::StoreContext::new(
+                    isolation.path("store.db"),
+                    Arc::new(FixedClock),
+                );
+                context.open_writer().unwrap();
+                let outcome =
+                    crate::store::queries::query(&context, "probe-instance", &command, &budget());
+                assert_eq!(outcome.unwrap_err().code, ErrorCode::NotFound);
+            }
+            LAZY_SEND => {
+                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":"lazy","thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                assert!(command.validate().is_ok());
+                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             INVITATION_REJECT => probe_invitation_reject(),
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
             PICKER_DIRECTORY_V1 => probe_picker_directory(),

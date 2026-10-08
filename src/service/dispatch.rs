@@ -254,10 +254,6 @@ impl LocalService for DomainService {
             | Command::Message(_)
             | Command::Diagnostics(_)
             | Command::RetirementJobs(_) => self.store.query(&command, &read, budget),
-            Command::CompleteInboxDelivery(_) => Err(error(
-                ErrorCode::Unsupported,
-                "inbox delivery completion is not implemented",
-            )),
             Command::OperationStatus(_) => Err(error(
                 ErrorCode::Unauthorized,
                 "verified operation scope required",
@@ -273,6 +269,7 @@ impl LocalService for DomainService {
             | Command::SendMessage(_)
             | Command::Ack(_)
             | Command::AckDisplayed(_)
+            | Command::CompleteInboxDelivery(_)
             | Command::Leave(_)
             | Command::SetTopic(_)
             | Command::SetThreadName(_)

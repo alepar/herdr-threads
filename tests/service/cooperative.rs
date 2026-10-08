@@ -1410,3 +1410,115 @@ fn operator_check_in_requires_human_lifecycle() {
     assert_eq!(refused.code, ErrorCode::Unauthorized);
     assert!(refused.detail.contains("me init --operator"));
 }
+
+#[test]
+fn lazy_inbox_fix_real_service_completion() {
+    use crate::protocol::commands::{CompleteInboxDelivery, DeliveryMode, SendMessage};
+    let (service, db) = fixture();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient','i','resolved','native','q',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-q','inc','coherent_enumeration',1)", []).unwrap();
+    let peer = PeerIdentity::from_kernel(501);
+    let sender = checked(&service, lifecycle(claim(), "sender")).context;
+    let mut recipient = claim();
+    recipient.seat = SeatId::new("recipient");
+    recipient.target = HostTargetId::new("q");
+    recipient.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+    let recipient = checked(&service, lifecycle(recipient, "recipient")).context;
+    let CommandResult::ThreadCreated(thread) = service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "topic".into(),
+                goal: "goal".into(),
+                operation: OperationId::new("thread"),
+                claim: sender.clone(),
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("thread")
+    };
+    db.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,'recipient','joined')",
+        [thread.as_str()],
+    )
+    .unwrap();
+    db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,'recipient',1,1)", [thread.as_str()]).unwrap();
+    let send = |op| {
+        let CommandResult::MessageSent(id) = service
+            .handle(
+                Command::SendMessage(SendMessage {
+                    delivery_mode: DeliveryMode::Lazy,
+                    thread: thread.clone(),
+                    body: "quiet".into(),
+                    invited_recipients: vec![],
+                    deadline_millis: None,
+                    operation: OperationId::new(op),
+                    claim: sender.clone(),
+                    relays_user: false,
+                    user_intent: None,
+                }),
+                peer,
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("send")
+        };
+        id
+    };
+    let id = send("lazy");
+    let request = CompleteInboxDelivery {
+        messages: vec![id.clone()],
+        operation: OperationId::new("done"),
+        claim: recipient.clone(),
+    };
+    let invoke = |r| service.handle(Command::CompleteInboxDelivery(r), peer, &budget());
+    assert_eq!(
+        service
+            .handle(
+                Command::CompleteInboxDelivery(request.clone()),
+                PeerIdentity::from_kernel(502),
+                &budget()
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::Unauthorized,
+    );
+    let mut sub = request.clone();
+    sub.claim.role = CallerRole::Subagent;
+    sub.operation = OperationId::new("sub");
+    assert_eq!(invoke(sub).unwrap_err().code, ErrorCode::CallerUnverified);
+    let mut stale = request.clone();
+    stale.claim.binding_generation += 1;
+    stale.operation = OperationId::new("stale");
+    assert!(invoke(stale).is_err());
+    assert_eq!(
+        db.query_row(
+            "SELECT state FROM lazy_recipients WHERE message_id=?1",
+            [id.as_str()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "pending"
+    );
+    let result = CommandResult::InboxDeliveryCompleted(vec![id]);
+    assert_eq!(invoke(request.clone()).unwrap(), result);
+    assert_eq!(invoke(request).unwrap(), result);
+    let human = send("human-lazy");
+    db.execute("UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='recipient' AND ended_at IS NULL", []).unwrap();
+    assert_eq!(
+        invoke(CompleteInboxDelivery {
+            messages: vec![human.clone()],
+            operation: OperationId::new("human-done"),
+            claim: CallerClaim {
+                harness: Harness::Human,
+                ..recipient
+            }
+        })
+        .unwrap(),
+        CommandResult::InboxDeliveryCompleted(vec![human])
+    );
+}

@@ -1761,3 +1761,74 @@ pub fn cooperative_payload_hash<T: serde::Serialize>(
 #[cfg(test)]
 #[path = "../../tests/store/task48_budget.rs"]
 mod task48_budget_tests;
+
+/// Monotonic passive presentation bookkeeping, never receipt attribution.
+pub fn complete_inbox_delivery(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    request: &crate::protocol::commands::CompleteInboxDelivery,
+    mut permit: MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    use crate::protocol::authority::CallerRole;
+    let distinct: std::collections::BTreeSet<_> = request.messages.iter().collect();
+    if request.claim.role == CallerRole::Subagent
+        || request.messages.is_empty()
+        || request.messages.len() > 100
+        || distinct.len() != request.messages.len()
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "invalid delivery completion batch or caller",
+        ));
+    }
+    let digest = cooperative_payload_hash("complete_inbox_delivery", request)?;
+    let seat = &request.claim.seat;
+    schema::execute_accountable_transaction(
+        context,
+        conn,
+        budget,
+        permit.cooperative_metadata(),
+        &format!("seat:{}", seat.as_str()),
+        request.operation.as_str(),
+        digest,
+        |tx| {
+            for id in &request.messages {
+                if super::lazy_delivery::recorded_mode(tx, &request.claim.instance, id)?
+                    != Some(crate::protocol::commands::DeliveryMode::Lazy)
+                    || !tx
+                        .query_row(
+                            super::lazy_delivery::ADDRESSED_SQL,
+                            params![seat.as_str(), id.as_str(), request.claim.instance],
+                            |r| r.get::<_, bool>(0),
+                        )
+                        .map_err(store_error)?
+                {
+                    return Err(api_error(
+                        ErrorCode::InvalidRequest,
+                        "completion ID is not an addressed published lazy message",
+                    ));
+                }
+            }
+            Ok(())
+        },
+        |tx, decision| {
+            decide_accountable(
+                tx,
+                decision,
+                &mut permit,
+                &request.claim,
+                seat,
+                &request.operation,
+                &ObligationRef::CheckIn(seat.clone()),
+                &digest,
+            )?;
+            for id in &request.messages {
+                super::lazy_delivery::complete_addressed(tx, &request.claim.instance, seat, id)?;
+            }
+            Ok(CommandResult::InboxDeliveryCompleted(
+                request.messages.clone(),
+            ))
+        },
+    )
+}

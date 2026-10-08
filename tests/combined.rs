@@ -74,3 +74,8 @@ mod lazy_publication;
 
 #[path = "store/lazy_metadata.rs"]
 mod lazy_metadata;
+
+#[path = "store/lazy_inbox.rs"]
+mod lazy_inbox;
+#[path = "protocol/lazy_inbox_v2.rs"]
+mod lazy_inbox_v2;
