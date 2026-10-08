@@ -98,6 +98,14 @@ pub enum Command {
     OperatorOrphanInvite(OperatorOrphanInvite),
     OperatorRetire(OperatorRetire),
     OperatorReplace(OperatorReplace),
+    BeginBootstrap(Box<crate::protocol::handoff::BeginBootstrap>),
+    ReserveBootstrapAttempt(Box<crate::protocol::handoff::ReserveBootstrapAttempt>),
+    RecordBootstrapCreated(Box<crate::protocol::handoff::RecordBootstrapCreated>),
+    AttachBootstrapHandoff(Box<crate::protocol::handoff::AttachBootstrapHandoff>),
+    CompleteLinkedBootstrap(Box<crate::protocol::handoff::CompleteLinkedBootstrap>),
+    CheckBootstrapSubmission(Box<crate::protocol::handoff::CheckBootstrapSubmission>),
+    BootstrapStatus(Box<crate::protocol::handoff::BootstrapStatus>),
+    RecoverBootstrap(Box<crate::protocol::handoff::RecoverBootstrap>),
 }
 
 /// Longest detail a hook report may carry: the CLI truncates to it
@@ -752,6 +760,68 @@ pub const MAX_BATCH_ITEMS: usize = 100;
 
 impl Command {
     pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::BeginBootstrap(v) => {
+                v.identity.validate()?;
+                if v.operation != v.identity.payload.handoff.keys.begin {
+                    return Err("bootstrap begin key mismatch");
+                }
+                return Ok(());
+            }
+            Self::ReserveBootstrapAttempt(v) => {
+                v.identity.validate()?;
+                if v.operation
+                    != v.expected_attempt
+                        .operation(&v.identity.compound, "reserve")?
+                {
+                    return Err("bootstrap reserve key mismatch");
+                }
+                return Ok(());
+            }
+            Self::RecordBootstrapCreated(v) => {
+                v.identity.validate()?;
+                v.evidence.validate()?;
+                if v.operation
+                    != v.expected_attempt
+                        .operation(&v.identity.compound, "record")?
+                    || v.evidence.workspace != v.identity.payload.workspace
+                    || v.evidence.witness.endpoint
+                        != v.identity.payload.handoff.namespace.host_endpoint
+                {
+                    return Err("bootstrap record mismatch");
+                }
+                return Ok(());
+            }
+            Self::AttachBootstrapHandoff(v) => {
+                v.identity.validate()?;
+                v.attachment.validate(&v.identity)?;
+                if v.operation != v.identity.payload.attach_key {
+                    return Err("bootstrap attach key mismatch");
+                }
+                return Ok(());
+            }
+            Self::CompleteLinkedBootstrap(v) => return v.validate(),
+            Self::CheckBootstrapSubmission(v) => {
+                v.identity.validate()?;
+                if v.operation
+                    != v.expected_attempt
+                        .operation(&v.identity.compound, "check")?
+                {
+                    return Err("bootstrap check key mismatch");
+                }
+                return Ok(());
+            }
+            Self::BootstrapStatus(v) => return v.identity.validate(),
+            Self::RecoverBootstrap(v) => {
+                v.identity.validate()?;
+                v.disposition.validate()?;
+                if v.operation != v.decision_operation()? {
+                    return Err("bootstrap recovery key mismatch");
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
         if let Some(page) = self.page() {
             page.validate()?;
         }

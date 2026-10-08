@@ -2193,6 +2193,20 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
     })
 }
 
+/// Neutral gate until canonical guards and the actual original-actor classifier
+/// are integrated. Never infer actor from current binding or recovery argv.
+pub fn reject_inert_handoff(
+    semantic: &super::journal::SemanticMutation,
+) -> Result<(), crate::protocol::results::ApiError> {
+    if semantic.namespace().is_some() {
+        return Err(crate::protocol::results::ApiError::new(
+            crate::protocol::results::ErrorCode::Unsupported,
+            "bootstrap and delivery execution require canonical guards and original actor classification",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     include!(concat!(

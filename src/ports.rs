@@ -3947,3 +3947,65 @@ mod contract_adapter_tests {
         ));
     }
 }
+
+/// Future required typed topology boundary, deliberately separate from HostPort.
+/// An adapter rechecks the expected socket/process witness at its final write.
+pub trait CreateTabPort: Send + Sync {
+    fn create_tab(&self, request: &CreateTabRequest, context: &HostCallContext)
+    -> CreateTabOutcome;
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateTabRequest {
+    pub correlation: HostCallId,
+    pub workspace: HostTargetId,
+    pub cwd: std::path::PathBuf,
+    pub label: String,
+    pub focus: bool,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub expected_witness: crate::host::continuity::LocalEndpointWitness,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreatedTab {
+    pub correlation: HostCallId,
+    pub workspace: HostTargetId,
+    pub tab: HostTargetId,
+    pub root_pane: HostTargetId,
+    pub terminal: TerminalId,
+    /// Derived from transport peer/process/socket, never a response field.
+    pub host_incarnation: HostBootId,
+    pub witness: crate::host::continuity::LocalEndpointWitness,
+}
+impl CreatedTab {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let w = &self.witness;
+        let incarnation = format!(
+            "herdr-server:pid={}:start={}.{:06}:uid={}",
+            w.peer_pid, w.start_seconds, w.start_microseconds, w.peer_uid
+        );
+        let prefix = format!("{}:", self.workspace.as_str());
+        if w.schema != 1
+            || !matches!(w.platform.as_str(), "macos" | "linux")
+            || w.peer_pid == 0
+            || w.start_seconds == 0
+            || w.start_microseconds >= 1_000_000
+            || w.socket.inode == 0
+            || !crate::protocol::handoff::frozen_absolute_path(&w.endpoint)
+            || self.host_incarnation.as_str() != incarnation
+            || !self.tab.as_str().starts_with(&prefix)
+            || !self.root_pane.as_str().starts_with(&prefix)
+            || self.tab == self.root_pane
+        {
+            return Err("invalid correlated creation evidence");
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateTabOutcome {
+    Created(Box<CreatedTab>),
+    /// Transport-proven zero submission, never inferred from a guessed error.
+    NotSubmitted(ApiError),
+    OutcomeUnknown(ApiError),
+}

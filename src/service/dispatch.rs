@@ -229,6 +229,17 @@ impl LocalService for DomainService {
             return self.store.query(&command, &read, budget);
         }
         match command {
+            Command::BeginBootstrap(_)
+            | Command::ReserveBootstrapAttempt(_)
+            | Command::RecordBootstrapCreated(_)
+            | Command::AttachBootstrapHandoff(_)
+            | Command::CompleteLinkedBootstrap(_)
+            | Command::CheckBootstrapSubmission(_)
+            | Command::BootstrapStatus(_)
+            | Command::RecoverBootstrap(_) => Err(error(
+                ErrorCode::Unsupported,
+                "bootstrap routes require canonical guards and original actor classification",
+            )),
             Command::Directory(_)
             | Command::PickerDirectory(_)
             | Command::Seats(_)
@@ -631,3 +642,58 @@ mod operator_tests {
 #[cfg(test)]
 #[path = "../../tests/service/cooperative.rs"]
 mod cooperative_tests;
+
+#[cfg(test)]
+mod topology_contract_dispatch_tests {
+    use super::*;
+    #[test]
+    fn topology_contract_new_commands_are_inert() {
+        let root = std::env::temp_dir().join(format!("topology-dispatch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("store.db");
+        let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
+        let store = Arc::new(
+            crate::store::SqliteStore::new(
+                crate::store::connection::StoreContext::new(path.clone(), clock.clone()),
+                "i",
+                crate::store::StoreSettings::default(),
+            )
+            .unwrap(),
+        );
+        let domain = DomainService::new("i".into(), store, clock.clone());
+        let db = rusqlite::Connection::open(path).unwrap();
+        let before: i64 = db
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .unwrap();
+        for command in crate::protocol::handoff::topology_contract_tests::commands() {
+            assert!(command.validate().is_ok());
+            let error = domain
+                .handle(
+                    command,
+                    PeerIdentity::from_kernel(501),
+                    &CallBudget {
+                        deadline: crate::protocol::time::MonoInstant(
+                            clock.monotonic_now().0 + 1000,
+                        ),
+                        cancellation: Default::default(),
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported);
+            assert_eq!(
+                db.query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                before
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM operations", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+        drop(domain);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

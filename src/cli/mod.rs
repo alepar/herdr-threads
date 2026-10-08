@@ -394,6 +394,12 @@ where
         deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
         cancellation: Cancellation::default(),
     };
+    if let CliAction::Retry(recovery) = &parsed.action {
+        let root = paths.instance_dir.join("intents");
+        if root.is_dir() {
+            reject_inert_retry(&journal::Journal::open(root)?, recovery.as_str())?;
+        }
+    }
     let host =
         crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock));
     // Canonical terminal cleanup precedes caller selection,
@@ -694,6 +700,7 @@ where
             let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
             let reference = journal.resolve_recovery_ref(recovery.as_str())?;
             let pending = journal.load(&reference)?;
+            commands::reject_inert_handoff(&pending.semantic)?;
             match (&pending.header.scope, &pending.semantic) {
                 (
                     IntentScope::ServiceAllocation {
@@ -1343,6 +1350,7 @@ fn exact_check_in_replay(
         CliAction::Retry(recovery) => {
             let reference = journal.resolve_recovery_ref(recovery.as_str())?;
             let pending = journal.load(&reference)?;
+            commands::reject_inert_handoff(&pending.semantic)?;
             if pending.header.scope == scope
                 && matches!(
                     pending.semantic,
@@ -2039,6 +2047,9 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     clock: &dyn Clock,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    if let CliAction::Retry(recovery) = &parsed.action {
+        reject_inert_retry(journal, recovery.as_str())?;
+    }
     use crate::harness::{
         Capability, LifecycleEvent, bridge,
         context::{EventKind, Role},
@@ -2172,6 +2183,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         CliAction::Retry(recovery) => {
             let reference = journal.resolve_recovery_ref(recovery.as_str())?;
             let pending = journal.load(&reference)?;
+            commands::reject_inert_handoff(&pending.semantic)?;
             let seed = contexts
                 .current()
                 .map_err(context_run_error)?
@@ -2410,5 +2422,166 @@ fn require_rejection_capability<C: LocalClient + ?Sized>(
         _ => Err(unsupported(
             "daemon lacks invitation.reject_v1; use a compatible daemon before rejecting invitations",
         )),
+    }
+}
+
+fn reject_inert_retry(journal: &journal::Journal, recovery: &str) -> Result<(), RunError> {
+    if let Some(pending) = journal.new_handoff_retry(recovery)? {
+        commands::reject_inert_handoff(&pending.semantic)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod topology_contract_retry_tests {
+    use super::*;
+    use crate::protocol::handoff::topology_contract_tests as fixture;
+    use crate::protocol::results::ErrorCode;
+    #[test]
+    fn topology_contract_new_retry_is_inert_before_presentation_or_effects() {
+        let root = std::env::temp_dir().join(format!("topology-retry-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = InstancePaths::resolve(
+            &crate::daemon::paths::RuntimeContext::explicit(
+                root.join("state"),
+                root.join("host.sock"),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let journal = journal::Journal::open(paths.instance_dir.join("intents")).unwrap();
+        for bootstrap in [true, false] {
+            for frozen in [true, false] {
+                let semantic = if bootstrap {
+                    SemanticMutation::HandoffBootstrap(Box::new(journal::BootstrapPlan {
+                        version: 1,
+                        payload: fixture::payload(),
+                    }))
+                } else {
+                    SemanticMutation::HandoffDelivery(Box::new(journal::DeliveryPlan {
+                        version: 1,
+                        payload: fixture::payload().handoff,
+                        recipient: crate::protocol::ids::SeatId::new("peer"),
+                    }))
+                };
+                let (semantic, scope) = if frozen {
+                    (
+                        SemanticMutation::freeze(semantic, fixture::claim()).unwrap(),
+                        IntentScope::Cooperative {
+                            instance: "i".into(),
+                            seat: fixture::claim().seat,
+                        },
+                    )
+                } else {
+                    (
+                        semantic,
+                        IntentScope::Native {
+                            instance: "i".into(),
+                            seat: fixture::claim().seat,
+                        },
+                    )
+                };
+                let reference = journal.record(scope, semantic, 1).unwrap();
+                let progress = journal
+                    .root()
+                    .join(format!("handoff-{}.progress", reference.operation.as_str()));
+                std::fs::write(
+                    progress,
+                    br#"{"completed":true,"launch":{"outcome":"started"}}"#,
+                )
+                .unwrap();
+                let snapshot = || {
+                    let mut entries: Vec<_> = std::fs::read_dir(journal.root())
+                        .unwrap()
+                        .map(|entry| {
+                            let path = entry.unwrap().path();
+                            (
+                                path.file_name().unwrap().to_owned(),
+                                std::fs::read(path).unwrap(),
+                            )
+                        })
+                        .collect();
+                    entries.sort();
+                    entries
+                };
+                let before = snapshot();
+                let argv = vec![
+                    "ht".to_owned(),
+                    "--state-dir".into(),
+                    root.join("state").display().to_string(),
+                    "--host-endpoint".into(),
+                    root.join("host.sock").display().to_string(),
+                    "retry".into(),
+                    reference.recovery_ref(),
+                ];
+                let mut output = Vec::new();
+                let error = run_in_pane(argv, None, &mut output).unwrap_err();
+                assert!(
+                    matches!(
+                        error,
+                        RunError::Api(ApiError {
+                            code: ErrorCode::Unsupported,
+                            ..
+                        })
+                    ),
+                    "must refuse before daemon or host connection: {error:?}"
+                );
+                assert!(output.is_empty());
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(root.join("contexts"))
+                    .unwrap();
+                let contexts = crate::harness::context::ContextJournal::open(
+                    &root.join("contexts").canonicalize().unwrap(),
+                    uuid::Uuid::from_u128(1),
+                    "sender",
+                    std::time::Duration::from_millis(20),
+                )
+                .unwrap();
+                struct CountingClient(std::sync::atomic::AtomicUsize);
+                impl crate::ports::LocalClient for CountingClient {
+                    crate::default_output_local_client!();
+                    fn call(
+                        &self,
+                        _: Command,
+                        _: &CallBudget,
+                    ) -> Result<crate::protocol::results::CommandResult, ApiError>
+                    {
+                        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Err(ApiError::new(ErrorCode::HostUnavailable, "test transport"))
+                    }
+                }
+                let client = CountingClient(std::sync::atomic::AtomicUsize::new(0));
+                let parsed =
+                    commands::parse_argv(["ht", "retry", &reference.recovery_ref()]).unwrap();
+                let error = run_cooperative(
+                    parsed,
+                    &journal,
+                    &contexts,
+                    None,
+                    crate::harness::context::Role::TopLevel,
+                    &client,
+                    &crate::app::SystemClock::new(),
+                    &mut output,
+                )
+                .unwrap_err();
+                assert!(matches!(
+                    error,
+                    RunError::Api(ApiError {
+                        code: ErrorCode::Unsupported,
+                        ..
+                    })
+                ));
+                assert_eq!(client.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+                assert!(output.is_empty());
+                assert_eq!(snapshot(), before);
+                assert!(!paths.descriptor_path.exists());
+                assert!(!paths.database_path.exists());
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
