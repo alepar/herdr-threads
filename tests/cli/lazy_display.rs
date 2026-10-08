@@ -208,6 +208,9 @@ impl herdr_threads::ports::LocalClient for Client {
                 stop_reason: StopReason::Complete,
                 consistency: Consistency::BoundedLive,
             })),
+            Command::CompleteInboxDelivery(completion) if self.v2 => {
+                Ok(CommandResult::InboxDeliveryCompleted(completion.messages))
+            }
             _ => panic!("unexpected mutation/read: {c:?}"),
         }
     }
@@ -303,6 +306,13 @@ fn lazy_display_json_machine_explicit_selector_readonly() {
                 .any(|c| matches!(c, Command::InboxBatchV2(_)))
         );
         assert!(!has_lazy_progress(&f));
+        assert!(
+            !c.calls.lock().unwrap().iter().any(|command| matches!(
+                command,
+                Command::CompleteInboxDelivery(_) | Command::Ack(_) | Command::AckDisplayed(_)
+            )),
+            "readonly discovery cannot settle and then clear its proof"
+        );
     }
     let f = Fixture::new();
     let c = Client {
@@ -312,9 +322,16 @@ fn lazy_display_json_machine_explicit_selector_readonly() {
     };
     run(&f, &["ht", "inbox"], &c, Role::Subagent);
     assert!(!has_lazy_progress(&f));
+    assert!(
+        !c.calls.lock().unwrap().iter().any(|command| matches!(
+            command,
+            Command::CompleteInboxDelivery(_) | Command::Ack(_) | Command::AckDisplayed(_)
+        )),
+        "subagent discovery cannot settle and then clear its proof"
+    );
 }
 #[test]
-fn lazy_display_default_text_routes_v2_leaves_pending() {
+fn lazy_display_default_text_routes_v2_settles_complete_body() {
     let f = Fixture::new();
     let c = Client {
         calls: std::sync::Mutex::new(vec![]),
@@ -328,11 +345,45 @@ fn lazy_display_default_text_routes_v2_leaves_pending() {
         herdr_threads::harness::context::Role::TopLevel,
     );
     assert!(String::from_utf8(out).unwrap().contains("[lazy]"));
-    assert!(has_lazy_progress(&f));
+    assert!(
+        !has_lazy_progress(&f),
+        "successful settlement clears its proof"
+    );
+    assert!(
+        f.journal
+            .page(&Default::default())
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let calls = c.calls.lock().unwrap();
     assert_eq!(
-        c.calls.lock().unwrap().len(),
-        2,
-        "capabilities and read only; no lazy ACK or completion"
+        calls.len(),
+        3,
+        "capabilities, v2 read and independent completion"
+    );
+    use herdr_threads::protocol::commands::Command;
+    assert!(matches!(calls[0], Command::Capabilities));
+    assert!(matches!(calls[1], Command::InboxBatchV2(_)));
+    let Command::CompleteInboxDelivery(completion) = &calls[2] else {
+        panic!(
+            "lazy completion cannot become an ordinary ACK: {:?}",
+            calls[2]
+        );
+    };
+    assert_eq!(completion.messages, vec![MessageId::new("lazy")]);
+    assert_eq!(
+        completion.claim,
+        CallerClaim {
+            instance: uuid::Uuid::from_u128(1).to_string(),
+            seat: SeatId::new("seat"),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("native"),
+            execution: ExecutionId::new(uuid::Uuid::from_u128(2).to_string()),
+            target: HostTargetId::new("pane"),
+        }
     );
 }
 #[test]
