@@ -101,6 +101,7 @@ pub enum Command {
     BeginBootstrap(Box<crate::protocol::handoff::BeginBootstrap>),
     ReserveBootstrapAttempt(Box<crate::protocol::handoff::ReserveBootstrapAttempt>),
     RecordBootstrapCreated(Box<crate::protocol::handoff::RecordBootstrapCreated>),
+    RecordBootstrapNotSubmitted(Box<crate::protocol::handoff::RecordBootstrapNotSubmitted>),
     AttachBootstrapHandoff(Box<crate::protocol::handoff::AttachBootstrapHandoff>),
     CompleteLinkedBootstrap(Box<crate::protocol::handoff::CompleteLinkedBootstrap>),
     CheckBootstrapSubmission(Box<crate::protocol::handoff::CheckBootstrapSubmission>),
@@ -775,6 +776,16 @@ impl Command {
                         .operation(&v.identity.compound, "reserve")?
                 {
                     return Err("bootstrap reserve key mismatch");
+                }
+                return Ok(());
+            }
+            Self::RecordBootstrapNotSubmitted(v) => {
+                v.identity.validate()?;
+                if v.operation
+                    != v.expected_attempt
+                        .operation(&v.identity.compound, "not_submitted")?
+                {
+                    return Err("bootstrap not-submitted key mismatch");
                 }
                 return Ok(());
             }

@@ -139,7 +139,7 @@ impl BootstrapAttempt {
         compound: &OperationId,
         phase: &str,
     ) -> Result<OperationId, &'static str> {
-        if !matches!(phase, "reserve" | "record" | "check") {
+        if !matches!(phase, "reserve" | "record" | "check" | "not_submitted") {
             return Err("invalid attempt phase");
         }
         use sha2::{Digest, Sha256};
@@ -203,6 +203,16 @@ pub struct BeginBootstrap {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReserveBootstrapAttempt {
+    pub identity: BootstrapIdentity,
+    pub operation: OperationId,
+    pub expected_attempt: BootstrapAttempt,
+}
+/// Cooperative original-caller report of the actual typed transport's zero-byte
+/// branch, never a human assertion or an error-code inference. Public dispatch
+/// stays inert until the real producer and canonical guards are integrated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordBootstrapNotSubmitted {
     pub identity: BootstrapIdentity,
     pub operation: OperationId,
     pub expected_attempt: BootstrapAttempt,
@@ -827,6 +837,13 @@ pub(crate) mod topology_contract_tests {
                 expected_attempt: attempt,
                 operation: attempt.operation(&identity().compound, "reserve").unwrap(),
             })),
+            Command::RecordBootstrapNotSubmitted(Box::new(RecordBootstrapNotSubmitted {
+                identity: identity(),
+                expected_attempt: attempt,
+                operation: attempt
+                    .operation(&identity().compound, "not_submitted")
+                    .unwrap(),
+            })),
             Command::RecordBootstrapCreated(Box::new(RecordBootstrapCreated {
                 identity: identity(),
                 expected_attempt: attempt,
@@ -995,5 +1012,13 @@ pub(crate) mod topology_contract_tests {
         assert_eq!(value["state"], "cancelled");
         assert!(value.get("authorization").is_none());
         assert!(value.get("submission_authorization").is_none());
+    }
+    #[test]
+    fn topology_not_submitted_wire_has_a_distinct_exact_attempt_key() {
+        use crate::protocol::commands::Command;
+        let raw = serde_json::json!({"kind":"record_bootstrap_not_submitted","args":{"identity":identity(),"expected_attempt":1,"operation":"bootstrap-7346d63b10526b3971fe0392dfb17c4ecafc7453a6383f2336ec0d67a89f1aa3"}});
+        let command: Command = serde_json::from_value(raw)
+            .expect("proven non-submission needs its own additive typed command");
+        command.validate().unwrap();
     }
 }

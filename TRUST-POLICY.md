@@ -531,3 +531,59 @@ lost-prompt recovery as unsupported on Codex 0.159.3 and later.
 | ht-5n6 Codex launched without a prompt never checks in, so no lost-prompt wake | `managed_launch` binding after a correlated launch | A3, A4, A5, Accepted limits |
 | W6-R2 "mark it self" wording | "when run in this pane" | A1 |
 | Waves 29/19 identifier sizes | accepted; fix the 104-bit comment (it is 112) | Accepted limits |
+
+## Bootstrap creation attempts and administrative recovery (2026-10-08)
+
+A bootstrap freezes the original agent claim, scope, namespace and payload. Its
+canonical first attempt exists at Begin. Only the transaction first reserving a
+prepared attempt issues submission authorization; status, restart and lost-reply
+replay never issue another authorization. A fresh pre-submit decision checks the
+original A2 claim, exact attempt and reservation administrative revision. A
+transport-proven `NotSubmitted` closes that attempt and allocates a distinct next
+attempt. A recorded unknown cannot later be reclassified as transport zero submission.
+Unknown creation remains fenced; delayed older creation cannot replace
+an inspected noncreation decision or a later attempt.
+
+Administrative recovery is recorded separately as `operator:local-user:<uid>`,
+using the authenticated local-account peer UID. The decision freezes an explicit
+attempt number and the complete assertion payload. Exact replay presents that
+historical decision even after later attempts; stale undecided attempts and
+contradictory assertions refuse. Each attempt retains at most one creation or
+noncreation recovery decision and one subsequent cancellation decision. Cancelling
+a confirmed creation retains its earlier decision for historical presentation.
+Recovery never rewrites original actor claims,
+produces receipts, proves occupancy or reports successful launch. Created-pane
+assertions need fresh coherent canonical structural evidence and the ordinary
+restore/hold/ownership guards; they do not move or allocate a seat. The normal
+operation lock must exclude a known in-flight invocation while the operator
+inspects and asserts noncreation or quiescence. No heuristic PID or topology
+snapshot proves quiescence, and recovery never kills an unowned process.
+
+Herdr offers correlation rather than creation idempotency. The product therefore
+sacrifices automatic progress after an uncertain submission. An operator's
+mistaken inspected noncreation or quiescence assertion can permit duplicate
+topology. That assertion is retained honestly as an administrative claim, never
+as transport proof of zero submission. Created topology is never automatically
+closed by product cleanup.
+
+Bootstrap cancellation is an absorbing administrative tombstone, not successful
+completion. A nonblank reason of at most 4096 UTF-8 bytes and inspected quiescence
+are retained with the original identity, attempt, evidence and exact attachment.
+Its deciding transaction must prove that no exact downstream legacy child fence
+or live local-journal hint exists. Cancellation retains messages, invitations,
+membership, receipts and topology; it releases only the bootstrap's protection.
+An already completed bootstrap cannot be cancelled or reactivated. A live legacy
+child remains protected indefinitely, including after pane loss or seat
+retirement; bootstrap cancellation cannot release that child fence. Broader
+legacy-child cancellation is outside this feature.
+
+The additive `RecordBootstrapNotSubmitted` boundary reports only the actual
+typed transport's zero-byte branch. It uses its own frozen deterministic attempt
+key, distinct from creation evidence; the daemon rechecks the original A2 claim
+and canonical namespace before closing that attempt. This is a cooperative
+original-caller transport-outcome claim under the frozen `cooperative_top_level`
+attribution, not independent daemon attestation of a host write, an operator
+inspection or receipt provenance. An incorrect producer claim can permit
+duplicate topology. Error classes, response loss and unknown submission never
+stand in for this claim. Public dispatch remains inert until the actual typed
+transport producer is integrated with all canonical guards.
