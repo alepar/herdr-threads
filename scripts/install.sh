@@ -17,7 +17,7 @@
 #      installs the package into ~/.local/share/herdr-threads (replaced
 #      crash-safe: the old tree is renamed aside, the new one renamed in, and
 #      the old one restored if that fails; an identical install is left
-#      alone) and links ~/.local/bin/herdr-threads to its executable;
+#      alone) and links ~/.local/bin/herdr-threads and ht to its executable;
 #   4. registers the package with Herdr (`herdr plugin link`; Herdr does not
 #      build a linked plugin, and the package's build command keeps the
 #      prebuilt binary), and ensures the daemon if Herdr runs;
@@ -91,11 +91,11 @@ usage: install.sh [options]
   --no-setup         skip all harness integration checks and updates
   --no-herdr         do not register the plugin with Herdr
   --prefix DIR       install directory (default ~/.local/share/herdr-threads)
-  --bin-dir DIR      symlink directory (default ~/.local/bin)
+  --bin-dir DIR      herdr-threads and ht symlink directory (default ~/.local/bin)
   --release-url URL  release base URL (default https://github.com/alepar/herdr-threads/releases)
   --yes              uninstall: remove the harness hooks without asking
                      (needed when there is no terminal)
-  --force            replace an unmanaged file at the symlink path; uninstall
+  --force            replace an unmanaged file at the herdr-threads path (never ht); uninstall
                      even when Herdr cannot unlink the plugin
   --uninstall        remove the installation (keeps daemon state)
   -h, --help         show this help
@@ -125,6 +125,7 @@ case "$bin_dir" in /*) ;; *) die "--bin-dir must be an absolute path: $bin_dir" 
 install_dir=${install_dir%/}
 bin_dir=${bin_dir%/}
 link_path="$bin_dir/herdr-threads"
+alias_path="$bin_dir/ht"
 installed_binary="$install_dir/bin/herdr-threads"
 
 if [ -z "$herdr" ]; then
@@ -415,6 +416,12 @@ uninstall() {
         rm -f "$link_path"
         say "removed $link_path"
     fi
+    if [ -L "$alias_path" ] && [ "$(readlink "$alias_path")" = "$installed_binary" ]; then
+        rm -f "$alias_path"
+        say "removed $alias_path"
+    elif [ -e "$alias_path" ] || [ -L "$alias_path" ]; then
+        say "preserved unrelated alias entry at $alias_path"
+    fi
     if [ -d "$install_dir" ]; then
         rm -rf "$install_dir"
         say "removed $install_dir"
@@ -590,6 +597,26 @@ else
     ln -s "$installed_binary" "$link_path"
     say "linked $link_path -> $installed_binary"
 fi
+# Only the exact link to this installation is ours. --force never adopts ht:
+# a common existing ht is the unrelated TeX executable.
+alias_owned=0
+if [ -L "$alias_path" ] && [ "$(readlink "$alias_path")" = "$installed_binary" ]; then
+    alias_owned=1
+elif [ -e "$alias_path" ] || [ -L "$alias_path" ]; then
+    warn "preserved unrelated alias entry at $alias_path; use $installed_binary"
+elif ln -s "$installed_binary" "$alias_path"; then
+    alias_owned=1
+    say "linked $alias_path -> $installed_binary"
+else
+    warn "could not create $alias_path; use $installed_binary"
+fi
+# This measures the installer's PATH. Caller shell aliases/functions can differ.
+selected_alias=$(command -v ht 2>/dev/null || true)
+alias_on_path=0
+if [ "$alias_owned" = 1 ] && [ -L "$selected_alias" ] &&
+    [ "$(readlink "$selected_alias")" = "$installed_binary" ]; then
+    alias_on_path=1
+fi
 on_path=0
 case ":$PATH:" in *":$bin_dir:"*) on_path=1 ;; esac
 "$installed_binary" --version >/dev/null || die "the installed executable does not run on this machine"
@@ -731,6 +758,18 @@ next_steps() {
     fi
     if [ "$on_path" = 0 ]; then
         step "$bin_dir is not on PATH; add it, e.g.: export PATH=\"$bin_dir:\$PATH\""
+    fi
+    if [ "$alias_owned" = 0 ]; then
+        step "ht was not installed at $alias_path; use $installed_binary skill (preserved any unrelated entry)."
+    elif [ "$alias_on_path" = 1 ]; then
+        step "ht is available on PATH: ht skill; ht follow. The agent skill is named \$herdr-threads."
+    else
+        if [ -n "$selected_alias" ]; then
+            step "ht on PATH selects $selected_alias; use $alias_path skill or $alias_path follow."
+        else
+            step "ht is not on PATH; use $alias_path skill or $alias_path follow."
+        fi
+        step "To select the installed ht, put $bin_dir first on PATH; caller shell aliases/functions may also override it."
     fi
     if [ "$OUT_DAEMON_UP" = 1 ]; then
         step "Check it: herdr-threads doctor"

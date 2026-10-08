@@ -17,8 +17,13 @@ impl Fixture {
         Self(root)
     }
     fn run(&self, args: &[&str]) -> Output {
-        let mut command =
-            herdr_threads::test_support::spawn::command(env!("CARGO_BIN_EXE_herdr-threads"));
+        self.run_executable(
+            std::path::Path::new(env!("CARGO_BIN_EXE_herdr-threads")),
+            args,
+        )
+    }
+    fn run_executable(&self, executable: &std::path::Path, args: &[&str]) -> Output {
+        let mut command = herdr_threads::test_support::spawn::command(executable);
         herdr_threads::test_support::isolation::scrub_env(&mut command);
         command
             .current_dir(&self.0)
@@ -245,4 +250,99 @@ fn installer_prepared_codex_allowance_is_preserved_with_intact_hooks() {
     assert_eq!(fs::read(path).unwrap(), bytes);
     assert_eq!(fs::read(f.0.join("codex/hooks.json")).unwrap(), hooks);
     assert_eq!(fs::read(f.0.join("codex/config.toml")).unwrap(), config);
+}
+
+// Kills basename-dependent routing, a different guide, or an alias bypassing native context refusal.
+#[test]
+fn installer_ht_executable_preserves_skill_follow_and_native_authorization() {
+    let f = Fixture::new();
+    let alias = f.0.join("bin/ht");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_herdr-threads"), &alias).unwrap();
+    for args in [
+        vec!["skill"],
+        vec!["follow", "--help"],
+        vec!["follow", "thread-1", "--machine"],
+        vec!["ack", "msg-1"],
+    ] {
+        let canonical = f.run(&args);
+        let shortened = f.run_executable(&alias, &args);
+        assert_eq!(shortened.status.code(), canonical.status.code(), "{args:?}");
+        if args.contains(&"--help") {
+            let help = String::from_utf8(shortened.stdout.clone()).unwrap();
+            // Clap accurately names the invocation in usage; all options/routing remain equal.
+            assert_eq!(
+                help.replace("Usage: ht follow", "Usage: herdr-threads follow")
+                    .as_bytes(),
+                canonical.stdout,
+                "{args:?}"
+            );
+        } else {
+            assert_eq!(shortened.stdout, canonical.stdout, "{args:?}");
+        }
+        assert_eq!(shortened.stderr, canonical.stderr, "{args:?}");
+        if args[0] == "ack" {
+            assert!(
+                String::from_utf8_lossy(&shortened.stderr)
+                    .contains("after that seat's lifecycle check-in")
+            );
+        }
+        if args[0] == "skill" || args.contains(&"--help") {
+            success(&shortened);
+        } else {
+            assert!(
+                !shortened.status.success(),
+                "native claim must still be required"
+            );
+        }
+    }
+    assert!(!f.0.join("state").exists());
+}
+
+// Kills treating missing/partial/invalid ownership as consent to overwrite or repair a skill.
+#[test]
+fn installer_refuses_incomplete_skill_manifest_states_independently() {
+    for case in ["missing-file", "missing-manifest", "prepared", "malformed"] {
+        let f = Fixture::new();
+        success(&f.install());
+        let path = f.skill("claude");
+        let original = fs::read(&path).unwrap();
+        let manifest = fs::read_dir(f.0.join("state/setup"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("claude-skill-")
+            })
+            .unwrap();
+        match case {
+            "missing-file" => fs::remove_file(&path).unwrap(),
+            "missing-manifest" => fs::remove_file(&manifest).unwrap(),
+            "prepared" => {
+                let mut record: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+                record["complete"] = serde_json::json!(false);
+                fs::write(&manifest, serde_json::to_vec(&record).unwrap()).unwrap();
+            }
+            "malformed" => fs::write(&manifest, b"{broken").unwrap(),
+            _ => unreachable!(),
+        }
+        let before_manifest = fs::read(&manifest).ok();
+        let out = f.install();
+        assert!(!out.status.success(), "{case}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("claude skill: failed"), "{case}: {text}");
+        assert!(text.contains("codex skill: updated"), "{case}: {text}");
+        assert_eq!(fs::read(&manifest).ok(), before_manifest, "{case}");
+        assert_eq!(
+            fs::read(&path).ok(),
+            if case == "missing-file" {
+                None
+            } else {
+                Some(original)
+            },
+            "{case}"
+        );
+    }
 }
