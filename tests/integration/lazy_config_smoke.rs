@@ -10,16 +10,16 @@ use herdr_threads::{
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     os::unix::{
-        fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+        fs::DirBuilderExt,
         net::{UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
     process::Output,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        Arc,
+        atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
     time::Duration,
@@ -153,17 +153,17 @@ impl Drop for FakeHost {
     }
 }
 
-struct World {
-    root: PathBuf,
+pub(super) struct World {
+    pub(super) root: PathBuf,
     state: PathBuf,
     host: PathBuf,
-    seats: Vec<String>,
-    thread: String,
+    pub(super) seats: Vec<String>,
+    pub(super) thread: String,
     _host: FakeHost,
     _scratch: Scratch,
 }
 impl World {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = PathBuf::from(format!(
             "/private/tmp/htlc-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..10]
@@ -249,7 +249,7 @@ impl World {
         c.args(args);
         c
     }
-    fn raw(&self, who: Option<usize>, human: bool, args: &[&str]) -> Output {
+    pub(super) fn raw(&self, who: Option<usize>, human: bool, args: &[&str]) -> Output {
         let mut command = self.command(who, human, args);
         let output = command.output().unwrap();
         // Optional task evidence retains complete successful output as well as
@@ -272,7 +272,7 @@ impl World {
         }
         output
     }
-    fn text(&self, who: usize, human: bool, args: &[&str]) -> String {
+    pub(super) fn text(&self, who: usize, human: bool, args: &[&str]) -> String {
         let o = self.raw(Some(who), human, args);
         assert!(
             o.status.success(),
@@ -282,7 +282,7 @@ impl World {
         );
         String::from_utf8(o.stdout).unwrap()
     }
-    fn ok(&self, who: Option<usize>, human: bool, args: &[&str]) -> Value {
+    pub(super) fn ok(&self, who: Option<usize>, human: bool, args: &[&str]) -> Value {
         let mut a = vec!["--json"];
         a.extend_from_slice(args);
         let o = self.raw(who, human, &a);
@@ -294,20 +294,20 @@ impl World {
         );
         serde_json::from_slice::<Value>(&o.stdout).unwrap()["result"].clone()
     }
-    fn paths(&self) -> InstancePaths {
+    pub(super) fn paths(&self) -> InstancePaths {
         InstancePaths::resolve(
             &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap(),
         )
         .unwrap()
     }
-    fn db(&self) -> rusqlite::Connection {
+    pub(super) fn db(&self) -> rusqlite::Connection {
         rusqlite::Connection::open_with_flags(
             self.paths().database_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .unwrap()
     }
-    fn state(&self, message: &str, seat: usize) -> String {
+    pub(super) fn state(&self, message: &str, seat: usize) -> String {
         self.db()
             .query_row(
                 "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2",
@@ -316,12 +316,12 @@ impl World {
             )
             .unwrap()
     }
-    fn send(&self, body: &str, extra: &[&str]) -> String {
+    pub(super) fn send(&self, body: &str, extra: &[&str]) -> String {
         let mut a = vec!["send", &self.thread, "--body", body];
         a.extend_from_slice(extra);
         self.ok(Some(0), false, &a)["data"].as_str().unwrap().into()
     }
-    fn projection_snapshot(&self) -> Vec<(String, Vec<Vec<String>>)> {
+    pub(super) fn projection_snapshot(&self) -> Vec<(String, Vec<Vec<String>>)> {
         let db = self.db();
         [
             "messages",
@@ -356,7 +356,7 @@ impl World {
         })
         .collect()
     }
-    fn intents(&self) -> Vec<(PathBuf, Vec<u8>)> {
+    pub(super) fn intents(&self) -> Vec<(PathBuf, Vec<u8>)> {
         fn walk(p: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
             if let Ok(es) = fs::read_dir(p) {
                 for e in es.flatten() {
@@ -381,120 +381,10 @@ impl Drop for World {
     }
 }
 
-// Single joined worker; no unowned per-connection threads. This is an explicit
-// capability emulator, forwarding actual daemon decisions and recorded wire frames.
-struct Proxy {
-    mode: Arc<AtomicU8>,
-    seen: Arc<Mutex<Vec<Value>>>,
-    stop: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
-    socket: PathBuf,
-    real: PathBuf,
-    descriptor: PathBuf,
-    saved: Vec<u8>,
-}
-fn frame(s: &mut UnixStream) -> Option<Vec<u8>> {
-    let mut n = [0; 4];
-    s.read_exact(&mut n).ok()?;
-    let mut b = vec![0; u32::from_be_bytes(n) as usize];
-    s.read_exact(&mut b).ok()?;
-    Some(b)
-}
-fn write_frame(s: &mut UnixStream, b: &[u8]) {
-    s.write_all(&(b.len() as u32).to_be_bytes()).unwrap();
-    s.write_all(b).unwrap();
-}
-impl Proxy {
-    fn new(w: &World) -> Self {
-        let p = w.paths();
-        let instance = read_existing_namespace(&p).unwrap().unwrap();
-        read_descriptor(&p, instance).unwrap();
-        let socket = p.socket_path;
-        let real = w.root.join("real.sock");
-        fs::rename(&socket, &real).unwrap();
-        let l = UnixListener::bind(&socket).unwrap();
-        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
-        l.set_nonblocking(true).unwrap();
-        let descriptor = p.descriptor_path;
-        let saved = fs::read(&descriptor).unwrap();
-        let mut v: Value = serde_json::from_slice(&saved).unwrap();
-        let m = fs::metadata(&socket).unwrap();
-        v["socket_device"] = json!(m.dev());
-        v["socket_inode"] = json!(m.ino());
-        fs::write(&descriptor, serde_json::to_vec(&v).unwrap()).unwrap();
-        let mode = Arc::new(AtomicU8::new(0));
-        let seen = Arc::new(Mutex::new(vec![]));
-        let stop = Arc::new(AtomicBool::new(false));
-        let (mode_c, seen_c, stop_c, real_c) =
-            (mode.clone(), seen.clone(), stop.clone(), real.clone());
-        let worker = std::thread::spawn(move || {
-            while !stop_c.load(Ordering::SeqCst) {
-                match l.accept() {
-                    Ok((mut s, _)) => {
-                        if s.set_nonblocking(false).is_err() {
-                            continue;
-                        }
-                        let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
-                        let Some(b) = frame(&mut s) else { continue };
-                        let q: Value = serde_json::from_slice(&b).unwrap();
-                        seen_c.lock().unwrap().push(q.clone());
-                        let mut d = UnixStream::connect(&real_c).unwrap();
-                        d.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-                        write_frame(&mut d, &b);
-                        let Some(reply) = frame(&mut d) else { continue };
-                        let mode = mode_c.load(Ordering::SeqCst);
-                        if mode == 1 && q["command"]["kind"] == "capabilities" {
-                            let mut v: Value = serde_json::from_slice(&reply).unwrap();
-                            let caps = v["result"]["Ok"]["data"]["capabilities"]
-                                .as_array_mut()
-                                .expect("actual capability shape");
-                            caps.retain(|c| {
-                                !matches!(
-                                    c.as_str(),
-                                    Some(
-                                        "send.lazy_v1"
-                                            | "inbox.batch_v2"
-                                            | "messages.delivery_modes_v1"
-                                    )
-                                )
-                            });
-                            write_frame(&mut s, &serde_json::to_vec(&v).unwrap());
-                        } else if mode == 2 && q["command"]["kind"] == "complete_inbox_delivery" { // canonical commit, lost reply
-                        } else {
-                            write_frame(&mut s, &reply);
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(2))
-                    }
-                    Err(e) => panic!("proxy {e}"),
-                }
-            }
-        });
-        Self {
-            mode,
-            seen,
-            stop,
-            worker: Some(worker),
-            socket,
-            real,
-            descriptor,
-            saved,
-        }
-    }
-    fn requests(&self) -> Vec<Value> {
-        self.seen.lock().unwrap().clone()
-    }
-}
-impl Drop for Proxy {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        self.worker.take().unwrap().join().unwrap();
-        fs::remove_file(&self.socket).unwrap();
-        fs::rename(&self.real, &self.socket).unwrap();
-        fs::write(&self.descriptor, &self.saved).unwrap();
-    }
-}
+#[path = "../support/lazy_proxy.rs"]
+mod lazy_proxy;
+pub(super) use lazy_proxy::Proxy;
+use lazy_proxy::{frame, write_frame};
 
 #[test]
 fn lazy_config_default_text_settles() {
@@ -559,7 +449,7 @@ fn lazy_config_json_machine_explicit_seat_are_readonly() {
 fn lazy_config_current_cli_inbox_v1_daemon_refuses_lazy_before_intent() {
     let w = World::new();
     let ordinary = w.send("ordinary legacy fallback", &["--require-ack", &w.seats[1]]);
-    let p = Proxy::new(&w);
+    let p = Proxy::new(w.paths(), &w.root);
     p.mode.store(1, Ordering::SeqCst);
     let before = w.intents();
     let count: i64 = w
@@ -807,7 +697,7 @@ fn lazy_config_multichunk_restart_printed_continuations() {
 fn lazy_config_lost_completion_reply_frozen_retry() {
     let w = World::new();
     let m = w.send("lost reply body", &[]);
-    let p = Proxy::new(&w);
+    let p = Proxy::new(w.paths(), &w.root);
     p.mode.store(2, Ordering::SeqCst);
     let o = w.raw(Some(1), false, &["inbox"]);
     assert!(

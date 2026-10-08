@@ -1343,7 +1343,7 @@ fn binding_change_supersedes_and_releases() {
     );
     // The successor inherits no hold: a new ordinary message above F is
     // offered at its next boundary.
-    let fresh = fx.send_as_a("a message after the change", &[]);
+    let fresh = fx.send_as_a("a message after the change", &["--nudge"]);
     assert!(
         fx.boundary_b().contains(&fresh),
         "no hold survives the binding change"

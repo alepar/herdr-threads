@@ -94,3 +94,6 @@ mod lazy_attention;
 
 #[path = "integration/lazy_config_smoke.rs"]
 mod lazy_config_smoke;
+
+#[path = "integration/lazy_sweep.rs"]
+mod lazy_sweep;
