@@ -17,3 +17,5 @@ Slowness: task7 initial cold RED build about2min, no artifact-lock line; behavio
 Timing correction: prior task7 initial cold about2min observation included model/reads; actual Cargo34.87s, no artifact-lock line. All recorded incremental/lint compiles under1min.
 - [measurement] Ordinary-subagents historical queue peak/idle timing not persisted; final Detector explicitly MEASUREMENT INVALID rather than invented historical throughput. Merges/completions independently verified against git and beads.
 - [review-mechanism] PR roast uses manual fan-out with fresh scouts and seat-differentiated judges; no Workflow tool is loaded.
+
+- [2026-10-08 code/fix-r1] run-profile treats late-created roast-fix bead as waiting from initial launch (6h07m), making it the critical bottleneck; profile also reports roast peak10 beside coordinator cap1 — preserve raw model and annotate actual bead creation/time/role boundary instead of inferring historical scheduler delay.

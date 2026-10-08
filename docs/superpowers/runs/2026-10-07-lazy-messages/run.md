@@ -2,7 +2,7 @@
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-08 direct user redesign of native send default — lazy by default, explicit --nudge for attention, ACK implies nudge; interim --ordinary superseded; applied within current code run, wire/saved omission stays Ordinary.
-phase: code
+phase: roast-code
 codeMechanism: ordinary-subagents
 
 idea: lgtm, let's $super-auto this, fully autonomous, both roasts are on
@@ -39,7 +39,7 @@ parked:
 graph-pass: depth 8→8 · width 1.6→1.6 · applied 0 · parked 0
 
 codeBuckets:
-  completed: ht-big.1, ht-big.9, ht-big.2.1, ht-big.4.1, ht-big.2.2, ht-big.8, ht-big.3, ht-big.4.2, ht-big.5.1, ht-big.5.2, ht-big.6, ht-big.7, ht-big.10
+  completed: ht-big.1, ht-big.9, ht-big.2.1, ht-big.4.1, ht-big.2.2, ht-big.8, ht-big.3, ht-big.4.2, ht-big.5.1, ht-big.5.2, ht-big.6, ht-big.7, ht-big.10, ht-big.11
   escalated:
   pendingRetry:
   parked:
@@ -49,7 +49,7 @@ codeBuckets:
   slowness: ordinary-subagents serial cap1; historical detector queue/idle measurement invalid; profile recovered13landed/13planned, no Workflow throughput claim
   worktreesKept:
   processSweep: stopped 0 · survived 0
-roastCodeRound: 1
+roastCodeRound: 2
 roast-code: 2026-10-07-lazy-messages-roast-pr-1.md
 stepBackCode-round-1: patch — preserve invocation context consistently across continuations; independent payload/batching/proof-retention claims.
 scopeFilter-round-1: [Blocking] src/store/queries.rs:5959 in-scope — Blocking, always in-scope
