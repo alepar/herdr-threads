@@ -140,6 +140,68 @@ pub struct InboxCursorState {
     pub warning_after_offset: i64,
 }
 
+/// Future v2 continuation state, separate from the v1 Cursor codec and flags.
+/// Its eventual codec must enforce MAX_CURSOR_BYTES; output inherits PageRequest
+/// bounds. Canonical binding identity, source and high waters must be checked by
+/// the v2 handler, including the message's UTF-8 body boundary and length.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InboxBatchV2CursorState {
+    #[serde(rename = "s")]
+    pub seat: crate::protocol::ids::SeatId,
+    /// Both identity fields are absent for an unbound read-only recipient.
+    /// A future handler validates their pairing against the canonical binding.
+    #[serde(rename = "g", default, skip_serializing_if = "Option::is_none")]
+    pub binding_generation: Option<u64>,
+    #[serde(rename = "e", default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<crate::protocol::ids::ExecutionId>,
+    #[serde(rename = "p")]
+    pub source: InboxBatchV2Source,
+    #[serde(rename = "a")]
+    pub attention: SeatAttentionCursorState,
+    #[serde(rename = "la")]
+    pub lazy_after_ordinal: u64,
+    #[serde(rename = "lh")]
+    pub lazy_high_water_ordinal: u64,
+    #[serde(rename = "dh")]
+    pub publication_decision_high_water: u64,
+    #[serde(rename = "b", default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<InboxBatchV2BodyPosition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InboxBatchV2Source {
+    #[serde(rename = "i")]
+    Invitations,
+    #[serde(rename = "r")]
+    Receipts,
+    #[serde(rename = "w")]
+    Warnings,
+    #[serde(rename = "l")]
+    Lazy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InboxBatchV2BodyPosition {
+    #[serde(rename = "m")]
+    pub message: crate::protocol::ids::MessageId,
+    #[serde(rename = "o")]
+    pub offset: u64,
+    #[serde(rename = "l")]
+    pub body_len: u64,
+}
+impl InboxBatchV2BodyPosition {
+    /// Structural check only. The handler must additionally validate captured
+    /// length and UTF-8 alignment against the canonical message body.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.offset > self.body_len {
+            return Err("inbox body offset exceeds captured length");
+        }
+        Ok(())
+    }
+}
+
 /// Exact bounded wake-attention continuation. Short wire keys keep the whole
 /// typed cursor under MAX_CURSOR_BYTES even with large SQLite ordinals.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

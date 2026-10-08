@@ -428,6 +428,7 @@ impl MutationSpec {
                 relays_user,
                 user_intent,
             } => WireCommand::SendMessage(SendMessage {
+                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 thread,
                 body,
                 invited_recipients: require_ack,

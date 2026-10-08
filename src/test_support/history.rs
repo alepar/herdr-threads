@@ -219,6 +219,7 @@ fn send_one(
     deadline_millis: Option<u64>,
 ) -> Result<MessageId, ApiError> {
     let request = SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new(thread),
         body: format!("history {operation}"),
         invited_recipients: Vec::new(),

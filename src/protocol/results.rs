@@ -26,6 +26,9 @@ pub enum CommandResult {
     SeatInspect(SeatInspection),
     Inbox(Page<InboxItem>),
     InboxBatch(Page<InboxBatchItem>),
+    InboxBatchV2(Page<InboxBatchV2Item>),
+    MessageDeliveryModes(Vec<MessageDeliveryMode>),
+    InboxDeliveryCompleted(Vec<MessageId>),
     Warnings(Page<WarningRef>),
     ActiveWarnings(Page<WarningRef>),
     Thread(ThreadDetails),
@@ -876,6 +879,70 @@ pub enum InboxBatchItem {
         warning: MessageId,
         sequence: u64,
     },
+}
+
+/// V2 deliberately leaves every legacy v1 item shape unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InboxBatchV2Item {
+    Invitation {
+        thread: ThreadId,
+        topic_data: String,
+        invitation: InvitationId,
+        required_service: Option<RequiredMembership>,
+    },
+    Message {
+        thread: ThreadId,
+        topic_data: String,
+        message: MessageId,
+        sequence: u64,
+        sender: Option<SeatId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        author_role: Option<crate::protocol::summary::AuthorRole>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        relays_user: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_intent: Option<crate::protocol::summary::UserIntent>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        author_role_backfilled: bool,
+        body: String,
+        body_start: u64,
+        body_end: u64,
+        body_len: u64,
+        ack_candidate: Option<MessageId>,
+    },
+    LazyMessage {
+        thread: ThreadId,
+        topic_data: String,
+        message: MessageId,
+        sequence: u64,
+        sender: Option<SeatId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        author_role: Option<crate::protocol::summary::AuthorRole>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        relays_user: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_intent: Option<crate::protocol::summary::UserIntent>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        author_role_backfilled: bool,
+        body: String,
+        body_start: u64,
+        body_end: u64,
+        body_len: u64,
+    },
+    Warning {
+        thread: ThreadId,
+        topic_data: String,
+        warning: MessageId,
+        sequence: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageDeliveryMode {
+    pub message: MessageId,
+    pub delivery_mode: crate::protocol::commands::DeliveryMode,
 }
 
 fn is_false(value: &bool) -> bool {

@@ -34,6 +34,9 @@ pub enum Command {
     /// Bounded read-only content page for the text inbox. Receipt changes use
     /// a separate accountable command after the caller displays this page.
     InboxBatch(InboxQuery),
+    /// Read-only v2 inbox contract; advertised only when its handler lands.
+    InboxBatchV2(InboxQuery),
+    MessageDeliveryModes(MessageDeliveryModesQuery),
     Warnings(WarningsQuery),
     /// Bounded read-only active warning conditions for one thread.
     ActiveWarnings(ActiveWarningsQuery),
@@ -85,6 +88,8 @@ pub enum Command {
     Ack(Ack),
     /// Accountable ACK claimed only after a whole inbox text page is flushed.
     AckDisplayed(Ack),
+    /// Presentation bookkeeping only; never an ACK or adoption.
+    CompleteInboxDelivery(CompleteInboxDelivery),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -618,9 +623,39 @@ impl AcceptRequired {
         Ok(())
     }
 }
+/// Recorded delivery policy, independent of the caller's intent and relay claims.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryMode {
+    #[default]
+    Ordinary,
+    Lazy,
+}
+impl DeliveryMode {
+    pub fn is_ordinary(&self) -> bool {
+        matches!(self, Self::Ordinary)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageDeliveryModesQuery {
+    pub messages: Vec<MessageId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompleteInboxDelivery {
+    pub messages: Vec<MessageId>,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendMessage {
+    #[serde(default, skip_serializing_if = "DeliveryMode::is_ordinary")]
+    pub delivery_mode: DeliveryMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_intent: Option<crate::protocol::summary::UserIntent>,
     pub thread: ThreadId,
@@ -762,6 +797,7 @@ impl Command {
             Self::Reject(v) => Some(&v.claim),
             Self::SendMessage(v) => Some(&v.claim),
             Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
+            Self::CompleteInboxDelivery(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
             Self::SetThreadName(v) => Some(&v.claim),
@@ -862,6 +898,23 @@ impl Command {
                 }
                 Ok(())
             }
+            Self::MessageDeliveryModes(query)
+                if query.messages.is_empty() || query.messages.len() > MAX_BATCH_ITEMS =>
+            {
+                Err("message delivery mode batch must contain 1..=100 messages")
+            }
+            Self::CompleteInboxDelivery(completion)
+                if completion.messages.is_empty()
+                    || completion.messages.len() > MAX_BATCH_ITEMS =>
+            {
+                Err("invalid inbox delivery completion batch size")
+            }
+            Self::SendMessage(send)
+                if send.delivery_mode == DeliveryMode::Lazy
+                    && (!send.invited_recipients.is_empty() || send.deadline_millis.is_some()) =>
+            {
+                Err("lazy messages cannot request receipts or deadlines")
+            }
             Self::SendMessage(send) if send.invited_recipients.len() > MAX_BATCH_ITEMS => {
                 Err("too many explicit recipients")
             }
@@ -879,7 +932,7 @@ impl Command {
             Self::PickerDirectory(v) => Some(&v.page),
             Self::Seats(v) => Some(&v.page),
             Self::SeatInspect(v) => Some(&v.page),
-            Self::Inbox(v) | Self::InboxBatch(v) => Some(&v.page),
+            Self::Inbox(v) | Self::InboxBatch(v) | Self::InboxBatchV2(v) => Some(&v.page),
             Self::Warnings(v) => Some(&v.page),
             Self::ActiveWarnings(v) => Some(&v.page),
             Self::Thread(v) => Some(&v.page),
@@ -935,6 +988,8 @@ pub enum PermitMutation {
     SendMessage(SendMessage),
     Ack(Ack),
     AckDisplayed(Ack),
+    /// Presentation bookkeeping only; never an ACK or adoption.
+    CompleteInboxDelivery(CompleteInboxDelivery),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -956,6 +1011,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::SendMessage(v) => Ok(Self::SendMessage(v)),
             Command::Ack(v) => Ok(Self::Ack(v)),
             Command::AckDisplayed(v) => Ok(Self::AckDisplayed(v)),
+            Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
             Command::SetThreadName(v) => Ok(Self::SetThreadName(v)),

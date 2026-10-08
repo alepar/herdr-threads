@@ -3,7 +3,7 @@
 use crate::ports::{DurableWorkAdmission, SendPreparationProgress};
 use crate::protocol::{
     authority::{MutationPermit, ObligationRef},
-    commands::SendMessage,
+    commands::{DeliveryMode, SendMessage},
     ids::{MessageId, SeatId, ServiceAuthorId, ThreadId, prefix, send_message_id_for_preparation},
     results::{ApiError, CommandResult, ErrorCode},
     time::CallBudget,
@@ -72,6 +72,9 @@ impl Default for MessageLimits {
 pub fn send_payload(request: &SendMessage) -> Value {
     let mut payload = json!({"kind":"send_message","thread":request.thread,"body":request.body,
         "invited_recipients":request.invited_recipients,"deadline_millis":request.deadline_millis,"claim":request.claim});
+    if !request.delivery_mode.is_ordinary() {
+        payload["delivery_mode"] = json!(request.delivery_mode);
+    }
     if request.relays_user {
         payload["relays_user"] = json!(true);
     }
@@ -91,6 +94,12 @@ pub fn prepare_send_step(
     budget: &CallBudget,
     admission: DurableWorkAdmission,
 ) -> Result<SendPreparationProgress, ApiError> {
+    if request.delivery_mode == DeliveryMode::Lazy {
+        return Err(api_error(
+            ErrorCode::Unsupported,
+            "lazy publication is not implemented",
+        ));
+    }
     require_live_budget(context, budget)?;
     let max_units = admission.max_units;
     if max_units == 0 || max_units > 16 || request.invited_recipients.len() > 100 {
@@ -753,6 +762,12 @@ pub fn publish_send(
     budget: &CallBudget,
     current_body_bytes: impl FnOnce() -> usize,
 ) -> Result<CommandResult, ApiError> {
+    if request.delivery_mode == DeliveryMode::Lazy {
+        return Err(api_error(
+            ErrorCode::Unsupported,
+            "lazy publication is not implemented",
+        ));
+    }
     require_live_budget(context, budget)?;
     let digest = schema::canonical_digest(&send_payload(request))?;
     super::seats::cooperative_instance(conn, &request.claim.instance, &request.claim)?;

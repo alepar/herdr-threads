@@ -365,6 +365,7 @@ fn cooperative_send_uses_claim_context_and_keeps_exact_replay() {
         panic!()
     };
     let send = SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         claim: result.context,
         thread,
         body: "explicit model mail".into(),
@@ -1371,6 +1372,7 @@ fn independent_current_and_issuance_budgets_stop_accountable_sqlite_waits() {
                         panic!()
                     };
                     let send = SendMessage {
+                        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                         claim: first.context.clone(),
                         thread,
                         body: "mail".into(),

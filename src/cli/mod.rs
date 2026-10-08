@@ -880,7 +880,7 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
         _ => None,
     };
     let inbox_seat = match &command {
-        Command::Inbox(query) => query.seat.clone(),
+        Command::Inbox(query) | Command::InboxBatchV2(query) => query.seat.clone(),
         _ => None,
     };
     // Service recovery deliberately accepts only the default wire output.
@@ -1551,7 +1551,9 @@ fn caller_need(
         {
             CallerNeed::Selection
         }
-        CliAction::Wire(Command::Inbox(query)) if query.seat.is_none() => {
+        CliAction::Wire(Command::Inbox(query) | Command::InboxBatchV2(query))
+            if query.seat.is_none() =>
+        {
             CallerNeed::SeatDefault { required: true }
         }
         CliAction::Wire(Command::PendingReceipts(query))
@@ -1566,7 +1568,9 @@ fn caller_need(
 
 fn default_seat(action: &mut CliAction, seat: crate::protocol::ids::SeatId) {
     match action {
-        CliAction::Wire(Command::Inbox(query)) => query.seat = Some(seat),
+        CliAction::Wire(Command::Inbox(query) | Command::InboxBatchV2(query)) => {
+            query.seat = Some(seat)
+        }
         CliAction::Wire(Command::PendingReceipts(query)) => query.seat = Some(seat),
         CliAction::Wire(Command::Directory(query)) => query.membership = Some(seat),
         CliAction::Wire(Command::Diagnostics(query)) => query.seat = Some(seat),
@@ -1628,7 +1632,9 @@ where
             CliAction::Mutation(MutationSpec::Invite {
                 seat: recipient, ..
             }) => *recipient = seat,
-            CliAction::Wire(Command::Inbox(query)) => query.seat = Some(seat),
+            CliAction::Wire(Command::Inbox(query) | Command::InboxBatchV2(query)) => {
+                query.seat = Some(seat)
+            }
             CliAction::Wire(Command::PendingReceipts(query)) => query.seat = Some(seat),
             CliAction::Wire(Command::Diagnostics(query)) => query.seat = Some(seat),
             CliAction::Wire(Command::Directory(query)) => query.membership = Some(seat),

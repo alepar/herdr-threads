@@ -56,6 +56,7 @@ fn setup(iso: &TestIsolation) -> (StoreContext, Connection) {
 
 fn send_request() -> SendMessage {
     SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("t"),
         body: "hello".into(),
         invited_recipients: vec![],
@@ -257,6 +258,82 @@ fn user_intent_send_payload_preserves_legacy_digest() {
         let digest = canonical_digest(&payload).unwrap();
         assert!(!digests.contains(&digest));
         digests.push(digest);
+    }
+}
+
+// Catches omitting lazy from frozen replay identity or changing ordinary digests.
+#[test]
+fn lazy_send_payload_changes_digest_only_for_lazy_mode() {
+    use crate::protocol::{commands::DeliveryMode, summary::UserIntent};
+    use crate::store::schema::canonical_digest;
+    let mut request = send_request();
+    request.relays_user = true;
+    request.user_intent = Some(UserIntent::Rule);
+    let legacy = serde_json::json!({"kind":"send_message","thread":"t","body":"hello",
+        "invited_recipients":[],"deadline_millis":null,"claim":request.claim,
+        "relays_user":true,"user_intent":"rule"});
+    let ordinary_digest = canonical_digest(&legacy).unwrap();
+    assert_eq!(
+        canonical_digest(&messages::send_payload(&request)).unwrap(),
+        ordinary_digest
+    );
+    request.delivery_mode = DeliveryMode::Lazy;
+    let mut expected_lazy = legacy;
+    expected_lazy["delivery_mode"] = serde_json::json!("lazy");
+    let lazy_digest = canonical_digest(&messages::send_payload(&request)).unwrap();
+    assert_eq!(lazy_digest, canonical_digest(&expected_lazy).unwrap());
+    assert_ne!(lazy_digest, ordinary_digest);
+}
+
+// Catches accepting new lazy wire as ordinary durable mail during the inert seam.
+#[test]
+fn inert_lazy_send_creates_no_preparation_or_attention() {
+    use crate::{ports::DurableWorkAdmission, protocol::commands::DeliveryMode};
+    let iso = TestIsolation::new("inert-lazy-send");
+    let (context, mut conn) = setup(&iso);
+    let mut request = send_request();
+    request.delivery_mode = DeliveryMode::Lazy;
+    let before = conn.total_changes();
+    let preparation = messages::prepare_send_step(
+        &context,
+        &mut conn,
+        &request,
+        messages::MessageLimits::default(),
+        &budget(),
+        DurableWorkAdmission::new(16).unwrap(),
+    );
+    assert_eq!(preparation.unwrap_err().code, ErrorCode::Unsupported);
+    assert_eq!(
+        conn.total_changes(),
+        before,
+        "preparation must not write any state"
+    );
+    let publication = messages::publish_send(
+        &context,
+        &mut conn,
+        &request,
+        &mut permit(&request),
+        &budget(),
+        || messages::MAX_BODY_BYTES,
+    );
+    assert_eq!(publication.unwrap_err().code, ErrorCode::Unsupported);
+    assert_eq!(
+        conn.total_changes(),
+        before,
+        "publication must not write any state"
+    );
+    for table in [
+        "send_preparations",
+        "send_manifests",
+        "messages",
+        "receipts",
+        "work_jobs",
+        "operations",
+    ] {
+        let rows: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "{table} must stay empty");
     }
 }
 

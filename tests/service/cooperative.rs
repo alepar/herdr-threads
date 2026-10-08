@@ -243,6 +243,7 @@ fn explicit_send_accept_and_ack_are_separate_sqlite_decisions() {
     let sent = service
         .handle(
             Command::SendMessage(SendMessage {
+                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 thread: created.clone(),
                 body: "pending mail".into(),
                 invited_recipients: vec![SeatId::new("recipient")],
@@ -529,6 +530,7 @@ fn partial_send_preparation_survives_budget_expiry_and_resumes_exact_intent() {
         db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,1)",rusqlite::params![thread.as_str(),seat]).unwrap();
     }
     let send = Command::SendMessage(SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: "bounded preparation".into(),
         invited_recipients: vec![],
@@ -601,6 +603,7 @@ fn stale_sender_cannot_publish_a_prepared_message() {
         panic!("wrong result")
     };
     let send = SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: "stale sender".into(),
         invited_recipients: vec![],
@@ -1085,6 +1088,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
 
     let send = |claim: &CallerClaim, required: Vec<SeatId>, operation: &str| match service.handle(
         Command::SendMessage(SendMessage {
+            delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: format!("mail {operation}"),
             invited_recipients: required,
@@ -1250,6 +1254,7 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
 
     let sent = match service.handle(
         Command::SendMessage(SendMessage {
+            delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: "before the first pass".into(),
             invited_recipients: vec![SeatId::new("recipient")],

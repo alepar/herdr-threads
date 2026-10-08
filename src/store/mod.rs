@@ -1424,7 +1424,7 @@ impl StorePort for SqliteStore {
             return Ok(result);
         }
         let mut selected = command.clone();
-        let needs_seat = matches!(&selected,Command::Inbox(q) | Command::InboxBatch(q) if q.seat.is_none())
+        let needs_seat = matches!(&selected,Command::Inbox(q) | Command::InboxBatch(q) | Command::InboxBatchV2(q) if q.seat.is_none())
             || matches!(&selected,Command::Directory(q) if q.membership.is_none() && q.membership_filter!=DirectoryMembership::All);
         if needs_seat {
             let Some(OperationReadScope::Seat(seat)) = &read.operation_scope else {
@@ -1448,7 +1448,9 @@ impl StorePort for SqliteStore {
                 ));
             }
             match &mut selected {
-                Command::Inbox(q) | Command::InboxBatch(q) => q.seat = Some(seat.clone()),
+                Command::Inbox(q) | Command::InboxBatch(q) | Command::InboxBatchV2(q) => {
+                    q.seat = Some(seat.clone())
+                }
                 Command::Directory(q) => q.membership = Some(seat.clone()),
                 _ => unreachable!(),
             }
@@ -1474,8 +1476,18 @@ impl StorePort for SqliteStore {
                 "cooperative permit instance mismatch",
             ));
         }
+        if matches!(command, PermitMutation::CompleteInboxDelivery(_)) {
+            return Err(api_error(
+                ErrorCode::Unsupported,
+                "inbox delivery completion is not implemented",
+            ));
+        }
         let mut writer = self.writer(budget)?;
         match command {
+            PermitMutation::CompleteInboxDelivery(_) => Err(api_error(
+                ErrorCode::Unsupported,
+                "inbox delivery completion is not implemented",
+            )),
             PermitMutation::CheckIn(_) => Err(api_error(
                 ErrorCode::InvalidRequest,
                 "check-in requires verified registration and read context",
@@ -2736,6 +2748,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
             schema::canonical_digest(&receipts::ack_displayed_payload(v))?,
+            None,
+        ),
+        PermitMutation::CompleteInboxDelivery(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            control::cooperative_payload_hash("complete_inbox_delivery", v)?,
             None,
         ),
         PermitMutation::Leave(v) => (

@@ -570,6 +570,7 @@ fn user_intent_service_send_stays_unclassified() {
 
         // 5. The native seat replies; History After{seq} sees it.
         let CommandResult::MessageSent(reply) = native(Command::SendMessage(SendMessage {
+        delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: "DONE".into(),
             invited_recipients: vec![],
