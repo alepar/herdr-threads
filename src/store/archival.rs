@@ -33,6 +33,17 @@ pub struct Progress {
     pub has_more: bool,
 }
 
+// The archival lane can win the startup race with the first observation.
+// Only the observation/identity paths establish the canonical host instance.
+fn instance_initialized(db: &Connection, instance: &str) -> Result<bool, ApiError> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM host_instances WHERE id=?1)",
+        [instance],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
 /// Each call owns one bounded deciding transaction. The caller must already
 /// hold its fair background writer turn and install the store VM budget.
 pub fn advance(db: &Connection, instance: &str, rt: &Runtime) -> Result<Progress, ApiError> {
@@ -51,6 +62,9 @@ pub(crate) fn advance_in(
             ErrorCode::InvalidRequest,
             "invalid archival timing",
         ));
+    }
+    if !instance_initialized(tx, instance)? {
+        return Ok(Progress::default());
     }
     let epoch = reconcile_runtime(tx, instance, rt)?;
     let mut progress = Progress::default();
@@ -780,6 +794,9 @@ pub(crate) fn store_pass(
         ));
     }
     budgeted(store, rt, budget, |tx, rt| {
+        if !instance_initialized(tx, &store.instance)? {
+            return Ok((Progress::default(), None));
+        }
         for hint in hints {
             if hint.identity.claim.instance != store.instance {
                 return Err(api_error(ErrorCode::InvalidRequest, "foreign legacy hint"));
@@ -814,6 +831,15 @@ pub(crate) fn store_next(
     budget: &crate::protocol::time::CallBudget,
 ) -> Result<ObservationWork, ApiError> {
     budgeted(store, rt, budget, |tx, rt| {
+        if !instance_initialized(tx, &store.instance)? {
+            return Ok((
+                ObservationWork {
+                    ticket: None,
+                    has_more: false,
+                },
+                None,
+            ));
+        }
         reconcile_runtime(tx, &store.instance, rt)?;
         let ticket = next_observation_in(tx, &store.instance, rt)?;
         let has_more = tx
