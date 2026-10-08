@@ -1799,7 +1799,7 @@ fn derive_selection_refuses_human_context_with_agent_marker() {
     let detail = refusal_detail(select(&[("CLAUDECODE", "1")], Ok(None), false).unwrap_err());
     assert!(detail.contains("CLAUDECODE"), "{detail}");
     assert!(
-        detail.contains("herdr-threads me init --operator"),
+        detail.contains("herdr-threads human me init --operator"),
         "{detail}"
     );
     assert!(select(&[("PATH", "/bin")], Ok(None), false).is_ok());
@@ -1812,7 +1812,7 @@ fn derive_selection_refuses_human_context_when_herdr_reports_agent() {
             refusal_detail(select(&[], Ok(Some(observed(Some(kind)))), false).unwrap_err());
         assert!(detail.contains(kind), "{detail}");
         assert!(
-            detail.contains("herdr-threads me init --operator"),
+            detail.contains("herdr-threads human me init --operator"),
             "{detail}"
         );
     }

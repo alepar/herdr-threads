@@ -178,6 +178,17 @@ pub fn query_with_output(
     output: &OutputSpec,
     budget: &CallBudget,
 ) -> Result<CommandResult, ApiError> {
+    query_with_output_for_caller(store, instance, command, output, budget, None)
+}
+
+pub(super) fn query_with_output_for_caller(
+    store: &StoreContext,
+    instance: &str,
+    command: &Command,
+    output: &OutputSpec,
+    budget: &CallBudget,
+    caller: Option<&OperationReadScope>,
+) -> Result<CommandResult, ApiError> {
     command
         .validate()
         .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
@@ -209,6 +220,18 @@ pub fn query_with_output(
             output,
         )
     })?;
+    // Only the requesting dispatch scope can choose person command spelling.
+    // A Human subject/recipient of an ordinary discovery read proves nothing
+    // about its viewer. Read the caller binding in this query's snapshot.
+    let human = match caller {
+        Some(OperationReadScope::Operator(_)) => true,
+        Some(OperationReadScope::Seat(seat)) => db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND b.ended_at IS NULL AND b.harness='human')",
+            params![seat.as_str(), instance], |row| row.get::<_, bool>(0),
+        ).map_err(|error| db.map_error(error))?,
+        _ => false,
+    };
+    let _namespace = crate::protocol::output::CommandNamespaceGuard::enter(human);
     let result = match command {
         Command::ResolveThread(q) => resolve_thread(&db, instance, q),
         Command::ThreadName(q) => {
@@ -2767,6 +2790,7 @@ fn contextual_argv(argv: Vec<String>, output: &OutputSpec) -> Vec<String> {
         result.push("--json".into());
     }
     result.extend(parts);
+    crate::protocol::output::namespace_argv(&mut result);
     result
 }
 

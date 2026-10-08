@@ -754,12 +754,12 @@ fn f6_walking_skeleton() {
     let text = refused.refused("rebind onto an owned target").to_owned();
     assert!(text.contains(&n1), "{text}");
     assert!(
-        text.contains(&format!("herdr-threads seat retire {b} --operator")),
+        text.contains(&format!("herdr-threads human seat retire {b} --operator")),
         "{text}"
     );
     assert!(
         text.contains(&format!(
-            "herdr-threads seat rebind {b} --pane w1:p2 --replace {n1} --operator"
+            "herdr-threads human seat rebind {b} --pane w1:p2 --replace {n1} --operator"
         )),
         "{text}"
     );

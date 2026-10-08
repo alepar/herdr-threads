@@ -1692,7 +1692,7 @@ impl Journal {
                 ErrorCode::ReadBudgetExhausted,
                 "intent page changed during traversal; retry same cursor",
             );
-            let mut argv = prefix.to_vec();
+            let mut argv = pending_command_argv(prefix);
             if let Some(cursor) = &request.cursor {
                 argv.extend(["--cursor".into(), cursor.clone()]);
             }
@@ -1786,7 +1786,7 @@ fn set_cursor(
     }
     .encode()
     .map_err(|e| api(ErrorCode::InvalidCursor, e))?;
-    let mut argv = prefix.to_vec();
+    let mut argv = pending_command_argv(prefix);
     argv.extend([
         "--cursor".into(),
         cursor.clone(),
@@ -1801,6 +1801,18 @@ fn set_cursor(
     page.stop_reason = reason;
     Ok(())
 }
+// Rendering only: the cursor identity above retains the original prefix.
+fn pending_command_argv(prefix: &[String]) -> Vec<String> {
+    let mut argv = prefix.to_vec();
+    if argv.first().is_some_and(|first| {
+        first.starts_with("--") || matches!(first.as_str(), "pending-ops" | "human")
+    }) {
+        argv.insert(0, "herdr-threads".into());
+    }
+    crate::protocol::output::namespace_argv(&mut argv);
+    argv
+}
+
 fn selected_len(page: &PendingPage, output: &OutputSpec) -> Result<usize, ApiError> {
     Ok(encode_selected(&CommandResult::LocalIntents(page.clone()), output)?.len())
 }

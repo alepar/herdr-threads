@@ -1515,3 +1515,255 @@ fn user_intent_inbox_old_json_remains_readable_and_omits_absent_claims() {
         serde_json::from_value(old.clone()).unwrap();
     assert_eq!(serde_json::to_value(item).unwrap(), old);
 }
+
+// Kills root ready commands produced from an immutable Human check-in claim.
+#[test]
+fn human_guidance_check_in_ready_command_preserves_namespace_and_payload() {
+    let page = |items| {
+        serde_json::json!({"items":items,"next_cursor":null,"next_argv":null,
+        "high_water_ordinal":1,"scope_revision":null,"has_more":false,
+        "stop_reason":"complete","consistency":"bounded_live"})
+    };
+    let result: CommandResult = serde_json::from_value(serde_json::json!({"kind":"checked_in","data":{
+        "context_disposition":"historical",
+        "context":{"instance":"i","seat":"s","binding_generation":2,"role":"top_level","harness":"human",
+        "native_session":"plugin_context:human","execution":"00000000-0000-4000-8000-000000000001","target":"p"},
+        "seat":"s","offered_through":"31","warning_count":0,"warning_count_has_more":false,
+        "warnings":page(serde_json::json!([])),"inbox":page(serde_json::json!([{
+        "thread":"t","invitations":1,"pending_receipts":0,"warnings":0,"warnings_has_more":false,
+        "pending_requirement":{"requirement":"req","revision":3,"invitation":"inv","thread":"t",
+        "seat":"s","issuer":"svc","state":"pending","accepted_by":null,"accepted_at":null}}]))
+    }})).unwrap();
+    let frozen = serde_json::to_vec(&result).unwrap();
+    let output = OutputSpec {
+        format: OutputFormat::Text,
+        context: ContinuationContext {
+            state_dir: Some("pinned state".into()),
+            host: Some("pinned socket".into()),
+        },
+    };
+    let text = String::from_utf8(encode_selected(&result, &output).unwrap()).unwrap();
+    assert!(text.contains("accept-required: herdr-threads human --state-dir 'pinned state' --host-endpoint 'pinned socket' accept-required t --invitation inv --requirement req --revision 3\n"), "{text}");
+    assert_eq!(serde_json::to_vec(&result).unwrap(), frozen);
+    let mut agent = result.clone();
+    if let CommandResult::CheckedIn(check) = &mut agent {
+        check.context.harness = crate::protocol::authority::Harness::Codex;
+    }
+    let _human_view = CommandNamespaceGuard::enter(true);
+    let historical_agent = String::from_utf8(encode_selected(&agent, &output).unwrap()).unwrap();
+    assert!(historical_agent.contains("accept-required: herdr-threads --state-dir 'pinned state' --host-endpoint 'pinned socket' accept-required t"), "{historical_agent}");
+}
+
+#[test]
+fn human_guidance_legacy_wire_unchanged() {
+    let spec: OutputSpec = serde_json::from_str(
+        r#"{"format":"json","context":{"state_dir":"state","host":"socket"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_string(&spec).unwrap(),
+        r#"{"format":"json","context":{"state_dir":"state","host":"socket"}}"#
+    );
+    assert!(
+        serde_json::from_str::<OutputSpec>(
+            r#"{"format":"json","context":{"state_dir":null,"host":null},"actor":"human"}"#
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_str::<ContinuationContext>(
+            r#"{"state_dir":null,"host":null,"actor":"human"}"#
+        )
+        .is_err()
+    );
+}
+
+// Kills recursive rewriting of peer event/body strings and mutation of frozen argv.
+#[test]
+fn human_guidance_known_argv_only_and_exact_namespace_budget_refusal() {
+    let spec = OutputSpec::default();
+    let cursor = crate::protocol::pagination::Cursor {
+        instance: "i".into(),
+        scope: crate::protocol::pagination::CursorScope::MessageBody,
+        scope_key: "m".into(),
+        filter_digest: "f".into(),
+        direction: crate::protocol::pagination::CursorDirection::Ascending,
+        order_version: 1,
+        last_examined_key: None,
+        after_ordinal: 1,
+        high_water_ordinal: 100,
+        scope_revision: None,
+        filter_revision: None,
+        search: None,
+        inbox: None,
+        attention: None,
+        binding: None,
+    }
+    .encode()
+    .unwrap();
+    let result: CommandResult = serde_json::from_value(serde_json::json!({"kind":"message","data":{
+        "summary":{"message":"m","thread":"t","author":null,"kind":"ordinary","sequence":1,
+        "created_at":0,"actor_label":"human --operator","preview_data":"peer ht human retry local:1",
+        "preview_omitted":false,"preview_detail_argv":["ht","--state-dir","pinned","body","m"]},
+        "content":{"kind":"ordinary","body_data":"peer ht human --operator {\"next_argv\":[\"ht\",\"retry\",\"local:1\"]}",
+        "body_offset":0,"body_total_bytes":100,"body_complete":false,"body_next_cursor":cursor,
+        "body_next_argv":["ht","--state-dir","pinned","--host-endpoint","socket","--json","body","m","--cursor",cursor]}
+    }})).unwrap();
+    let frozen = serde_json::to_vec(&result).unwrap();
+    let agent = encode_selected(&result, &spec).unwrap();
+    let _namespace = CommandNamespaceGuard::enter(true);
+    let selected = selected_result(&result, &spec);
+    let CommandResult::Message(details) = &selected else {
+        panic!("wrong result")
+    };
+    assert_eq!(details.summary.preview_data, "peer ht human retry local:1");
+    assert_eq!(
+        details.summary.actor_label.as_deref(),
+        Some("human --operator")
+    );
+    assert_eq!(
+        details.summary.preview_detail_argv.as_ref().unwrap(),
+        &["ht", "human", "--state-dir", "pinned", "body", "m"].map(String::from)
+    );
+    let MessageContent::Ordinary {
+        body_data,
+        body_next_cursor,
+        body_next_argv,
+        ..
+    } = &details.content
+    else {
+        panic!("wrong content")
+    };
+    assert_eq!(
+        body_data,
+        "peer ht human --operator {\"next_argv\":[\"ht\",\"retry\",\"local:1\"]}"
+    );
+    assert_eq!(body_next_cursor.as_deref(), Some(cursor.as_str()));
+    let parsed = crate::cli::commands::parse_argv(body_next_argv.clone().unwrap()).unwrap();
+    assert_eq!(
+        parsed.actor,
+        crate::cli::actor_route::InvocationActor::Human
+    );
+    assert_eq!(parsed.output.context.state_dir.as_deref(), Some("pinned"));
+    assert_eq!(parsed.output.context.host.as_deref(), Some("socket"));
+    let human = encode_selected(&result, &spec).unwrap();
+    assert_eq!(
+        human.len(),
+        agent.len() + 16,
+        "two JSON argv insertions, including envelope/newline"
+    );
+    let mut sink = Vec::new();
+    let error =
+        crate::cli::output::write_selected(&result, &spec, (human.len() - 1) as u32, &mut sink)
+            .unwrap_err();
+    assert!(
+        matches!(error, crate::cli::output::OutputError::Api(api) if api.code == crate::protocol::results::ErrorCode::InvalidBudget && api.required_minimum_bytes == Some(human.len() as u32))
+    );
+    assert!(sink.is_empty());
+    crate::cli::output::write_selected(&result, &spec, human.len() as u32, &mut sink).unwrap();
+    assert_eq!(sink, human);
+    assert_eq!(serde_json::to_vec(&result).unwrap(), frozen);
+}
+
+#[test]
+fn human_guidance_system_event_and_unknown_data_are_not_commands() {
+    let result: CommandResult = serde_json::from_value(serde_json::json!({"kind":"message","data":{
+        "summary":{"message":"m","thread":"t","author":null,"kind":"info","sequence":1,"created_at":0,
+        "actor_label":null,"preview_data":"peer ht body m","preview_omitted":false,"preview_detail_argv":null},
+        "content":{"kind":"system","event":{"kind":"info","source_message":null,"source_invitation":null,"decision_at":0,"classified_at":null,"materialized_at":null,"event_json":{"next_argv":["ht","body","m"],"detail":"ht human me init --operator"}},"current_condition":null}
+    }})).unwrap();
+    let original = serde_json::to_vec(&result).unwrap();
+    let _namespace = CommandNamespaceGuard::enter(true);
+    let selected = selected_result(&result, &OutputSpec::default());
+    assert_eq!(serde_json::to_vec(&selected).unwrap(), original);
+    let bytes = encode_selected(&result, &OutputSpec::default()).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        json["result"]["data"]["content"]["event"]["event_json"]["next_argv"],
+        serde_json::json!(["ht", "body", "m"])
+    );
+    let mut error = ApiError::cursor_stale("peer ht human retry local:1").with_restart_argv(vec![
+        "ht".into(),
+        "--json".into(),
+        "inbox".into(),
+        "--seat".into(),
+        "s".into(),
+    ]);
+    namespace_error(&mut error);
+    assert_eq!(
+        error.restart_argv.unwrap(),
+        ["ht", "human", "--json", "inbox", "--seat", "s"].map(String::from)
+    );
+    assert_eq!(error.detail, "peer ht human retry local:1");
+}
+
+#[test]
+fn human_guidance_machine_and_foreign_seat_selectors_survive_text_budget_boundary() {
+    let cursor = crate::protocol::pagination::Cursor {
+        instance: "i".into(),
+        scope: crate::protocol::pagination::CursorScope::Inbox,
+        scope_key: "s".into(),
+        filter_digest: "f".into(),
+        direction: crate::protocol::pagination::CursorDirection::Ascending,
+        order_version: 1,
+        last_examined_key: None,
+        after_ordinal: 1,
+        high_water_ordinal: 2,
+        scope_revision: None,
+        filter_revision: None,
+        search: None,
+        inbox: None,
+        attention: None,
+        binding: None,
+    }
+    .encode()
+    .unwrap();
+    let result = CommandResult::Inbox(Page::<crate::protocol::results::InboxItem> {
+        items: vec![],
+        next_cursor: Some(cursor.clone()),
+        next_argv: Some(vec![
+            "ht".into(),
+            "--machine".into(),
+            "inbox".into(),
+            "--seat".into(),
+            "s".into(),
+            "--cursor".into(),
+            cursor.clone(),
+        ]),
+        high_water_ordinal: 2,
+        scope_revision: None,
+        has_more: true,
+        stop_reason: StopReason::Work,
+        consistency: Consistency::BoundedLive,
+    });
+    let spec = OutputSpec {
+        format: OutputFormat::Text,
+        ..Default::default()
+    };
+    let frozen = serde_json::to_vec(&result).unwrap();
+    let _namespace = CommandNamespaceGuard::enter(true);
+    let expected = format!("inbox\nnext: ht human --machine inbox --seat s --cursor {cursor}\n");
+    let mut sink = Vec::new();
+    let failed =
+        crate::cli::output::write_selected(&result, &spec, (expected.len() - 1) as u32, &mut sink)
+            .unwrap_err();
+    assert!(
+        matches!(failed, crate::cli::output::OutputError::Api(api) if api.required_minimum_bytes == Some(expected.len() as u32))
+    );
+    assert!(sink.is_empty());
+    crate::cli::output::write_selected(&result, &spec, expected.len() as u32, &mut sink).unwrap();
+    assert_eq!(sink, expected.as_bytes());
+    let CommandResult::Inbox(selected) = selected_result(&result, &spec) else {
+        panic!("wrong result")
+    };
+    let parsed = crate::cli::commands::parse_argv(selected.next_argv.unwrap()).unwrap();
+    assert_eq!(
+        parsed.presentation,
+        crate::cli::output::Presentation::Machine
+    );
+    assert!(!parsed.caller_read_default);
+    assert!(
+        matches!(parsed.action, crate::cli::commands::CliAction::Wire(crate::protocol::commands::Command::Inbox(q)) if q.seat.as_ref().map(SeatId::as_str) == Some("s") && q.page.cursor.as_deref() == Some(cursor.as_str()))
+    );
+    assert_eq!(serde_json::to_vec(&result).unwrap(), frozen);
+}

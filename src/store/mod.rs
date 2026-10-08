@@ -1490,12 +1490,13 @@ impl StorePort for SqliteStore {
                 _ => unreachable!(),
             }
         }
-        queries::query_with_output(
+        queries::query_with_output_for_caller(
             &self.context,
             &self.instance,
             &selected,
             &read.output,
             budget,
+            read.operation_scope.as_ref(),
         )
     }
 
@@ -1794,6 +1795,10 @@ impl StorePort for SqliteStore {
             permit,
             budget,
             |tx, seat, seq| {
+                let _namespace = crate::protocol::output::CommandNamespaceGuard::enter(
+                    request.command.claim.harness == crate::protocol::authority::Harness::Human
+                        || request.operator.is_some(),
+                );
                 let _progress = WriterProgressGuard::install(tx, budget, self.context.clock());
                 let page = PageRequest {
                     max_bytes: 8_000,
@@ -1855,7 +1860,7 @@ impl StorePort for SqliteStore {
                 let mut notices_has_more =
                     notices.len() > crate::protocol::results::MAX_NOTICE_PAGE_ITEMS;
                 notices.truncate(crate::protocol::results::MAX_NOTICE_PAGE_ITEMS);
-                let mut offer = crate::protocol::results::CheckInResult {
+                let offer = crate::protocol::results::CheckInResult {
                     context_disposition:
                         crate::protocol::results::CheckInContextDisposition::Current,
                     context: returned_context,
@@ -1866,6 +1871,11 @@ impl StorePort for SqliteStore {
                     warnings,
                     notices: crate::protocol::results::NoticeOffer::default(),
                     inbox,
+                };
+                let mut selected = CommandResult::CheckedIn(offer);
+                crate::protocol::output::namespace_result(&mut selected);
+                let CommandResult::CheckedIn(mut offer) = selected else {
+                    unreachable!()
                 };
                 // Trim the notice page (never the rest of the offer) to the
                 // selected output bound: only notices the offer carries settle.

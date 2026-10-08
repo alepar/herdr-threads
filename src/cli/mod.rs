@@ -301,7 +301,7 @@ pub(crate) fn agent_evidence_refusal(pane: &str, evidence: &str) -> RunError {
     invalid_request(&format!(
         "pane {pane}: `me init` and person-pane commands never act as an agent ({evidence}). \
          Run them in your own shell pane, or override as the local account with \
-         `herdr-threads me init --operator` (later commands in this pane then run as you)"
+         `herdr-threads human me init --operator` (later commands in this pane then run as you)"
     ))
 }
 
@@ -342,7 +342,7 @@ where
     T: Into<OsString> + Clone,
     W: Write,
 {
-    let mut parsed = match commands::parse_argv_or_informational(argv) {
+    let parsed = match commands::parse_argv_or_informational(argv) {
         Ok(parsed) => parsed,
         Err(commands::ParseFailure::Informational(text)) => {
             writer.write_all(text.as_bytes())?;
@@ -352,6 +352,23 @@ where
         Err(commands::ParseFailure::Usage(text)) => return Err(RunError::Usage(text)),
         Err(commands::ParseFailure::Invalid(error)) => return Err(error.into()),
     };
+    let _namespace = crate::protocol::output::CommandNamespaceGuard::enter(
+        parsed.actor == actor_route::InvocationActor::Human,
+    );
+    let retry = matches!(parsed.action, CliAction::Retry(_));
+    run_parsed_in_pane(parsed, caller_pane, writer).map_err(|mut error| {
+        if !retry && let RunError::Api(api) = &mut error {
+            crate::protocol::output::namespace_error(api);
+        }
+        error
+    })
+}
+
+fn run_parsed_in_pane<W: Write>(
+    mut parsed: commands::ParsedCli,
+    caller_pane: Option<&str>,
+    writer: &mut W,
+) -> Result<(), RunError> {
     let _presentation = output::PresentationGuard::enter(parsed.presentation, &parsed.output);
     if let CliAction::Skill = &parsed.action {
         writer.write_all(skill::SKILL_MD.as_bytes())?;
@@ -427,9 +444,9 @@ where
         parsed.output.context.host.as_ref().map(PathBuf::from),
     ))
     .map_err(context_error)?;
-    if let CliAction::Retry(recovery) = &parsed.action {
+    let original_actor = if let CliAction::Retry(recovery) = &parsed.action {
         let paths = InstancePaths::resolve_read_only(&context)?;
-        retry::preflight_original_actor(
+        Some(retry::preflight_original_actor(
             paths.instance_dir.join("intents"),
             recovery.as_str(),
             parsed.actor,
@@ -437,8 +454,15 @@ where
                 state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
                 host: Some(context.host_endpoint.to_string_lossy().into_owned()),
             },
-        )?;
-    }
+        )?)
+    } else {
+        None
+    };
+    let _retry_namespace = original_actor.map(|original| {
+        crate::protocol::output::CommandNamespaceGuard::enter(
+            original == journal::OriginalActor::HumanOrOperator,
+        )
+    });
     let paths = InstancePaths::resolve(&context)?;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let budget = || CallBudget {
@@ -2458,6 +2482,9 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     clock: &dyn Clock,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    let _namespace = crate::protocol::output::CommandNamespaceGuard::enter(
+        parsed.actor == actor_route::InvocationActor::Human,
+    );
     if let CliAction::Retry(recovery) = &parsed.action {
         retry::preflight_original_actor(
             journal.root(),

@@ -5413,3 +5413,87 @@ fn picker_directory_exact_complete_envelope_accepts_all_fitting_rows() {
     assert_eq!(result["stop_reason"], "complete");
     assert_eq!(result["has_more"], false);
 }
+
+// Kills using the subject's Human binding instead of the requesting caller.
+#[test]
+fn human_guidance_canonical_requesting_caller_before_page_fit() {
+    use crate::{
+        ports::{OperationReadScope, ReadContext, StorePort},
+        store::{SqliteStore, StoreSettings},
+    };
+    let (context, db) = fixture();
+    bind_query_agent(&db);
+    db.execute("UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='s'", []).unwrap();
+    for n in 0..3 {
+        let thread = format!("guidance-{n}");
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','ht human --operator','goal',0,0)", [&thread]).unwrap();
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES (?1,?2,'s',1,'pending',0,300,300,1)", params![format!("guidance-inv-{n}"),thread]).unwrap();
+    }
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let output = OutputSpec {
+        format: OutputFormat::Json,
+        context: crate::protocol::output::ContinuationContext {
+            state_dir: Some("state".into()),
+            host: Some("socket".into()),
+        },
+    };
+    let command = Command::Inbox(InboxQuery {
+        seat: Some(SeatId::new("s")),
+        page: PageRequest {
+            limit: 1,
+            ..page(None)
+        },
+    });
+    for (caller, human) in [
+        (None, false),
+        (Some(OperationReadScope::Seat(SeatId::new("s"))), true),
+    ] {
+        let result = store
+            .query(
+                &command,
+                &ReadContext {
+                    instance: "i".into(),
+                    output: output.clone(),
+                    operation_scope: caller,
+                },
+                &budget(),
+            )
+            .unwrap();
+        let CommandResult::Inbox(result) = result else {
+            panic!("wrong result")
+        };
+        let argv = result.next_argv.as_ref().unwrap();
+        let prefix: Vec<String> = if human {
+            vec![
+                "herdr-threads",
+                "human",
+                "--state-dir",
+                "state",
+                "--host-endpoint",
+                "socket",
+                "--json",
+                "inbox",
+            ]
+        } else {
+            vec![
+                "herdr-threads",
+                "--state-dir",
+                "state",
+                "--host-endpoint",
+                "socket",
+                "--json",
+                "inbox",
+            ]
+        }
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(&argv[..prefix.len()], prefix.as_slice());
+        let parsed = parse_argv(argv.clone()).unwrap();
+        assert_eq!(
+            parsed.actor == crate::cli::actor_route::InvocationActor::Human,
+            human
+        );
+        assert_eq!(result.items.len(), 1);
+    }
+}
