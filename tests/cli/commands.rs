@@ -1865,3 +1865,56 @@ fn ordinary_catalog_routing_and_output_forms_parse_without_actor_escalation() {
     assert_eq!(resolve.human_options, ["--operator", "--new-seat"]);
     assert_eq!(catalog.families.iter().find(|f| f.prefix == ["invite"]).unwrap().human_options, ["--operator"]);
 }
+
+#[test]
+fn inbox_v2_continuation_validates_without_changing_own_text_action() {
+    use crate::protocol::{ids::{ExecutionId,MessageId,SeatId}, pagination::{InboxBatchV2CursorState as State, InboxBatchV2Source as Source, InboxBatchV2BodyPosition,SeatAttentionCursorState,ReceiptAttentionCursorState}};
+    let state = State {
+        seat: SeatId::new("s"),
+        binding_generation: Some(1),
+        execution: Some(ExecutionId::new("execution")),
+        source: Source::Lazy,
+        lazy_after_ordinal: 0,
+        lazy_high_water_ordinal: 2,
+        publication_decision_high_water: 4,
+        body: Some(InboxBatchV2BodyPosition {
+            message: MessageId::new("m"),
+            offset: 2,
+            body_len: 10,
+        }),
+        attention: SeatAttentionCursorState {
+            invitation_after_seq: 0,
+            invitation_after_ordinal: 0,
+            invitations_done: false,
+            has_pending_invitation: false,
+            invitation_frontier: Some((0, 2)),
+            receipts: Some(ReceiptAttentionCursorState {
+                physical_after: 0,
+                manifest_after: 0,
+                physical_high_water: 2,
+                manifest_high_water: 2,
+                next_manifest: false,
+            }),
+            receipts_done: false,
+            has_pending_receipt: false,
+            receipt_frontier_seq: Some(4),
+            physical_warning_after: 0,
+            physical_warning_high_water: 4,
+            manifest_warning_after: 0,
+            manifest_warning_high_water: 4,
+            next_manifest_warning: false,
+            latest_warning_seq: None,
+            latest_warning_offset: Some(0),
+        },
+    };
+    let raw=state.encode("fixture-instance").unwrap();
+    let parsed=parse_argv(["ht","inbox","--cursor",&raw]).unwrap();
+    let CliAction::Wire(WireCommand::Inbox(query))=parsed.action else {panic!("must retain own Inbox placeholder")};
+    assert!(query.seat.is_none());
+    assert_eq!(query.page.cursor.as_deref(),Some(raw.as_str()));
+    assert!(WireCommand::Inbox(query.clone()).validate().is_err(),"legacy wire still rejects ib2");
+    assert!(WireCommand::InboxBatch(query.clone()).validate().is_err());
+    assert!(WireCommand::InboxBatchV2(query).validate().is_ok());
+    for prefix in [vec!["ht","read","t"],vec!["ht","search","needle"],vec!["ht","seat","list"]] {let mut args=prefix;args.extend(["--cursor",&raw]);assert!(parse_argv(args).is_err(),"non-Inbox route must reject v2 cursor");}
+    for invalid in ["ib2:","ib2:broken!","ib2:A"] {assert!(parse_argv(["ht","inbox","--cursor",invalid]).is_err());}
+}
