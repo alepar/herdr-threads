@@ -2,7 +2,7 @@
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-08 direct user redesign of native send default — lazy by default, explicit --nudge for attention, ACK implies nudge; interim --ordinary superseded; applied within current code run, wire/saved omission stays Ordinary.
-phase: roast-code
+phase: code
 codeMechanism: ordinary-subagents
 
 idea: lgtm, let's $super-auto this, fully autonomous, both roasts are on
@@ -51,3 +51,10 @@ codeBuckets:
   processSweep: stopped 0 · survived 0
 roastCodeRound: 1
 roast-code: 2026-10-07-lazy-messages-roast-pr-1.md
+stepBackCode-round-1: patch — preserve invocation context consistently across continuations; independent payload/batching/proof-retention claims.
+scopeFilter-round-1: [Blocking] src/store/queries.rs:5959 in-scope — Blocking, always in-scope
+scopeFilter-round-1: [Should-fix] src/cli/mod.rs:2057; src/store/queries.rs:5959 in-scope — Incorrect behavior in the goal-named explicit inbox path: the supplied human continuation prevents the originating participant from completing the displayed announcement body.
+scopeFilter-round-1: [Should-fix] src/protocol/output_compact.rs:77; src/protocol/results.rs:896 punch-list — The goal does not name invitation goal payloads or preservation of invitation rendering; this defect concerns an adjacent inbox behavior.
+scopeFilter-round-1: [Should-fix] src/cli/follow.rs:813 punch-list — Batching delivery-mode lookups in human follow is a performance improvement outside the goal-named natural explicit inbox delivery behavior, with no correctness defect established.
+scopeFilter-round-1: [Nit] src/cli/journal.rs:688 punch-list — Bounded cleanup of abandoned local display proofs is extra hardening; the finding establishes retained files and scan work, not incorrect delivery or violation of the goal's attention boundary.
+scope-filter: 2 in-scope · 3 punch-listed

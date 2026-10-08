@@ -1,0 +1,29 @@
+{
+  "findings": [
+    {
+      "key": "[Blocking] src/store/queries.rs:5959",
+      "disposition": "in-scope",
+      "reason": "Blocking \u2014 always in-scope."
+    },
+    {
+      "key": "[Should-fix] src/cli/mod.rs:2057; src/store/queries.rs:5959",
+      "disposition": "in-scope",
+      "reason": "Incorrect behavior in the goal-named explicit inbox path: the supplied human continuation prevents the originating participant from completing the displayed announcement body."
+    },
+    {
+      "key": "[Should-fix] src/protocol/output_compact.rs:77; src/protocol/results.rs:896",
+      "disposition": "punch-list",
+      "reason": "The goal does not name invitation goal payloads or preservation of invitation rendering; this defect concerns an adjacent inbox behavior."
+    },
+    {
+      "key": "[Should-fix] src/cli/follow.rs:813",
+      "disposition": "punch-list",
+      "reason": "Batching delivery-mode lookups in human follow is a performance improvement outside the goal-named natural explicit inbox delivery behavior, with no correctness defect established."
+    },
+    {
+      "key": "[Nit] src/cli/journal.rs:688",
+      "disposition": "punch-list",
+      "reason": "Bounded cleanup of abandoned local display proofs is extra hardening; the finding establishes retained files and scan work, not incorrect delivery or violation of the goal's attention boundary."
+    }
+  ]
+}
