@@ -23,3 +23,11 @@ roastDesignRound: 2
 roast-design: 2026-10-07-handoff-topology-roast-design-1.md, 2026-10-07-handoff-topology-roast-design-2.md
 stepBackDesign-round-1: patch — independent exact-attempt recovery, bootstrap-only cancellation/liveness and atomic linked successful-report-backed completion; no shared redesign
 graph-pass: depth 7→7 · width 2.3→2.3 · applied 0 · parked 0
+
+## 2026-10-08 source-bound continuation
+
+Same original ht-qhz run/session, eight of sixteen leaves complete; prior design roast2 and all source/fix counters preserved. Independently approved attempts6329 + attachment8243 composition d56/tree98cf integrated only isolated511a, with real cancellation/namespace Begin both deciding orders and rollback/current authority controls. Main/release/public activation remain separate.
+
+Main authorizes unchanged six-CLI actor extraction from immutable f0d/tree073a; initiald01 exactsource and retained-origin/directcontext/inert controls are frozen, actual storage composition and fresh independent source review remain required. No full lazy/source ancestry/permission backend import. Existing.7 archival and.4.2 coordinator continue on isolated511a bases; bounded archival coverage and preallocation boundary reviews retain actual source limitations.
+
+The approved narrow preallocation amendment is recorded in 2026-10-08-handoff-preallocation-boundary-design.md. Initial scoped design Important lifecycle ambiguity and Minor footprint omission are addressed in FIX1 before source expansion. These are scoped amendment reviews, not replacement root roasts. Public modes/capability remain inert until19 actual guarded producer/consumer composition is independently reviewed.
