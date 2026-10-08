@@ -355,3 +355,383 @@ fn thread_names_human_directory_keeps_name_beside_canonical_id() {
     });
     assert_eq!(human(&unnamed), "Thread t-human name: unnamed.\n");
 }
+
+// Removing the direct lifecycle actor guard would reach pane/config/service
+// lookup before refusing a root person operation.
+#[test]
+fn human_namespace_init_preserves_provenance() {
+    use crate::cli::actor_route::InvocationActor;
+    let root = std::env::temp_dir().join(format!("human-init-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let runtime = crate::daemon::paths::RuntimeContext::explicit(
+        root.join("state"),
+        root.join("host.sock"),
+        None,
+    )
+    .unwrap();
+    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let mut parsed = crate::cli::commands::parse_argv(["ht", "human", "me", "init"]).unwrap();
+    parsed.actor = InvocationActor::Agent;
+    let clock: std::sync::Arc<dyn crate::protocol::time::Clock> =
+        std::sync::Arc::new(crate::app::SystemClock::new());
+    let mut output = Vec::new();
+    let error =
+        crate::cli::me::run_me_init(parsed, false, None, &runtime, &paths, &clock, &mut output)
+            .unwrap_err();
+    assert!(
+        matches!(error, crate::cli::RunError::Api(ref e)
+        if e.code == crate::protocol::results::ErrorCode::InvalidRequest
+        && e.detail.contains("ht human me init")),
+        "{error:?}"
+    );
+    assert!(
+        !paths.instance_dir.exists(),
+        "root refusal creates no person state"
+    );
+    assert!(output.is_empty());
+    assert!(crate::cli::commands::parse_argv(["ht", "me", "init"]).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+struct HumanLifecycle {
+    root: std::path::PathBuf,
+    paths: crate::daemon::paths::InstancePaths,
+    instance: uuid::Uuid,
+    selection: crate::cli::commands::CooperativeSelection,
+    client: HumanClient,
+}
+
+struct HumanClient {
+    generation: std::sync::atomic::AtomicU64,
+    hold: std::sync::atomic::AtomicBool,
+    lose_check_in: std::sync::atomic::AtomicBool,
+    calls: std::sync::Mutex<Vec<crate::protocol::commands::Command>>,
+}
+
+impl crate::ports::LocalClient for HumanClient {
+    fn call_with_output(
+        &self,
+        command: crate::protocol::commands::Command,
+        _: &OutputSpec,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        self.call(command, budget)
+    }
+    fn call(
+        &self,
+        command: crate::protocol::commands::Command,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        use crate::protocol::{commands::Command, results::*};
+        use std::sync::atomic::Ordering::SeqCst;
+        self.calls.lock().unwrap().push(command.clone());
+        match command {
+            Command::SeatInspect(q) => Ok(CommandResult::SeatInspect(SeatInspection {
+                summary: SeatSummary {
+                    seat: q.seat,
+                    continuity: ContinuityStatus::Resolved,
+                    target: Some(crate::protocol::ids::HostTargetId::new("w1:p1")),
+                    generation: self.generation.load(SeqCst),
+                    created_at: UtcMillis(0),
+                    retired_at: None,
+                },
+                mapping: MappingStatus {
+                    state: ContinuityStatus::Resolved,
+                    target: Some(crate::protocol::ids::HostTargetId::new("w1:p1")),
+                    detail_argv: None,
+                },
+                hold: self.hold.load(SeqCst).then(|| HoldSummary {
+                    target: crate::protocol::ids::HostTargetId::new("w1:p1"),
+                    reason_data: "restore repair".into(),
+                    detail_argv: vec![],
+                }),
+                retirement: None,
+                open_binding: None,
+                history: page(vec![]),
+            })),
+            Command::CheckIn(c) | Command::OperatorCheckIn(c) => {
+                if self.lose_check_in.load(SeqCst) {
+                    return Err(ApiError::unknown_outcome("private check-in response lost"));
+                }
+                let mut claim = c.claim;
+                claim.binding_generation = self.generation.load(SeqCst)
+                    + u64::from(matches!(
+                        c.mode,
+                        crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                    ));
+                self.generation.store(claim.binding_generation, SeqCst);
+                Ok(CommandResult::CheckedIn(CheckInResult {
+                    seat: claim.seat.clone(),
+                    context: claim,
+                    context_disposition: CheckInContextDisposition::Current,
+                    offered_through: None,
+                    warning_count: 0,
+                    warning_count_has_more: false,
+                    warnings: page(vec![]),
+                    notices: Default::default(),
+                    inbox: page(vec![]),
+                }))
+            }
+            _ => Err(ApiError::unknown_outcome(
+                "private communication response lost",
+            )),
+        }
+    }
+}
+
+impl HumanLifecycle {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!("human-lifecycle-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let runtime = crate::daemon::paths::RuntimeContext::explicit(
+            root.join("state"),
+            root.join("host.sock"),
+            None,
+        )
+        .unwrap();
+        Self {
+            root,
+            paths: crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap(),
+            instance: uuid::Uuid::new_v4(),
+            selection: crate::cli::commands::CooperativeSelection {
+                seat: SeatId::new("seat-person"),
+                target: crate::protocol::ids::HostTargetId::new("w1:p1"),
+                harness: crate::harness::context::Harness::Human,
+                role: crate::harness::context::Role::TopLevel,
+            },
+            client: HumanClient {
+                generation: 1.into(),
+                hold: false.into(),
+                lose_check_in: false.into(),
+                calls: Default::default(),
+            },
+        }
+    }
+    fn contexts(&self) -> crate::harness::context::ContextJournal {
+        crate::cli::seat_contexts(&self.paths, self.instance, &self.selection.seat).unwrap()
+    }
+    fn run(&self, args: &[&str], operator: bool) -> Result<(), crate::cli::RunError> {
+        let mut argv = vec!["ht", "human"];
+        argv.extend_from_slice(args);
+        let mut parsed = crate::cli::commands::parse_argv(argv).unwrap();
+        if operator {
+            let crate::cli::commands::CliAction::Mutation(
+                crate::cli::commands::MutationSpec::CheckInLifecycle { operator, .. },
+            ) = &mut parsed.action
+            else {
+                panic!("lifecycle required")
+            };
+            *operator = true;
+        }
+        crate::cli::run_selected(
+            parsed,
+            &self.selection,
+            &self.paths,
+            self.instance,
+            &self.client,
+            &crate::app::SystemClock::new(),
+            &mut Vec::new(),
+        )
+    }
+    fn init(&self) {
+        self.run(&["check-in", "--lifecycle-event", "person-first"], false)
+            .unwrap();
+    }
+}
+impl Drop for HumanLifecycle {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.root).unwrap();
+    }
+}
+
+// An agent harness, a regenerated pending identity or a fresh Current
+// lifecycle would violate the saved Human binding and exact request replay.
+#[test]
+fn human_namespace_pending_and_current_check_in_keep_identity() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let f = HumanLifecycle::new();
+    f.client.lose_check_in.store(true, SeqCst);
+    assert!(
+        f.run(&["check-in", "--lifecycle-event", "person-first"], false)
+            .is_err()
+    );
+    let pending = f.contexts().pending().unwrap().unwrap();
+    assert_eq!(
+        pending.context.harness,
+        crate::harness::context::Harness::Human
+    );
+    assert_eq!(pending.context.binding_generation, 1);
+    f.client.lose_check_in.store(false, SeqCst);
+    f.init();
+    let current = f.contexts().current().unwrap().unwrap();
+    assert_eq!(current.harness, crate::harness::context::Harness::Human);
+    assert_eq!(current.execution, pending.context.execution);
+    assert_eq!(current.session, pending.context.session);
+    assert_eq!(current.binding_generation, 2);
+    f.run(&["check-in"], false).unwrap();
+    assert_eq!(f.contexts().current().unwrap().unwrap(), current);
+    let calls = f.client.calls.lock().unwrap();
+    let requests: Vec<_> = calls
+        .iter()
+        .filter(|c| matches!(c, crate::protocol::commands::Command::CheckIn(_)))
+        .collect();
+    assert_eq!(
+        requests[0], requests[1],
+        "lost response replay preserves complete frozen request"
+    );
+}
+
+// Each retained communication intent must carry the same Human binding,
+// without inventing an agent harness or operator repair label.
+#[test]
+fn human_namespace_communication_preserves_claim() {
+    use crate::cli::journal::{IntentScope, Journal, OriginalActor, classify_original_actor};
+    let operations: &[&[&str]] = &[
+        &[
+            "send",
+            "thread-test",
+            "--body",
+            "human is peer text",
+            "--relays-user",
+        ],
+        &["invite", "thread-test", "--seat", "seat-recipient"],
+        &["accept", "thread-test"],
+        &["ack", "message-test"],
+    ];
+    for args in operations {
+        let f = HumanLifecycle::new();
+        f.init();
+        let context = f.contexts().current().unwrap().unwrap();
+        let expected = crate::harness::bridge::caller_claim(&context).unwrap();
+        assert_eq!(expected.harness.cooperative_provenance(), "operator_human");
+        assert!(f.run(args, false).is_err());
+        let journal = Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        let pending = journal
+            .page(&crate::protocol::pagination::PageRequest {
+                cursor: None,
+                limit: 10,
+                max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+            })
+            .unwrap()
+            .items;
+        assert_eq!(
+            pending.len(),
+            1,
+            "uncertain communication retains its intent"
+        );
+        let reference = journal
+            .resolve_recovery_ref(pending[0].recovery_ref.as_str())
+            .unwrap();
+        let saved = journal.load(&reference).unwrap();
+        assert_eq!(
+            saved.header.scope,
+            IntentScope::Cooperative {
+                instance: f.instance.to_string(),
+                seat: f.selection.seat.clone()
+            }
+        );
+        assert_eq!(
+            classify_original_actor(&saved.header.scope, &saved.semantic).unwrap(),
+            OriginalActor::HumanOrOperator
+        );
+        let calls = f.client.calls.lock().unwrap();
+        let command = calls.last().unwrap();
+        assert_eq!(saved.semantic.frozen_claim(), Some(&expected));
+        use crate::protocol::commands::Command;
+        let emitted_claim = match command {
+            Command::SendMessage(c) => &c.claim,
+            Command::Invite(c) => &c.claim,
+            Command::Accept(c) => &c.claim,
+            Command::Ack(c) => &c.claim,
+            other => panic!("unexpected communication: {other:?}"),
+        };
+        assert_eq!(emitted_claim, &expected);
+    }
+}
+
+// Removing the context mismatch refusal would silently seed Human over an
+// agent before a local-account operator check-in has been requested.
+#[test]
+fn human_namespace_agent_takeover_requires_operator() {
+    let f = HumanLifecycle::new();
+    let execution = uuid::Uuid::new_v4();
+    let agent = crate::harness::context::OccupantContext {
+        format_version: 1,
+        instance: f.instance,
+        seat: f.selection.seat.as_str().into(),
+        target: "w1:p1".into(),
+        harness: crate::harness::context::Harness::Codex,
+        binding_generation: 1,
+        execution,
+        session: crate::harness::context::SessionReference::PluginContext(execution),
+        role: crate::harness::context::Role::TopLevel,
+    };
+    f.contexts().install_reattached(agent.clone()).unwrap();
+    assert!(
+        f.run(&["check-in", "--lifecycle-event", "person-first"], false)
+            .is_err()
+    );
+    assert_eq!(f.contexts().current().unwrap(), Some(agent));
+    let journal = crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+    assert!(
+        journal
+            .page(&crate::protocol::pagination::PageRequest {
+                cursor: None,
+                limit: 10,
+                max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+            })
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    f.run(&["check-in", "--lifecycle-event", "person-override"], true)
+        .unwrap();
+    let context = f.contexts().current().unwrap().unwrap();
+    assert_eq!(context.harness, crate::harness::context::Harness::Human);
+    assert_ne!(context.execution, execution);
+    assert!(matches!(
+        f.client.calls.lock().unwrap().last(),
+        Some(crate::protocol::commands::Command::OperatorCheckIn(_))
+    ));
+}
+
+// A stale generation or canonical restore hold must stop communication
+// rather than reseeding its session/execution to pass authorization.
+#[test]
+fn human_namespace_stale_and_hold_guards() {
+    use std::sync::atomic::Ordering::SeqCst;
+    for held in [false, true] {
+        let f = HumanLifecycle::new();
+        f.init();
+        let before = f.contexts().current().unwrap();
+        if held {
+            f.client.hold.store(true, SeqCst);
+        } else {
+            f.client.generation.store(99, SeqCst);
+        }
+        f.client.calls.lock().unwrap().clear();
+        assert!(
+            f.run(&["send", "thread-test", "--body", "person mail"], false)
+                .is_err()
+        );
+        assert_eq!(f.contexts().current().unwrap(), before);
+        assert_eq!(
+            f.client.calls.lock().unwrap().len(),
+            1,
+            "canonical inspection stops mutation"
+        );
+        let journal =
+            crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        assert!(
+            journal
+                .page(&crate::protocol::pagination::PageRequest {
+                    cursor: None,
+                    limit: 10,
+                    max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES
+                })
+                .unwrap()
+                .items
+                .is_empty()
+        );
+    }
+}

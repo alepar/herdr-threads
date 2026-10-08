@@ -554,6 +554,7 @@ fn parser_rejects_mixed_durable_seat_and_pane_scope_and_requires_target_intent()
         vec!["ht", "inbox", "--seat", "s123", "--pane", "alice"],
         vec![
             "ht",
+            "human",
             "seat",
             "resolve",
             "--new-seat",
@@ -563,6 +564,7 @@ fn parser_rejects_mixed_durable_seat_and_pane_scope_and_requires_target_intent()
         ],
         vec![
             "ht",
+            "human",
             "seat",
             "rebind",
             "s123",

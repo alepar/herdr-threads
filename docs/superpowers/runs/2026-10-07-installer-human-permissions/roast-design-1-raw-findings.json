@@ -1,0 +1,103 @@
+[
+  {
+    "claim": "Codex installation/update/removal lacks an explicit crash-recovery ownership protocol across rules-file and separate manifest publication.",
+    "location": "Decision 3: independent permission ownership; Decision 4: native policy rendering",
+    "category": "premortem",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Exact rules fingerprints live in separate component manifest; Codex writes CODEX_HOME/rules file. Prepared-record publication/recovery is explicit only for Claude transfer; crash between file/manifest publications leaves unmatched live grants or ownership proof without safe resume/remove protocol."
+  },
+  {
+    "claim": "Codex installation/update/removal lacks an explicit crash-recovery ownership protocol across rules-file and separate manifest publication.",
+    "location": "Decision 3: independent permission ownership; Decision 4: native policy rendering",
+    "category": "completeness",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Exact rules fingerprints live in separate component manifest; Codex writes CODEX_HOME/rules file. Prepared-record publication/recovery is explicit only for Claude transfer; crash between file/manifest publications leaves unmatched live grants or ownership proof without safe resume/remove protocol."
+  },
+  {
+    "claim": "Race refusal depends on an unspecified cross-process exclusion/publication mechanism between final revalidation and replacement.",
+    "location": "Decision 3: independent permission ownership",
+    "category": "completeness",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Spec promises revalidates before replacement, refuses raced states, preserves unrelated content, and writers run sequentially. No cross-process lock identity/protected interval or conditional replacement is defined; concurrent writer can edit after check and before replace.",
+    "spike": "Pause after final comparison, edit settings from second isolated fixture writer, resume; fail if overwritten without conflict."
+  },
+  {
+    "claim": "Declined/missing permission consent can retain historical owned broad Claude allowance and cover new human namespace without native approval.",
+    "location": "Decision 3: independent permission ownership; Decision 5: setup, installer and consent",
+    "category": "failure-mode",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Historical hooks own Bash(herdr-threads *). Explicit permission update performs narrowing; missing permission consent may decline/report missing. No transition handles exact owned broad rule when permission grant declined; existing broad grant can cover human."
+  },
+  {
+    "claim": "Race refusal depends on an unspecified cross-process exclusion/publication mechanism between final revalidation and replacement.",
+    "location": "Decision 3: independent permission ownership",
+    "category": "failure-mode",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Spec promises revalidates before replacement, refuses raced states, preserves unrelated content, and writers run sequentially. No cross-process lock identity/protected interval or conditional replacement is defined; concurrent writer can edit after check and before replace.",
+    "spike": "Pause after final comparison, edit settings from second isolated fixture writer, resume; fail if overwritten without conflict."
+  },
+  {
+    "claim": "Race refusal depends on an unspecified cross-process exclusion/publication mechanism between final revalidation and replacement.",
+    "location": "Decision 3: independent permission ownership",
+    "category": "feasibility",
+    "external": false,
+    "kind": "UNVERIFIED-ASSUMPTION",
+    "evidence": "Spec promises revalidates before replacement, refuses raced states, preserves unrelated content, and writers run sequentially. No cross-process lock identity/protected interval or conditional replacement is defined; concurrent writer can edit after check and before replace.",
+    "spike": "Pause after final comparison, edit settings from second isolated fixture writer, resume; fail if overwritten without conflict."
+  },
+  {
+    "claim": "Race refusal depends on an unspecified cross-process exclusion/publication mechanism between final revalidation and replacement.",
+    "location": "Decision 3: independent permission ownership",
+    "category": "domain:installer/configuration-management",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Spec promises revalidates before replacement, refuses raced states, preserves unrelated content, and writers run sequentially. No cross-process lock identity/protected interval or conditional replacement is defined; concurrent writer can edit after check and before replace.",
+    "spike": "Pause after final comparison, edit settings from second isolated fixture writer, resume; fail if overwritten without conflict."
+  },
+  {
+    "claim": "Fresh permission installation lacks interruption ownership contract; historical source transfer does not cover source-absent installs.",
+    "location": "Decision 3: independent permission ownership; Decision 4: native policy rendering",
+    "category": "domain:installer/configuration-management",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Prepared transfer requires source and destination manifests; fresh Claude/Codex grants have no historical source. No durable prepared ownership record before new policy publication or inspect/remove restart protocol specified."
+  },
+  {
+    "claim": "Durable ownership invariant lacks explicit crash fault model and persistence barriers across ordered publications.",
+    "location": "Decision 3: independent permission ownership",
+    "category": "domain:crash-consistency",
+    "external": false,
+    "kind": "UNVERIFIED-ASSUMPTION",
+    "evidence": "At every interruption durable record promised but process termination versus OS/power crash unspecified; cross-file prepared/settings/destination/source persistence ordering needs actual sync and directory barriers.",
+    "spike": "Interrupt isolated migration at persistence boundaries; changed settings cannot survive without durable owner proof."
+  },
+  {
+    "claim": "Ordinary fresh install/update/remove crash recovery unspecified outside historical Claude transfer.",
+    "location": "Decision 3: independent permission ownership; Decision 4: native policy rendering",
+    "category": "domain:crash-consistency",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Exact rules fingerprints live in separate component manifest; Codex writes CODEX_HOME/rules file. Prepared-record publication/recovery is explicit only for Claude transfer; crash between file/manifest publications leaves unmatched live grants or ownership proof without safe resume/remove protocol."
+  },
+  {
+    "claim": "Required verification matrix does not require restarted-process interrupted lifecycle tests.",
+    "location": "Required configurations and verification: ownership matrix",
+    "category": "domain:crash-consistency",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Root lists fresh/update/remove and partial/edited/foreign/symlink/race but not process termination between publication boundaries followed by new-process inspect/resume/remove. Nested transfer acceptance covers historical transfer only."
+  },
+  {
+    "claim": "Independent hook and permission entry points do not specify discovery/handling of a pending transfer before mutating its source or destination.",
+    "location": "Decision 3: independent permission ownership",
+    "category": "domain:crash-consistency",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Sequential invocation writers and exact-state resume do not identify later entrypoints that discover durable prepared transfer; hook install/remove may invalidate source or settings before resume."
+  }
+]
