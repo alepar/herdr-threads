@@ -26,6 +26,125 @@ fn wait_for_send_attention(w: &World) {
 }
 
 #[test]
+fn continuation_legacy_own_text_survives_v2_capability_upgrade() {
+    use std::sync::atomic::Ordering;
+    let w = World::new();
+    let lazy = w.send("legacy traversal must leave lazy pending", &[]);
+    let body = "native-legacy-é界-".repeat(1100);
+    let ordinary = w.send(&body, &["--nudge", "--require-ack", &w.seats[1]]);
+    wait_for_send_attention(&w);
+    let proxy = crate::lazy_config_smoke::Proxy::new(w.paths(), &w.root);
+    // Only the advertised capabilities change; every inbox page comes from
+    // the real daemon and the producer prints its actual v1 batch cursor.
+    proxy.mode.store(1, Ordering::SeqCst);
+    let mut out = w.text(1, false, &["inbox", "--max-bytes", "4096"]);
+    let mut recovered = String::new();
+    let mut pages = 0;
+    loop {
+        assert!(out.len() <= 4096);
+        let mut current = None;
+        for line in out.lines() {
+            if let Some(header) = line.strip_prefix("message ") {
+                current = header.split_whitespace().next();
+            } else if let Some(chunk) = line.strip_prefix("  ") {
+                if current == Some(ordinary.as_str()) && !chunk.starts_with("read: ") {
+                    recovered.push_str(chunk);
+                }
+            } else {
+                current = None;
+            }
+        }
+        let Some(next) = out.lines().find_map(|line| line.strip_prefix("next: ")) else {
+            break;
+        };
+        let argv = shlex::split(next).unwrap();
+        assert_eq!(argv[0], "herdr-threads");
+        assert!(
+            !argv
+                .iter()
+                .any(|a| matches!(a.as_str(), "human" | "--seat" | "--json" | "--machine"))
+        );
+        let cursor = argv.iter().position(|a| a == "--cursor").unwrap();
+        assert!(
+            argv[cursor + 1].starts_with("c3:"),
+            "real v1 batch cursor required: {argv:?}"
+        );
+        for (flag, expected) in [
+            (
+                "--state-dir",
+                w.root.join("state").to_str().unwrap().to_owned(),
+            ),
+            (
+                "--host-endpoint",
+                w.root.join("h.sock").to_str().unwrap().to_owned(),
+            ),
+            ("--limit", "20".into()),
+            ("--max-bytes", "4096".into()),
+        ] {
+            let at = argv.iter().position(|a| a == flag).unwrap();
+            assert_eq!(argv[at + 1], expected);
+            assert_eq!(argv.iter().filter(|a| *a == flag).count(), 1);
+        }
+        let state: String = w.db().query_row("SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2", [&ordinary, &w.seats[1]], |r| r.get(0)).unwrap();
+        assert_eq!(state, "pending", "partial body must not ACK");
+        proxy.mode.store(0, Ordering::SeqCst);
+        let output = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"))
+            .args(&argv[1..])
+            .env("HOME", w.root.join("home"))
+            .env("CLAUDE_CONFIG_DIR", w.root.join("claude"))
+            .env("CODEX_HOME", w.root.join("codex"))
+            .env("HERDR_THREADS_OFFLINE", "1")
+            .env("NO_COLOR", "1")
+            .env("HERDR_PANE_ID", "w1:p2")
+            .env_remove("HERDR_PLUGIN_STATE_DIR")
+            .env_remove("HERDR_SOCKET_PATH")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "upgraded daemon rejected printed v1 batch argv: {argv:?}\nstdout={} stderr={}\nrequests={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+            proxy.requests()
+        );
+        out = String::from_utf8(output.stdout).unwrap();
+        pages += 1;
+        assert!(pages < 20, "legacy body cursor failed to advance");
+    }
+    assert!(pages > 1, "complete multi-page body required");
+    assert_eq!(recovered, body);
+    let state: String = w.db().query_row("SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2", [&ordinary, &w.seats[1]], |r| r.get(0)).unwrap();
+    assert_eq!(state, "acked");
+    assert_eq!(w.state(&lazy, 1), "pending");
+    let requests = proxy.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["command"]["kind"] == "inbox_batch")
+            .count(),
+        pages + 1
+    );
+    assert!(!requests.iter().any(|r| matches!(
+        r["command"]["kind"].as_str(),
+        Some("inbox_batch_v2" | "complete_inbox_delivery")
+    )));
+    let acks: Vec<_> = requests
+        .iter()
+        .filter(|r| r["command"]["kind"] == "ack_displayed")
+        .collect();
+    assert_eq!(acks.len(), 1);
+    assert_eq!(
+        acks[0]["command"]["args"]["messages"],
+        serde_json::json!([ordinary])
+    );
+    let claim = &acks[0]["command"]["args"]["claim"];
+    assert_eq!(claim["seat"], w.seats[1]);
+    assert_eq!(claim["harness"], "codex");
+    assert_eq!(claim["role"], "top_level");
+    assert_eq!(claim["target"], "w1:p2");
+}
+
+#[test]
 fn continuation_legacy_checkin_replays_on_v2_daemon_readonly() {
     let w = World::new();
     let lazy = w.send("pending lazy delivery", &[]);

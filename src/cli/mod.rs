@@ -1111,9 +1111,14 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         }
         Err(error) => return Err(RunError::Api(error)),
     };
-    let v2 = capabilities
-        .iter()
-        .any(|name| name == crate::protocol::capabilities::INBOX_BATCH_V2);
+    let v2 = request
+        .page
+        .cursor
+        .as_deref()
+        .is_none_or(|cursor| cursor.starts_with(crate::protocol::pagination::INBOX_V2_PREFIX))
+        && capabilities
+            .iter()
+            .any(|name| name == crate::protocol::capabilities::INBOX_BATCH_V2);
     let supported = capabilities
         .iter()
         .any(|name| name == crate::protocol::capabilities::INBOX_BATCH);
