@@ -1,0 +1,51 @@
+   Compiling herdr-threads v0.2.11 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.80s
+────────────
+ Nextest run ID cecce52b-94a4-4d15-8d09-62118d34d86f with nextest profile: default
+    Starting 44 tests across 7 binaries (3170 tests skipped)
+        PASS [   0.015s] ( 1/44) herdr-threads cli::commands::tests::handoff_parser_preserves_native_elements_and_distinct_names
+        PASS [   0.016s] ( 2/44) herdr-threads cli::handoff::tests::handoff_bootstrap_is_one_native_shell_argument
+        PASS [   0.017s] ( 3/44) herdr-threads cli::commands::tests::handoff_thread_name_uses_shared_canonical_resolution
+        PASS [   0.021s] ( 4/44) herdr-threads cli::commands::tests::handoff_parser_requires_one_thread_explicit_pane_and_one_body
+        PASS [   0.384s] ( 5/44) herdr-threads cli::handoff::tests::handoff_fenced_early_live_alias_defers_without_calls_or_refusal
+        PASS [   0.842s] ( 6/44) herdr-threads cli::handoff::tests::handoff_crash_after_native_start_before_result_never_repeats_start
+        PASS [   0.988s] ( 7/44) herdr-threads cli::handoff::tests::handoff_fenced_early_namespace_alias_is_canonical_but_copied_uuid_is_not
+        PASS [   1.021s] ( 8/44) herdr-threads cli::handoff::tests::handoff_broken_output_replays_report_without_relaunch_or_wrong_scope
+        PASS [   1.042s] ( 9/44) herdr-threads cli::handoff::tests::handoff_bootstrap_binds_hook_preference_to_frozen_expected_instance_and_pair
+        PASS [   1.132s] (10/44) herdr-threads cli::handoff::tests::handoff_bootstrap_prefers_recipient_hook_commands_and_replays_exact_fallback
+        PASS [   1.175s] (11/44) herdr-threads cli::handoff::tests::handoff_fenced_complete_survives_local_removal_failure_then_cleanup_only_retry
+        PASS [   0.515s] (12/44) herdr-threads cli::handoff::tests::handoff_fenced_terminal_retry_only_reprints_and_cleans_retained_intent
+        PASS [   0.954s] (13/44) herdr-threads cli::handoff::tests::handoff_fenced_early_terminal_retry_uses_frozen_selection_without_live_inspection
+        PASS [   1.376s] (14/44) herdr-threads cli::handoff::tests::handoff_existing_thread_requires_joined_sender_and_freezes_id_on_replay
+        PASS [   0.010s] (15/44) herdr-threads cli::hook::tests::burst_digest_ranks_the_require_ack_handoff_first
+        PASS [   1.400s] (16/44) herdr-threads cli::handoff::tests::handoff_confirmed_native_refusal_resets_fence_for_guarded_retry
+        PASS [   0.013s] (17/44) herdr-threads cli::hook::tests::burst_session_start_keeps_the_handoff_inbox_within_budget
+        PASS [   0.103s] (18/44) herdr-threads cli::handoff::tests::handoff_validation_precedes_native_and_durable_work
+        PASS [   0.272s] (19/44) herdr-threads cli::launch::tests::handoff_preflight_and_failed_durable_gate_never_submit_or_record_start
+        PASS [   0.272s] (20/44) herdr-threads cli::launch::tests::handoff_native_launcher_checks_frozen_seat_and_propagates_confirmed_refusal
+        PASS [   0.010s] (21/44) herdr-threads harness::launch::tests::handoff_preparation_runs_all_guards_without_native_submission
+        PASS [   0.012s] (22/44) herdr-threads cli::panes::panes_hint::handoff_names_ignore_unnamed_agents_in_other_spaces
+        PASS [   0.309s] (23/44) herdr-threads cli::launch::tests::claude_launch_starts_with_caller_argv_and_reports_durable_handoff
+        PASS [   0.023s] (24/44) herdr-threads host::native::tests::handoff_native_confirmed_refusal_has_not_submitted_evidence
+        PASS [   0.257s] (25/44) herdr-threads cli::launch::tests::unknown_outcome_exits_five_and_keeps_handoff_discoverable
+        PASS [   0.741s] (26/44) herdr-threads cli::handoff::tests::handoff_pending_page_lists_compound_without_payload_and_uses_private_files
+        PASS [   0.063s] (27/44) herdr-threads::combined handoff_fences::handoff_begin_completed_replay_is_historical_but_live_replay_checks_current_guards
+        PASS [   0.060s] (28/44) herdr-threads::combined handoff_fences::handoff_begin_installs_exact_thread_protection_before_any_side_effect
+        PASS [   0.060s] (29/44) herdr-threads::combined handoff_fences::handoff_begin_refuses_changed_immutable_plan_identity
+        PASS [   0.061s] (30/44) herdr-threads::combined handoff_fences::handoff_completed_tombstone_absorbs_delayed_import_and_retained_restart_intent
+        PASS [   0.059s] (31/44) herdr-threads::combined handoff_fences::handoff_legacy_hint_is_sticky_and_cannot_change_bindings_or_receipts
+        PASS [   0.061s] (32/44) herdr-threads::combined handoff_fences::handoff_new_thread_attachment_matches_exact_actor_scope_and_create_key
+        PASS [   1.950s] (33/44) herdr-threads cli::handoff::tests::handoff_fenced_begin_precedes_effects_complete_follows_successful_flush
+        PASS [   0.871s] (34/44) herdr-threads cli::handoff::tests::handoff_pre_start_refusal_retains_work_and_rechecks_launch
+        PASS [   1.292s] (35/44) herdr-threads cli::handoff::tests::handoff_possible_start_crash_and_unknown_never_start_twice
+        PASS [   2.459s] (36/44) herdr-threads cli::handoff::tests::handoff_exact_keys_replay_lost_responses_each_durable_phase
+        PASS [   0.794s] (37/44) herdr-threads::combined handoff_fences::handoff_accountable_replay_presents_current_terminal_state_before_live_guards
+        PASS [   1.478s] (38/44) herdr-threads cli::handoff::tests::handoff_freezes_configured_options_for_preflight_launch_and_retry
+        PASS [   0.665s] (39/44) herdr-threads::combined handoff_fences::handoff_real_create_attaches_atomically_and_begin_replay_reports_current_thread
+        PASS [   2.521s] (40/44) herdr-threads::service resolution::managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending
+        PASS [   1.296s] (41/44) herdr-threads::combined handoff_fences::handoff_actual22_upgrade_imports_already_committed_create_then_replays_without_unattached_fence
+        PASS [   2.379s] (42/44) herdr-threads cli::handoff::tests::handoff_manual_recovery_preserves_frozen_options_without_reentry
+        PASS [   7.107s] (43/44) herdr-threads::integration readme_tryout::readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundaries
+        PASS [   8.552s] (44/44) herdr-threads::integration sweep::installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart
+────────────
+     Summary [  10.480s] 44 tests run: 44 passed, 3170 skipped
