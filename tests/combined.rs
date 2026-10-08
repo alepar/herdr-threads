@@ -29,6 +29,8 @@ mod installer_integrations;
 mod lazy_delivery;
 #[path = "store/lazy_schema.rs"]
 mod lazy_schema;
+#[path = "cli/lazy_send.rs"]
+mod lazy_send;
 #[path = "lifecycle_ux.rs"]
 mod lifecycle_ux;
 #[path = "local_endpoint.rs"]

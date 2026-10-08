@@ -109,6 +109,8 @@ pub enum SemanticMutation {
         expected_revision: u64,
     },
     SendMessage {
+        #[serde(default, skip_serializing_if = "DeliveryMode::is_ordinary")]
+        delivery_mode: DeliveryMode,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user_intent: Option<crate::protocol::summary::UserIntent>,
         thread: ThreadId,
@@ -183,6 +185,16 @@ impl SemanticMutation {
         };
         frozen.validate()?;
         Ok(frozen)
+    }
+    pub fn is_lazy_send(&self) -> bool {
+        match self {
+            Self::Frozen { mutation, .. } => mutation.is_lazy_send(),
+            Self::SendMessage {
+                delivery_mode: DeliveryMode::Lazy,
+                ..
+            } => true,
+            _ => false,
+        }
     }
     pub fn frozen_claim(&self) -> Option<&CallerClaim> {
         match self {
@@ -300,6 +312,14 @@ impl SemanticMutation {
             {
                 Err(invalid("invalid ack batch size"))
             }
+            Self::SendMessage {
+                delivery_mode: DeliveryMode::Lazy,
+                invited_recipients,
+                deadline_millis,
+                ..
+            } if !invited_recipients.is_empty() || deadline_millis.is_some() => Err(invalid(
+                "lazy send cannot have explicit recipients or a deadline",
+            )),
             Self::SendMessage {
                 invited_recipients, ..
             } if invited_recipients.len() > MAX_BATCH_ITEMS => {
@@ -467,6 +487,7 @@ impl SemanticMutation {
                 claim: native()?,
             }),
             Self::SendMessage {
+                delivery_mode,
                 thread,
                 body,
                 invited_recipients,
@@ -474,7 +495,7 @@ impl SemanticMutation {
                 relays_user,
                 user_intent,
             } => Command::SendMessage(SendMessage {
-                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                delivery_mode: *delivery_mode,
                 thread: thread.clone(),
                 body: body.clone(),
                 invited_recipients: invited_recipients.clone(),

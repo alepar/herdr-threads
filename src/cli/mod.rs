@@ -2163,6 +2163,9 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 require_rejection_capability(client, clock)?;
             }
             let semantic = SemanticMutation::freeze(cooperative_semantic(mutation)?, claim)?;
+            if semantic.is_lazy_send() {
+                require_lazy_send_capability(client, clock)?;
+            }
             retry::run_new_api_to_writer_discarding_rejection(
                 journal,
                 scope,
@@ -2244,6 +2247,9 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 if pending.semantic.kind() == crate::protocol::results::IntentKind::Reject {
                     require_rejection_capability(client, clock)?;
                 }
+                if pending.semantic.is_lazy_send() {
+                    require_lazy_send_capability(client, clock)?;
+                }
                 retry::run_retry_api_to_writer(
                     journal,
                     &reference,
@@ -2323,6 +2329,7 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
         },
         MutationSpec::Leave(thread) => SemanticMutation::Leave { thread },
         MutationSpec::Send {
+            delivery_mode,
             thread,
             body,
             require_ack,
@@ -2330,6 +2337,7 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
             relays_user,
             user_intent,
         } => SemanticMutation::SendMessage {
+            delivery_mode,
             thread,
             body,
             invited_recipients: require_ack,
@@ -2415,6 +2423,35 @@ fn require_rejection_capability<C: LocalClient + ?Sized>(
         }
         _ => Err(unsupported(
             "daemon lacks invitation.reject_v1; use a compatible daemon before rejecting invitations",
+        )),
+    }
+}
+
+/// Refuse unsupported lazy delivery before publishing an intent or replaying it.
+fn require_lazy_send_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    match client.call(Command::Capabilities, &cooperative_budget(clock)) {
+        Ok(CommandResult::Capabilities(list))
+            if list
+                .capabilities
+                .iter()
+                .any(|name| name == crate::protocol::capabilities::LAZY_SEND) =>
+        {
+            Ok(())
+        }
+        Err(error)
+            if !matches!(
+                error.code,
+                crate::protocol::results::ErrorCode::Unsupported
+                    | crate::protocol::results::ErrorCode::InvalidRequest
+            ) =>
+        {
+            Err(RunError::Api(error))
+        }
+        _ => Err(unsupported(
+            "daemon lacks send.lazy_v1; upgrade the daemon before sending lazy messages",
         )),
     }
 }
