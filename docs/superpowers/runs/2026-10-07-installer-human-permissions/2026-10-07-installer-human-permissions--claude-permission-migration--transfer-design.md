@@ -4,7 +4,7 @@ Interrupted Claude permission transfers retain exact ownership and resume safely
 
 # Claude Permission Migration  Transfer
 
-Epic: `ht-uwd.5.3`. Parent: [root](2026-10-07-installer-human-permissions-design.md). Mode B autonomous.
+Epic: `ht-uwd.5.3`. Parent: [Claude migration](2026-10-07-installer-human-permissions--claude-permission-migration-design.md). Mode B autonomous.
 
 ## Problem description
 
@@ -36,6 +36,11 @@ blocked-by ht-uwd.4: consumes boundary contract
 blocked-by ht-uwd.5.3.1: consumes declared producer artifact
 Acceptance consumes declared producer artifact (needs: ht-uwd.4).
 boundary contract: ht-uwd.4
+
+
+## Round 1 settled ownership/publication decisions
+
+ExactHistoricalOwned is an existing logical permission component, recognized only by exact non-pre-existing historical proof and current matching bytes; an authorized update narrows/transfers it even when new grant consent declines. Native matching scope never expands without consent: bare historical herdr-threads grants do not authorize ht/absolute forms, retired export-only rules do not authorize direct ordinary grants. Missing/edited/foreign/pre-existing evidence cannot add permissions. Shared OwnedConfigWriteGuard serializes all cooperating owned writers across processes from refreshed validation through ownership/settings/recovery publication. Noncooperating edits in final-check→rename interval are an explicit accepted limit. Historical recovery fault model is process termination on functioning filesystem with existing file+parent sync barriers. New-process interruption witnesses cover each promised transfer stage and lock release. Generic fresh/update/remove retain honest partial refusal, not universal automatic recovery.
 
 ## Post-Implementation Notes
 

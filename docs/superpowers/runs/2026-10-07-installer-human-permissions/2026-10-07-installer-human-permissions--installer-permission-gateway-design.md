@@ -37,6 +37,11 @@ blocked-by ht-uwd.7: consumes declared producer artifact
 blocked-by ht-uwd.8.1: consumes declared producer artifact
 Acceptance consumes declared producer artifact (needs: ht-uwd.7).
 
+
+## Round 1 settled consent decision
+
+Exact non-pre-existing matching historical owned permission proof is existing state, not Missing merely because new manifest absent. Narrow/transfer within old native match scope without expanded grant consent; ht/absolute/new direct or export-only broader grants need explicit consent, decline leaves missing desired forms with truthful incomplete status. Hook-only/pre-existing/foreign/edited/missing rule states never authorize additions. Consent before shared config lock; revalidate under OwnedConfigWriteGuard before mutations.
+
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*

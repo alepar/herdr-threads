@@ -219,14 +219,14 @@
   {
     "id": "ht-uwd.8.2",
     "title": "Pass owned installer paths and consent through shell gateway",
-    "description": "Exercise actual shell gateway to Rust consumer with isolated ownership/refusal/consent regressions, then implement owned path transport and truthful summaries. Forward installed_binary/link_path/alias_path and pinned state/socket to actual installer-integrations consumer; update missing permission consent and truthful summaries/exit/next steps; preserve foreign/force/PATH protections and uninstall ownership.\nowns: shell inventory gateway and permission consent wording.\nconsumes: installer inventory validation/transport consumer.\nAcceptance: fake-host shell fixture actual gateway arguments plus Rust consumer round trip; fresh/update/uninstall/declined/no-setup/noninteractive/custom-prefix/foreign/symlink cases; no real config.\nFiles: scripts/install.sh, tests/release/install_test.sh.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.7: consumes component lifecycle and consent\nblocked-by ht-uwd.8.1: consumes installer inventory validation/transport consumer\nAcceptance consumes declared producer artifact (needs: ht-uwd.7).",
+    "description": "Exercise actual shell gateway to Rust consumer with isolated ownership/refusal/consent regressions, then implement owned path transport and truthful summaries. Forward installed_binary/link_path/alias_path and pinned state/socket to actual installer-integrations consumer; update missing permission consent and truthful summaries/exit/next steps; preserve foreign/force/PATH protections and uninstall ownership.\nowns: shell inventory gateway and permission consent wording.\nconsumes: installer inventory validation/transport consumer.\nAcceptance: fake-host shell fixture actual gateway arguments plus Rust consumer round trip; fresh/update/uninstall/declined/no-setup/noninteractive/custom-prefix/foreign/symlink cases; no real config.\nFiles: scripts/install.sh, tests/release/install_test.sh.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.7: consumes component lifecycle and consent\nblocked-by ht-uwd.8.1: consumes installer inventory validation/transport consumer\nAcceptance consumes declared producer artifact (needs: ht-uwd.7).\nRound1 settled refinement: Gateway regression: historical exact bare broad proof narrows even if ht/absolute expansion consent declines; no new matching scope added, truthful missing desired coverage. Retired/pre_existing/edited ownership cases distinct.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:56:01Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:59:35Z",
+    "updated_at": "2026-10-08T06:14:16Z",
     "metadata": {
       "files_touched": [
         "scripts/install.sh",
@@ -321,14 +321,14 @@
   {
     "id": "ht-uwd.7.2",
     "title": "Installer component reconciliation and explicit permission consent",
-    "description": "Add causal isolated missing/declined/noninteractive/hooks-owned consent fixtures at actual reconciliation entry point. Reconcile permissions separately from hooks/skill; require specific missing permission consent, retain ownership-only updates and truthful per-component state/exit. Reinspect exact state after consent and serialize JSON mutation plans.\nowns: independent permission consent/reconciliation.\nconsumes: explicit permission lifecycle API.\nAcceptance: missing/declined/noninteractive/hooks-owned cases; consent says ordinary reads AND writes, human/operator withheld; mixed hook/permission status and changed-during-consent refusal; Rust consumer witness.\nFiles: src/cli/installer.rs reconciliation, tests/installer_integrations.rs.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nblocked-by ht-uwd.7.1: consumes explicit permission lifecycle API\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4",
+    "description": "Add causal isolated missing/declined/noninteractive/hooks-owned consent fixtures at actual reconciliation entry point. Reconcile permissions separately from hooks/skill; require specific missing permission consent, retain ownership-only updates and truthful per-component state/exit. Reinspect exact state after consent and serialize JSON mutation plans.\nowns: independent permission consent/reconciliation.\nconsumes: explicit permission lifecycle API.\nAcceptance: missing/declined/noninteractive/hooks-owned cases; consent says ordinary reads AND writes, human/operator withheld; mixed hook/permission status and changed-during-consent refusal; Rust consumer witness.\nFiles: src/cli/installer.rs reconciliation, tests/installer_integrations.rs.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nblocked-by ht-uwd.7.1: consumes explicit permission lifecycle API\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4\nRound1 settled refinement: Missing/expansion consent distinct from exact historical-owned bounded update. Declined expanded grants never suppress safe existing narrowing; no hook-only/foreign/pre_existing additions. Status incomplete for missing desired spellings. Consent before lock, exact state refresh under guard.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:54:55Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:59:36Z",
+    "updated_at": "2026-10-08T06:14:16Z",
     "metadata": {
       "files_touched": [
         "src/cli/installer.rs",
@@ -372,14 +372,14 @@
   {
     "id": "ht-uwd.7.1",
     "title": "Explicit permission setup status unsetup and requested doctor fix",
-    "description": "Wire backend component into explicit request/response/status/remove, with active isolated roots and independent component result.\nowns: explicit permission lifecycle API.\nconsumes: Claude permission backend; Codex permission backend; component API.\nAcceptance: actual Rust consumer install/status/remove round trip, absent backend/config and owned-state diagnostics, requested doctor only, stronger/foreign state preserved.\nFiles: src/cli/setup.rs lifecycle and src/cli/doctor.rs component dispatch; setup CLI declaration slots reserved by ht-uwd.1.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.5: consumes Claude permission backend and historical hook transfer\nblocked-by ht-uwd.6: consumes Codex permission backend\nAcceptance consumes declared producer artifact (needs: ht-uwd.5).",
+    "description": "Wire backend component into explicit request/response/status/remove, with active isolated roots and independent component result.\nowns: explicit permission lifecycle API.\nconsumes: Claude permission backend; Codex permission backend; component API.\nAcceptance: actual Rust consumer install/status/remove round trip, absent backend/config and owned-state diagnostics, requested doctor only, stronger/foreign state preserved.\nFiles: src/cli/setup.rs lifecycle and src/cli/doctor.rs component dispatch; setup CLI declaration slots reserved by ht-uwd.1.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.5: consumes Claude permission backend and historical hook transfer\nblocked-by ht-uwd.6: consumes Codex permission backend\nAcceptance consumes declared producer artifact (needs: ht-uwd.5).\nRound1 settled refinement: Inspection treats ExactHistoricalOwned as existing state for bounded narrowing; new desired spellings still explicit grant consent. Shared write guard used through component publications/recovery.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:54:52Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:32Z",
+    "updated_at": "2026-10-08T06:14:15Z",
     "metadata": {
       "files_touched": [
         "src/cli/doctor.rs",
@@ -423,14 +423,14 @@
   {
     "id": "ht-uwd.5.3.2",
     "title": "Independent Claude install status remove with shared JSON safety",
-    "description": "Wire backend lifecycle to exact transfer engine and current ownership manifest, refreshed settings plans and representability diagnostic; status separates hooks/native permissions/external broad rule warning.\nowns: independent Claude lifecycle.\nconsumes: prepared ownership transfer engine.\nAcceptance: fresh/update/unsetup plus migration/partial/edited/foreign/symlink/race matrix; unrelated hooks/deny/ask survive and removed broad never returns.\nFiles: src/harness/permissions/claude.rs lifecycle, tests/installer_integrations.rs.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nblocked-by ht-uwd.5.3.1: consumes prepared ownership transfer engine\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4",
+    "description": "Wire backend lifecycle to exact transfer engine and current ownership manifest, refreshed settings plans and representability diagnostic; status separates hooks/native permissions/external broad rule warning.\nowns: independent Claude lifecycle.\nconsumes: prepared ownership transfer engine.\nAcceptance: fresh/update/unsetup plus migration/partial/edited/foreign/symlink/race matrix; unrelated hooks/deny/ask survive and removed broad never returns.\nFiles: src/harness/permissions/claude.rs lifecycle, tests/installer_integrations.rs.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nblocked-by ht-uwd.5.3.1: consumes prepared ownership transfer engine\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4\nRound1 settled refinement: Inspect logical exact historical ownership before deciding missing consent; old bare grant cannot expand to ht/absolute without consent. Retired export-only proof permits safe exact removal/narrowing but no direct general new grants. Limited coverage status honest; OwnedConfigWriteGuard participating lifecycle.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:53:46Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:32Z",
+    "updated_at": "2026-10-08T06:14:14Z",
     "metadata": {
       "files_touched": [
         "src/harness/permissions/claude.rs",
@@ -474,14 +474,14 @@
   {
     "id": "ht-uwd.5.3.1",
     "title": "Durable exact Claude ownership transfer engine",
-    "description": "Implement validated prepared record, exact stage derivation and idempotent resume/publication state machine from historical source to independent destination.\nowns: prepared ownership transfer engine.\nconsumes: Claude rule renderer and legacy hook evidence.\nAcceptance: interrupt each boundary then resume/retry/remove, at least one durable removal proof always, no two contradictory owners, unchanged foreign/preexisting bytes; corrupt/edited/race states refuse.\nFiles: src/harness/permissions/claude_transfer.rs, src/harness/setup.rs transfer proof adapter only; focused transfer fixtures.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.5.1: consumes Claude rule renderer and representability contract\nblocked-by ht-uwd.5.2: consumes independent hook completeness and legacy ownership evidence\nAcceptance consumes declared producer artifact (needs: ht-uwd.5.1).",
+    "description": "Implement validated prepared record, exact stage derivation and idempotent resume/publication state machine from historical source to independent destination.\nowns: prepared ownership transfer engine.\nconsumes: Claude rule renderer and legacy hook evidence.\nAcceptance: interrupt each boundary then resume/retry/remove, at least one durable removal proof always, no two contradictory owners, unchanged foreign/preexisting bytes; corrupt/edited/race states refuse.\nFiles: src/harness/permissions/claude_transfer.rs, src/harness/setup.rs transfer proof adapter only; focused transfer fixtures.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.5.1: consumes Claude rule renderer and representability contract\nblocked-by ht-uwd.5.2: consumes independent hook completeness and legacy ownership evidence\nAcceptance consumes declared producer artifact (needs: ht-uwd.5.1).\nRound1 settled refinement: Implement bounded ExactHistoricalOwned narrowing/transfer even when expansion consent declines; compare native rule scope, never ht/absolute/direct general grant from bare/export-only proof. Cooperating publication guard spans prepared/settings/destination/source publications. Process-termination recovery only, existing sync_all(file)+rename+sync_all(parent). New-process interruption witnesses every stage, proof/foreign/no-broad-restore/lock-release assertions.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:53:43Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:33Z",
+    "updated_at": "2026-10-08T06:14:14Z",
     "metadata": {
       "files_touched": [
         "src/harness/permissions/claude_transfer.rs",
@@ -588,14 +588,14 @@
   {
     "id": "ht-uwd.5.2",
     "title": "Decouple hook completeness and writes from new permissions",
-    "description": "Remove broad automatic permission grant/requirement from new Claude hooks install/status while preserving historical OwnedPermission fingerprint/pre_existing/superseded/resume proof.\nowns: independent hook completeness and legacy ownership evidence.\nconsumes: separate permission manifest schema.\nAcceptance: hook-only update cannot add broad or missing permission; hooks status independent; historical removal refuses edited proof and preserves foreign/pre-existing rules.\nFiles: src/harness/setup.rs hook install/inspect/remove internals, setup unit tests.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4",
+    "description": "Remove broad automatic permission grant/requirement from new Claude hooks install/status while preserving historical OwnedPermission fingerprint/pre_existing/superseded/resume proof.\nowns: independent hook completeness and legacy ownership evidence.\nconsumes: separate permission manifest schema.\nAcceptance: hook-only update cannot add broad or missing permission; hooks status independent; historical removal refuses edited proof and preserves foreign/pre-existing rules.\nFiles: src/harness/setup.rs hook install/inspect/remove internals, setup unit tests.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4\nRound1 settled refinement: Exact historical-owned proof is existing permission state; hook-only operations remain permission-inert. Cooperating hook writes consume shared OwnedConfigWriteGuard and reject conflicting transfer states. No new grants solely from hook ownership.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:52:39Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:34Z",
+    "updated_at": "2026-10-08T06:14:13Z",
     "metadata": {
       "files_touched": [
         "src/harness/setup.rs"
@@ -827,14 +827,14 @@
   {
     "id": "ht-uwd.9",
     "title": "Human command guidance and immutable continuation rendering",
-    "description": "Update owned guidance, generated pending/retry/ready/continuation commands and TRUST-POLICY spelling/native limits. Human output ready argv preserves immediate human; no new strict OutputSpec/ContinuationContext wire field, digest rewrite, or blind replacement of peer/body text. Supply exact shared SKILL/handoff help wording to w4:pD0 via parent and consume only coordinated source.\nowns: lawful namespace suggestions and documentation.\nconsumes: InvocationActor route; frozen retry origin classifier; runtime actor boundary.\nAcceptance: valid legacy wire fixtures and generated human/agent continuation argv; precise suggestions and no peer/body rewriting.\nFiles: src/cli/output.rs, src/cli/journal.rs rendering, src/cli/me.rs help, TRUST-POLICY.md, docs/install.md; shared integrations/skill/SKILL.md and handoff help owner-coordinated.\nblocked-by ht-uwd.2: consumes Immutable original actor classification and retry preflight\nblocked-by ht-uwd.3: consumes Runtime honest actor routing and human lifecycle\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.2).\nOutputSpec/ContinuationContext deny_unknown_fields compatibility and frozen wire digest are immutable: build local namespace argv without serialized schema changes or blind text replacement.\nOutputSpec/ContinuationContext deny_unknown_fields compatibility and frozen wire digest are immutable: build local namespace argv without serialized schema changes or blind text replacement.",
+    "description": "Update owned guidance, generated pending/retry/ready/continuation commands and TRUST-POLICY spelling/native limits. Human output ready argv preserves immediate human; no new strict OutputSpec/ContinuationContext wire field, digest rewrite, or blind replacement of peer/body text. Supply exact shared SKILL/handoff help wording to w4:pD0 via parent and consume only coordinated source.\nowns: lawful namespace suggestions and documentation.\nconsumes: InvocationActor route; frozen retry origin classifier; runtime actor boundary.\nAcceptance: valid legacy wire fixtures and generated human/agent continuation argv; precise suggestions and no peer/body rewriting.\nFiles: src/cli/output.rs, src/cli/journal.rs rendering, src/cli/me.rs help, TRUST-POLICY.md, docs/install.md; shared integrations/skill/SKILL.md and handoff help owner-coordinated.\nblocked-by ht-uwd.2: consumes Immutable original actor classification and retry preflight\nblocked-by ht-uwd.3: consumes Runtime honest actor routing and human lifecycle\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.2).\nOutputSpec/ContinuationContext deny_unknown_fields compatibility and frozen wire digest are immutable: build local namespace argv without serialized schema changes or blind text replacement.\nOutputSpec/ContinuationContext deny_unknown_fields compatibility and frozen wire digest are immutable: build local namespace argv without serialized schema changes or blind text replacement.\nRound1 settled refinement: Known structured argv producers must add human before daemon page fitting for new person/operator suggestions using existing action/caller semantics, no serialized actor field. Local legacy rendering clones only known argv fields and checks final encoding against original max-bytes; refuse via existing required-minimum budget error if framing cannot fit, unchanged cursor/rows/persisted frozen response. Never blind peer/body replacement. Own src/protocol/output.rs budget-compatible helpers and concrete suggestion producer wiring needed; no wire schema/digest change.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:49:04Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T06:00:55Z",
+    "updated_at": "2026-10-08T06:14:17Z",
     "metadata": {
       "files_touched": [
         "TRUST-POLICY.md",
@@ -984,14 +984,14 @@
   {
     "id": "ht-uwd.6",
     "title": "Codex owned execpolicy backend",
-    "description": "Generate exact executable union allow plus matching immediate human prompt, install/status/remove owned rules file under active CODEX_HOME/rules. Retain stronger policy and separate existing codex_config network/socket/writable-root allowances.\nowns: Codex permission backend.\nconsumes: PermissionInputs, PermissionPlan/Inspection and component manifest schema.\nAcceptance: isolated literal/union checker contract, precedence, paths, quoted/compound evidence scope, edited/foreign/partial/symlink/race removal refusal; no shell prefixes or modes.\nFiles: src/harness/permissions/codex.rs, tests/permissions_codex.rs (combined module).\nblocked-by ht-uwd.4: consumes boundary contract\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.4).\nboundary contract: ht-uwd.4",
+    "description": "Generate exact executable union allow plus matching immediate human prompt, install/status/remove owned rules file under active CODEX_HOME/rules. Retain stronger policy and separate existing codex_config network/socket/writable-root allowances.\nowns: Codex permission backend.\nconsumes: PermissionInputs, PermissionPlan/Inspection and component manifest schema.\nAcceptance: isolated literal/union checker contract, precedence, paths, quoted/compound evidence scope, edited/foreign/partial/symlink/race removal refusal; no shell prefixes or modes.\nFiles: src/harness/permissions/codex.rs, tests/permissions_codex.rs (combined module).\nblocked-by ht-uwd.4: consumes boundary contract\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.4).\nboundary contract: ht-uwd.4\nRound1 settled refinement: Consume shared OwnedConfigWriteGuard for owned rules/manifest mutation; exact Starlark literal escaping including spaces/metachars/apostrophe. Generic interrupted fresh/update/remove honestly refuses partial state, no universal recovery claim.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:48:57Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:37Z",
+    "updated_at": "2026-10-08T06:14:15Z",
     "metadata": {
       "files_touched": [
         "src/harness/permissions/codex.rs",
@@ -1075,14 +1075,14 @@
   {
     "id": "ht-uwd.4",
     "title": "Seam contract: owned permission component and validated executable inputs",
-    "description": "Deliver compilable inert-by-default permission module/API: bounded validated executable spellings and routing, inspect/plan/install/remove backend types, separate manifest/status/consent fields, module wiring. Only boundary code and its acceptance; no backend implementation/migration/polish.\nowns: PermissionInputs, PermissionPlan/Inspection and component manifest schema.\nconsumes: ordinary command catalog.\nAcceptance: compile, no silent grant, validated union rejects foreign/control/relative paths; stubs wired to consumer boundaries.\nFiles: src/harness/permissions.rs or permissions/mod.rs, src/harness/mod.rs, src/cli/setup.rs boundary declarations, src/cli/installer.rs boundary declarations.\nblocked-by ht-uwd.1: consumes Namespace grammar and ordinary command catalog\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.1).",
+    "description": "Deliver compilable inert-by-default permission module/API: bounded validated executable spellings and routing, inspect/plan/install/remove backend types, separate manifest/status/consent fields, module wiring. Only boundary code and its acceptance; no backend implementation/migration/polish.\nowns: PermissionInputs, PermissionPlan/Inspection and component manifest schema.\nconsumes: ordinary command catalog.\nAcceptance: compile, no silent grant, validated union rejects foreign/control/relative paths; stubs wired to consumer boundaries.\nFiles: src/harness/permissions.rs or permissions/mod.rs, src/harness/mod.rs, src/cli/setup.rs boundary declarations, src/cli/installer.rs boundary declarations.\nblocked-by ht-uwd.1: consumes Namespace grammar and ordinary command catalog\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.1).\nRound1 settled refinement: Owns additional minimal boundary: PermissionInspection states Missing/ExactHistoricalOwned/CurrentOwned/Conflict/Foreign and OwnedConfigWriteGuard signature/RAII primitive keyed by verified config identity. No grant expansion from executable ownership. Inert setup declarations; backend writers consume guard. Existing std File::try_lock/Drop unlock, bounded busy conflict; stable owned inode no unlink, symlink/foreign refusal. No general locking framework.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:48:54Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:38Z",
+    "updated_at": "2026-10-08T06:14:13Z",
     "metadata": {
       "files_touched": [
         "src/cli/installer.rs",
@@ -1168,14 +1168,14 @@
   {
     "id": "ht-uwd.2",
     "title": "Immutable original actor classification and retry preflight",
-    "description": "Classify validated original SemanticMutation/frozen CallerClaim/IntentScope, including Native lifecycle and contradictions, before completed handoff shortcut output/cleanup. Existing agent completed replay after binding change remains root-valid; retained human/operator only human retry. Read absent journal without mkdir; no schema/claim/scope/digest/key rewrite.\nowns: frozen retry origin classifier and preflight.\nconsumes: InvocationActor route.\nAcceptance: RED/GREEN legacy person/operator, completed agent/person, Native and malformed; byte-identical replay invariance.\nFiles: src/cli/journal.rs, src/cli/retry.rs, src/cli/mod.rs preflight only, tests/cli/journal.rs, tests/cli/follow_retry.rs; coordinate handoff.rs owner through parent.\nblocked-by ht-uwd.1: consumes Namespace grammar and ordinary command catalog\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.1).",
+    "description": "Classify validated original SemanticMutation/frozen CallerClaim/IntentScope, including Native lifecycle and contradictions, before completed handoff shortcut output/cleanup. Existing agent completed replay after binding change remains root-valid; retained human/operator only human retry. Read absent journal without mkdir; no schema/claim/scope/digest/key rewrite.\nowns: frozen retry origin classifier and preflight.\nconsumes: InvocationActor route.\nAcceptance: RED/GREEN legacy person/operator, completed agent/person, Native and malformed; byte-identical replay invariance.\nFiles: src/cli/journal.rs, src/cli/retry.rs, src/cli/mod.rs preflight only, tests/cli/journal.rs, tests/cli/follow_retry.rs; coordinate handoff.rs owner through parent.\nblocked-by ht-uwd.1: consumes Namespace grammar and ordinary command catalog\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.1).\nRound1 settled refinement: Before original actor classification use InstancePaths::resolve_read_only and read-only validated journal loader; do not create allocator.lock/runtime dir/marker/ordinal metadata merely on refusal. Scope authority unchanged.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-08T05:48:50Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-08T05:56:39Z",
+    "updated_at": "2026-10-08T06:14:13Z",
     "metadata": {
       "files_touched": [
         "src/cli/journal.rs",

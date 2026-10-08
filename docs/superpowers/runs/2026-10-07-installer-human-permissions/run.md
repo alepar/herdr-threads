@@ -34,4 +34,8 @@ approvals:
 
 - coverage-round-2 · auto · no new findings; C1/C2/C3 closed; requirements: 10 · mapped: 10 · unmapped: 0; findings: 3 → 0; novel: 0/0 (0%); widening: no
 
-roastDesignRound: 1
+roastDesignRound: 2
+
+roast-design: 2026-10-07-installer-human-permissions-roast-design-1.md
+
+stepBackDesign-round-1: redesign — applied: destination-manifest absence → exact historical-owned state with native-scope-bounded narrowing (dissolves 1)
