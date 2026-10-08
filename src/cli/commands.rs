@@ -2634,7 +2634,22 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
         }
     };
     if let CliAction::Wire(command) = &action {
-        command.validate().map_err(validation_error)?;
+        // Inbox is a client-side placeholder until capability discovery. A v2
+        // continuation must retain that action for own-text settlement, while
+        // legacy wire commands continue to reject the distinct cursor namespace.
+        if let WireCommand::Inbox(query) = command
+            && query
+                .page
+                .cursor
+                .as_deref()
+                .is_some_and(|raw| raw.starts_with(crate::protocol::pagination::INBOX_V2_PREFIX))
+        {
+            WireCommand::InboxBatchV2(query.clone())
+                .validate()
+                .map_err(validation_error)?;
+        } else {
+            command.validate().map_err(validation_error)?;
+        }
     }
     Ok(ParsedCli {
         actor: super::actor_route::InvocationActor::Agent,
