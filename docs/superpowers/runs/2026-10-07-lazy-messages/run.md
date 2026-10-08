@@ -2,7 +2,7 @@
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
 resumeChange: 2026-10-08 direct user redesign of native send default — lazy by default, explicit --nudge for attention, ACK implies nudge; interim --ordinary superseded; applied within current code run, wire/saved omission stays Ordinary.
-phase: roast-code
+phase: report
 codeMechanism: ordinary-subagents
 
 idea: lgtm, let's $super-auto this, fully autonomous, both roasts are on
@@ -35,6 +35,7 @@ approvals:
 parked:
 - user brief · degraded-verdict · "Full-suite sweep delegated to main; worker runs focused gates only, per explicit user scope."
 - user brief · degraded-verdict · "Merge/main-only push already authorized subject to main granting actual mutation window; preserve release freeze."
+- development coordination · degraded-verdict · "Main retains actual landing window, integrated exact-SHA full suite, release and install; preserve real migration26 → actual reviewed adapter27 → topology28 order. No standalone foundation or whole-feature composition permission issued while roast Blocking remains."
 
 graph-pass: depth 8→8 · width 1.6→1.6 · applied 0 · parked 0
 
@@ -46,7 +47,7 @@ codeBuckets:
   stalled: false
   review: ready
   sweep: SWEEP DEFERRED (caller-owned)
-  slowness: ordinary-subagents serial cap1; historical detector queue/idle measurement invalid; profile recovered13landed/13planned, no Workflow throughput claim
+  slowness: ordinary-subagents serial cap1; historical detector queue/idle measurement invalid; profiles retain raw model; late-created ht-big.11 synthetic6h07wait and mixed roast/coordinator peak are not observed scheduling delay; no Workflow throughput claim
   worktreesKept:
   processSweep: stopped 0 · survived 0
 roastCodeRound: 2
@@ -60,3 +61,5 @@ scopeFilter-round-1: [Nit] src/cli/journal.rs:688 punch-list — Bounded cleanup
 scope-filter: 2 in-scope · 3 punch-listed
 roastCodeExit: thrash
 roastCodeCapped: [Blocking] src/store/queries.rs:5720 · 2026-10-07-lazy-messages-roast-pr-2.md · operator disposition of bounded-loop exit before further source fixes; main retains landing/release gates
+stepBackCode-round-2: patch — prior context fix held; recovery recency, cursor protocol and embedded guide have independent causes; fixes parked at thrash exit
+friction: 7 events
