@@ -378,6 +378,14 @@ fn synthetic_four_adapter_hook_configuration_and_canonical_replay() {
             .map(|id| (id.to_owned(), "cooperative_top_level".to_owned()))
     );
     let before = daemon.counts();
+    let operations_before: i64 = daemon
+        .db()
+        .query_row(
+            "SELECT COALESCE(MAX(rowid), 0) FROM operations",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     let first = daemon.hook("w1:p4", "synthetic_fourth", &fourth);
     let replay = daemon.hook("w1:p4", "synthetic_fourth", &fourth);
     assert_eq!(first, replay);
@@ -385,6 +393,31 @@ fn synthetic_four_adapter_hook_configuration_and_canonical_replay() {
         daemon.counts(),
         before,
         "exact replay allocated canonical rows"
+    );
+    // The only operations a replay adds are guarded resolutions of the same
+    // already resolved seat: nothing else is decided again.
+    let added: Vec<String> = daemon
+        .db()
+        .prepare("SELECT result_json FROM operations WHERE rowid > ?1")
+        .unwrap()
+        .query_map([operations_before], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let resolved: std::collections::BTreeSet<String> = added
+        .iter()
+        .map(|json| {
+            let value: serde_json::Value = serde_json::from_str(json).unwrap();
+            assert_eq!(
+                value["kind"], "seat_resolved",
+                "replay decided more: {json}"
+            );
+            value["data"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    assert!(
+        resolved.len() <= 1,
+        "replay resolved different seats: {resolved:?}"
     );
     daemon.json(&["daemon", "stop"]);
     daemon.json(&["daemon", "ensure"]);
