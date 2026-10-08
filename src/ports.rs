@@ -1280,6 +1280,11 @@ pub struct BootstrapPaneObservation {
     tab: HostTargetId,
 }
 impl BootstrapPaneObservation {
+    /// Publish this same response before deriving its canonical attachment guard.
+    pub fn observation(&self) -> &HostObservation {
+        &self.observation
+    }
+
     // Inert until the native pane.get producer is wired by daemon integration.
     #[allow(dead_code)]
     pub(crate) fn try_new(
