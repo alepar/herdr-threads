@@ -197,7 +197,30 @@ impl herdr_threads::ports::LocalClient for Client {
                     vec![]
                 },
             })),
-            Command::InboxBatchV2(_) if self.v2 => Ok(self.result.clone()),
+            Command::InboxBatchV2(query) if self.v2 => {
+                let mut result = self.result.clone();
+                if let CommandResult::InboxBatchV2(page) = &mut result
+                    && page.items.is_empty()
+                    && page.stop_reason == StopReason::Work
+                    && page.has_more
+                {
+                    // Advance this canned walk like the real bounded producer.
+                    let after = query.page.cursor.as_ref().map_or(0, |cursor| {
+                        herdr_threads::protocol::pagination::InboxBatchV2CursorState::decode(cursor)
+                            .unwrap()
+                            .lazy_after_ordinal
+                    });
+                    let next = test_cursor_after(after + 1);
+                    page.next_cursor = Some(next.clone());
+                    page.next_argv = Some(vec![
+                        "herdr-threads".into(),
+                        "inbox".into(),
+                        "--cursor".into(),
+                        next,
+                    ]);
+                }
+                Ok(result)
+            }
             Command::Inbox(_) if !self.v2 => Ok(CommandResult::Inbox(Page {
                 items: vec![],
                 next_cursor: None,
@@ -408,12 +431,12 @@ fn lazy_display_empty_continuation_not_empty_inbox() {
     p.items.clear();
     p.has_more = true;
     p.stop_reason = StopReason::Work;
-    p.next_cursor = Some("bounded".into());
+    p.next_cursor = Some(test_cursor());
     p.next_argv = Some(vec![
         "ht".into(),
         "inbox".into(),
         "--cursor".into(),
-        "bounded".into(),
+        test_cursor(),
     ]);
     let c = Client {
         calls: std::sync::Mutex::new(vec![]),
@@ -428,6 +451,26 @@ fn lazy_display_empty_continuation_not_empty_inbox() {
     ))
     .unwrap();
     assert!(out.contains("next:"));
+    let next = shlex::split(
+        out.lines()
+            .find_map(|line| line.strip_prefix("next: "))
+            .unwrap(),
+    )
+    .unwrap();
+    let cursor = next.iter().position(|arg| arg == "--cursor").unwrap();
+    assert_eq!(next[cursor + 1], test_cursor_after(8));
+    assert_eq!(
+        c.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| matches!(
+                call,
+                herdr_threads::protocol::commands::Command::InboxBatchV2(_)
+            ))
+            .count(),
+        8
+    );
     assert!(!out.contains("empty"));
     assert!(!has_lazy_progress(&f));
 }
@@ -705,6 +748,10 @@ fn continuation_empty_work_page_preserves_invocation() {
 }
 
 fn test_cursor() -> String {
+    test_cursor_after(0)
+}
+
+fn test_cursor_after(after: u64) -> String {
     use herdr_threads::protocol::pagination::{
         InboxBatchV2CursorState, InboxBatchV2Source, ReceiptAttentionCursorState,
         SeatAttentionCursorState,
@@ -714,8 +761,8 @@ fn test_cursor() -> String {
         binding_generation: Some(1),
         execution: Some(ExecutionId::new(uuid::Uuid::from_u128(2).to_string())),
         source: InboxBatchV2Source::Lazy,
-        lazy_after_ordinal: 0,
-        lazy_high_water_ordinal: 2,
+        lazy_after_ordinal: after,
+        lazy_high_water_ordinal: 100,
         publication_decision_high_water: 4,
         body: None,
         attention: SeatAttentionCursorState {

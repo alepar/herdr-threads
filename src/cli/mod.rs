@@ -1105,6 +1105,64 @@ fn fit_annotated_read<C: LocalClient + ?Sized>(
     }
 }
 
+const INBOX_DISPLAY_PAGE_READ_LIMIT: usize = 8;
+
+fn select_display_inbox_page<C: LocalClient + ?Sized>(
+    mut command: Command,
+    output_spec: &OutputSpec,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(Command, CommandResult), RunError> {
+    let selection_budget = cooperative_budget(clock);
+    let mut result = client.call_with_output(command.clone(), output_spec, &selection_budget)?;
+    // Source pages have their own bounded candidate walk. Retained, settled
+    // history can fill that walk without producing anything to display. Keep
+    // one bounded selection window, then present its actual continuation.
+    for _ in 1..INBOX_DISPLAY_PAGE_READ_LIMIT {
+        let (empty, stop_reason, has_more, next_cursor) = match &result {
+            CommandResult::InboxBatch(page) => (
+                page.items.is_empty(),
+                page.stop_reason,
+                page.has_more,
+                &page.next_cursor,
+            ),
+            CommandResult::InboxBatchV2(page) => (
+                page.items.is_empty(),
+                page.stop_reason,
+                page.has_more,
+                &page.next_cursor,
+            ),
+            _ => break,
+        };
+        if !empty
+            || stop_reason != crate::protocol::pagination::StopReason::Work
+            || !has_more
+            || selection_budget.is_exhausted(clock)
+        {
+            break;
+        }
+        let next = next_cursor.as_ref().ok_or_else(|| {
+            RunError::Api(ApiError::store_corrupt(
+                "inbox work page has no continuation",
+            ))
+        })?;
+        let request = match &mut command {
+            Command::InboxBatch(request) | Command::InboxBatchV2(request) => request,
+            _ => unreachable!("display selection only reads compact inbox batches"),
+        };
+        if request.page.cursor.as_ref() == Some(next) {
+            return Err(RunError::Api(ApiError::store_corrupt(
+                "inbox work continuation did not advance",
+            )));
+        }
+        request.page.cursor = Some(next.clone());
+        result = client.call_with_output(command.clone(), output_spec, &selection_budget)?;
+    }
+    // Byte refitting must reselect this final source page, including any body
+    // offset and frozen high waters in its request cursor, never the first page.
+    Ok((command, result))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
     query: &crate::protocol::commands::InboxQuery,
@@ -1151,9 +1209,8 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         .iter()
         .any(|name| name == crate::protocol::capabilities::INBOX_BATCH);
     if v2 {
-        let command = Command::InboxBatchV2(request);
-        let result =
-            client.call_with_output(command.clone(), output_spec, &cooperative_budget(clock))?;
+        let (command, result) =
+            select_display_inbox_page(Command::InboxBatchV2(request), output_spec, client, clock)?;
         let result = fit_inbox_read(command, result, output_spec, client, &|| {
             cooperative_budget(clock)
         })?;
@@ -1184,9 +1241,8 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
             "this daemon does not support compact inbox display ACK; upgrade the daemon or use inbox --machine for a read-only view",
         ));
     }
-    let command = Command::InboxBatch(request);
-    let result =
-        client.call_with_output(command.clone(), output_spec, &cooperative_budget(clock))?;
+    let (command, result) =
+        select_display_inbox_page(Command::InboxBatch(request), output_spec, client, clock)?;
     let result = fit_inbox_read(command, result, output_spec, client, &|| {
         cooperative_budget(clock)
     })?;

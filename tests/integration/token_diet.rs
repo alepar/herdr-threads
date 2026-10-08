@@ -8,7 +8,7 @@
 use super::sweep::{FakeHost, Scratch, pane};
 use serde_json::{Value, json};
 #[path = "../support/lazy_proxy.rs"]
-mod lazy_proxy;
+pub(super) mod lazy_proxy;
 use herdr_threads::daemon::paths::{InstancePaths, RuntimeContext};
 use std::sync::atomic::Ordering;
 use std::{fs, os::unix::fs::DirBuilderExt, path::PathBuf, process::Command};

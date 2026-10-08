@@ -80,6 +80,7 @@ fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
 }
 
 struct World {
+    binary: String,
     root: PathBuf,
     state: PathBuf,
     host: PathBuf,
@@ -91,6 +92,9 @@ struct World {
 }
 impl World {
     fn start(panes: Vec<Value>) -> Self {
+        Self::start_with_binary(panes, BIN)
+    }
+    fn start_with_binary(panes: Vec<Value>, binary: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "htsf-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..8]
@@ -116,13 +120,15 @@ impl World {
         let file = paths.instance_dir.join("settings.json");
         fs::write(&file, SETTINGS).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
-        let argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Claude);
+        let argv = installed_argv(binary, Some(state.to_str().unwrap()), None, Harness::Claude);
         let plan = plan_claude(b"{}", &argv).unwrap();
         let installed: Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
         let claude_hooks = installed["hooks"].clone();
-        let codex_argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Codex);
+        let codex_argv =
+            installed_argv(binary, Some(state.to_str().unwrap()), None, Harness::Codex);
         let codex_hook = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
         let world = Self {
+            binary: binary.to_owned(),
             root,
             state,
             host: socket,
@@ -165,7 +171,19 @@ impl World {
         args: &[&str],
         json: bool,
     ) -> Out {
-        let mut command = crate::scrubbed_command(BIN);
+        self.exec_binary(&self.binary, caller, pane, stdin, args, json)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn exec_binary(
+        &self,
+        binary: &str,
+        caller: Option<Caller>,
+        pane: Option<&str>,
+        stdin: Option<&str>,
+        args: &[&str],
+        json: bool,
+    ) -> Out {
+        let mut command = crate::scrubbed_command(binary);
         let args = if args.first() == Some(&"human") {
             command.arg("human");
             &args[1..]
@@ -492,12 +510,18 @@ impl Fixture {
     /// | 5     | 15-16     | m9, m10                                         |
     /// | tail  | 17        | m11, require-ACK to B with a short deadline     |
     fn build() -> Self {
-        let world = World::start(vec![
-            claude(PANE_A, "term-a", "SA"),
-            claude(PANE_B, "term-b", SESSION_B),
-            pane(PANE_C, "term-c"),
-            agent_pane(PANE_D, "term-d", "codex", Some("cx-sess")),
-        ]);
+        Self::build_with_binary(BIN)
+    }
+    fn build_with_binary(binary: &str) -> Self {
+        let world = World::start_with_binary(
+            vec![
+                claude(PANE_A, "term-a", "SA"),
+                claude(PANE_B, "term-b", SESSION_B),
+                pane(PANE_C, "term-c"),
+                agent_pane(PANE_D, "term-d", "codex", Some("cx-sess")),
+            ],
+            binary,
+        );
         let resolve = |pane: &str| {
             world
                 .cli(None, None, &["seat", "resolve", "--pane", pane])
@@ -2525,4 +2549,437 @@ fn user_intent_snapshot_worker_retries_exact_bundle() {
             .iter()
             .any(|e| e["item"]["body"]["text"] == "A asks B to review the plan")
     );
+}
+
+use crate::token_diet::lazy_proxy as useful_page_proxy;
+
+fn useful_page_proxy(fx: &Fixture, v1: bool) -> useful_page_proxy::Proxy {
+    let paths = herdr_threads::daemon::paths::InstancePaths::resolve(
+        &RuntimeContext::explicit(fx.world.state.clone(), fx.world.host.clone(), None).unwrap(),
+    )
+    .unwrap();
+    let proxy = useful_page_proxy::Proxy::new(paths, &fx.world.root);
+    proxy
+        .mode
+        .store(u8::from(v1), std::sync::atomic::Ordering::SeqCst);
+    proxy
+}
+
+/// Retained history fixture. The opt-in binary override is used only for
+/// version-bound reproductions against a separately owned older daemon.
+fn inbox_history_fixture(history_count: i64) -> Fixture {
+    let binary = std::env::var("HT_INBOX_FIXTURE_BINARY").unwrap_or_else(|_| BIN.to_owned());
+    let fx = Fixture::build_with_binary(&binary);
+    // Settle original mail through the real API, including sparse receipts.
+    let original = fx
+        .world
+        .exec_in_pane(None, Some(PANE_B), None, &["inbox"], false);
+    assert_eq!(original.code, 0, "{}", original.stderr);
+    assert!(fx.world.pending(&fx.b).is_empty());
+    let db = rusqlite::Connection::open(fx.world.instance_dir.join("threads.sqlite3")).unwrap();
+    db.busy_timeout(Duration::from_secs(5)).unwrap();
+    let instance: String = db
+        .query_row("SELECT instance_id FROM seats WHERE id=?1", [&fx.b], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let high: i64 = db
+        .query_row(
+            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            [&instance],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let seq: i64 = db
+        .query_row(
+            "SELECT next_sequence FROM threads WHERE id=?1",
+            [&fx.thread],
+            |r| r.get(0),
+        )
+        .unwrap();
+    for n in 0..history_count {
+        let id = format!("history-{n}");
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,event_offset,decision_at) VALUES (?1,?2,?3,?4,'ordinary','settled history',?5,?6,0)", rusqlite::params![id,instance,fx.thread,seq+n,high,1000+n]).unwrap();
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,?2,?3,'acked',300)", rusqlite::params![id,fx.thread,fx.b]).unwrap();
+        let warning = format!("historical-warning-{n}");
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_seq,event_offset,decision_at) VALUES (?1,?2,?3,?4,'warn','{}',?5,?6,0)", rusqlite::params![warning,instance,fx.thread,seq+history_count+n,high,1000+history_count+n]).unwrap();
+    }
+    db.execute(
+        "UPDATE threads SET next_sequence=?2 WHERE id=?1",
+        rusqlite::params![fx.thread, seq + 2 * history_count],
+    )
+    .unwrap();
+    eprintln!(
+        "VERSION-BOUND CLI+DAEMON {} settled={history_count} unrelated-warnings={history_count}",
+        fx.world.binary
+    );
+    fx
+}
+
+fn add_pending_physical(fx: &Fixture) -> rusqlite::Connection {
+    let db = rusqlite::Connection::open(fx.world.instance_dir.join("threads.sqlite3")).unwrap();
+    db.busy_timeout(Duration::from_secs(5)).unwrap();
+    let instance: String = db
+        .query_row("SELECT instance_id FROM seats WHERE id=?1", [&fx.b], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let high: i64 = db
+        .query_row(
+            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            [&instance],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let seq: i64 = db
+        .query_row(
+            "SELECT next_sequence FROM threads WHERE id=?1",
+            [&fx.thread],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // Supported legacy physical receipts must not hide behind settled rows.
+    // Fresh sparse sends alternate ahead of the physical history instead.
+    let sent = "useful-pending";
+    let offset: i64 = db.query_row("SELECT coalesce(max(event_offset),0)+1 FROM messages WHERE instance_id=?1 AND decision_seq=?2", rusqlite::params![instance,high], |r| r.get(0)).unwrap();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,event_offset,decision_at) VALUES (?1,?2,?3,?4,'ordinary','USEFUL PENDING BODY',?5,?6,0)", rusqlite::params![sent,instance,fx.thread,seq,high,offset]).unwrap();
+    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,?2,?3,'pending',300000)", rusqlite::params![sent,fx.thread,fx.b]).unwrap();
+    db.execute(
+        "UPDATE threads SET next_sequence=next_sequence+1 WHERE id=?1",
+        [&fx.thread],
+    )
+    .unwrap();
+    db
+}
+
+#[test]
+fn inbox_first_useful_page_skips_historical_work() {
+    for v1 in [true, false] {
+        let fx = inbox_history_fixture(120);
+        let proxy = useful_page_proxy(&fx, v1);
+        let db = add_pending_physical(&fx);
+        let sent = "useful-pending";
+        assert_eq!(
+            db.query_row(
+                "SELECT state FROM receipts WHERE message_id=?1",
+                [sent],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "pending"
+        );
+        for args in [
+            vec!["inbox", "--machine"],
+            vec!["--json", "inbox"],
+            vec!["inbox", "--seat", fx.b.as_str()],
+        ] {
+            let readonly = fx
+                .world
+                .exec_in_pane(None, Some(PANE_B), None, &args, false);
+            assert_eq!(readonly.code, 0, "{}", readonly.stderr);
+            assert_eq!(
+                db.query_row(
+                    "SELECT state FROM receipts WHERE message_id=?1",
+                    [sent],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "pending",
+                "read-only inbox must not ACK unseen mail"
+            );
+        }
+        let out = fx
+            .world
+            .exec_in_pane(None, Some(PANE_B), None, &["inbox"], false);
+        eprintln!(
+            "FIRST USEFUL: code={} stdout={:?} stderr={:?}",
+            out.code, out.stdout, out.stderr
+        );
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert!(
+            out.stdout.contains("USEFUL PENDING BODY"),
+            "first page must show pending body, got {:?}",
+            out.stdout
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT state FROM receipts WHERE message_id=?1",
+                [sent],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "acked"
+        );
+        let db = fx.world.db();
+        let observation: String = db
+            .query_row(
+                "SELECT ack_observation FROM receipts WHERE message_id=?1 AND seat_id=?2",
+                rusqlite::params![sent, fx.b],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&observation).unwrap()["action_provenance"],
+            "cooperative_inbox_display"
+        );
+        let reads: Vec<_> = proxy
+            .requests()
+            .into_iter()
+            .filter(|r| {
+                matches!(
+                    r["command"]["kind"].as_str(),
+                    Some("inbox_batch" | "inbox_batch_v2")
+                )
+            })
+            .collect();
+        assert!(!reads.is_empty());
+        assert!(
+            reads
+                .iter()
+                .all(|r| r["command"]["kind"] == if v1 { "inbox_batch" } else { "inbox_batch_v2" })
+        );
+    }
+}
+
+#[test]
+fn inbox_first_useful_page_historical_only_reaches_empty() {
+    for v1 in [true, false] {
+        let fx = inbox_history_fixture(120);
+        let proxy = useful_page_proxy(&fx, v1);
+        let out = fx
+            .world
+            .exec_in_pane(None, Some(PANE_B), None, &["inbox"], false);
+        eprintln!(
+            "HISTORICAL ONLY: code={} stdout={:?} stderr={:?}",
+            out.code, out.stdout, out.stderr
+        );
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(
+            out.stdout, "empty\n",
+            "historical-only fixture should report empty"
+        );
+        assert_eq!(
+            fx.world
+                .db()
+                .query_row(
+                    "SELECT count(*) FROM messages WHERE id LIKE 'historical-warning-%'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            120
+        );
+        let reads: Vec<_> = proxy
+            .requests()
+            .into_iter()
+            .filter(|r| {
+                matches!(
+                    r["command"]["kind"].as_str(),
+                    Some("inbox_batch" | "inbox_batch_v2")
+                )
+            })
+            .collect();
+        assert!(!reads.is_empty());
+        assert!(
+            reads
+                .iter()
+                .all(|r| r["command"]["kind"] == if v1 { "inbox_batch" } else { "inbox_batch_v2" })
+        );
+    }
+}
+
+#[test]
+fn inbox_first_useful_page_scan_cap_preserves_pending_and_exact_continuation() {
+    for v1 in [true, false] {
+        let fx = inbox_history_fixture(1200);
+        let proxy = useful_page_proxy(&fx, v1);
+        let db = add_pending_physical(&fx);
+        let mut args = vec!["inbox".to_owned()];
+        let mut saw_body = false;
+        for invocation in 0..10 {
+            let refs: Vec<_> = args.iter().map(String::as_str).collect();
+            let out = fx
+                .world
+                .exec_in_pane(None, Some(PANE_B), None, &refs, false);
+            assert_eq!(out.code, 0, "{}", out.stderr);
+            let state: String = db
+                .query_row(
+                    "SELECT state FROM receipts WHERE message_id='useful-pending'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if out.stdout.contains("USEFUL PENDING BODY") {
+                assert!(
+                    invocation > 0,
+                    "first invocation must retain a continuation after bounded scanning"
+                );
+                assert_eq!(state, "acked");
+                saw_body = true;
+                break;
+            }
+            assert_eq!(
+                state, "pending",
+                "never ACK pending mail on a hidden empty page"
+            );
+            assert!(
+                !out.stdout.contains("empty"),
+                "bounded work cannot claim empty while pending remains"
+            );
+            assert!(out.stdout.contains(fx.world.state.to_str().unwrap()));
+            assert!(out.stdout.contains(fx.world.host.to_str().unwrap()));
+            let cursor = out
+                .stdout
+                .split("--cursor ")
+                .nth(1)
+                .expect("real continuation")
+                .split_whitespace()
+                .next()
+                .unwrap();
+            args = vec!["inbox".into(), "--cursor".into(), cursor.into()];
+        }
+        assert!(saw_body, "continuations must advance to pending body");
+        let reads: Vec<_> = proxy
+            .requests()
+            .into_iter()
+            .filter(|r| {
+                matches!(
+                    r["command"]["kind"].as_str(),
+                    Some("inbox_batch" | "inbox_batch_v2")
+                )
+            })
+            .collect();
+        assert!(!reads.is_empty());
+        assert!(
+            reads
+                .iter()
+                .all(|r| r["command"]["kind"] == if v1 { "inbox_batch" } else { "inbox_batch_v2" })
+        );
+    }
+}
+
+/// Real sparse publications and explicit ACKs leave retained settled candidates.
+/// A v2 display must drain those empty Work pages without claiming hidden mail.
+#[test]
+fn inbox_first_useful_page_v2_sparse_settled_history() {
+    for v1 in [true, false] {
+        let fx = inbox_history_fixture(0);
+        let proxy = useful_page_proxy(&fx, v1);
+        for _ in 0..110 {
+            let sent = fx.send_as_a(
+                "SPARSE SETTLED HISTORY",
+                &["--require-ack", &fx.b, "--deadline", "300"],
+            );
+            fx.world
+                .cli(Some(fx.caller_b()), None, &["ack", &sent])
+                .data("settle sparse history");
+        }
+        let sent = fx.send_as_a(
+            "SPARSE USEFUL BODY",
+            &["--require-ack", &fx.b, "--deadline", "300"],
+        );
+        fx.world
+            .cli(
+                Some(fx.caller_b()),
+                None,
+                &[
+                    "check-in",
+                    "--lifecycle-event",
+                    "sparse-history-warning-offer",
+                ],
+            )
+            .data("offer retained warnings");
+        let db = fx.world.db();
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM send_manifests WHERE message_id=?1",
+                [&sent],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        for args in [
+            vec!["inbox", "--machine"],
+            vec!["--json", "inbox"],
+            vec!["inbox", "--seat", fx.b.as_str()],
+        ] {
+            let before: i64 = db
+                .query_row("SELECT count(*) FROM operations", [], |r| r.get(0))
+                .unwrap();
+            let readonly = fx
+                .world
+                .exec_in_pane(None, Some(PANE_B), None, &args, false);
+            assert_eq!(readonly.code, 0, "{}", readonly.stderr);
+            assert_eq!(
+                db.query_row(
+                    "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
+                    rusqlite::params![sent, fx.b],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "pending"
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM operations", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                before
+            );
+        }
+        let out = fx
+            .world
+            .exec_in_pane(None, Some(PANE_B), None, &["inbox"], false);
+        eprintln!(
+            "V2 SPARSE USEFUL: code={} stdout={:?} stderr={:?}",
+            out.code, out.stdout, out.stderr
+        );
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(
+            out.stdout.matches("SPARSE USEFUL BODY").count(),
+            1,
+            "useful sparse mail must appear once after settled Work pages"
+        );
+        let observation: String = db
+            .query_row(
+                "SELECT ack_observation FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
+                rusqlite::params![sent, fx.b],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&observation).unwrap()["action_provenance"],
+            "cooperative_inbox_display"
+        );
+        let after = fx
+            .world
+            .exec_in_pane(None, Some(PANE_B), None, &["inbox"], false);
+        assert_eq!(after.code, 0, "{}", after.stderr);
+        assert_eq!(
+            after.stdout, "empty\n",
+            "settled sparse history must reach true exhaustion"
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM send_manifests", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            123
+        );
+        let reads: Vec<_> = proxy
+            .requests()
+            .into_iter()
+            .filter(|r| {
+                matches!(
+                    r["command"]["kind"].as_str(),
+                    Some("inbox_batch" | "inbox_batch_v2")
+                )
+            })
+            .collect();
+        assert!(!reads.is_empty());
+        assert!(
+            reads
+                .iter()
+                .all(|r| r["command"]["kind"] == if v1 { "inbox_batch" } else { "inbox_batch_v2" })
+        );
+    }
 }
