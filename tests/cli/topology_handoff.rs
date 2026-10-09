@@ -1029,8 +1029,18 @@ mod live {
             }
             let journal = super::super::super::journal::Journal::open(&journal_root).unwrap();
             let reference = publish(&journal, &identity, 1).unwrap();
+            // A store writer seeds the fresh database from the per-binary
+            // schema template (the same migrations, run once per binary)
+            // and verifies it, instead of replaying every migration here.
+            drop(
+                crate::store::connection::StoreContext::new(
+                    database_path.clone(),
+                    Arc::new(crate::app::SystemClock::new()),
+                )
+                .open_writer()
+                .unwrap(),
+            );
             let db = rusqlite::Connection::open(&database_path).unwrap();
-            schema::initialize(&db, || UtcMillis(0)).unwrap();
             let created = crate::protocol::handoff::topology_contract_tests::created();
             let boot = &created.host_incarnation;
             db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,observation_sequence,observation_admission_sequence,observation_decided_sequence,lifecycle_revision,recovery_boot,recovery_epoch) VALUES('i',0,?1,1,1,1,1,1,?1,1)",[boot.as_str()]).unwrap();
@@ -1068,6 +1078,112 @@ mod live {
                 witness,
             }
         }
+        /// Captures the fixture's whole on-disk state (journal, retained
+        /// files, canonical database) and the peer's call log, so a matrix
+        /// can run each case from one shared completed setup instead of
+        /// rebuilding the fixture and replaying the setup handoff per case.
+        fn checkpoint(&self) -> Checkpoint {
+            let mut state = self.peer.state.lock().unwrap();
+            // Close the only connection so the WAL is folded into the file.
+            state.db = rusqlite::Connection::open_in_memory().unwrap();
+            let mut checkpoint = Checkpoint {
+                entries: vec![],
+                calls: state.calls.clone(),
+                native_calls: state.native_calls,
+                fault: state.fault,
+            };
+            fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<CheckpointEntry>) {
+                use std::os::unix::fs::PermissionsExt;
+                let mut names: Vec<_> = std::fs::read_dir(dir)
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .collect();
+                names.sort();
+                for path in names {
+                    let meta = std::fs::symlink_metadata(&path).unwrap();
+                    let relative = path.strip_prefix(root).unwrap().to_owned();
+                    let mode = meta.permissions().mode();
+                    assert!(!meta.file_type().is_symlink(), "checkpoint holds no links");
+                    if meta.is_dir() {
+                        out.push(CheckpointEntry {
+                            relative,
+                            mode,
+                            bytes: None,
+                        });
+                        walk(root, &path, out);
+                    } else {
+                        out.push(CheckpointEntry {
+                            relative,
+                            mode,
+                            bytes: Some(std::fs::read(&path).unwrap()),
+                        });
+                    }
+                }
+            }
+            walk(
+                self._temp.path(),
+                self._temp.path(),
+                &mut checkpoint.entries,
+            );
+            state.db = rusqlite::Connection::open(&self.peer.database_path).unwrap();
+            checkpoint
+        }
+        /// Returns the fixture to exactly the checkpointed state: every file
+        /// a case added, changed, removed or re-permissioned is reset.
+        fn restore(&self, checkpoint: &Checkpoint) {
+            use std::os::unix::fs::PermissionsExt;
+            let mut state = self.peer.state.lock().unwrap();
+            state.db = rusqlite::Connection::open_in_memory().unwrap();
+            let root = self._temp.path();
+            fn writable(dir: &std::path::Path) {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+                for entry in std::fs::read_dir(dir).unwrap() {
+                    let path = entry.unwrap().path();
+                    if std::fs::symlink_metadata(&path).unwrap().is_dir() {
+                        writable(&path);
+                    }
+                }
+            }
+            writable(root);
+            for entry in std::fs::read_dir(root).unwrap() {
+                let path = entry.unwrap().path();
+                if std::fs::symlink_metadata(&path).unwrap().is_dir() {
+                    std::fs::remove_dir_all(&path).unwrap();
+                } else {
+                    std::fs::remove_file(&path).unwrap();
+                }
+            }
+            for entry in &checkpoint.entries {
+                let path = root.join(&entry.relative);
+                match &entry.bytes {
+                    None => std::fs::create_dir(&path).unwrap(),
+                    Some(bytes) => {
+                        std::fs::write(&path, bytes).unwrap();
+                        std::fs::set_permissions(
+                            &path,
+                            std::fs::Permissions::from_mode(entry.mode),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            for entry in checkpoint
+                .entries
+                .iter()
+                .rev()
+                .filter(|e| e.bytes.is_none())
+            {
+                std::fs::set_permissions(
+                    root.join(&entry.relative),
+                    std::fs::Permissions::from_mode(entry.mode),
+                )
+                .unwrap();
+            }
+            state.db = rusqlite::Connection::open(&self.peer.database_path).unwrap();
+            state.calls = checkpoint.calls.clone();
+            state.native_calls = checkpoint.native_calls;
+            state.fault = checkpoint.fault;
+        }
         fn run(&self) -> Result<BootstrapResult, RunError> {
             resume_to_attachment(
                 &self.journal,
@@ -1082,6 +1198,17 @@ mod live {
                 },
             )
         }
+    }
+    struct CheckpointEntry {
+        relative: std::path::PathBuf,
+        mode: u32,
+        bytes: Option<Vec<u8>>,
+    }
+    struct Checkpoint {
+        entries: Vec<CheckpointEntry>,
+        calls: Vec<&'static str>,
+        native_calls: usize,
+        fault: Fault,
     }
     #[derive(Default)]
     struct DownstreamLauncher {
@@ -1329,15 +1456,27 @@ mod live {
         assert_eq!(f.peer.status(), before);
         assert_eq!(launcher.starts, 1);
     }
+    /// Quotes in `large_escaped_argv`; each escapes to two origin bytes.
+    const LARGE_ARGV_ESCAPES: usize = 16 * 200;
+    /// Canonically legal argv (16 args, 61744 raw bytes, under the 65536 raw
+    /// launch bound) whose bootstrap origin fits 64 KiB unescaped but exceeds
+    /// it (`archival_legacy::RECORD_CAP`, the 65536 delivery bound) only once
+    /// its quotes are escaped. Few escapes: each is a separate write when
+    /// progress is serialized, so a quote-only argv cost seconds per save.
+    fn large_escaped_argv() -> Vec<String> {
+        vec![format!("--config={}{}", "x".repeat(3650), "\"".repeat(200)); 16]
+    }
+    /// One large retained bundle (origin over a record, terminal and child
+    /// each over a legacy page) is built once; each phase restores it.
     #[test]
-    fn composition_actual_large_retained_terminal_and_survivors_establish_coverage() {
-        let argv = vec![format!("--config={}", "\"".repeat(3800)); 16];
-        let f = Fixture::aligned(Fault::None, Some(argv));
+    fn composition_actual_large_bundle_survivors_admission_loss_and_cancel() {
+        let f = Fixture::aligned(Fault::None, Some(large_escaped_argv()));
         let original = f
             .journal
             .snapshot_bootstrap_origin(&f.peer.reference)
             .unwrap();
-        assert!(original.len() > 65536);
+        assert!(original.len() > crate::archival_legacy::RECORD_CAP);
+        assert!(original.len() - LARGE_ARGV_ESCAPES < crate::archival_legacy::RECORD_CAP);
         let mut launcher = DownstreamLauncher {
             report_padding: 200000,
             ..Default::default()
@@ -1347,11 +1486,15 @@ mod live {
             write: true,
         };
         assert!(downstream(&f, &mut launcher, &mut output).is_err());
+        assert_eq!(launcher.starts, 1);
         let terminal = std::fs::read(terminal_path(&f.journal, &f.peer.reference)).unwrap();
         let child = std::fs::read(child_progress_path(&f.journal, &f.peer.reference)).unwrap();
         assert!(terminal.len() > 262144);
         assert!(child.len() > 262144);
         let before = f.peer.status();
+        let retained = f.checkpoint();
+
+        // Legal large retained terminal and surviving files establish coverage.
         let scan = composition_scan(&f);
         assert!(
             scan.coverage.is_some(),
@@ -1365,6 +1508,43 @@ mod live {
                 .unwrap(),
             original
         );
+
+        // Worker admission loss stays sticky, then a fresh traversal recovers.
+        f.restore(&retained);
+        let mut worker = composition_worker(&f);
+        worker.writer = Arc::new(crate::service::fair_writer::FairWriter::new(0));
+        assert_eq!(worker.run_page().unwrap_err().code, ErrorCode::StoreBusy);
+        worker.writer = Arc::new(crate::service::fair_writer::FairWriter::new(32));
+        composition_drain(&mut worker);
+        assert!(
+            composition_veto(&f),
+            "consumed bundle must retain traversal veto at EOF"
+        );
+        composition_drain(&mut worker);
+        assert!(
+            !composition_veto(&f),
+            "fresh admitted traversal must recover"
+        );
+        assert_eq!(f.peer.status(), before);
+        drop(worker);
+
+        // Cancellation between reads vetoes the consumed large bundle.
+        f.restore(&retained);
+        let mut source = composition_source(&f);
+        let calls = std::cell::Cell::new(0);
+        // A page may end on its 10 ms budget before the sixth check; keep
+        // scanning so the cancellation still lands inside the bundle.
+        let error = loop {
+            match source.scan(|| {
+                calls.set(calls.get() + 1);
+                calls.get() >= 6
+            }) {
+                Err(error) => break error,
+                Ok(page) => assert!(page.pending, "cancel during consumed bundle"),
+            }
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(f.peer.status(), before);
         assert_eq!(launcher.starts, 1);
     }
     #[test]
@@ -1529,19 +1709,12 @@ mod live {
             .unwrap()
     }
     #[test]
-    fn composition_actual_large_bundle_worker_admission_loss_stays_sticky_then_fresh_recovers() {
-        let f = Fixture::aligned(
-            Fault::None,
-            Some(vec![format!("--config={}", "\"".repeat(3800)); 16]),
-        );
-        let mut launcher = DownstreamLauncher {
-            report_padding: 200000,
-            ..Default::default()
-        };
+    fn composition_actual_retained_bundle_cap_and_corruption_controls() {
+        let f = Fixture::aligned(Fault::None, None);
         assert!(
             downstream(
                 &f,
-                &mut launcher,
+                &mut DownstreamLauncher::default(),
                 &mut FailingOutput {
                     bytes: vec![],
                     write: true
@@ -1549,26 +1722,9 @@ mod live {
             )
             .is_err()
         );
-        let before = f.peer.status();
-        let mut worker = composition_worker(&f);
-        worker.writer = Arc::new(crate::service::fair_writer::FairWriter::new(0));
-        assert_eq!(worker.run_page().unwrap_err().code, ErrorCode::StoreBusy);
-        worker.writer = Arc::new(crate::service::fair_writer::FairWriter::new(32));
-        composition_drain(&mut worker);
-        assert!(
-            composition_veto(&f),
-            "consumed bundle must retain traversal veto at EOF"
-        );
-        composition_drain(&mut worker);
-        assert!(
-            !composition_veto(&f),
-            "fresh admitted traversal must recover"
-        );
-        assert_eq!(f.peer.status(), before);
-        assert_eq!(launcher.starts, 1);
-    }
-    #[test]
-    fn composition_actual_retained_bundle_cap_and_corruption_controls() {
+        let retained = f.checkpoint();
+        // Control: the undamaged restored bundle composes.
+        assert!(composition_scan(&f).coverage.is_some());
         for control in [
             "child_version",
             "child_unknown",
@@ -1584,18 +1740,7 @@ mod live {
             "terminal_overflow",
             "embedded_origin_overflow",
         ] {
-            let f = Fixture::aligned(Fault::None, None);
-            assert!(
-                downstream(
-                    &f,
-                    &mut DownstreamLauncher::default(),
-                    &mut FailingOutput {
-                        bytes: vec![],
-                        write: true
-                    }
-                )
-                .is_err()
-            );
+            f.restore(&retained);
             let original = f.journal.root().join(format!(
                 "{:020}-{}.intent",
                 f.peer.reference.ordinal,
@@ -1735,40 +1880,6 @@ mod live {
             composition_scan(&f).coverage.is_some(),
             "typed Bootstrap decoder has no independent4096 header cap"
         );
-    }
-    #[test]
-    fn composition_cancel_between_reads_vetoes_consumed_large_bundle() {
-        let f = Fixture::aligned(
-            Fault::None,
-            Some(vec![format!("--config={}", "\"".repeat(3800)); 16]),
-        );
-        assert!(
-            downstream(
-                &f,
-                &mut DownstreamLauncher::default(),
-                &mut FailingOutput {
-                    bytes: vec![],
-                    write: true
-                }
-            )
-            .is_err()
-        );
-        let before = f.peer.status();
-        let mut source = composition_source(&f);
-        let calls = std::cell::Cell::new(0);
-        // A page may end on its 10 ms budget before the sixth check; keep
-        // scanning so the cancellation still lands inside the bundle.
-        let error = loop {
-            match source.scan(|| {
-                calls.set(calls.get() + 1);
-                calls.get() >= 6
-            }) {
-                Err(error) => break error,
-                Ok(page) => assert!(page.pending, "cancel during consumed bundle"),
-            }
-        };
-        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
-        assert_eq!(f.peer.status(), before);
     }
     #[cfg(target_os = "macos")]
     fn composition_heap_statistics() -> [usize; 3] {
@@ -2115,19 +2226,23 @@ mod live {
     }
     #[test]
     fn composition_terminal_surviving_submission_must_match_completed_attempt_and_creation() {
+        let f = Fixture::aligned(Fault::None, None);
+        assert!(
+            downstream(
+                &f,
+                &mut DownstreamLauncher::default(),
+                &mut FailingOutput {
+                    bytes: vec![],
+                    write: true
+                }
+            )
+            .is_err()
+        );
+        let retained = f.checkpoint();
+        // Control: the uncontradicted restored bundle composes.
+        assert!(composition_scan(&f).coverage.is_some());
         for control in ["creation", "attempt"] {
-            let f = Fixture::aligned(Fault::None, None);
-            assert!(
-                downstream(
-                    &f,
-                    &mut DownstreamLauncher::default(),
-                    &mut FailingOutput {
-                        bytes: vec![],
-                        write: true
-                    }
-                )
-                .is_err()
-            );
+            f.restore(&retained);
             let mut progress =
                 load_bootstrap_progress(&f.journal, &f.peer.reference, &f.peer.identity)
                     .unwrap()
@@ -2365,8 +2480,10 @@ mod live {
     }
     #[test]
     fn downstream_crash_before_or_after_native_start_never_relaunches() {
+        let f = Fixture::downstream(Fault::None);
+        let fresh = f.checkpoint();
         for after_start in [false, true] {
-            let f = Fixture::downstream(Fault::None);
+            f.restore(&fresh);
             let mut launcher = DownstreamLauncher {
                 crash_after_gate: !after_start,
                 crash_after_start: after_start,
@@ -2478,8 +2595,10 @@ mod live {
     }
     #[test]
     fn final_sdd_pending_write_and_flush_loss_preserve_possible_start_and_retry() {
+        let f = Fixture::downstream(Fault::None);
+        let fresh = f.checkpoint();
         for write in [true, false] {
-            let f = Fixture::downstream(Fault::None);
+            f.restore(&fresh);
             let mut launcher = DownstreamLauncher {
                 unknown: true,
                 ..Default::default()
@@ -2654,8 +2773,10 @@ mod live {
     }
     #[test]
     fn pending_writer_fresh_not_submitted_reports_next_prepared() {
+        let f = Fixture::downstream(Fault::NotSubmitted);
+        let fresh = f.checkpoint();
         for json in [true, false] {
-            let f = Fixture::downstream(Fault::NotSubmitted);
+            f.restore(&fresh);
             let original = f
                 .journal
                 .snapshot_bootstrap_origin(&f.peer.reference)
@@ -2686,8 +2807,10 @@ mod live {
     }
     #[test]
     fn pending_writer_saved_not_submitted_reports_next_prepared() {
+        let f = Fixture::downstream(Fault::NotSubmittedRecordUnavailable);
+        let fresh = f.checkpoint();
         for json in [true, false] {
-            let f = Fixture::downstream(Fault::NotSubmittedRecordUnavailable);
+            f.restore(&fresh);
             let mut launcher = DownstreamLauncher::default();
             assert!(downstream_format(&f, &mut launcher, json, &mut vec![]).is_err());
             assert_eq!(f.peer.status().state, BootstrapState::PossibleCreation);
@@ -2716,8 +2839,10 @@ mod live {
     }
     #[test]
     fn pending_writer_rearm_report_write_and_flush_failure_stays_replayable() {
+        let f = Fixture::downstream(Fault::NotSubmitted);
+        let fresh = f.checkpoint();
         for write in [true, false] {
-            let f = Fixture::downstream(Fault::NotSubmitted);
+            f.restore(&fresh);
             let mut launcher = DownstreamLauncher::default();
             let mut output = FailingOutput {
                 bytes: vec![],
@@ -2737,8 +2862,10 @@ mod live {
     }
     #[test]
     fn pending_writer_completion_failure_labels_last_observed_attached_as_uncertain() {
+        let f = Fixture::downstream(Fault::CompleteBefore);
+        let fresh = f.checkpoint();
         for json in [true, false] {
-            let f = Fixture::downstream(Fault::CompleteBefore);
+            f.restore(&fresh);
             let mut launcher = DownstreamLauncher::default();
             let mut bytes = vec![];
             assert!(downstream_format(&f, &mut launcher, json, &mut bytes).is_err());
@@ -2848,9 +2975,28 @@ mod live {
     }
     #[test]
     fn pending_writer_inspect_argv_parses_as_public_pending_ops() {
+        // Each distinct fresh fixture is built once; every scenario, in both
+        // the JSON and text renderings, runs from an exact restore of it.
+        let fixtures: Vec<(Fixture, Checkpoint)> = [
+            Fixture::downstream(Fault::None),
+            Fixture::new(Fault::HostReply),
+            Fixture::downstream(Fault::NotSubmitted),
+            Fixture::downstream(Fault::CompleteBefore),
+        ]
+        .into_iter()
+        .map(|f| {
+            let fresh = f.checkpoint();
+            (f, fresh)
+        })
+        .collect();
+        let scenario = |n: usize| {
+            let (f, fresh) = &fixtures[n];
+            f.restore(fresh);
+            f
+        };
         for json in [true, false] {
             // Canonical status unknown to this invocation (actual writer, real identity).
-            let f = Fixture::downstream(Fault::None);
+            let f = scenario(0);
             let mut bytes = vec![];
             super::super::write_pending_observed(
                 &f.peer.reference,
@@ -2870,19 +3016,19 @@ mod live {
             )
             .unwrap();
             assert!(String::from_utf8_lossy(&bytes).contains("status_unknown"));
-            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+            assert_inspect_is_public_pending_ops(f, json, &bytes);
 
             // Lost host reply: PossibleCreation without creation evidence.
-            let f = Fixture::new(Fault::HostReply);
+            let f = scenario(1);
             let mut bytes = vec![];
             unknown(downstream_format(
-                &f,
+                f,
                 &mut DownstreamLauncher::default(),
                 json,
                 &mut bytes,
             ));
             assert!(String::from_utf8_lossy(&bytes).contains("creation_unknown"));
-            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+            assert_inspect_is_public_pending_ops(f, json, &bytes);
             if json {
                 // The human recovery templates carry the same pinned routing.
                 let frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -2898,47 +3044,45 @@ mod live {
             }
 
             // Typed zero submission: canonical next attempt Prepared.
-            let f = Fixture::downstream(Fault::NotSubmitted);
+            let f = scenario(2);
             let mut bytes = vec![];
             assert!(
-                downstream_format(&f, &mut DownstreamLauncher::default(), json, &mut bytes)
-                    .is_err()
+                downstream_format(f, &mut DownstreamLauncher::default(), json, &mut bytes).is_err()
             );
-            assert_prepared_next_attempt_report(&f, json, &bytes);
-            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+            assert_prepared_next_attempt_report(f, json, &bytes);
+            assert_inspect_is_public_pending_ops(f, json, &bytes);
 
             // Attached partial: proven launch refusal after attachment.
-            let f = Fixture::downstream(Fault::None);
+            let f = scenario(0);
             let mut launcher = DownstreamLauncher {
                 not_submitted: true,
                 ..Default::default()
             };
             let mut bytes = vec![];
-            assert!(downstream_format(&f, &mut launcher, json, &mut bytes).is_err());
+            assert!(downstream_format(f, &mut launcher, json, &mut bytes).is_err());
             assert_eq!(f.peer.status().state, BootstrapState::Attached);
             assert!(String::from_utf8_lossy(&bytes).contains("outcome"));
-            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+            assert_inspect_is_public_pending_ops(f, json, &bytes);
 
             // Possible start.
-            let f = Fixture::downstream(Fault::None);
+            let f = scenario(0);
             let mut launcher = DownstreamLauncher {
                 unknown: true,
                 ..Default::default()
             };
             let mut bytes = vec![];
-            assert!(downstream_format(&f, &mut launcher, json, &mut bytes).is_err());
+            assert!(downstream_format(f, &mut launcher, json, &mut bytes).is_err());
             assert!(String::from_utf8_lossy(&bytes).contains("possible_start"));
-            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+            assert_inspect_is_public_pending_ops(f, json, &bytes);
 
             // Completion pending.
-            let f = Fixture::downstream(Fault::CompleteBefore);
+            let f = scenario(3);
             let mut bytes = vec![];
             assert!(
-                downstream_format(&f, &mut DownstreamLauncher::default(), json, &mut bytes)
-                    .is_err()
+                downstream_format(f, &mut DownstreamLauncher::default(), json, &mut bytes).is_err()
             );
             assert!(String::from_utf8_lossy(&bytes).contains("completion_pending"));
-            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+            assert_inspect_is_public_pending_ops(f, json, &bytes);
         }
     }
     struct FailingOutput {
@@ -2959,8 +3103,10 @@ mod live {
     }
     #[test]
     fn downstream_failed_output_reopen_archive_depart_binding_changes_are_history_only() {
+        let f = Fixture::downstream(Fault::None);
+        let fresh = f.checkpoint();
         for write in [false, true] {
-            let f = Fixture::downstream(Fault::None);
+            f.restore(&fresh);
             let mut launcher = DownstreamLauncher::default();
             let mut failed = FailingOutput {
                 bytes: vec![],
@@ -3053,8 +3199,10 @@ mod live {
     }
     #[test]
     fn downstream_invalid_or_oversized_success_report_refuses_before_wrapper_commit() {
+        let f = Fixture::downstream(Fault::None);
+        let fresh = f.checkpoint();
         for oversized in [false, true] {
-            let f = Fixture::downstream(Fault::None);
+            f.restore(&fresh);
             let mut launcher = DownstreamLauncher {
                 invalid_report: !oversized,
                 oversized_report: oversized,
@@ -3075,13 +3223,16 @@ mod live {
     }
     #[test]
     fn downstream_canonical_accepted_escaped_origin_exceeding_delivery_bound_replays() {
-        let argv = vec![format!("--config={}", "\"".repeat(3800)); 16];
-        let f = Fixture::with_request(Fault::None, request(), Some(argv));
+        let f = Fixture::with_request(Fault::None, request(), Some(large_escaped_argv()));
         let original = f
             .journal
             .snapshot_bootstrap_origin(&f.peer.reference)
             .unwrap();
         assert!(original.len() > 65536);
+        assert!(
+            original.len() - LARGE_ARGV_ESCAPES < 65536,
+            "escaping is what carries the origin past the delivery bound"
+        );
         assert!(original.len() < super::super::super::journal::MAX_BOOTSTRAP_ORIGIN_BYTES);
         canonical::encode_identity(&f.peer.identity.payload.handoff.namespace, &f.peer.identity)
             .unwrap();
@@ -3161,8 +3312,10 @@ mod live {
     #[test]
     fn downstream_child_intent_and_directory_sync_cleanup_loss_replays_only_history() {
         use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::downstream(Fault::None);
+        let fresh = f.checkpoint();
         for mode in ["child", "intent", "sync"] {
-            let f = Fixture::downstream(Fault::None);
+            f.restore(&fresh);
             let mut launcher = DownstreamLauncher::default();
             let mut writer = CleanupLoss {
                 root: f.journal.root().into(),
@@ -3192,6 +3345,13 @@ mod live {
     }
     #[test]
     fn downstream_retained_origin_damage_or_ambiguity_refuses_before_client_or_output() {
+        // One completed handoff is the shared, not-under-test setup; each
+        // damage case starts from an exact restore of it.
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        downstream(&f, &mut launcher, &mut vec![]).unwrap();
+        assert_eq!(launcher.starts, 1);
+        let completed = f.checkpoint();
         for damage in [
             "missing",
             "malformed",
@@ -3210,9 +3370,11 @@ mod live {
             "duplicate-intent",
             "conflicting-intent",
         ] {
-            let f = Fixture::downstream(Fault::None);
-            let mut launcher = DownstreamLauncher::default();
-            downstream(&f, &mut launcher, &mut vec![]).unwrap();
+            f.restore(&completed);
+            let mut launcher = DownstreamLauncher {
+                starts: 1,
+                ..Default::default()
+            };
             let path = terminal_path(&f.journal, &f.peer.reference);
             let bytes = std::fs::read(&path).unwrap();
             let mut saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -3365,13 +3527,37 @@ mod live {
             assert!(output.is_empty());
             assert_eq!(launcher.starts, 1);
         }
+        assert_restored_completion_replays(&f, &completed);
+    }
+    /// Control for checkpointed matrices: the undamaged restored setup
+    /// replays its completed history, so each refusal above is the damage's.
+    fn assert_restored_completion_replays(f: &Fixture, completed: &Checkpoint) {
+        f.restore(completed);
+        f.peer.state.lock().unwrap().calls.clear();
+        let mut launcher = DownstreamLauncher {
+            starts: 1,
+            ..Default::default()
+        };
+        downstream(f, &mut launcher, &mut vec![]).unwrap();
+        assert!(
+            f.peer
+                .state
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .all(|r| *r == "status")
+        );
+        assert_eq!(launcher.starts, 1);
     }
     #[test]
     fn downstream_terminal_namespace_mismatch_refuses_even_after_cleanup() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        downstream(&f, &mut launcher, &mut vec![]).unwrap();
+        let completed = f.checkpoint();
         for field in ["instance", "state", "host", "state-spelling"] {
-            let f = Fixture::downstream(Fault::None);
-            let mut launcher = DownstreamLauncher::default();
-            downstream(&f, &mut launcher, &mut vec![]).unwrap();
+            f.restore(&completed);
             let mut namespace = f.peer.identity.payload.handoff.namespace.clone();
             match field {
                 "instance" => namespace.instance = "different".into(),
@@ -3407,9 +3593,13 @@ mod live {
             assert!(f.peer.state.lock().unwrap().calls.is_empty());
             assert!(output.is_empty());
         }
+        assert_restored_completion_replays(&f, &completed);
     }
     #[test]
     fn downstream_retained_terminal_requires_exact_canonical_completed_report() {
+        let f = Fixture::downstream(Fault::None);
+        downstream(&f, &mut DownstreamLauncher::default(), &mut vec![]).unwrap();
+        let completed = f.checkpoint();
         for damage in [
             "missing-report",
             "report-corrupt",
@@ -3417,9 +3607,11 @@ mod live {
             "nonterminal",
             "unavailable",
         ] {
-            let f = Fixture::downstream(Fault::None);
-            let mut launcher = DownstreamLauncher::default();
-            downstream(&f, &mut launcher, &mut vec![]).unwrap();
+            f.restore(&completed);
+            let mut launcher = DownstreamLauncher {
+                starts: 1,
+                ..Default::default()
+            };
             let mut state = f.peer.state.lock().unwrap();
             // Isolated database corruption fixtures deliberately bypass the
             // immutable SQL triggers; no production migration is changed.
@@ -3497,6 +3689,7 @@ mod live {
             assert!(output.is_empty());
             assert_eq!(launcher.starts, 1);
         }
+        assert_restored_completion_replays(&f, &completed);
     }
     #[test]
     fn downstream_partial_terminal_with_live_original_refuses_before_any_effect() {
@@ -3512,10 +3705,15 @@ mod live {
     }
     #[test]
     fn downstream_child_progress_corruption_or_oversize_never_clears_launch_fence() {
+        let f = Fixture::downstream(Fault::CompleteBefore);
+        assert!(downstream(&f, &mut DownstreamLauncher::default(), &mut vec![]).is_err());
+        let pending = f.checkpoint();
         for damage in ["unknown", "identity", "oversized"] {
-            let f = Fixture::downstream(Fault::CompleteBefore);
-            let mut launcher = DownstreamLauncher::default();
-            assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+            f.restore(&pending);
+            let mut launcher = DownstreamLauncher {
+                starts: 1,
+                ..Default::default()
+            };
             let path = child_progress_path(&f.journal, &f.peer.reference);
             let mut saved: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -3647,8 +3845,10 @@ mod live {
     }
     #[test]
     fn phase13_operator_created_keeps_original_request_and_allows_second_agent_retry() {
+        let f = Fixture::new(Fault::HostReply);
+        let fresh = f.checkpoint();
         for retained_request in [true, false] {
-            let f = Fixture::new(Fault::HostReply);
+            f.restore(&fresh);
             unknown(f.run());
             let old = load_bootstrap_progress(&f.journal, &f.peer.reference, &f.peer.identity)
                 .unwrap()
@@ -4010,12 +4210,15 @@ mod live {
     }
     #[test]
     fn live_missing_guard_capability_refuses_before_any_mutation() {
+        let f = Fixture::new(Fault::MissingCapability);
+        let fresh = f.checkpoint();
         for fault in [
             Fault::MissingCapability,
             Fault::OldCapability,
             Fault::WrongCapability,
         ] {
-            let f = Fixture::new(fault);
+            f.restore(&fresh);
+            f.peer.state.lock().unwrap().fault = fault;
             let result = f.run();
             assert!(matches!(
                 result,
@@ -4050,8 +4253,11 @@ mod live {
     }
     #[test]
     fn live_moved_scope_at_resolve_or_attach_retains_exact_creation() {
+        let f = Fixture::new(Fault::MovedResolveTab);
+        let fresh = f.checkpoint();
         for fault in [Fault::MovedResolveTab, Fault::MovedAttachTab] {
-            let f = Fixture::new(fault);
+            f.restore(&fresh);
+            f.peer.state.lock().unwrap().fault = fault;
             assert!(f.run().is_err());
             assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
             assert_eq!(f.peer.status().state, BootstrapState::Created);
@@ -4106,8 +4312,10 @@ mod live {
     }
     #[test]
     fn live_actor_wrapper_invalid_missing_ambiguous_origins_refuse_readonly() {
+        let f = Fixture::new(Fault::MissingCapability);
+        let fresh = f.checkpoint();
         for damage in ["malformed", "missing", "ambiguous"] {
-            let f = Fixture::new(Fault::MissingCapability);
+            f.restore(&fresh);
             let path = std::fs::read_dir(f.journal.root())
                 .unwrap()
                 .map(Result::unwrap)
@@ -4439,6 +4647,9 @@ mod live {
     }
     #[test]
     fn live_preallocation_a2_namespace_claim_and_race_controls_zero_effect() {
+        let f = Fixture::new(Fault::ResolveUnsupported);
+        let _ = f.run();
+        let fresh = f.checkpoint();
         for change in [
             "membership",
             "archive",
@@ -4453,8 +4664,7 @@ mod live {
             "unresolved",
             "retired",
         ] {
-            let f = Fixture::new(Fault::ResolveUnsupported);
-            let _ = f.run();
+            f.restore(&fresh);
             if change == "owner" {
                 let _ = preexisting_owner(&f);
             }
@@ -4526,9 +4736,11 @@ mod live {
     #[test]
     fn live_preallocation_same_response_wrong_workspace_or_terminal_refuses() {
         use crate::ports::{BootstrapAttachmentGuard, BootstrapPaneObservation};
+        let f = Fixture::new(Fault::ResolveUnsupported);
+        let _ = f.run();
+        let fresh = f.checkpoint();
         for change in ["workspace", "terminal"] {
-            let f = Fixture::new(Fault::ResolveUnsupported);
-            let _ = f.run();
+            f.restore(&fresh);
             let (ctx, mut observation, admission, budget) = scoped_current(&f);
             if change == "terminal" {
                 observation.terminal = Some(TerminalId::new("different-terminal"));
@@ -4593,9 +4805,11 @@ mod live {
                 }
             }
         }
+        let f = Fixture::new(Fault::ResolveUnsupported);
+        let _ = f.run();
+        let fresh = f.checkpoint();
         for (trip, cancelled) in [(1, false), (5, false), (1, true), (4, true)] {
-            let f = Fixture::new(Fault::ResolveUnsupported);
-            let _ = f.run();
+            f.restore(&fresh);
             let (_, guard, _) = scoped_guard(&f, "w1:t2");
             let cancel = Cancellation::default();
             if trip == 1 && cancelled {
@@ -4623,9 +4837,11 @@ mod live {
     }
     #[test]
     fn live_preallocation_integer_ceiling_allocating_and_owner_phases() {
+        let f = Fixture::new(Fault::ResolveUnsupported);
+        let _ = f.run();
+        let fresh = f.checkpoint();
         for existing in [false, true] {
-            let f = Fixture::new(Fault::ResolveUnsupported);
-            let _ = f.run();
+            f.restore(&fresh);
             let owner = existing.then(|| preexisting_owner(&f));
             f.peer
                 .state
@@ -4693,9 +4909,11 @@ mod live {
     }
     #[test]
     fn live_preallocation_replay_rechecks_original_authority_preserving_ledger() {
+        let f = Fixture::new(Fault::ResolveUnsupported);
+        let _ = f.run();
+        let fresh = f.checkpoint();
         for change in ["archive", "binding"] {
-            let f = Fixture::new(Fault::ResolveUnsupported);
-            let _ = f.run();
+            f.restore(&fresh);
             let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
             resolve(&f, &resolve_request(&f), &ctx, &guard, &budget).unwrap();
             let (ctx, guard, budget) = scoped_guard(&f, "w1:t2");
@@ -5041,10 +5259,16 @@ mod live {
     }
     #[test]
     fn historical_v1_reply_loss_and_terminal_save_loss_recover_after_drift() {
+        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut setup = DownstreamLauncher::default();
+        assert!(downstream(&f, &mut setup, &mut vec![]).is_err());
+        let pending = f.checkpoint();
         for fault in [Fault::CompleteReply, Fault::TerminalSave] {
-            let f = Fixture::downstream(Fault::CompleteBefore);
-            let mut launcher = DownstreamLauncher::default();
-            assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+            f.restore(&pending);
+            let mut launcher = DownstreamLauncher {
+                starts: setup.starts,
+                ..Default::default()
+            };
             let _drift = arm_v1_drift();
             f.peer.state.lock().unwrap().fault = fault;
             let first = downstream(&f, &mut launcher, &mut vec![]);
@@ -5070,10 +5294,16 @@ mod live {
     }
     #[test]
     fn historical_v1_corrupted_saved_report_refuses_after_drift_without_relaunch() {
+        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut setup = DownstreamLauncher::default();
+        assert!(downstream(&f, &mut setup, &mut vec![]).is_err());
+        let pending = f.checkpoint();
         for change in ["prompt", "options"] {
-            let f = Fixture::downstream(Fault::CompleteBefore);
-            let mut launcher = DownstreamLauncher::default();
-            assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+            f.restore(&pending);
+            let mut launcher = DownstreamLauncher {
+                starts: setup.starts,
+                ..Default::default()
+            };
             let path = child_progress_path(&f.journal, &f.peer.reference);
             let mut saved: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
