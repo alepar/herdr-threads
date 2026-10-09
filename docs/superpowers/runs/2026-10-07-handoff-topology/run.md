@@ -94,3 +94,18 @@ All owned processes QUIET:38fixPIDs absent, physicalownedrows0, UUIDe60da2cf-a70
 ## User-requested pause and session transfer
 
 User paused at a safe boundary before any Task26 integration merge. Exact627 compiler packet is reviewed and FF-adopted only in task-ht-qhz.26; Task21 remains quarantined. Earlier merging ledger entry was intent only, superseded here. No counters reset. All subagents and owned fixtures QUIET; UUID cleanup0. No new tests/builds/reviews. Continue the existing unfinished run only with user authorization; see session-handoff.md and controller-user-pause-freeze.json. Earlier stalled report remains historical evidence, not current readiness.
+
+## Resumed session: feature complete at merge-ready source (2026-10-09)
+
+A new session (Claude) resumed with user authorization and a user-approved lighter process: git history is the record, per-file hash bindings and counter ledgers were dropped, substantive gates kept (TDD, independent review per task, PR roast, clippy/default-features/fmt, leak checks, full suite).
+
+- Task26/.26 merged normally (Main ancestry kept), then current Main. Two stale schema27 literals in lazy26/channel-activation tests fixed (8f1e30f0).
+- Task21/.25 merged (9ba7f785). The incremental-build budget re-measured on the composed tree: 15 uncontended runs, test --no-run 26-43 s; two contended runs 61-70 s accepted by the user. ht-8l4 closed.
+- Task18/.22 (84237aad + review follow-up aa10423c), Task19/.23 (57881273 + 7f7c06ca) and Task20/.24 (f10c3df7): each independently reviewed, minors fixed, merged.
+- Main v0.5.0 merged (45af88ff); four add/add conflicts kept both sides.
+- Load flakes fixed: archival_legacy scan helper counted Coverage markers (f04cfe3b); new-tab replay pane-read count and consumed-bundle cancel (fb1e90f6).
+- PR roast round 2 (manual fan-out, 14/14 scouts): Nit (2 confirmed) [converged]; report 2026-10-09-handoff-topology-roast-pr-2.md. Both Nits fixed (aa8045a7): typed zero-submission rearm now exits 3 (retryable), continuation report tests added. Round 3 not run.
+- Pressure evaluation: the handoff guidance in integrations/skill/SKILL.md is unchanged since the v2 5-control/5-candidate evaluation above (only Main's join/lazy wording changed), so it was not rerun.
+- Final gates on 70cac952: clippy, check-default-features, fmt clean; full suite 4434/4434 in 228 s; no leaked processes. Flake hunt (793 feature-area tests x10) clean after the fixes.
+
+Open: punch-listed archival_legacy:712 lookup cost; ht-1jc (likely fixed by f04cfe3b, flake hunt clean). Main owns merge, release, install and tab closure. Feature worktrees retained.
