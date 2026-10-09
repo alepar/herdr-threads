@@ -177,11 +177,7 @@ impl World {
         if human_route {
             cmd.arg("human");
         }
-        cmd.arg("--state-dir")
-            .arg(&self.state)
-            .arg("--host-endpoint")
-            .arg(&self.socket)
-            .env("HOME", self.root.join("home"))
+        cmd.env("HOME", self.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("CODEX_HOME", self.root.join("codex"))
             .env("SHELL", self.root.join("shell"))
@@ -205,14 +201,27 @@ impl World {
         }
         cmd
     }
+    fn routed(&self, args: &[&str]) -> Vec<std::ffi::OsString> {
+        herdr_threads::test_support::isolation::routed_argv(
+            &[
+                std::ffi::OsStr::new("--state-dir"),
+                self.state.as_os_str(),
+                std::ffi::OsStr::new("--host-endpoint"),
+                self.socket.as_os_str(),
+            ],
+            args,
+        )
+    }
     fn run(&self, actor: Option<(&str, &str, &str)>, args: &[&str], json: bool) -> String {
         let human_route = args.first() == Some(&"human");
         let args = if human_route { &args[1..] } else { args };
         let mut cmd = self.command(actor, human_route);
+        let mut words = Vec::new();
         if json {
-            cmd.arg("--json");
+            words.push("--json");
         }
-        let output = cmd.args(args).output().unwrap();
+        words.extend_from_slice(args);
+        let output = cmd.args(self.routed(&words)).output().unwrap();
         assert!(
             output.status.success(),
             "{args:?}: {}{}",
@@ -282,7 +291,10 @@ impl World {
 }
 impl Drop for World {
     fn drop(&mut self) {
-        let _ = self.command(None, false).args(["daemon", "stop"]).output();
+        let _ = self
+            .command(None, false)
+            .args(self.routed(&["daemon", "stop"]))
+            .output();
     }
 }
 
@@ -296,7 +308,7 @@ impl Follower {
     fn start(world: &World) -> Self {
         let mut child = world
             .command(None, false)
-            .args(["read", "review", "--follow"])
+            .args(world.routed(&["read", "review", "--follow"]))
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn_owned()

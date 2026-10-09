@@ -1502,21 +1502,23 @@ fn ordinary_retry_claim(
     )?)
 }
 
+/// The frozen caller a same-location retry replays as. Any other location, role or instance
+/// keeps the live selection, whose own original-caller checks then refuse the retry.
 fn replay_selection(
     selection: &CooperativeSelection,
     claim: &crate::protocol::authority::CallerClaim,
-) -> Result<CooperativeSelection, RunError> {
+    instance: uuid::Uuid,
+) -> Option<CooperativeSelection> {
     use crate::protocol::authority::CallerRole;
     if selection.seat != claim.seat
         || selection.target != claim.target
         || selection.role != crate::harness::context::Role::TopLevel
         || claim.role != CallerRole::TopLevel
+        || claim.instance != instance.to_string()
     {
-        return Err(mapping_error(
-            "retry belongs to a different caller location or role",
-        ));
+        return None;
     }
-    Ok(CooperativeSelection {
+    Some(CooperativeSelection {
         seat: claim.seat.clone(),
         target: claim.target.clone(),
         role: selection.role,
@@ -1539,13 +1541,11 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         protocol::{commands::SeatInspectQuery, pagination::PageRequest, results::CommandResult},
     };
     let replay = ordinary_retry_claim(&parsed, &paths.instance_dir.join("intents"))?;
-    let historical;
-    let selection = if let Some(claim) = &replay {
-        if claim.instance != instance.to_string() {
-            return Err(unsupported("retry belongs to a different instance or seat"));
-        }
-        historical = replay_selection(selection, claim)?;
-        &historical
+    let historical = replay
+        .as_ref()
+        .and_then(|claim| replay_selection(selection, claim, instance));
+    let selection = if let Some(historical) = &historical {
+        historical
     } else {
         if !matches!(&parsed.action, CliAction::Retry(_)) {
             validate_actor_harness(parsed.actor, selection.harness)?;
@@ -2139,8 +2139,16 @@ where
 {
     let replay = ordinary_retry_claim(parsed, &paths.instance_dir.join("intents"))?;
     if let Some(selection) = &parsed.cooperative {
-        if let Some(claim) = &replay {
-            parsed.cooperative = Some(replay_selection(selection, claim)?);
+        let instance = match replay {
+            Some(_) => read_existing_namespace(paths)?,
+            None => None,
+        };
+        if let Some(historical) = replay
+            .as_ref()
+            .zip(instance)
+            .and_then(|(claim, instance)| replay_selection(selection, claim, instance))
+        {
+            parsed.cooperative = Some(historical);
         } else if !matches!(&parsed.action, CliAction::Retry(_)) {
             validate_actor_harness(parsed.actor, selection.harness)?;
         }
@@ -2360,25 +2368,22 @@ where
                 ))
             })?,
     };
-    if let Some(claim) = replay {
-        if context.instance != instance
-            || context.seat != seat.as_str()
-            || context.target != pane.as_str()
-            || claim.instance != instance.to_string()
-        {
-            return Err(mapping_error(
-                "local context differs from current service mapping",
-            ));
-        }
-        return replay_selection(
+    if let Some(claim) = replay
+        && context.instance == instance
+        && context.seat == seat.as_str()
+        && context.target == pane.as_str()
+        && let Some(historical) = replay_selection(
             &CooperativeSelection {
-                seat,
-                target: pane,
+                seat: seat.clone(),
+                target: pane.clone(),
                 harness: context.harness,
                 role: context.role,
             },
             &claim,
-        );
+            instance,
+        )
+    {
+        return Ok(historical);
     }
     if !matches!(&parsed.action, CliAction::Retry(_)) {
         validate_actor_harness(parsed.actor, context.harness)?;

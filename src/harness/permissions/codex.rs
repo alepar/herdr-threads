@@ -3,12 +3,10 @@
 //! Native strictest precedence preserves external forbidden/prompt policy. The
 //! executable allow covers launch too; CLI grammar and semantic actor checks,
 //! rather than arbitrary argument predicates, enforce the immediate human route.
-//! Escalating commands prompt bare and under the pinned routing values; a routing
-//! value nobody pinned cannot be expressed as an exact argv prefix and stays covered
-//! by the executable allow (an accepted limit of the cooperative trust model).
+//! Escalating commands prompt by their leading words, which the CLI requires an agent
+//! to write first.
 //! These rules do not establish shell decomposition or live classifier acceptance.
-use super::{PermissionInputs, arrangements};
-use std::collections::BTreeSet;
+use super::PermissionInputs;
 
 /// Exact Starlark string literals: JSON double-quoted UTF-8 strings share the
 /// required quote/backslash escapes here (validated inputs contain no controls).
@@ -23,16 +21,9 @@ pub fn render(inputs: &PermissionInputs) -> String {
     let mut text = format!(
         "# herdr-threads owned execpolicy v1; exact argv prefixes\nprefix_rule(pattern = [{union}], decision = \"allow\")\nprefix_rule(pattern = [{union}, \"human\"], decision = \"prompt\")\n"
     );
-    // Every spelling shares one union token, so arrangements differ only after it.
-    let routing = inputs.routing_tokens(|_| true);
-    let mut escalating = BTreeSet::new();
+    // The CLI accepts an agent's escalating command only as its exact leading words.
     for command in inputs.catalog().escalating {
-        for arrangement in arrangements("", &routing, command) {
-            escalating.insert(arrangement[1..].to_vec());
-        }
-    }
-    for tokens in escalating {
-        let rest: String = tokens
+        let rest: String = command
             .iter()
             .map(|token| format!(", {}", serde_json::to_string(token).expect("string")))
             .collect();
@@ -138,46 +129,27 @@ mod tests {
         assert_eq!(rules[1], (vec!["human".to_owned()], "prompt".to_owned()));
     }
 
-    // An agent must not grant itself permissions: every escalating command prompts, bare,
-    // after output flags and under pinned routing, while ordinary commands stay allowed.
+    // An agent must not grant itself permissions: every escalating command prompts by its
+    // leading words, while ordinary commands stay allowed.
     #[test]
     fn permission_codex_escalating_commands_prompt() {
-        let f = Fixture::new(PinnedRouting {
-            state_directory: Some("/fixture/state dir".into()),
-            host_endpoint: None,
-        });
+        let f = Fixture::new(PinnedRouting::default());
         let (_, rules) = decode(&render(&f.inputs));
         let prompts: Vec<Vec<String>> = rules
             .iter()
             .filter(|(_, d)| d == "prompt")
             .map(|(t, _)| t.clone())
             .collect();
-        let has = |tokens: &[&str]| prompts.iter().any(|p| p == tokens);
-        for command in [
-            &["setup"][..],
+        let expected: Vec<Vec<String>> = [
+            &["human"][..],
+            &["setup"],
             &["unsetup"],
             &["doctor", "fix"],
             &["internal", "installer-integrations"],
-        ] {
-            assert!(has(command), "{command:?}");
-            let json: Vec<&str> = ["--json"].iter().chain(command).copied().collect();
-            assert!(has(&json), "{json:?}");
-            let routed: Vec<&str> = ["--state-dir", "/fixture/state dir"]
-                .iter()
-                .chain(command)
-                .copied()
-                .collect();
-            assert!(has(&routed), "{routed:?}");
-        }
-        assert!(
-            !prompts
-                .iter()
-                .any(|p| p.first().is_some_and(|t| t == "send"))
-        );
-        assert!(
-            !prompts
-                .iter()
-                .any(|p| p.iter().any(|t| t == "setup-status"))
-        );
+        ]
+        .iter()
+        .map(|words| words.iter().map(|w| (*w).to_owned()).collect())
+        .collect();
+        assert_eq!(prompts, expected);
     }
 }

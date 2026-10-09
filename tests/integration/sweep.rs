@@ -698,14 +698,19 @@ fn cooperative_setup_sweep_reports_healthy_daemon_and_pending_codex_review() {
     let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
     let state = iso.path("state");
     let run = |args: &[&str]| -> (i32, Value, String) {
+        let words: Vec<&str> = ["--json"].iter().chain(args).copied().collect();
+        let args = &words[..];
         let output = iso
             .command(BIN)
-            .arg("--json")
-            .arg("--state-dir")
-            .arg(&state)
-            .arg("--host-endpoint")
-            .arg(&socket)
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&state),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&socket),
+                ],
+                args,
+            ))
             .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
             .output()
             .unwrap();

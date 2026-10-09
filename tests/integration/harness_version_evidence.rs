@@ -263,11 +263,15 @@ impl Rig {
     fn command(&self, args: &[&str], env: &[(String, String)]) -> Command {
         let mut command = crate::scrubbed_command(BIN);
         command
-            .arg("--state-dir")
-            .arg(&self.state)
-            .arg("--host-endpoint")
-            .arg(&self.host)
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.state),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.host),
+                ],
+                args,
+            ))
             .env("HOME", self.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"))
             .env("CODEX_HOME", self.root.join("codex-home"))

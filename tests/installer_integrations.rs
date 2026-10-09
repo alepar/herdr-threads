@@ -31,11 +31,15 @@ impl Fixture {
             .env("CODEX_HOME", self.0.join("codex"))
             .env("CLAUDE_CONFIG_DIR", self.0.join("claude"))
             .env("PATH", self.0.join("bin"))
-            .args(["--state-dir"])
-            .arg(self.0.join("state"))
-            .args(["--host-endpoint"])
-            .arg(self.0.join("herdr.sock"))
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsString::from("--state-dir"),
+                    self.0.join("state").into_os_string(),
+                    std::ffi::OsString::from("--host-endpoint"),
+                    self.0.join("herdr.sock").into_os_string(),
+                ],
+                args,
+            ))
             .output()
             .unwrap()
     }

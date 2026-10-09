@@ -6,7 +6,7 @@ fn doctor_debug_and_fix_are_scoped_to_doctor() {
     assert!(matches!(plain.action, CliAction::Doctor { debug: false, fix: false, .. }));
     let debug = parse_argv(["herdr-threads", "doctor", "--debug"]).unwrap();
     assert!(matches!(debug.action, CliAction::Doctor { debug: true, fix: false, .. }));
-    let fix = parse_argv(["herdr-threads", "--json", "doctor", "fix"]).unwrap();
+    let fix = parse_argv(["herdr-threads", "doctor", "fix", "--json"]).unwrap();
     assert!(matches!(fix.action, CliAction::Doctor { debug: false, fix: true, .. }));
     assert_eq!(fix.output.format, OutputFormat::Json);
     assert!(parse_argv(["herdr-threads", "doctor", "repair"]).is_err());
@@ -1891,23 +1891,30 @@ fn ordinary_catalog_escalates_self_granting_commands() {
     assert!(catalog.families.iter().any(|f| f.prefix == ["doctor"]));
 }
 
-/// Kills an allowed `doctor` prefix that still runs a repair: options may not separate
-/// `doctor` from `fix`, so the escalating `doctor fix` prompt rules always match.
+/// Kills an escalating command an agent can move out of a native prompt rule's reach:
+/// its words must lead, with every option after them; `human` keeps its own prompt.
 #[test]
-fn doctor_fix_words_stay_adjacent() {
+fn escalating_command_words_lead() {
     for argv in [
         vec!["ht", "doctor", "--debug", "fix"],
-        vec!["ht", "doctor", "--json", "fix"],
         vec!["ht", "doctor", "--harness", "claude", "fix"],
-        vec!["ht", "doctor", "--state-dir", "/private/s", "fix"],
+        vec!["ht", "--json", "doctor", "fix"],
+        vec!["ht", "--state-dir", "/private/s", "setup", "claude"],
+        vec!["ht", "--state-dir=/private/s", "unsetup"],
+        vec!["ht", "--json", "internal", "installer-integrations"],
+        vec!["ht", "internal", "--json", "installer-integrations"],
     ] {
         let error = parse_argv(argv.clone()).unwrap_err();
-        assert!(error.detail.contains("doctor fix"), "{argv:?}: {}", error.detail);
+        assert!(error.detail.contains("first and put every option after it"), "{argv:?}: {}", error.detail);
     }
     for argv in [
         vec!["ht", "doctor", "fix", "--debug"],
-        vec!["ht", "--json", "doctor", "fix", "--harness", "claude"],
         vec!["ht", "doctor", "--debug"],
+        vec!["ht", "--json", "doctor"],
+        vec!["ht", "setup", "claude", "--state-dir", "/private/s"],
+        vec!["ht", "--state-dir", "/private/s", "setup-status", "claude"],
+        vec!["ht", "internal", "installer-integrations", "--confirm-missing"],
+        vec!["ht", "human", "--state-dir", "/private/s", "unsetup", "claude"],
     ] {
         assert!(parse_argv(argv.clone()).is_ok(), "{argv:?}");
     }

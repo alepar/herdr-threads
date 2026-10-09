@@ -1997,16 +1997,34 @@ where
             "human namespace cannot be mixed with cooperative agent selectors",
         )));
     }
-    // Native permission rules match exact leading words, and `doctor` is ordinary while
-    // `doctor fix` must prompt: options may not separate the two words.
-    if matches!(parsed.action, CliAction::Doctor { fix: true, .. })
-        && command
-            .and_then(|i| retained.get(i + 1))
-            .is_none_or(|next| next != "fix")
+    // Native permission rules prompt for an escalating command by its exact leading words
+    // (see `OrdinaryCatalog::escalating`). An agent therefore writes those words first, with
+    // every option after them, so no flag can move the command out of a prompt rule's reach.
+    let escalating: Option<&[&str]> = match &parsed.action {
+        CliAction::Setup(request) => match request.verb {
+            super::setup::SetupVerb::Install => Some(&["setup"]),
+            super::setup::SetupVerb::Remove => Some(&["unsetup"]),
+            super::setup::SetupVerb::Status => None,
+        },
+        CliAction::SetupAll(verb, _) => match verb {
+            super::setup::SetupVerb::Install => Some(&["setup"]),
+            super::setup::SetupVerb::Remove => Some(&["unsetup"]),
+            super::setup::SetupVerb::Status => None,
+        },
+        CliAction::Doctor { fix: true, .. } => Some(&["doctor", "fix"]),
+        CliAction::InstallerIntegrations { .. } => Some(&["internal", "installer-integrations"]),
+        _ => None,
+    };
+    if actor == InvocationActor::Agent
+        && let Some(words) = escalating
+        && retained
+            .get(1..=words.len())
+            .is_none_or(|leading| leading.iter().zip(words).any(|(a, b)| a != b))
     {
-        return Err(ParseFailure::Invalid(invalid(
-            "write `doctor fix` together and put its options after it, e.g. `herdr-threads doctor fix --harness claude`",
-        )));
+        return Err(ParseFailure::Invalid(invalid(format!(
+            "write `herdr-threads {}` first and put every option after it",
+            words.join(" ")
+        ))));
     }
     let requires_human = matches!(
         &parsed.action,

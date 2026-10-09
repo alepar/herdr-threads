@@ -192,6 +192,34 @@ pub fn count_vm_units<T>(
     f()
 }
 
+/// A rig's argv with its pinned routing (`--state-dir S --host-endpoint H`, …). Routing leads,
+/// except before an escalating command (setup, unsetup, doctor fix, internal
+/// installer-integrations): an agent must write those words first, so its leading output
+/// flags and the routing follow them.
+pub fn routed_argv<S: AsRef<OsStr>>(routing: &[S], args: &[&str]) -> Vec<std::ffi::OsString> {
+    let flags = args
+        .iter()
+        .take_while(|arg| matches!(**arg, "--json" | "--human" | "--machine"))
+        .count();
+    let rest = &args[flags..];
+    let routing = routing.iter().map(|r| r.as_ref().to_os_string());
+    if crate::cli::commands::ordinary_catalog()
+        .escalating
+        .iter()
+        .any(|words| rest.starts_with(words))
+    {
+        rest.iter()
+            .chain(&args[..flags])
+            .map(std::ffi::OsString::from)
+            .chain(routing)
+            .collect()
+    } else {
+        routing
+            .chain(args.iter().map(std::ffi::OsString::from))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

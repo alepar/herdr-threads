@@ -56,11 +56,12 @@ pub fn render(inputs: &PermissionInputs) -> ClaudePermissionRules {
                 add_prefix(&mut allow, &prefix);
             }
         }
-        // Native ask rules win over allow rules, including a broader family such as `doctor`.
+        // The CLI accepts an agent's escalating command only as its exact leading words, and
+        // native ask rules win over allow rules, including a broader family such as `doctor`.
         for command in catalog.escalating {
-            for prefix in arrangements(spelling, &routing, command) {
-                add_prefix(&mut ask, &prefix);
-            }
+            let mut prefix = vec![spelling];
+            prefix.extend(command.iter().copied());
+            add_prefix(&mut ask, &prefix);
         }
     }
     ClaudePermissionRules {
@@ -383,8 +384,8 @@ mod tests {
         }
     }
 
-    // An agent must not grant itself permissions: each escalating command asks in every
-    // catalogued arrangement, even where a broader ordinary family such as `doctor` allows.
+    // An agent must not grant itself permissions: each escalating command asks by its leading
+    // words, even where a broader ordinary family such as `doctor` allows.
     #[test]
     fn permission_claude_escalating_commands_ask() {
         let f = Fixture::new(
@@ -397,13 +398,18 @@ mod tests {
         let rules = render(&f.inputs);
         for command in [
             "herdr-threads setup claude --with-permissions",
-            "ht unsetup codex",
-            "herdr-threads --json setup",
-            "ht --state-dir /fixture/state doctor fix",
-            "herdr-threads --human --state-dir /fixture/state unsetup claude",
+            "ht unsetup codex --json",
+            "ht doctor fix --state-dir /fixture/state",
             "herdr-threads internal installer-integrations --confirm-missing",
         ] {
             assert!(covers(&rules.ask, command), "{command}");
+        }
+        // The grammar refuses these for an agent; natively they are not allowed either.
+        for command in [
+            "herdr-threads --json setup",
+            "ht --state-dir /fixture/state unsetup claude",
+        ] {
+            assert!(!covers(&rules.allow, command), "{command}");
         }
         assert!(covers(&rules.allow, "herdr-threads doctor fix"));
         assert!(covers(&rules.allow, "herdr-threads setup-status claude"));
