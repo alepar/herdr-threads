@@ -323,6 +323,74 @@ fn truncation_marker_names_body_then_ack() {
     );
 }
 
+fn selector_prefix() -> Vec<String> {
+    [
+        "herdr-threads",
+        "--state-dir",
+        "/s/state",
+        "--host-endpoint",
+        "/s/h.sock",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+#[test]
+fn truncation_marker_repeats_selectors() {
+    assert_eq!(
+        truncation_marker_for(&selector_prefix(), &MessageId::new("m9"), false),
+        "…truncated; run herdr-threads --state-dir /s/state --host-endpoint /s/h.sock body m9, then herdr-threads --state-dir /s/state --host-endpoint /s/h.sock ack m9"
+    );
+}
+
+#[test]
+fn truncation_marker_quotes_selector_paths() {
+    let prefix: Vec<String> = ["herdr-threads", "--state-dir", "/tmp/my state"]
+        .map(String::from)
+        .to_vec();
+    let marker = truncation_marker_for(&prefix, &MessageId::new("m9"), false);
+    assert!(
+        marker.contains("--state-dir '/tmp/my state' body m9"),
+        "{marker}"
+    );
+    let instruction = marker.strip_prefix("…truncated; run ").unwrap();
+    let first = instruction.split(", then ").next().unwrap();
+    assert_eq!(
+        shlex::split(first).unwrap(),
+        [
+            "herdr-threads",
+            "--state-dir",
+            "/tmp/my state",
+            "body",
+            "m9"
+        ]
+    );
+}
+
+#[test]
+fn truncation_marker_for_empty_prefix_is_bare() {
+    let id = MessageId::new("m9");
+    assert_eq!(
+        truncation_marker_for(&[], &id, false),
+        truncation_marker(&id)
+    );
+}
+
+#[test]
+fn lazy_truncation_marker_names_only_body() {
+    let id = MessageId::new("m9");
+    assert_eq!(
+        truncation_marker_for(&[], &id, true),
+        "…truncated; run herdr-threads body m9"
+    );
+    let with = truncation_marker_for(&selector_prefix(), &id, true);
+    assert_eq!(
+        with,
+        "…truncated; run herdr-threads --state-dir /s/state --host-endpoint /s/h.sock body m9"
+    );
+    assert!(!with.contains(" ack "), "{with}");
+}
+
 #[test]
 fn ledger_entry_round_trips() {
     let entry = ModLedgerEntry {

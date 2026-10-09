@@ -29,11 +29,16 @@
 //! Pages are bounded by [`WATCH_PAGE_MAX_ITEMS`] items and
 //! [`WATCH_PAGE_MAX_BYTES`] bytes. A body longer than
 //! [`WATCH_BODY_LIMIT_BYTES`] is cut at a char boundary and followed by
-//! [`truncation_marker`], with `truncated: true`. A truncated item is never
-//! acked by the mod. Its receipt settles when the agent follows the marker
-//! (`body` to read the rest, which is read-only, then `ack`) or when a text
-//! `inbox` displays it in full. A truncated `lazy` row has no receipt; it
-//! stays pending until a text `inbox` shows it, and nothing reminds about it.
+//! [`truncation_marker_for`], with `truncated: true`. The marker repeats the
+//! global selectors the `watch` child was launched with (`--state-dir`, and
+//! `--host-endpoint` when needed) whenever a bare `herdr-threads` in the
+//! session's shell would not reach this instance, the rule the hooks use for
+//! every command they print. A truncated item is never acked by the mod. An
+//! ordinary row's marker names `body` (read-only) then `ack`; its receipt
+//! settles when the agent follows it or when a text `inbox` displays the item
+//! in full. A truncated `lazy` row has no receipt: its marker names only
+//! `body`, and the row stays pending until a text `inbox` shows it; nothing
+//! reminds about it.
 //!
 //! The mod frames all message text as untrusted data and never starts a
 //! submit with `/`.
@@ -80,12 +85,42 @@ pub const WATCH_EXIT_RETRY: i32 = 2;
 /// Exit code: permanent, stop until reload.
 pub const WATCH_EXIT_STOP: i32 = 3;
 
-/// The marker appended to a cut body: read the rest with `body`, then settle
-/// the receipt with `ack` (`body` is read-only and the mod never acks a
-/// truncated item).
+/// The program name every agent-facing command starts with (`cli::hook::CLI_ARGV0`).
+const MARKER_PROGRAM: &str = "herdr-threads";
+
+/// The bare marker of an ordinary (receipt-bearing) row: what
+/// [`truncation_marker_for`] prints when the agent's shell reaches the
+/// instance by itself.
 pub fn truncation_marker(id: &MessageId) -> String {
-    let id = id.as_str();
-    format!("…truncated; run herdr-threads body {id}, then herdr-threads ack {id}")
+    truncation_marker_for(&[], id, false)
+}
+
+/// The marker appended to a cut body. `prefix` is the invocation the
+/// agent's shell must use (program plus global selectors, as
+/// `cli::hook::cli_prefix` builds it); empty means bare `herdr-threads`.
+/// An ordinary row names `body` (read-only) then `ack`, which settles the
+/// receipt; a lazy row has no receipt, so its marker names only `body`.
+pub fn truncation_marker_for(prefix: &[String], id: &MessageId, lazy: bool) -> String {
+    let program = [MARKER_PROGRAM.to_owned()];
+    let prefix = if prefix.is_empty() {
+        &program[..]
+    } else {
+        prefix
+    };
+    let command = |verb: &str| {
+        let mut argv = prefix.to_vec();
+        argv.extend([verb.to_owned(), id.as_str().to_owned()]);
+        super::output::format_command_argv(&argv)
+    };
+    if lazy {
+        format!("…truncated; run {}", command("body"))
+    } else {
+        format!(
+            "…truncated; run {}, then {}",
+            command("body"),
+            command("ack")
+        )
+    }
 }
 
 /// Daemon setting `mod_delivery` (`src/daemon/settings.rs` re-uses it).
@@ -379,7 +414,7 @@ pub enum WatchItem {
 
 /// A message or lazy row. `body` is the full body, or its first
 /// `WATCH_BODY_LIMIT_BYTES` bytes (char boundary) followed by
-/// [`truncation_marker`]; `body_len` is the stored length; `ack_required` is
+/// [`truncation_marker_for`]; `body_len` is the stored length; `ack_required` is
 /// false for lazy rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchMessage {
