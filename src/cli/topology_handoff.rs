@@ -1399,17 +1399,45 @@ pub(crate) fn resume_to_writer<
             v.state,
             BootstrapState::Attached | BootstrapState::Completed
         )
-    }) && let Err(error) = super::retry::run_bootstrap_retry(
-        journal, reference, actor, namespace, client, native, clock, submission,
-    ) {
-        if reportable_failure(&error)
-            && let Ok(current) = status()
-        {
-            write_pending(
-                reference, &identity, &current, None, "creation", output, writer,
-            )?;
+    }) {
+        match super::retry::run_bootstrap_retry(
+            journal, reference, actor, namespace, client, native, clock, submission,
+        ) {
+            Err(error) => {
+                if reportable_failure(&error)
+                    && let Ok(current) = status()
+                {
+                    write_pending(
+                        reference, &identity, &current, None, "creation", output, writer,
+                    )?;
+                }
+                return Err(error);
+            }
+            // A successful canonical transition that stops before attachment
+            // (typed zero submission closed N and prepared N+1) is unfinished
+            // handoff work, not success. Present the coordinator's exact result
+            // and never run the next attempt automatically.
+            Ok(next)
+                if !matches!(
+                    next.state,
+                    BootstrapState::Attached | BootstrapState::Completed
+                ) =>
+            {
+                write_pending(
+                    reference, &identity, &next, None, "creation", output, writer,
+                )?;
+                return Err(super::invalid_request(&format!(
+                    "bootstrap lacks canonical attachment: {} attempt {} is {}; retry the original to continue; no automatic submission",
+                    reference.recovery_ref(),
+                    next.attempt.get(),
+                    serde_json::to_value(next.state)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_owned))
+                        .unwrap_or_default(),
+                )));
+            }
+            Ok(_) => {}
         }
-        return Err(error);
     }
     let _lock = super::handoff::lock(journal, reference)?;
     let retained = read_terminal(journal, reference)?;
@@ -1639,7 +1667,7 @@ pub(crate) fn resume_to_writer<
     )
 }
 
-fn reportable_failure(error: &RunError) -> bool {
+pub(crate) fn reportable_failure(error: &RunError) -> bool {
     use crate::protocol::results::ErrorCode;
     !matches!(error, RunError::Api(e) if matches!(e.code,
         ErrorCode::Unauthorized | ErrorCode::CallerUnverified | ErrorCode::InstanceMismatch
@@ -1658,15 +1686,40 @@ pub(crate) fn write_pending<W: std::io::Write>(
     output: &crate::protocol::output::OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    write_pending_observed(
+        reference,
+        identity,
+        Some(current),
+        progress,
+        phase,
+        output,
+        writer,
+    )
+}
+
+/// Same bounded presentation when canonical status was never observed by this
+/// invocation: attempt/state stay null (unknown), never inferred from publication.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_pending_observed<W: std::io::Write>(
+    reference: &super::journal::IntentRef,
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    current: Option<&crate::protocol::handoff::BootstrapResult>,
+    progress: Option<&super::handoff::Progress>,
+    phase: &str,
+    output: &crate::protocol::output::OutputSpec,
+    writer: &mut W,
+) -> Result<(), RunError> {
     use crate::protocol::handoff::BootstrapState;
-    if current.compound != identity.compound
-        || matches!(
-            current.state,
-            BootstrapState::Completed | BootstrapState::Cancelled
-        )
-    {
+    if current.is_some_and(|current| {
+        current.compound != identity.compound
+            || matches!(
+                current.state,
+                BootstrapState::Completed | BootstrapState::Cancelled
+            )
+    }) {
         return Err(super::invalid_request("pending bootstrap status differs"));
     }
+    let progress = progress.filter(|_| current.is_some());
     let namespace = &identity.payload.handoff.namespace;
     let context = crate::protocol::output::ContinuationContext {
         state_dir: Some(namespace.state_dir.to_string_lossy().into_owned()),
@@ -1681,8 +1734,11 @@ pub(crate) fn write_pending<W: std::io::Write>(
     retry.extend(["retry".into(), reference.recovery_ref()]);
     let mut inspect = prefix.clone();
     inspect.push("pending".into());
-    let unknown_creation =
-        current.state == BootstrapState::PossibleCreation && current.creation.is_none();
+    let unknown_creation = current.is_some_and(|current| {
+        current.state == BootstrapState::PossibleCreation && current.creation.is_none()
+    });
+    let creation = current.and_then(|v| v.creation.as_ref());
+    let attachment = current.and_then(|v| v.attachment.as_ref());
     let possible_start = progress.is_some_and(|p| {
         p.possible_start && p.launch.as_ref().is_none_or(|v| v["outcome"] != "started")
     });
@@ -1692,17 +1748,19 @@ pub(crate) fn write_pending<W: std::io::Write>(
         "phase":phase,"failed":true,
         "outcome":if unknown_creation {"creation_unknown"} else if possible_start {"possible_start"} else if started {"completion_pending"} else {"pending"},
         "namespace":namespace,"recovery_ref":reference.recovery_ref(),"bootstrap_compound":identity.compound,
-        "attempt":current.attempt,"state":current.state,"attempt_state":current.attempt_state,"status_is_last_observed":true,
-        "workspace":identity.payload.workspace,"creation":current.creation,
-        "tab":current.creation.as_ref().map(|v| &v.tab),"pane":current.creation.as_ref().map(|v| &v.root_pane),
-        "seat":current.attachment.as_ref().map(|v| &v.resolved_seat),
-        "child_compound":current.attachment.as_ref().map(|v| &v.handoff.compound),
-        "possible_start":possible_start,"thread":null,"invitation":null,"message":null,
+        "attempt":current.map(|v| v.attempt),"state":current.map(|v| v.state),"attempt_state":current.map(|v| v.attempt_state),
+        "status_is_last_observed":current.is_some(),"status_unknown":current.is_none(),
+        "workspace":identity.payload.workspace,"creation":creation,
+        "tab":creation.map(|v| &v.tab),"pane":creation.map(|v| &v.root_pane),
+        "seat":attachment.map(|v| &v.resolved_seat),
+        "child_compound":attachment.map(|v| &v.handoff.compound),
+        "possible_start":possible_start,"completion_uncertain":phase == "complete",
+        "thread":null,"invitation":null,"message":null,
         "retry_argv":retry,"inspect_argv":inspect,
         "manual_launch_after_confirming_no_start_argv":null,"conditional_human_recovery":null,
         "guidance":"Fields are last confirmed observations; null means unknown, not proof of nonexecution. Inspect this exact namespace and attempt. Retry never proves noncreation or no start. Do not launch manually unless inspection confirms no start. No automatic topology cleanup, launch, invitation acceptance or ACK."
     });
-    if let (Some(attachment), Some(progress)) = (&current.attachment, progress) {
+    if let (Some(attachment), Some(progress)) = (attachment, progress) {
         let plan = attached_handoff_plan(identity, attachment)?;
         let legacy = super::handoff::report(
             reference,
@@ -1722,7 +1780,7 @@ pub(crate) fn write_pending<W: std::io::Write>(
                 legacy["manual_launch_after_confirming_no_start_argv"].clone();
         }
     }
-    if unknown_creation {
+    if let Some(current) = current.filter(|_| unknown_creation) {
         let mut human = prefix;
         human.insert(1, "human".into());
         human.extend([

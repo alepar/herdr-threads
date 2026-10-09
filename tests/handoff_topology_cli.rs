@@ -102,6 +102,10 @@ struct HostState {
     created: bool,
     agent: Option<Value>,
     lose: Option<&'static str>,
+    // Lose one reply only after the original journal publication is visible,
+    // so the injected failure is a witnessed post-publication read.
+    lose_after_publication: Option<(&'static str, PathBuf)>,
+    lost_after_publication: Vec<Value>,
     helpers: Vec<Value>,
 }
 struct Host {
@@ -212,6 +216,18 @@ impl Host {
                 };
                 if state.lose == Some(method) {
                     state.lose = None;
+                    continue;
+                }
+                if let Some((selected, journal)) = &state.lose_after_publication
+                    && *selected == method
+                    && fs::read_dir(journal).is_ok_and(|entries| {
+                        entries
+                            .flatten()
+                            .any(|e| e.path().extension().is_some_and(|x| x == "intent"))
+                    })
+                {
+                    state.lose_after_publication = None;
+                    state.lost_after_publication.push(request.clone());
                     continue;
                 }
                 let _ = writeln!(stream, "{}", json!({"id":request["id"],"result":result}));
@@ -1652,4 +1668,146 @@ fn final_sdd_generated_pinned_prompt_limit_refuses_before_publication_or_effects
     assert_eq!(f.effect_counts(), (0, 0, 0, 0));
     assert_eq!(f.count("SELECT count(*) FROM bootstrap_handoffs"), 0);
     assert!(f.original_bytes().is_empty());
+}
+
+// The actual ordinary CLI publishes the original, then a witnessed host read
+// fails before the inner writer. The process must still present the durable
+// reference with honest unknown canonical status, and the same route completes.
+#[test]
+fn pending_public_postpublication_witnessed_read_failure_reports() {
+    for json in [true, false] {
+        let f = Fixture::new();
+        f.setup("codex");
+        f.host.state.lock().unwrap().lose_after_publication = Some(("pane.get", f.journal()));
+        let binary = f.iso.path("codex");
+        let args = f.new_thread_args("codex", binary.to_str().unwrap());
+        let out = f.run_format(&args, OPTIONS, json);
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(!stderr.is_empty(), "generic phase error retained");
+        let lost = f.host.state.lock().unwrap().lost_after_publication.clone();
+        assert_eq!(lost.len(), 1, "witnessed post-publication read was lost");
+        let reference = f.reference();
+        let original = f.original_bytes();
+        assert_eq!(f.effect_counts(), (0, 0, 0, 0));
+        assert_eq!(f.count("SELECT count(*) FROM bootstrap_handoffs"), 0);
+        if json {
+            let frame: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+                panic!(
+                    "missing post-publication report: {e}; stdout={} stderr={stderr}",
+                    String::from_utf8_lossy(&out.stdout)
+                )
+            });
+            let report = &frame["bootstrap"];
+            assert_eq!(report["failed"], true);
+            assert_eq!(report["phase"], "creation");
+            assert_eq!(report["outcome"], "pending");
+            assert_eq!(report["recovery_ref"], reference);
+            assert_eq!(
+                report["namespace"]["state_dir"],
+                f.context.state_dir.to_str().unwrap()
+            );
+            assert_eq!(
+                report["namespace"]["host_endpoint"],
+                f.context.host_endpoint.to_str().unwrap()
+            );
+            // No canonical status was observed: unknown, never invented.
+            assert!(report["attempt"].is_null());
+            assert!(report["state"].is_null());
+            assert_eq!(report["status_unknown"], true);
+            assert_eq!(report["status_is_last_observed"], false);
+            for absent in [
+                "creation",
+                "pane",
+                "seat",
+                "thread",
+                "conditional_human_recovery",
+            ] {
+                assert!(report[absent].is_null(), "fabricated {absent}");
+            }
+            let retry: Vec<String> = serde_json::from_value(report["retry_argv"].clone()).unwrap();
+            assert_eq!(retry[1], "HERDR_PANE_ID=w4:p1");
+            assert!(retry.contains(&f.context.state_dir.to_string_lossy().into_owned()));
+            assert!(retry.contains(&f.context.host_endpoint.to_string_lossy().into_owned()));
+            assert_eq!(
+                retry[retry.len() - 2..],
+                ["retry".to_owned(), reference.clone()]
+            );
+        } else {
+            let text = String::from_utf8(out.stdout.clone()).unwrap();
+            assert!(text.contains("phase: creation"), "{text}");
+            assert!(text.contains("status_unknown: true"), "{text}");
+            assert!(text.contains(&format!("retry {reference}")), "{text}");
+            assert!(text.contains(f.context.state_dir.to_str().unwrap()));
+        }
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("work\n--agent-arg"));
+        // Same public route, no fault: completes exactly once from the original.
+        let done = successful(f.run_format(&["retry", &reference], "'malformed", true));
+        assert_eq!(done["handoff"]["outcome"], "started");
+        assert_eq!(f.effect_counts(), (1, 1, 1, 1));
+        assert!(
+            original
+                .iter()
+                .any(|(p, _)| p.extension().is_some_and(|v| v == "intent"))
+        );
+    }
+}
+
+#[test]
+fn pending_public_prepublication_and_authority_failures_are_silent() {
+    // Prepublication: the same witnessed read fails before any original exists.
+    let f = Fixture::new();
+    f.setup("codex");
+    f.host.state.lock().unwrap().lose = Some("pane.get");
+    let binary = f.iso.path("codex");
+    let args = f.new_thread_args("codex", binary.to_str().unwrap());
+    let out = f.run(&args, OPTIONS);
+    assert!(!out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(f.original_bytes().is_empty());
+    assert_eq!(f.effect_counts(), (0, 0, 0, 0));
+    // Authority: a different live caller cannot obtain the original's report.
+    let f = Fixture::new();
+    f.setup("codex");
+    f.host.state.lock().unwrap().lose_after_publication = Some(("pane.get", f.journal()));
+    let args = args_for(&f);
+    let out = f.run(
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        OPTIONS,
+    );
+    assert!(!out.status.success());
+    let reference = f.reference();
+    f.host.state.lock().unwrap().lose_after_publication = Some(("pane.get", f.journal()));
+    let mut cmd = f.command();
+    cmd.args([
+        "--cooperative-seat",
+        "recipient",
+        "--cooperative-target",
+        "w4:p2",
+        "--cooperative-harness",
+        "codex",
+        "--cooperative-role",
+        "top-level",
+        "retry",
+        &reference,
+    ]);
+    let out = f.capture(cmd);
+    assert!(!out.status.success());
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(f.effect_counts(), (0, 0, 0, 0));
+}
+fn args_for(f: &Fixture) -> Vec<String> {
+    let binary = f.iso.path("codex");
+    f.new_thread_args("codex", binary.to_str().unwrap())
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }

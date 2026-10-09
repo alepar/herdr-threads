@@ -409,8 +409,25 @@ pub fn execute<C: LocalClient + ?Sized>(
     clock: &dyn Clock,
 ) -> Result<serde_json::Value, RunError> {
     let _lock = handoff::lock(journal, reference)?;
-    execute_locked(journal, reference, journal.load(reference)?, client, clock)
-        .map(|(report, _)| report)
+    execute_locked(
+        journal,
+        reference,
+        journal.load(reference)?,
+        client,
+        clock,
+        &mut None,
+    )
+    .map(|(report, _)| report)
+}
+/// Transient, invocation-local observations of admitted unfinished delivery.
+/// Captured only after original/scope validation, canonical Begin and a valid
+/// retained progress read; never persisted and never used as authority.
+struct DeliveryObservation {
+    plan: DeliveryPlan,
+    caller_target: crate::protocol::ids::HostTargetId,
+    phase: &'static str,
+    staged: handoff::StagedWork,
+    last_observed: HandoffResult,
 }
 fn execute_locked<C: LocalClient + ?Sized>(
     journal: &Journal,
@@ -418,6 +435,7 @@ fn execute_locked<C: LocalClient + ?Sized>(
     pending: PendingIntent,
     client: &C,
     clock: &dyn Clock,
+    observed: &mut Option<DeliveryObservation>,
 ) -> Result<(serde_json::Value, HandoffResult), RunError> {
     let SemanticMutation::Frozen { claim, mutation } = pending.semantic else {
         return Err(super::invalid_request(
@@ -455,8 +473,23 @@ fn execute_locked<C: LocalClient + ?Sized>(
         return retained_report(reference, &plan, &current, &progress)
             .map(|report| (report, current));
     }
-    let recipient = inspect(client, clock, &plan.recipient)?;
     let mut staged = progress.staged.clone();
+    *observed = Some(DeliveryObservation {
+        plan: (*plan).clone(),
+        caller_target: claim.target.clone(),
+        phase: "recipient",
+        staged: staged.clone(),
+        last_observed: current.clone(),
+    });
+    let observe = |observed: &mut Option<DeliveryObservation>,
+                   phase: &'static str,
+                   staged: &handoff::StagedWork| {
+        if let Some(observed) = observed {
+            observed.phase = phase;
+            observed.staged = staged.clone();
+        }
+    };
+    let recipient = inspect(client, clock, &plan.recipient)?;
     let mut phase = "create";
     let call = |semantic: SemanticMutation, key: &OperationId| -> Result<CommandResult, RunError> {
         Ok(client.call(
@@ -464,7 +497,7 @@ fn execute_locked<C: LocalClient + ?Sized>(
             &super::cooperative_budget(clock),
         )?)
     };
-    handoff::stage_work(
+    let staging = handoff::stage_work(
         handoff::Staging {
             channel: &plan.payload.channel,
             body: &plan.payload.body,
@@ -483,7 +516,12 @@ fn execute_locked<C: LocalClient + ?Sized>(
         },
         client,
         clock,
-    )?;
+    );
+    // Typed returned child results stay observations even when their local
+    // save failed; the presenter never claims local durability for them.
+    observe(observed, phase, &staged);
+    staging?;
+    observe(observed, "participation", &staged);
     let participation = if recipient.open_binding.is_none() {
         "staged_unbound"
     } else if handoff::recipient_joined(
@@ -497,9 +535,11 @@ fn execute_locked<C: LocalClient + ?Sized>(
         "invited_pending"
     };
     let report = serde_json::json!({"compound":keys.compound,"thread":staged.thread,"recipient":plan.recipient,"participation":participation,"outcome":"staged","invitation":staged.invitation,"message":staged.message,"recovery_ref":reference.recovery_ref()});
+    observe(observed, "report", &staged);
     progress.report = Some(report.clone());
     progress.report_digest = Some(retained_digest(&report)?);
     handoff::save_progress(journal, reference, &progress)?;
+    observe(observed, "complete", &staged);
     let completed = handoff::keyed_fence(client, clock, &identity, keys.complete.clone(), true)?;
     retained_report(reference, &plan, &completed, &progress)?;
     Ok((report, completed))
@@ -758,7 +798,19 @@ pub fn retry_to_writer<C: LocalClient + ?Sized, W: Write>(
         terminal
     } else {
         let original = journal.snapshot_delivery_origin(reference)?;
-        let (_, completed) = execute_locked(journal, reference, pending, client, clock)?;
+        let mut observed = None;
+        let (_, completed) =
+            match execute_locked(journal, reference, pending, client, clock, &mut observed) {
+                Ok(done) => done,
+                Err(error) => {
+                    if super::topology_handoff::reportable_failure(&error)
+                        && let Some(observed) = &observed
+                    {
+                        write_pending(reference, observed, output, writer)?;
+                    }
+                    return Err(error);
+                }
+            };
         let progress: Progress = load_delivery_progress(journal, reference)?;
         let progress_digest = retained_digest(&progress)?;
         let terminal = Terminal {
@@ -787,6 +839,71 @@ pub fn retry_to_writer<C: LocalClient + ?Sized, W: Write>(
     writer.flush()?;
     remove_completed_files(journal, reference)?;
     Ok(report)
+}
+/// Bounded presentation of this invocation's admitted unfinished delivery.
+/// Reporting performs no read or mutation; null means unknown, never absent.
+fn write_pending<W: Write>(
+    reference: &IntentRef,
+    observed: &DeliveryObservation,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<(), RunError> {
+    let plan = &observed.plan;
+    let staged = &observed.staged;
+    let namespace = &plan.payload.namespace;
+    let context = crate::protocol::output::ContinuationContext {
+        state_dir: Some(namespace.state_dir.to_string_lossy().into_owned()),
+        host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
+    };
+    let prefix = super::hook::cli_prefix(&context);
+    let mut retry = vec![
+        "env".into(),
+        format!("HERDR_PANE_ID={}", observed.caller_target.as_str()),
+    ];
+    retry.extend(prefix.clone());
+    retry.extend(["retry".into(), reference.recovery_ref()]);
+    let mut inspect = prefix;
+    inspect.push("pending".into());
+    let completion = observed.phase == "complete";
+    let uncertain = match observed.phase {
+        "create" if staged.thread.is_none() => Some("thread"),
+        "invite" if staged.invitation.is_none() => Some("invitation"),
+        "send" if staged.message.is_none() => Some("message"),
+        "complete" => Some("completion"),
+        _ => None,
+    };
+    let mut report = serde_json::json!({
+        "phase":observed.phase,"failed":true,
+        "outcome":if completion {"completion_uncertain"} else {"pending"},
+        "namespace":namespace,"recovery_ref":reference.recovery_ref(),
+        "compound":plan.payload.keys.compound,"recipient":plan.recipient,
+        "thread":staged.thread,"invitation":staged.invitation,"message":staged.message,
+        "invitation_attempted":staged.invitation_attempted,"uncertain":uncertain,
+        "completion":if completion {"uncertain"} else {"not_attempted"},
+        "last_observed_state":observed.last_observed.state,"status_is_last_observed":true,
+        "retry_argv":retry,"inspect_argv":inspect,
+        "manual_launch_after_confirming_no_start_argv":null,
+        "guidance":"Fields are this invocation's last confirmed observations; null means unknown, not proof that the child was not created. Retry the exact original reference; it replays the same keyed children and never duplicates them. Delivery never launches a harness, accepts an invitation or ACKs."
+    });
+    let bytes = if output.format == OutputFormat::Json {
+        format!("{}\n", serde_json::json!({"delivery_pending":report})).into_bytes()
+    } else {
+        let map = report.as_object_mut().unwrap();
+        for (key, value) in map.iter_mut() {
+            if key.ends_with("_argv")
+                && let Ok(argv) = serde_json::from_value::<Vec<String>>(value.clone())
+            {
+                *value = crate::protocol::output::format_command_argv(&argv).into();
+            }
+        }
+        super::setup::render_text(&report).into_bytes()
+    };
+    if bytes.len() > 1024 * 1024 {
+        return Err(super::invalid_request("oversized delivery pending report"));
+    }
+    writer.write_all(&bytes)?;
+    writer.flush()?;
+    Ok(())
 }
 fn remove_completed_files(journal: &Journal, reference: &IntentRef) -> io::Result<()> {
     match fs::remove_file(handoff::progress_path(journal, reference)) {
