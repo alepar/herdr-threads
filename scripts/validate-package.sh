@@ -478,7 +478,7 @@ try:
     workspace = herdr_json("workspace", "create", "--cwd", str(root), "--label", "package-validation", "--no-focus")
     seat_pane = workspace["root_pane"]["pane_id"]
     cli_env = dict(environment, HERDR_PLUGIN_STATE_DIR=str(plugin_state))
-    resolved = run([str(binary), "seat", "resolve", "--pane", seat_pane, "--new-seat", "--operator"], env=cli_env)
+    resolved = run([str(binary), "human", "seat", "resolve", "--pane", seat_pane, "--new-seat", "--operator"], env=cli_env)
     seat = field(resolved.stdout, "value")
     check("operator resolves a fresh seat", bool(seat and re.fullmatch(r"s[0-9A-Za-z]{8}", seat)), resolved.stdout)
     cooperative = ["--cooperative-seat", seat, "--cooperative-target", seat_pane,
