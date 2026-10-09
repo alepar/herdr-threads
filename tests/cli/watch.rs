@@ -146,7 +146,7 @@ fn stub_mod_files_follow_the_layout() {
     let plugin: serde_json::Value =
         serde_json::from_str(&read(".claude-plugin/plugin.json")).unwrap();
     assert_eq!(plugin["name"], "herdr-threads");
-    assert_eq!(plugin["types"], "types/index.d.ts");
+    assert_eq!(plugin["types"], "./types/index.d.ts");
     let types = read("types/index.d.ts");
     assert!(types.contains("PluginState"));
     assert!(types.contains("'herdr-threads'"));
