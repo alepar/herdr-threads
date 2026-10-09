@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-07-handoff-topology
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: fix-loop
+phase: report
 codeMechanism: ordinary-subagents
 
 idea: lgtm, let's $super-auto this, fully autonomous, both roasts ar eon
@@ -46,13 +46,13 @@ User verification/ownership override remains: focused worker checks, main final 
 
 codeBuckets:
   completed: ht-qhz.1, ht-qhz.19, ht-qhz.2.1, ht-qhz.2.2, ht-qhz.2.3, ht-qhz.20, ht-qhz.3, ht-qhz.4.1, ht-qhz.4.2, ht-qhz.4.3, ht-qhz.5.1, ht-qhz.5.2, ht-qhz.6, ht-qhz.7, ht-qhz.8, ht-qhz.9, ht-qhz.21
-  escalated:
+  escalated: ht-qhz.25, ht-qhz.26
   pendingRetry:
   parked:
-  stalled: false
-  review: not ready (C1 independently approved and integrated b3d6d268; I2 and original PR1 recovery/presentation/historical/inspection fixes remain; original PR1 settled, phase5 recovery .25 now implementing; matched actual-main pressure awaits final source)
+  stalled: true
+  review: not ready (Task21 and Task22 quarantined for compilation budget; Task22 old-reader control passed; pending presentation/historical/inspection fixes and final matched pressure/original PR2/3 remain)
   sweep: SWEEP DEFERRED (caller-owned)
-  slowness: historical overages retained; final changed-source builds/lint under60s; soft archival bundle limits remain explicit
+  slowness: historical overages retained; Task21 test compilation61.191s and Task22 test-profile148.187/112.248s fail60; separate dev/lint passes do not waive; soft archival limits remain explicit
   worktreesKept: all owned source/evidence worktrees — user requires retention until DONE+MERGED
   processSweep: stopped 0 · survived 0 — fixtures already physically reaped; latest UUID-scoped inventory0ownedlive
 
@@ -82,3 +82,11 @@ Ruling: Preserve the canonical scope disposition: archival C*M recurring lookup 
 Task17/ht-qhz.21 independently reviewed Approved0C0I0M at a125/f9cfa, source-equivalent rebase226 preserved original ref evidence/ht-qhz.21-reviewed-a125dfad; own integration b3d6d268/treefe5a319d verified both configured build-only checks before commit/leaf closure. Allfeature root build60.264s overage retained; default57.391s and author changed-source47.59/44.34s+lint30.733s are separate qualified measurements. No fullsuite/native qualification or main mutation. C1 final-review item resolved by actual evidence; I2 remains pending, no second finalSDD wave/rereview.
 
 Original phase5 appended leaves: ordinal18/.22 admitted-pending output;19/.23 immutable V1 launch validation;20/.24 parser-valid inspection (consumes exact reviewed .22 output);21/.25 canonical inspected-state recovery. Original16 remain closed. Fresh recovery scoped design review83f7c0c1 Approved0C0I0M, adopted auditf7005fc3; .25 implementing from cleanb3 in isolated task-ht-qhz.25 by the same original author. All new leaf taskFix/seamFix/invalidReviews/checkAborts0; root same run/phase/roast counters. No adapter/Lazy semantic dependency or coordinator permission/HOLD. Capability/history/actor/state binding constraints and exact pre-edit footprint remain binding; code review not yet run for .25. Main readiness/merge/release/install/close remain separate.
+
+## Source-bound compilation blocker drain
+
+Original same ht-qhz run remains unfinished. Task21/.25 cfc functional source remains quarantined after TaskFix1 and61.191s test compilation. Task22/.26 clean9d9a8003022ccc563ddafa5d785e0fdffe2fd5b1/treeea70b72b10b4ce4e08164609317f1b7a2b8538e1 is a normal2ae+Main3d composition excluding cfc; topology28 preserves historical1..27. Fresh review3208435a NEEDS_FIX0C2I2M. SingleTaskFix1 resolved I2 by executing genuine immutableMain27 production startup API against genuine28 with positive controls and independent database/schema/data snapshots. Query auxiliary WAL/SHM creation and initial overstrict assertion diagnostic remain retained. Parent verified74fixartifacts+2139old+2311current sources0mismatch, all275originalartifacts unchanged. I1 remains genuine test-profile148.187389/112.248241s>60; dev/lint success is separate, no waiver. Freshtriage dace278a ESCALATE, actual.26->ht-8l4 edge added; existing external owner w4:pEK/tabw4:t8R already authorized/informed of exact9d consumer. No duplicate investigation, secondTaskFix or counter reset. Minors inherited whitespace/original lostfence diagnostic deferred unchanged.
+
+Current ready query found zero own epic leaves. Pending.22/.23 depend on reviewed.26, .24 on.22; .25/.26 remain open/quarantined. No original completed leaf reopened, root goal incomplete, no Main readiness/merge/release. NextMain25db audit read-only236bindings18absences6artifacts verified; no source import/performance inference. Compile owner must deliver immutable independently reviewed causalrepair packet with actual9d applicability; feature owns subsequent scoped composition and genuine same-profile changed-source qualification, then downstream source/tests/freshreview/matchedpressure/originalPR2/3. Same run/counters retained; resume exact unfinished queue when prerequisite is supplied, not new preflight/root.
+
+All owned processes QUIET:38fixPIDs absent, physicalownedrows0, UUIDe60da2cf-a70b-4064-8d46-2444e9a719a2 checker0/signals0. Source/evidence/worktrees preserved; actual old/current probes retained outsideCargo. No polling/sharedserver/native/config/push/main mutation. This is a stalled report boundary, not feature completion or a global HOLD. Evidence pointers: ../../../../.superpowers/sdd/ht-qhz-plan/task-22-fix-pass.md, controller-task22-fix-parent-verification.json, controller-task22-triage.json, progress.md and current-controller-checkpoint.md.
