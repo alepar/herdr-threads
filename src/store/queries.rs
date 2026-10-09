@@ -6210,6 +6210,11 @@ mod inbox_v2 {
                         Some(Item::Warning {
                             thread: ThreadId::new(&candidate.thread_id),
                             topic_data: batch_topic(db, &candidate.thread_id)?,
+                            informational: !super::super::attention::warning_wakes_seat(
+                                db,
+                                seat.as_str(),
+                                &candidate.id,
+                            )?,
                             warning: MessageId::new(candidate.id),
                             sequence: warning.sequence as u64,
                         })

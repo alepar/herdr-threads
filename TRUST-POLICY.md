@@ -388,6 +388,9 @@ member learns of another seat's overdue or cleared obligation only when its pane
 more than the bounded window of pending warnings or unoffered notices is visible, narrowing cannot rule
 out an older waking notice (such as a service notice), so the wake keeps its unnarrowed answer and the
 offer probe stays conservative: it may still wake, never silently drop one.
+The same rule decides a live Claude mod channel's attention: the daemon counts only waking warnings in
+the channel's attention fingerprint (with the same saturated fallback) and marks each other pending
+warning `informational` in the inbox batch, so `watch` raises no `attention` line for it.
 
 **A8. Passive lazy delivery bookkeeping.** Recorded `ordinary`/`lazy` delivery mode is immutable and
 independent of sender role, relay and human intent. A lazy audience is frozen by canonical preparation

@@ -4285,7 +4285,8 @@ const MOD_LAZY_COUNT_CAP: i64 = 1000;
 /// The seat's A2 state for the mod watch channel (spec D2), read-only. Call it
 /// inside the caller's read transaction. `None`: no such seat in `instance`.
 /// The fingerprint is built from the canonical digest (so it moves with every
-/// attention source the digest knows) and the lazy pending set.
+/// attention source the digest knows), with warnings narrowed to those that
+/// wake the seat (`attention::wake_warnings`), and the lazy pending set.
 pub fn mod_seat_view(
     db: &Connection,
     instance: &str,
@@ -4355,6 +4356,12 @@ pub fn mod_seat_view(
         )
         .map_err(store_error)?;
     let digest = &run.digest;
+    // Only warnings that would wake the seat natively raise mod attention
+    // (TRUST-POLICY A7): another seat's overdue transition, and every clear,
+    // is an informational notice that waits for the next check-in. The
+    // saturated-walk conservative rule is the native wake's.
+    let (waking_warnings, _) =
+        super::attention::wake_warnings(db, seat.as_str(), run.warnings)?.count();
     let fingerprint = ModFingerprint {
         attention_version,
         pending_receipts: digest.receipts.count,
@@ -4364,7 +4371,7 @@ pub fn mod_seat_view(
             .map_or(0, |(seq, _)| i64::try_from(seq).unwrap_or(i64::MAX)),
         lazy_pending: u64::try_from(lazy_pending).unwrap_or(0),
         max_lazy_rowid,
-        other_pending: digest.invitations.count + digest.warnings.count,
+        other_pending: digest.invitations.count + waking_warnings,
         binding_generation: binding.as_ref().map(|b| b.generation),
     };
     Ok(Some(ModSeatView {
