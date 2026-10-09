@@ -1877,6 +1877,20 @@ fn ordinary_catalog_excludes_person_and_operator_families() {
     }
 }
 
+/// Kills an agent-grantable self-permission: config-changing commands must be escalating,
+/// never ordinary families, and each must still parse as a command.
+#[test]
+fn ordinary_catalog_escalates_self_granting_commands() {
+    let catalog = ordinary_catalog();
+    let expected: [&[&str]; 4] = [&["setup"], &["unsetup"], &["doctor", "fix"], &["internal", "installer-integrations"]];
+    assert_eq!(catalog.escalating, &expected[..]);
+    for prefix in expected {
+        assert!(!catalog.families.iter().any(|f| f.prefix == prefix), "{prefix:?}");
+    }
+    assert!(catalog.families.iter().any(|f| f.prefix == ["setup-status"]));
+    assert!(catalog.families.iter().any(|f| f.prefix == ["doctor"]));
+}
+
 #[test]
 fn actor_route_pinned_globals_follow_human() {
     use crate::cli::actor_route::InvocationActor;

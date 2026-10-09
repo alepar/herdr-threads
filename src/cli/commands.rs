@@ -57,6 +57,9 @@ pub struct OrdinaryCatalog {
     pub output_flags: &'static [&'static str],
     pub output_positions: &'static [OutputPosition],
     pub omissions: &'static [(&'static [&'static str], &'static str)],
+    /// Commands that change native configuration or herdr-threads' own grants. Native policy
+    /// asks before each one, so an agent can never grant itself permissions silently.
+    pub escalating: &'static [&'static [&'static str]],
 }
 pub fn ordinary_catalog() -> OrdinaryCatalog {
     OrdinaryCatalog {
@@ -67,10 +70,6 @@ pub fn ordinary_catalog() -> OrdinaryCatalog {
             },
             OrdinaryFamily {
                 prefix: &["--help"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["doctor", "fix"],
                 human_options: &[],
             },
             OrdinaryFamily {
@@ -238,14 +237,6 @@ pub fn ordinary_catalog() -> OrdinaryCatalog {
                 human_options: &[],
             },
             OrdinaryFamily {
-                prefix: &["setup"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["unsetup"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
                 prefix: &["setup-status"],
                 human_options: &[],
             },
@@ -293,10 +284,6 @@ pub fn ordinary_catalog() -> OrdinaryCatalog {
                 prefix: &["internal", "json-field"],
                 human_options: &[],
             },
-            OrdinaryFamily {
-                prefix: &["internal", "installer-integrations"],
-                human_options: &[],
-            },
         ],
         routing_forms: &[
             &[],
@@ -327,6 +314,12 @@ pub fn ordinary_catalog() -> OrdinaryCatalog {
             &["seat", "retirements"],
             "operator cleanup inventory omitted from native ordinary coverage",
         )],
+        escalating: &[
+            &["setup"],
+            &["unsetup"],
+            &["doctor", "fix"],
+            &["internal", "installer-integrations"],
+        ],
     }
 }
 

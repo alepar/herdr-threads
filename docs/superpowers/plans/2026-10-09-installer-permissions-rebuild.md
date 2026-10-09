@@ -45,11 +45,16 @@ landed on main (merge-base `3573b9f5`).
    Route every non-private `write_replacement`, `OwnedFile::prepare` creation and `delete_created`
    user-config site through it. Reuse pieces of the old branch's `native_config.rs` only where they
    stay small.
-3. **Permission core.** Transplant `harness/permissions.rs` (inputs/inventory/consent/plan/lock),
-   `permissions/codex.rs` renderer, `permissions/claude.rs` renderer. Add
-   `HarnessAdapter::permission_policy()` beside `installer_policy()`, forwarded through
-   `ErasedAdapter`/`Registration`. Remove the self-grant commands from the catalog.
-4. **Claude component.** Split the allow rule out of the hooks transaction (`DECLARED_RULE`,
+3. **Permission core.** Transplant `harness/permissions.rs` (inputs/inventory/consent/plan/lock)
+   and the Claude and Codex renderers. Self-granting commands (`setup`, `unsetup`, `doctor fix`,
+   `internal installer-integrations`) move from the ordinary families to a catalog `escalating`
+   list: Claude renders ask rules for them in every finite arrangement (ask wins over the
+   broader `doctor` allow); Codex renders `prompt` prefix rules bare, after output flags and under
+   pinned routing values. An unpinned routing value cannot be an exact Codex argv prefix and stays
+   under the executable allow — an accepted cooperative-model limit. The adapter hook moves to
+   phase 4 with its first consumer.
+4. **Claude component.** Add `HarnessAdapter::permission_policy()` beside `installer_policy()`,
+   forwarded through `ErasedAdapter`/`Registration`. Split the allow rule out of the hooks transaction (`DECLARED_RULE`,
    `OwnedPermission` in the hook manifest stay readable for historical state). Migration of the
    historical broad rule: permission manifest records pending intent (settings fingerprints
    before/after) → one atomic settings.json write adds the narrow rules and removes the broad rule →
