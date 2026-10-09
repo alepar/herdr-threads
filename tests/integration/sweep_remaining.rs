@@ -794,11 +794,16 @@ fn fenced_first_send_measurement(
     {
         return None;
     }
-    let (_, _, anchor) = kicks.iter().find(|(_, origin, _)| origin.is_none())?;
+    // Anchor on the publication commit: the foreground commit that schedules
+    // send_attention on Deadlines. A send also writes the sender's archival
+    // sample in an earlier foreground commit (an Archival-only kick); timing
+    // from that one would add request processing between the two commits
+    // (2-5 ms alone, 139 ms seen under suite load) to commit-to-wake.
+    let (_, _, anchor) = kicks
+        .iter()
+        .find(|(lanes, origin, _)| origin.is_none() && lanes.contains(Lane::Deadlines))?;
     if first.producer_at < *anchor
-        || !kicks.iter().any(|(lanes, origin, at)| {
-            origin.is_none() && lanes.contains(Lane::Deadlines) && *at <= final_proof.proved_at
-        })
+        || *anchor > final_proof.proved_at
         || !kicks.iter().any(|(lanes, origin, at)| {
             *origin == Some(Lane::Deadlines)
                 && lanes.contains(Lane::Wakes)
@@ -974,9 +979,21 @@ fn first_final_negative_controls(
     assert!(wrong_return.is_err());
     let anchor = kicks
         .iter()
-        .find(|(_, origin, _)| origin.is_none())
+        .find(|(lanes, origin, _)| origin.is_none() && lanes.contains(Lane::Deadlines))
         .unwrap()
         .2;
+    // An earlier foreground commit that kicks no Deadlines (the sender's
+    // archival sample write) is not the send's commit: it moves no endpoint.
+    let mut early_foreground = vec![(
+        herdr_threads::service::kicks::LaneSet::EMPTY.with(Lane::Archival),
+        None,
+        anchor - Duration::from_millis(150),
+    )];
+    early_foreground.extend_from_slice(kicks);
+    assert_eq!(
+        fenced_first_send_measurement(&early_foreground, Some(&first), Some(final_proof), message),
+        fenced_first_send_measurement(kicks, Some(&first), Some(final_proof), message)
+    );
     let mut before_anchor = first.clone();
     before_anchor.producer_at = anchor - Duration::from_millis(1);
     assert!(
