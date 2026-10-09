@@ -67,3 +67,4 @@ baseAbsorbed: 90066db1 → 3793cf88 (merge 53b6df93), 0 conflicted files (warnin
 feedback: sent to the superpowers workspace agent tab wB:p8 (herdr agent prompt), report upstream-feedback-draft.md
 postLoopFix: live re-run reload_mid_turn 2/3 (second delivered ledger entry) fixed at 73a75cbf with a delivery test shown failing without it; independent re-review of 1c66f49f..73a75cbf (dc5b2f6c, 73a75cbf): ready, no must-fix — code-final-review-9.md
 liveStress: targeted re-run at 73a75cbf: reload_mid_turn, reload, clear_rebind, idle_submit 3/3 each, 0 native prompts, leak check clean (docs/evidence/claude-mod-delivery/final-subset/)
+baseAbsorbed: 3793cf88 → 88f5c69f (merge d2e8a84d), 0 conflicted files (main merged 6da43c6c and prepared v0.5.0; the branch now differs from main only by 73a75cbf's mod fix and docs/evidence; clippy, check-default-features, mod tests 84/84, integration mod_delivery+sweep_remaining 41/41 at the merge)
