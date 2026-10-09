@@ -623,16 +623,16 @@ fn validate_report(command: &CompleteLinkedBootstrap) -> Result<(), ApiError> {
                 .into_owned(),
         ),
     };
-    let mut caller = id.payload.launch.argv.clone();
-    caller.push(crate::cli::handoff::bootstrap(
-        &command.retained.thread,
+    // Frozen V1 composition (empty owned argv), never today's renderer or
+    // registry: an upgrade cannot invalidate an already successful launch.
+    if !crate::cli::handoff::bootstrap_v1::retained_argv_matches(
+        id.payload.launch.harness,
+        &id.payload.launch.argv,
+        command.retained.thread.as_str(),
         &context,
         &id.claim.instance,
-    ));
-    // Current production SetupHookInspector::installed supplies no owned args.
-    let expected =
-        crate::harness::launch::compose_native_argv(id.payload.launch.harness, caller, Vec::new())?;
-    if command.retained.report.get("argv") != Some(&serde_json::json!(expected)) {
+        command.retained.report.get("argv"),
+    )? {
         return Err(conflict("bootstrap retained launch arguments differ"));
     }
     Ok(())

@@ -1615,3 +1615,88 @@ fn task48_composed_overflow_refuses_before_seat_work() {
         assert_eq!(submissions, 0);
     }
 }
+
+fn v1(harness: Harness, argv: &[&str]) -> Result<Vec<String>, ApiError> {
+    compose_bootstrap_v1_argv(harness, argv.iter().map(|a| a.to_string()).collect())
+}
+
+/// Frozen V1 bootstrap composition keeps the original caller order and forms
+/// (empty owned argv), independently of today's composer; baseline equality
+/// with the unperturbed current composer is a golden, not the RED.
+#[test]
+fn frozen_v1_bootstrap_composition_keeps_original_caller_forms() {
+    let admitted: &[(Harness, &[&str])] = &[
+        (Harness::Codex, &["--model", "fixed", "P"]),
+        (
+            Harness::Codex,
+            &["--no-daemon", "-c", "a=1", "-c", "a=1", "P"],
+        ),
+        (Harness::Codex, &["--no-daemon", "exec", "--json", "P"]),
+        (Harness::Codex, &["exec", "resume", "--last", "P"]),
+        (Harness::Codex, &["--image=x.png", "--", "resume"]),
+        (Harness::Codex, &["-c", "", "--model", "\t", "P"]),
+        (Harness::Claude, &["--settings=x", "--tools", "", "P"]),
+    ];
+    for (harness, argv) in admitted {
+        let caller: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+        assert_eq!(v1(*harness, argv).unwrap(), caller, "{argv:?}");
+        assert_eq!(
+            compose_native_argv(*harness, caller.clone(), vec![]).unwrap(),
+            caller,
+            "tripwire: today's composer differs from V1 for {argv:?}"
+        );
+    }
+    let refused: &[&[&str]] = &[
+        &["--daemon", "P"],
+        &["--no-daemon=1", "P"],
+        &["-c", "hooks.SessionStart=[x]", "P"],
+        &["--config=hooks={}", "P"],
+        &["-chooks.Stop=1", "P"],
+        &["-i", "x.png", "P"],
+        &["resume", "P"],
+        &["login"],
+        &["exec", "fork", "P"],
+        &["first", "second"],
+        &["--no-daemon", "--no-daemon", "P"],
+        &["exec", "--no-daemon", "P"],
+    ];
+    // Tripwire: today's composer must still agree with frozen V1 on every
+    // admitted and refused form. A failure here means today's launch
+    // composition changed: introduce bootstrap plan version 2 for new plans;
+    // never edit V1 (retained V1 reports are validated against it).
+    for argv in refused {
+        assert!(v1(Harness::Codex, argv).is_err(), "{argv:?}");
+        assert!(
+            compose_native_argv(
+                Harness::Codex,
+                argv.iter().map(|a| a.to_string()).collect(),
+                vec![]
+            )
+            .is_err(),
+            "tripwire: today's composer admits V1-refused {argv:?}"
+        );
+    }
+    assert!(v1(Harness::Human, &["P"]).is_err());
+    let hermes = crate::harness::registry::builtins()
+        .agent("hermes")
+        .ok()
+        .map(crate::harness::registry::OccupantHarness::Agent);
+    if let Some(hermes) = hermes {
+        assert!(v1(hermes, &["P"]).is_err(), "Hermes was never a V1 target");
+    }
+}
+
+/// Simulated present-day composer drift is observed by the current composer
+/// only; frozen V1 composition still accepts the formerly admitted argument.
+#[test]
+fn frozen_v1_bootstrap_composition_ignores_current_composer_drift() {
+    let caller: Vec<String> = ["--model", "fixed", "P"].map(String::from).to_vec();
+    let _drift = current_drift::arm(None, Some("fixed"));
+    assert!(compose_native_argv(Harness::Codex, caller.clone(), vec![]).is_err());
+    assert_eq!(
+        compose_bootstrap_v1_argv(Harness::Codex, caller.clone()).unwrap(),
+        caller
+    );
+    drop(_drift);
+    assert!(compose_native_argv(Harness::Codex, caller, vec![]).is_ok());
+}

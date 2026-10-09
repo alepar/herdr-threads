@@ -30,7 +30,9 @@ release="$proof/release"
 control="$proof/control"
 
 status=0
-for name in $names test_support::failpoints "test failpoint"; do
+# The thread-local launch-composition drift seam is test-only as well.
+drift="simulated current composer drift"
+for name in $names test_support::failpoints "test failpoint" "$drift"; do
   if LC_ALL=C grep -aqF "$name" "$release"; then
     echo "FAIL: release binary contains '$name'"
     status=1
@@ -40,6 +42,7 @@ present=0
 for name in $names; do
   if LC_ALL=C grep -aqF "$name" "$control"; then present=$((present + 1)); fi
 done
+LC_ALL=C grep -aqF "$drift" "$control" || { echo "FAIL: positive control lacks drift seam"; status=1; }
 echo "positive control (test-support build) contains $present/$count hook names"
 [ "$present" -eq "$count" ] || { echo "FAIL: positive control incomplete"; status=1; }
 [ "$status" -eq 0 ] && echo "PASS: release binary $(shasum -a 256 "$release" | cut -c1-16) contains 0/$count failpoint names"

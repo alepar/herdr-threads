@@ -231,8 +231,8 @@ pub(super) fn preflight_launch_request(
         HandoffChannel::New { .. } => &longest,
     };
     let mut argv = identity.payload.launch.argv.clone();
-    argv.push(super::handoff::bootstrap(
-        thread,
+    argv.push(super::handoff::bootstrap_v1::prompt(
+        thread.as_str(),
         &context,
         &identity.claim.instance,
     ));
@@ -253,9 +253,20 @@ fn preflight_launch_argv(
     // and geometry used by prepare_managed, including Codex grammar validation.
     let argv = crate::harness::launch::compose_native_argv(
         identity.payload.launch.harness,
-        request.argv,
+        request.argv.clone(),
         vec![],
     )?;
+    // Completion validates the retained report against frozen V1 composition.
+    if argv
+        != crate::harness::launch::compose_bootstrap_v1_argv(
+            identity.payload.launch.harness,
+            request.argv,
+        )?
+    {
+        return Err(super::invalid_request(
+            "current launch composition differs from bootstrap plan V1; a new bootstrap plan version is required",
+        ));
+    }
     crate::ports::NativeLaunchRequest::validate_argv(&argv).map_err(super::invalid_request)?;
     // The retained successful report has a tighter per-argument ceiling than
     // the native transport, including its generated prompt. Keep both contracts.
@@ -1164,22 +1175,20 @@ fn validate_completed(
     };
     wrapper.validate().map_err(super::invalid_request)?;
     let plan = attached_handoff_plan(identity, &done.attachment)?;
-    let mut caller = plan.request.launch.argv.clone();
-    caller.push(super::handoff::bootstrap(
-        &done.retained.thread,
+    // Frozen V1 composition, never today's renderer or registry.
+    let launched = super::handoff::bootstrap_v1::retained_argv_matches(
+        identity.payload.launch.harness,
+        &plan.request.launch.argv,
+        done.retained.thread.as_str(),
         &plan.context,
         &identity.claim.instance,
-    ));
-    let expected = crate::harness::launch::compose_native_argv(
-        identity.payload.launch.harness,
-        caller,
-        vec![],
+        done.retained.report.get("argv"),
     )?;
     if !same_record(&done.identity, identity)?
         || done.legacy_result.state != HandoffState::Completed
         || done.legacy_result.compound != done.attachment.handoff.compound
         || done.legacy_result.thread.as_ref() != Some(&done.retained.thread)
-        || done.retained.report["argv"] != serde_json::json!(expected)
+        || !launched
     {
         return Err(super::invalid_request("bootstrap completed report differs"));
     }
