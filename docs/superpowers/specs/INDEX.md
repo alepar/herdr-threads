@@ -4,6 +4,7 @@ Columns: date · title · relative link · one-line summary · status · tags.
 
 | Date | Title | Design | Summary | Status | Tags |
 |---|---|---|---|---|---|
+| 2026-10-09 | Hermes global enrollment | [Design](../runs/2026-10-09-hermes-global-enrollment/2026-10-09-hermes-global-enrollment-design.md) | A top-level Hermes CLI start callback enrolls the pane through the ordinary resolver (no check-in); the qualified turn checks in; platform tag is the top-level witness; ht-4ne. | draft | hermes, enrollment, hooks, ht-4ne |
 | 2026-10-09 | Claude Code mod inbound delivery | [Design](../runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md) | Bundled Claude Code mod plus `herdr-threads watch` stream delivers messages mid-turn, on idle and lazily, settles receipts as `cooperative_mod_delivery`, falls back to native wake when disconnected. | draft | claude, mod, delivery, wake |
 | 2026-10-07 | Lazy announcement delivery | [Design](2026-10-07-lazy-messages-design.md) | Durable explicit-inbox delivery without wake, notification or ACK obligations; separate delivery progress. | draft, approval pending | lazy, messages, inbox, cost |
 | 2026-10-03 | Hermes native adapter | [Design](../runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--hermes-design.md) | Exact-runtime qualification, owned profile assets, bounded Python callback transport and native launch/canary. | draft | harness-adapters, hermes, ht-3bi.6 |
