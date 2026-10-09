@@ -1,0 +1,1 @@
+L1 · r1 · flag-sweep · ht-4ne.1 · kept as leaf — sp:demoted-by-session overrules a PROMOTE (size); contract pinned in spec D2a and the work re-split into ht-4ne.1 (inert seam) + ht-4ne.4 (behavior); re-review judged both LEAF
