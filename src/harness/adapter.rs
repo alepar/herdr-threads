@@ -323,7 +323,9 @@ pub enum EventIntent {
     Lifecycle(crate::harness::context::EventKind),
     Current,
     QualifiedTurn(crate::harness::context::QualifiedTurn),
-    /// A witnessed top-level session start. Nothing produces it yet.
+    /// A witnessed top-level session start: Hermes' CLI `on_session_start` with the
+    /// bridge's enrollment witness. It enrolls the pane through the ordinary resolver
+    /// without a check-in; the first qualified turn checks in.
     Enroll,
     Observer,
     DeclaredReset(super::context::DeclaredReset),
