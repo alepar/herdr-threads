@@ -19,5 +19,6 @@ parked:
 - 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md · escalation · "$.session.id() inside session.end may return the ending session's id; restart path must re-read later"
 - coverage-round-2 · degraded-verdict · "coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage — design roast reviews the settled tree"
 roastDesignRound: 2
-roast-design: 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md
+roast-design: 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md, 2026-10-09-claude-mod-inbound-delivery-roast-design-2.md
 stepBackDesign-round-1: patch — 11 findings fixable in place; four clusters (D12 override layer folded into D2–D8, delivered predicate per path, install env/managed-policy checks, ack per-id result taxonomy) plus reload turn-state
+roastDesignExit: converged at round 2 (Should-fix 8 confirmed [converged], 0 Blocking); punch list of 8 applied inline as spec/bead text, no re-roast; iteration-1 escalations (submit atomicity under Esc; $.session.id() in session.end) remain parked

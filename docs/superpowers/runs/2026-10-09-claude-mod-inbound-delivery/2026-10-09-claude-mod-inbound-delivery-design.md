@@ -93,11 +93,12 @@ On success it records a process-local registration `(seat, binding_generation) â
   - settlement by another path (hook or inbox ACK).
 - `Close{reason}`, with reason `replaced`, `binding_changed`, `retired`, `unresolved`, `stalled`, `disabled` or `stopping`, after which the daemon closes the stream.
 
-**Generation.** The registration is keyed by the binding generation. A lifecycle check-in (`/clear`, resume) rotates the generation and closes the channel with `binding_changed`. A plugin reload does not rotate it.
+**Generation.** The registration is keyed by the binding generation. A lifecycle check-in (`/clear`, resume, `/branch`) rotates the generation and closes the channel with `binding_changed`; a plugin reload does not rotate it. A `binding_changed` close starts a seat-level *rebind grace* (D7).
 
 **Lifetime.**
 - The registration lives in memory only. A daemon restart drops every registration, and the clients reconnect.
 - At most one registration per seat. A second watch for the same seat and generation replaces the first, and the old stream gets `Close{replaced}`.
+- Watch connections have their own admission budget: a separate semaphore of 64, outside the ordinary `MAX_CONNECTIONS`, so one-shot requests are never starved. Over the cap, registration is refused with `busy` (exit 2).
 - A capability string, `MOD_WATCH`, gates the feature, and `PROTOCOL_VERSION` stays at 6.
 - Turning `mod_delivery` off closes every live channel with `Close{disabled}`.
 
@@ -122,7 +123,7 @@ Exit codes, each preceded by one JSON status line on a non-zero exit:
 |---|---|---|
 | 0 | stdout closed or stream ended (including daemon restart) | restart with backoff |
 | 1 | other error | restart with backoff |
-| 2 | refused, retryable (`no_binding`, `session_mismatch`, `held`, `unresolved`, `cooldown`) | retry with backoff 1, 2, 5, 10, then every 30 s |
+| 2 | refused, retryable (`no_binding`, `session_mismatch`, `held`, `unresolved`, `cooldown`, `busy`) | retry with backoff 1, 2, 5, 10, then every 30 s |
 | 3 | permanent (`disabled` by setting or `HERDR_THREADS_MOD_DELIVERY=off`, no `HERDR_PANE_ID`, `not_claude`, unsupported daemon) | stop until reload |
 
 Exit 2 covers the race where the mod starts before the SessionStart hook's check-in commits.
@@ -184,7 +185,8 @@ After a load with no recorded state, the mod starts **assumed busy**. It leaves 
 - **Attention items** are delivered once per attention version and once after each `watch` (re)start. They are never acked.
 - **De-duplication and the delivered-but-unacked set.** These live in `$.store`, keyed by session id.
   - On `session.end` with reason `clear`, the set is discarded and the cleared session gets everything re-streamed.
-  - On `resume`, the set is kept; the restored transcript already holds those deliveries.
+  - On `resume`, the set is kept. The restored transcript already holds those deliveries, and the mod re-acks them after re-registering (D6).
+  - `/branch` reports `resume` but has a new session id. Its new key starts empty, so items delivered but not acked before a branch may be delivered again: an accepted limit.
 - **Visibility.** Each context or append delivery writes one dim `$.ui.log` line (`herdr-threads: delivered N message(s)`), because those paths are invisible in the TUI.
 - **Restart.** On every `watch` exit, and on `session.end` (`clear` or `resume`), the mod:
   - stops the child;
@@ -213,6 +215,8 @@ The daemon decides `AckModDelivered` per id against A2:
 - the current binding and generation, with provenance `cooperative_top_level`;
 - a live watch registration for that generation, a registration in reconnect grace included.
 
+**Resume re-ack.** An ack whose session id equals the current binding's native session is also accepted for ids delivered under the immediately previous generation of that same native session. This is the resume case: the session id is unchanged and the transcript holds the delivery.
+
 It then:
 - **Ordinary pending receipts:** settles them exactly as `AckDisplayed` does, with `ack_observation.action_provenance = "cooperative_mod_delivery"`. The binding's `cooperative_top_level` provenance is kept separately.
 - **Lazy ids:** completes them as displayed (A8), with the same claim.
@@ -224,10 +228,10 @@ It then:
 | `settled` | settled now | drop from the set |
 | `already_settled` | idempotent success | drop from the set |
 | `refused_terminal` | unknown, not addressed to the seat, truncated (decided from the stored body length, never a client hint) | drop from the set |
-| `stale_generation` | the binding generation changed | drop from the set; the item re-streams to the new session |
-| `retryable` | no live channel yet, daemon busy or unreachable | keep, retry after the next registration |
+| `stale_generation` | the binding generation changed, and the id was not delivered under the immediately previous generation of the same native session | drop from the set; the item re-streams to the new session |
+| `retryable` | no live channel yet, daemon busy or unreachable | keep; retry on the next `Attention` frame, after the next registration, and every 30 s while registered |
 
-The process exit code is 0 when every id has a result. Otherwise it is non-zero, and every id is treated as retryable.
+The process exit code is 0 when every id has a result. Otherwise it is non-zero, and every id is treated as retryable. Only `settled` and `already_settled` count as a mod ack for the stall predicate.
 
 **User direction.** This is a user-approved change to the 2026-10 "no read/delivery auto-ACK" direction. In this session the user stated delivery is the receipt for now ("we already judged delivery is the receipt"). The precedent is `cooperative_inbox_display`. For ordinary messages the claim is "the full body entered the model's context through the mod"; it is not proof the model read it.
 
@@ -250,7 +254,8 @@ The process exit code is 0 when every id has a result. Otherwise it is non-zero,
 **Reconnect grace.** When a watch connection drops (exit, crash, reload), the registry keeps the entry in grace for 30 s, and it still counts as live for all three consumers.
 - If the same binding generation re-registers within the grace, the grace ends and the mod re-acks its delivered-but-unacked set.
 - If not, the entry is removed and the wake lane is kicked for that seat, so the existing ladder resumes from current pending state.
-- A `Close` for `binding_changed`, `retired`, `unresolved`, `stalled`, `disabled` or `stopping` removes the entry at once, with no grace, and kicks.
+- **Rebind grace.** A `Close{binding_changed}` (`/clear`, resume, `/branch`) keeps a seat-level entry for 30 s that counts as live for all three consumers, including the `SessionStart` check-in result that rotated the generation, so its digest is omitted. A registration for the new generation ends the rebind grace. If none arrives in time, the entry is removed and the wake lane is kicked.
+- A `Close` for `retired`, `unresolved`, `stalled`, `disabled` or `stopping` removes the entry at once, with no grace, and kicks.
 - Nothing is marked delivered by a disconnect. An item streamed but never acked stays pending and is re-streamed on reconnect, or reaches the agent through the native wake. Across an unrecovered handoff that is at-least-once, never lost: an accepted limit.
 
 **Stall handover.** A channel counts as stalled when all of these hold:
@@ -272,18 +277,18 @@ The native ladder, with its existing composer guards, is the only delivery path 
 
 ### D8. Install, upgrade, uninstall
 
-The mod's files (`.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/register.js`) are embedded with `include_str!` and written by `setup claude` to `<state>/claude-mod/herdr-threads/`, versioned with the binary.
+The mod's files (`.claude-plugin/plugin.json` with a `types` field, `hooks/hooks.json`, `hooks/register.js`, and `types/index.d.ts` declaring the `$.state` values the mod uses) are embedded with `include_str!` and written by `setup claude` to `<state>/claude-mod/herdr-threads/`, versioned with the binary.
 
 Rewriting them on upgrade triggers a module reload in running sessions. That is safe because of the D5 assumed-busy startup and `$.state` turn tracking, and the D7 reconnect grace.
 
 **Before writing anything, `setup claude` checks two things:**
-- **Managed policy.** If managed settings set `disableSideloadFlags`, it does not write `CLAUDE_CODE_PLUGIN_DIRS`: Claude Code would refuse to start. The install stays hooks-only and says so.
+- **Managed policy.** If managed settings set `disableSideloadFlags`, it does not write `CLAUDE_CODE_PLUGIN_DIRS`: Claude Code would refuse to start. The install stays hooks-only and says so. The check reads the managed settings files Claude Code documents for the platform. Server-delivered managed settings are cached under the config dir and read when present.
 - **Process environment.** If `CLAUDE_CODE_PLUGIN_DIRS` is set in its own environment, it warns that a settings `env` value replaces the shell value. The warning includes the user's directories in the written value, so they are not silently lost.
 
 **The settings change.** The user's Claude `settings.json` gains `env.CLAUDE_CODE_PLUGIN_DIRS`:
 - the existing settings value, if any, is preserved, and the mod directory is appended with `:`;
-- the change is recorded in the owned setup manifest, the same fingerprinted ownership as the hook groups;
-- `unsetup` removes only the appended path and the files.
+- the change is recorded in the owned setup manifest, the same fingerprinted ownership as the hook groups, including any directories setup copied in from the shell environment;
+- `unsetup` removes the appended mod path, the copied-in directories and the files. It deletes the key when nothing the user wrote remains.
 
 **`setup-status` reports:**
 - whether the mod is installed;
@@ -292,6 +297,8 @@ Rewriting them on upgrade triggers a module reload in running sessions. That is 
 - the daemon's `mod_delivery` setting and live channels, from `ModChannelStatus`.
 
 It also states that an install does not prove any session loaded the mod.
+
+`setup-status` and every later `setup claude` re-run the managed-policy check. When the policy appears after install, they report that Claude Code will refuse to start and offer to remove the written path (`setup claude --hooks-only`). Accepted limit: the daemon cannot see a session that never started.
 
 Tests use an isolated `HOME` and `CLAUDE_CONFIG_DIR`.
 
@@ -323,7 +330,9 @@ Amend TRUST-POLICY.md in the bead that introduces the constants:
     - `tool.call` results: answered, denied, error and subagent;
     - submit results with and without `drop`;
     - prompt-box text, stream items, child exits;
-    - reloads mid-turn.
+    - reloads mid-turn;
+    - `/clear`, resume and `/branch` with delivered-but-unacked items;
+    - transient `retryable` ack results.
 
   Invariants checked:
   - no submit while a main turn is open;
