@@ -962,6 +962,16 @@ struct ReplyLoss {
 }
 impl ReplyLoss {
     fn new(f: &Fixture, kind: &'static str, phase: Option<&'static str>) -> Self {
+        Self::with_hook(f, kind, phase, Box::new(|_| {}))
+    }
+    // `hook` sees each forwarded request after the daemon decided it and
+    // before its reply is relayed; an empty `kind` drops no reply.
+    fn with_hook(
+        f: &Fixture,
+        kind: &'static str,
+        phase: Option<&'static str>,
+        mut hook: Box<dyn FnMut(&Value) + Send>,
+    ) -> Self {
         let original = fs::read(&f.paths.descriptor_path).unwrap();
         let socket = f.paths.socket_path.clone();
         let upstream = socket.with_extension("upstream");
@@ -1013,7 +1023,9 @@ impl ReplyLoss {
                 daemon.set_write_timeout(Some(Duration::from_secs(5)))?;
                 write_frame(&mut daemon, &request)?;
                 let response = read_frame(&mut daemon)?;
-                let selected = parsed["command"]["kind"] == kind
+                hook(&parsed);
+                let selected = !kind.is_empty()
+                    && parsed["command"]["kind"] == kind
                     && phase.is_none_or(|p| parsed["command"]["args"]["action"]["phase"] == p);
                 let mut log = dropped.lock().unwrap();
                 if selected && log.is_none() {
@@ -1807,6 +1819,160 @@ fn pending_public_prepublication_failure_is_silent() {
     assert!(f.original_bytes().is_empty());
     assert_eq!(f.effect_counts(), (0, 0, 0, 0));
 }
+fn handoff_lock_path(f: &Fixture) -> PathBuf {
+    let files: Vec<_> = fs::read_dir(f.journal())
+        .unwrap()
+        .filter_map(|e| {
+            let p = e.unwrap().path();
+            (p.extension().is_some_and(|s| s == "intent")).then_some(p)
+        })
+        .collect();
+    assert_eq!(files.len(), 1, "one original compound: {files:?}");
+    let text = fs::read_to_string(&files[0]).unwrap();
+    let header: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    let operation = header["reference"]["operation"].as_str().unwrap();
+    f.journal().join(format!("handoff-{operation}.lock"))
+}
+// A concurrent operation takes the original compound's handoff lock as soon
+// as it is free while a canonical bootstrap status reply is in flight. The
+// public retry's terminal check holds the lock across its own status read, so
+// the lock is taken exactly at the continuation's status observation: that
+// continuation then fails post-publication, after observing canonical status.
+fn concurrent_lock_at_status(f: &Fixture) -> (ReplyLoss, Arc<Mutex<Option<fs::File>>>) {
+    let path = handoff_lock_path(f);
+    let held = Arc::new(Mutex::new(None));
+    let slot = held.clone();
+    let proxy = ReplyLoss::with_hook(
+        f,
+        "",
+        None,
+        Box::new(move |request| {
+            let mut slot = slot.lock().unwrap();
+            if slot.is_none() && request["command"]["kind"] == "bootstrap_status" {
+                let file = fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(&path)
+                    .unwrap();
+                if file.try_lock().is_ok() {
+                    *slot = Some(file);
+                }
+            }
+        }),
+    );
+    (proxy, held)
+}
+
+// Post-publication continuation failure after an observed attached canonical
+// status: the report labels the unfinished phase "continuation" and carries
+// exactly the observed status, never an invented one.
+#[test]
+fn pending_public_postpublication_lock_failure_after_attached_reports_continuation() {
+    for json in [true, false] {
+        let f = Fixture::new();
+        f.setup("claude");
+        f.host.state.lock().unwrap().lose = Some("agent.start");
+        let binary = f.iso.path("claude");
+        let args = f.new_thread_args("claude", binary.to_str().unwrap());
+        unknown(&f.run(&args, OPTIONS));
+        assert_eq!(
+            f.count("SELECT count(*) FROM bootstrap_handoffs WHERE state='attached'"),
+            1
+        );
+        let reference = f.reference();
+        let effects = f.effect_counts();
+        let (mut proxy, held) = concurrent_lock_at_status(&f);
+        let out = f.run_format(&["retry", &reference], "'malformed", json);
+        proxy.finish().unwrap();
+        assert!(held.lock().unwrap().take().is_some(), "lock was contended");
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(stderr.contains("handoff already running"), "{stderr}");
+        if json {
+            let frame: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+                panic!(
+                    "missing continuation report: {e}; stdout={} stderr={stderr}",
+                    String::from_utf8_lossy(&out.stdout)
+                )
+            });
+            let report = &frame["bootstrap"];
+            assert_eq!(report["failed"], true);
+            assert_eq!(report["phase"], "continuation");
+            assert_eq!(report["outcome"], "pending");
+            assert_eq!(report["recovery_ref"], reference);
+            // Exactly the observed canonical status.
+            assert_eq!(report["attempt"], 1);
+            assert_eq!(report["state"], "attached");
+            assert_eq!(report["status_unknown"], false);
+            assert_eq!(report["status_is_last_observed"], true);
+            let retry: Vec<String> = serde_json::from_value(report["retry_argv"].clone()).unwrap();
+            assert_eq!(
+                retry[retry.len() - 2..],
+                ["retry".to_owned(), reference.clone()]
+            );
+        } else {
+            let text = String::from_utf8(out.stdout.clone()).unwrap();
+            assert!(text.contains("phase: continuation"), "{text}");
+            assert!(text.contains("state: attached"), "{text}");
+            assert!(text.contains("attempt: 1"), "{text}");
+            assert!(text.contains(&format!("retry {reference}")), "{text}");
+        }
+        assert_eq!(f.effect_counts(), effects, "no effect under a held lock");
+    }
+}
+
+// Post-publication continuation failure after an observed cancelled canonical
+// status: the original error propagates and nothing is reported on stdout.
+#[test]
+fn pending_public_postpublication_lock_failure_after_cancelled_is_silent() {
+    for json in [true, false] {
+        let f = Fixture::new();
+        f.setup("codex");
+        f.host.state.lock().unwrap().lose = Some("tab.create");
+        let args = final_sdd_args(&f, "codex", &["--config=frozen=true".into()]);
+        let out = f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), "");
+        let report = final_sdd_pending(&f, &out, "creation");
+        let cancel: Vec<String> =
+            serde_json::from_value(report["conditional_human_recovery"]["cancel_argv"].clone())
+                .unwrap();
+        let mut cmd = f.iso.command(BIN);
+        cmd.args(&cancel[1..])
+            .env("PATH", f.owned_path())
+            .env("CLAUDE_CONFIG_DIR", f.iso.path("claude-config"))
+            .env("CODEX_HOME", f.iso.path("codex-home"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let cancelled = f.capture(cmd);
+        assert!(
+            cancelled.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&cancelled.stdout),
+            String::from_utf8_lossy(&cancelled.stderr)
+        );
+        assert_eq!(
+            f.count("SELECT count(*) FROM bootstrap_handoffs WHERE state='cancelled'"),
+            1
+        );
+        let reference = f.reference();
+        let effects = f.effect_counts();
+        let (mut proxy, held) = concurrent_lock_at_status(&f);
+        let out = f.run_format(&["retry", &reference], "'malformed", json);
+        proxy.finish().unwrap();
+        assert!(held.lock().unwrap().take().is_some(), "lock was contended");
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("handoff already running"), "{stderr}");
+        assert!(
+            out.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert_eq!(f.effect_counts(), effects);
+    }
+}
+
 fn args_for(f: &Fixture) -> Vec<String> {
     let binary = f.iso.path("codex");
     f.new_thread_args("codex", binary.to_str().unwrap())

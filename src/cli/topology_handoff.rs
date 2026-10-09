@@ -1425,7 +1425,12 @@ pub(crate) fn resume_to_writer<
             // A successful canonical transition that stops before attachment
             // (typed zero submission closed N and prepared N+1) is unfinished
             // handoff work, not success. Present the coordinator's exact result
-            // and never run the next attempt automatically.
+            // and never run the next attempt automatically. The arguments were
+            // valid and the remedy is retrying the same reference, so this is
+            // the retryable unavailable class (exit 3), never a usage error: a
+            // transport-proven zero submission means the host did not take the
+            // creation. The typed cause is not retained across a saved rearm,
+            // so the class is fixed rather than copied from it.
             Ok(next)
                 if !matches!(
                     next.state,
@@ -1435,7 +1440,7 @@ pub(crate) fn resume_to_writer<
                 write_pending(
                     reference, &identity, &next, None, "creation", output, writer,
                 )?;
-                return Err(super::invalid_request(&format!(
+                return Err(crate::protocol::results::ApiError::host_unavailable(format!(
                     "bootstrap lacks canonical attachment: {} attempt {} is {}; retry the original to continue; no automatic submission",
                     reference.recovery_ref(),
                     next.attempt.get(),
@@ -1443,7 +1448,8 @@ pub(crate) fn resume_to_writer<
                         .ok()
                         .and_then(|v| v.as_str().map(str::to_owned))
                         .unwrap_or_default(),
-                )));
+                ))
+                .into());
             }
             Ok(_) => {}
         }
