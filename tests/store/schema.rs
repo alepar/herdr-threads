@@ -6268,9 +6268,9 @@ fn adapter_upgrade_rejects_tampered_diagnostics_from_main25_and_lazy26() {
                 ErrorCode::IncompatibleSchema
             );
             assert_eq!(
-                db.pragma_query_value(None, "user_version", |r| r.get::<_, usize>(0))
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                version
+                version as i64
             );
             assert_eq!(
                 db.query_row(
