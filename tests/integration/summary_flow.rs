@@ -2932,6 +2932,21 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
             "SPARSE USEFUL BODY",
             &["--require-ack", &fx.b, "--deadline", "300"],
         );
+        // The daemon's deadline worker projects receipt_state in the
+        // background, one send job per pass and with a retry backoff after a
+        // busy pass. Under host load the 111-send backlog can leave this
+        // receipt unprojected past the readonly reads below, so wait for its
+        // own projection job before asserting the physical pending row.
+        let db = fx.world.db();
+        wait_until("sparse useful projection", Duration::from_secs(60), || {
+            db.query_row(
+                "SELECT status FROM work_jobs WHERE id=?1",
+                [format!("work:send:{sent}")],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+                == "complete"
+        });
         fx.world
             .cli(
                 Some(fx.caller_b()),
@@ -2943,7 +2958,6 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
                 ],
             )
             .data("offer retained warnings");
-        let db = fx.world.db();
         assert_eq!(
             db.query_row(
                 "SELECT count(*) FROM send_manifests WHERE message_id=?1",
