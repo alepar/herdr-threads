@@ -20,7 +20,7 @@ use crate::{
         ids::{MessageId, NativeSessionId, OperationId, SeatId},
         pagination::PageRequest,
         results::{ApiError, CommandResult, ErrorCode, InboxBatchV2Item},
-        time::Clock,
+        time::{CallBudget, Clock},
         watch::{
             ModAckItem, ModAckOutcome, ModAckReason, ModDeliveryVia, WATCH_BODY_LIMIT_BYTES,
             WATCH_EXIT_ERROR, WATCH_EXIT_STREAM_ENDED, WATCH_PAGE_MAX_BYTES, WATCH_PAGE_MAX_ITEMS,
@@ -330,6 +330,41 @@ pub(crate) struct WatchSession<'a> {
     pub hint_path: Option<PathBuf>,
 }
 
+/// What the `mod.watch_v1` capability probe learned.
+enum Probe {
+    Supported,
+    /// The daemon answered, and it has no such feature.
+    Unsupported,
+    /// The call itself failed (busy, timeout, booting daemon, transport loss): the daemon
+    /// may well support the feature, so the mod retries instead of stopping for the session.
+    Failed,
+}
+
+/// A fresh, fallible capability call: unlike `LocalClient::supports_capability`, a failed
+/// call is not read as "no capabilities".
+fn probe_mod_watch(client: &dyn LocalClient, budget: &CallBudget) -> Probe {
+    match client.call_definitive(Command::Capabilities, budget) {
+        Ok(Ok(CommandResult::Capabilities(list))) => {
+            if list.capabilities.iter().any(|c| c == MOD_WATCH) {
+                Probe::Supported
+            } else {
+                Probe::Unsupported
+            }
+        }
+        // Correlated, definitive answers that mean "this daemon has no such feature".
+        Ok(Err(error))
+            if matches!(
+                error.code,
+                ErrorCode::UnknownWireVersion | ErrorCode::Unsupported
+            ) =>
+        {
+            Probe::Unsupported
+        }
+        Ok(Ok(_)) => Probe::Unsupported,
+        Ok(Err(_)) | Err(_) => Probe::Failed,
+    }
+}
+
 /// Capability check, registration, then the stream loop. Returns the exit code.
 fn run_session(
     session: WatchSession<'_>,
@@ -337,11 +372,10 @@ fn run_session(
     mut alive: impl FnMut() -> bool,
 ) -> i32 {
     let mut state = EmitState::new(session.hint_path.clone());
-    if !session
-        .client
-        .supports_capability(MOD_WATCH, &cooperative_budget(session.clock))
-    {
-        return refuse(&mut state, out, WatchStatusReason::Unsupported);
+    match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
+        Probe::Supported => {}
+        Probe::Unsupported => return refuse(&mut state, out, WatchStatusReason::Unsupported),
+        Probe::Failed => return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable),
     }
     let seat = session.claim.seat.clone();
     let (reply, mut conn) = match open_watch(session.socket, session.instance, session.claim) {

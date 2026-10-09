@@ -5,7 +5,7 @@ use crate::protocol::{
     commands::Command,
     ids::{ExecutionId, HostTargetId, InvitationId, ThreadId},
     pagination::{Consistency, Page, StopReason},
-    results::{CommandResult, InboxBatchV2Item},
+    results::{CapabilityList, CommandResult, ErrorCode, InboxBatchV2Item},
     time::CallBudget,
     watch::{
         ModAckReport, WatchCloseReason, WatchItem, WatchLine, WatchRefusal, WatchRefusalReason,
@@ -120,6 +120,9 @@ struct FakeClient {
     handler: Handler,
     calls: Mutex<Vec<Command>>,
     watch_capability: bool,
+    /// Makes the capability probe fail: `Err` is an outer (transport) failure,
+    /// `Ok` a definitive daemon rejection.
+    probe: Option<Result<ApiError, ApiError>>,
 }
 
 impl FakeClient {
@@ -130,6 +133,7 @@ impl FakeClient {
             handler: Box::new(handler),
             calls: Mutex::new(Vec::new()),
             watch_capability: true,
+            probe: None,
         }
     }
 
@@ -142,9 +146,36 @@ impl LocalClient for FakeClient {
     fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
         self.watch_capability && name == MOD_WATCH
     }
-    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+    fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+        if matches!(command, Command::Capabilities) {
+            return match self.call_definitive(command, budget) {
+                Ok(answer) => answer,
+                Err(error) => Err(error),
+            };
+        }
         self.calls.lock().unwrap().push(command.clone());
         (self.handler)(&command)
+    }
+    fn call_definitive(
+        &self,
+        command: Command,
+        budget: &CallBudget,
+    ) -> Result<Result<CommandResult, ApiError>, ApiError> {
+        if matches!(command, Command::Capabilities) {
+            // Not recorded in `calls()`: the probe is not part of the stream's traffic.
+            return match &self.probe {
+                Some(Err(outer)) => Err(outer.clone()),
+                Some(Ok(rejection)) => Ok(Err(rejection.clone())),
+                None => Ok(Ok(CommandResult::Capabilities(CapabilityList {
+                    capabilities: if self.watch_capability {
+                        vec![MOD_WATCH.to_owned()]
+                    } else {
+                        Vec::new()
+                    },
+                }))),
+            };
+        }
+        self.call(command, budget).map(Ok)
     }
     fn call_with_output(
         &self,
@@ -1085,6 +1116,73 @@ fn dead_parent_stops_the_stream_loop_without_a_status_line() {
         "only `connected`; nothing after the parent died"
     );
     server.finish();
+}
+
+/// Runs `run_session` against a client whose capability probe is rigged and
+/// returns the exit code and the single status line it printed.
+fn run_probe(client: &FakeClient) -> (i32, WatchStatus) {
+    let clock = clock();
+    let mut out = Vec::new();
+    // No server exists: the capability check precedes any connection.
+    let exit = run_session(
+        session(client, &clock, Path::new("/nonexistent/htw.sock")),
+        &mut out,
+        || true,
+    );
+    let got = lines(&out);
+    assert_eq!(got.len(), 1, "exactly one status line: {got:?}");
+    (exit, status_of(&got[0]).clone())
+}
+
+#[test]
+fn failed_capability_probe_exits_retryable_daemon_unavailable() {
+    let mut client = empty_inbox();
+    client.probe = Some(Err(ApiError::host_unavailable("daemon booting")));
+    let (exit, status) = run_probe(&client);
+    let retryable = WatchStatusReason::DaemonUnavailable.exit_code();
+    assert_eq!(exit, retryable);
+    assert_ne!(exit, 3, "exit 3 stops the mod for the whole session");
+    assert_eq!(
+        status,
+        WatchStatus {
+            state: WatchStatusState::Refused,
+            reason: Some(WatchStatusReason::DaemonUnavailable),
+            exit: Some(retryable),
+        }
+    );
+}
+
+#[test]
+fn busy_or_timed_out_probe_is_retryable() {
+    for code in [
+        ErrorCode::StoreBusy,
+        ErrorCode::ServiceBusy,
+        ErrorCode::DeadlineExceeded,
+        ErrorCode::DaemonBootChanged,
+    ] {
+        let mut client = empty_inbox();
+        client.probe = Some(Ok(ApiError::new(code.clone(), "probe rejected")));
+        let (exit, status) = run_probe(&client);
+        assert_ne!(exit, 3, "{code:?} must not stop the mod");
+        assert_eq!(exit, WatchStatusReason::DaemonUnavailable.exit_code());
+        assert_eq!(
+            status.reason,
+            Some(WatchStatusReason::DaemonUnavailable),
+            "{code:?}"
+        );
+    }
+}
+
+#[test]
+fn definitive_unknown_wire_version_probe_exits_3_unsupported() {
+    let mut client = empty_inbox();
+    client.probe = Some(Ok(ApiError::new(
+        ErrorCode::UnknownWireVersion,
+        "older daemon",
+    )));
+    let (exit, status) = run_probe(&client);
+    assert_eq!(exit, 3);
+    assert_eq!(status.reason, Some(WatchStatusReason::Unsupported));
 }
 
 #[test]
