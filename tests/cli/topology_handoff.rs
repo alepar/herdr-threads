@@ -3254,6 +3254,19 @@ mod live {
             )
             .unwrap();
             let mut recovery = RecoverBootstrap {
+                inspection: Some(
+                    BootstrapRecoveryInspection::from_status(&{
+                        let state = f.peer.state.lock().unwrap();
+                        canonical::current(
+                            &state.db,
+                            &f.peer.identity.payload.handoff.namespace,
+                            &f.peer.identity,
+                        )
+                        .unwrap()
+                        .unwrap()
+                    })
+                    .unwrap(),
+                ),
                 identity: f.peer.identity.clone(),
                 expected_attempt: BootstrapAttempt::first(),
                 operation: OperationId::new("placeholder"),

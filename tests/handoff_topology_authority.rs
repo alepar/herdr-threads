@@ -257,6 +257,12 @@ fn actual_guarded_domain_capability_requires_concrete_composition_and_handler() 
             .any(|name| name
                 == herdr_threads::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1)
     );
+    assert!(
+        caps.capabilities
+            .iter()
+            .any(|name| name
+                == herdr_threads::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1)
+    );
     // Advertising probe must also execute the real typed deciding handler.
     assert!(
         matches!(control.handle(begin(super::topology_handoff::identity()), peer, &budget).unwrap(), CommandResult::Bootstrap(ref status) if status.state == BootstrapState::Prepared)
@@ -285,6 +291,13 @@ fn actual_guarded_domain_capability_requires_concrete_composition_and_handler() 
             .iter()
             .any(|name| name
                 == herdr_threads::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1)
+    );
+    assert!(
+        !caps
+            .capabilities
+            .iter()
+            .any(|name| name
+                == herdr_threads::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1)
     );
 }
 

@@ -438,6 +438,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
     assert!(!caps.supports(HARNESS_EVIDENCE_V2));
     assert!(!caps.supports(HARNESS_HEALTH_V2));
     assert!(!caps.supports("nonexistent.capability"));
+    assert!(!caps.supports(BOOTSTRAP_INSPECTED_RECOVERY_V1));
 }
 
 #[test]

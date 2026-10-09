@@ -1797,6 +1797,7 @@ fn operator_bootstrap_recovery_has_own_actor_without_reclassifying_reference() {
     use crate::protocol::handoff::*;
     let identity = topology_contract_tests::identity();
     let mut request = RecoverBootstrap {
+        inspection: None,
         identity,
         expected_attempt: BootstrapAttempt::first(),
         operation: OperationId::new("placeholder"),

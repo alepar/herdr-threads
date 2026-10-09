@@ -589,6 +589,14 @@ fn cancel_bootstrap(
     let tx = db.transaction().unwrap();
     topology_handoff::begin_pending(&tx, ns, id, UtcMillis(0)).unwrap();
     let mut request = RecoverBootstrap {
+        inspection: Some(
+            BootstrapRecoveryInspection::from_status(
+                &topology_handoff::current(&tx, &id.payload.handoff.namespace, id)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap(),
+        ),
         identity: id.clone(),
         expected_attempt: BootstrapAttempt::first(),
         operation: id.compound.clone(),
@@ -1064,6 +1072,14 @@ fn cancel_attached(
     };
     let tx = db.transaction().unwrap();
     let mut request = RecoverBootstrap {
+        inspection: Some(
+            BootstrapRecoveryInspection::from_status(
+                &topology_handoff::current(&tx, &id.payload.handoff.namespace, id)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap(),
+        ),
         identity: id.clone(),
         expected_attempt: BootstrapAttempt::first(),
         operation: id.compound.clone(),

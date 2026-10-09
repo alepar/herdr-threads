@@ -455,6 +455,8 @@ pub struct BootstrapCancellationGuard {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoverBootstrap {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspection: Option<BootstrapRecoveryInspection>,
     pub identity: BootstrapIdentity,
     pub expected_attempt: BootstrapAttempt,
     pub operation: OperationId,
@@ -463,6 +465,8 @@ pub struct RecoverBootstrap {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BootstrapRecoveryResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspection: Option<BootstrapRecoveryInspection>,
     pub identity: BootstrapIdentity,
     pub attempt: BootstrapAttempt,
     pub operation: OperationId,
@@ -692,15 +696,90 @@ impl BootstrapIdentity {
         Ok(())
     }
 }
+/// Immutable canonical inspected-state binding. It is an operator assertion,
+/// never authority or evidence of transport zero submission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootstrapRecoveryInspection {
+    pub version: u32,
+    pub digest: String,
+}
+impl BootstrapRecoveryInspection {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.version != 1 || !valid_digest(&self.digest) {
+            return Err("invalid bootstrap recovery inspection");
+        }
+        Ok(())
+    }
+    /// Only the bounded canonical tuple is hashed. Completed reports are omitted;
+    /// terminal state already forbids fresh mutation. Prior recovery is finite.
+    pub fn from_status(status: &BootstrapResult) -> Result<Self, &'static str> {
+        use sha2::{Digest, Sha256};
+        struct Hasher {
+            hash: Sha256,
+            remaining: usize,
+        }
+        impl std::io::Write for Hasher {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.remaining = self
+                    .remaining
+                    .checked_sub(bytes.len())
+                    .ok_or_else(|| std::io::Error::other("oversized recovery inspection"))?;
+                self.hash.update(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        // Creation + attachment + latest recovery have 128/128/256 KiB caps.
+        // Allow bounded tuple tags and scalar fields, never a completed report.
+        let mut writer = Hasher {
+            hash: Sha256::new(),
+            remaining: 512 * 1024 + 1024,
+        };
+        serde_json::to_writer(
+            &mut writer,
+            &(
+                "handoff.bootstrap.inspection.v1",
+                &status.compound,
+                status.attempt,
+                status.attempt_state,
+                status.state,
+                &status.creation,
+                &status.attachment,
+                &status.recovery,
+            ),
+        )
+        .map_err(|_| "invalid or oversized recovery inspection snapshot")?;
+        Ok(Self {
+            version: 1,
+            digest: format!("{:x}", writer.hash.finalize()),
+        })
+    }
+}
 impl RecoverBootstrap {
     pub fn decision_operation(&self) -> Result<OperationId, &'static str> {
         use sha2::{Digest, Sha256};
-        let bytes = serde_json::to_vec(&(
-            &self.identity.compound,
-            &self.identity.digest,
-            self.expected_attempt,
-            &self.disposition,
-        ))
+        let bytes = if let Some(inspection) = &self.inspection {
+            inspection.validate()?;
+            serde_json::to_vec(&(
+                "handoff.bootstrap.recovery-key.v1",
+                &self.identity.compound,
+                &self.identity.digest,
+                self.expected_attempt,
+                &self.disposition,
+                inspection,
+            ))
+        } else {
+            // Preserve the exact historical four-tuple and absent-field bytes.
+            serde_json::to_vec(&(
+                &self.identity.compound,
+                &self.identity.digest,
+                self.expected_attempt,
+                &self.disposition,
+            ))
+        }
         .map_err(|_| "invalid recovery assertion")?;
         OperationId::parse(format!("bootstrap-recovery-{:x}", Sha256::digest(bytes)))
     }
@@ -967,6 +1046,7 @@ pub(crate) mod topology_contract_tests {
         use crate::protocol::commands::Command;
         let attempt = BootstrapAttempt::first();
         let mut recovery = RecoverBootstrap {
+            inspection: None,
             identity: identity(),
             expected_attempt: attempt,
             operation: OperationId::new("decision"),
@@ -1197,5 +1277,235 @@ pub(crate) mod topology_contract_tests {
         let command: Command = serde_json::from_value(raw)
             .expect("proven non-submission needs its own additive typed command");
         command.validate().unwrap();
+    }
+    #[test]
+    fn recovery_inspection_wire_keys_bind_canonical_state_and_preserve_absent_history() {
+        let status = BootstrapResult {
+            compound: OperationId::new("b"),
+            attempt: BootstrapAttempt::first(),
+            attempt_state: BootstrapAttemptState::Prepared,
+            state: BootstrapState::Prepared,
+            creation: None,
+            attachment: None,
+            completed: None,
+            recovery: None,
+        };
+        let inspection = BootstrapRecoveryInspection::from_status(&status).unwrap();
+        // Independently SHA-256 of the literal domain-tagged canonical JSON tuple.
+        assert_eq!(
+            inspection.digest,
+            "ea2b63590714039519cdc86b4d5cfe1accd9028e92d0542e2df5fdf301d16b76"
+        );
+        let mut request = match commands().pop().unwrap() {
+            crate::protocol::commands::Command::RecoverBootstrap(v) => *v,
+            _ => unreachable!(),
+        };
+        let old = serde_json::to_vec(&request).unwrap();
+        let old_key = request.operation.clone();
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&old)
+                .unwrap()
+                .get("inspection")
+                .is_none()
+        );
+        assert_eq!(
+            serde_json::to_vec(&serde_json::from_slice::<RecoverBootstrap>(&old).unwrap()).unwrap(),
+            old
+        );
+        request.inspection = Some(inspection);
+        assert!(
+            crate::protocol::commands::Command::RecoverBootstrap(Box::new(request.clone()))
+                .validate()
+                .is_err()
+        );
+        request.operation = request.decision_operation().unwrap();
+        assert_ne!(request.operation, old_key);
+        crate::protocol::commands::Command::RecoverBootstrap(Box::new(request.clone()))
+            .validate()
+            .unwrap();
+        for bad in [
+            BootstrapRecoveryInspection {
+                version: 2,
+                digest: "a".repeat(64),
+            },
+            BootstrapRecoveryInspection {
+                version: 1,
+                digest: "A".repeat(64),
+            },
+            BootstrapRecoveryInspection {
+                version: 1,
+                digest: "a".repeat(65),
+            },
+        ] {
+            request.inspection = Some(bad);
+            assert!(
+                crate::protocol::commands::Command::RecoverBootstrap(Box::new(request.clone()))
+                    .validate()
+                    .is_err()
+            );
+        }
+        for field in [
+            "attempt",
+            "possible",
+            "unknown",
+            "cancelled",
+            "creation",
+            "attachment",
+            "recovery",
+        ] {
+            let mut changed = status.clone();
+            match field {
+                "attempt" => changed.attempt = BootstrapAttempt::new(2).unwrap(),
+                "possible" => changed.attempt_state = BootstrapAttemptState::PossibleCreation,
+                "unknown" => changed.attempt_state = BootstrapAttemptState::OutcomeUnknown,
+                "cancelled" => changed.state = BootstrapState::Cancelled,
+                "creation" => changed.creation = Some(created()),
+                "attachment" => changed.attachment = Some(completion().attachment),
+                "recovery" => {
+                    changed.recovery = Some(Box::new(BootstrapRecoveryResult {
+                        inspection: None,
+                        identity: identity(),
+                        attempt: BootstrapAttempt::first(),
+                        operation: OperationId::new("old"),
+                        disposition: BootstrapRecoveryDisposition::NotCreated {
+                            quiescence:
+                                BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+                        },
+                        operator_uid: 501,
+                        operator_provenance: "operator:local-user:501".into(),
+                        creation: None,
+                        state: BootstrapState::Prepared,
+                    }))
+                }
+                _ => unreachable!(),
+            }
+            assert_ne!(
+                BootstrapRecoveryInspection::from_status(&changed)
+                    .unwrap()
+                    .digest,
+                "ea2b63590714039519cdc86b4d5cfe1accd9028e92d0542e2df5fdf301d16b76",
+                "{field} omitted from inspected tuple"
+            );
+        }
+        let mut oversized = status.clone();
+        let mut huge = created();
+        huge.witness.endpoint = ("/".to_owned() + &"x".repeat(512 * 1024 + 1024)).into();
+        oversized.creation = Some(huge);
+        assert!(BootstrapRecoveryInspection::from_status(&oversized).is_err());
+    }
+    #[test]
+    fn inspection_aware_results_preserve_old_history_and_older_decoders_fail_closed() {
+        // Shipped deny_unknown_fields field shape. Unchanged payload fields
+        // use IgnoredAny: the input is already a genuine typed serialized result.
+        // This tests old shape rejection, not a historical executable or malformed
+        // old payload admission. Nested recovery still uses the old result shape.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct OldRequest {
+            identity: serde::de::IgnoredAny,
+            expected_attempt: serde::de::IgnoredAny,
+            operation: serde::de::IgnoredAny,
+            disposition: serde::de::IgnoredAny,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct OldRecovery {
+            identity: serde::de::IgnoredAny,
+            attempt: serde::de::IgnoredAny,
+            operation: serde::de::IgnoredAny,
+            disposition: serde::de::IgnoredAny,
+            operator_uid: serde::de::IgnoredAny,
+            operator_provenance: serde::de::IgnoredAny,
+            creation: serde::de::IgnoredAny,
+            state: serde::de::IgnoredAny,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct OldStatus {
+            compound: serde::de::IgnoredAny,
+            attempt: serde::de::IgnoredAny,
+            attempt_state: serde::de::IgnoredAny,
+            state: serde::de::IgnoredAny,
+            creation: serde::de::IgnoredAny,
+            attachment: serde::de::IgnoredAny,
+            completed: serde::de::IgnoredAny,
+            recovery: Option<Box<OldRecovery>>,
+        }
+        let mut result = BootstrapRecoveryResult {
+            inspection: None,
+            identity: identity(),
+            attempt: BootstrapAttempt::first(),
+            operation: OperationId::new("retained"),
+            disposition: BootstrapRecoveryDisposition::NotCreated {
+                quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+            },
+            operator_uid: 501,
+            operator_provenance: "operator:local-user:501".into(),
+            creation: None,
+            state: BootstrapState::Prepared,
+        };
+        let mut request = RecoverBootstrap {
+            inspection: None,
+            identity: result.identity.clone(),
+            expected_attempt: result.attempt,
+            operation: OperationId::new("temporary"),
+            disposition: result.disposition.clone(),
+        };
+        request.operation = request.decision_operation().unwrap();
+        let old_request = serde_json::to_vec(&request).unwrap();
+        assert!(serde_json::from_slice::<OldRequest>(&old_request).is_ok());
+        assert_eq!(
+            serde_json::to_vec(&serde_json::from_slice::<RecoverBootstrap>(&old_request).unwrap())
+                .unwrap(),
+            old_request
+        );
+        request.inspection = Some(BootstrapRecoveryInspection {
+            version: 1,
+            digest: "a".repeat(64),
+        });
+        request.operation = request.decision_operation().unwrap();
+        assert!(
+            serde_json::from_value::<OldRequest>(serde_json::to_value(&request).unwrap()).is_err()
+        );
+        let old = serde_json::to_vec(&result).unwrap();
+        assert!(serde_json::from_slice::<OldRecovery>(&old).is_ok());
+        assert_eq!(
+            serde_json::to_vec(&serde_json::from_slice::<BootstrapRecoveryResult>(&old).unwrap())
+                .unwrap(),
+            old
+        );
+        let mut status = BootstrapResult {
+            compound: result.identity.compound.clone(),
+            attempt: BootstrapAttempt::new(2).unwrap(),
+            attempt_state: BootstrapAttemptState::Prepared,
+            state: BootstrapState::Prepared,
+            creation: None,
+            attachment: None,
+            completed: None,
+            recovery: Some(Box::new(result.clone())),
+        };
+        assert!(
+            serde_json::from_value::<OldStatus>(serde_json::to_value(&status).unwrap()).is_ok()
+        );
+        result.inspection = Some(BootstrapRecoveryInspection {
+            version: 1,
+            digest: "a".repeat(64),
+        });
+        assert!(
+            serde_json::from_value::<OldRecovery>(serde_json::to_value(&result).unwrap()).is_err()
+        );
+        status.recovery = Some(Box::new(result));
+        assert!(
+            serde_json::from_value::<OldStatus>(serde_json::to_value(&status).unwrap()).is_err()
+        );
+        let decoded: BootstrapResult =
+            serde_json::from_value(serde_json::to_value(&status).unwrap()).unwrap();
+        assert!(
+            decoded.recovery.unwrap().inspection.is_some(),
+            "new presentation cannot strip guard for older decoders"
+        );
     }
 }

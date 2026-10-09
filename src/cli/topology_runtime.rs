@@ -483,7 +483,7 @@ pub(crate) fn run_operator(
     }
     let (instance, _, client) = super::connect(paths, clock)?;
     let ns = namespace(selected, instance);
-    require_capability(&client, clock.as_ref())?;
+    super::topology_recover::require_capability(&client, clock.as_ref())?;
     let reference = if let Some(original) = original {
         original.header.reference
     } else {
@@ -568,9 +568,26 @@ pub(crate) fn run_operator(
             disposition,
             unsafe { libc::geteuid() },
             &ns,
+            &status,
         )?;
-        drop(lock);
-        super::topology_recover::publish(&journal, &plan, &ns, clock.utc_now().0)?
+        let reference = super::topology_recover::publish_under_guard(
+            &journal,
+            &plan,
+            &ns,
+            clock.utc_now().0,
+            &lock,
+        )?;
+        super::topology_recover::retry_under_guard(
+            &journal,
+            &reference,
+            &ns,
+            &client,
+            clock.as_ref(),
+            &parsed.output,
+            writer,
+            &lock,
+        )?;
+        return Ok(true);
     };
     super::retry::run_topology_recovery_retry_to_writer(
         &journal,

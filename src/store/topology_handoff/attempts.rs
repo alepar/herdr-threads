@@ -342,10 +342,10 @@ pub(crate) fn recovery_replay(
     )?
     .into_iter()
     .find(|r| r.operation == request.operation);
-    if saved
-        .as_ref()
-        .is_some_and(|saved| !same(&saved.disposition, &request.disposition).unwrap_or(false))
-    {
+    if saved.as_ref().is_some_and(|saved| {
+        saved.inspection != request.inspection
+            || !same(&saved.disposition, &request.disposition).unwrap_or(false)
+    }) {
         return Err(corrupt());
     }
     Ok(saved)
@@ -373,6 +373,10 @@ pub fn recover(
     let (parent, revision) = parent(tx, ns, &request.identity)?;
     if let Some(saved) = recovery_replay(tx, ns, request)? {
         return Ok(saved);
+    }
+    let inspection = request.inspection.as_ref().ok_or_else(conflict)?;
+    if inspection != &BootstrapRecoveryInspection::from_status(&result).map_err(invalid)? {
+        return Err(conflict());
     }
     active(&result, request.expected_attempt)?;
     let decision_kind = if matches!(
@@ -466,6 +470,7 @@ pub fn recover(
         }
     };
     let saved = BootstrapRecoveryResult {
+        inspection: request.inspection.clone(),
         identity: request.identity.clone(),
         attempt: request.expected_attempt,
         operation: request.operation.clone(),
@@ -591,8 +596,18 @@ mod tests {
         .unwrap();
         (db, id, guard)
     }
-    fn request(id: &BootstrapIdentity, guard: &BootstrapAttachmentGuard) -> RecoverBootstrap {
+    fn request(
+        db: &Connection,
+        id: &BootstrapIdentity,
+        guard: &BootstrapAttachmentGuard,
+    ) -> RecoverBootstrap {
         let mut r = RecoverBootstrap {
+            inspection: Some(
+                BootstrapRecoveryInspection::from_status(
+                    &status(db, &id.payload.handoff.namespace, id).unwrap(),
+                )
+                .unwrap(),
+            ),
             identity: id.clone(),
             expected_attempt: BootstrapAttempt::first(),
             operation: id.compound.clone(),
@@ -626,7 +641,9 @@ mod tests {
         let (mut db, id, guard) = fixture();
         let tx = db.transaction().unwrap();
         begin_reserve(&tx, &id);
-        let request = request(&id, &guard);
+        let mut request = request(&tx, &id, &guard);
+        request.inspection = None;
+        request.operation = request.decision_operation().unwrap();
         let semantic = crate::cli::journal::SemanticMutation::Frozen {
             claim: id.claim.clone(),
             mutation: Box::new(crate::cli::journal::SemanticMutation::HandoffBootstrap(
@@ -636,15 +653,33 @@ mod tests {
                 }),
             )),
         };
-        let saved = recover(
-            &tx,
-            &id.payload.handoff.namespace,
-            &request,
-            501,
-            UtcMillis(1),
-            Some(&guard),
-        )
-        .unwrap();
+        // Actual historical committed None row, not a newly admitted unbound decision.
+        let saved = BootstrapRecoveryResult {
+            inspection: None,
+            identity: id.clone(),
+            attempt: request.expected_attempt,
+            operation: request.operation.clone(),
+            disposition: request.disposition.clone(),
+            operator_uid: 501,
+            operator_provenance: "operator:local-user:501".into(),
+            creation: Some(created()),
+            state: BootstrapState::Created,
+        };
+        tx.execute("UPDATE bootstrap_attempts SET state='created',creation_json=?1 WHERE parent_id=1 AND attempt=1", [serde_json::to_vec(&created()).unwrap()]).unwrap();
+        tx.execute("INSERT INTO bootstrap_recovery_decisions(parent_id,attempt,operation,result_json,decision_kind) VALUES(1,1,?1,?2,'recovery')", params![request.operation.as_str(),serde_json::to_vec(&saved).unwrap()]).unwrap();
+        tx.execute("UPDATE bootstrap_handoffs SET state='created',latest_recovery_operation=?1,administrative_revision=1 WHERE id=1", [request.operation.as_str()]).unwrap();
+        assert_eq!(
+            recover(
+                &tx,
+                &id.payload.handoff.namespace,
+                &request,
+                501,
+                UtcMillis(1),
+                None
+            )
+            .unwrap(),
+            saved
+        );
         let mut raw = std::collections::BTreeMap::<&str, Vec<u8>>::new();
         raw.insert("request", serde_json::to_vec(&request).unwrap());
         raw.insert(
@@ -744,7 +779,7 @@ mod tests {
         let (mut db, id, guard) = fixture();
         let tx = db.transaction().unwrap();
         begin_reserve(&tx, &id);
-        let mut r = request(&id, &guard);
+        let mut r = request(&tx, &id, &guard);
         if let BootstrapRecoveryDisposition::CreatedPane {
             structural_reference,
             ..
@@ -811,7 +846,7 @@ mod tests {
             recover(
                 &tx,
                 &id.payload.handoff.namespace,
-                &request(&id, &guard),
+                &request(&tx, &id, &guard),
                 501,
                 UtcMillis(1),
                 Some(&guard)
@@ -862,7 +897,7 @@ mod tests {
                 recover(
                     &tx,
                     &id.payload.handoff.namespace,
-                    &request(&id, &guard),
+                    &request(&tx, &id, &guard),
                     501,
                     UtcMillis(2),
                     Some(&guard)
@@ -898,7 +933,7 @@ mod tests {
             guard.ordinary().structural_proof().incarnation(),
             created().host_incarnation.as_str()
         );
-        let r = request(&id, &guard);
+        let r = request(&tx, &id, &guard);
         let saved = recover(
             &tx,
             &id.payload.handoff.namespace,
@@ -961,7 +996,7 @@ mod tests {
                 recover(
                     &tx,
                     &id.payload.handoff.namespace,
-                    &request(&id, &guard),
+                    &request(&tx, &id, &guard),
                     501,
                     UtcMillis(1),
                     Some(&guard)
@@ -980,7 +1015,7 @@ mod tests {
         let (mut db, id, guard) = fixture();
         let tx = db.transaction().unwrap();
         begin_reserve(&tx, &id);
-        let mut r = request(&id, &guard);
+        let mut r = request(&tx, &id, &guard);
         if let BootstrapRecoveryDisposition::CreatedPane { evidence, .. } = &mut r.disposition {
             evidence.witness.socket.change_nanoseconds += 1;
         }
@@ -1022,7 +1057,7 @@ mod tests {
         let (mut db, id, guard) = fixture();
         let tx = db.transaction().unwrap();
         begin_reserve(&tx, &id);
-        let created_request = request(&id, &guard);
+        let created_request = request(&tx, &id, &guard);
         let created_decision = recover(
             &tx,
             &id.payload.handoff.namespace,
@@ -1033,6 +1068,12 @@ mod tests {
         )
         .unwrap();
         let mut cancel = RecoverBootstrap {
+            inspection: Some(
+                BootstrapRecoveryInspection::from_status(
+                    &status(&tx, &id.payload.handoff.namespace, &id).unwrap(),
+                )
+                .unwrap(),
+            ),
             identity: id.clone(),
             expected_attempt: BootstrapAttempt::first(),
             operation: id.compound.clone(),
@@ -1105,7 +1146,7 @@ mod tests {
             recover(
                 &tx,
                 &id.payload.handoff.namespace,
-                &request(&id, &guard),
+                &request(&tx, &id, &guard),
                 501,
                 UtcMillis(1),
                 Some(&guard)
