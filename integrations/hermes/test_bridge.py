@@ -346,12 +346,48 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(observation["timeout_seconds"], 30.0)
         self.assertGreaterEqual(observation["age_seconds"], 0)
         self.assertLessEqual(observation["age_seconds"], 5)
-        self.assertEqual(request["role_association"], {"role":"top", "provenance":"explicit_parent", "session_id":"session-Ω", "turn_id":"turn-1"})
+        self.assertEqual(request["role_association"], {"role":"top", "provenance":"explicit_parent", "session_id":"session-Ω", "turn_id":"turn-1", "enrollment_witness":"cli_platform"})
         self.request("post_tool_call", self.callbacks["tool"])
         tool = self.requests()[-1]["request"]
-        self.assertEqual(tool["role_association"], {"role":"top", "provenance":"qualified_pre_llm_cache", "session_id":"session-Ω", "turn_id":"turn-1"})
+        self.assertEqual(tool["role_association"], {"role":"top", "provenance":"qualified_pre_llm_cache", "session_id":"session-Ω", "turn_id":"turn-1", "enrollment_witness":None})
         self.assertEqual(tool["startup_capture"], capture)
         self.assertEqual(self.version_reads, 1)
+
+    def test_enrollment_witness_envelope_per_platform(self):
+        self.load()
+        keys = {"role", "provenance", "session_id", "turn_id", "enrollment_witness"}
+        for index, (platform, expected) in enumerate((("cli", "cli_platform"), ("", None), (None, None))):
+            turn = {**self.callbacks["qualified"], "turn_id": f"turn-{index}"}
+            if platform is None:
+                del turn["platform"]
+            else:
+                turn["platform"] = platform
+            self.assertIsNotNone(self.request("pre_llm_call", turn))
+            association = self.requests()[-1]["request"]["role_association"]
+            self.assertEqual(set(association), keys)
+            self.assertEqual(association["enrollment_witness"], expected, platform)
+            self.request("post_tool_call", {**self.callbacks["tool"], "turn_id": f"turn-{index}"})
+            tool = self.requests()[-1]["request"]
+            self.assertEqual(tool["callback"], "post_tool_call")
+            self.assertEqual(set(tool["role_association"]), keys)
+            self.assertIsNone(tool["role_association"]["enrollment_witness"])
+        def start(payload):
+            before = len(self.requests())
+            self.request("on_session_start", payload)
+            sent = self.requests()
+            return sent[-1]["request"] if len(sent) > before else None
+        self.assertEqual(start({"session_id": "start-cli", "platform": "cli", "model": "m"})["role_association"],
+                         {"role": "top", "provenance": "cli_session_start", "session_id": "start-cli",
+                          "turn_id": None, "enrollment_witness": "cli_platform"})
+        self.assertIsNone(start({"session_id": "start-empty", "platform": "", "model": "m"})["role_association"])
+        self.assertIsNone(start({"session_id": "start-none", "model": "m"})["role_association"])
+        self.assertIsNone(start({"session_id": "start-sub", "platform": "subagent", "model": "m"}),
+                          "subagent session start is not forwarded")
+        self.request("on_session_reset", self.callbacks["reset"])
+        reset = self.requests()[-1]["request"]
+        self.assertEqual(reset["callback"], "on_session_reset")
+        self.assertIsNone(reset["role_association"])
+        self.assertNotIn("PRIVATE", json.dumps(self.requests()))
 
     def requests(self):
         path = self.state / "requests"

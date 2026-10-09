@@ -2903,15 +2903,15 @@ fn run_admitted_hook_since(
         EventIntent::QualifiedTurn(turn) => Some(turn),
         _ => None,
     };
-    // Only original admitted lifecycle intent permits ordinary enrollment.
-    // A qualified turn's normalized Startup/Clear is context preparation, not
-    // native lifecycle enrollment evidence. Actual native metadata stays intact.
+    // Whether this event may enroll is the adapter's declared policy, not a
+    // hard-coded intent. A qualified turn's normalized Startup/Clear is context
+    // preparation, not native lifecycle enrollment evidence. Only today's
+    // lifecycle enrollment is acted on here; SessionStart / UnownedTurn are
+    // decoded but not honored yet (ht-4ne.4).
     let enroll = matches!(
-        decoded.intent,
-        EventIntent::Lifecycle(EventKind::Startup | EventKind::Clear | EventKind::Resume)
-    ) && matches!(decoded.role, EventRole::TopLevel)
-        && matches!(decoded.delivery, DeliveryEligibility::Context)
-        && decoded.can_check_in();
+        decoded.enrollment(registration.enrollment_policy()),
+        Some(EnrollmentKind::Lifecycle)
+    );
     match check_in(
         args,
         &event,

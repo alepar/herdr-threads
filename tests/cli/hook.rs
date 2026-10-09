@@ -6028,6 +6028,7 @@ mod registered_resume {
                 event_id: p.event_id,
                 intent,
                 metadata: EventMetadata {
+                    enrollment_witness: None,
                     skill_pointer: false,
                     callback_deadline: None,
                     context_source: source.into(),
@@ -6961,6 +6962,8 @@ mod registered_resume {
     }
     /// A registry entry and normalized Startup cannot enroll Hermes. A mutant
     /// based on context_event mode reaches the forbidden actual ResolveSeat.
+    /// New-bridge witnessed shapes decode but the Hermes policy is still
+    /// Lifecycle, so they cannot enroll either (ht-4ne.1).
     #[test]
     fn startup_enrollment_hermes_qualified_unowned_never_resolves() {
         let r = builtins()
@@ -6998,6 +7001,49 @@ mod registered_resume {
             assert!(f.saved().is_none());
             assert!(f.service.requests().is_empty());
             assert!(outcome.attention.is_none());
+            assert_no_enrollment_intents(&f);
+        }
+        for callback in ["on_session_start", "pre_llm_call"] {
+            let f = Fixture::new(false);
+            write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+            let mut i = hermes_input(callback, "unowned-native-session", "turn", 1, "top");
+            let mut p: serde_json::Value = serde_json::from_slice(&i.bytes).unwrap();
+            if callback == "on_session_start" {
+                p["turn_id"] = serde_json::Value::Null;
+                p["shape"]["turn_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+                p["role_association"] = serde_json::json!({
+                    "role": "top", "provenance": "cli_session_start",
+                    "session_id": "unowned-native-session", "turn_id": null,
+                    "enrollment_witness": "cli_platform"});
+            } else {
+                p["role_association"]["enrollment_witness"] = "cli_platform".into();
+            }
+            assert_eq!(p["platform"], "cli");
+            i.bytes = serde_json::to_vec(&p).unwrap();
+            let handle = r
+                .admit(
+                    &hook_admission_request(r, callback_install_observation(r), &i),
+                    &budget(Instant::now() + LIFECYCLE_BUDGET, clock().as_ref()),
+                )
+                .unwrap();
+            let d = r.decode(&handle, &i).unwrap();
+            assert_eq!(
+                d.metadata.enrollment_witness,
+                Some(EnrollmentWitness::CliPlatform)
+            );
+            let outcome = f.run(r, &i);
+            assert_eq!(
+                enrollment_counts(&f),
+                (0, 0),
+                "witnessed {callback}: diagnostic={:?}",
+                outcome.diagnostic
+            );
+            assert!(f.saved().is_none());
+            assert!(f.service.requests().is_empty());
+            assert!(outcome.attention.is_none());
+            if callback == "on_session_start" {
+                assert!(outcome.stdout.is_empty());
+            }
             assert_no_enrollment_intents(&f);
         }
     }

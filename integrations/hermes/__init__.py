@@ -503,6 +503,20 @@ class Bridge:
         else:
             event = "hermes:" + self.nonce + ":" + str(sequence)
         budget_ms = int(span * 1000)
+        # The platform CLI is the only witness of an interactive top-level session.
+        # Parented pre_llm_call returned above, so a turn association is always top.
+        witness = "cli_platform" if platform == "cli" else None
+        if name == "pre_llm_call":
+            association = {"role": "top", "provenance": "explicit_parent", "session_id": session,
+                           "turn_id": turn, "enrollment_witness": witness}
+        elif name == "post_tool_call":
+            association = {"role": "top", "provenance": "qualified_pre_llm_cache", "session_id": session,
+                           "turn_id": turn, "enrollment_witness": None}
+        elif name == "on_session_start" and platform == "cli":
+            association = {"role": "top", "provenance": "cli_session_start", "session_id": session,
+                           "turn_id": None, "enrollment_witness": "cli_platform"}
+        else:
+            association = None
         envelope = {"schema_version": 1, "callback": name,
                     **{key: kwargs.get(key) for key in IDS}, "event_id": event,
                     "observation_order": {"process_nonce": self.nonce, "sequence": sequence,
@@ -514,9 +528,7 @@ class Bridge:
                     "timeout_observation": {"quality": "ok", "fallback_kind": None,
                         "provenance": observation["provenance"], "timeout_seconds": timeout,
                         "age_seconds": observation["age_seconds"], "generation": observation["generation"]},
-                    "role_association": {"role": "top", "session_id": session, "turn_id": turn,
-                        "provenance": "explicit_parent" if name == "pre_llm_call" else "qualified_pre_llm_cache"}
-                        if name in ("pre_llm_call", "post_tool_call") else None,
+                    "role_association": association,
                     "shape": shape(kwargs), "bridge_schema_contract_id": BRIDGE_CONTRACT}
         encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
         if len(encoded) > 65536 or not self.child_lock.acquire(blocking=False):
