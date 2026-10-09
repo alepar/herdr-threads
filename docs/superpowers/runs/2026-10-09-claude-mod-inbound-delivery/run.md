@@ -16,7 +16,6 @@ approvals:
 - coverage-round-2 · c13..c31 applied auto · c32 noted · requirements: 17 · mapped: 17 · unmapped: 0 · divergence: findings 12 → 19 · novel 19/19 (100%) · widening: yes (no round 3 by cap; design roast covers the settled tree)
 parked:
 - 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md · escalation · "idle check vs submit non-atomic: a user Enter between the mod's idle check and the engine's acceptance can queue the plugin prompt behind the user's turn; spike check needed"
-- 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md · escalation · "$.session.id() inside session.end may return the ending session's id; restart path must re-read later"
 - coverage-round-2 · degraded-verdict · "coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage — design roast reviews the settled tree"
 - 2026-10-09 background commit security review · escalation · "mod frame relay/intent markers can be spoofed by peer-controlled body, thread or sender text (a fake marked header line); raw-body escaping was rejected twice under the cooperative model (design roast 1, PR roast 1); follow-up: delimit or escape peer text inside the frame now that markers carry meaning; recorded as a TRUST-POLICY accepted limit"
 - 2026-10-09-claude-mod-inbound-delivery-roast-pr-post-cap-audit.md · escalation · "D3 heuristic (register.js:67): whether Claude Code 2.1.295 reports an ordinary failed Bash call or a permissions.deny rule as isError/deny on the mod tool.call result is unverified; if so, a turn ending that way holds idle submits up to 120 s. Documented accepted heuristic in the spec; refute and ground seats REJECT at FYI. Check: live scenario running `false` via an allowed Bash rule, then answering, with a peer message mid-turn"
@@ -31,8 +30,8 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: ready (whole-epic final review 10 at 8e7eaa41 found one defect, ht-j16.34, fixed and independently reviewed ready at 2945d1ee; review 9 ready for dc5b2f6c/73a75cbf)
-  sweep: 573841ed — 4032 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (260 s; leak check clean; clippy, fmt, check-default-features clean; loaded runs at f62267f5 and 8e7eaa41 hit flakes ht-wur/ht-uy3 in untouched tests) @ 573841ed
+  review: ready (closing whole-epic review code-final-review-11.md at b7a408c0; review 10's one defect ht-j16.34 fixed at 2945d1ee)
+  sweep: b7a408c0 — 4032 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (150 s; leak check clean; also 4032/4032 at 573841ed, the same code; loaded runs at earlier tips hit flakes ht-wur/ht-uy3 in untouched tests) @ b7a408c0
   slowness: round 1 (fix re-entry): merge queue peaked at 5 — serial merge lane bottleneck
   worktreesKept:
   processSweep: stopped 0 · survived 0
@@ -71,3 +70,5 @@ baseAbsorbed: 3793cf88 → 88f5c69f (merge d2e8a84d), 0 conflicted files (main m
 postLoopFix: whole-epic final review 10 at 8e7eaa41 (not ready: mod attention ignored main's warning_wakes_seat, bystander prompts) filed as ht-j16.34, fixed at 2945d1ee (TRUST-POLICY A7 sentence, spec note, 3 new tests red→green), independent review ready, merged 573841ed
 liveStress: full run at 573841ed (final code SHA): 14/14 scenarios 3/3, 1 native prompt, leak check clean
 baseAbsorbed: 88f5c69f → 6ef444d4 (merge 8d4c759c), 0 conflicted files (docs only: CHANGELOG and evidence README line)
+escalationResolved: 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md · "$.session.id() inside session.end" — resolved: became live defect D1, fixed by ht-j16.28 (read after session.end, sidSuspect re-read on restart); clear_rebind live 3/3 at b562d1e4, 73a75cbf and 573841ed (code-final-review-11.md)
+escalationTriage: code-final-review-11.md — submit atomicity: open, needs a human decision (accept as a named limit or run the spike check); marker spoofing: accepted limit (TRUST-POLICY "Mod frames keep peer text off the header column"); D3 heuristic: accepted, documented (spec note ht-j16.30, CHANGELOG)
