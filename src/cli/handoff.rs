@@ -24,27 +24,68 @@ use std::{
 };
 
 pub const HANDOFF_HELP: &str = "Choose exactly one channel: --new-thread or --thread ID_OR_NAME.
-Choose one target mode: explicit --pane PANE for legacy launch; --new-tab LABEL
---kind claude|codex for a guarded new-tab launch; or --existing with exactly one
-of --seat SEAT | --pane PANE for guarded delivery. New modes require an original
-top-level Agent; existing delivery stages work without a launch.
-New threads join the sender; existing threads require a joined sender. --thread-name,
---topic and --goal apply only to new threads. Topic defaults to Handoff to DISPLAY;
-goal defaults to topic. --name names the native agent, not the channel.
+Choose one target mode:
+  --pane PANE --kind claude|codex launches in an existing explicit pane;
+  --new-tab LABEL --kind claude|codex creates a tab and launches there;
+  --existing with exactly one --seat SEAT or --pane PANE delivers durable work
+    to an existing canonical seat without launching or restarting its session.
+New modes require an original top-level Agent and the guarded daemon capability.
+--new-tab conflicts with --existing, --tab, --pane and --seat. --cwd is new-tab
+only: an absolute existing directory, defaulting to the invocation cwd, normalized
+before publication. --space selects one live workspace by exact ID or unique label;
+omission for creation uses the caller's live workspace, never UI focus. New-tab is
+intentional creation even if its label already exists; it does not focus the tab.
+For --existing, --space and --tab may qualify --pane, but conflict with --seat.
+Delivery forbids --kind, --harness-binary, --name and --agent-arg and ignores the
+launch-option environment. An unresolved, held, retired or foreign seat refuses.
+An unbound resolved seat may receive staged work; this does not establish a
+working or available session. Delivery reports staged work, not a launch result.
 
-The one quoted body after -- is durable work. Native options use repeatable
---agent-arg=OPTION; launch -- native arguments is unchanged.
-HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS prepend optional arguments,
-using shell-style quotes and escapes without variable or command expansion. Unset
-or empty adds nothing. Handoff freezes these options before preflight; retry uses
-the saved arguments even if the environment changes.
-Handoff invites and sends before guarded launch. Startup gets fixed inbox
-instructions, not a second copy of the body. Launch never accepts or ACKs.
+New threads join the sender; existing threads require a joined sender. --thread-name,
+--topic and --goal apply only to new threads. Topic defaults to Handoff to DISPLAY:
+legacy launch uses the pane display, new-tab uses its label, delivery uses the
+canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
+The one quoted body after -- is durable work (1..1024 UTF-8 bytes), never native argv.
+Native launch options use repeatable --agent-arg=OPTION; launch -- native arguments
+is unchanged. HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS prepend optional
+arguments using shell-style quotes and escapes without variable or command
+expansion. Unset or empty adds nothing. Launch handoff freezes the combined options
+before preflight; retry uses saved arguments even if the environment changes.
+Handoff stages an invitation when needed and a message addressed to the exact
+recipient; launch modes then perform guarded launch. Startup gets fixed inbox
+instructions, not a second copy of the body. Handoff never accepts or ACKs for
+the recipient, nor declares task adoption or task completion.
+Native execution still needs the selected harness's approval/configuration.
 
 Committed work survives failure. pending-ops lists the compound reference; retry REF
-resumes exact keyed steps. A confirmed pre-start refusal can retry after repair.
-Possible start, unknown outcome or a crash across submission never auto-launches
-again: inspect the reported pane/seat before using the reported manual launch argv.";
+resumes exact keyed steps without duplicate messages or invitations. A confirmed
+pre-start refusal can retry after repair. Unknown creation cannot automatically
+create another tab: inspect the reported exact namespace and attempt. It is distinct
+from downstream possible start; possible start, unknown launch outcome or a crash
+across launch submission never automatically launches again. Inspect the exact
+downstream pane/seat before using any reported manual launch argv after confirming no
+agent started. Manual launch guidance does not prove tab noncreation.
+Completed retry presents the retained historical report and cleans its own local
+intent without repeating effects or proving current availability.
+
+Administrative bootstrap recovery uses human immediately after the executable:
+  herdr-threads human [GLOBALS] handoff recover REF --attempt N --created-pane EXACT_PANE
+  herdr-threads human [GLOBALS] handoff recover REF --attempt N --not-created
+  herdr-threads human [GLOBALS] handoff recover REF --attempt N --cancel --reason TEXT
+Keep the exact reported reference, positive attempt N, state directory and endpoint;
+routing/output globals follow immediate human. Root --human selects output only.
+Recovery needs the guarded daemon capability and records a separate local-account
+operator assertion, preserving the original agent identity. Created-pane asserts
+this exact result belongs to the inspected attempt and needs fresh coherent
+structural evidence and ordinary guards; labels are not ownership evidence.
+Not-created asserts inspected noncreation and quiescence. Cancellation asserts
+quiescence and administrative abandonment, not completion; reason is nonblank and
+at most 4096 UTF-8 bytes. A known in-flight invocation refuses conflicting recovery;
+snapshots or guessed PIDs do not prove quiescence. Recovery never launches downstream
+work. Bootstrap cancellation refuses while an exact legacy child fence or live hint
+remains; that child may stay protected indefinitely after pane loss or retirement.
+Recovery replay presents its exact recorded decision, never authorizes a newer
+attempt. Product cleanup never closes created topology.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoffRequest {
