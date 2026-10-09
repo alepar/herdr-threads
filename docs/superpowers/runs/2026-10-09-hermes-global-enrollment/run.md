@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-hermes-global-enrollment
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: fix-loop
+phase: roast-code
 codeMechanism: Workflow
 
 idea: ht-4ne: make Hermes enroll globally through its hooks instead of launch-only (TRUST-POLICY.md:412-416 says Hermes enrolls only via launch --kind hermes). Reasons in docs/superpowers/runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--hermes-design.md: launch-bound exact-runtime qualification (QualifiedCallback), the guarded Herdr process hint (src/harness/hermes/launch.rs:185), and no top-level vs child signal in on_session_start. New facts: Herdr 0.9.1 lists hermes as a built-in agent kind, and Herdr's own Hermes integration (~/.hermes/plugins/herdr-agent-state/__init__.py, v5; read-only, never write ~/.hermes) reports report-agent-session --agent hermes on on_session_start, on_session_reset and pre_llm_call, so bare-Hermes detection may already be solved (unverified). First verify in an isolated named Herdr test session (scripts/lib/isolated-herdr.sh) whether a bare hermes pane shows as agent hermes, then design. The agy run (super-auto/agy-harness-adapter) is designing a generic harness-local top-level witness for telling a subagent from /clear; coordinate before duplicating it. Follow AGENTS.md (no real-config writes, no push or stash, never touch the shared Herdr server).
@@ -21,17 +21,17 @@ roast-design exit: converged at round 2 (Should-fix (3 confirmed) [converged], n
 graph-pass: depth 4→4 · width 1.2→1.2 · applied 0 · parked 0
 
 codeBuckets:
-  completed: ht-4ne.1, ht-4ne.4, ht-4ne.2, ht-4ne.3, ht-4ne.5
+  completed: ht-4ne.1, ht-4ne.4, ht-4ne.2, ht-4ne.3, ht-4ne.5, ht-4ne.10, ht-4ne.11
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (stale docs/compatibility/README.md:40 + adapter.rs:326 comment; concurrent start/first-turn test masks an UnknownOutcome failure with a retry; TRUST-POLICY says resumed session checks in as Startup but seated-pane resume checks in as current with no context)
+  review: not ready (headless `hermes -z`/`chat -q` carry platform=cli, so with the broadened cross-harness retire a nested different-harness CLI replaces another agent's binding and a one-shot allocates a seat — no TRUST-POLICY accepted limit; concurrent start/first-turn UnknownOutcome unexplained; branch unmeasured by full suite)
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: round 1: graph-bound — 5 open beads, depth 4, achievable width 2 vs cap 8; edge audit armed now
   worktreesKept:
   processSweep: stopped 0 · survived 0
-roastCodeRound: 1
+roastCodeRound: 2
 roast-code: 2026-10-09-hermes-global-enrollment-roast-pr-1.md
 stepBackCode-round-1: patch — These are first-round findings. They are independent, low-severity, and mostly about docs, test isolation or test strength. None comes from a design decision that a redesign would remove, so redesigning would cost more than patching.
 scopeFilter-round-1: [Should-fix] .config/nextest.toml:101 punch-list — Test-scheduling hardening against a flake; it does not change whether the goal-named enrollment behavior is correct.
