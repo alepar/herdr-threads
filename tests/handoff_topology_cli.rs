@@ -271,6 +271,9 @@ impl Fixture {
         Self::with_instance(None)
     }
     fn with_instance(copied: Option<Uuid>) -> Self {
+        Self::with_layout(copied, false)
+    }
+    fn with_layout(copied: Option<Uuid>, long_state: bool) -> Self {
         let iso = TestIsolation::new("handoff-topology-cli");
         for dir in ["claude-config", "codex-home", "cwd"] {
             fs::create_dir(iso.path(dir)).unwrap();
@@ -294,7 +297,18 @@ impl Fixture {
         );
         let socket = iso.socket_path("host.sock");
         let host = Host::start(&iso, &socket);
-        let context = RuntimeContext::explicit(iso.path("state"), socket, None).unwrap();
+        let mut state = if long_state {
+            iso.socket_path("state")
+        } else {
+            iso.path("state")
+        };
+        if long_state {
+            for _ in 0..2 {
+                state = state.join("\u{1}".repeat(170));
+            }
+        }
+        fs::create_dir_all(&state).unwrap();
+        let context = RuntimeContext::explicit(state, socket, None).unwrap();
         let paths = InstancePaths::resolve(&context).unwrap();
         let owner = OwnerLock::acquire(&paths).unwrap();
         let mut instance = owner.instance_uuid();
@@ -431,8 +445,14 @@ impl Fixture {
         self.command_in(&self.context.state_dir, &self.context.host_endpoint)
     }
     fn command_in(&self, state: &Path, host: &Path) -> Command {
+        self.command_in_format(state, host, true)
+    }
+    fn command_in_format(&self, state: &Path, host: &Path, json: bool) -> Command {
         let mut cmd = self.iso.command(BIN);
-        cmd.args(["--json", "--state-dir"])
+        if json {
+            cmd.arg("--json");
+        }
+        cmd.arg("--state-dir")
             .arg(state)
             .arg("--host-endpoint")
             .arg(host)
@@ -449,7 +469,14 @@ impl Fixture {
         cmd
     }
     fn run(&self, args: &[&str], options: &str) -> Output {
-        let mut cmd = self.command();
+        self.run_format(args, options, true)
+    }
+    fn run_format(&self, args: &[&str], options: &str, json: bool) -> Output {
+        let mut cmd = if json {
+            self.command()
+        } else {
+            self.command_in_format(&self.context.state_dir, &self.context.host_endpoint, false)
+        };
         cmd.args([
             "--cooperative-seat",
             "sender",
@@ -1331,4 +1358,255 @@ fn public_copied_uuid_namespace_refuses_before_effects() {
     assert_eq!(foreign.original_bytes(), copied);
     assert_eq!(original.original_bytes(), saved);
     assert_eq!(original.effect_counts(), (0, 0, 1, 1));
+}
+
+// Removing fresh composed-argv validation must expose topology/staging before refusal.
+fn final_sdd_args(f: &Fixture, kind: &str, argv: &[String]) -> Vec<String> {
+    let mut args = vec![
+        "handoff".into(),
+        "--new-tab".into(),
+        "Peer".into(),
+        "--new-thread".into(),
+        "--kind".into(),
+        kind.into(),
+        "--harness-binary".into(),
+        f.iso.path(kind).to_str().unwrap().into(),
+    ];
+    args.extend(argv.iter().map(|arg| format!("--agent-arg={arg}")));
+    args.extend(["--".into(), BODY.into()]);
+    args
+}
+#[test]
+fn final_sdd_actual_native_count_refuses_before_publication_or_effects() {
+    for kind in ["claude", "codex"] {
+        let f = Fixture::new();
+        f.setup(kind);
+        let args = final_sdd_args(&f, kind, &vec!["--config=repeat=true".into(); 64]);
+        let out = f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), "");
+        assert!(!out.status.success());
+        assert!(
+            out.stdout.is_empty(),
+            "prepublication refusal output: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert_eq!(
+            f.effect_counts(),
+            (0, 0, 0, 0),
+            "actual composed65 native refusal came after effects: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(f.count("SELECT count(*) FROM bootstrap_handoffs"), 0);
+        assert!(f.original_bytes().is_empty());
+    }
+}
+#[test]
+fn final_sdd_actual_native_maximum_completes_and_historical_retry_never_relaunches() {
+    for kind in ["claude", "codex"] {
+        let f = Fixture::new();
+        f.setup(kind);
+        let frozen = vec!["--config=repeat=true".into(); 63];
+        let args = final_sdd_args(&f, kind, &frozen);
+        let first = successful(f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), ""));
+        let starts = f.host.requests("agent.start");
+        let actual: Vec<String> =
+            serde_json::from_value(starts[0]["params"]["args"].clone()).unwrap();
+        assert_eq!(actual.len(), 64);
+        assert_eq!(&actual[..63], frozen);
+        assert!(actual[63].contains(f.context.state_dir.to_str().unwrap()));
+        assert!(actual[63].contains(f.context.host_endpoint.to_str().unwrap()));
+        assert!(actual[63].len() <= 4096);
+        let reference = first["handoff"]["recovery_ref"].as_str().unwrap();
+        let retry = successful(f.run(&["retry", reference], "'malformed"));
+        assert_eq!(retry, first);
+        assert_eq!(f.effect_counts(), (1, 1, 1, 1));
+        assert_eq!(f.count("SELECT count(*) FROM bootstrap_reports"), 1);
+    }
+}
+fn final_sdd_pending(f: &Fixture, out: &Output, phase: &str) -> Value {
+    assert!(!out.status.success());
+    let frame: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "missing admitted pinned report: {e}; stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    let report = &frame["bootstrap"];
+    assert_eq!(report["phase"], phase);
+    assert_eq!(
+        report["namespace"]["state_dir"],
+        f.context.state_dir.to_str().unwrap()
+    );
+    assert_eq!(
+        report["namespace"]["host_endpoint"],
+        f.context.host_endpoint.to_str().unwrap()
+    );
+    assert_eq!(report["recovery_ref"], f.reference());
+    assert_eq!(report["attempt"], 1);
+    for key in ["retry_argv", "inspect_argv"] {
+        let argv: Vec<String> = serde_json::from_value(report[key].clone()).unwrap();
+        assert!(argv.contains(&f.context.state_dir.to_string_lossy().into_owned()));
+        assert!(argv.contains(&f.context.host_endpoint.to_string_lossy().into_owned()));
+    }
+    report.clone()
+}
+#[test]
+fn final_sdd_public_creation_unknown_reports_pinned_attempt_and_conditional_human_recovery() {
+    let f = Fixture::new();
+    f.setup("codex");
+    f.host.state.lock().unwrap().lose = Some("tab.create");
+    let args = final_sdd_args(&f, "codex", &["--config=frozen=true".into()]);
+    let out = f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), "");
+    let report = final_sdd_pending(&f, &out, "creation");
+    assert_eq!(report["outcome"], "creation_unknown");
+    assert!(report["pane"].is_null());
+    assert!(report["manual_launch_after_confirming_no_start_argv"].is_null());
+    let recovery = &report["conditional_human_recovery"];
+    for key in ["created_pane_argv", "not_created_argv", "cancel_argv"] {
+        let argv: Vec<String> = serde_json::from_value(recovery[key].clone()).unwrap();
+        assert_eq!(argv[1], "human");
+        assert!(argv.windows(2).any(|w| w == ["--attempt", "1"]));
+        assert!(argv.contains(&f.reference()));
+        let mut argv = argv;
+        for word in &mut argv {
+            if word == "REPLACE_WITH_EXACT_INSPECTED_PANE" {
+                *word = "w4:p3".into();
+            }
+        }
+        let parsed = herdr_threads::cli::commands::parse_argv(argv).unwrap();
+        assert!(matches!(
+            parsed.action,
+            herdr_threads::cli::commands::CliAction::TopologyRecover(_)
+        ));
+    }
+    let text = f.run_format(&["retry", &f.reference()], "'malformed", false);
+    unknown(&text);
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("phase: creation"));
+    assert!(text.contains("outcome: creation_unknown"));
+    assert!(text.contains("created_pane_argv: herdr-threads human --state-dir"));
+    assert!(text.contains(f.context.state_dir.to_str().unwrap()));
+    assert!(text.contains(f.context.host_endpoint.to_str().unwrap()));
+    let retry = f.run(&["retry", &f.reference()], "'malformed");
+    let second = final_sdd_pending(&f, &retry, "creation");
+    assert_eq!(report, second);
+    assert_eq!(f.effect_counts(), (1, 0, 0, 0));
+}
+#[test]
+fn final_sdd_public_possible_start_reports_known_committed_work_without_relaunch() {
+    let f = Fixture::new();
+    f.setup("claude");
+    f.host.state.lock().unwrap().lose = Some("agent.start");
+    let args = final_sdd_args(&f, "claude", &["--config=frozen=true".into()]);
+    let out = f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), "");
+    let report = final_sdd_pending(&f, &out, "launch");
+    assert_eq!(report["outcome"], "possible_start");
+    assert_eq!(report["pane"], "w4:p3");
+    assert!(report["thread"].is_string());
+    assert!(!report["invitation"].is_null());
+    assert!(!report["message"].is_null());
+    assert!(report["conditional_human_recovery"].is_null());
+    let manual: Vec<String> =
+        serde_json::from_value(report["manual_launch_after_confirming_no_start_argv"].clone())
+            .unwrap();
+    assert_eq!(
+        &manual[..3],
+        [
+            "env",
+            "HERDR_THREADS_CODEX_OPTS=",
+            "HERDR_THREADS_CLAUDE_OPTS="
+        ]
+    );
+    assert!(manual.contains(&"--config=frozen=true".into()));
+    let retry = f.run(&["retry", &f.reference()], "'malformed");
+    final_sdd_pending(&f, &retry, "launch");
+    let text = f.run_format(&["retry", &f.reference()], "'malformed", false);
+    unknown(&text);
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("phase: launch"));
+    assert!(text.contains("outcome: possible_start"));
+    assert!(text.contains("manual_launch_after_confirming_no_start_argv: env HERDR_THREADS_CODEX_OPTS= HERDR_THREADS_CLAUDE_OPTS="));
+    assert!(text.contains("--config=frozen=true"));
+    assert!(text.contains("seat_inspect_argv:"));
+    assert!(text.contains("inspect_argv:"));
+    assert_eq!(f.effect_counts(), (1, 1, 1, 1));
+}
+
+#[test]
+fn final_sdd_actual_native_byte_and_line_limits_refuse_before_effects() {
+    for argv in [
+        vec![format!("--config={}", "x".repeat(3900)); 9],
+        vec!["--config=line\nbreak".into()],
+        vec!["--config=line\rbreak".into()],
+        vec!["".into()],
+        vec!["--config=single".to_owned() + &"x".repeat(4096)],
+    ] {
+        let f = Fixture::new();
+        f.setup("claude");
+        let args = final_sdd_args(&f, "claude", &argv);
+        let out = f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), "");
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty());
+        assert_eq!(f.effect_counts(), (0, 0, 0, 0));
+        assert!(f.original_bytes().is_empty());
+    }
+    // TAB is allowed by the actual native contract and must remain byte-exact.
+    let f = Fixture::new();
+    f.setup("claude");
+    let frozen = vec!["--config=allowed\tbyte".into()];
+    let args = final_sdd_args(&f, "claude", &frozen);
+    successful(f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), ""));
+    assert_eq!(
+        f.host.requests("agent.start")[0]["params"]["args"][0],
+        frozen[0]
+    );
+}
+#[test]
+fn final_sdd_public_staging_loss_reports_actual_create_phase_and_retries_only_saved_work() {
+    let f = Fixture::new();
+    f.setup("codex");
+    let mut proxy = ReplyLoss::new(&f, "create_thread", None);
+    let args = final_sdd_args(&f, "codex", &["--config=frozen=true".into()]);
+    let out = f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), "");
+    let report = final_sdd_pending(&f, &out, "create");
+    assert_eq!(report["outcome"], "pending");
+    assert_eq!(report["pane"], "w4:p3");
+    assert!(report["thread"].is_null());
+    assert!(report["manual_launch_after_confirming_no_start_argv"].is_null());
+    assert_eq!(f.effect_counts(), (1, 0, 0, 0));
+    let reference = report["recovery_ref"].as_str().unwrap();
+    let original = f.original_bytes();
+    proxy.finish().unwrap();
+    let success = successful(f.run(&["retry", reference], "'malformed"));
+    assert_eq!(success["handoff"]["outcome"], "started");
+    successful(f.run(&["retry", reference], "'malformed"));
+    assert_eq!(f.effect_counts(), (1, 1, 1, 1));
+    assert_eq!(f.count("SELECT count(*) FROM threads"), 1);
+    assert!(
+        original
+            .iter()
+            .any(|(p, _)| p.extension().is_some_and(|v| v == "intent"))
+    );
+}
+
+#[test]
+fn final_sdd_generated_pinned_prompt_limit_refuses_before_publication_or_effects() {
+    let f = Fixture::with_layout(None, true);
+    // No installed-hook claim: actual preparation rejects this argument geometry
+    // before it could inspect configuration or publish a bootstrap.
+    let args = final_sdd_args(&f, "claude", &[]);
+    let out = f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), "");
+    assert!(
+        !out.status.success(),
+        "expanded pinned prompt must exceed retained report cap"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("retained report limit"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_empty());
+    assert_eq!(f.effect_counts(), (0, 0, 0, 0));
+    assert_eq!(f.count("SELECT count(*) FROM bootstrap_handoffs"), 0);
+    assert!(f.original_bytes().is_empty());
 }

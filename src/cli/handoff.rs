@@ -868,7 +868,7 @@ pub(crate) fn bootstrap(
         thread.as_str()
     )
 }
-fn report(
+pub(crate) fn report(
     reference: &IntentRef,
     plan: &HandoffPlan,
     progress: &Progress,

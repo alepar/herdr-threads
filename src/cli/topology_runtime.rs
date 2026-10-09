@@ -331,6 +331,15 @@ pub(crate) fn run(
         .is_some_and(|v| v.state == BootstrapState::PossibleCreation)
         && retained_witness.is_none()
     {
+        super::topology_handoff::write_pending(
+            &reference,
+            &identity,
+            status.as_ref().unwrap(),
+            None,
+            "creation",
+            &output,
+            writer,
+        )?;
         return Err(super::topology_handoff::creation_unknown(
             &reference,
             &identity,

@@ -944,7 +944,7 @@ fn elected_public_delivery_is_staged_without_native_effect_and_completed_retry_i
     assert_eq!(report["participation"], "staged_unbound");
     let reference = report["recovery_ref"].as_str().unwrap();
     assert_eq!(f.effects.load(Ordering::Relaxed), 0);
-    let reads = f.pane_reads.load(Ordering::Relaxed);
+    f.refuse_owned_pane_reads();
     let db = f.db();
     db.execute_batch("UPDATE threads SET archived=1; UPDATE occupant_bindings SET ended_at=1; UPDATE seats SET generation=generation+1").unwrap();
     drop(db);
@@ -958,7 +958,7 @@ fn elected_public_delivery_is_staged_without_native_effect_and_completed_retry_i
         serde_json::from_slice::<Value>(&retry.stdout).unwrap(),
         frame
     );
-    assert_eq!(f.pane_reads.load(Ordering::Relaxed), reads);
+
     // Human argv does not rewrite the immutable Agent origin; historical output remains honest.
     let human = f.cli(&["retry", reference], true);
     assert!(
@@ -1533,7 +1533,10 @@ fn public_unknown_created_pane_agent_retry_chain(retain_request: bool) {
         false,
     );
     assert!(!unknown.status.success());
-    assert!(unknown.stdout.is_empty());
+    let pending: serde_json::Value = serde_json::from_slice(&unknown.stdout).unwrap();
+    assert_eq!(pending["bootstrap"]["phase"], "creation");
+    assert_eq!(pending["bootstrap"]["outcome"], "creation_unknown");
+    assert_eq!(pending["bootstrap"]["attempt"], 1);
     assert!(
         String::from_utf8_lossy(&unknown.stderr).contains("outcome_unknown"),
         "{}",
