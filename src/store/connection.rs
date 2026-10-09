@@ -63,6 +63,15 @@ pub struct DecisionInstant {
     pub monotonic: MonoInstant,
 }
 
+/// Test-support builds only: a process started with this set to `1` (every
+/// child tagged by `test_support::spawn`, so test-spawned CLIs and daemons)
+/// commits with `synchronous=NORMAL`. Hundreds of test daemons each fsyncing
+/// every WAL commit made the suite disk-bound on a loaded machine; a test
+/// cannot observe the difference, which only matters on power loss.
+/// Production builds never compile it and always commit with `FULL`.
+#[cfg(any(test, feature = "test-support"))]
+pub const TEST_RELAXED_DURABILITY_ENV: &str = "HT_TEST_RELAXED_DURABILITY";
+
 impl StoreContext {
     pub fn new(path: PathBuf, clock: Arc<dyn Clock>) -> Self {
         Self {
@@ -74,7 +83,9 @@ impl StoreContext {
             #[cfg(any(test, feature = "test-support"))]
             lane_fault: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
-            relaxed_durability: AtomicBool::new(false),
+            relaxed_durability: AtomicBool::new(
+                std::env::var_os(TEST_RELAXED_DURABILITY_ENV).is_some_and(|v| v == "1"),
+            ),
             #[cfg(test)]
             setup_busy_signal: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -144,6 +155,8 @@ impl StoreContext {
     }
 
     pub fn open_writer(&self) -> Result<Connection, ApiError> {
+        #[cfg(test)]
+        fresh_schema_template::seed(&self.path);
         let conn = Connection::open(&self.path).map_err(store_error)?;
         conn.busy_timeout(Duration::from_secs(2))
             .map_err(store_error)?;
@@ -684,6 +697,76 @@ fn unclassified(error: &rusqlite::Error) -> ApiError {
 #[cfg(test)]
 #[path = "../../tests/store/schema.rs"]
 mod tests;
+
+/// Unit tests run one process per test and open hundreds of fresh stores;
+/// replaying every migration costs each ~60 ms of CPU (schema 27's table
+/// rebuilds alone ~17 ms). A writer whose store file does not exist yet is
+/// seeded with this test binary's fresh-schema template, built once by the
+/// production fresh-creation path; `schema::initialize` then verifies it as
+/// it verifies any existing store. Existing files, in-memory databases and
+/// direct `schema::initialize` calls are untouched, and any seeding failure
+/// falls back to ordinary creation.
+#[cfg(test)]
+mod fresh_schema_template {
+    use super::schema;
+    use crate::protocol::time::UtcMillis;
+    use rusqlite::Connection;
+    use std::path::{Path, PathBuf};
+
+    pub(super) fn seed(path: &Path) {
+        if std::fs::symlink_metadata(path).is_ok() {
+            return;
+        }
+        let (Some(template), Some(name)) = (template(), path.file_name()) else {
+            return;
+        };
+        let mut staging = name.to_os_string();
+        staging.push(format!(".{}.seed", uuid::Uuid::new_v4()));
+        let staging = path.with_file_name(staging);
+        if std::fs::copy(&template, &staging).is_ok() {
+            // Never replaces a store another opener created meanwhile.
+            let _ = std::fs::hard_link(&staging, path);
+        }
+        let _ = std::fs::remove_file(&staging);
+    }
+
+    /// Keyed by this binary's identity, so a rebuild never reuses a template
+    /// produced by different schema code.
+    fn template() -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        let meta = std::fs::metadata(&exe).ok()?;
+        let built = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        let path = exe.with_file_name(format!(
+            "{}.schema-v{}-{}-{}.db",
+            exe.file_name()?.to_str()?,
+            schema::LATEST_VERSION,
+            meta.len(),
+            built.as_nanos()
+        ));
+        if path.is_file() {
+            return Some(path);
+        }
+        let staging = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let clock_read = std::cell::Cell::new(false);
+        let built = Connection::open(&staging).ok().and_then(|conn| {
+            schema::initialize(&conn, || {
+                clock_read.set(true);
+                UtcMillis(0)
+            })
+            .ok()
+        });
+        // A creation path that reads the clock is not reproducible from a
+        // template: keep ordinary creation.
+        let renamed =
+            built.is_some() && !clock_read.get() && std::fs::rename(&staging, &path).is_ok();
+        let _ = std::fs::remove_file(&staging);
+        renamed.then_some(path)
+    }
+}
 
 /// Per-connection commit-change state for the domain writer (spec D1). The
 /// update hook ORs the changed table's lane set into `pending`, the commit

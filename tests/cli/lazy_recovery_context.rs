@@ -62,9 +62,13 @@ fn receipt(w: &World, message: &str, who: usize) -> String {
 
 // Catches journal-local references selecting ambient B instead of the pinned A,
 // dropped quoting/host context, actor replacement, or clearing independent proof.
-fn recovery_case(human: bool, second_record_failure: bool) {
-    let mut failures = vec![];
-    for remove_ambient in [false, true] {
+//
+// Each case runs two ambient controls (explicit A against a conflicting ambient
+// B, and environment-only A). Each control is its own #[test] (its own process
+// under nextest, so they run in parallel): World setup (a daemon plus ~15 CLI
+// calls, twice) dominates the cost.
+fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool) {
+    {
         let a = World::with_routing_names("state's $` dir", "h' $.sock");
         let b = World::new();
         let who = if human { 2 } else { 1 };
@@ -258,26 +262,34 @@ fn recovery_case(human: bool, second_record_failure: bool) {
             b.intents() == b_intents
         );
         println!("{evidence}");
-        if !effects_ok {
-            failures.push(evidence);
-        }
+        assert!(
+            effects_ok,
+            "printed recovery selected the wrong journal or actor:\n{evidence}"
+        );
     }
-    assert!(
-        failures.is_empty(),
-        "printed recovery selected the wrong journal or actor:\n{}",
-        failures.join("\n")
-    );
 }
 
 #[test]
 fn lazy_recovery_agent_mixed_submission_pins_journal() {
-    recovery_case(false, false);
+    recovery_case(false, false, false);
+}
+#[test]
+fn lazy_recovery_agent_mixed_submission_pins_ambient_journal() {
+    recovery_case(false, false, true);
 }
 #[test]
 fn lazy_recovery_human_submission_pins_journal() {
-    recovery_case(true, false);
+    recovery_case(true, false, false);
+}
+#[test]
+fn lazy_recovery_human_submission_pins_ambient_journal() {
+    recovery_case(true, false, true);
 }
 #[test]
 fn lazy_recovery_prior_durable_ref_on_second_record_failure_pins_journal() {
-    recovery_case(false, true);
+    recovery_case(false, true, false);
+}
+#[test]
+fn lazy_recovery_prior_durable_ref_on_second_record_failure_pins_ambient_journal() {
+    recovery_case(false, true, true);
 }

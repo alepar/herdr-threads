@@ -305,17 +305,30 @@ fn checker_flags_live_tagged_processes_then_passes_after_reap() {
     probe.child.wait().expect("reap the probe");
     assert_all_gone(&probe.dir);
     // Not "exit 0": the checker scans the whole machine, so another run's
-    // orphan (a live suite in a sibling worktree) may legitimately be listed.
-    // Nothing of this probe may be.
-    let clean = check("10");
-    let text = String::from_utf8_lossy(&clean.stdout).into_owned();
+    // orphan (a live suite in a sibling worktree) may legitimately be listed,
+    // and its own grace would then spin on that orphan. Nothing of this probe
+    // may be listed: single scans (no grace) are repeated for up to the
+    // checker's default 10 s grace until none lists this probe.
     let ours: Vec<&str> = recorded
         .lines()
         .filter_map(|l| l.split_once(' ').map(|(_, pid)| pid))
         .collect();
+    let lists_ours = |text: &str| {
+        text.lines().any(|l| {
+            l.contains("rule=run-id") || ours.iter().any(|pid| l.contains(&format!("pid={pid} ")))
+        })
+    };
+    let until = Instant::now() + Duration::from_secs(10);
+    let text = loop {
+        let clean = check("0");
+        let text = String::from_utf8_lossy(&clean.stdout).into_owned();
+        if !lists_ours(&text) || Instant::now() >= until {
+            break text;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    };
     assert!(
-        !text.lines().any(|l| l.contains("rule=run-id")
-            || ours.iter().any(|pid| l.contains(&format!("pid={pid} ")))),
+        !lists_ours(&text),
         "checker after reap still lists this probe: {text}"
     );
 }

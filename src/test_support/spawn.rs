@@ -58,8 +58,9 @@ pub fn ensure_reaper() {
 /// parallel, so a fake `herdr` script or a daemon start can take seconds.
 pub const TIMEOUT_SCALE: &str = "10";
 
-/// Tag `command` with this process as owner (and the daemon owner pid), and
-/// scale its external wait bounds for a loaded suite.
+/// Tag `command` with this process as owner (and the daemon owner pid),
+/// scale its external wait bounds for a loaded suite, and relax its stores'
+/// commit durability.
 pub fn tag(command: &mut Command) -> &mut Command {
     ensure_reaper();
     command
@@ -70,6 +71,12 @@ pub fn tag(command: &mut Command) -> &mut Command {
     let scale = crate::protocol::time::TEST_TIMEOUT_SCALE_ENV;
     if !command.get_envs().any(|(key, _)| key == scale) {
         command.env(scale, TIMEOUT_SCALE);
+    }
+    // Test children's stores skip the per-commit fsync; set or removed
+    // explicitly on the command, that choice wins.
+    let durability = crate::store::connection::TEST_RELAXED_DURABILITY_ENV;
+    if !command.get_envs().any(|(key, _)| key == durability) {
+        command.env(durability, "1");
     }
     command
 }

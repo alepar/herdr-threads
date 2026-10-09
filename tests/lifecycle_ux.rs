@@ -1082,6 +1082,10 @@ fn bare_invocation_prints_usage_with_status_two() {
 /// not the instance directory, and doctor still printing the ensure hint.
 #[test]
 fn unsafe_private_dir_gives_same_status_from_ensure_and_doctor() {
+    // A minimal PATH: doctor's harness autodetection would otherwise probe
+    // whatever harness launchers the invoking user has installed (about 2 s
+    // per doctor run), which this private-directory check does not exercise.
+    let path = Path::new("/usr/bin:/bin");
     for level in ["instances", "instance"] {
         let scratch = Scratch::new();
         let state = scratch.0.join("state");
@@ -1092,7 +1096,7 @@ fn unsafe_private_dir_gives_same_status_from_ensure_and_doctor() {
             state: state.clone(),
             host: host.clone(),
         };
-        let probe = run(&state, &host, &["--json", "doctor"], None);
+        let probe = run_with_path(&state, &host, &["--json", "doctor"], path);
         let report: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
         let instance_dir = PathBuf::from(report["doctor"]["instance_dir"].as_str().unwrap());
         let instances = state.join("instances");
@@ -1109,7 +1113,7 @@ fn unsafe_private_dir_gives_same_status_from_ensure_and_doctor() {
         };
         fs::set_permissions(unsafe_dir, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let ensure = run(&state, &host, &["daemon", "ensure"], None);
+        let ensure = run_with_path(&state, &host, &["daemon", "ensure"], path);
         let stderr = text(&ensure.stderr);
         assert_eq!(ensure.status.code(), Some(2), "{level}: {stderr}");
         assert!(
@@ -1118,7 +1122,7 @@ fn unsafe_private_dir_gives_same_status_from_ensure_and_doctor() {
         );
         assert!(stderr.contains("(invalid_request)"), "{level}: {stderr}");
 
-        let doctor = run(&state, &host, &["doctor"], None);
+        let doctor = run_with_path(&state, &host, &["doctor"], path);
         let stdout = text(&doctor.stdout);
         assert_eq!(doctor.status.code(), Some(2), "{level}: {stdout}");
         assert!(

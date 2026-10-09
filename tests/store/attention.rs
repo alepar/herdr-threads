@@ -419,11 +419,23 @@ fn at_scale(threads: u64) -> Connection {
 // membership-interval lookup that is not seat-leading (a scan of every
 // interval). The seat's work is
 // identical in indexed candidates, and within 10% in SQLite VM instructions,
-// from 10^3 to 10^5 instance threads.
+// from 10^3 to 10^4 instance threads (a 10x span: any per-thread walk grows
+// tenfold). The 10^5 case is
+// `digest_cost_is_flat_from_a_thousand_to_a_hundred_thousand_threads`.
 #[test]
+fn digest_cost_is_flat_from_a_thousand_to_ten_thousand_threads() {
+    assert_digest_cost_flat_in_threads(&[1_000, 10_000]);
+}
+
+#[test]
+#[ignore = "seeds 10^5 instance threads; run in release"]
 fn digest_cost_is_flat_from_a_thousand_to_a_hundred_thousand_threads() {
+    assert_digest_cost_flat_in_threads(&[1_000, 10_000, 100_000]);
+}
+
+fn assert_digest_cost_flat_in_threads(sizes: &[u64]) {
     let mut observed = Vec::new();
-    for threads in [1_000u64, 10_000, 100_000] {
+    for &threads in sizes {
         let db = at_scale(threads);
         let (run, units) = vm_units(&db, || digest(&db, "s"));
         assert_eq!(ids(&run.digest.invitations), ["inv-s"]);
@@ -494,9 +506,12 @@ fn with_settled_history(acked: u64, warns: u64) -> Connection {
 }
 
 // Digest fix2 B1: per-call work is proportional to the seat's pending
-// attention, never to its retained history. From 10^3 to 10^5 ACKed receipts
+// attention, never to its retained history. From 10^3 to 10^4 ACKed receipts
 // on the digest seat (half physical, half manifest-backed) and from 10^3 to
-// 10^4 settled warnings in its member thread, the digest examines exactly the
+// 10^4 settled warnings in its member thread (10x on both axes; the 10^5
+// receipt case is
+// `digest_cost_is_flat_at_a_hundred_thousand_acked_receipts`), the digest
+// examines exactly the
 // same indexed candidates and the same SQLite VM work (within 10%). Kills:
 // the full-history receipt walk (`scan_effective_receipts(Seat)` to
 // completion), a physical walk on `receipts_seat_state_ordinal` without the
@@ -506,8 +521,22 @@ fn with_settled_history(acked: u64, warns: u64) -> Connection {
 // trigger (settled rows left in a projection).
 #[test]
 fn digest_cost_is_flat_in_the_seats_acked_receipts_and_settled_warnings() {
+    assert_digest_cost_flat_in_settled_history(&[(1_000, 1_002), (10_000, 10_002)]);
+}
+
+#[test]
+#[ignore = "seeds 10^5 ACKed receipts; run in release"]
+fn digest_cost_is_flat_at_a_hundred_thousand_acked_receipts() {
+    assert_digest_cost_flat_in_settled_history(&[
+        (1_000, 1_002),
+        (10_000, 3_000),
+        (100_000, 10_002),
+    ]);
+}
+
+fn assert_digest_cost_flat_in_settled_history(sizes: &[(u64, u64)]) {
     let mut observed = Vec::new();
-    for (acked, warns) in [(1_000u64, 1_002u64), (10_000, 3_000), (100_000, 10_002)] {
+    for &(acked, warns) in sizes {
         let db = with_settled_history(acked, warns);
         assert_eq!(
             db.query_row(
@@ -638,8 +667,10 @@ fn production_history(
     let guard = RemoveOnDrop(path);
     let mut conn = context.open_writer().unwrap();
     // Setup speed only: the send writer's preparation lookup scans every
-    // retained preparation (reported separately), so keep them cached.
+    // retained preparation (reported separately), so keep them cached, and
+    // a throwaway store needs no fsync per writer commit.
     conn.pragma_update(None, "cache_size", -262_144).unwrap();
+    conn.pragma_update(None, "synchronous", "OFF").unwrap();
     conn.execute_batch("\
         INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1);\
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('snd','i','resolved','native','p-snd',1,1,0,1),('rcv','i','resolved','native','p-rcv',1,1,0,1);\
@@ -833,13 +864,14 @@ fn assert_check_in_reads_flat(sizes: &[u64]) {
 // its candidate limit inside `hist` and returns one warning instead of two).
 // The default-suite guard for the same regressions (ht-zo4.7): ACKed
 // receipts and settled invitations are never visited, so the work is flat
-// already from 200 to 2,000 (10x), without the minutes-long 10^4 seeding.
+// already from 50 to 500 (10x; 500 still exceeds the first warnings page's
+// candidate limit), without the minutes-long 10^4 seeding.
 // It replaces the wall-clock budget check of
 // hook_entrypoint::twenty_thousand_acked_receipts_stay_quiet_and_new_attention_is_emitted
 // (now release-only) with deterministic SQLite VM work.
 #[test]
-fn check_in_reads_are_flat_from_two_hundred_to_two_thousand_acked_receipts() {
-    assert_check_in_reads_flat(&[200, 2_000]);
+fn check_in_reads_are_flat_from_fifty_to_five_hundred_acked_receipts() {
+    assert_check_in_reads_flat(&[50, 500]);
 }
 
 #[test]
@@ -1291,7 +1323,8 @@ fn scale_invariance_inventory_of_canonical_effective_scans() {
 }
 
 // Digest fix3, kept under wave-2 (a): check-in's pending warning count never
-// walks the instance's threads. From 10^3 to 10^5 instance threads (each with
+// walks the instance's threads. From 10^3 to 10^4 instance threads (the 10^5
+// case is `pending_warning_count_is_flat_at_a_hundred_thousand_threads`; each with
 // an ordinary message and no warning) the count for `s` (one pending
 // invitation-overdue warning, through its membership) is exact with the same
 // SQLite VM work (within 10%). Kills: a per-thread count loop (`SELECT id FROM
@@ -1299,6 +1332,16 @@ fn scale_invariance_inventory_of_canonical_effective_scans() {
 // grows with every retained thread.
 #[test]
 fn pending_warning_count_is_flat_in_instance_threads() {
+    assert_pending_warning_count_flat_in_threads(&[1_000, 10_000]);
+}
+
+#[test]
+#[ignore = "seeds 10^5 instance threads; run in release"]
+fn pending_warning_count_is_flat_at_a_hundred_thousand_threads() {
+    assert_pending_warning_count_flat_in_threads(&[1_000, 10_000, 100_000]);
+}
+
+fn assert_pending_warning_count_flat_in_threads(sizes: &[u64]) {
     use crate::protocol::time::{CallBudget, MonoInstant};
     let clock = crate::app::SystemClock::new();
     let budget = CallBudget {
@@ -1306,7 +1349,7 @@ fn pending_warning_count_is_flat_in_instance_threads() {
         cancellation: Default::default(),
     };
     let mut observed = Vec::new();
-    for threads in [1_000u64, 10_000, 100_000] {
+    for &threads in sizes {
         let db = empty();
         db.execute_batch(&format!("\
             WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{threads})\

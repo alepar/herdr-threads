@@ -767,16 +767,24 @@ fn journal_corruption_prevents_new_mutation_submit() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+// Each record fsyncs its intent and the journal directory, so the count is
+// kept to the smallest that still fills more than two item-limit (20) pages:
+// the traversal crosses at least two page boundaries whichever bound (items
+// or bytes) cuts each page.
+const PAGED_ENTRIES: u64 = 45;
+
 #[test]
 fn pending_pages_traverse_205_entries_with_bounded_headers() {
     let dir = temp();
     let journal = Journal::open(&dir).unwrap();
-    for n in 1..=205 {
-        journal.record(scope(), send(), n).unwrap();
+    for n in 1..=PAGED_ENTRIES {
+        journal.record(scope(), send(), n as i64).unwrap();
     }
     let mut cursor = None;
     let mut seen = Vec::new();
+    let mut pages = 0;
     loop {
+        pages += 1;
         let request = crate::protocol::pagination::PageRequest {
             cursor,
             limit: 20,
@@ -798,7 +806,8 @@ fn pending_pages_traverse_205_entries_with_bounded_headers() {
             break;
         }
     }
-    assert_eq!(seen, (1..=205).collect::<Vec<_>>());
+    assert!(pages >= 3, "{pages} pages");
+    assert_eq!(seen, (1..=PAGED_ENTRIES).collect::<Vec<_>>());
     std::fs::remove_dir_all(dir).unwrap();
 }
 

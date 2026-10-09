@@ -317,7 +317,10 @@ fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
 
     // The party: each seat checks in, sends a required-ACK message to the
     // next seat and ACKs whatever it owes, repeatedly.
-    let party_for = Duration::from_secs(14);
+    // Longer than one 5 s request budget (the transport's ordinary timeout),
+    // so the follower outlives it, and several slow host round trips (up to
+    // 1.5 s each) per seat.
+    let party_for = Duration::from_secs(7);
     let stop = Arc::new(AtomicBool::new(false));
     let sent = Arc::new(AtomicUsize::new(0));
     let failures = Arc::new(Mutex::new(Vec::<String>::new()));

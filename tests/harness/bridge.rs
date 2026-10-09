@@ -1342,12 +1342,25 @@ fn cooperative_typed_rejection_discards_intent_but_transport_failure_keeps_it() 
     answers.push((Err(error(ErrorCode::HostUnavailable)), 1));
     answers.push((Err(error(ErrorCode::NotFound)), 1));
     answers.push((Err(error(ErrorCode::InvalidRequest)), 1));
+    // One registered occupant serves every answer (a fresh fixture per code
+    // only repeated the fsync-bound setup). Each send records its own intent;
+    // a kept one is completed after it is counted, so every answer starts from
+    // the same pending journal.
+    let (root, j, cj, seed, event) = fixture();
+    let check = Transport::new();
+    let mut out = vec![];
+    run_hook_event(&j, &cj, &event, Some(&seed), 1, &check, &Clock, &mut out).unwrap();
+    let pending_refs = || -> Vec<String> {
+        j.page(&Default::default())
+            .unwrap()
+            .items
+            .iter()
+            .map(|item| item.recovery_ref.as_str().to_owned())
+            .collect()
+    };
+    let baseline = pending_refs();
     for (answer, pending) in answers {
-        let (root, j, cj, seed, event) = fixture();
-        let check = Transport::new();
-        let mut out = vec![];
-        run_hook_event(&j, &cj, &event, Some(&seed), 1, &check, &Clock, &mut out).unwrap();
-        let before = j.page(&Default::default()).unwrap().items.len();
+        assert_eq!(pending_refs(), baseline);
         let parsed = crate::cli::commands::parse_argv([
             "herdr-threads",
             "send",
@@ -1376,10 +1389,17 @@ fn cooperative_typed_rejection_discards_intent_but_transport_failure_keeps_it() 
             matches!(&failure, crate::cli::RunError::Api(e) if e.code == expected),
             "{failure:?}"
         );
-        let after = j.page(&Default::default()).unwrap().items.len();
-        assert_eq!(after - before, pending, "{expected:?}");
-        fs::remove_dir_all(root).unwrap();
+        let kept: Vec<_> = pending_refs()
+            .into_iter()
+            .filter(|reference| !baseline.contains(reference))
+            .collect();
+        assert_eq!(kept.len(), pending, "{expected:?}");
+        for reference in kept {
+            j.complete(&j.resolve_recovery_ref(&reference).unwrap())
+                .unwrap();
+        }
     }
+    fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn cross_instance_context_diagnostic_precedes_any_new_hook_intent() {

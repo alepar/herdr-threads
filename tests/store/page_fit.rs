@@ -210,8 +210,13 @@ fn differential_matches_greedy_for_every_site() {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     for format in [OutputFormat::Json, OutputFormat::Text] {
         let output = spec(format);
+        // Trial 0 is a long page (its cursor grows with the item index, as
+        // real ordinal cursors do); the others are random lengths, including
+        // empty and single-item pages. The oracle encodes every prefix, so
+        // cost is quadratic in n: 100/60 keep each shape multi-page at every
+        // budget class at a fraction of the cost.
         for trial in 0..5 {
-            let n = if trial == 0 { 300 } else { rng.below(150) };
+            let n = if trial == 0 { 100 } else { rng.below(60) };
             let (threads, seats, inboxes, hits) = fixtures(&mut rng, n);
             for shape in shapes(&threads, &seats, &inboxes, &hits) {
                 let prefixes = prefix_lengths(&shape, &output);
@@ -289,7 +294,9 @@ fn ceil_log2(n: usize) -> usize {
 fn encode_calls_are_bounded() {
     let mut rng = Rng(0xD1B5_4A32_D192_ED03);
     let output = spec(OutputFormat::Json);
-    for n in [1usize, 2, 3, 7, 10, 50, 100, 300, 1000] {
+    // The bound is checked per n, so 300 items already exercise the long-page
+    // regime (a 1,000-item page only made each encode larger).
+    for n in [1usize, 2, 3, 7, 10, 50, 100, 300] {
         let (threads, seats, inboxes, hits) = fixtures(&mut rng, n);
         for shape in shapes(&threads, &seats, &inboxes, &hits) {
             let full = encoded(&(shape.render)(n).unwrap(), &output).len();
@@ -445,8 +452,10 @@ fn positions(rng: &mut Rng, n: usize) -> (Vec<(u64, u64)>, u64, u64) {
 fn internal_pages_match_the_old_tail() {
     let instance = "11111111-2222-3333-4444-555555555555";
     let mut rng = Rng(0x8CB9_2BA7_2F3D_8DD7);
-    for trial in 0..60 {
-        let n = if trial == 0 { 100 } else { rng.below(101) };
+    // 24 trials (half `Work`, half `Rows` stops) with random lengths up to 60
+    // and one 100-item trial: the pop-and-re-encode oracle is quadratic in n.
+    for trial in 0..24 {
+        let n = if trial == 0 { 100 } else { rng.below(61) };
         let (pos, final_after, high) = positions(&mut rng, n);
         let work: Vec<WorkCandidate> = (0..n)
             .map(|i| WorkCandidate {

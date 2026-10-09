@@ -314,6 +314,31 @@ impl Drop for SyntheticDaemon {
     }
 }
 
+/// A Hermes `pre_llm_call` that must yield context. Its envelope carries the
+/// production 1200 ms callback cap; a debug hook child on a loaded machine can
+/// overrun it and fail open with no context. Only such an overrun (the empty
+/// attempt itself took at least 1 s) is retried: the same event is presented
+/// again with fresh timestamps (a canonical replay; the caller asserts the
+/// binding did not rotate), at most three more times. A fast empty answer is
+/// returned as is, so a callback that never yields context still fails.
+fn hermes_hook_with_context(
+    daemon: &SyntheticDaemon,
+    pane: &str,
+    session: &str,
+    event: &str,
+    sequence: u64,
+) -> serde_json::Value {
+    let mut output = serde_json::Value::Null;
+    for _ in 0..4 {
+        let started = std::time::Instant::now();
+        output = daemon.hook(pane, "hermes", &hermes_envelope(session, event, sequence));
+        if !output["context"].is_null() || started.elapsed() < std::time::Duration::from_secs(1) {
+            break;
+        }
+    }
+    output
+}
+
 fn hermes_envelope(session: &str, event: &str, sequence: u64) -> serde_json::Value {
     let mut payload: serde_json::Value =
         serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
@@ -364,7 +389,11 @@ fn synthetic_four_adapter_hook_configuration_and_canonical_replay() {
             "synthetic_context",
         ),
     ] {
-        let output = daemon.hook(pane, harness, &payload);
+        let output = if harness == "hermes" {
+            hermes_hook_with_context(&daemon, pane, "synthetic-hermes", "hermes-first", 1)
+        } else {
+            daemon.hook(pane, harness, &payload)
+        };
         assert!(
             !output[key].is_null(),
             "{harness}: real callback produced no context: {output}"
@@ -514,11 +543,7 @@ fn synthetic_four_adapter_hook_configuration_and_canonical_replay() {
         protected,
         "reset observer changed accountable rows"
     );
-    let next = daemon.hook(
-        "w1:p3",
-        "hermes",
-        &hermes_envelope("synthetic-hermes-new", "hermes-next", 5),
-    );
+    let next = hermes_hook_with_context(&daemon, "w1:p3", "synthetic-hermes-new", "hermes-next", 5);
     assert!(next["context"].is_string());
     assert_eq!(
         daemon

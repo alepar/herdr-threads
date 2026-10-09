@@ -3,8 +3,12 @@ use crate::lazy_config_smoke::World;
 use herdr_threads::test_support::spawn;
 use serde_json::Value;
 
+/// Fixture readiness, not a latency claim: under a starved host a deadline-lane
+/// pass can miss its 500 ms admission budget and back off (hosted push
+/// 37897718472 missed the former 2 s wait). The bound is a hang guard; on
+/// expiry it reports the jobs and the daemon log.
 fn wait_for_send_attention(w: &World) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let unfinished: i64 = w
             .db()
@@ -17,10 +21,22 @@ fn wait_for_send_attention(w: &World) {
         if unfinished == 0 {
             return;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "private send attention failed to finish"
-        );
+        if std::time::Instant::now() >= deadline {
+            let db = w.db();
+            let mut jobs = db
+                .prepare("SELECT kind,status,last_error FROM work_jobs ORDER BY ordinal")
+                .unwrap();
+            let jobs: Vec<(String, String, Option<String>)> = jobs
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            let log = herdr_threads::daemon::logs::daemon_log_path(&w.paths());
+            panic!(
+                "private send attention failed to finish: jobs={jobs:?}\ndaemon log:\n{}",
+                std::fs::read_to_string(log).unwrap_or_default()
+            );
+        }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
