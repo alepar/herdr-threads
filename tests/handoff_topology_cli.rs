@@ -66,6 +66,83 @@ fn executable(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
+/// Install an owned helper script at `path` as a symlink to one immutable,
+/// content-addressed copy kept beside this test binary. macOS scans every
+/// newly written executable on its first exec (~0.15 s, several per fixture);
+/// the shared copy is scanned once. A symlink (not a hard link) leaves the
+/// shared file's metadata untouched, so its frozen launch identity cannot
+/// change under a concurrent fixture. Falls back to a private copy.
+fn install_helper(path: &Path, body: &str) {
+    let shared = std::env::current_exe().ok().map(|exe| {
+        let shared = exe.with_file_name(format!(
+            "handoff-topology-cli-helper-{:x}",
+            Sha256::digest(body.as_bytes())
+        ));
+        if !shared.is_file() {
+            let staging = shared.with_extension(format!("{}.tmp", Uuid::new_v4()));
+            executable(&staging, body);
+            // Never replaces a copy another test process published meanwhile.
+            let _ = fs::hard_link(&staging, &shared);
+            let _ = fs::remove_file(&staging);
+        }
+        shared
+    });
+    // A link count of one means its publisher already removed the staging
+    // name: nothing changes the shared file's metadata afterwards.
+    let linked = shared.is_some_and(|shared| {
+        fs::metadata(&shared).is_ok_and(|meta| meta.nlink() == 1)
+            && fs::read(&shared).is_ok_and(|bytes| bytes == body.as_bytes())
+            && std::os::unix::fs::symlink(&shared, path).is_ok()
+    });
+    if !linked {
+        executable(path, body);
+    }
+}
+/// Seed a not-yet-created store with this binary's fresh-schema template, as
+/// the library's own tests do: creating the schema replays every migration
+/// (~0.1 s per fixture), while `open_writer` on the copy still runs the full
+/// schema audit. Any failure leaves ordinary creation to `open_writer`.
+fn seed_fresh_schema(database: &Path) {
+    if fs::symlink_metadata(database).is_err()
+        && let Some(template) = fresh_schema_template()
+    {
+        let _ = fs::copy(template, database);
+    }
+}
+/// Keyed by this binary's identity, so a rebuild never reuses a template
+/// produced by different schema code.
+fn fresh_schema_template() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let meta = fs::metadata(&exe).ok()?;
+    let built = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    let path = exe.with_file_name(format!(
+        "handoff-topology-cli-schema-{}-{}.db",
+        meta.len(),
+        built.as_nanos()
+    ));
+    if !path.is_file() {
+        let staging = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
+        let clock_read = std::cell::Cell::new(false);
+        let built = Connection::open(&staging).ok().and_then(|db| {
+            herdr_threads::store::schema::initialize(&db, || {
+                clock_read.set(true);
+                herdr_threads::protocol::time::UtcMillis(0)
+            })
+            .ok()
+        });
+        // A creation path that reads the clock is not reproducible from a
+        // template; never replaces a template another process published.
+        if built.is_some() && !clock_read.get() {
+            let _ = fs::hard_link(&staging, &path);
+        }
+        let _ = fs::remove_file(&staging);
+    }
+    path.is_file().then_some(path)
+}
 fn finish(mut child: OwnedChild) -> Output {
     wait("owned CLI/helper exit", || {
         child.try_wait().unwrap().is_some()
@@ -305,9 +382,9 @@ impl Fixture {
             "#!{}\nimport json,os,sys\nprint(json.dumps({{'argv':sys.argv[1:],'home':os.environ['HOME'],'claude':os.environ['CLAUDE_CONFIG_DIR'],'codex':os.environ['CODEX_HOME']}}))\n",
             python.trim()
         );
-        executable(&iso.path("claude"), &script);
-        executable(&iso.path("codex"), &script);
-        executable(
+        install_helper(&iso.path("claude"), &script);
+        install_helper(&iso.path("codex"), &script);
+        install_helper(
             &iso.path("shell"),
             "#!/bin/sh\nprintf '%s\\n' probe >> \"$HT_SMOKE_SHELL_LOG\"\nprintf '%s' HT_PANE_ENV_BEGINHT_PANE_ENV_END\n",
         );
@@ -390,6 +467,7 @@ impl Fixture {
             )
             .unwrap();
         let observation = observed.observation();
+        seed_fresh_schema(&paths.database_path);
         let store_context = StoreContext::new(paths.database_path.clone(), clock.clone());
         let db = store_context.open_writer().unwrap();
         db.execute(
@@ -1474,8 +1552,10 @@ fn final_sdd_args(f: &Fixture, kind: &str, argv: &[String]) -> Vec<String> {
 }
 #[test]
 fn final_sdd_actual_native_count_refuses_before_publication_or_effects() {
+    // A refusal leaves no effect (asserted after each), so both kinds share
+    // one fixture; the second refusal also proves the first left nothing.
+    let f = Fixture::new();
     for kind in ["claude", "codex"] {
-        let f = Fixture::new();
         f.setup(kind);
         let args = final_sdd_args(&f, kind, &vec!["--config=repeat=true".into(); 64]);
         let out = f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), "");
@@ -1630,14 +1710,16 @@ fn final_sdd_public_possible_start_reports_known_committed_work_without_relaunch
 
 #[test]
 fn final_sdd_actual_native_byte_and_line_limits_refuse_before_effects() {
+    let f = Fixture::new();
+    f.setup("claude");
     for argv in [
         vec![format!("--config={}", "x".repeat(3900)); 9],
         vec!["--config=line\nbreak".into()],
         vec!["--config=line\rbreak".into()],
         vec!["--config=single".to_owned() + &"x".repeat(4096)],
     ] {
-        let f = Fixture::new();
-        f.setup("claude");
+        // Each refusal leaves no effect or original (asserted), so the cases
+        // share one fixture and each also proves the previous left nothing.
         let args = final_sdd_args(&f, "claude", &argv);
         let out = f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), "");
         assert!(!out.status.success());
@@ -1646,8 +1728,6 @@ fn final_sdd_actual_native_byte_and_line_limits_refuse_before_effects() {
         assert!(f.original_bytes().is_empty());
     }
     // TAB is allowed by the actual native contract and must remain byte-exact.
-    let f = Fixture::new();
-    f.setup("claude");
     let frozen = vec!["--config=allowed\tbyte".into()];
     let args = final_sdd_args(&f, "claude", &frozen);
     successful(f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), ""));

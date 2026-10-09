@@ -6,21 +6,65 @@ use herdr_threads::{
 use rusqlite::Connection;
 
 // Build genuine historical schemas from their immutable migration chain, never
-// relabel a latest database by rewinding user_version.
+// relabel a latest database by rewinding user_version. Replaying the chain
+// costs far more than each audit case, so each test process replays it once,
+// keeps the image after every prefix, and each call deserializes a private,
+// independent copy of the requested prefix (with its user_version).
 fn historical(version: usize) -> Connection {
+    use rusqlite::ffi;
+    static IMAGES: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    let images = IMAGES.get_or_init(|| {
+        let db = Connection::open_in_memory().unwrap();
+        let mut paths =
+            std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+                .unwrap()
+                .map(|p| p.unwrap().path())
+                .collect::<Vec<_>>();
+        paths.sort();
+        let mut images = Vec::new();
+        for (applied, path) in std::iter::once(None)
+            .chain(paths.into_iter().take(28).map(Some))
+            .enumerate()
+        {
+            if let Some(path) = path {
+                db.execute_batch(&std::fs::read_to_string(path).unwrap())
+                    .unwrap();
+            }
+            db.pragma_update(None, "user_version", applied as i64)
+                .unwrap();
+            let mut size: ffi::sqlite3_int64 = 0;
+            // SAFETY: serialize the live main schema of our own open connection;
+            // the returned sqlite3_malloc buffer is copied and freed here.
+            images.push(unsafe {
+                let data = ffi::sqlite3_serialize(db.handle(), c"main".as_ptr(), &mut size, 0);
+                assert!(!data.is_null(), "serialize historical {applied}");
+                let image = std::slice::from_raw_parts(data, size as usize).to_vec();
+                ffi::sqlite3_free(data.cast());
+                image
+            });
+        }
+        images
+    });
+    let image = &images[version];
     let db = Connection::open_in_memory().unwrap();
-    let mut paths =
-        std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"))
-            .unwrap()
-            .map(|p| p.unwrap().path())
-            .collect::<Vec<_>>();
-    paths.sort();
-    for path in paths.into_iter().take(version) {
-        db.execute_batch(&std::fs::read_to_string(path).unwrap())
-            .unwrap();
+    // SAFETY: SQLite takes ownership of the sqlite3_malloc64 copy (FREEONCLOSE)
+    // and may grow it (RESIZEABLE); the connection handle is ours and open.
+    unsafe {
+        let buffer = ffi::sqlite3_malloc64(image.len() as u64).cast::<u8>();
+        assert!(!buffer.is_null(), "allocate historical {version}");
+        std::ptr::copy_nonoverlapping(image.as_ptr(), buffer, image.len());
+        let size = image.len() as ffi::sqlite3_int64;
+        let rc = ffi::sqlite3_deserialize(
+            db.handle(),
+            c"main".as_ptr(),
+            buffer,
+            size,
+            size,
+            (ffi::SQLITE_DESERIALIZE_FREEONCLOSE | ffi::SQLITE_DESERIALIZE_RESIZEABLE) as _,
+        );
+        assert_eq!(rc, ffi::SQLITE_OK, "deserialize historical {version}");
     }
-    db.pragma_update(None, "user_version", version as i64)
-        .unwrap();
+    assert_eq!(self::version(&db), version as i64);
     db
 }
 fn version(db: &Connection) -> i64 {

@@ -724,15 +724,29 @@ fn publish_fixture_snapshot(
             &budget,
         )
         .unwrap();
-    store
-        .stage_snapshot_targets(
-            &stage.id,
-            0,
-            &snapshot.targets,
-            DurableWorkAdmission::new(16).unwrap(),
-            &budget,
-        )
-        .unwrap();
+    // A writer turn may stage only a prefix (its quantum ran out under load);
+    // stage the rest in following turns, as the production observation path
+    // does (identity::reconcile).
+    let mut offset = 0u64;
+    let mut targets = &snapshot.targets[..];
+    while !targets.is_empty() {
+        let progress = store
+            .stage_snapshot_targets(
+                &stage.id,
+                offset,
+                targets,
+                DurableWorkAdmission::new(16).unwrap(),
+                &budget,
+            )
+            .unwrap();
+        let visited = usize::from(progress.visited);
+        offset += visited as u64;
+        assert!(
+            visited > 0 && visited <= targets.len() && progress.stage.staged_targets == offset,
+            "snapshot staging did not advance exactly"
+        );
+        targets = &targets[visited..];
+    }
     store.seal_snapshot_stage(&stage.id, &budget).unwrap();
     let published = store.publish_snapshot_stage(&stage.id, &budget).unwrap();
     let page = store

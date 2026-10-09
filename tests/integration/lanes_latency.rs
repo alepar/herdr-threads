@@ -711,10 +711,20 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
         Lane::Wakes,
         Box::new(move |wake| recorded.lock().unwrap().push((wake, Instant::now()))),
     );
+    let finished = Arc::new(Mutex::new(Vec::<Instant>::new()));
+    let ended = Arc::clone(&finished);
+    session.probe.set_registered_idle_hook(
+        Lane::Wakes,
+        Box::new(move |_| ended.lock().unwrap().push(Instant::now())),
+    );
     let kicks_before = session.probe.kick_log().len();
     let wake_commits = session.commits("wake");
-    // The deadline passes after 1 s; the deadline lane notices at its next
-    // 5 s safety tick (documented as up to 5 s late).
+    // The 1 s deadline has passed (the quiet wait above lasted longer). The
+    // deadline lane would notice at its next 5 s safety tick (documented as up
+    // to 5 s late); detection latency is not what this test measures, so kick
+    // it. The measured kick is still the deadline lane's own commit kicking
+    // the wake lane.
+    session.probe.kick_registered(Lane::Deadlines);
     // Pin the kick to the publication: once the inviter's recipient row is
     // committed, its commit's kick is logged; the latest deadline-origin Wakes
     // kick from then on follows that commit.
@@ -741,7 +751,34 @@ fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
         .rev()
         .find(|(lanes, origin, _)| lanes.contains(Lane::Wakes) && *origin == Some(Lane::Deadlines))
         .unwrap_or_else(|| panic!("no deadline-origin Wakes kick: {kicks:?}"));
-    std::thread::sleep(Duration::from_secs(1));
+    // Wait for the kicked wake pass to start and then finish (instead of a
+    // fixed 1 s), so the "no wake for the inviter" check below sees a
+    // completed pass.
+    let kicked_start = || {
+        starts
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(wake, at)| *wake == Wake::Kicked && *at >= kicked_at)
+            .map(|(_, at)| *at)
+    };
+    wait_until(
+        "a kicked wake pass after the kick",
+        Duration::from_secs(5),
+        || kicked_start().is_some(),
+    );
+    let pass_started = kicked_start().unwrap();
+    wait_until(
+        "the kicked wake pass to finish",
+        Duration::from_secs(5),
+        || {
+            finished
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|at| *at >= pass_started)
+        },
+    );
     let starts = starts.lock().unwrap().clone();
     let (_, started_at) = starts
         .iter()

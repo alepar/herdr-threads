@@ -75,9 +75,50 @@ fn setup(db: &Connection) {
     joined_agent(db);
 }
 
+/// The database image `setup` produces. Building the schema replays every
+/// migration and its verification, far more than most cases cost, so each
+/// test process builds it once; every fixture is a private copy of the image,
+/// as fresh and independent as a newly built one.
+fn image() -> &'static [u8] {
+    use rusqlite::ffi;
+    static IMAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    IMAGE.get_or_init(|| {
+        let db = Connection::open_in_memory().unwrap();
+        setup(&db);
+        let mut size: ffi::sqlite3_int64 = 0;
+        // SAFETY: serialize the live main schema of our own open connection;
+        // the returned sqlite3_malloc buffer is copied and freed here.
+        unsafe {
+            let data = ffi::sqlite3_serialize(db.handle(), c"main".as_ptr(), &mut size, 0);
+            assert!(!data.is_null(), "serialize the fixture schema");
+            let image = std::slice::from_raw_parts(data, size as usize).to_vec();
+            ffi::sqlite3_free(data.cast());
+            image
+        }
+    })
+}
+
 pub(super) fn fixture() -> Connection {
+    use rusqlite::ffi;
+    let image = image();
     let db = Connection::open_in_memory().unwrap();
-    setup(&db);
+    let size = image.len() as ffi::sqlite3_int64;
+    // SAFETY: SQLite takes ownership of the sqlite3_malloc64 copy (FREEONCLOSE)
+    // and may grow it (RESIZEABLE); the connection handle is ours and open.
+    unsafe {
+        let buffer = ffi::sqlite3_malloc64(image.len() as u64).cast::<u8>();
+        assert!(!buffer.is_null(), "allocate the fixture image");
+        std::ptr::copy_nonoverlapping(image.as_ptr(), buffer, image.len());
+        let rc = ffi::sqlite3_deserialize(
+            db.handle(),
+            c"main".as_ptr(),
+            buffer,
+            size,
+            size,
+            (ffi::SQLITE_DESERIALIZE_FREEONCLOSE | ffi::SQLITE_DESERIALIZE_RESIZEABLE) as _,
+        );
+        assert_eq!(rc, ffi::SQLITE_OK, "deserialize the fixture schema");
+    }
     db
 }
 
@@ -91,8 +132,9 @@ fn file_fixture() -> (
     );
     std::fs::create_dir(&directory.0).unwrap();
     let path = directory.0.join("store.db");
+    // A serialized image is a complete database file.
+    std::fs::write(&path, image()).unwrap();
     let db = Connection::open(&path).unwrap();
-    setup(&db);
     (directory, path, db)
 }
 

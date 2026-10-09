@@ -313,19 +313,17 @@ impl World {
         db.busy_timeout(Duration::from_secs(5)).unwrap();
         db
     }
-    /// The real compact message API as JSON. Public `--json inbox` is a
-    /// thread-count aggregate; own text inbox uses this API and may then ACK.
-    /// Calling its read boundary directly keeps this test free of display ACKs.
-    fn inbox_batch_json(&self, seat: &str) -> Value {
+    /// The daemon's local API, called in process (no CLI process).
+    fn daemon_call(
+        &self,
+        command: herdr_threads::protocol::commands::Command,
+    ) -> Result<Value, herdr_threads::protocol::results::ApiError> {
         use herdr_threads::{
             app::SystemClock,
             client::local::LocalSocketClient,
             daemon::ownership::{read_descriptor, read_existing_namespace},
             protocol::{
-                commands::{Command, InboxQuery},
-                ids::SeatId,
                 output::{OutputFormat, OutputSpec, encode_selected},
-                pagination::PageRequest,
                 time::{CallBudget, Cancellation, Clock, MonoInstant},
             },
         };
@@ -348,25 +346,111 @@ impl World {
             format: OutputFormat::Json,
             ..Default::default()
         };
+        // The CLI's own mutation call (`call_definitive`): transport errors
+        // panic, a definitive daemon rejection is returned.
         let result = client
-            .call_with_output(
-                Command::InboxBatch(InboxQuery {
-                    seat: Some(SeatId::new(seat)),
-                    page: PageRequest {
-                        limit: 100,
-                        ..Default::default()
-                    },
-                }),
+            .call_with_output_definitive(
+                command,
                 &spec,
                 &CallBudget {
                     deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
                     cancellation: Cancellation::default(),
                 },
             )
-            .unwrap();
+            .unwrap()?;
         let encoded = encode_selected(&result, &spec).unwrap();
         let envelope: Value = serde_json::from_slice(&encoded).unwrap();
-        envelope["result"]["data"].clone()
+        Ok(envelope["result"]["data"].clone())
+    }
+    /// `seat`'s current occupant claim, read from the private context
+    /// journal its lifecycle check-in saved: the claim the CLI's cooperative
+    /// mutations send.
+    fn seat_claim(&self, seat: &str) -> herdr_threads::protocol::authority::CallerClaim {
+        use herdr_threads::{
+            daemon::ownership::read_existing_namespace,
+            harness::{bridge::caller_claim, context::ContextJournal},
+        };
+        use sha2::{Digest, Sha256};
+        let paths = InstancePaths::resolve(
+            &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap(),
+        )
+        .unwrap();
+        let instance = read_existing_namespace(&paths).unwrap().unwrap();
+        let dir = paths
+            .instance_dir
+            .canonicalize()
+            .unwrap()
+            .join("contexts")
+            .join(format!("{:x}", Sha256::digest(seat.as_bytes())));
+        let contexts = ContextJournal::open_existing(&dir, instance, Duration::from_secs(1))
+            .unwrap()
+            .expect("the seat's lifecycle check-in saved its context");
+        caller_claim(&contexts.current().unwrap().expect("a current context")).unwrap()
+    }
+    /// One `send` as `claim`, called in process: the same `SendMessage` the
+    /// CLI builds (`Lazy` unless an ACK recipient is named, as `send` picks)
+    /// and the same daemon publication, minus a CLI process and its intent
+    /// journal. Setup only: CLI `send` itself stays covered by every test
+    /// that sends through [`Fixture::send_as_a`]. Returns the message ID.
+    fn send_in_process(
+        &self,
+        claim: &herdr_threads::protocol::authority::CallerClaim,
+        thread: &str,
+        body: &str,
+        require_ack: Option<(&str, u64)>,
+        relays_user: bool,
+    ) -> String {
+        use herdr_threads::protocol::{
+            commands::{Command, DeliveryMode, SendMessage},
+            ids::{OperationId, SeatId, ThreadId},
+        };
+        let mut attempt = 0;
+        loop {
+            let sent = self.daemon_call(Command::SendMessage(SendMessage {
+                delivery_mode: if require_ack.is_some() {
+                    DeliveryMode::Ordinary
+                } else {
+                    DeliveryMode::Lazy
+                },
+                user_intent: None,
+                thread: ThreadId::new(thread),
+                body: body.to_owned(),
+                invited_recipients: require_ack
+                    .iter()
+                    .map(|(seat, _)| SeatId::new(*seat))
+                    .collect(),
+                deadline_millis: require_ack.map(|(_, seconds)| seconds * 1_000),
+                operation: OperationId::new(format!("in-process-send-{}", uuid::Uuid::new_v4())),
+                claim: claim.clone(),
+                relays_user,
+            }));
+            attempt += 1;
+            match sent {
+                Ok(id) => return id.as_str().unwrap().to_owned(),
+                // As `cli_send`: a lane commit between preparation and
+                // decision refuses the send with nothing published.
+                Err(e) if attempt < 5 && e.detail.contains("snapshot changed") => {}
+                Err(e) => panic!("in-process send: {e:?}"),
+            }
+        }
+    }
+    /// The real compact message API as JSON. Public `--json inbox` is a
+    /// thread-count aggregate; own text inbox uses this API and may then ACK.
+    /// Calling its read boundary directly keeps this test free of display ACKs.
+    fn inbox_batch_json(&self, seat: &str) -> Value {
+        use herdr_threads::protocol::{
+            commands::{Command, InboxQuery},
+            ids::SeatId,
+            pagination::PageRequest,
+        };
+        self.daemon_call(Command::InboxBatch(InboxQuery {
+            seat: Some(SeatId::new(seat)),
+            page: PageRequest {
+                limit: 100,
+                ..Default::default()
+            },
+        }))
+        .unwrap()
     }
     /// `(state, end_reason, frontier, extension_until, ended_at)` of the
     /// seat's catch-up row on the thread.
@@ -629,7 +713,24 @@ impl Fixture {
                 .data("accept");
         }
         let mut ack = String::new();
-        if stage == Stage::Sent {
+        // The fixture's twelve sends are setup: against the built binary they
+        // go in process (one CLI process each was most of the setup); a
+        // version-bound override binary keeps its own CLI.
+        if stage == Stage::Sent && binary == BIN {
+            let claim = world.seat_claim(&a);
+            for index in 0..12 {
+                let sent = world.send_in_process(
+                    &claim,
+                    &thread,
+                    &body(index),
+                    (index == 11).then_some((b.as_str(), ack_deadline_seconds)),
+                    index == 3,
+                );
+                if index == 11 {
+                    ack = sent;
+                }
+            }
+        } else if stage == Stage::Sent {
             for index in 0..12 {
                 let text = body(index);
                 let mut args = vec!["send", thread.as_str(), "--body", text.as_str()];
@@ -683,6 +784,40 @@ impl Fixture {
         let mut args = vec!["send", self.thread.as_str(), "--body", text];
         args.extend_from_slice(flags);
         self.world.cli_send(self.caller_a(), &args).text("send")
+    }
+    /// `count` require-ACK-to-B sends (300 s deadline): the
+    /// `SendMessage` a `send --require-ack B --deadline 300` CLI call makes,
+    /// under A's own claim, called in process (see [`World::send_in_process`]).
+    /// Each waits for its own projection job, as a CLI process's latency
+    /// used to: a back-to-back burst starves the deadline lane's one-job
+    /// passes, and a busy pass backs that job off for seconds.
+    fn publish_as_a_in_process(&self, count: usize, text: &str) -> Vec<String> {
+        let claim = self.world.seat_claim(&self.a);
+        let db = self.world.db();
+        (0..count)
+            .map(|_| {
+                let sent = self.world.send_in_process(
+                    &claim,
+                    &self.thread,
+                    text,
+                    Some((&self.b, 300)),
+                    false,
+                );
+                let job = format!("work:send:{sent}");
+                let until = Instant::now() + Duration::from_secs(60);
+                while db
+                    .query_row("SELECT status FROM work_jobs WHERE id=?1", [&job], |r| {
+                        r.get::<_, String>(0)
+                    })
+                    .unwrap()
+                    != "complete"
+                {
+                    assert!(Instant::now() < until, "timed out projecting {sent}");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                sent
+            })
+            .collect()
     }
     /// B's boundary hook: the digest text, empty when nothing new arrived.
     fn boundary_b(&self) -> String {
@@ -3065,14 +3200,7 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
     // `MAX_BATCH_ITEMS` = 100 IDs). The display-page assertion below proves
     // the page is filled (94 of these leave a single page).
     const SPARSE_SETTLED: usize = 100;
-    let settled: Vec<String> = (0..SPARSE_SETTLED)
-        .map(|_| {
-            fx.send_as_a(
-                "SPARSE SETTLED HISTORY",
-                &["--require-ack", &fx.b, "--deadline", "300"],
-            )
-        })
-        .collect();
+    let settled = fx.publish_as_a_in_process(SPARSE_SETTLED, "SPARSE SETTLED HISTORY");
     let mut ack = vec!["ack"];
     ack.extend(settled.iter().map(String::as_str));
     fx.world

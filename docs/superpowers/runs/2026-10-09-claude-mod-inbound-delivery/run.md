@@ -15,7 +15,6 @@ approvals:
 - coverage-round-1 · c1..c11 applied auto · c12 rejected auto · R1..R13 canonical (coverage-round-1-requirements.md) · requirements: 13 · mapped: 13 · unmapped: 0 · r-new folded into c1, c2, c4, c5
 - coverage-round-2 · c13..c31 applied auto · c32 noted · requirements: 17 · mapped: 17 · unmapped: 0 · divergence: findings 12 → 19 · novel 19/19 (100%) · widening: yes (no round 3 by cap; design roast covers the settled tree)
 parked:
-- 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md · escalation · "idle check vs submit non-atomic: a user Enter between the mod's idle check and the engine's acceptance can queue the plugin prompt behind the user's turn; spike check needed"
 - coverage-round-2 · degraded-verdict · "coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage — design roast reviews the settled tree"
 - 2026-10-09 background commit security review · escalation · "mod frame relay/intent markers can be spoofed by peer-controlled body, thread or sender text (a fake marked header line); raw-body escaping was rejected twice under the cooperative model (design roast 1, PR roast 1); follow-up: delimit or escape peer text inside the frame now that markers carry meaning; recorded as a TRUST-POLICY accepted limit"
 - 2026-10-09-claude-mod-inbound-delivery-roast-pr-post-cap-audit.md · escalation · "D3 heuristic (register.js:67): whether Claude Code 2.1.295 reports an ordinary failed Bash call or a permissions.deny rule as isError/deny on the mod tool.call result is unverified; if so, a turn ending that way holds idle submits up to 120 s. Documented accepted heuristic in the spec; refute and ground seats REJECT at FYI. Check: live scenario running `false` via an allowed Bash rule, then answering, with a peer message mid-turn"
@@ -31,7 +30,7 @@ codeBuckets:
   parked:
   stalled: false
   review: ready (closing whole-epic review code-final-review-11.md at b7a408c0; review 10's one defect ht-j16.34 fixed at 2945d1ee)
-  sweep: b7a408c0 — 4032 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (150 s; leak check clean; also 4032/4032 at 573841ed, the same code; loaded runs at earlier tips hit flakes ht-wur/ht-uy3 in untouched tests) @ b7a408c0
+  sweep: e5fad2d2 — 4437 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (243 s; leak check clean; main's merged tree plus the submit-race evidence; earlier 4032/4032 at b7a408c0) @ e5fad2d2
   slowness: round 1 (fix re-entry): merge queue peaked at 5 — serial merge lane bottleneck
   worktreesKept:
   processSweep: stopped 0 · survived 0
@@ -73,3 +72,4 @@ baseAbsorbed: 88f5c69f → 6ef444d4 (merge 8d4c759c), 0 conflicted files (docs o
 escalationResolved: 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md · "$.session.id() inside session.end" — resolved: became live defect D1, fixed by ht-j16.28 (read after session.end, sidSuspect re-read on restart); clear_rebind live 3/3 at b562d1e4, 73a75cbf and 573841ed (code-final-review-11.md)
 escalationTriage: code-final-review-11.md — submit atomicity: open, needs a human decision (accept as a named limit or run the spike check); marker spoofing: accepted limit (TRUST-POLICY "Mod frames keep peer text off the header column"); D3 heuristic: accepted, documented (spec note ht-j16.30, CHANGELOG)
 merged: main fast-forwarded to b7a408c0 by the 'main' tab (code verified: suite 4032/4032 at b7a408c0, live 14/14 at 573841ed); release cutting (v0.5.0) owned by the 'main' tab
+escalationResolved: 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md · "idle check vs submit non-atomic" — resolved by a live spike on Claude Code 2.1.295 (docs/evidence/claude-mod-delivery/submit-race-spike.md): 18 valid trials; a plugin prompt queued behind a user turn is delivered even across Esc, $.prompt.submit resolves only at the plugin turn's turn.start, and the only non-delivery is a rejection (no ack); no discarded-but-resolved case
