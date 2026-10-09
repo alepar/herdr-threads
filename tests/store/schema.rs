@@ -1367,11 +1367,19 @@ fn relaxed_commit_durability_is_a_per_context_test_hook() {
         db.query_row("PRAGMA synchronous", [], |r| r.get::<_, i64>(0))
             .unwrap()
     };
+    // Unit-test stores start relaxed; both start from FULL here, so the
+    // relax hook must actually move one, and only that one.
     let relaxed = StoreContext::new(path.clone(), Arc::new(FixedClock));
-    relaxed.relax_commit_durability();
-    assert_eq!(synchronous(&relaxed.open_writer().unwrap()), 1, "NORMAL");
+    relaxed.require_commit_durability();
     let durable = StoreContext::new(path, Arc::new(FixedClock));
     durable.require_commit_durability();
+    assert_eq!(
+        synchronous(&relaxed.open_writer().unwrap()),
+        2,
+        "FULL first"
+    );
+    relaxed.relax_commit_durability();
+    assert_eq!(synchronous(&relaxed.open_writer().unwrap()), 1, "NORMAL");
     assert_eq!(synchronous(&durable.open_writer().unwrap()), 2, "FULL");
 }
 

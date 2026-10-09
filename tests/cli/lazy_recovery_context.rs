@@ -70,22 +70,18 @@ fn receipt(w: &World, message: &str, who: usize) -> String {
 fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool) {
     {
         // Agent cases never use the Human seat 2; only Human cases build it.
-        // The two independent worlds (each its own daemon) are built at once.
-        let (a, b) = std::thread::scope(|scope| {
-            let b = scope.spawn(|| {
-                if human {
-                    World::new()
-                } else {
-                    World::agents_only()
-                }
-            });
-            let a = if human {
-                World::with_routing_names("state's $` dir", "h' $.sock")
-            } else {
-                World::agents_only_with_routing_names("state's $` dir", "h' $.sock")
-            };
-            (a, b.join().unwrap())
-        });
+        // Built one after the other: concurrent spawns on macOS can leak one
+        // thread's not-yet-CLOEXEC pipe into the other's daemon and hang it.
+        let a = if human {
+            World::with_routing_names("state's $` dir", "h' $.sock")
+        } else {
+            World::agents_only_with_routing_names("state's $` dir", "h' $.sock")
+        };
+        let b = if human {
+            World::new()
+        } else {
+            World::agents_only()
+        };
         let who = if human { 2 } else { 1 };
         let lazy_a = a.send("original passive body", &[]);
         let ordinary_a = a.send("original ordinary body", &["--require-ack", &a.seats[1]]);
