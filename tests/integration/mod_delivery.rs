@@ -1937,6 +1937,122 @@ fn session_start_and_pre_tool_use_emit_no_digest_while_live() {
     );
 }
 
+/// ht-j16.21: a notice published while the channel is live is offered by the
+/// next PreToolUse hook, once; the digest stays suppressed and the channel
+/// stays live (spec D7: the live channel carries attention, not notices).
+#[test]
+fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
+    use herdr_threads::{
+        client::service::{PersistentServiceClient, ServiceIntentJournal},
+        daemon::ownership::{read_descriptor, read_existing_namespace},
+        protocol::{
+            ids::{OperationId, SeatId, ThreadId},
+            service::{
+                EnsureManagedThread, InvitationConstraint, NotificationSeverity, ServiceInvite,
+                ServiceNotify, ServiceOperation,
+            },
+            time::CallBudget,
+        },
+    };
+
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let instance = read_existing_namespace(&rig.paths)
+        .unwrap()
+        .expect("instance");
+    let descriptor = read_descriptor(&rig.paths, instance).unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let client = PersistentServiceClient::new(
+        descriptor.endpoint.clone(),
+        Arc::clone(&clock),
+        descriptor.instance_uuid,
+        Some(descriptor.boot_id),
+        ServiceIntentJournal::open(rig.root.join("intents")).unwrap(),
+    );
+    let budget = || CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 10_000),
+        cancellation: Cancellation::default(),
+    };
+    let managed = ThreadId::new("thread-notice-live");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            client.register(&budget()).await.unwrap();
+            client
+                .submit(
+                    ServiceOperation::EnsureThread(EnsureManagedThread {
+                        thread: managed.clone(),
+                        topic: "notice while live".into(),
+                        goal: "coordination".into(),
+                        operation: OperationId::new("ensure"),
+                    }),
+                    &budget(),
+                )
+                .await
+                .unwrap();
+            client
+                .submit(
+                    ServiceOperation::Invite(ServiceInvite {
+                        thread: managed.clone(),
+                        seat: SeatId::new(rig.b.clone()),
+                        constraint: InvitationConstraint::Ordinary,
+                        deadline_millis: Some(300_000),
+                        operation: OperationId::new("invite"),
+                    }),
+                    &budget(),
+                )
+                .await
+                .unwrap();
+            // B accepts through its own CLI, then the service notifies on the
+            // same connection (one runtime: the client is bound to it).
+            rig.cli(Some((&rig.b, PANE_B)), &["accept", managed.as_str()])
+                .data("accept");
+            client
+                .submit(
+                    ServiceOperation::Notify(ServiceNotify {
+                        thread: managed.clone(),
+                        severity: NotificationSeverity::Warn,
+                        event_json: json!({"kind": "integration", "detail": "notice while live"}),
+                        operation: OperationId::new("notify"),
+                    }),
+                    &budget(),
+                )
+                .await
+                .unwrap();
+        });
+    // The notice projection runs on a worker: poll the hook until it shows.
+    let shown = wait_until("the notice in the PreToolUse hook", STEP, || {
+        let out = rig.hook(PANE_B, &pre_tool_use(SESSION_B));
+        out.stdout.contains("offered notices: 1").then_some(out)
+    });
+    assert!(
+        !shown.stdout.contains(DIGEST_MARK),
+        "digest while live: {:?}",
+        shown.stdout
+    );
+    assert!(
+        !shown.stdout.contains("pending mail"),
+        "ready commands while live: {:?}",
+        shown.stdout
+    );
+    assert!(
+        shown.stdout.contains("thread-notice-live"),
+        "the offer names the notice's thread: {:?}",
+        shown.stdout
+    );
+    let again = rig.hook(PANE_B, &pre_tool_use(SESSION_B));
+    assert!(
+        !again.stdout.contains("offered notices"),
+        "the notice was offered twice: {:?}",
+        again.stdout
+    );
+    assert_eq!(rig.channel_state().as_deref(), Some("live"));
+    assert!(watch.running(), "the watch child died");
+}
+
 /// Spec D2: watch connections have their own budget of 64 (outside the 32
 /// ordinary slots). With 64 seats holding a channel, a 65th registration is
 /// refused `busy` (retryable, exit 2) while ordinary requests are still served.
