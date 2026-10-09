@@ -863,16 +863,17 @@ mod process_hint_tests {
     }
 
     #[test]
-    fn process_hint_shared_exact_version_protocol_gate_remains_separate() {
+    fn process_hint_shared_version_floor_preserves_separate_capability_gate() {
         for (version, protocol, supported) in [
             ("0.9.1", 22, true),
             ("0.9.3", 22, true),
-            ("0.9.2", 22, false),
-            ("0.9.10", 22, false),
+            ("0.9.2", 22, true),
+            ("0.9.10", 22, true),
             ("0.9.1-preview", 22, false),
-            ("0.9.3-preview", 22, false),
-            ("0.9.1", 21, false),
-            ("0.9.3", 23, false),
+            ("0.9.3-preview", 22, true),
+            ("0.9.1", 21, true),
+            ("0.9.3", 23, true),
+            ("0.9.0", 22, false),
         ] {
             let mut advert = pong();
             advert["version"] = json!(version);
