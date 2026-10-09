@@ -48,7 +48,7 @@ Enrollment and check-in are split across two callbacks. A top-level Hermes CLI
 resolver Claude/Codex use; no check-in, no offer). The existing qualified `pre_llm_call` then
 checks in against the now-resolved seat and delivers context, unchanged. As a fallback, a
 qualified top-level CLI `pre_llm_call` that finds the pane `Unowned` may enroll too, within its
-own budget. The top-level witness is in-band and Hermes-specific: the native `platform` tag.
+own budget, without starting the daemon. The top-level witness is in-band and Hermes-specific: the native `platform` tag.
 Hermes 0.21.5 starts delegated children with `platform="subagent"`
 (`hermes-agent/tools/delegate_tool.py:239`) and fires `on_session_start` from
 `agent/conversation_loop.py:833-835` with `platform=agent.platform`; the CLI's top-level agent
@@ -68,7 +68,10 @@ Hermes requirements for that witness are recorded below so the agy design can ta
 `pre_llm_call` enrolls as a fallback when the pane is `Unowned`.** `on_session_start` fires once,
 at the first turn of a new session, before the first model call, inside the 4.5 s lifecycle cap,
 so it can start the daemon and do a fresh target read. The fallback covers a timed-out or skipped
-start (stale timeout observation, daemon start slower than the cap) without a session-long gap.
+start (stale timeout observation, daemon start slower than the cap) without a session-long gap. The
+fallback never calls `ensure_running`: with the daemon down it stays quiet for that turn (today's
+behavior) and the next turn tries again; the start callback is the only enrollment path that may start
+the daemon.
 *Considered:* `pre_llm_call` only, discarded because 1.2 s cannot reliably cover
 `ensure_running` plus `ResolveSeat` plus check-in, so the first turn of a cold machine would
 silently stay unseated; `on_session_start` only, discarded because one missed callback would
@@ -98,7 +101,10 @@ no reply at spec time); Herdr's `agent_session.session_start_source`, discarded 
 
 The bridge envelope's `role_association` object gains one field, `enrollment_witness`, whose
 value is the string `"cli_platform"` or JSON `null`; it is always present (strict parse,
-byte-identical decode, `hermes.rs` `parse`/`decode`). The bridge sets it to `"cli_platform"`
+byte-identical decode, `hermes.rs` `parse`/`decode`) when the bridge sends it. For version skew, an
+envelope with the field **absent** is accepted and decoded exactly as `null` (an older installed
+bridge keeps today's launch-only behavior instead of being refused; re-running `setup hermes` installs
+the new bridge, and the user docs say so). The bridge sets it to `"cli_platform"`
 exactly when the native callback's `platform` is the string `"cli"`, and to `null` otherwise.
 Per callback:
 
@@ -107,6 +113,7 @@ Per callback:
 | `on_session_start`, platform `"cli"` | `"top"` | `"cli_session_start"` (new) | `"cli_platform"` |
 | `on_session_start`, platform `None` or `""` | `"unknown"` | as today | `null` |
 | `pre_llm_call`, no parent | `"top"` | `"explicit_parent"` | `"cli_platform"` iff platform `"cli"`, else `null` |
+| `pre_llm_call`, parented (child) | answered locally by the bridge, never forwarded (as today) | | |
 | `post_tool_call`, `on_session_reset` | as today | as today | `null` |
 
 Rust side: `enum EnrollmentPolicy { Lifecycle, WitnessedStartAndUnownedTurn }` returned by
@@ -117,7 +124,7 @@ returned by `DecodedEvent::enrollment(policy)`. `Lifecycle` is today's rule (top
 `EventIntent::Enroll` with role top-level and witness `cli_platform`. `UnownedTurn` is a
 top-level `QualifiedTurn` with witness `cli_platform`, honored only after `find_seat` returns
 `Unowned`. A witness on any other callback, or `cli_session_start` with a `null` witness, is a
-strict-parse refusal.
+strict-parse refusal, and so is `role: "child"` with a non-null witness.
 
 ### D3. Enrollment without check-in at session start
 
@@ -134,15 +141,15 @@ own receipt semantics for no gain.
 
 **Recommended: replace the hard-coded `enroll` expression at `hook.rs:2909-2914` with
 `DecodedEvent::enrollment(&self) -> Option<EnrollmentKind>` driven by a new adapter method,
-`HarnessAdapter::enrollment_policy()` (default `LifecycleOnly`, which reproduces today's rule
-exactly for Claude and Codex), with Hermes returning `HermesCli`, which admits `Enroll` (D3)
+`HarnessAdapter::enrollment_policy()` (default `EnrollmentPolicy::Lifecycle`, which reproduces today's rule
+exactly for Claude and Codex), with Hermes returning `WitnessedStartAndUnownedTurn` (names pinned in D2a), which admits `Enroll` (D3)
 and, when the pane is `Unowned`, a top-level `QualifiedTurn` whose envelope platform is `cli`.**
 Enrollment still needs `role == TopLevel` and `can_check_in()` or the `Enroll` intent, and still
 never runs for subagent, observer, `Current`/compact or `DeclaredReset` events. The fallback
 path checks `find_seat` first and calls the resolver only on `Unowned`, so a steady-state turn
-adds no resolver call. Fix `find_seat`'s hard-coded `harness: Harness::Claude` selection
-(`hook.rs:1346`) to use the decoded harness, so `selected_generation` is computed for the real
-occupant. *Considered:* an `if harness == hermes` branch in `hook.rs`, discarded because the
+adds no resolver call. (`find_seat`'s hard-coded `harness: Harness::Claude` selection at
+`hook.rs:1346` is left alone: `selected_generation`, `src/cli/mod.rs:183-212`, never reads the
+harness, so it has no effect.) *Considered:* an `if harness == hermes` branch in `hook.rs`, discarded because the
 registry exists so the hook path stays harness-neutral (the agy run is testing exactly that);
 mapping Hermes `on_session_start` to `Lifecycle(Startup)`, discarded because the lifecycle path
 also checks in (D3).
