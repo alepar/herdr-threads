@@ -20,6 +20,11 @@ service-daemon = { max-threads = 1 }
 # holds 64 channels. Four at a time keep it from starving the latency-asserting
 # daemon tests running beside it; its own waits are generous.
 mod-delivery = { max-threads = 4 }
+# The Hermes bare-enrollment smoke (ht-4ne.3): each test drives the installed
+# bridge under its real 1.2 s pre_llm_call cap against its own isolated Herdr
+# server and daemon. Starved beside the suite a callback fails open (no context),
+# so the tests run one at a time.
+hermes-smoke = { max-threads = 1 }
 
 [profile.default]
 # A hang guard, not a budget: the longest test waits ~70 s by design.
@@ -138,6 +143,11 @@ test-group = "service-daemon"
 filter = "binary(integration) & test(/^mod_delivery::/)"
 priority = 60
 test-group = "mod-delivery"
+
+[[profile.default.overrides]]
+filter = "binary(integration) & test(/^hermes_enrollment_smoke::/)"
+priority = 60
+test-group = "hermes-smoke"
 
 # CI: a JUnit report (per-test times; success output kept for the
 # skipped-Herdr summary).
