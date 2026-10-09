@@ -9,7 +9,7 @@ branch: super-auto/hermes-global-enrollment
 base: main
 spec: 2026-10-09-hermes-global-enrollment-design.md
 epic: ht-4ne
-roastDesignRound: 1
+roastDesignRound: 2
 roast-design: 2026-10-09-hermes-global-enrollment-roast-design-1.md
 
 approvals:
