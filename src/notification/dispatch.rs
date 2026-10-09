@@ -272,31 +272,38 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         // the prompt. A skip sends nothing and leaves `soft_poked_at` unset;
         // the next tick re-evaluates until the hard deadline.
         let decision = poke.as_ref().map(|request| {
+            // An explicit occupant takes precedence, including Human and
+            // child refusal. Native cooperative reads have no occupant;
+            // resolve only the canonical bound agent ID in that case.
+            let harness = match observation.occupant.as_ref() {
+                Some(occupant) if occupant.is_top_level => match occupant.harness {
+                    agent @ Harness::Agent(_) => Some(agent),
+                    Harness::Human => None,
+                },
+                Some(_) => None,
+                None if cooperative => target
+                    .bound_harness
+                    .as_deref()
+                    .and_then(|bound| crate::harness::registry::builtins().agent(bound).ok())
+                    .map(Harness::Agent),
+                None => None,
+            };
             let bound_native_agent = match &reservation.authority {
-                ReservedWakeAuthority::Registered { .. } => true,
-                ReservedWakeAuthority::Cooperative { harness, .. } => harness.is_some(),
+                ReservedWakeAuthority::Registered { .. }
+                | ReservedWakeAuthority::Cooperative { .. } => harness.is_some(),
                 ReservedWakeAuthority::RecoveryHint { .. } => false,
             };
             // Cooperative native reads never name an occupant (Herdr's cached
             // agent is not proof); the adapter's own agent-kind recheck
             // against the bound harness stands in for recognition there.
-            let recognized = observation
-                .occupant
-                .as_ref()
-                .is_some_and(|occupant| occupant.is_top_level)
-                || (cooperative && target.bound_harness.is_some());
-            let harness = observation
-                .occupant
-                .as_ref()
-                .map(|occupant| occupant.harness)
-                .or(match target.bound_harness.as_deref() {
-                    Some("codex") => Some(Harness::Codex),
-                    Some("claude") => Some(Harness::Claude),
-                    _ => None,
-                });
-            let caps = harness.map_or(PokeCapabilities::NONE, |harness| {
-                request.caps.capabilities(harness)
-            });
+            let recognized = harness.is_some();
+            let caps = if bound_native_agent {
+                harness.map_or(PokeCapabilities::NONE, |harness| {
+                    request.caps.capabilities(harness)
+                })
+            } else {
+                PokeCapabilities::NONE
+            };
             poke_eligibility(&observation, bound_native_agent, recognized, caps)
         });
         // Attention never stashes a draft. Nonempty input was refused above;

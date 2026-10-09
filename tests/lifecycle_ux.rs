@@ -752,11 +752,8 @@ fn doctor_reports_codex_contract_without_probing_runtime_or_embedded_schemas() {
         );
         assert!(installed["version"].is_null(), "{label}: {installed}");
         assert_eq!(installed["binary"], bin.join("codex").display().to_string());
-        let line = installed["evidence"].as_str().unwrap();
-        assert!(
-            line.contains("runtime metadata unavailable"),
-            "{label}: {line}"
-        );
+        // A declared contract carries no native evidence line.
+        assert!(installed["evidence"].is_null(), "{label}: {installed}");
         assert!(
             !bin.join("invoked").exists(),
             "{label}: doctor invoked Codex"
@@ -910,6 +907,7 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
             scope,
             SemanticMutation::freeze(
                 SemanticMutation::Handoff(Box::new(HandoffPlan {
+                    startup_input: None,
                     request: HandoffRequest {
                         thread: Some(ThreadId::new("t")),
                         thread_name: None,

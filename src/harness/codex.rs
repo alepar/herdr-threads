@@ -10,6 +10,11 @@
 //! setup declaration installs context hooks only: lifecycle, child start, and
 //! a Bash `PreToolUse` group whose output is `additionalContext` and never a
 //! permission decision or `updatedInput`.
+pub mod setup;
+
+mod composer;
+
+use super::adapter::*;
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::codex_schema::{self, Unextractable};
 use super::context::{ContextError, EventKind, Harness, Role};
@@ -22,6 +27,7 @@ pub use super::recipe::NativeSupport;
 use super::recipe::{self, Evidence, LookupError, Recipe, Version, VersionSet};
 use super::{Capability, LifecycleEvent, declared_role, field, input};
 use crate::protocol::results::CapabilityState;
+use crate::protocol::time::CallBudget;
 use crate::protocol::time::{Cancellation, external_bound};
 use serde_json::{Value, json};
 use std::{
@@ -1224,4 +1230,1008 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
         event_id: event_id.into(),
         capability: Capability::SourceSupported,
     })
+}
+
+pub(crate) struct CodexAdapter;
+
+struct CodexCanary;
+impl super::adapter::CanaryStrategy for CodexCanary {
+    fn descriptor(&self) -> super::adapter::CanaryDescriptor {
+        super::adapter::CanaryDescriptor {
+            kind: super::adapter::CanaryKind::NpmRelease,
+            candidate_kind: super::adapter::CandidateKind::StableRelease,
+            npm_package: Some("@openai/codex".into()),
+            model_key_env: Some("OPENAI_API_KEY".into()),
+            companion: "scripts/canary/adapters/codex.py".into(),
+            artifact_schema_version: 1,
+        }
+    }
+}
+impl HarnessAdapter for CodexAdapter {
+    fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
+        Some(self)
+    }
+    fn receipt_admission_summary(&self) -> Option<String> {
+        Some("declared".into())
+    }
+    fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String> {
+        super::adapter::executable_observation_fingerprint(env, "codex")
+    }
+    fn observe_daemon(
+        &self,
+        env: &InstallEnvironment,
+        _: &CallBudget,
+    ) -> super::adapter::DaemonObservation {
+        let status = if crate::cli::hook::resolve_on_path("codex", env.path.as_deref()).is_some() {
+            super::adapter::HarnessStatus::ContractDeclared { detail: "codex: contract_declared; runtime metadata unavailable; rich optional capabilities unavailable".into() }
+        } else {
+            super::adapter::HarnessStatus::NotInstalled(
+                "no executable `codex` on the daemon's PATH".into(),
+            )
+        };
+        super::adapter::DaemonObservation {
+            status,
+            receipt_basis: Some(
+                crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE.into(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+        HookAdmissionPolicy::RegisteredContract
+    }
+    type Admission = super::operational::CodexContract;
+    fn metadata(&self) -> &'static AdapterMetadata {
+        static METADATA: AdapterMetadata = AdapterMetadata {
+            id: "codex",
+            display_label: "Codex",
+            context_spelling: "Codex",
+            context_aliases: &[],
+            executable: ExecutableLookup::Path("codex"),
+            host_kinds: &["codex"],
+            setup_scopes: &[SetupScopeKind::ConfigRoot],
+            runtime_sources: &["installed_probe", "native_transcript"],
+            budget: EventBudgetPolicy {
+                lifecycle_ms: 5000,
+                observer_ms: 1500,
+            },
+        };
+        &METADATA
+    }
+    fn doctor_projection(
+        &self,
+        request: &StatusRequest,
+        daemon: &serde_json::Value,
+        budget: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        Some(crate::cli::doctor::legacy_codex_projection(
+            request, daemon, budget,
+        ))
+    }
+    fn legacy_contract_id(&self) -> Option<String> {
+        Some(super::contract::contract_id(&CONTRACT))
+    }
+    fn canary_strategy(&self) -> Option<&dyn super::adapter::CanaryStrategy> {
+        Some(&CodexCanary)
+    }
+    fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
+        Some(&composer::NativeComposer)
+    }
+    fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
+        Some(self)
+    }
+    fn contracts(&self) -> &'static [ContractDescriptor] {
+        static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {
+            domain: ContractDomain::Native,
+            domain_id: "native_payload",
+            origin: super::evidence::EvidenceOrigin::NativePayload,
+            events: &[
+                super::evidence::LEGACY_EVENTS[0],
+                super::evidence::LEGACY_EVENTS[1],
+                super::evidence::EvidenceEvent {
+                    native_event: "SubagentStart",
+                    milestone: None,
+                    always_send: false,
+                },
+            ],
+            required_milestones: &["lifecycle", "tool"],
+            qualifications: &[],
+            holding: super::evidence::AttributionHolding::SuppressResumed,
+            resumed_unavailable_reason: Some("codex resume: rollout version is the creating CLI's"),
+            contract: &CONTRACT,
+        }];
+        &CONTRACTS
+    }
+    fn nonholding_unavailable_reasons(
+        &self,
+        descriptor: &ContractDescriptor,
+    ) -> &'static [&'static str] {
+        static REASONS: [&str; 1] = [super::attribution::Unattributed::CodexCreatorOnly.as_str()];
+        if std::ptr::eq(&self.contracts()[0], descriptor) {
+            &REASONS
+        } else {
+            &[]
+        }
+    }
+    fn observe_install(&self, env: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+        match crate::cli::hook::resolve_on_path("codex", env.path.as_deref()) {
+            Some(binary) => InstallObservation::ExecutableAvailable { binary },
+            None => InstallObservation::Unavailable {
+                diagnostic: "installed codex executable not found on PATH".into(),
+            },
+        }
+    }
+    fn admit(
+        &self,
+        request: &AdmissionRequest,
+        _: &CallBudget,
+    ) -> AdmissionDecision<Self::Admission> {
+        match &request.installed {
+            InstallObservation::NotRequested | InstallObservation::ExecutableAvailable { .. } => AdmissionDecision::ContractDeclared {state: super::operational::CodexContract::registered(), recipe: RECIPES[0].id},
+            _ => AdmissionDecision::Refused {diagnostic: "registered codex contract requires executable availability or declared hook selection".into()},
+        }
+    }
+    fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder {
+        identity.release().map_or(Ladder::Admitted, |version| {
+            super::state::table_ladder(admission_table(), version)
+        })
+    }
+    fn classify(&self, input: &HookInput) -> ContractObservation {
+        ContractObservation {
+            domain: ContractDomain::Native,
+            classification: super::contract::classify(
+                &CONTRACT,
+                input.registered_event.as_deref(),
+                &input.bytes,
+            ),
+        }
+    }
+    fn output_policy(&self) -> OutputPolicy {
+        OutputPolicy {
+            child_requires_endpoint: true,
+            extra_guidance: crate::cli::skill::CODEX_COMMAND_GUIDANCE,
+            empty_lifecycle: true,
+            session_start_hint: true,
+        }
+    }
+    fn decode(
+        &self,
+        admitted: &Self::Admission,
+        input: &HookInput,
+    ) -> Result<DecodedEvent, DecodeFailure> {
+        if let Some(registered) = input.registered_event.as_deref() {
+            let payload: Value = serde_json::from_slice(&input.bytes)
+                .map_err(|_| DecodeFailure::Native(ContextError::Invalid))?;
+            if payload.get("hook_event_name").and_then(Value::as_str) != Some(registered) {
+                return Err(DecodeFailure::Native(ContextError::Invalid));
+            }
+        }
+        parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
+            .map(DecodedEvent::from_native)
+            .map_err(DecodeFailure::Native)
+    }
+    fn encode(
+        &self,
+        _: &Self::Admission,
+        event: &DecodedEvent,
+        offer: &NeutralOffer,
+    ) -> Result<EncodedOutput, EncodeFailure> {
+        super::adapter::encode_context(event, offer)
+    }
+    fn attribute_runtime(&self, input: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+        super::attribution::attribute_native_runtime("codex", input)
+    }
+    fn setup(&self, request: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+        setup::setup(request)
+    }
+    fn status(&self, request: &StatusRequest, budget: &CallBudget) -> SetupStatus {
+        setup::status(request, budget)
+    }
+    fn unsetup(
+        &self,
+        request: &UnsetupRequest,
+        _: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure> {
+        setup::unsetup(request)
+    }
+}
+
+/// Codex native launch grammar, environment and wrapper policy.
+pub mod launch {
+    use crate::cli::setup::SetupEnv;
+    use crate::protocol::results::{ApiError, ErrorCode};
+    use crate::protocol::time::CallBudget;
+    use serde_json::{Value, json};
+    use std::{
+        fs,
+        io::Read,
+        process::{Command as Process, Stdio},
+        time::{Duration, Instant},
+    };
+    fn error(code: ErrorCode, detail: &str) -> ApiError {
+        ApiError::new(code, detail)
+    }
+    /// Codex options (root, `exec` and `resume` levels) that consume the next
+    /// argument as their value. Any other `-`/`--` option is taken as a switch;
+    /// `--flag=value` spellings never consume the next argument. `-i/--image`
+    /// takes one or more values, so its separated spelling is refused
+    /// ([`CODEX_MULTI_VALUE_OPTIONS`]) rather than guessing its arity.
+    pub(crate) const CODEX_VALUE_OPTIONS: &[&str] = &[
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "-i",
+        "--image",
+        "--remote",
+        "--remote-auth-token-env",
+        "--thread-source",
+        "-m",
+        "--model",
+        "--local-provider",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-a",
+        "--ask-for-approval",
+        "-C",
+        "--cd",
+        "--add-dir",
+        "--output-schema",
+        "--color",
+        "-o",
+        "--output-last-message",
+    ];
+
+    /// Codex options taking a variable number of values (codex-cli 0.159.2
+    /// `-i, --image <FILE>...`): the separated spelling would swallow a
+    /// following subcommand or prompt, so only `--image=FILE` (or the option
+    /// after `--`) is accepted.
+    const CODEX_MULTI_VALUE_OPTIONS: &[&str] = &["-i", "--image"];
+
+    /// Codex subcommands a managed launch cannot configure: refused rather than
+    /// started without the owned hooks. `exec` is a handled form; `resume` is refused until captured.
+    /// Covers every top-level subcommand and alias `codex --help` lists for
+    /// codex-cli 0.159.2 (plus older names), so a bare first positional naming a
+    /// Codex subcommand is never mistaken for an interactive prompt; a prompt
+    /// that is such a word goes after `--`.
+    pub(crate) const CODEX_UNSUPPORTED_SUBCOMMANDS: &[&str] = &[
+        "agents",
+        "e",
+        "review",
+        "login",
+        "logout",
+        "mcp",
+        "mcp-server",
+        "app-server",
+        "app",
+        "completion",
+        "sandbox",
+        "debug",
+        "apply",
+        "a",
+        "fork",
+        "cloud",
+        "cloud-tasks",
+        "features",
+        "help",
+        "plugin",
+        "remote-control",
+        "update",
+        "doctor",
+        "queue",
+        "archive",
+        "delete",
+        "migrate-rollouts",
+        "unarchive",
+        "exec-server",
+        "responses-api-proxy",
+        "stdio-to-uds",
+        "execpolicy",
+        "generate-ts",
+    ];
+
+    /// `codex exec` subcommands other than `resume` (codex-cli 0.159.2
+    /// `codex exec --help`): refused, since no evidence shows they read the
+    /// exec-level owned hooks.
+    pub(crate) const CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS: &[&str] = &["fork", "review", "help"];
+
+    /// Where a managed Codex launch places the owned `-c` configuration. Codex
+    /// 0.159.2 `exec` ignores root-level `hooks.*` overrides
+    /// (`native-codex-matrix-1/hook-placement-probe`), so each subcommand form
+    /// carries them at its own level; `--no-daemon` is a top-level flag and
+    /// always precedes the subcommand.
+    ///
+    /// Evidence per form:
+    /// - `Interactive`: `codex --no-daemon -c hooks.* [PROMPT]`, the launch line
+    ///   `setup codex` prints (root-level session overrides);
+    /// - `Exec`: `codex --no-daemon exec -c hooks.* ... PROMPT`
+    ///   (`hook-placement-probe/exec.jsonl`, `codex-158-live-hook-capture/run1.sh`);
+    /// - `ExecResume`: `codex --no-daemon exec ... resume ... -c hooks.* ID PROMPT`
+    ///   (`codex-158-live-hook-capture/run3.sh`, SessionStart resume captured);
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CodexLaunchForm {
+        Interactive,
+        Exec,
+        ExecResume,
+    }
+
+    /// The explicit working directory whose project configuration a scoped
+    /// sandbox probe can reproduce. An implicit pane cwd is not inferred from
+    /// the coordinator process or saved pane paths.
+    pub fn scoped_codex_cwd(argv: &[String]) -> Result<std::path::PathBuf, ApiError> {
+        let options_end = argv
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(argv.len());
+        let mut found = None;
+        let mut index = 0;
+        while index < options_end {
+            let arg = argv[index].as_str();
+            let cwd = if arg == "-C" || arg == "--cd" {
+                argv.get(index + 1).map(String::as_str)
+            } else {
+                arg.strip_prefix("--cd=")
+                    .or_else(|| arg.strip_prefix("-C="))
+            };
+            if let Some(cwd) = cwd {
+                let path = std::path::PathBuf::from(cwd);
+                if found.is_some() || !path.is_absolute() {
+                    return Err(error(
+                        ErrorCode::InvalidRequest,
+                        "scoped Codex sandbox validation needs one absolute -C directory",
+                    ));
+                }
+                found = Some(path);
+                index += if arg == "-C" || arg == "--cd" { 2 } else { 1 };
+            } else {
+                index += if CODEX_VALUE_OPTIONS.contains(&arg) {
+                    2
+                } else {
+                    1
+                };
+            }
+        }
+        found.ok_or_else(|| {
+        error(
+            ErrorCode::InvalidRequest,
+            "scoped Codex sandbox validation needs an explicit -C /absolute/project/path to match project policy",
+        )
+    })
+    }
+
+    /// The next positional argument at or after `start`: its index and whether
+    /// it follows `--` (and so is a prompt, never a subcommand).
+    fn next_positional(argv: &[String], start: usize) -> Option<(usize, bool)> {
+        let mut index = start;
+        while index < argv.len() {
+            let arg = argv[index].as_str();
+            if arg == "--" {
+                return (index + 1 < argv.len()).then_some((index + 1, true));
+            }
+            if arg.len() > 1 && arg.starts_with('-') {
+                index += if CODEX_VALUE_OPTIONS.contains(&arg) {
+                    2
+                } else {
+                    1
+                };
+                continue;
+            }
+            return Some((index, false));
+        }
+        None
+    }
+
+    /// The caller's Codex form and the index at which the owned configuration is
+    /// inserted (right after the subcommand that must carry it).
+    fn codex_form(argv: &[String]) -> Result<(CodexLaunchForm, usize, Option<usize>), ApiError> {
+        let Some((first, after_separator)) = next_positional(argv, 0) else {
+            return Ok((CodexLaunchForm::Interactive, 0, None));
+        };
+        if after_separator {
+            return Ok((CodexLaunchForm::Interactive, 0, None));
+        }
+        match argv[first].as_str() {
+            "exec" => match next_positional(argv, first + 1) {
+                Some((second, false)) if argv[second] == "resume" => {
+                    Ok((CodexLaunchForm::ExecResume, second + 1, Some(first)))
+                }
+                // Only `exec resume` has evidence of reading its own hook level;
+                // every other exec subcommand (0.159.2: `fork`, `review`, `help`)
+                // is refused rather than started with unverified hook placement.
+                Some((second, false))
+                    if CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS.contains(&argv[second].as_str()) =>
+                {
+                    Err(error(
+                        ErrorCode::InvalidRequest,
+                        "managed launch supports Codex `exec` and `exec resume` only; this exec \
+                     subcommand cannot carry the owned hook configuration",
+                    ))
+                }
+                _ => Ok((CodexLaunchForm::Exec, first + 1, Some(first))),
+            },
+            "resume" => Err(error(
+                ErrorCode::InvalidRequest,
+                "managed launch refuses the Codex `resume` form: no live capture shows it loading the owned hooks (TRUST-POLICY Accepted limits); run `codex resume` by hand in the pane, or use `exec resume`",
+            )),
+            word if CODEX_UNSUPPORTED_SUBCOMMANDS.contains(&word) => Err(error(
+                ErrorCode::InvalidRequest,
+                "managed launch supports Codex interactive, `exec` and `exec resume` only; \
+             this subcommand cannot carry the owned hook configuration",
+            )),
+            _ => {
+                // Interactive with a prompt: Codex takes one prompt, so a second
+                // positional means the arguments were misread (an unknown option
+                // taking a value before a subcommand). Refuse rather than place
+                // the owned hooks where the subcommand would ignore them.
+                if next_positional(argv, first + 1).is_some() {
+                    return Err(error(
+                        ErrorCode::InvalidRequest,
+                        "ambiguous Codex arguments: more than one positional argument before a \
+                     recognised subcommand; put the prompt after `--`",
+                    ));
+                }
+                Ok((CodexLaunchForm::Interactive, 0, None))
+            }
+        }
+    }
+
+    /// Insert owned configuration at the caller's supported subcommand level,
+    /// retaining every caller token in order. No daemon-mode argument is added;
+    /// obsolete owned --no-daemon is filtered. Existing native guards still apply.
+    pub fn compose_native_argv(
+        caller: Vec<String>,
+        owned: Vec<String>,
+    ) -> Result<Vec<String>, ApiError> {
+        let options_end = caller
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(caller.len());
+        let options = &caller[..options_end];
+        if options.iter().any(|arg| {
+            arg == "--daemon" || arg.starts_with("--daemon=") || arg.starts_with("--no-daemon=")
+        }) {
+            return Err(error(
+                ErrorCode::InvalidRequest,
+                "conflicting Codex daemon mode",
+            ));
+        }
+        // Codex applies repeated `-c` values in order within the session layer,
+        // so a caller hook override (a `hooks.*` key or the whole `hooks` table)
+        // would silently replace the owned hook.
+        let scoped_socket_policy = owned
+            .iter()
+            .any(|arg| arg == "sandbox_workspace_write.network_access=true");
+        let mut previous_is_config = false;
+        let mut previous_takes_value = false;
+        for arg in options {
+            let value = if previous_is_config {
+                Some(arg.as_str())
+            } else {
+                arg.strip_prefix("--config=").or_else(|| {
+                    arg.strip_prefix("-c")
+                        .filter(|rest| !rest.is_empty())
+                        .map(|rest| rest.strip_prefix('=').unwrap_or(rest))
+                })
+            };
+            if value.is_some_and(overrides_hooks) {
+                return Err(error(
+                    ErrorCode::InvalidRequest,
+                    "caller Codex hooks override would replace the owned hook configuration",
+                ));
+            }
+            if scoped_socket_policy
+                && (value.is_some()
+                    || (!previous_takes_value
+                        && matches!(
+                            arg.as_str(),
+                            "-c" | "--config"
+                                | "-p"
+                                | "--profile"
+                                | "-s"
+                                | "--sandbox"
+                                | "--enable"
+                                | "--disable"
+                                | "--add-dir"
+                                | "--remote"
+                                | "--remote-auth-token-env"
+                                | "--worktree"
+                                | "--approve-for-me"
+                                | "--dangerously-bypass-approvals-and-sandbox"
+                                | "--yolo"
+                                | "--dangerously-bypass-hook-trust"
+                                | "--full-auto"
+                                | "--search"
+                        ))
+                    || (!previous_takes_value
+                        && [
+                            "--profile=",
+                            "--sandbox=",
+                            "--enable=",
+                            "--disable=",
+                            "--add-dir=",
+                            "--remote=",
+                            "--remote-auth-token-env=",
+                        ]
+                        .iter()
+                        .any(|prefix| arg.starts_with(prefix)))
+                    || (!previous_takes_value && (arg.starts_with("-s") || arg.starts_with("-p"))))
+            {
+                return Err(error(
+                    ErrorCode::InvalidRequest,
+                    "caller Codex policy or profile override would differ from the measured scoped sandbox policy",
+                ));
+            }
+            if !previous_takes_value && CODEX_MULTI_VALUE_OPTIONS.contains(&arg.as_str()) {
+                return Err(error(
+                    ErrorCode::InvalidRequest,
+                    "ambiguous Codex arguments: put images as --image=FILE or before --",
+                ));
+            }
+            previous_is_config = !previous_takes_value && (arg == "-c" || arg == "--config");
+            previous_takes_value =
+                !previous_takes_value && CODEX_VALUE_OPTIONS.contains(&arg.as_str());
+        }
+        let (_, insert_at, subcommand) = codex_form(&caller)?;
+        let no_daemon: Vec<usize> = options
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| *arg == "--no-daemon")
+            .map(|(index, _)| index)
+            .collect();
+        if no_daemon.len() > 1 {
+            return Err(error(
+                ErrorCode::InvalidRequest,
+                "duplicate Codex --no-daemon",
+            ));
+        }
+        if let (Some(&at), Some(subcommand)) = (no_daemon.first(), subcommand)
+            && at > subcommand
+        {
+            return Err(error(
+                ErrorCode::InvalidRequest,
+                "Codex --no-daemon is a top-level flag; it must precede the subcommand",
+            ));
+        }
+        let owned = owned.into_iter().filter(|arg| arg != "--no-daemon");
+        let mut argv = Vec::with_capacity(caller.len() + 8);
+        let mut caller = caller.into_iter();
+        argv.extend(caller.by_ref().take(insert_at));
+        argv.extend(owned);
+        argv.extend(caller);
+        Ok(argv)
+    }
+
+    /// Whether a Codex `-c` value sets the `hooks` table or a key under it: the
+    /// key is the text before the first `=`, trimmed.
+    fn overrides_hooks(value: &str) -> bool {
+        let key = value.split('=').next().unwrap_or("").trim();
+        key == "hooks" || key.starts_with("hooks.")
+    }
+
+    /// Bounded pane-shell configuration exports; tests inject synthetic probes.
+    pub trait CodexShellProbe {
+        fn pane_shell_env_bounded(
+            &self,
+            var: &str,
+            clock: &dyn crate::protocol::time::Clock,
+            budget: &CallBudget,
+        ) -> Option<String> {
+            if budget.is_exhausted(clock) {
+                return None;
+            }
+            self.pane_shell_env(var)
+        }
+
+        /// The value the pane's interactive shell itself gives `var` (an `export`
+        /// in its startup files), without the launcher's own value; `None` when
+        /// the shell sets none or cannot be asked. Herdr's `agent.start` carries
+        /// no environment, so the agent inherits whatever the pane shell has.
+        fn pane_shell_env(&self, _var: &str) -> Option<String> {
+            None
+        }
+    }
+
+    /// The bound on configuration-directory shell probes.
+    pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+    /// Runs the pane interactive shell to inspect configuration exports only.
+    pub struct SystemShellProbe {
+        pub shell: std::path::PathBuf,
+        pub timeout: Duration,
+    }
+
+    impl SystemShellProbe {
+        pub fn from_process() -> Self {
+            let shell = std::env::var_os("SHELL")
+                .filter(|shell| !shell.is_empty())
+                .map_or_else(|| "/bin/zsh".into(), std::path::PathBuf::from);
+            Self {
+                shell,
+                timeout: crate::protocol::time::external_bound(SHELL_PROBE_TIMEOUT),
+            }
+        }
+    }
+
+    impl SystemShellProbe {
+        /// Runs `script` in the interactive shell (`-ic`), stdout only, bounded by
+        /// the probe timeout. `unset` removes one inherited variable first.
+        fn run_script(&self, script: &str, unset: Option<&str>) -> Result<String, String> {
+            let mut command = Process::new(&self.shell);
+            command.arg("-ic").arg(script);
+            if let Some(var) = unset {
+                command.env_remove(var);
+            }
+            let mut child = command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| format!("{}: {error}", self.shell.display()))?;
+            let mut stdout = child.stdout.take().ok_or("no shell stdout")?;
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let result = stdout.read_to_end(&mut bytes).map(|_| bytes);
+                let _ = sender.send(result);
+            });
+            let deadline = Instant::now() + self.timeout;
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break status,
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Ok(None) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("the shell probe timed out".into());
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            };
+            if !status.success() {
+                return Err(format!("the shell probe exited with {status}"));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let bytes = receiver
+                .recv_timeout(remaining.max(Duration::from_millis(100)))
+                .map_err(|_| "the shell probe output was not closed".to_owned())?
+                .map_err(|error| error.to_string())?;
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        }
+    }
+
+    impl CodexShellProbe for SystemShellProbe {
+        fn pane_shell_env_bounded(
+            &self,
+            var: &str,
+            clock: &dyn crate::protocol::time::Clock,
+            budget: &CallBudget,
+        ) -> Option<String> {
+            let remaining = budget.deadline.0.saturating_sub(clock.monotonic_now().0);
+            if remaining == 0 {
+                return None;
+            }
+            Self {
+                shell: self.shell.clone(),
+                timeout: self.timeout.min(Duration::from_millis(remaining)),
+            }
+            .pane_shell_env(var)
+        }
+
+        fn pane_shell_env(&self, var: &str) -> Option<String> {
+            const BEGIN: &str = "HT_PANE_ENV_BEGIN";
+            const END: &str = "HT_PANE_ENV_END";
+            // Only a plain variable name is ever interpolated into the script.
+            if var.is_empty() || !var.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+                return None;
+            }
+            let script = format!("printf '%s' {BEGIN}\"${{{var}-}}\"{END}");
+            let output = self.run_script(&script, Some(var)).ok()?;
+            let value = output.split(BEGIN).nth(1)?.split(END).next()?;
+            (!value.is_empty()).then(|| value.to_owned())
+        }
+    }
+
+    /// The Codex profile Codex applies: `-p/--profile` before `--` (the last one
+    /// wins), else the top-level `profile` key of `config.toml`, else none.
+    pub fn codex_profile(argv: &[String], config: Option<&str>) -> (String, &'static str) {
+        let options_end = argv.iter().position(|a| a == "--").unwrap_or(argv.len());
+        let options = &argv[..options_end];
+        let mut chosen = None;
+        for (index, arg) in options.iter().enumerate() {
+            let value = match arg.as_str() {
+                "-p" | "--profile" => options.get(index + 1).map(String::as_str),
+                other => other
+                    .strip_prefix("--profile=")
+                    .or_else(|| other.strip_prefix("-p").filter(|rest| !rest.is_empty())),
+            };
+            if let Some(value) = value {
+                chosen = Some(value.to_owned());
+            }
+        }
+        if let Some(profile) = chosen {
+            return (profile, "argv");
+        }
+        let from_config = config
+            .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
+            .and_then(|doc| doc.get("profile")?.as_str().map(str::to_owned));
+        match from_config {
+            Some(profile) => (profile, "config.toml"),
+            None => ("default".to_owned(), "none"),
+        }
+    }
+
+    /// The effective Codex home, its `config.toml` and the selected profile,
+    /// which answers "why was my Codex profile not applied?".
+    pub(crate) fn codex_report(env: &SetupEnv, argv: &[String]) -> Value {
+        let home = env.codex_home.as_deref();
+        let config_path = home.map(|home| home.join("config.toml"));
+        let config = config_path
+            .as_deref()
+            .and_then(|path| fs::read_to_string(path).ok());
+        let (profile, profile_source) = codex_profile(argv, config.as_deref());
+        json!({
+            "codex_home": home.map(|home| home.display().to_string()),
+            "config_path": config_path.as_ref().map(|path| path.display().to_string()),
+            "config_present": config.is_some(),
+            "profile": profile,
+            "profile_source": profile_source,
+            "command_execution": "approved_outside_sandbox",
+            "command_guidance": "Run herdr-threads commands outside the sandbox through Codex approval; if denied, report the policy refusal without bypassing it",
+        })
+    }
+}
+
+impl LaunchPolicy for CodexAdapter {
+    fn native_options_env(&self) -> Option<&'static str> {
+        Some("HERDR_THREADS_CODEX_OPTS")
+    }
+    fn resolve_scope(
+        &self,
+        request: &LaunchRequest,
+        probe: &dyn super::launch::CodexShellProbe,
+        budget: &CallBudget,
+    ) -> Result<LaunchScope, crate::protocol::results::ApiError> {
+        let mut scope = super::launch::native_scope(request, "codex", "CODEX_HOME", probe, budget)?;
+        // -C remains in native argv. It changes project lookup, never setup profile selection.
+        let options_end = request
+            .argv
+            .iter()
+            .position(|a| a == "--")
+            .unwrap_or(request.argv.len());
+        let mut index = 0;
+        while index < options_end {
+            let arg = &request.argv[index];
+            let value = if arg == "-C" || arg == "--cd" {
+                request.argv.get(index + 1).map(String::as_str)
+            } else {
+                arg.strip_prefix("--cd=")
+                    .or_else(|| arg.strip_prefix("-C="))
+            };
+            if let Some(value) = value {
+                scope.working_directory = request.environment.cwd.join(value);
+            }
+            index += if launch::CODEX_VALUE_OPTIONS.contains(&arg.as_str()) {
+                2
+            } else {
+                1
+            };
+        }
+        Ok(scope)
+    }
+    fn prepare_startup_input(
+        &self,
+        caller: &[String],
+        _: &StartupInputSpec,
+    ) -> Result<Option<StartupInputTemplate>, crate::protocol::results::ApiError> {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        let invalid = || {
+            ApiError::new(
+                ErrorCode::InvalidRequest,
+                "uncaptured Codex handoff option, arity or selector",
+            )
+        };
+        let conflict = || {
+            ApiError::new(
+                ErrorCode::Conflict,
+                "Codex handoff prompt or selector is occupied",
+            )
+        };
+        self.validate_native_argv(caller)?;
+        let mut state = 0; // root, exec, exec-resume
+        let mut selector = false;
+        let mut index = 0;
+        while index < caller.len() {
+            let token = caller[index].as_str();
+            if token == "--" {
+                if index + 1 != caller.len() {
+                    return Err(conflict());
+                }
+                break;
+            }
+            if token == "--no-daemon" {
+                if state != 0 {
+                    return Err(invalid());
+                }
+                index += 1;
+                continue;
+            }
+            if token == "--json" {
+                if state == 0 {
+                    return Err(invalid());
+                }
+                index += 1;
+                continue;
+            }
+            if token == "--last" {
+                if state != 2 {
+                    return Err(invalid());
+                }
+                if selector {
+                    return Err(conflict());
+                }
+                selector = true;
+                index += 1;
+                continue;
+            }
+            if token == "-i" || token == "--image" {
+                return Err(invalid());
+            }
+            if launch::CODEX_VALUE_OPTIONS.contains(&token) {
+                if caller
+                    .get(index + 1)
+                    .is_none_or(|v| v.is_empty() || v.starts_with('-'))
+                {
+                    return Err(invalid());
+                }
+                index += 2;
+                continue;
+            }
+            if let Some((name, value)) = token.split_once('=') {
+                if !name.starts_with("--")
+                    || !launch::CODEX_VALUE_OPTIONS.contains(&name)
+                    || value.is_empty()
+                {
+                    return Err(invalid());
+                }
+                index += 1;
+                continue;
+            }
+            if token.starts_with('-') {
+                return Err(invalid());
+            }
+            match state {
+                0 if token == "exec" => state = 1,
+                0 if launch::CODEX_UNSUPPORTED_SUBCOMMANDS.contains(&token) => {
+                    return Err(invalid());
+                }
+                1 if token == "resume" => state = 2,
+                1 if launch::CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS.contains(&token) => {
+                    return Err(invalid());
+                }
+                2 if !selector
+                    && !token.is_empty()
+                    && !launch::CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS.contains(&token) =>
+                {
+                    selector = true
+                }
+                _ => return Err(conflict()),
+            }
+            index += 1;
+        }
+        if state == 2 && !selector {
+            return Err(invalid());
+        }
+        Ok(Some(StartupInputTemplate::positional(caller.len())))
+    }
+    fn validate_native_argv(
+        &self,
+        argv: &[String],
+    ) -> Result<(), crate::protocol::results::ApiError> {
+        launch::compose_native_argv(argv.to_vec(), Vec::new()).map(|_| ())
+    }
+    fn compose_argv(
+        &self,
+        caller: Vec<String>,
+        owned: Vec<String>,
+    ) -> Result<Vec<String>, crate::protocol::results::ApiError> {
+        launch::compose_native_argv(caller, owned)
+    }
+    fn prepare_launch(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+        admitted: &super::registry::AdmittedHandle,
+        status: &LocalSetupStatus,
+        _probe: &dyn super::launch::CodexShellProbe,
+        _budget: &CallBudget,
+    ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
+        if admitted.metadata().id != "codex" || status.scope != scope.setup {
+            return Err(crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::InvalidRequest,
+                "launch admission or scope mismatch",
+            ));
+        }
+        let hook = super::launch::owned_launch_hook(status)?;
+        if hook != super::launch::native_configuration_hook(request, scope, Harness::Codex)? {
+            return Err(crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::Conflict,
+                "selected native setup status changed before preparation",
+            ));
+        }
+        let env = crate::harness::setup::legacy::scoped_legacy_environment(
+            Harness::Codex,
+            &scope.setup,
+            &request.environment,
+        )
+        .map_err(|err| {
+            crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::InvalidRequest,
+                err.to_string(),
+            )
+        })?;
+        Ok(LaunchPreparation {
+            argv: self.compose_argv(request.argv.clone(), Vec::new())?,
+            hook,
+            working_directory: scope.working_directory.clone(),
+            environment_overrides: Default::default(),
+            report: json!({"codex": launch::codex_report(&env, &request.argv)}),
+        })
+    }
+    fn configuration_fingerprint(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+    ) -> Result<String, crate::protocol::results::ApiError> {
+        super::launch::native_configuration_fingerprint(
+            request,
+            scope,
+            Harness::Codex,
+            &["hooks.json", "config.toml"],
+        )
+    }
+    fn expected_host_kinds(&self) -> &'static [&'static str] {
+        self.metadata().host_kinds
+    }
+}
+
+impl InstallerPolicy for CodexAdapter {
+    fn inspect_hooks(
+        &self,
+        request: &StatusRequest,
+        budget: &CallBudget,
+    ) -> Result<InstallerHookState, SetupFailure> {
+        if budget.cancellation.is_cancelled() {
+            return Err(SetupFailure::Invalid(
+                "installer observation cancelled".into(),
+            ));
+        }
+        let env = crate::harness::setup::legacy::scoped_legacy_environment(
+            Harness::Codex,
+            &request.scope,
+            &request.environment,
+        )?;
+        crate::harness::setup::legacy::installer_hooks_installed(&env, Harness::Codex)
+            .map(|owned| {
+                if owned {
+                    InstallerHookState::Owned
+                } else {
+                    InstallerHookState::Missing
+                }
+            })
+            .map_err(|error| SetupFailure::Invalid(error.to_string()))
+    }
+    fn skill_destination(&self, scope: &ResolvedSetupScope) -> Option<InstallerSkillDestination> {
+        let ResolvedSetupScope::ConfigRoot(root) = scope else {
+            return None;
+        };
+        Some(InstallerSkillDestination {
+            root: root.clone(),
+            file: root.join("skills/herdr-threads/SKILL.md"),
+        })
+    }
 }

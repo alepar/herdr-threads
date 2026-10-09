@@ -3,11 +3,11 @@ use super::*;
 #[test]
 fn doctor_debug_and_fix_are_scoped_to_doctor() {
     let plain = parse_argv(["herdr-threads", "doctor"]).unwrap();
-    assert!(matches!(plain.action, CliAction::Doctor { debug: false, fix: false }));
+    assert!(matches!(plain.action, CliAction::Doctor { debug: false, fix: false, .. }));
     let debug = parse_argv(["herdr-threads", "doctor", "--debug"]).unwrap();
-    assert!(matches!(debug.action, CliAction::Doctor { debug: true, fix: false }));
+    assert!(matches!(debug.action, CliAction::Doctor { debug: true, fix: false, .. }));
     let fix = parse_argv(["herdr-threads", "--json", "doctor", "fix"]).unwrap();
-    assert!(matches!(fix.action, CliAction::Doctor { debug: false, fix: true }));
+    assert!(matches!(fix.action, CliAction::Doctor { debug: false, fix: true, .. }));
     assert_eq!(fix.output.format, OutputFormat::Json);
     assert!(parse_argv(["herdr-threads", "doctor", "repair"]).is_err());
 }
@@ -1553,6 +1553,29 @@ fn contract_id_runs_without_a_daemon_and_prints_exact_documents() {
     );
 }
 
+/// A local selector cannot silently choose an adapter, use a native launch
+/// profile, or pass through unsupported scope/option metadata.
+#[test]
+fn local_profile_and_options_are_validated_before_dispatch() {
+    for command in ["setup", "unsetup", "setup-status"] {
+        let bare = parse_argv(["herdr-threads", command, "--profile", "work"]).unwrap_err();
+        assert!(bare.detail.contains("explicitly selected adapter"));
+        for harness in ["claude", "codex"] {
+            let named = parse_argv(["herdr-threads", command, harness, "--profile", "work"]).unwrap_err();
+            assert!(named.detail.contains("named profile is unsupported"));
+        }
+    }
+    let doctor = parse_argv(["herdr-threads", "doctor", "--profile", "work"]).unwrap_err();
+    assert!(doctor.detail.contains("explicitly selected adapter"));
+    let doctor = parse_argv(["herdr-threads", "doctor", "--harness", "codex", "--profile", "work"]).unwrap_err();
+    assert!(doctor.detail.contains("named profile is unsupported"));
+    assert!(parse_argv(["herdr-threads", "setup", "unknown"]).is_err());
+    assert!(parse_argv(["herdr-threads", "setup", "codex", "--disable-prompt-suggestions"]).is_err());
+    assert!(parse_argv(["herdr-threads", "setup", "claude", "--disable-prompt-suggestions", "--keep-prompt-suggestions"]).is_err());
+    let bare = parse_argv(["herdr-threads", "setup", "--disable-prompt-suggestions"]).unwrap();
+    assert!(matches!(bare.action, CliAction::SetupAll(_, crate::cli::setup::PromptSuggestionPolicy::Disable)));
+}
+
 #[test]
 fn rejection_requires_exact_invitation_and_bounded_nonblank_reason() {
     let parsed = parse_argv([
@@ -2060,4 +2083,411 @@ fn public_join_parses_and_freezes_thread_selector() {
     ).unwrap();
     let CliAction::Mutation(spec) = parsed.action else { panic!("mutation expected") };
     assert_eq!(crate::cli::threads::selector_mut(&mut CliAction::Mutation(spec)).unwrap().as_str(), "tResolved");
+}
+
+#[test]
+fn registry_selectors_preserve_legacy_argv_and_never_default_unknown_to_claude() {
+    // A parser caller must not gain a Claude claim just because it bypassed clap.
+    let mut cli = Cli::try_parse_from([
+        "herdr-threads",
+        "--cooperative-seat",
+        "s1",
+        "--cooperative-target",
+        "w1:p1",
+        "--cooperative-harness",
+        "codex",
+        "--cooperative-role",
+        "top-level",
+        "inbox",
+    ])
+    .unwrap();
+    cli.cooperative_harness = Some("missing-adapter".into());
+    assert!(
+        parse_cli(cli).is_err(),
+        "unknown identity must not become Claude"
+    );
+    let parsed = parse_argv([
+        "herdr-threads",
+        "launch",
+        "--pane",
+        "w1:p1",
+        "--kind",
+        "codex",
+        "--",
+        "exec",
+        "--config",
+        "key=value with spaces",
+        "prompt",
+    ])
+    .unwrap();
+    assert!(matches!(parsed.action, CliAction::Launch(request)
+        if request.harness.as_str() == "codex"
+        && request.argv == ["exec", "--config", "key=value with spaces", "prompt"]));
+    for name in ["human", "Human", "missing-adapter"] {
+        for argv in [
+            vec!["herdr-threads", "contract-id", "--harness", name],
+            vec![
+                "herdr-threads",
+                "harness-version",
+                "normalize",
+                name,
+                "0.1.0",
+            ],
+            vec!["herdr-threads", "launch", "--pane", "w1:p1", "--kind", name],
+            vec![
+                "herdr-threads",
+                "handoff",
+                "--pane",
+                "w1:p1",
+                "--kind",
+                name,
+                "--new-thread",
+                "--",
+                "body",
+            ],
+            vec!["herdr-threads", "setup", name],
+            vec!["herdr-threads", "unsetup", name],
+            vec!["herdr-threads", "setup-status", name],
+            vec!["herdr-threads", "doctor", "--harness", name],
+            vec![
+                "herdr-threads",
+                "--cooperative-seat",
+                "s1",
+                "--cooperative-target",
+                "w1:p1",
+                "--cooperative-harness",
+                name,
+                "--cooperative-role",
+                "top-level",
+                "inbox",
+            ],
+        ] {
+            let error = parse_argv(argv).unwrap_err();
+            assert!(error.detail.contains("possible values"), "{error:?}");
+        }
+        let error = harness_arg(name, crate::harness::registry::builtins()).unwrap_err();
+        assert!(error.detail.contains("select a registered agent harness"));
+    }
+    for (harness, serialized) in [
+        (crate::harness::context::Harness::Codex, "\"Codex\""),
+        (crate::harness::context::Harness::Claude, "\"Claude\""),
+        (crate::harness::context::Harness::Human, "\"Human\""),
+    ] {
+        assert_eq!(serde_json::to_string(&harness).unwrap(), serialized);
+        assert_eq!(
+            serde_json::from_str::<crate::harness::context::Harness>(serialized).unwrap(),
+            harness
+        );
+    }
+    assert!(matches!(
+        parse_argv(["herdr-threads", "human", "me", "init"]).unwrap().action,
+        CliAction::MeInit { operator: false }
+    ));
+}
+
+// Metadata-only author fixture: selecting it must never call runtime operations.
+static SELECTOR_INSTALL_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+struct SelectorAdapter(u8);
+impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
+    type Admission = ();
+    fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
+        use crate::harness::adapter::*;
+        static METADATA: AdapterMetadata = AdapterMetadata {
+            id: "selectorfixture",
+            display_label: "Synthetic SelectorFixture",
+            context_spelling: "SelectorFixture",
+            context_aliases: &[],
+            executable: ExecutableLookup::Unsupported,
+            host_kinds: &[],
+            setup_scopes: &[SetupScopeKind::ConfigRoot, SetupScopeKind::Profile],
+            budget: EventBudgetPolicy {
+                lifecycle_ms: 1,
+                observer_ms: 1,
+            },
+            runtime_sources: &[],
+        };
+        static FOURTH: AdapterMetadata = AdapterMetadata {
+            id: "fourth",
+            display_label: "Fourth",
+            context_spelling: "Fourth",
+            context_aliases: &[],
+            executable: ExecutableLookup::Unsupported,
+            host_kinds: &[],
+            setup_scopes: &[SetupScopeKind::ConfigRoot],
+            budget: EventBudgetPolicy {
+                lifecycle_ms: 1,
+                observer_ms: 1,
+            },
+            runtime_sources: &[],
+        };
+        if self.0 != 0 { &FOURTH } else { &METADATA }
+    }
+    fn canary_strategy(&self) -> Option<&dyn crate::harness::adapter::CanaryStrategy> {
+        if self.0 == 2 { Some(&InvalidDiscoveryStrategy) } else { None }
+    }
+    fn contracts(&self) -> &'static [crate::harness::adapter::ContractDescriptor] {
+        &[]
+    }
+    fn observe_install(
+        &self,
+        _: &crate::harness::adapter::InstallEnvironment,
+        _: &crate::protocol::time::CallBudget,
+    ) -> crate::harness::adapter::InstallObservation {
+        SELECTOR_INSTALL_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        panic!("selector must not probe")
+    }
+    fn admit(
+        &self,
+        _: &crate::harness::adapter::AdmissionRequest,
+        _: &crate::protocol::time::CallBudget,
+    ) -> crate::harness::adapter::AdmissionDecision<()> {
+        panic!("selector must not admit")
+    }
+    fn version_ladder(
+        &self,
+        _: &crate::harness::adapter::RuntimeIdentity,
+    ) -> crate::harness::adapter::Ladder {
+        panic!("selector must not inspect version")
+    }
+    fn classify(
+        &self,
+        _: &crate::harness::adapter::HookInput,
+    ) -> crate::harness::adapter::ContractObservation {
+        panic!("selector must not classify")
+    }
+    fn decode(
+        &self,
+        _: &(),
+        _: &crate::harness::adapter::HookInput,
+    ) -> Result<crate::harness::adapter::DecodedEvent, crate::harness::adapter::DecodeFailure> {
+        panic!("selector must not decode")
+    }
+    fn encode(
+        &self,
+        _: &(),
+        _: &crate::harness::adapter::DecodedEvent,
+        _: &crate::harness::adapter::NeutralOffer,
+    ) -> Result<crate::harness::adapter::EncodedOutput, crate::harness::adapter::EncodeFailure>
+    {
+        panic!("selector must not encode")
+    }
+    fn attribute_runtime(
+        &self,
+        _: &crate::harness::adapter::HookInput,
+        _: &crate::protocol::time::CallBudget,
+    ) -> crate::harness::adapter::RuntimeAttribution {
+        panic!("selector must not attribute")
+    }
+    fn setup(
+        &self,
+        _: &crate::harness::adapter::SetupRequest,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::harness::adapter::SetupOutcome, crate::harness::adapter::SetupFailure> {
+        panic!("selector must not set up")
+    }
+    fn status(
+        &self,
+        _: &crate::harness::adapter::StatusRequest,
+        _: &crate::protocol::time::CallBudget,
+    ) -> crate::harness::adapter::SetupStatus {
+        panic!("selector must not inspect status")
+    }
+    fn unsetup(
+        &self,
+        _: &crate::harness::adapter::UnsetupRequest,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::harness::adapter::RemovalOutcome, crate::harness::adapter::SetupFailure>
+    {
+        panic!("selector must not remove")
+    }
+}
+
+#[test]
+fn injected_registry_drives_agent_selector_choices_without_native_operations() {
+    use crate::harness::registry::{Registration, Registry};
+    use clap::FromArgMatches;
+    static ADAPTER: SelectorAdapter = SelectorAdapter(0);
+    static FOURTH: SelectorAdapter = SelectorAdapter(1);
+    let registrations =
+        Box::leak(vec![Registration::new(&ADAPTER), Registration::new(&FOURTH)].into_boxed_slice());
+    let registry = Registry::new(registrations).unwrap();
+    for (name, spelling) in [
+        ("selectorfixture", "SelectorFixture"),
+        ("fourth", "Fourth"),
+    ] {
+        for mut argv in [
+            vec![
+                "herdr-threads",
+                "launch",
+                "--pane",
+                "w1:p1",
+                "--kind",
+                "selectorfixture",
+                "--",
+                "literal prompt",
+            ],
+            vec![
+                "herdr-threads",
+                "handoff",
+                "--pane",
+                "w1:p1",
+                "--kind",
+                "selectorfixture",
+                "--new-thread",
+                "--",
+                "durable body",
+            ],
+            vec!["herdr-threads", "contract-id", "--harness", "selectorfixture"],
+            vec![
+                "herdr-threads",
+                "harness-version",
+                "normalize",
+                "selectorfixture",
+                "development identity",
+            ],
+            vec![
+                "herdr-threads",
+                "--cooperative-seat",
+                "s1",
+                "--cooperative-target",
+                "w1:p1",
+                "--cooperative-harness",
+                "selectorfixture",
+                "--cooperative-role",
+                "top-level",
+                "inbox",
+            ],
+        ] {
+            for value in &mut argv {
+                if *value == "selectorfixture" {
+                    *value = name;
+                }
+            }
+            let matches = command_for_registry(&registry)
+                .try_get_matches_from(argv)
+                .unwrap();
+            let cli = Cli::from_arg_matches(&matches).unwrap();
+            let parsed = parse_cli_in_registry(cli, &registry).unwrap();
+            let selected = match parsed.action {
+                CliAction::Launch(request) => request.harness,
+                CliAction::Handoff(request) => request.launch.harness,
+                CliAction::ContractId { harness } => harness.unwrap(),
+                CliAction::HarnessVersionNormalize { harness, .. } => harness,
+                _ => parsed.cooperative.unwrap().harness,
+            };
+            assert_eq!(
+                selected.occupant(),
+                crate::harness::registry::OccupantHarness::Agent(registry.agent(name).unwrap())
+            );
+            assert_eq!(
+                serde_json::to_string(&selected).unwrap(),
+                format!("\"{spelling}\"")
+            );
+        }
+        for verb in ["setup", "unsetup", "setup-status"] {
+            let matches = command_for_registry(&registry)
+                .try_get_matches_from(["herdr-threads", verb, name])
+                .unwrap();
+            let parsed =
+                parse_cli_in_registry(Cli::from_arg_matches(&matches).unwrap(), &registry).unwrap();
+            assert!(
+                matches!(parsed.action, CliAction::Setup(request) if request.harness.as_str() == name)
+            );
+        }
+        let matches = command_for_registry(&registry)
+            .try_get_matches_from(["herdr-threads", "doctor", "--harness", name])
+            .unwrap();
+        assert!(matches!(
+            parse_cli_in_registry(Cli::from_arg_matches(&matches).unwrap(), &registry)
+                .unwrap()
+                .action,
+            CliAction::Doctor { .. }
+        ));
+    }
+    assert!(
+        crate::harness::registry::builtins()
+            .agent("selectorfixture")
+            .is_err(),
+        "fixture is never production registration"
+    );
+}
+
+#[test]
+fn doctor_action_retains_selected_registered_profile() {
+    use crate::harness::registry::{Registration, Registry};
+    use clap::FromArgMatches;
+    static ADAPTER: SelectorAdapter = SelectorAdapter(0);
+    let registry = Registry::new(Box::leak(vec![Registration::new(&ADAPTER)].into_boxed_slice())).unwrap();
+    let matches = command_for_registry(&registry).try_get_matches_from([
+        "herdr-threads", "doctor", "--harness", "selectorfixture", "--profile", "work"
+    ]).unwrap();
+    let parsed = parse_cli_in_registry(Cli::from_arg_matches(&matches).unwrap(), &registry).unwrap();
+    let action = format!("{:?}", parsed.action);
+    assert!(action.contains("selectorfixture"), "{action}");
+    assert!(action.contains("work"), "{action}");
+}
+
+// Catches hard-coded discovery, reordering, native observation, and synthesized strategies.
+#[test]
+fn adapters_discovery_is_bounded_deterministic_and_never_probes_installation() {
+    use crate::harness::registry::{Registration, Registry};
+    use clap::FromArgMatches;
+    static THIRD: SelectorAdapter = SelectorAdapter(0);
+    static FOURTH: SelectorAdapter = SelectorAdapter(1);
+    let registry = Registry::new(Box::leak(vec![
+        Registration::new(&FOURTH),
+        Registration::new(&crate::harness::claude::ClaudeAdapter),
+        Registration::new(&THIRD),
+        Registration::new(&crate::harness::codex::CodexAdapter),
+    ].into_boxed_slice())).unwrap();
+    let matches = command_for_registry(&registry)
+        .try_get_matches_from(["herdr-threads", "adapters", "--json"]).unwrap();
+    let parsed = parse_cli_in_registry(Cli::from_arg_matches(&matches).unwrap(), &registry).unwrap();
+    assert!(matches!(parsed.action, CliAction::Adapters));
+    assert_eq!(parsed.output.format, OutputFormat::Json);
+    let bytes = adapter_discovery_output(&parsed, &registry).unwrap().expect("local dispatch output");
+    let value: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    let entries = value["adapters"].as_array().unwrap();
+    assert_eq!(entries.iter().map(|e|e["id"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["fourth", "claude", "selectorfixture", "codex"]);
+    assert_eq!(entries[0], serde_json::json!({"id":"fourth", "display_name":"Fourth",
+        "host_kinds":[], "setup_scopes":["config_root"], "legacy_contract_id":null,
+        "contracts":[], "canary_strategy":null}));
+    assert_eq!(entries[2]["canary_strategy"], serde_json::Value::Null);
+    assert_eq!(entries[1]["contracts"][0]["domain"], "native_payload");
+    assert_eq!(entries[1]["contracts"][0]["required_milestones"], serde_json::json!(["lifecycle","tool"]));
+    assert_eq!(entries[1]["canary_strategy"]["npm_package"], "@anthropic-ai/claude-code");
+    assert_eq!(entries[3]["canary_strategy"]["npm_package"], "@openai/codex");
+    assert_eq!(bytes, crate::harness::discovery::render(&registry).unwrap());
+    assert_eq!(SELECTOR_INSTALL_CALLS.load(std::sync::atomic::Ordering::SeqCst),0);
+    struct CountBackend(usize);
+    impl CliBackend for CountBackend {
+        fn call(&mut self,_:WireCommand,_:&OutputSpec)->Result<CommandResult,ApiError> {
+            self.0 += 1; Err(ApiError::unsupported("unexpected daemon call"))
+        }
+    }
+    let mut backend=CountBackend(0);
+    assert!(dispatch(parsed,&mut backend,None,None).is_err());
+    assert_eq!(backend.0,0);
+
+}
+
+struct InvalidDiscoveryStrategy;
+impl crate::harness::adapter::CanaryStrategy for InvalidDiscoveryStrategy {
+    fn descriptor(&self) -> crate::harness::adapter::CanaryDescriptor {
+        use crate::harness::adapter::*;
+        CanaryDescriptor { kind:CanaryKind::ExactRuntime, candidate_kind:CandidateKind::ExactBuild,
+            npm_package:None, model_key_env:None, companion:"scripts/canary/adapters/../bad.py".into(),
+            artifact_schema_version:1 }
+    }
+}
+// A malformed adapter-owned provider must refuse local discovery, never expose a supported strategy.
+#[test]
+fn adapters_discovery_refuses_invalid_provider_before_daemon_dispatch() {
+    use crate::harness::registry::{Registration, Registry};
+    static BAD: SelectorAdapter = SelectorAdapter(2);
+    let registry=Registry::new(Box::leak(vec![Registration::new(&BAD)].into_boxed_slice())).unwrap();
+    let parsed=parse_argv(["ht","adapters","--json"]).unwrap();
+    assert!(adapter_discovery_output(&parsed,&registry).is_err());
 }

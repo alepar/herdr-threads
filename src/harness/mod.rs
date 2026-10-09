@@ -1,5 +1,6 @@
 //! Native harness boundary: versioned Claude/Codex recipes, hook parsing,
 //! context rendering, setup and managed launch.
+pub mod adapter;
 pub mod admission;
 #[cfg(test)]
 #[path = "../../tests/harness/admission_ladder.rs"]
@@ -37,6 +38,9 @@ mod contract_tests;
 #[cfg(test)]
 #[path = "../../tests/harness/cooperative.rs"]
 mod cooperative;
+pub mod discovery;
+pub mod evidence;
+pub mod hermes;
 pub mod launch;
 pub mod manifest;
 #[cfg(test)]
@@ -51,6 +55,8 @@ pub mod recipe;
 #[cfg(test)]
 #[path = "../../tests/harness/recipe.rs"]
 mod recipe_tests;
+pub mod registry;
+pub mod runtime;
 pub mod setup;
 pub mod state;
 #[cfg(test)]

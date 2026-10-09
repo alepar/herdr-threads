@@ -622,3 +622,28 @@ fn override_is_gated_out_of_release_builds() {
     let reads = source.matches("HT_TEST_RECIPES_JSON\")").count();
     assert_eq!(reads, 1, "exactly one reader of the variable");
 }
+
+#[test]
+fn registry_admission_refuses_mismatched_runtime_identity_before_adapter() {
+    use crate::harness::{
+        adapter::{AdmissionRequest, InstallObservation, RuntimeIdentity},
+        registry::builtins,
+    };
+    let registry = builtins();
+    let registration = registry.by_id(registry.agent("claude").unwrap()).unwrap();
+    let mut identity = RuntimeIdentity::stable_release("2.1.287", "installed_probe").unwrap();
+    identity.key = "release:2.1.286".into();
+    let request = AdmissionRequest {
+        installed: InstallObservation::Available {
+            binary: "unused".into(),
+            identity,
+        },
+        input: None,
+        runtime_candidate: None,
+    };
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(100),
+        cancellation: Default::default(),
+    };
+    assert!(registration.admit(&request, &budget).is_err());
+}

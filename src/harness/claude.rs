@@ -9,6 +9,11 @@
 //! was captured and its `additionalContext` delivered after compaction, so
 //! only the 2.1.287 recipe admits compact (spec §9). Model receipt and
 //! durable receipts remain separate, unqualified gates.
+pub mod setup;
+
+mod composer;
+
+use super::adapter::*;
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
 use super::context::{ContextError, EventKind, Harness, Role};
 use super::contract::{
@@ -21,6 +26,7 @@ use super::{
     TOP_LEVEL_INSTRUCTION, field, input,
 };
 use crate::protocol::results::CapabilityState;
+use crate::protocol::time::CallBudget;
 use serde_json::{Value, json};
 
 pub const MAX_HOOK_OUTPUT: usize = 4096;
@@ -703,4 +709,456 @@ pub fn declared_hooks_for_argv(argv: &[String]) -> Result<Value, super::setup::S
         hooks.insert(event.into(), json!([group]));
     }
     Ok(Value::Object(hooks))
+}
+
+pub(crate) struct ClaudeAdapter;
+
+struct ClaudeCanary;
+impl super::adapter::CanaryStrategy for ClaudeCanary {
+    fn descriptor(&self) -> super::adapter::CanaryDescriptor {
+        super::adapter::CanaryDescriptor {
+            kind: super::adapter::CanaryKind::NpmRelease,
+            candidate_kind: super::adapter::CandidateKind::StableRelease,
+            npm_package: Some("@anthropic-ai/claude-code".into()),
+            model_key_env: Some("ANTHROPIC_API_KEY".into()),
+            companion: "scripts/canary/adapters/claude.py".into(),
+            artifact_schema_version: 1,
+        }
+    }
+}
+impl HarnessAdapter for ClaudeAdapter {
+    fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
+        Some(self)
+    }
+    fn receipt_admission_summary(&self) -> Option<String> {
+        Some("declared".into())
+    }
+    fn observation_fingerprint(&self, env: &InstallEnvironment) -> Option<String> {
+        super::adapter::executable_observation_fingerprint(env, "claude")
+    }
+    fn observe_daemon(
+        &self,
+        env: &InstallEnvironment,
+        _: &CallBudget,
+    ) -> super::adapter::DaemonObservation {
+        let status = if crate::cli::hook::resolve_on_path("claude", env.path.as_deref()).is_some() {
+            super::adapter::HarnessStatus::ContractDeclared { detail: "claude: contract_declared; runtime metadata unavailable; rich optional capabilities unavailable".into() }
+        } else {
+            super::adapter::HarnessStatus::NotInstalled(
+                "no executable `claude` on the daemon's PATH".into(),
+            )
+        };
+        super::adapter::DaemonObservation {
+            status,
+            receipt_basis: Some(
+                crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE.into(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+        HookAdmissionPolicy::RegisteredContract
+    }
+    type Admission = super::operational::ClaudeContract;
+    fn metadata(&self) -> &'static AdapterMetadata {
+        static METADATA: AdapterMetadata = AdapterMetadata {
+            id: "claude",
+            display_label: "Claude",
+            context_spelling: "Claude",
+            context_aliases: &[],
+            executable: ExecutableLookup::Path("claude"),
+            host_kinds: &["claude"],
+            setup_scopes: &[SetupScopeKind::ConfigRoot],
+            runtime_sources: &["installed_probe", "native_transcript"],
+            budget: EventBudgetPolicy {
+                lifecycle_ms: 5000,
+                observer_ms: 1500,
+            },
+        };
+        &METADATA
+    }
+    fn doctor_projection(
+        &self,
+        request: &StatusRequest,
+        daemon: &serde_json::Value,
+        budget: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        Some(crate::cli::doctor::legacy_claude_projection(
+            request, daemon, budget,
+        ))
+    }
+    fn legacy_contract_id(&self) -> Option<String> {
+        Some(super::contract::contract_id(&CONTRACT))
+    }
+    fn canary_strategy(&self) -> Option<&dyn super::adapter::CanaryStrategy> {
+        Some(&ClaudeCanary)
+    }
+    fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
+        Some(&composer::NativeComposer)
+    }
+    fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
+        Some(self)
+    }
+    fn contracts(&self) -> &'static [ContractDescriptor] {
+        static CONTRACTS: [ContractDescriptor; 1] = [ContractDescriptor {
+            domain: ContractDomain::Native,
+            domain_id: "native_payload",
+            origin: super::evidence::EvidenceOrigin::NativePayload,
+            events: super::evidence::LEGACY_EVENTS,
+            required_milestones: &["lifecycle", "tool"],
+            qualifications: &[],
+            holding: super::evidence::AttributionHolding::UntilAttributed,
+            resumed_unavailable_reason: None,
+            contract: &CONTRACT,
+        }];
+        &CONTRACTS
+    }
+    fn observe_install(&self, env: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+        match crate::cli::hook::resolve_on_path("claude", env.path.as_deref()) {
+            Some(binary) => InstallObservation::ExecutableAvailable { binary },
+            None => InstallObservation::Unavailable {
+                diagnostic: "installed claude executable not found on PATH".into(),
+            },
+        }
+    }
+    fn admit(
+        &self,
+        request: &AdmissionRequest,
+        _: &CallBudget,
+    ) -> AdmissionDecision<Self::Admission> {
+        match &request.installed {
+            InstallObservation::NotRequested | InstallObservation::ExecutableAvailable { .. } => AdmissionDecision::ContractDeclared {state: super::operational::ClaudeContract::registered(), recipe: RECIPES[0].id},
+            _ => AdmissionDecision::Refused {diagnostic: "registered claude contract requires executable availability or declared hook selection".into()},
+        }
+    }
+    fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder {
+        identity.release().map_or(Ladder::Admitted, |version| {
+            super::state::table_ladder(admission_table(), version)
+        })
+    }
+    fn classify(&self, input: &HookInput) -> ContractObservation {
+        ContractObservation {
+            domain: ContractDomain::Native,
+            classification: super::contract::classify(
+                &CONTRACT,
+                input.registered_event.as_deref(),
+                &input.bytes,
+            ),
+        }
+    }
+    fn output_policy(&self) -> OutputPolicy {
+        OutputPolicy {
+            child_requires_endpoint: true,
+            extra_guidance: "",
+            empty_lifecycle: false,
+            session_start_hint: true,
+        }
+    }
+    fn decode(
+        &self,
+        admitted: &Self::Admission,
+        input: &HookInput,
+    ) -> Result<DecodedEvent, DecodeFailure> {
+        if let Some(registered) = input.registered_event.as_deref() {
+            let payload: Value = serde_json::from_slice(&input.bytes)
+                .map_err(|_| DecodeFailure::Native(ContextError::Invalid))?;
+            if payload.get("hook_event_name").and_then(Value::as_str) != Some(registered) {
+                return Err(DecodeFailure::Native(ContextError::Invalid));
+            }
+        }
+        parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
+            .map(DecodedEvent::from_native)
+            .map_err(DecodeFailure::Native)
+    }
+    fn encode(
+        &self,
+        _: &Self::Admission,
+        event: &DecodedEvent,
+        offer: &NeutralOffer,
+    ) -> Result<EncodedOutput, EncodeFailure> {
+        super::adapter::encode_context(event, offer)
+    }
+    fn attribute_runtime(&self, input: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+        super::attribution::attribute_native_runtime("claude", input)
+    }
+    fn setup_options(&self) -> &'static [SetupOption] {
+        &[
+            SetupOption {
+                name: "disable-prompt-suggestions",
+                conflicts: &["keep-prompt-suggestions"],
+            },
+            SetupOption {
+                name: "keep-prompt-suggestions",
+                conflicts: &["disable-prompt-suggestions"],
+            },
+        ]
+    }
+    fn setup_environment_inputs(&self) -> &'static [&'static str] {
+        &["CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"]
+    }
+    fn settle_setup_consent(
+        &self,
+        environment: &SetupEnvironment,
+        projection: &mut serde_json::Value,
+        reader: &mut dyn std::io::BufRead,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), SetupFailure> {
+        setup::settle_prompt_suggestions(
+            &crate::cli::setup::SetupEnv::from_snapshot(environment),
+            projection,
+            reader,
+            writer,
+        )
+        .map_err(super::setup::legacy::adapter_failure)
+    }
+    fn setup(&self, request: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+        setup::setup(request)
+    }
+    fn status(&self, request: &StatusRequest, budget: &CallBudget) -> SetupStatus {
+        setup::status(request, budget)
+    }
+    fn unsetup(
+        &self,
+        request: &UnsetupRequest,
+        _: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure> {
+        setup::unsetup(request)
+    }
+}
+
+impl LaunchPolicy for ClaudeAdapter {
+    fn native_options_env(&self) -> Option<&'static str> {
+        Some("HERDR_THREADS_CLAUDE_OPTS")
+    }
+    fn resolve_scope(
+        &self,
+        request: &LaunchRequest,
+        probe: &dyn super::launch::CodexShellProbe,
+        budget: &CallBudget,
+    ) -> Result<LaunchScope, crate::protocol::results::ApiError> {
+        super::launch::native_scope(request, "claude", "CLAUDE_CONFIG_DIR", probe, budget)
+    }
+    fn prepare_startup_input(
+        &self,
+        caller: &[String],
+        _: &StartupInputSpec,
+    ) -> Result<Option<StartupInputTemplate>, crate::protocol::results::ApiError> {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        let unsupported = || {
+            ApiError::new(
+                ErrorCode::InvalidRequest,
+                "uncaptured Claude handoff option or arity",
+            )
+        };
+        let conflict = || {
+            ApiError::new(
+                ErrorCode::Conflict,
+                "Claude handoff input or session selector is occupied",
+            )
+        };
+        let mut index = 0;
+        let mut insertion = caller.len();
+        let mut print = false;
+        let mut print_dependent = false;
+        let mut selector = false;
+        let mut occupied = false;
+        while index < caller.len() {
+            match caller[index].as_str() {
+                "--" => {
+                    occupied |= index + 1 < caller.len();
+                    break;
+                }
+                "--model" | "--effort" | "--settings" | "--permission-mode"
+                | "--max-budget-usd" => {
+                    let value = caller
+                        .get(index + 1)
+                        .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                        .ok_or_else(unsupported)?;
+                    let _ = value;
+                    index += 2;
+                }
+                "--setting-sources" => {
+                    if !caller
+                        .get(index + 1)
+                        .is_some_and(|v| matches!(v.as_str(), "user" | "project,local"))
+                    {
+                        return Err(unsupported());
+                    }
+                    index += 2;
+                }
+                "--output-format" => {
+                    if !caller
+                        .get(index + 1)
+                        .is_some_and(|v| matches!(v.as_str(), "json" | "stream-json"))
+                    {
+                        return Err(unsupported());
+                    }
+                    print_dependent = true;
+                    index += 2;
+                }
+                "--verbose" => {
+                    print_dependent = true;
+                    index += 1;
+                }
+                "-p" => {
+                    if print {
+                        return Err(unsupported());
+                    }
+                    print = true;
+                    index += 1;
+                }
+                "--strict-mcp-config" => {
+                    index += 1;
+                }
+                "--tools" => {
+                    let recipe = [
+                        "--tools",
+                        "",
+                        "--strict-mcp-config",
+                        "--mcp-config",
+                        "{\"mcpServers\":{}}",
+                    ];
+                    if caller
+                        .get(index..index + recipe.len())
+                        .is_none_or(|tokens| !tokens.iter().map(String::as_str).eq(recipe))
+                    {
+                        return Err(unsupported());
+                    }
+                    insertion = insertion.min(index);
+                    index += recipe.len();
+                }
+                "--resume" | "--session-id" => {
+                    if selector {
+                        return Err(conflict());
+                    }
+                    let uuid = caller.get(index + 1).ok_or_else(unsupported)?;
+                    if uuid.len() != 36
+                        || !uuid.bytes().enumerate().all(|(i, b)| {
+                            if [8, 13, 18, 23].contains(&i) {
+                                b == b'-'
+                            } else {
+                                b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+                            }
+                        })
+                    {
+                        return Err(unsupported());
+                    }
+                    selector = true;
+                    index += 2;
+                }
+                "--continue" => {
+                    if selector {
+                        return Err(conflict());
+                    }
+                    selector = true;
+                    index += 1;
+                }
+                token if token.starts_with('-') => return Err(unsupported()),
+                _ => {
+                    occupied = true;
+                    index += 1;
+                }
+            }
+        }
+        if occupied {
+            return Err(conflict());
+        }
+        if print_dependent && !print {
+            return Err(unsupported());
+        }
+        Ok(Some(StartupInputTemplate::positional(insertion)))
+    }
+    fn validate_native_argv(&self, _: &[String]) -> Result<(), crate::protocol::results::ApiError> {
+        Ok(())
+    }
+    fn compose_argv(
+        &self,
+        caller: Vec<String>,
+        owned: Vec<String>,
+    ) -> Result<Vec<String>, crate::protocol::results::ApiError> {
+        Ok(owned.into_iter().chain(caller).collect())
+    }
+    fn prepare_launch(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+        admitted: &super::registry::AdmittedHandle,
+        status: &LocalSetupStatus,
+        _: &dyn super::launch::CodexShellProbe,
+        _: &CallBudget,
+    ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
+        if admitted.metadata().id != "claude" || status.scope != scope.setup {
+            return Err(crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::InvalidRequest,
+                "launch admission or scope mismatch",
+            ));
+        }
+        let hook = super::launch::owned_launch_hook(status)?;
+        if hook != super::launch::native_configuration_hook(request, scope, Harness::Claude)? {
+            return Err(crate::protocol::results::ApiError::new(
+                crate::protocol::results::ErrorCode::Conflict,
+                "selected native setup status changed before preparation",
+            ));
+        }
+        Ok(LaunchPreparation {
+            argv: request.argv.clone(),
+            hook,
+            working_directory: scope.working_directory.clone(),
+            environment_overrides: Default::default(),
+            report: Value::Null,
+        })
+    }
+    fn configuration_fingerprint(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+    ) -> Result<String, crate::protocol::results::ApiError> {
+        super::launch::native_configuration_fingerprint(
+            request,
+            scope,
+            Harness::Claude,
+            &["settings.json"],
+        )
+    }
+    fn expected_host_kinds(&self) -> &'static [&'static str] {
+        self.metadata().host_kinds
+    }
+}
+
+impl InstallerPolicy for ClaudeAdapter {
+    fn inspect_hooks(
+        &self,
+        request: &StatusRequest,
+        budget: &CallBudget,
+    ) -> Result<InstallerHookState, SetupFailure> {
+        if budget.cancellation.is_cancelled() {
+            return Err(SetupFailure::Invalid(
+                "installer observation cancelled".into(),
+            ));
+        }
+        let env = crate::harness::setup::legacy::scoped_legacy_environment(
+            Harness::Claude,
+            &request.scope,
+            &request.environment,
+        )?;
+        crate::harness::setup::legacy::installer_hooks_installed(&env, Harness::Claude)
+            .map(|owned| {
+                if owned {
+                    InstallerHookState::Owned
+                } else {
+                    InstallerHookState::Missing
+                }
+            })
+            .map_err(|error| SetupFailure::Invalid(error.to_string()))
+    }
+    fn skill_destination(&self, scope: &ResolvedSetupScope) -> Option<InstallerSkillDestination> {
+        let ResolvedSetupScope::ConfigRoot(root) = scope else {
+            return None;
+        };
+        Some(InstallerSkillDestination {
+            root: root.clone(),
+            file: root.join("skills/herdr-threads/SKILL.md"),
+        })
+    }
 }

@@ -19,6 +19,269 @@ use std::sync::{
 
 const NOW: u64 = 5_000 * HEARTBEAT_MS;
 
+/// Strict synthetic callback data; no native imports, profile reads or runtime probes.
+fn hermes_callback() -> Value {
+    let mut payload: Value =
+        serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    payload["started_at"] = now.into();
+    payload["deadline_at"] = (now + 1200).into();
+    payload["observation_order"]["observed_at_millis"] = now.into();
+    payload
+}
+
+#[test]
+fn hermes_structural_domains_reach_real_recorder_without_qualification_conflation() {
+    use crate::{
+        harness::adapter::{ContractDomain, HookInput, RuntimeAttribution},
+        ports::StorePort as _,
+        protocol::{
+            capabilities::HARNESS_EVIDENCE_V2, commands::HarnessEvidenceOutcomeV2 as Outcome,
+            results::HarnessEvidenceV2Recorded,
+        },
+    };
+    let iso = TestIsolation::new("hev-hermes-domains");
+    let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
+    let store = Arc::new(
+        crate::store::SqliteStore::new(
+            crate::store::connection::StoreContext::new(iso.path("store.db"), clock.clone()),
+            "i",
+            crate::store::StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let recorder = crate::daemon::harness_evidence::HarnessEvidenceRecorderV2::new(
+        store.clone(),
+        None,
+        clock.clone(),
+    );
+    let notes = Arc::new(Mutex::new(Vec::new()));
+    let captured = notes.clone();
+    let client = Arc::new(CountingLocalClient::scripted(
+        move |command| {
+            let Command::HarnessEvidenceV2(note) = command else {
+                panic!("unexpected command {command:?}")
+            };
+            captured.lock().unwrap().push(note.clone());
+            recorder.record(note, &budget()).map(|verified| {
+                CommandResult::HarnessEvidenceV2Recorded(HarnessEvidenceV2Recorded { verified })
+            })
+        },
+        DaemonVintage::Current,
+    ));
+    let registry = crate::harness::registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let send = |payload: &Value, state: Option<&Path>, at| {
+        run_registered(
+            registration,
+            Some("pre_llm_call"),
+            &serde_json::to_vec(payload).unwrap(),
+            state,
+            at,
+            (&budget(), clock.as_ref()),
+            |_| {
+                Some((
+                    client.clone() as Arc<dyn LocalClient>,
+                    Capabilities::from_list([HARNESS_EVIDENCE_V2.into()]),
+                ))
+            },
+        )
+    };
+    let native = registration
+        .contracts()
+        .iter()
+        .find(|d| d.domain == ContractDomain::Native)
+        .unwrap();
+    let bridge = registration
+        .contracts()
+        .iter()
+        .find(|d| d.domain == ContractDomain::Bridge)
+        .unwrap();
+    let mut calls = 0;
+    // Both missing and type-wrong paths must be accepted by the real recorder's allowlist.
+    for (index, field, broken_domain, missing) in [
+        (0, "deadline_at", bridge, false),
+        (1, "deadline_at", bridge, true),
+        (2, "shape.session_id.type", native, false),
+        (3, "shape.session_id.type", native, true),
+    ] {
+        let mut payload = hermes_callback();
+        payload["session_id"] = format!("broken-{index}").into();
+        payload["role_association"]["session_id"] = payload["session_id"].clone();
+        let (object, key) = if field == "deadline_at" {
+            (payload.as_object_mut().unwrap(), "deadline_at")
+        } else {
+            (
+                payload["shape"]["session_id"].as_object_mut().unwrap(),
+                "type",
+            )
+        };
+        if missing {
+            object.remove(key);
+        } else {
+            object.insert(key.into(), serde_json::json!([]));
+        }
+        assert_eq!(
+            send(&payload, Some(iso.state_root()), NOW + index),
+            Delivery::Sent(Some(false)),
+            "{field}/missing={missing}"
+        );
+        calls += 2;
+        assert_eq!(client.total_calls(), calls);
+        let captured = notes.lock().unwrap();
+        for (note, descriptor) in captured[captured.len() - 2..].iter().zip([native, bridge]) {
+            assert_eq!(note.domain, descriptor.domain_id);
+            assert_eq!(note.origin, descriptor.origin);
+            assert_eq!(note.contract_id, descriptor.contract_id_v2().unwrap());
+            assert_eq!(note.event, "pre_llm_call");
+            assert_eq!(
+                note.outcome,
+                if descriptor.domain == broken_domain.domain {
+                    Outcome::Violation {
+                        field: field.into(),
+                    }
+                } else {
+                    Outcome::Ok
+                }
+            );
+            assert_eq!(note.runtime, None);
+            assert_eq!(
+                note.unavailable_reason.as_deref(),
+                Some("startup_callback_unavailable")
+            );
+            assert!(note.qualifications.is_empty());
+        }
+        drop(captured);
+        let diagnostics = store.contract_diagnostics("hermes", &budget()).unwrap();
+        let diagnostic = diagnostics
+            .iter()
+            .find(|d| d.session_id == format!("broken-{index}"))
+            .unwrap();
+        assert_eq!(
+            diagnostic.contract_id,
+            broken_domain.contract_id_v2().unwrap()
+        );
+        assert_eq!(diagnostic.event, "pre_llm_call");
+        assert_eq!(diagnostic.field, field);
+        assert_eq!(diagnostics.len(), (index + 1) as usize);
+        assert_eq!(
+            send(&payload, Some(iso.state_root()), NOW + index + 10),
+            Delivery::Sent(Some(false))
+        );
+        calls += 1; // Unqualified Ok in the other domain still needs its milestone.
+        assert_eq!(
+            client.total_calls(),
+            calls,
+            "bounded per-session diagnostic send"
+        );
+        let captured = notes.lock().unwrap();
+        assert_ne!(captured.last().unwrap().domain, broken_domain.domain_id);
+        assert_eq!(captured.last().unwrap().outcome, Outcome::Ok);
+    }
+    for (index, callback) in [
+        Value::Null,
+        serde_json::json!(3),
+        serde_json::json!("on_session_start"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut payload = hermes_callback();
+        payload["session_id"] = format!("selector-{index}").into();
+        if callback.is_null() {
+            payload.as_object_mut().unwrap().remove("callback");
+        } else {
+            payload["callback"] = callback;
+        }
+        assert_eq!(send(&payload, None, NOW), Delivery::Sent(Some(false)));
+        calls += 2;
+        assert_eq!(client.total_calls(), calls);
+        let captured = notes.lock().unwrap();
+        assert_eq!(captured[captured.len() - 2].outcome, Outcome::Malformed);
+        assert_eq!(captured[captured.len() - 2].domain, native.domain_id);
+        assert_eq!(
+            captured.last().unwrap().outcome,
+            Outcome::Violation {
+                field: "callback".into()
+            }
+        );
+        assert_eq!(captured.last().unwrap().domain, bridge.domain_id);
+        drop(captured);
+        let diagnostics = store.contract_diagnostics("hermes", &budget()).unwrap();
+        let diagnostic = diagnostics
+            .iter()
+            .find(|d| d.session_id == format!("selector-{index}"))
+            .unwrap();
+        assert_eq!(diagnostic.contract_id, bridge.contract_id_v2().unwrap());
+        assert_eq!(diagnostic.field, "callback");
+    }
+    let sticky = store.contract_diagnostics("hermes", &budget()).unwrap();
+    // Full decoder refusal must never invent a structural field violation.
+    for refusal in ["expired", "role", "runtime", "schema", "callback_value"] {
+        let mut payload = hermes_callback();
+        match refusal {
+            "expired" => {
+                payload["started_at"] = 1.into();
+                payload["deadline_at"] = 1201.into();
+                payload["observation_order"]["observed_at_millis"] = 1.into();
+            }
+            "role" => payload["role_association"]["role"] = "unsupported".into(),
+            "runtime" => payload["runtime_identity"]["source"] = "unsupported".into(),
+            "schema" => payload["schema_version"] = 2.into(),
+            "callback_value" => payload["reset_reason"] = "unsupported".into(),
+            _ => unreachable!(),
+        }
+        payload["session_id"] = "broken-0".into();
+        payload["role_association"]["session_id"] = "broken-0".into();
+        let input = HookInput {
+            bytes: serde_json::to_vec(&payload).unwrap(),
+            registered_event: Some("pre_llm_call".into()),
+        };
+        assert!(matches!(
+            registration.attribute_runtime(&input, &budget()),
+            RuntimeAttribution::Unavailable { .. }
+        ));
+        assert_eq!(
+            send(&payload, None, NOW),
+            Delivery::Sent(Some(false)),
+            "{refusal}"
+        );
+        calls += 2;
+        assert_eq!(client.total_calls(), calls);
+        for note in notes.lock().unwrap().iter().rev().take(2) {
+            assert_eq!(note.outcome, Outcome::Ok, "{refusal}");
+            assert_eq!(note.runtime, None);
+            assert!(note.qualifications.is_empty());
+        }
+        assert_eq!(
+            store.contract_diagnostics("hermes", &budget()).unwrap(),
+            sticky,
+            "success cannot clear or refresh sticky failure"
+        );
+    }
+    for descriptor in [native, bridge] {
+        assert_eq!(
+            store
+                .last_unattributed_v2("hermes", descriptor.domain_id, descriptor.origin, &budget())
+                .unwrap()
+                .unwrap()
+                .0,
+            "startup_callback_unavailable"
+        );
+    }
+    assert!(
+        store
+            .harness_evidence_v2_all("hermes", 0, &budget())
+            .unwrap()
+            .is_empty(),
+        "unavailable runtime creates no build or verified milestone"
+    );
+    assert_eq!(client.total_calls(), 28);
+}
+
 fn budget() -> CallBudget {
     CallBudget {
         deadline: MonoInstant(u64::MAX / 2),
@@ -891,6 +1154,8 @@ fn codex_resume_mark_is_written_without_a_daemon() {
         |_| None,
     );
     assert_eq!(delivery, Delivery::Unavailable);
+    assert_eq!(std::fs::read(gate_path(&gate_dir(fx.iso.state_root()), "codex", "s")).unwrap(),
+        br#"{"verified":false,"ok_sent_at_ms":null,"heartbeat_at_ms":null,"sent":[],"resumed":true}"#);
     assert!(fx.gate("codex", "s").resumed);
     assert!(matches!(
         fx.hook_as(
@@ -1045,4 +1310,643 @@ fn codex_session_resumed_after_an_upgrade_records_nothing_for_either_version() {
             .as_deref(),
         Some(CODEX_RESUMED)
     );
+}
+
+// Synthetic rich-only registration: projected metadata, never native Hermes proof.
+mod rich_fixture {
+    use crate::harness::adapter::*;
+    use crate::harness::{claude::ClaudeAdapter, evidence::EvidenceOrigin};
+    use crate::protocol::time::CallBudget;
+    pub struct Adapter(pub u8);
+    impl HarnessAdapter for Adapter {
+        type Admission = ();
+        fn legacy_contract_id(&self) -> Option<String> {
+            (self.0 == 1).then(|| ClaudeAdapter.legacy_contract_id().unwrap())
+        }
+        fn metadata(&self) -> &'static AdapterMetadata {
+            ClaudeAdapter.metadata()
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            static DOMAINS: std::sync::OnceLock<Vec<ContractDescriptor>> =
+                std::sync::OnceLock::new();
+            let domains = DOMAINS.get_or_init(|| {
+                let mut native = ClaudeAdapter.contracts()[0];
+                native.domain_id = "shape";
+                native.origin = EvidenceOrigin::NativeShapeObservation;
+                let mut bridge = native;
+                bridge.domain = ContractDomain::Bridge;
+                bridge.domain_id = "envelope";
+                bridge.origin = EvidenceOrigin::BridgeEnvelope;
+                vec![native, bridge]
+            });
+            static QUALIFIED: std::sync::OnceLock<Vec<ContractDescriptor>> =
+                std::sync::OnceLock::new();
+            if self.0 >= 2 {
+                QUALIFIED.get_or_init(|| {
+                    domains
+                        .iter()
+                        .map(|d| {
+                            let mut d = *d;
+                            d.qualifications = &["same_runtime"];
+                            d
+                        })
+                        .collect()
+                })
+            } else {
+                domains
+            }
+        }
+        fn classify(&self, input: &HookInput) -> ContractObservation {
+            let domain = if serde_json::from_slice::<serde_json::Value>(&input.bytes)
+                .ok()
+                .is_some_and(|p| p["bridge"] == true)
+            {
+                ContractDomain::Bridge
+            } else {
+                ContractDomain::Native
+            };
+            ContractObservation {
+                domain,
+                classification: ClaudeAdapter.classify(input).classification,
+            }
+        }
+        fn attribute_runtime(&self, input: &HookInput, budget: &CallBudget) -> RuntimeAttribution {
+            if self.0 == 1 {
+                RuntimeAttribution::Attributed(
+                    RuntimeIdentity::stable_release("9.9.9", "native_transcript").unwrap(),
+                )
+            } else {
+                ClaudeAdapter.attribute_runtime(input, budget)
+            }
+        }
+        fn evidence_qualifications(
+            &self,
+            request: &EvidenceQualificationRequest<'_>,
+            _: &CallBudget,
+        ) -> Result<Vec<String>, String> {
+            if self.0 < 2 {
+                return Ok(vec![]);
+            }
+            assert_eq!(request.runtime.key, "release:2.1.286");
+            assert_eq!(request.descriptor.domain_id, "shape");
+            assert!(request.input.bytes.starts_with(b"{"));
+            Ok(match self.0 {
+                2 => vec!["same_runtime".into()],
+                3 => vec!["same_runtime".into(), "same_runtime".into()],
+                4 => vec!["undeclared".into()],
+                5 => vec!["Malformed".into()],
+                6 => vec!["same_runtime".into(); 9],
+                _ => vec![],
+            })
+        }
+        fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+            panic!("evidence must never probe")
+        }
+        fn admit(&self, _: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<()> {
+            panic!("evidence must never admit")
+        }
+        fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
+            panic!("evidence must never consult admission")
+        }
+        fn decode(&self, _: &(), _: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+            panic!("classification independent of decode")
+        }
+        fn encode(
+            &self,
+            _: &(),
+            _: &DecodedEvent,
+            _: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            panic!("observer evidence cannot offer")
+        }
+        fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+            panic!("evidence cannot setup")
+        }
+        fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
+            panic!("evidence cannot inspect installation")
+        }
+        fn unsetup(
+            &self,
+            _: &UnsetupRequest,
+            _: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            panic!("evidence cannot remove")
+        }
+    }
+    pub fn registration() -> crate::harness::registry::Registration {
+        crate::harness::registry::Registration::new(&Adapter(0))
+    }
+}
+
+// Kills legacy-only submission despite advertised rich capability, and session-only gates.
+#[test]
+fn v2_client_gates_isolate_runtime_domains_retry_and_never_downgrade_rich_evidence() {
+    use crate::protocol::{capabilities::HARNESS_EVIDENCE_V2, results::HarnessEvidenceV2Recorded};
+    let iso = TestIsolation::new("hev-v2-client");
+    let first = transcript(&iso, "2.1.286");
+    let second = transcript(&iso, "2.1.287");
+    let notes = Arc::new(Mutex::new(Vec::new()));
+    let captured = notes.clone();
+    let client = Arc::new(CountingLocalClient::scripted(
+        move |command| {
+            captured.lock().unwrap().push(command.clone());
+            Ok(CommandResult::HarnessEvidenceV2Recorded(
+                HarnessEvidenceV2Recorded { verified: true },
+            ))
+        },
+        DaemonVintage::Current,
+    ));
+    let registration = rich_fixture::registration();
+    let send = |path: &str, session: &str, now| {
+        run_registered(
+            &registration,
+            Some("PreToolUse"),
+            &tool(session, path),
+            Some(iso.state_root()),
+            now,
+            (&budget(), &crate::app::SystemClock::new()),
+            |_| {
+                Some((
+                    client.clone() as Arc<dyn LocalClient>,
+                    Capabilities::from_list([HARNESS_EVIDENCE_V2.to_owned()]),
+                ))
+            },
+        )
+    };
+    assert_eq!(send(&first, "s", NOW), Delivery::Sent(Some(true)));
+    let captured = notes.lock().unwrap();
+    assert!(
+        matches!(&captured[0], Command::HarnessEvidenceV2(_)),
+        "advertised v2 must select its own command: {:?}",
+        captured[0]
+    );
+    drop(captured);
+    assert_eq!(send(&first, "s", NOW + 1), Delivery::Suppressed);
+    assert_eq!(send(&second, "s", NOW + 2), Delivery::Sent(Some(true)));
+    assert_eq!(send(&first, "s2", NOW + 3), Delivery::Sent(Some(true)));
+    assert_eq!(
+        send(&first, "s", NOW + HEARTBEAT_MS),
+        Delivery::Sent(Some(true))
+    );
+    assert_eq!(notes.lock().unwrap().len(), 4);
+}
+
+// Kills domain-shared suppression, raw payload projection, and authority-side calls.
+#[test]
+fn rich_observer_domains_are_separate_and_send_only_bounded_metadata() {
+    use crate::protocol::{capabilities::HARNESS_EVIDENCE_V2, results::HarnessEvidenceV2Recorded};
+    let iso = TestIsolation::new("hev-rich-domains");
+    let path = transcript(&iso, "2.1.286");
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let record = captured.clone();
+    let client = Arc::new(CountingLocalClient::scripted(
+        move |command| {
+            command.validate().unwrap();
+            record.lock().unwrap().push(command.clone());
+            Ok(CommandResult::HarnessEvidenceV2Recorded(
+                HarnessEvidenceV2Recorded { verified: false },
+            ))
+        },
+        DaemonVintage::Current,
+    ));
+    let registration = rich_fixture::registration();
+    let send = |event: &str, bridge: bool, now| {
+        let mut payload: Value = serde_json::from_slice(&tool("s", &path)).unwrap();
+        payload["bridge"] = bridge.into();
+        payload["hook_event_name"] = event.into();
+        payload["source"] = "startup".into();
+        payload["tool_input"] = serde_json::json!({"command": "PRIVATE_BODY"});
+        run_registered(
+            &registration,
+            Some(event),
+            &serde_json::to_vec(&payload).unwrap(),
+            Some(iso.state_root()),
+            now,
+            (&budget(), &crate::app::SystemClock::new()),
+            |_| {
+                Some((
+                    client.clone() as Arc<dyn LocalClient>,
+                    Capabilities::from_list([HARNESS_EVIDENCE_V2.into()]),
+                ))
+            },
+        )
+    };
+    assert_eq!(send("PreToolUse", false, NOW), Delivery::Sent(Some(false)));
+    assert_eq!(send("PreToolUse", false, NOW + 1), Delivery::Suppressed);
+    assert_eq!(
+        send("PreToolUse", true, NOW + 2),
+        Delivery::Sent(Some(false))
+    );
+    assert_eq!(
+        send("SessionStart", false, NOW + 3),
+        Delivery::Sent(Some(false))
+    );
+    assert_eq!(
+        send("SessionStart", false, NOW + 4),
+        Delivery::Sent(Some(false))
+    );
+    let notes = captured.lock().unwrap();
+    assert_eq!(notes.len(), 4);
+    let Command::HarnessEvidenceV2(shape) = &notes[0] else {
+        panic!("no legacy projection")
+    };
+    let Command::HarnessEvidenceV2(envelope) = &notes[1] else {
+        panic!("no legacy projection")
+    };
+    assert_eq!(shape.domain, "shape");
+    assert_eq!(
+        shape.origin,
+        crate::harness::evidence::EvidenceOrigin::NativeShapeObservation
+    );
+    assert_eq!(envelope.domain, "envelope");
+    assert_eq!(
+        envelope.origin,
+        crate::harness::evidence::EvidenceOrigin::BridgeEnvelope
+    );
+    assert_ne!(shape.contract_id, envelope.contract_id);
+    let serialized = serde_json::to_string(&*notes).unwrap();
+    for forbidden in [
+        "PRIVATE_BODY",
+        "tool_input",
+        "transcript_path",
+        "tool_use_id",
+    ] {
+        assert!(!serialized.contains(forbidden), "wire leaked {forbidden}");
+    }
+    assert_eq!(
+        std::fs::read_dir(v2_gate_dir(iso.state_root()))
+            .unwrap()
+            .count(),
+        2
+    );
+    assert!(
+        !gate_dir(iso.state_root()).exists(),
+        "rich observations must never rewrite legacy gates"
+    );
+    for entry in std::fs::read_dir(v2_gate_dir(iso.state_root())).unwrap() {
+        let meta = entry.unwrap().metadata().unwrap();
+        assert!(meta.len() <= MAX_GATE_BYTES);
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+    // Script accepts only evidence; fixture panics for admission, native probe, decode and offer encoding.
+    assert_eq!(client.total_calls(), 4);
+}
+
+// Kills old-daemon downgrade and any local advancement after wrong/refused/expired replies.
+#[test]
+fn rich_missing_capability_and_failed_transport_never_close_the_retry_gate() {
+    use crate::protocol::{capabilities::HARNESS_EVIDENCE_V2, results::HarnessEvidenceV2Recorded};
+    let iso = TestIsolation::new("hev-rich-retry");
+    let path = transcript(&iso, "2.1.286");
+    let registration = rich_fixture::registration();
+    let clock = crate::app::SystemClock::new();
+    let good = Arc::new(CountingLocalClient::scripted(
+        |_| {
+            Ok(CommandResult::HarnessEvidenceV2Recorded(
+                HarnessEvidenceV2Recorded { verified: true },
+            ))
+        },
+        DaemonVintage::Current,
+    ));
+    for caps in [
+        Capabilities::none(),
+        Capabilities::from_list([HARNESS_EVIDENCE.into()]),
+    ] {
+        assert_eq!(
+            run_registered(
+                &registration,
+                Some("PreToolUse"),
+                &tool("s", &path),
+                Some(iso.state_root()),
+                NOW,
+                (&budget(), &clock),
+                |_| Some((good.clone() as Arc<dyn LocalClient>, caps))
+            ),
+            Delivery::Unsupported
+        );
+    }
+    assert_eq!(
+        good.total_calls(),
+        0,
+        "rich adapter must never send a legacy command"
+    );
+    for reply in [
+        Ok(CommandResult::HarnessEvidenceRecorded { verified: true }),
+        Err(ApiError::new(ErrorCode::Unsupported, "refused")),
+        Err(ApiError::new(ErrorCode::DeadlineExceeded, "timed out")),
+    ] {
+        let client = Arc::new(CountingLocalClient::scripted(
+            move |_| reply.clone(),
+            DaemonVintage::Current,
+        ));
+        for now in [NOW, NOW + 1] {
+            assert_eq!(
+                run_registered(
+                    &registration,
+                    Some("PreToolUse"),
+                    &tool("s", &path),
+                    Some(iso.state_root()),
+                    now,
+                    (&budget(), &clock),
+                    |_| Some((
+                        client.clone() as Arc<dyn LocalClient>,
+                        Capabilities::from_list([HARNESS_EVIDENCE_V2.into()])
+                    ))
+                ),
+                Delivery::Sent(None)
+            );
+        }
+        assert_eq!(client.total_calls(), 2, "failed send must retry");
+        assert!(!v2_gate_dir(iso.state_root()).exists());
+    }
+    let cancelled = budget();
+    let token = cancelled.cancellation.clone();
+    let late = Arc::new(CountingLocalClient::scripted(
+        move |_| {
+            token.cancel();
+            Ok(CommandResult::HarnessEvidenceV2Recorded(
+                HarnessEvidenceV2Recorded { verified: true },
+            ))
+        },
+        DaemonVintage::Current,
+    ));
+    assert_eq!(
+        run_registered(
+            &registration,
+            Some("PreToolUse"),
+            &tool("s", &path),
+            Some(iso.state_root()),
+            NOW,
+            (&cancelled, &clock),
+            |_| Some((
+                late as Arc<dyn LocalClient>,
+                Capabilities::from_list([HARNESS_EVIDENCE_V2.into()])
+            ))
+        ),
+        Delivery::Sent(None)
+    );
+    assert!(!v2_gate_dir(iso.state_root()).exists());
+    let expired = CallBudget {
+        deadline: MonoInstant(0),
+        cancellation: Cancellation::default(),
+    };
+    assert_eq!(
+        run_registered(
+            &registration,
+            Some("PreToolUse"),
+            &tool("s", &path),
+            Some(iso.state_root()),
+            NOW,
+            (&expired, &clock),
+            |_| panic!("expired observer cannot connect")
+        ),
+        Delivery::Unavailable
+    );
+}
+
+// Kills trusting a gate copied from another immutable key or a foreign version.
+#[test]
+fn v2_gate_rejects_key_replacement_and_legacy_bytes() {
+    use crate::protocol::{capabilities::HARNESS_EVIDENCE_V2, results::HarnessEvidenceV2Recorded};
+    let iso = TestIsolation::new("hev-rich-key");
+    let path = transcript(&iso, "2.1.286");
+    let registration = rich_fixture::registration();
+    let client = Arc::new(CountingLocalClient::scripted(
+        |_| {
+            Ok(CommandResult::HarnessEvidenceV2Recorded(
+                HarnessEvidenceV2Recorded { verified: true },
+            ))
+        },
+        DaemonVintage::Current,
+    ));
+    let send = || {
+        run_registered(
+            &registration,
+            Some("PreToolUse"),
+            &tool("s", &path),
+            Some(iso.state_root()),
+            NOW,
+            (&budget(), &crate::app::SystemClock::new()),
+            |_| {
+                Some((
+                    client.clone() as Arc<dyn LocalClient>,
+                    Capabilities::from_list([HARNESS_EVIDENCE_V2.into()]),
+                ))
+            },
+        )
+    };
+    assert_eq!(send(), Delivery::Sent(Some(true)));
+    let file = std::fs::read_dir(v2_gate_dir(iso.state_root()))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let bytes = std::fs::read(&file).unwrap();
+    for (field, value) in [
+        ("harness", "codex"),
+        ("domain", "other"),
+        ("origin", "bridge_envelope"),
+        ("contract_id", "0123456789abcdef"),
+        ("session_id", "other-session"),
+        ("unavailable_reason", "no identity"),
+    ] {
+        let mut stored: Value = serde_json::from_slice(&bytes).unwrap();
+        stored["key"][field] = value.into();
+        std::fs::write(&file, serde_json::to_vec(&stored).unwrap()).unwrap();
+        assert_eq!(
+            send(),
+            Delivery::Sent(Some(true)),
+            "copied {field} gate cannot suppress another observation"
+        );
+    }
+    for bad in [
+        serde_json::to_vec(&GateState {
+            verified: true,
+            ..Default::default()
+        })
+        .unwrap(),
+        vec![b' '; MAX_GATE_BYTES as usize + 1],
+    ] {
+        std::fs::write(&file, bad).unwrap();
+        assert_eq!(send(), Delivery::Sent(Some(true)));
+    }
+    let mut old: Value = serde_json::from_slice(&bytes).unwrap();
+    old["version"] = 1.into();
+    std::fs::write(&file, serde_json::to_vec(&old).unwrap()).unwrap();
+    assert_eq!(send(), Delivery::Sent(Some(true)));
+}
+
+// Kills a legacy sender bypassing its resolved adapter runtime attribution.
+#[test]
+fn legacy_projection_uses_the_resolved_adapter_attribution() {
+    let iso = TestIsolation::new("hev-adapter-attribution");
+    let path = transcript(&iso, "2.1.286");
+    let registration = crate::harness::registry::Registration::new(&rich_fixture::Adapter(1));
+    let note = Arc::new(Mutex::new(None));
+    let captured = note.clone();
+    let client = Arc::new(CountingLocalClient::scripted(
+        move |command| {
+            *captured.lock().unwrap() = Some(command.clone());
+            Ok(CommandResult::HarnessEvidenceRecorded { verified: false })
+        },
+        DaemonVintage::Current,
+    ));
+    assert_eq!(
+        run_registered(
+            &registration,
+            Some("PreToolUse"),
+            &tool("s", &path),
+            Some(iso.state_root()),
+            NOW,
+            (&budget(), &crate::app::SystemClock::new()),
+            |_| Some((
+                client as Arc<dyn LocalClient>,
+                Capabilities::from_list([HARNESS_EVIDENCE.into()])
+            ))
+        ),
+        Delivery::Sent(Some(false))
+    );
+    let recorded = note.lock().unwrap();
+    let Some(Command::HarnessEvidence(evidence)) = recorded.as_ref() else {
+        panic!("legacy projection missing")
+    };
+    assert_eq!(evidence.version.as_deref(), Some("9.9.9"));
+}
+
+// Kills a late successful response being remembered after the invocation expired.
+#[test]
+fn legacy_expired_advisory_result_keeps_the_retry_open() {
+    let iso = TestIsolation::new("hev-legacy-expired");
+    let path = transcript(&iso, "2.1.286");
+    let timing = budget();
+    let token = timing.cancellation.clone();
+    let client = Arc::new(CountingLocalClient::scripted(
+        move |_| {
+            token.cancel();
+            Ok(CommandResult::HarnessEvidenceRecorded { verified: true })
+        },
+        DaemonVintage::Current,
+    ));
+    let registration = registration_for(Harness::Claude).unwrap();
+    assert_eq!(
+        run_registered(
+            registration,
+            Some("PreToolUse"),
+            &tool("s", &path),
+            Some(iso.state_root()),
+            NOW,
+            (&timing, &crate::app::SystemClock::new()),
+            |_| Some((
+                client as Arc<dyn LocalClient>,
+                Capabilities::from_list([HARNESS_EVIDENCE.into()])
+            ))
+        ),
+        Delivery::Sent(None)
+    );
+    assert!(!gate_dir(iso.state_root()).exists());
+}
+
+// Kills discarded adapter facts and accepting forged/unbounded/undeclared qualification tokens.
+#[test]
+fn rich_qualification_producer_reaches_client_and_invalid_facts_never_send() {
+    use crate::protocol::{capabilities::HARNESS_EVIDENCE_V2, results::HarnessEvidenceV2Recorded};
+    let iso = TestIsolation::new("hev-rich-qualified");
+    let path = transcript(&iso, "2.1.286");
+    for mode in [2, 3, 4, 5, 6, 7] {
+        let registration = crate::harness::registry::Registration::new(Box::leak(Box::new(
+            rich_fixture::Adapter(mode),
+        )));
+        let client = Arc::new(CountingLocalClient::scripted(
+            move |command| {
+                let Command::HarnessEvidenceV2(note) = command else {
+                    panic!("rich qualifier sent legacy evidence")
+                };
+                if !matches!(mode, 3..=6) {
+                    assert_eq!(
+                        note.qualifications,
+                        if mode == 2 {
+                            vec!["same_runtime".to_string()]
+                        } else {
+                            vec![]
+                        }
+                    );
+                }
+                Ok(CommandResult::HarnessEvidenceV2Recorded(
+                    HarnessEvidenceV2Recorded {
+                        verified: mode == 2,
+                    },
+                ))
+            },
+            DaemonVintage::Current,
+        ));
+        let delivery = run_registered(
+            &registration,
+            Some("PreToolUse"),
+            &tool(&format!("s{mode}"), &path),
+            Some(iso.state_root()),
+            NOW,
+            (&budget(), &crate::app::SystemClock::new()),
+            |_| {
+                Some((
+                    client.clone() as Arc<dyn LocalClient>,
+                    Capabilities::from_list([HARNESS_EVIDENCE_V2.into()]),
+                ))
+            },
+        );
+        if matches!(mode, 3..=6) {
+            assert_eq!(delivery, Delivery::Unsupported);
+            assert_eq!(
+                client.total_calls(),
+                0,
+                "invalid facts must refuse before send"
+            );
+        } else {
+            assert_eq!(delivery, Delivery::Sent(Some(mode == 2)));
+        }
+    }
+}
+
+// Kills an unqualified observation spending the required qualified milestone's retry.
+#[test]
+fn absent_qualification_cannot_suppress_a_later_qualified_milestone() {
+    use crate::protocol::{capabilities::HARNESS_EVIDENCE_V2, results::HarnessEvidenceV2Recorded};
+    let iso = TestIsolation::new("hev-rich-qualification-retry");
+    let path = transcript(&iso, "2.1.286");
+    let client = Arc::new(CountingLocalClient::scripted(
+        |command| {
+            let Command::HarnessEvidenceV2(note) = command else {
+                panic!("unexpected non-evidence command")
+            };
+            Ok(CommandResult::HarnessEvidenceV2Recorded(
+                HarnessEvidenceV2Recorded {
+                    verified: note.qualifications == ["same_runtime"],
+                },
+            ))
+        },
+        DaemonVintage::Current,
+    ));
+    for (mode, expected) in [(7, false), (2, true)] {
+        let registration = crate::harness::registry::Registration::new(Box::leak(Box::new(
+            rich_fixture::Adapter(mode),
+        )));
+        let mut payload: Value = serde_json::from_slice(&tool("s", &path)).unwrap();
+        payload["qualifications"] = serde_json::json!(["same_runtime"]); // ignored JSON claim
+        assert_eq!(
+            run_registered(
+                &registration,
+                Some("PreToolUse"),
+                &serde_json::to_vec(&payload).unwrap(),
+                Some(iso.state_root()),
+                NOW,
+                (&budget(), &crate::app::SystemClock::new()),
+                |_| Some((
+                    client.clone() as Arc<dyn LocalClient>,
+                    Capabilities::from_list([HARNESS_EVIDENCE_V2.into()])
+                ))
+            ),
+            Delivery::Sent(Some(expected))
+        );
+    }
+    assert_eq!(client.total_calls(), 2);
 }

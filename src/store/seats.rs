@@ -4041,6 +4041,18 @@ pub(crate) fn cooperative_mapping(
             }
         }
         _ => {
+            let stored_harness: Option<String> = db.query_row(
+                "SELECT harness FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL",
+                params![claim.seat.as_str(),generation],|r|r.get(0)
+            ).optional().map_err(store_error)?;
+            if stored_harness.as_deref().is_some_and(|id| {
+                id != "human" && crate::harness::registry::builtins().agent(id).is_err()
+            }) {
+                return Err(api_error(
+                    ErrorCode::Unsupported,
+                    "stored binding harness has no registered adapter",
+                ));
+            }
             // A `managed_launch` binding is never a caller's context (A2/A3):
             // only a lifecycle check-in replaces it.
             let exact: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND target_id=?3 AND harness=?4 AND native_session=?5 AND execution_id=?6 AND ended_at IS NULL AND observation_provenance<>?7)",

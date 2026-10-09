@@ -2266,10 +2266,10 @@ fn actual_native_health_reports_observed_verified_host_evidence() {
     // note: the designed mode, never a limitation.
     assert_eq!(health.host.safe_prompt, CapabilityState::Supported);
     assert!(
-        health
-            .notes
-            .iter()
-            .any(|line| line == herdr_threads::daemon::health::COOPERATIVE_WAKE_LINE),
+        health.notes.iter().any(|line| *line
+            == herdr_threads::daemon::health::cooperative_wake_line_for(
+                herdr_threads::harness::registry::builtins()
+            )),
         "{:?}",
         health.notes
     );

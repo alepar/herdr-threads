@@ -67,7 +67,7 @@ fn setup(db: &Connection) {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        27
+        28
     );
     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
         .unwrap();
@@ -1132,3 +1132,187 @@ fn recovery_matching_created_and_cancelled_evidence_survive_reopen() {
 mod attachment;
 #[path = "topology_attempts.rs"]
 mod attempts;
+
+fn current_main_historical26() -> Connection {
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    for sql in [
+        include_str!("../../migrations/0001_initial.sql"),
+        include_str!("../../migrations/0002_service_substrate.sql"),
+        include_str!("../../migrations/0003_invitation_cancellations.sql"),
+        include_str!("../../migrations/0004_voluntary_membership.sql"),
+        include_str!("../../migrations/0005_service_notifications.sql"),
+        include_str!("../../migrations/0006_retirement_health.sql"),
+        include_str!("../../migrations/0007_attention_digest.sql"),
+        include_str!("../../migrations/0008_digest_pending_paths.sql"),
+        include_str!("../../migrations/0009_human_occupant.sql"),
+        include_str!("../../migrations/0010_b5_trust_guards.sql"),
+        include_str!("../../migrations/0011_cooperative_only.sql"),
+        include_str!("../../migrations/0012_harness_version_evidence.sql"),
+        include_str!("../../migrations/0013_thread_summaries.sql"),
+        include_str!("../../migrations/0014_catch_up_release.sql"),
+        include_str!("../../migrations/0015_preparation_retention.sql"),
+        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
+        include_str!("../../migrations/0017_wake_batches.sql"),
+        include_str!("../../migrations/0018_warning_conditions.sql"),
+        include_str!("../../migrations/0019_thread_names.sql"),
+        include_str!("../../migrations/0020_recent_activity.sql"),
+        include_str!("../../migrations/0021_invitation_rejections.sql"),
+        include_str!("../../migrations/0022_user_message_intent.sql"),
+        include_str!("../../migrations/0023_channel_archival.sql"),
+        include_str!("../../migrations/0024_harness_contract_diagnostics.sql"),
+        include_str!("../../migrations/0025_warning_notice_delivery.sql"),
+        include_str!("../../migrations/0026_lazy_message_delivery.sql"),
+    ] {
+        db.execute_batch(sql).unwrap();
+    }
+    db.pragma_update(None, "user_version", 26).unwrap();
+    db
+}
+
+#[test]
+fn current_main_fresh_and_canonical26_upgrade_to_topology28() {
+    for historical in [false, true] {
+        let db = if historical {
+            current_main_historical26()
+        } else {
+            Connection::open_in_memory().unwrap()
+        };
+        let saved = if historical {
+            db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
+                .unwrap();
+            thread(&db);
+            joined_agent(&db);
+            let old_claim = r#"{"instance":"i","seat":"s","target":"p","binding_generation":1,"role":"top_level","harness":"codex","native_session":"session","execution":"00000000-0000-4000-8000-000000000001"}"#;
+            assert_eq!(
+                serde_json::from_str::<herdr_threads::protocol::authority::CallerClaim>(old_claim)
+                    .unwrap(),
+                super::handoff_fences::identity().claim
+            );
+            db.execute("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,original_thread,thread_id,origin,state,created_at) VALUES('i','seat:s','compound',?1,?2,'s','create','invite','send','t','t','cooperative_pending_claim','live',1)", rusqlite::params!["a".repeat(64), old_claim]).unwrap();
+            Some(
+                db.query_row("SELECT claim_json FROM channel_handoff_fences", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        assert_eq!(
+            db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+                .unwrap(),
+            28
+        );
+        assert!(
+            db.query_row(
+                "SELECT name FROM sqlite_master WHERE name='bootstrap_handoffs'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .is_ok()
+        );
+        if let Some(saved) = saved {
+            assert_eq!(
+                db.query_row("SELECT claim_json FROM channel_handoff_fences", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+                saved
+            );
+            assert_eq!(
+                db.query_row("SELECT ordinal FROM occupant_bindings", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+        }
+        schema::initialize(&db, || UtcMillis(2)).unwrap();
+    }
+}
+
+#[test]
+fn current_main_topology28_late_failure_rolls_back() {
+    let db = current_main_historical26();
+    db.execute_batch(include_str!("../../migrations/0027_harness_adapters.sql"))
+        .unwrap();
+    db.pragma_update(None, "user_version", 27).unwrap();
+    db.execute_batch("CREATE TABLE bootstrap_reports(blocker TEXT)")
+        .unwrap();
+    let before = db
+        .prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>();
+    assert!(schema::initialize(&db, || UtcMillis(1)).is_err());
+    assert_eq!(
+        db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+            .unwrap(),
+        27
+    );
+    assert_eq!(
+        db.prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name")
+            .unwrap()
+            .query_map([], |r| Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?
+            )))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>(),
+        before
+    );
+}
+
+#[test]
+fn current_main_rejects_unpublished_topology27_shape() {
+    let db = current_main_historical26();
+    // Exact unlanded Root SQL bytes; deliberately not canonical Main adapter27.
+    db.execute_batch(include_str!("../../migrations/0028_handoff_topology.sql"))
+        .unwrap();
+    db.pragma_update(None, "user_version", 27).unwrap();
+    let before: String = db
+        .query_row(
+            "SELECT group_concat(sql) FROM (SELECT sql FROM sqlite_master ORDER BY name)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        schema::initialize(&db, || UtcMillis(1)).unwrap_err().code,
+        ErrorCode::IncompatibleSchema
+    );
+    assert_eq!(
+        db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+            .unwrap(),
+        27
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT group_concat(sql) FROM (SELECT sql FROM sqlite_master ORDER BY name)",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        before
+    );
+}

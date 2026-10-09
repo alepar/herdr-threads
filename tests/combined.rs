@@ -9,6 +9,8 @@
 //! changes process-wide state gets its own `[[test]]` target instead, like
 //! `hook_entrypoint`, `integration`, `package` and `service`.
 
+#[path = "harness/adapter_smoke.rs"]
+mod adapter_smoke;
 #[path = "store/archival_legacy.rs"]
 mod archival_legacy;
 #[path = "store/archival_worker.rs"]

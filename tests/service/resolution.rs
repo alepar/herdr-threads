@@ -2735,6 +2735,7 @@ impl HostPort for LaunchHost {
         diagnostic.occupancy = StructuralOccupancy::Occupied;
         Ok(NativeLaunchOutcome::ObservedStartup {
             correlation: CorrelatedStartup {
+                process_hint: false,
                 seat: request.seat.clone(),
                 agent_name: request.agent_name(),
                 harness: request.harness,
@@ -2814,6 +2815,8 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
     fs::write(&claude, "#!/bin/sh\nprintf '2.1.285 (Claude Code)\\n'\n").unwrap();
     fs::set_permissions(&claude, fs::Permissions::from_mode(0o700)).unwrap();
     let env = SetupEnv {
+        home: None,
+        declared_environment: Default::default(),
         executable: root.join("herdr-threads"),
         state_dir: Some(root.join("state")),
         cwd: root.clone(),
@@ -2825,6 +2828,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
     };
     setup::execute(
         &SetupRequest {
+            scope: Default::default(),
             verb: SetupVerb::Install,
             harness: ContextHarness::Claude,
             harness_binary: None,

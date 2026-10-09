@@ -1,0 +1,36 @@
+   Compiling herdr-threads v0.2.3 (<TASK14_WORKTREE>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.18s
+     Running unittests src/lib.rs (<INTEGRATION_TARGET>/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
+
+running 29 tests
+test harness::hermes::assets::tests::lock_child ... ok
+test harness::hermes::runtime::profile_observation_tests::duplicate_native_origin_is_not_a_complete_profile_result ... ok
+test harness::hermes::runtime::profile_observation_tests::native_stamp_source_spelling_is_retained_without_admission_identity ... ok
+test harness::hermes::runtime::profile_observation_tests::profile_config_quality_scope_and_bounds_never_become_admission_facts ... ok
+test harness::hermes::runtime::profile_observation_tests::startup_profile_schema_is_separate_from_legacy_qualification ... ok
+test harness::hermes::assets::tests::missing_persistent_lock_is_refused_without_creating_a_new_inode ... ok
+test harness::hermes::assets::tests::stages_completed_bridge_and_six_settings_in_observed_home ... ok
+test harness::hermes::runtime::tests::capture_budget_exhaustion_prevents_spawn ... ok
+test harness::hermes::assets::tests::replaced_lock_inode_refuses_existing_manifest_generation ... ok
+test harness::hermes::assets::tests::foreign_modified_and_missing_unsetup_never_claim_or_create_assets ... ok
+test harness::hermes::runtime::tests::captured_argv_retains_spaces_without_shell_or_bootstrap_parsing ... ok
+test harness::hermes::assets::tests::symlink_asset_directory_and_replaced_lock_inode_refuse_generation ... ok
+test harness::hermes::runtime::tests::descriptor_requires_explicit_nullable_fields ... ok
+test harness::hermes::runtime::tests::current_native_qualification_is_refused_not_promoted_from_metadata ... ok
+test harness::hermes::runtime::tests::git_metadata_without_commit_is_not_exact_source_identity ... ok
+test harness::hermes::runtime::tests::git_metadata_without_distance_is_not_exact_source_identity ... ok
+test harness::hermes::assets::tests::lock_symlink_home_replacement_and_oversized_assets_refuse ... ok
+test harness::hermes::runtime::tests::helper_rejects_other_running_interpreter_source_scope_and_incomplete_api ... ok
+test harness::hermes::runtime::tests::helper_requires_complete_schema_and_byte_caps ... ok
+test harness::hermes::runtime::tests::hermes_runtime_helper_uses_captured_launcher_profile_and_exact_source ... ok
+test harness::hermes::runtime::tests::machine_capture_refuses_shell_substitution_and_wrong_helper_tail ... ok
+test harness::hermes::assets::tests::process_death_releases_physical_lock_without_replacing_inode ... ok
+test harness::hermes::assets::tests::hermes_owned_assets_share_physical_profile_lock_and_remove_only_locked_generation ... ok
+test harness::hermes::assets::tests::interrupted_directory_publication_recovers_recorded_staging_inode ... ok
+test harness::hermes::assets::tests::default_named_isolation_interruption_and_config_selection_are_independent ... ok
+test harness::hermes::assets::tests::synthetic_native_entry_reaches_asset_setup_status_and_actual_bridge_settings_reader ... ok
+test harness::hermes::runtime::tests::capture_child_is_metadata_only_and_never_executes_returned_bootstrap ... ok
+test harness::hermes::runtime::tests::capture_kills_and_reaps_owned_hung_child ... ok
+test harness::hermes::runtime::tests::capture_bounds_both_streams_and_handles_nonzero_exit ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 2674 filtered out; finished in 1.24s

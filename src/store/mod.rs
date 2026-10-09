@@ -1988,6 +1988,71 @@ impl StorePort for SqliteStore {
     fn prune_retention(&self, budget: &CallBudget) -> Result<PruneProgress, ApiError> {
         retention::prune_once(self, budget)
     }
+    fn record_harness_evidence_v2(
+        &self,
+        record: &harness_evidence::EvidenceRecordV2<'_>,
+        budget: &CallBudget,
+    ) -> Result<harness_evidence::RecordedV2, ApiError> {
+        let mut writer = self.writer(budget)?;
+        harness_evidence::record_v2(&self.context, &mut writer, record)
+    }
+    fn harness_evidence_v2(
+        &self,
+        harness: &str,
+        identity: &str,
+        domain: &str,
+        origin: crate::harness::evidence::EvidenceOrigin,
+        contract: &str,
+        budget: &CallBudget,
+    ) -> Result<Option<harness_evidence::EvidenceRowV2>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        harness_evidence::get_v2(&db, harness, identity, domain, origin, contract)
+    }
+    fn harness_evidence_v2_all(
+        &self,
+        harness: &str,
+        since_ms: u64,
+        budget: &CallBudget,
+    ) -> Result<Vec<harness_evidence::EvidenceRowV2>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        harness_evidence::all_v2(&db, harness, since_ms)
+    }
+    fn harness_evidence_v2_since(
+        &self,
+        since_ms: u64,
+        budget: &CallBudget,
+    ) -> Result<Vec<harness_evidence::EvidenceRowV2>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        harness_evidence::since_v2(&db, since_ms)
+    }
+    fn record_unattributed_v2(
+        &self,
+        harness: &str,
+        domain: &str,
+        origin: crate::harness::evidence::EvidenceOrigin,
+        reason: &str,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        let mut writer = self.writer(budget)?;
+        harness_evidence::record_unattributed_v2(
+            &self.context,
+            &mut writer,
+            harness,
+            domain,
+            origin,
+            reason,
+        )
+    }
+    fn last_unattributed_v2(
+        &self,
+        harness: &str,
+        domain: &str,
+        origin: crate::harness::evidence::EvidenceOrigin,
+        budget: &CallBudget,
+    ) -> Result<Option<(String, u64)>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        harness_evidence::last_unattributed_v2(&db, harness, domain, origin)
+    }
     fn record_harness_evidence(
         &self,
         record: &harness_evidence::EvidenceRecord<'_>,

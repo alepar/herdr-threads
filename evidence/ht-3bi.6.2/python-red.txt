@@ -1,0 +1,62 @@
+FFFFF
+======================================================================
+FAIL: test_failed_config_has_no_values_or_inferred_fallback (test_runtime_helper.RuntimeHelperTests.test_failed_config_has_no_values_or_inferred_fallback)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<TASK14_WORKTREE>/integrations/hermes/test_runtime_helper.py", line 78, in test_failed_config_has_no_values_or_inferred_fallback
+    self.assertEqual(result.get('config_quality'), 'failed_config_read')
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: None != 'failed_config_read'
+
+======================================================================
+FAIL: test_missing_profile_refuses_without_default_fallback (test_runtime_helper.RuntimeHelperTests.test_missing_profile_refuses_without_default_fallback)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<TASK14_WORKTREE>/integrations/hermes/test_runtime_helper.py", line 85, in test_missing_profile_refuses_without_default_fallback
+    self.assertEqual(result['status'], 'unavailable')
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'unsupported' != 'unavailable'
+- unsupported
++ unavailable
+
+
+======================================================================
+FAIL: test_mixed_loaded_origin_refuses_before_config (test_runtime_helper.RuntimeHelperTests.test_mixed_loaded_origin_refuses_before_config)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<TASK14_WORKTREE>/integrations/hermes/test_runtime_helper.py", line 92, in test_mixed_loaded_origin_refuses_before_config
+    self.assertEqual(self.probe()['status'], 'unavailable')
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'unsupported' != 'unavailable'
+- unsupported
++ unavailable
+
+
+======================================================================
+FAIL: test_official_profile_result_preserves_selected_home_and_config_observation (test_runtime_helper.RuntimeHelperTests.test_official_profile_result_preserves_selected_home_and_config_observation) (profile='default')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<TASK14_WORKTREE>/integrations/hermes/test_runtime_helper.py", line 66, in test_official_profile_result_preserves_selected_home_and_config_observation
+    self.assertEqual(result['status'], 'observed')
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'unsupported' != 'observed'
+- unsupported
++ observed
+
+
+======================================================================
+FAIL: test_official_profile_result_preserves_selected_home_and_config_observation (test_runtime_helper.RuntimeHelperTests.test_official_profile_result_preserves_selected_home_and_config_observation) (profile='work')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<TASK14_WORKTREE>/integrations/hermes/test_runtime_helper.py", line 66, in test_official_profile_result_preserves_selected_home_and_config_observation
+    self.assertEqual(result['status'], 'observed')
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'unsupported' != 'observed'
+- unsupported
++ observed
+
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.260s
+
+FAILED (failures=5)

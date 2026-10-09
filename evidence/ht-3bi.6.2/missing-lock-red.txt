@@ -1,0 +1,22 @@
+   Compiling herdr-threads v0.2.3 (<TASK14_WORKTREE>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.87s
+     Running unittests src/lib.rs (<INTEGRATION_TARGET>/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
+
+running 1 test
+test harness::hermes::assets::tests::missing_persistent_lock_is_refused_without_creating_a_new_inode ... FAILED
+
+failures:
+
+---- harness::hermes::assets::tests::missing_persistent_lock_is_refused_without_creating_a_new_inode stdout ----
+
+thread 'harness::hermes::assets::tests::missing_persistent_lock_is_refused_without_creating_a_new_inode' (61779254) panicked at src/harness/hermes/assets.rs:1021:9:
+an existing generation must not recreate its lock inode
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    harness::hermes::assets::tests::missing_persistent_lock_is_refused_without_creating_a_new_inode
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2702 filtered out; finished in 0.12s
+
+error: test failed, to rerun pass `--lib`

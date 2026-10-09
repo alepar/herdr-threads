@@ -4664,3 +4664,57 @@ mod main539_composition {
         assert!(f.client.calls.lock().unwrap().is_empty());
     }
 }
+
+#[test]
+fn current_main_human_selected_registered_agent_refuses_before_effects() {
+    use crate::harness::context::{Harness as ContextHarness, Role};
+    let isolation = crate::test_support::isolation::TestIsolation::new("human-selected-hermes");
+    let root = isolation.state_root().canonicalize().unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let contexts = crate::harness::context::ContextJournal::open(
+        &root,
+        uuid::Uuid::from_u128(1),
+        "seat-1",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    let mut current = human_context("current-pane");
+    current.harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
+        crate::harness::registry::builtins()
+            .agent("hermes")
+            .unwrap(),
+    ));
+    contexts.install_reattached(current).unwrap();
+    struct Never;
+    impl crate::ports::LocalClient for Never {
+        crate::default_output_local_client!();
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            panic!("Human selected registered Agent reached accountable submission: {command:?}")
+        }
+    }
+    let before = actor_fixture_snapshot(&root);
+    let parsed = crate::cli::commands::parse_argv(["ht", "human", "ack", "message"]).unwrap();
+    let mut output = Vec::new();
+    let error = crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        None,
+        Role::TopLevel,
+        &Never,
+        &crate::app::SystemClock::new(),
+        &mut output,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:?}")
+            .contains("human namespace cannot act through an agent cooperative selection"),
+        "{error:?}"
+    );
+    assert_eq!(actor_fixture_snapshot(&root), before);
+    assert!(output.is_empty());
+}

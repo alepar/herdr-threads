@@ -518,3 +518,139 @@ fn public_join_is_visible_in_human_read_and_follow() {
         "[12:34] -!- w/alice/s001 joined\n"
     );
 }
+
+struct RegisteredNick {
+    seat: SeatId,
+    nick: Nick,
+}
+impl Lookup for RegisteredNick {
+    fn nick(&mut self, seat: &SeatId) -> Nick {
+        if *seat == self.seat {
+            self.nick.clone()
+        } else {
+            Nick::seat(seat)
+        }
+    }
+}
+
+/// Kills a renderer-only two-brand predicate, including suffix and ID clipping.
+#[test]
+fn registered_agents_render_messages_and_recipients_without_suffix_or_id_clipping() {
+    let seat = SeatId::new("seat-0b5a1c2e-1111-2222-3333-444455556666");
+    let mut labels = crate::host::observation::SeatHostLabels {
+        terminal: "test".into(),
+        incarnation: None,
+        target: crate::protocol::ids::HostTargetId::new("w1:p1"),
+        workspace_id: "w1".into(),
+        workspace_label: Some("a/b\x1b\n".into()),
+        tab_id: "t1".into(),
+        tab_label: Some("must-not-appear".into()),
+        pane_label: Some("alice\u{202e}".into()),
+    };
+    for registration in crate::harness::registry::builtins().registrations() {
+        let id = registration.metadata().id;
+        for (workspace, pane, expected) in [
+            (
+                Some("a/b\x1b\n".to_owned()),
+                Some("alice\u{202e}".to_owned()),
+                "a/b\\u{001b}\\n/alice\\u{202e}/seat-0b5a1c2e-1111-2222-3333-444455556666",
+            ),
+            (
+                Some("w".repeat(100)),
+                Some("p".repeat(100)),
+                "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww…/pppppppppppppppppppppppppppppppp…/seat-0b5a1c2e-1111-2222-3333-444455556666",
+            ),
+            (
+                Some(String::new()),
+                None,
+                "w1/w1:p1/seat-0b5a1c2e-1111-2222-3333-444455556666",
+            ),
+        ] {
+            labels.workspace_label = workspace;
+            labels.pane_label = pane;
+            let mut lookup = RegisteredNick {
+                seat: seat.clone(),
+                nick: Nick {
+                    name: agent_seat_nick(&seat, Some(&labels)),
+                    harness: Some(id.into()),
+                },
+            };
+            let text = render_message(
+                &summary(1, seat.as_str(), "hello"),
+                &mut lookup,
+                &Style {
+                    width: 1000,
+                    ..Style::plain()
+                },
+            );
+            assert_eq!(
+                text,
+                format!("[12:34] <{expected}> hello\n"),
+                "registered {id}"
+            );
+            let warning = event(
+                2,
+                MessageKind::Warn,
+                &format!(
+                    "{{\"obligation\":\"receipt\",\"seat\":\"{}\"}}",
+                    seat.as_str()
+                ),
+            );
+            let text = render_message(
+                &warning,
+                &mut lookup,
+                &Style {
+                    width: 1000,
+                    ..Style::plain()
+                },
+            );
+            assert!(
+                text.contains(&format!("{expected} is overdue")),
+                "registered {id}: {text}"
+            );
+            assert!(!text.contains('·'), "registered {id}: {text}");
+            assert!(!text.contains("must-not-appear"), "registered {id}: {text}");
+        }
+        let mut lookup = RegisteredNick {
+            seat: seat.clone(),
+            nick: Nick {
+                name: agent_seat_nick(&seat, None),
+                harness: Some(id.into()),
+            },
+        };
+        assert_eq!(
+            render(&summary(1, seat.as_str(), "hello"), &mut lookup),
+            "[12:34] <seat-0b5a1c2e-1111-2222-3333-444455556666> hello\n",
+            "registered {id}"
+        );
+    }
+}
+
+/// A plausible but unregistered spelling must not grant full-ID agent display.
+#[test]
+fn unregistered_and_human_nicks_retain_clipping_and_suffix_behavior() {
+    let unknown = "not_registered_display_adapter";
+    assert!(crate::harness::registry::builtins().agent(unknown).is_err());
+    for (harness, expected) in [
+        (None, "abcdefghijklmnopqrstuvwxyz012345…"),
+        (Some("human"), "abcdefghijklmnopqrstuvwxyz012345…·human"),
+        (Some("Human"), "abcdefghijklmnopqrstuvwxyz012345…·Human"),
+        (
+            Some(unknown),
+            "abcdefghijklmnopqrstuvwxyz012345…·not_register…",
+        ),
+    ] {
+        let mut lookup = RegisteredNick {
+            seat: SeatId::new("sUnknown"),
+            nick: Nick {
+                name: "abcdefghijklmnopqrstuvwxyz0123456789".into(),
+                harness: harness.map(str::to_owned),
+            },
+        };
+        assert_eq!(
+            render(&summary(1, "sUnknown", "hello"), &mut lookup),
+            format!("[12:34] <{expected}> hello\n"),
+            "{harness:?}"
+        );
+    }
+}

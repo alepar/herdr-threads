@@ -16,61 +16,32 @@ pub enum ComponentStatus {
     Unavailable(String),
 }
 
-/// One harness as the daemon observed it on its own `PATH` (the bounded
-/// boot observation). Hook installation is per harness environment
-/// (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`), so `doctor`, run in that
-/// environment, checks it; the daemon does not.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum HarnessStatus {
-    /// The observation has not completed.
-    #[default]
-    Unknown,
-    /// No executable on the daemon's `PATH`: a note, never a degradation.
-    NotInstalled(String),
-    /// Present but its `--version` could not be observed or recognized, which
-    /// blocks the hook: a limitation that degrades Health.
-    Refused(String),
-    /// Present, observed, and its version is below the recipe floor or inside
-    /// a known-broken range. Whether that matters is the version verdict's
-    /// (`harness::state`, rendered from evidence and the manifest), so Health
-    /// shows nothing for it here; doctor shows the detected-version line.
-    VersionRefused(String),
-    /// Admitted by a recipe whose receipts are cooperative
-    /// (`cooperative_top_level`). `live_unverified` marks a schema-matched
-    /// admission, which stays listed as a limitation.
-    Cooperative {
-        detail: String,
-        live_unverified: bool,
-    },
-    /// Admitted by a recipe that declares native-verified receipt: a listed
-    /// version whose recipe proves native receipt, never an unlisted one.
-    Supported(String),
-    /// Unlisted but admitted by the ladder's optimistic rows, parsed under an
-    /// assumed recipe, live-unverified. The detail is the operator-facing
-    /// label (`crate::harness::optimistic_label`); Health renders it as an
-    /// informational note, never a limitation or a degradation.
-    Optimistic(String),
-}
+pub use crate::harness::adapter::HarnessStatus;
 
 impl HarnessStatus {
     pub fn state(&self) -> HarnessState {
         match self {
             Self::Unknown => HarnessState::Unknown,
-            Self::NotInstalled(_) | Self::Refused(_) | Self::VersionRefused(_) => {
-                HarnessState::Unsupported
+            Self::NotInstalled(_)
+            | Self::PresentUnqualified { .. }
+            | Self::Refused(_)
+            | Self::VersionRefused(_) => HarnessState::Unsupported,
+            Self::ContractDeclared { .. } | Self::Cooperative { .. } | Self::Optimistic(_) => {
+                HarnessState::Cooperative
             }
-            Self::Cooperative { .. } | Self::Optimistic(_) => HarnessState::Cooperative,
             Self::Supported(_) => HarnessState::Supported,
         }
     }
 
     /// Whether this harness leaves Health `healthy`: cooperative or
-    /// supported, or simply not installed here.
+    /// supported, absent here, or present without optional qualification.
     fn acceptable(&self) -> bool {
         matches!(
             self,
             Self::NotInstalled(_)
+                | Self::PresentUnqualified { .. }
                 | Self::VersionRefused(_)
+                | Self::ContractDeclared { .. }
                 | Self::Cooperative { .. }
                 | Self::Supported(_)
                 | Self::Optimistic(_)
@@ -120,6 +91,9 @@ pub struct HealthInputs {
     pub schema: ComponentStatus,
     pub host: ComponentStatus,
     pub host_version: Option<String>,
+    /// "untested Herdr X.Y.Z; ..." for a release newer than the tested
+    /// range: a limitation that does not degrade Health.
+    pub host_release_warning: Option<String>,
     pub current_execution: CapabilityState,
     pub coherent_enumeration: CapabilityState,
     pub safe_prompt: CapabilityState,
@@ -132,6 +106,7 @@ pub struct HealthInputs {
     pub codex: HarnessStatus,
     /// Claude executable availability and declared core cooperation on daemon PATH.
     pub claude: HarnessStatus,
+    pub additional_harnesses: Vec<(String, HarnessStatus)>,
     pub retirement: RetirementHealth,
     pub settings: Option<HealthSettings>,
     /// Completion time of the last reconciliation pass over a verified
@@ -199,7 +174,55 @@ pub const COOPERATIVE_WAKE_LINE: &str = "wake cooperative: prompts only Herdr's 
 /// Declared core contracts grant cooperative caller claims, never native receipt
 /// or exact-runtime qualification. Historical captures remain diagnostic evidence.
 pub fn cooperative_receipt_line() -> String {
-    "receipt cooperative: declared core contract; accept/ACK is recorded as cooperative_top_level; runtime and native model receipt unverified".into()
+    cooperative_receipt_line_for(crate::harness::registry::builtins())
+}
+
+pub fn cooperative_receipt_line_for(registry: &crate::harness::registry::Registry) -> String {
+    let admissions = registry
+        .registrations()
+        .iter()
+        .map(|registration| {
+            format!(
+                "{} {}",
+                registration.metadata().id,
+                registration
+                    .receipt_admission_summary()
+                    .unwrap_or_else(|| "admission unknown".into())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    bounded(
+        &format!(
+            "receipt cooperative: declared input contracts; accept/ACK is recorded as cooperative_top_level; runtime and native model receipt unverified; contracts: {admissions}"
+        ),
+        256,
+    )
+}
+
+pub fn cooperative_wake_line_for(registry: &crate::harness::registry::Registry) -> String {
+    let ids: Vec<_> = registry
+        .registrations()
+        .iter()
+        .filter(|registration| !registration.metadata().host_kinds.is_empty())
+        .map(|registration| registration.metadata().id)
+        .collect();
+    let kinds = match ids.as_slice() {
+        [] => "agent kind unavailable".to_owned(),
+        [id] => (*id).to_owned(),
+        [first, last] => format!("{first} or {last}"),
+        many => format!(
+            "{} or {}",
+            many[..many.len() - 1].join(", "),
+            many[many.len() - 1]
+        ),
+    };
+    bounded(
+        &format!(
+            "wake cooperative: prompts only Herdr's detected idle/done {kinds} agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
+        ),
+        256,
+    )
 }
 
 /// Health's limitation when the host offers neither native current-execution
@@ -301,7 +324,8 @@ fn harness_line(
         HarnessStatus::Refused(detail) => {
             push(limitations, format!("harness {name} unsupported: {detail}"))
         }
-        HarnessStatus::Cooperative { detail, .. } if detail.contains("contract_declared") => {
+        HarnessStatus::PresentUnqualified { detail }
+        | HarnessStatus::ContractDeclared { detail } => {
             push(notes, format!("harness {name}: {detail}"));
         }
         HarnessStatus::VersionRefused(_)
@@ -392,6 +416,7 @@ impl HealthInputs {
             schema: ComponentStatus::Unknown,
             host: ComponentStatus::Unknown,
             host_version: None,
+            host_release_warning: None,
             current_execution: CapabilityState::Unknown,
             coherent_enumeration: CapabilityState::Unknown,
             safe_prompt: CapabilityState::Unknown,
@@ -400,6 +425,7 @@ impl HealthInputs {
             last_scheduler_tick_at: None,
             codex: HarnessStatus::Unknown,
             claude: HarnessStatus::Unknown,
+            additional_harnesses: Vec::new(),
             retirement: RetirementHealth::default(),
             settings: None,
             last_reconciliation_at: None,
@@ -429,6 +455,9 @@ impl HealthInputs {
             .host_version
             .as_deref()
             .map(|value| bounded(value, 128));
+        if let Some(warning) = &self.host_release_warning {
+            push(&mut health.limitations, warning.clone());
+        }
         health.host.current_execution = self.current_execution;
         health.host.coherent_enumeration = self.coherent_enumeration;
         health.host.safe_prompt = self.safe_prompt;
@@ -472,25 +501,40 @@ impl HealthInputs {
             codex: self.codex.state(),
             claude: self.claude.state(),
         };
-        for (name, status) in [("claude", &self.claude), ("codex", &self.codex)] {
+        for (name, status) in [("claude", &self.claude), ("codex", &self.codex)]
+            .into_iter()
+            .chain(
+                self.additional_harnesses
+                    .iter()
+                    .map(|(id, status)| (id.as_str(), status)),
+            )
+        {
             harness_line(name, status, &mut health.limitations, &mut health.notes);
         }
         for line in &self.harness_version_lines {
             push(&mut health.limitations, line.clone());
         }
-        let cooperative_harness = [&self.claude, &self.codex].iter().any(|status| {
-            matches!(
-                status,
-                HarnessStatus::Cooperative { .. } | HarnessStatus::Optimistic(_)
-            )
-        });
+        let cooperative_harness = [&self.claude, &self.codex]
+            .into_iter()
+            .chain(self.additional_harnesses.iter().map(|(_, status)| status))
+            .any(|status| {
+                matches!(
+                    status,
+                    HarnessStatus::ContractDeclared { .. }
+                        | HarnessStatus::Cooperative { .. }
+                        | HarnessStatus::Optimistic(_)
+                )
+            });
         if cooperative_harness {
             push(&mut health.notes, cooperative_receipt_line());
         }
         let cooperative_wake = self.safe_prompt == CapabilityState::Supported
             && self.current_execution != CapabilityState::Supported;
         if cooperative_wake {
-            push(&mut health.notes, COOPERATIVE_WAKE_LINE.into());
+            push(
+                &mut health.notes,
+                cooperative_wake_line_for(crate::harness::registry::builtins()),
+            );
         }
         let wake_available = self.safe_prompt == CapabilityState::Supported
             || self.current_execution == CapabilityState::Supported;
@@ -565,6 +609,10 @@ impl HealthInputs {
             && wake_available
             && self.claude.acceptable()
             && self.codex.acceptable()
+            && self
+                .additional_harnesses
+                .iter()
+                .all(|(_, status)| status.acceptable())
             && !self.retirement.pending
             && !self.retirement.degraded
             && !lacking_evidence

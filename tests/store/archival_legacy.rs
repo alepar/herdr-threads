@@ -141,6 +141,7 @@ fn legacy_compound(
     };
     let id = super::handoff_fences::identity();
     let plan = HandoffPlan {
+        startup_input: None,
         request: HandoffRequest {
             thread: (!new_thread).then(|| ThreadId::new("t")),
             thread_name: None,

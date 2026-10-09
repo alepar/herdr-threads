@@ -1,0 +1,12 @@
+[Should-fix] integrations/hermes/__init__.py:493
+[Should-fix] src/daemon/harness_evidence.rs:631
+[Should-fix] src/store/schema.rs:658
+[Should-fix] src/daemon/harness_states.rs:146
+[Should-fix] src/harness/adapter.rs:19
+[Should-fix] src/harness/adapter.rs:675
+[Nit] integrations/hermes/__init__.py:575
+[Nit] integrations/hermes/__init__.py:621
+[Nit] src/cli/hook_evidence.rs:865
+[Should-fix] src/daemon/harness_states.rs:146
+[Should-fix] integrations/hermes/test_bridge.py:338
+[Should-fix] integrations/hermes/__init__.py:235

@@ -25,7 +25,7 @@ fn lazy_schema_upgrade25_defaults_existing_messages_to_ordinary() {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        27
+        28
     );
 }
 

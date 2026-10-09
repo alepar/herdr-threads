@@ -54,6 +54,14 @@ filter = "binary(hook_entrypoint)"
 priority = 80
 test-group = "hook-budget"
 
+# Real registered hooks against a spawned fixture service under the
+# production lifecycle budget: starved beside the suite, a fixture reply
+# missed that budget ("unknown outcome after request submission").
+[[profile.default.overrides]]
+filter = "binary_id(herdr-threads) & test(/^cli::hook::tests::registered_resume::task52_/)"
+priority = 80
+test-group = "hook-budget"
+
 [[profile.default.overrides]]
 filter = """
 binary(integration) & test(/^(lanes_latency|lane_wiring|sweep_remaining|topology_activation)::/)

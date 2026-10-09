@@ -217,7 +217,7 @@ class Writer(Base):
         # a manual row under a contract that is not live is also kept, canary rows of it are not
         _, out = self.write(doc([row("claude", "2.1.200", cid=THIRD, source="manual"), row("claude", "2.1.201", cid=THIRD)]),
                             report([]))
-        self.assertEqual([r["version"] for r in out["rows"]], ["2.1.200"])
+        self.assertEqual([r["version"] for r in out["rows"]], ["2.1.200", "2.1.201"])  # missing evidence preserves history
 
     def test_rows_for_both_live_contracts(self):
         rel = release([("claude", "2.1.288", [SESSION_OK, TOOL_OK])], cid={"claude": OTHER, "codex": MAIN["codex"]})
@@ -601,6 +601,327 @@ class WriterFixture(Base):
             self.FIXTURE.write_bytes(got)
         self.assertEqual(got, self.FIXTURE.read_bytes(),
                          "writer-output.json drifted from the writer (HT_BLESS=1 python3 -m unittest scripts/canary/test_manifest.py)")
+
+
+
+class RuntimeFixtures(Base):
+    # Catches dropping rich baseline collections and semver/stage promotion.
+    def setUp(self):
+        super().setUp()
+        import test_strategy
+        self.adapter = test_strategy.adapter()
+        self.adapter['canary_strategy'] = None
+        self.discovery = {'schema_version': 1, 'adapters': [self.adapter]}
+        self.binary = self.dir / 'binary'
+        self.binary.write_text('#!' + sys.executable + '\nimport json,os,sys\n'
+                               'if sys.argv[1:] == ["adapters", "--json"]:\n'
+                               ' print(' + repr(json.dumps(self.discovery)) + ')\n'
+                               'else: os.execv(' + repr(STUB) + ', [' + repr(STUB) + '] + sys.argv[1:])\n')
+        self.binary.chmod(0o755)
+        self.result = test_strategy.result()
+        descriptor = {'source': 'source', 'release_version': None, 'base_version': '1.2.3',
+                      'derived_version': '1.2.3-dev', 'commit': 'a' * 40, 'dirty': False, 'distance': 1}
+        import hashlib
+        key = 'build:' + hashlib.sha256(json.dumps(dict(descriptor, schema_version=1),
+                                    sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        self.result['identity'] = dict(key=key, **descriptor)
+        self.work = self.dir / 'work/third-try1'
+        self.work.mkdir(parents=True)
+        self.index = {'schema_version': 1, 'attempts': [{'harness': 'third', 'attempt': 'try1',
+                      'identity_key': key, 'evidence_stage': 'no_model',
+                      'result_path': 'work/third-try1/result.json', 'capture_paths': []}]}
+
+    def write_runtime(self, baseline=None, release_doc=None):
+        (self.work / 'result.json').write_text(json.dumps(self.result))
+        args = ['write', '--binary', self.binary, '--baseline', self.put('baseline.json', baseline or doc([])),
+                '--report', self.put('report.json', report([])), '--artifact-index', self.put('artifact-index.json', self.index),
+                '--generated-at', NOW, '--out', self.dir / 'out.json']
+        if release_doc is not None:
+            args += ['--release-results', self.put('release.json', release_doc)]
+        cp = self.cli(*args)
+        return cp, json.loads((self.dir / 'out.json').read_text()) if cp.returncode == 0 else None
+
+
+
+class RuntimeWriter(RuntimeFixtures):
+    def test_external_runtime_manifest_preserves_baselines_and_exact_release_replay_stage(self):
+        cp, out = self.write_runtime()
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        rich = out['runtime_rows'][0]
+        self.assertEqual(rich['identity'], self.result['identity'])
+        self.assertEqual(rich['evidence_stage'], 'no_model')
+        self.assertEqual(rich['last_seen_at'], 1790920800000)
+        self.assertEqual(out['rows'], [])
+        rich['source'] = 'manual'
+        baseline = dict(out, rows=[row('claude', '2.1.286', cid=THIRD)],
+                        contracts={'claude': THIRD, 'codex': MAIN['codex']})
+        self.result['outcome'] = 'infra_failure'
+        cp, kept = self.write_runtime(baseline, {'tag': 'v1.0.0', 'error': 'build failed'})
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        for collection in ('rows', 'contracts', 'runtime_rows', 'runtime_contracts'):
+            self.assertEqual(kept[collection], baseline[collection])
+        cp, kept = self.write_runtime(baseline)
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        for collection in ('rows', 'contracts', 'runtime_rows', 'runtime_contracts'):
+            self.assertEqual(kept[collection], baseline[collection])
+
+    def test_final_noncomplete_attempt_preserves_runtime_baseline_history(self):
+        # Superseded success must not merge descriptors or prune/reorder history.
+        cp, baseline = self.write_runtime()
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        seed = baseline['runtime_rows'][0]
+        baseline['runtime_contracts']['third'][0]['id'] = OTHER
+        history = []
+        for n in range(55):
+            old = copy.deepcopy(seed)
+            old.update(contract_id=OTHER, last_seen_at=n)
+            old['identity'] = {'key': f'release:1.0.{n}', 'release_version': f'1.0.{n}',
+                               'source': 'npm', 'base_version': None, 'derived_version': None,
+                               'commit': None, 'dirty': False, 'distance': None}
+            history.append(old)
+        baseline['runtime_rows'] = history
+        final_work = self.dir / 'work/third-try2'
+        final_work.mkdir()
+        final_entry = dict(self.index['attempts'][0], attempt='try2',
+                           result_path='work/third-try2/result.json')
+        self.index['attempts'].append(final_entry)
+        for outcome in ('infra_failure', 'inconclusive', 'unsupported', 'complete'):
+            with self.subTest(outcome=outcome):
+                final_result = dict(self.result, attempt='try2', outcome=outcome)
+                (final_work / 'result.json').write_text(json.dumps(final_result))
+                cp, kept = self.write_runtime(baseline)
+                self.assertEqual(cp.returncode, 0, cp.stdout + cp.stderr)
+                if outcome != 'complete':
+                    for collection in ('runtime_contracts', 'runtime_rows'):
+                        with self.subTest(collection=collection):
+                            self.assertEqual(kept[collection], baseline[collection])
+                else:
+                    # A final success still adds its descriptor and observation,
+                    # and applies the normal newest-50 unprotected retention.
+                    self.assertEqual(len(kept['runtime_rows']), 50)
+                    self.assertIn(self.adapter['contracts'][0], kept['runtime_contracts']['third'])
+                    current = [r for r in kept['runtime_rows']
+                               if r['identity'] == self.result['identity']]
+                    self.assertEqual(len(current), 1)
+                    self.assertEqual(current[0]['status'], 'verified')
+                    self.assertEqual(current[0]['evidence_stage'], 'no_model')
+
+    def test_incomplete_capture_unsupported_and_bad_identity_cannot_verify(self):
+        for change in ({'evidence_stage': 'source_captured'}, {'outcome': 'unsupported'},
+                       {'outcome': 'inconclusive'}):
+            with self.subTest(change=change):
+                self.result.update(change)
+                self.index['attempts'][0]['evidence_stage'] = self.result['evidence_stage']
+                cp, out = self.write_runtime()
+                self.assertEqual(cp.returncode, 0, cp.stderr)
+                self.assertEqual(out['runtime_rows'], [])
+                self.result.update(outcome='complete', evidence_stage='no_model')
+        self.index['attempts'][0]['evidence_stage'] = 'no_model'
+        self.result['domains'][0]['successful_milestones'] = ['session_start']
+        cp, out = self.write_runtime()
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(out['runtime_rows'], [])
+        self.index['attempts'][0]['identity_key'] = 'build:' + 'b' * 64
+        cp, _ = self.write_runtime()
+        self.assertNotEqual(cp.returncode, 0)
+
+    def test_runtime_validation_rejects_timestamp_and_origin_mismatch(self):
+        cp, out = self.write_runtime()
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        for value in (-1, True, '2026-10-02T06:00:00Z', 2**64):
+            bad = copy.deepcopy(out)
+            bad['runtime_rows'][0]['last_seen_at'] = value
+            self.assertTrue(manifest.validate_doc(bad), value)
+        bad = copy.deepcopy(out)
+        bad['runtime_rows'][0]['origin'] = 'bridge_envelope'
+        self.assertTrue(manifest.validate_doc(bad))
+
+class ReleaseReplay(RuntimeFixtures):
+    # Catches filename-derived joins, stage promotion and symlink escape.
+    def prepare(self):
+        self.put('artifact-index.json', self.index)
+        (self.work / 'result.json').write_text(json.dumps(self.result))
+        (self.work / 'request.json').write_text(json.dumps({'adapter': self.adapter}))
+        return manifest.prepare_replay(self.dir, None, MAIN)
+
+    def test_old_release_replays_only_representable_indexed_legacy(self):
+        plan = self.prepare()
+        self.assertEqual(plan['probes'], [])  # exact builds are not legacy versions
+        self.assertEqual(plan['unsupported'][0]['domain'], 'native_shape')
+        self.result['identity'] = {'key': 'release:2.1.288', 'release_version': '2.1.288',
+                'source': 'npm', 'base_version': None, 'derived_version': None,
+                'commit': None, 'dirty': False, 'distance': None}
+        self.result['harness'] = 'claude'
+        self.adapter['id'] = 'claude'
+        self.adapter['contracts'][0].update(domain='native_payload', origin='native_payload')
+        self.result['domains'][0].update(domain='native_payload', origin='native_payload')
+        self.index['attempts'][0].update(harness='claude', identity_key='release:2.1.288',
+                    result_path='work/claude-try1/result.json')
+        self.work.rename(self.dir / 'work/claude-try1')
+        self.work = self.dir / 'work/claude-try1'
+        (self.work / 'capture.stdin').write_text('{}')
+        (self.work / 'capture.argv').write_text('hook\nclaude\n')
+        captures = []
+        for suffix in ('stdin', 'argv'):
+            name = 'meta-' + suffix + '.json'
+            (self.work / name).write_text(json.dumps({'domain': 'native_payload', 'origin': 'native_payload',
+                 'evidence_stage': 'no_model', 'path': 'capture.' + suffix}))
+            captures.append('work/claude-try1/' + name)
+        self.index['attempts'][0]['capture_paths'] = captures
+        plan = self.prepare()
+        self.assertEqual(len(plan['probes']), 1)
+        self.assertEqual(plan['probes'][0]['evidence_stage'], 'no_model')
+        self.assertEqual(plan['probes'][0]['attempt'], 'try1')
+        (self.dir / plan['probes'][0]['work_path'] / 'canary-rust.json').write_text(json.dumps({'payloads': [{'contract': TOOL_OK}]}))
+        replay = manifest.collect_replay(self.dir, plan, 'v1.0.0')
+        self.assertEqual(replay['probes'][0]['evidence_stage'], 'no_model')
+        self.assertEqual(manifest.release_observations(replay, report([probe('2.1.288')]), lambda h,v:v)[0][2], ('verified', 'no_model'))
+
+    def test_release_index_rejects_traversal_symlink_and_ambiguous_source(self):
+        self.prepare()
+        self.index['attempts'][0]['result_path'] = '../result.json'
+        with self.assertRaises(ValueError): self.prepare()
+        self.index['attempts'][0]['result_path'] = 'work/third-try1/result.json'
+        (self.work / 'result.json').unlink()
+        (self.work / 'result.json').symlink_to(self.put('outside.json', self.result))
+        self.put('artifact-index.json', self.index)
+        with self.assertRaises(ValueError): manifest.prepare_replay(self.dir, self.discovery, MAIN)
+
+class RuntimeHistory(RuntimeFixtures):
+    # Catches pruning protected history and misclassifying declared violations.
+    def test_runtime_broken_manual_and_bounded_retention(self):
+        cp, out = self.write_runtime()
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        seed = out['runtime_rows'][0]
+        history = []
+        for n in range(55):
+            r = copy.deepcopy(seed)
+            r['identity'] = {'key': f'release:1.0.{n}', 'release_version': f'1.0.{n}', 'source': 'npm',
+                             'base_version': None, 'derived_version': None, 'commit': None, 'dirty': False, 'distance': None}
+            r['last_seen_at'] = n
+            r['harness'] = 'claude'
+            history.append(r)
+        history[0]['source'] = 'manual'
+        history[1].update(status='known_broken', broken_event='SessionStart', broken_field='session_id')
+        out['runtime_rows'] = history
+        out['runtime_contracts']['claude'] = copy.deepcopy(out['runtime_contracts']['third'])
+        out['rows'] = [row('claude', '1.0.2', recipe='current')]
+        cp, kept = self.write_runtime(out)
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(len(kept['runtime_rows']), 54)
+        self.assertIn('release:1.0.0', [r['identity']['key'] for r in kept['runtime_rows']])
+        self.result['domains'][0].update(outcome='contract_violation', violations=[{'event':'SessionStart', 'field':'session_id'}])
+        cp, broken = self.write_runtime()
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(broken['runtime_rows'][0]['status'], 'known_broken')
+        self.assertEqual(broken['runtime_rows'][0]['broken_field'], 'session_id')
+        # Each valid protected row stays, so too much protected history fails atomically.
+        out['runtime_rows'] = history * 10
+        for n, r in enumerate(out['runtime_rows']):
+            out['runtime_rows'][n] = copy.deepcopy(r)
+            out['runtime_rows'][n]['identity'].update(key=f'release:2.0.{n}', release_version=f'2.0.{n}')
+            out['runtime_rows'][n]['source'] = 'manual'
+        before = (self.dir / 'out.json').read_bytes()
+        cp, _ = self.write_runtime(out)
+        self.assertNotEqual(cp.returncode, 0)
+        self.assertIn('manifest too large', cp.stdout)
+        self.assertEqual((self.dir / 'out.json').read_bytes(), before)
+
+class ReplayAttribution(RuntimeFixtures):
+    def test_release_runtime_requires_exact_source_attempt_and_preserves_stage(self):
+        a = copy.deepcopy(self.adapter)
+        a['contracts'][0].update(domain='native_payload', origin='native_payload', id=OTHER)
+        self.result['domains'][0].update(domain='native_payload', origin='native_payload')
+        source = [(self.index['attempts'][0], self.result)]
+        replay = {'discovery': {'schema_version':1, 'adapters':[a]}, 'tag':'v1.0.0',
+                  'probes':[{'harness':'third', 'attempt':'try1', 'identity': self.result['identity'],
+                             'evidence_stage':'no_model', 'payloads':[SESSION_OK, {'event':'TurnEnd','kind':'ok','field':None}]}]}
+        registry, results = manifest.replay_results(replay, source)
+        out = manifest.add_runtime(doc([]), doc([]), registry, results, NOW)
+        self.assertEqual(out['runtime_rows'][0]['evidence_stage'], 'no_model')
+        self.assertEqual(out['runtime_rows'][0]['contract_id'], OTHER)
+        replay['probes'][0]['attempt'] = 'other'
+        with self.assertRaises(ValueError): manifest.replay_results(replay, source)
+        replay['discovery'] = None
+        with self.assertRaises(ValueError): manifest.replay_results(replay, source)
+
+class RuntimeSetup(RuntimeFixtures):
+    def test_legacy_setup_failure_never_creates_rich_broken_or_verified_rows(self):
+        (self.work / 'legacy-probe.json').write_text(json.dumps({'checks': [{'id':'t0.help','status':'fail'}], 'result':'fail'}))
+        cp, out = self.write_runtime()
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(out['runtime_rows'], [])
+
+
+class ReleaseShell(RuntimeFixtures):
+    prepare = ReleaseReplay.prepare
+    def test_shell_uses_built_release_legacy_fallback_and_writes_infra_error(self):
+        self.prepare()
+        fakebin = self.dir / 'fakebin'
+        fakebin.mkdir()
+        git = fakebin / 'git'
+        git.write_text('#!' + sys.executable + '\nimport pathlib,shutil,sys\n'
+                       'a=sys.argv[1:]\n'
+                       'if "add" in a: pathlib.Path(a[-2]).mkdir(parents=True)\n'
+                       'elif "remove" in a: shutil.rmtree(a[-1])\n')
+        git.chmod(0o755)
+        cargo = fakebin / 'cargo'
+        cargo.write_text('#!' + sys.executable + '\nimport os,pathlib,shutil\n'
+                         'p=pathlib.Path(os.environ["CARGO_TARGET_DIR"])/"debug/herdr-threads"\n'
+                         'p.parent.mkdir(parents=True,exist_ok=True)\n'
+                         'shutil.copyfile(' + repr(STUB) + ',p);p.chmod(0o755)\n')
+        cargo.chmod(0o755)
+        home = self.dir / 'home'
+        home.mkdir()
+        env = dict(self.env, PATH=str(fakebin) + os.pathsep + os.environ['PATH'], HOME=str(home))
+        def run_shell():
+            return subprocess.run(['bash', str(HERE / 'release_contract.sh'), 'v1.0.0', str(self.dir)],
+                                  env=env, capture_output=True, text=True, timeout=30)
+        cp = run_shell()
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        result = json.loads((self.dir / 'release-contract.json').read_text())
+        self.assertTrue(result['supported'])
+        self.assertIsNone(result['discovery'])
+        self.assertEqual(result['probes'], [])
+        self.assertEqual(result['unsupported_domains'][0]['domain'], 'native_shape')
+        rich = self.dir / 'rich-release'
+        rich.write_text('#!' + sys.executable + '\nimport sys\n'
+                        'if sys.argv[1:] != ["adapters", "--json"]: sys.exit(2)\n'
+                        'print(' + repr(json.dumps(self.discovery)) + ')\n')
+        rich.chmod(0o755)
+        cargo.write_text(cargo.read_text().replace(repr(STUB), repr(str(rich))))
+        cp = run_shell()
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        result = json.loads((self.dir / 'release-contract.json').read_text())
+        self.assertTrue(result['supported'])
+        self.assertEqual(result['discovery'], self.discovery)
+        self.index['attempts'][0]['result_path'] = '../escape.json'
+        self.put('artifact-index.json', self.index)
+        cp = run_shell()
+        self.assertEqual(cp.returncode, 2, cp.stderr)
+        result = json.loads((self.dir / 'release-contract.json').read_text())
+        self.assertIn('invalid indexed source artifacts', result['error'])
+        self.assertFalse((self.dir / 'release-src').exists())
+
+
+class ReleaseSupport(RuntimeFixtures):
+    def test_unsupported_release_does_not_support_main_runtime(self):
+        cp, out = self.write_runtime(release_doc={'tag':'v1.0.0', 'supported':False})
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertIsNone(out['runtime_rows'][0]['supported_since'])
+
+
+class MissingEvidence(Base):
+    def test_infra_probe_preserves_legacy_rows_and_contracts(self):
+        baseline = doc([row('claude', '2.1.286', cid=THIRD)], contracts={'claude':THIRD})
+        cp, out = self.write(baseline, report([probe('2.1.287', result='infra')]))
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(out['rows'], baseline['rows'])
+        self.assertEqual(out['contracts'], baseline['contracts'])
+        cp, out = self.write(baseline, report([probe('2.1.287', result='fail', checks=[{'id':'t0.help','status':'fail'}])]))
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(out['rows'], baseline['rows'])
+        self.assertEqual(out['contracts'], baseline['contracts'])
 
 
 if __name__ == "__main__":

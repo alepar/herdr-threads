@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-08",
+  "evidence_stage": "native_measurement",
+  "native_scope": "live",
+  "verdict_run": 3,
+  "runs": [
+    {
+      "run": 1,
+      "threads": {"commit": "82ba030ca52a1f7c7516e5808c3cec2dd52adc68", "binary_sha256": "258868fb5550cbecc0b27166ead9d2defee5a31c881e5ea8fc166e5418a74768", "plugin_init_sha256": "b47623b7be91d22d5ad40469cb6350eb82bbf9e4250799bab57d6fb04e5511ce"},
+      "raw_evidence": "deleted with its root; summary only"
+    },
+    {
+      "run": 2,
+      "builds": [
+        {"stages": "setup through first child attempt", "binary_sha256": "258868fb5550cbecc0b27166ead9d2defee5a31c881e5ea8fc166e5418a74768", "plugin_init_sha256": "b47623b7be91d22d5ad40469cb6350eb82bbf9e4250799bab57d6fb04e5511ce"},
+        {"stages": "child retry, reset, bare start", "binary_sha256": "09afd22ae2f9eb81c2d6faf863f659e9a57aaf9eb71897a773a830f324038e48", "plugin_init_sha256": "9ed5e59acd5f2774cde6df1d8ccb3d3671d49433740ddacfaeaec2ef4f8366fd"}
+      ],
+      "raw_evidence": "run-2/"
+    },
+    {
+      "run": 3,
+      "threads": {"commit": "9039a866aafd2705225b1e56dc76e02dcb2d6ee2", "binary_sha256": "56af8de8cd3b491eab5566810261cf4ba111a8d6fc31415ed8c4e9d784eacdc6", "plugin_init_sha256": "9ed5e59acd5f2774cde6df1d8ccb3d3671d49433740ddacfaeaec2ef4f8366fd"},
+      "settings": {"wake_batch_delay_ms": 180000},
+      "raw_evidence": "run-3/"
+    }
+  ],
+  "host": {
+    "modified": true,
+    "source_commit": "6c00655e787f14b84755461bf94762a8a791331d",
+    "binary_sha256": "e7d957e156e4e4f455ce6aaf292f640f4fe593a8dd5126f87f3d84a313992206",
+    "capability": "agent_start_process_hint_v1"
+  },
+  "hermes": {
+    "version": "0.21.5+3962.g37daf85",
+    "commit": "37daf85b2ad0ee50ed45d7234dc47b7fa24cec09",
+    "profile": "default",
+    "profile_copy_change": "delegation toolset enabled",
+    "provider": "openrouter",
+    "model": "deepseek-v4.1-flash",
+    "plugin_yaml_sha256": "ae1c731f8d1fea31e3a31a96f2dff35d03ee871ac635aaafb23d73643d03e162"
+  },
+  "matrix_run_3": [
+    {"stage": "plugin_setup", "verdict": "PASS", "evidence": "01-setup.json, 03-owned-files.txt"},
+    {"stage": "enablement", "verdict": "PASS", "evidence": "02-enable.out, 03-setup-status.json"},
+    {"stage": "guarded_launch", "verdict": "PASS", "evidence": "04-launch.json"},
+    {"stage": "recognition", "verdict": "PASS", "evidence": "07-agent-get-after-turn.json agent_session"},
+    {"stage": "callback_context", "verdict": "PASS", "evidence": "08-turn1-api-content.txt, snap-after-turn1"},
+    {"stage": "context_only_turn", "verdict": "PASS", "evidence": "13-neutral-api-content.txt; ack +2.0s, accept +19.5s, reply +22.1s; reservation removed before its +180s deadline, so no wake was due"},
+    {"stage": "model_accept", "verdict": "PASS", "evidence": "snap-neutral-10/invitations.txt gen 3 cooperative_top_level"},
+    {"stage": "model_inbox", "verdict": "PASS", "evidence": "receipt action_provenance cooperative_inbox_display"},
+    {"stage": "model_ack", "verdict": "PASS", "evidence": "snap-neutral-10/receipts.txt"},
+    {"stage": "model_reply", "verdict": "PASS", "evidence": "12-thread-read.json"},
+    {"stage": "relaunch", "verdict": "PASS", "evidence": "14-relaunch.json, snap-after-relaunch-*"},
+    {"stage": "child", "verdict": "PASS", "evidence": "16-child-api-content.txt, snap-before-child vs snap-after-child"},
+    {"stage": "reset", "verdict": "PASS", "evidence": "snap-after-reset context journal and bindings"},
+    {"stage": "bare_start", "verdict": "LIMIT", "evidence": "17-agent-get-bare.json agent_not_found; no api_content; no seat"},
+    {"stage": "cleanup", "verdict": "PASS", "evidence": "18-teardown.txt"}
+  ],
+  "limits": [
+    "one model and profile, macOS only",
+    "private modified Herdr host, not a released Herdr",
+    "system-prompt exclusion cited from Hermes' pre_llm_call contract; Hermes does not persist the system prompt",
+    "one earlier managed session without first-turn context, not reproduced on fresh roots"
+  ]
+}

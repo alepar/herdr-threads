@@ -4,8 +4,8 @@
 
 ## Prerequisites
 
-- macOS on arm64. The manifest declares `platforms = ["macos", "linux"]`, which names no architecture; only macOS arm64 has been exercised, Linux is unverified (see [below](#installing-a-prebuilt-release)) and no other platform or architecture is claimed.
-- Herdr 0.9.1 or 0.9.3 with protocol 22. The manifest's `min_herdr_version = "0.9.1"` is a floor; the adapter admits these exact audited releases. Optional operations require their own capabilities. See the [Herdr audit](compatibility/herdr-093-audit.md).
+- macOS on arm64 (supported). Linux x86_64 and arm64 are experimental: prebuilt archives exist, but the Herdr link is unverified and the daemon runs degraded there (see [below](#installing-a-prebuilt-release)). The manifest declares `platforms = ["macos", "linux"]`, which names no architecture; only macOS arm64 has been exercised, and no other platform or architecture is claimed.
+- Herdr 0.9.1 or newer (tested with 0.9.1–0.9.3). The adapter enforces the manifest's `min_herdr_version = "0.9.1"` floor and nothing else about the release: a newer release connects, and `daemon health` adds the limitation `untested Herdr X.Y.Z; tested 0.9.1-0.9.3` without degrading. An operation that release no longer serves fails as `unsupported` on its own. Optional operations still require their own capabilities. See [Herdr host compatibility](compatibility/herdr-host.md) and the [Herdr audit](compatibility/herdr-093-audit.md).
 - Claude Code or Codex on `PATH`, including a managed wrapper. Core setup, launch and hooks use registered contracts with strict payload validation and do not run harness version/help/schema probes. Runtime metadata may be unavailable; installation and valid input do not prove native support or enable richer capabilities.
 - Building from source requires Cargo and the pinned Rust toolchain (CI uses Rust 1.94.0, edition 2024). Prebuilt installation does not require Cargo. Source builds use the committed lockfile with `--locked`.
 - `herdr-threads` on the agent's `PATH`: the hook's ready commands name it bare.

@@ -1,0 +1,23 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.3 (<TASK14_WORKTREE>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.92s
+     Running unittests src/lib.rs (<INTEGRATION_TARGET>/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
+
+running 1 test
+test harness::hermes::runtime::profile_observation_tests::startup_profile_schema_is_separate_from_legacy_qualification ... FAILED
+
+failures:
+
+---- harness::hermes::runtime::profile_observation_tests::startup_profile_schema_is_separate_from_legacy_qualification stdout ----
+
+thread 'harness::hermes::runtime::profile_observation_tests::startup_profile_schema_is_separate_from_legacy_qualification' (61722013) panicked at src/harness/hermes/runtime.rs:760:9:
+separate observation producer is missing
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    harness::hermes::runtime::profile_observation_tests::startup_profile_schema_is_separate_from_legacy_qualification
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2687 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

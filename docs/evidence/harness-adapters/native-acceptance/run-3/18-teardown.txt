@@ -1,0 +1,7 @@
+post-run 1791491989
+processes referencing root:
+(end)
+real launchers:
+<home>/.hermes/hermes-agent/.hermes/bin/hermes: OK
+<home>/.hermes/hermes-agent/.hermes/bin/hermes-acp: OK
+root deleted: <root>

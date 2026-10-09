@@ -1,8 +1,7 @@
 //! Immutable identifiers for locally cached CheckIn output.
 use crate::{
     harness::context::{
-        CheckInMode, CheckInResponse, Harness, OccupantContext, PendingCheckIn, Role,
-        SessionReference,
+        CheckInMode, CheckInResponse, OccupantContext, PendingCheckIn, Role, SessionReference,
     },
     protocol::{
         output::{ContinuationContext, OutputFormat, OutputSpec, encode_selected},
@@ -117,11 +116,7 @@ fn context_tuple(c: &OccupantContext) -> serde_json::Value {
         SessionReference::Native(value) => serde_json::json!(["native", value]),
         SessionReference::PluginContext(id) => serde_json::json!(["plugin_context", id]),
     };
-    let harness = match c.harness {
-        Harness::Codex => "codex",
-        Harness::Claude => "claude",
-        Harness::Human => "human",
-    };
+    let harness = c.harness.as_str();
     let role = match c.role {
         Role::TopLevel => "top_level",
         Role::Subagent => "subagent",
@@ -556,7 +551,7 @@ mod tests {
             instance: Uuid::from_u128(1),
             seat: "seat".into(),
             target: "target".into(),
-            harness: Harness::Codex,
+            harness: crate::harness::context::Harness::Codex,
             binding_generation: 1,
             execution: Uuid::from_u128(3),
             session: SessionReference::PluginContext(Uuid::from_u128(3)),
@@ -916,7 +911,7 @@ mod tests {
             instance: Uuid::from_u128(1),
             seat: "seat".into(),
             target: "target".into(),
-            harness: Harness::Codex,
+            harness: crate::harness::context::Harness::Codex,
             binding_generation: 1,
             execution: Uuid::from_u128(3),
             session: SessionReference::PluginContext(Uuid::from_u128(3)),

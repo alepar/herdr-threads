@@ -1,0 +1,108 @@
+{
+  "evidence_stage": "source_grammar_and_synthetic_policy",
+  "source_commit": "37daf85b2ad0ee50ed45d7234dc47b7fa24cec09",
+  "cases": [
+    {
+      "input": [],
+      "expected": [
+        "--profile",
+        "default",
+        "--cli",
+        "chat"
+      ]
+    },
+    {
+      "input": [
+        "--profile= Work ",
+        "--cli",
+        "-m",
+        "model Ω",
+        "--provider",
+        "provider's name",
+        "-q",
+        "first turn Ω"
+      ],
+      "expected": [
+        "--profile",
+        "work",
+        "--cli",
+        "chat",
+        "--model",
+        "model Ω",
+        "--provider",
+        "provider's name",
+        "--query",
+        "first turn Ω"
+      ]
+    },
+    {
+      "input": [
+        "--model",
+        "--profile"
+      ],
+      "refused": true
+    },
+    {
+      "input": [
+        "--profile",
+        "work",
+        "-p",
+        "default"
+      ],
+      "refused": true
+    },
+    {
+      "input": [
+        "--cli",
+        "--cli"
+      ],
+      "refused": true
+    },
+    {
+      "input": [
+        "-q",
+        "hello",
+        "--query",
+        "bye"
+      ],
+      "refused": true
+    },
+    {
+      "input": [
+        "chat"
+      ],
+      "refused": true
+    },
+    {
+      "input": [
+        "--query-file",
+        "file"
+      ],
+      "refused": true
+    },
+    {
+      "input": [
+        "--accept-hooks"
+      ],
+      "refused": true
+    },
+    {
+      "input": [
+        "--safe-mode"
+      ],
+      "refused": true
+    },
+    {
+      "input": [
+        "--stream"
+      ],
+      "refused": true
+    },
+    {
+      "input": [
+        "--profile=../bad"
+      ],
+      "refused": true
+    }
+  ]
+}
