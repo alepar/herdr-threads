@@ -4483,6 +4483,147 @@ mod live {
         assert_eq!(launcher.starts, 1);
         assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
     }
+    /// Simulated upgrade between a genuine saved successful launch and its
+    /// completion/presentation: today's prompt renderer and composer change
+    /// while every retained byte stays unchanged.
+    fn arm_v1_drift() -> crate::harness::launch::current_drift::Armed {
+        let armed = crate::harness::launch::current_drift::arm(
+            Some(" Re-read the task body."),
+            Some("saved value"),
+        );
+        assert!(
+            crate::harness::launch::compose_native_argv(
+                crate::protocol::authority::Harness::Codex,
+                vec!["--model".into(), "saved value".into()],
+                vec![],
+            )
+            .is_err(),
+            "current composer observes the simulated drift"
+        );
+        armed
+    }
+    #[test]
+    fn historical_v1_saved_success_completes_after_current_composition_drift() {
+        let f = Fixture::downstream(Fault::CompleteBefore);
+        let mut launcher = DownstreamLauncher::default();
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        let saved: ChildProgress = serde_json::from_slice(
+            &std::fs::read(child_progress_path(&f.journal, &f.peer.reference)).unwrap(),
+        )
+        .unwrap();
+        let genuine = saved.progress.launch.clone().unwrap();
+        let _drift = arm_v1_drift();
+        f.peer.state.lock().unwrap().calls.clear();
+        let mut first = vec![];
+        let done = downstream(&f, &mut launcher, &mut first)
+            .unwrap_or_else(|e| panic!("genuine V1 report refused after drift: {e:?}"));
+        assert_eq!(done.state, BootstrapState::Completed);
+        assert_eq!(done.completed.unwrap().retained.report, genuine);
+        assert!(!f.peer.state.lock().unwrap().calls.iter().any(|r| matches!(
+            *r,
+            "invite_child" | "send_child" | "create_child" | "native" | "resolve" | "attach"
+        )));
+        assert_downstream_once(&f, &launcher);
+        // Terminal-only replay after journal cleanup presents the same bytes.
+        f.peer.state.lock().unwrap().calls.clear();
+        let mut replay = vec![];
+        downstream(&f, &mut launcher, &mut replay).unwrap();
+        assert_eq!(replay, first);
+        assert!(
+            f.peer
+                .state
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .all(|r| *r == "status")
+        );
+        assert_downstream_once(&f, &launcher);
+    }
+    #[test]
+    fn historical_v1_completed_terminal_presents_after_current_composition_drift() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        let mut first = vec![];
+        downstream(&f, &mut launcher, &mut first).unwrap();
+        assert!(f.journal.load(&f.peer.reference).is_err());
+        let terminal = std::fs::read(terminal_path(&f.journal, &f.peer.reference)).unwrap();
+        let _drift = arm_v1_drift();
+        f.peer.state.lock().unwrap().calls.clear();
+        let mut replay = vec![];
+        downstream(&f, &mut launcher, &mut replay)
+            .unwrap_or_else(|e| panic!("completed V1 terminal refused after drift: {e:?}"));
+        assert_eq!(replay, first);
+        assert_eq!(
+            std::fs::read(terminal_path(&f.journal, &f.peer.reference)).unwrap(),
+            terminal
+        );
+        assert!(
+            f.peer
+                .state
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .all(|r| *r == "status")
+        );
+        assert_downstream_once(&f, &launcher);
+    }
+    #[test]
+    fn historical_v1_reply_loss_and_terminal_save_loss_recover_after_drift() {
+        for fault in [Fault::CompleteReply, Fault::TerminalSave] {
+            let f = Fixture::downstream(Fault::CompleteBefore);
+            let mut launcher = DownstreamLauncher::default();
+            assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+            let _drift = arm_v1_drift();
+            f.peer.state.lock().unwrap().fault = fault;
+            let first = downstream(&f, &mut launcher, &mut vec![]);
+            if fault == Fault::TerminalSave {
+                assert!(first.is_err());
+                assert_eq!(f.peer.status().state, BootstrapState::Completed);
+                std::fs::remove_dir(terminal_path(&f.journal, &f.peer.reference)).unwrap();
+                downstream(&f, &mut launcher, &mut vec![])
+                    .unwrap_or_else(|e| panic!("terminal save loss after drift: {e:?}"));
+            } else {
+                assert_eq!(
+                    first
+                        .unwrap_or_else(|e| panic!("reply loss after drift: {e:?}"))
+                        .state,
+                    BootstrapState::Completed
+                );
+            }
+            let mut replay = vec![];
+            downstream(&f, &mut launcher, &mut replay).unwrap();
+            assert!(!replay.is_empty());
+            assert_downstream_once(&f, &launcher);
+        }
+    }
+    #[test]
+    fn historical_v1_corrupted_saved_report_refuses_after_drift_without_relaunch() {
+        for change in ["prompt", "options"] {
+            let f = Fixture::downstream(Fault::CompleteBefore);
+            let mut launcher = DownstreamLauncher::default();
+            assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+            let path = child_progress_path(&f.journal, &f.peer.reference);
+            let mut saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let argv = saved["progress"]["launch"]["argv"].as_array_mut().unwrap();
+            match change {
+                "prompt" => *argv.last_mut().unwrap() = "invented prompt".into(),
+                _ => argv[1] = "changed".into(),
+            }
+            std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+            let _drift = arm_v1_drift();
+            let mut output = vec![];
+            assert!(
+                downstream(&f, &mut launcher, &mut output).is_err(),
+                "{change}"
+            );
+            assert_eq!(f.peer.status().state, BootstrapState::Attached, "{change}");
+            assert_eq!(launcher.starts, 1, "{change}");
+            assert_eq!(f.peer.state.lock().unwrap().native_calls, 1, "{change}");
+        }
+    }
 }
 
 #[test]
@@ -4542,5 +4683,33 @@ fn current_main_topology_native_argv_preserves_empty_tokens() {
     assert_eq!(
         identity.payload.launch.harness,
         crate::protocol::authority::Harness::Claude
+    );
+}
+
+/// Fresh preparation keeps today's native admission: a present-day composer
+/// refusal stops it before publication even though frozen V1 would accept.
+/// The fresh Root generated input is the frozen V1 prompt.
+#[test]
+fn fresh_root_preparation_uses_current_admission_and_v1_generated_input() {
+    let temp = Temp::new();
+    let identity = prepared(&request(), temp.path()).unwrap();
+    let fresh = preflight_launch_request(&identity).unwrap();
+    let namespace = &identity.payload.handoff.namespace;
+    let context = crate::protocol::output::ContinuationContext {
+        state_dir: Some(namespace.state_dir.to_string_lossy().into_owned()),
+        host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
+    };
+    assert_eq!(
+        fresh.argv.last().unwrap(),
+        &super::super::handoff::bootstrap_v1::prompt(
+            "canonical-thread",
+            &context,
+            &identity.claim.instance
+        )
+    );
+    let _drift = crate::harness::launch::current_drift::arm(None, Some("saved value"));
+    assert!(
+        prepared(&request(), temp.path()).is_err(),
+        "current composer refusal must stop fresh preparation"
     );
 }

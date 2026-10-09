@@ -3660,3 +3660,126 @@ fn task48_nonpositional_optional_provider_reaches_actual_guarded_native() {
             .is_none()
     );
 }
+
+// Literal V1 prompt pieces, retained as data independently of production code.
+const V1_INSTRUCTION: &str = " Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox using that matching group. Otherwise use the exact fallback: `";
+const V1_SUFFIX: &str = " is stored in inbox; follow its printed next: commands for complete bodies. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.";
+
+fn v1_context(state: &str, host: &str) -> crate::protocol::output::ContinuationContext {
+    crate::protocol::output::ContinuationContext {
+        state_dir: Some(state.into()),
+        host: Some(host.into()),
+    }
+}
+
+/// Frozen V1 bytes: canonical UUID+JSON escaping, null routing, quoted and
+/// control-safe fallback tokens, literal thread and no task body.
+#[test]
+fn frozen_v1_prompt_literals_bind_routing_quoting_and_thread() {
+    use sha2::{Digest, Sha256};
+    let null = bootstrap_v1::prompt("t", &v1_context("/state", "/host.sock"), "i");
+    let literal = format!(
+        "Expected handoff command routing (JSON data): null{V1_INSTRUCTION}herdr-threads --state-dir /state --host-endpoint /host.sock inbox`. The task for thread t{V1_SUFFIX}"
+    );
+    assert_eq!(null, literal);
+    assert_eq!(null.len(), 831);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(null.as_bytes())),
+        "67417931a30b16a76f1a93958eba68b9213858e57b7ec425f27b1ef3c07757fb"
+    );
+    // Paths that do not exist now: validation uses the retained canonical
+    // object verbatim, never today's filesystem lookup.
+    let context = v1_context(
+        "/nonexistent-ht-v1/a \"b\" 'c'",
+        "/nonexistent-ht-v1/h\u{1}\u{200b}.sock",
+    );
+    let instance = "00000000000040008000000000000ABC";
+    let prompts = bootstrap_v1::retained_prompts("t9", &context, instance);
+    let fallback = r#"herdr-threads --state-dir '/nonexistent-ht-v1/a "b" '\''c'\''' --host-endpoint $'/nonexistent-ht-v1/h\x01\xe2\x80\x8b.sock' inbox"#;
+    assert_eq!(
+        prompts,
+        vec![
+            format!(
+                "Expected handoff command routing (JSON data): {{\"instance\":\"00000000-0000-4000-8000-000000000abc\",\"state_dir\":\"/nonexistent-ht-v1/a \\\"b\\\" 'c'\",\"host_endpoint\":\"/nonexistent-ht-v1/h\\u0001\u{200b}.sock\"}}{V1_INSTRUCTION}{fallback}`. The task for thread t9{V1_SUFFIX}"
+            ),
+            format!(
+                "Expected handoff command routing (JSON data): null{V1_INSTRUCTION}{fallback}`. The task for thread t9{V1_SUFFIX}"
+            ),
+        ]
+    );
+    assert!(prompts.iter().all(|p| !p.contains("secret durable task")));
+    // Today's renderer repeats the filesystem lookup: for the same retained
+    // namespace it now yields null, so recomposition could not have accepted a
+    // genuine object-routing report once these paths disappeared.
+    assert_eq!(
+        bootstrap(&ThreadId::new("t9"), &context, instance),
+        prompts[1]
+    );
+    assert_eq!(
+        bootstrap_v1::retained_prompts("t9", &context, "not-a-uuid"),
+        prompts[1..].to_vec(),
+        "an invalid UUID admits only the null-routing form"
+    );
+    // Baseline golden (not a RED): the V1 producer and today's unperturbed
+    // renderer agree for an existing canonical pair.
+    let (_temp, journal) = journal();
+    let state = journal.root().parent().unwrap().canonicalize().unwrap();
+    let context = v1_context(
+        state.to_str().unwrap(),
+        state.join("h.sock").to_str().unwrap(),
+    );
+    let produced = bootstrap_v1::prompt("t1", &context, &claim().instance);
+    assert_eq!(
+        produced,
+        bootstrap(&ThreadId::new("t1"), &context, &claim().instance)
+    );
+    assert_eq!(
+        bootstrap_v1::retained_prompts("t1", &context, &claim().instance)[0],
+        produced
+    );
+}
+
+/// A simulated later change to today's renderer must not change the frozen
+/// V1 prompt or the template-free manual projection built from it.
+#[test]
+fn frozen_v1_prompt_and_manual_projection_ignore_current_renderer_drift() {
+    let (_temp, journal) = journal();
+    let plan = HandoffPlan {
+        startup_input: None,
+        request: request(),
+        context: v1_context("/state", "/host.sock"),
+        recipient: SeatId::new("recipient"),
+        create_key: OperationId::new("create"),
+        invite_key: OperationId::new("invite"),
+        send_key: OperationId::new("send"),
+    };
+    let progress = Progress {
+        thread: Some(ThreadId::new("t1")),
+        ..Default::default()
+    };
+    let reference = frozen(&journal);
+    let v1 = bootstrap_v1::prompt("t1", &plan.context, &claim().instance);
+    let _drift = crate::harness::launch::current_drift::arm(Some(" DRIFTED"), None);
+    assert_eq!(
+        bootstrap(&ThreadId::new("t1"), &plan.context, &claim().instance),
+        format!("{v1} DRIFTED"),
+        "the current renderer observes the simulated drift"
+    );
+    assert_eq!(
+        bootstrap_v1::prompt("t1", &plan.context, &claim().instance),
+        v1
+    );
+    let report = report(
+        &reference,
+        &plan,
+        &progress,
+        "launch",
+        true,
+        false,
+        &claim(),
+    );
+    let manual = report["manual_launch_after_confirming_no_start_argv"]
+        .as_array()
+        .unwrap();
+    assert_eq!(manual.last().unwrap(), &serde_json::json!(v1));
+}

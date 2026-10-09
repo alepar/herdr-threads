@@ -177,12 +177,272 @@ pub fn compose_native_argv(
     caller: Vec<String>,
     owned: Vec<String>,
 ) -> Result<Vec<String>, ApiError> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(token) = current_drift::rejected_token()
+        && caller.iter().any(|arg| arg == token)
+    {
+        return Err(error(
+            ErrorCode::InvalidRequest,
+            "simulated current composer drift refuses this argument",
+        ));
+    }
     let registration = launch_registration(super::registry::builtins(), harness)?;
     registration
         .launch_policy()
         .expect("checked provider")
         .compose_argv(caller, owned)
 }
+/// Test-only, thread-local simulation of a later change to today's mutable
+/// launch composition (the prompt renderer and [`compose_native_argv`]). It
+/// models an upgrade without touching retained data; frozen V1 composition
+/// ([`compose_bootstrap_v1_argv`]) never reads it.
+#[cfg(any(test, feature = "test-support"))]
+pub mod current_drift {
+    use std::cell::Cell;
+
+    thread_local! {
+        static PROMPT_SUFFIX: Cell<Option<&'static str>> = const { Cell::new(None) };
+        static REJECTED_TOKEN: Cell<Option<&'static str>> = const { Cell::new(None) };
+    }
+
+    /// Restores the unperturbed current composition on drop.
+    pub struct Armed(());
+    impl Drop for Armed {
+        fn drop(&mut self) {
+            PROMPT_SUFFIX.with(|cell| cell.set(None));
+            REJECTED_TOKEN.with(|cell| cell.set(None));
+        }
+    }
+
+    /// Today's prompt renderer appends `prompt_suffix`; today's composer
+    /// refuses any caller argument equal to `rejected_token`.
+    pub fn arm(prompt_suffix: Option<&'static str>, rejected_token: Option<&'static str>) -> Armed {
+        PROMPT_SUFFIX.with(|cell| cell.set(prompt_suffix));
+        REJECTED_TOKEN.with(|cell| cell.set(rejected_token));
+        Armed(())
+    }
+
+    pub(crate) fn prompt_suffix() -> Option<&'static str> {
+        PROMPT_SUFFIX.with(Cell::get)
+    }
+
+    pub(crate) fn rejected_token() -> Option<&'static str> {
+        REJECTED_TOKEN.with(Cell::get)
+    }
+}
+
+/// Frozen V1 bootstrap launch composition: the native argv a version-1 Root
+/// bootstrap (`BootstrapPlan.version == 1`, the only plan version) produced
+/// from its caller arguments plus generated prompt, with the empty owned argv
+/// that production hook inspection supplies. Retained successful launch
+/// reports are validated against this, never against today's registry or
+/// provider grammar, so a later change to [`compose_native_argv`] cannot
+/// invalidate an already successful historical launch.
+///
+/// The original acceptance grammar is kept (Codex daemon-mode, hook-override,
+/// image-arity, subcommand-form and `--no-daemon` guards); with empty owned
+/// argv every admitted form returns the caller arguments unchanged. Only the
+/// original V1 native targets (Codex, Claude) are accepted. Do not edit this
+/// to follow current launch behavior: it is a compatibility record.
+pub fn compose_bootstrap_v1_argv(
+    harness: Harness,
+    caller: Vec<String>,
+) -> Result<Vec<String>, ApiError> {
+    if harness == Harness::Claude {
+        return Ok(caller);
+    }
+    if harness != Harness::Codex {
+        return Err(error(
+            ErrorCode::UnsupportedHarness,
+            "not a version-1 bootstrap native target",
+        ));
+    }
+    v1::codex_guard(&caller)?;
+    Ok(caller)
+}
+
+/// The V1 Codex acceptance grammar, frozen with its original tables.
+mod v1 {
+    use super::error;
+    use crate::protocol::results::{ApiError, ErrorCode};
+
+    const VALUE_OPTIONS: &[&str] = &[
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "-i",
+        "--image",
+        "--remote",
+        "--remote-auth-token-env",
+        "--thread-source",
+        "-m",
+        "--model",
+        "--local-provider",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-a",
+        "--ask-for-approval",
+        "-C",
+        "--cd",
+        "--add-dir",
+        "--output-schema",
+        "--color",
+        "-o",
+        "--output-last-message",
+    ];
+    const MULTI_VALUE_OPTIONS: &[&str] = &["-i", "--image"];
+    const UNSUPPORTED_SUBCOMMANDS: &[&str] = &[
+        "agents",
+        "e",
+        "review",
+        "login",
+        "logout",
+        "mcp",
+        "mcp-server",
+        "app-server",
+        "app",
+        "completion",
+        "sandbox",
+        "debug",
+        "apply",
+        "a",
+        "fork",
+        "cloud",
+        "cloud-tasks",
+        "features",
+        "help",
+        "plugin",
+        "remote-control",
+        "update",
+        "doctor",
+        "queue",
+        "archive",
+        "delete",
+        "migrate-rollouts",
+        "unarchive",
+        "exec-server",
+        "responses-api-proxy",
+        "stdio-to-uds",
+        "execpolicy",
+        "generate-ts",
+    ];
+    const EXEC_UNSUPPORTED_SUBCOMMANDS: &[&str] = &["fork", "review", "help"];
+
+    fn invalid(detail: &str) -> ApiError {
+        error(ErrorCode::InvalidRequest, detail)
+    }
+
+    fn next_positional(argv: &[String], start: usize) -> Option<(usize, bool)> {
+        let mut index = start;
+        while index < argv.len() {
+            let arg = argv[index].as_str();
+            if arg == "--" {
+                return (index + 1 < argv.len()).then_some((index + 1, true));
+            }
+            if arg.len() > 1 && arg.starts_with('-') {
+                index += if VALUE_OPTIONS.contains(&arg) { 2 } else { 1 };
+                continue;
+            }
+            return Some((index, false));
+        }
+        None
+    }
+
+    /// The index of the subcommand, if any, for an admitted V1 form.
+    fn form(argv: &[String]) -> Result<Option<usize>, ApiError> {
+        let Some((first, after_separator)) = next_positional(argv, 0) else {
+            return Ok(None);
+        };
+        if after_separator {
+            return Ok(None);
+        }
+        match argv[first].as_str() {
+            "exec" => match next_positional(argv, first + 1) {
+                Some((second, false))
+                    if argv[second] != "resume"
+                        && EXEC_UNSUPPORTED_SUBCOMMANDS.contains(&argv[second].as_str()) =>
+                {
+                    Err(invalid("V1 bootstrap refuses this Codex exec subcommand"))
+                }
+                _ => Ok(Some(first)),
+            },
+            "resume" => Err(invalid("V1 bootstrap refuses the Codex resume form")),
+            word if UNSUPPORTED_SUBCOMMANDS.contains(&word) => {
+                Err(invalid("V1 bootstrap refuses this Codex subcommand"))
+            }
+            _ if next_positional(argv, first + 1).is_some() => Err(invalid(
+                "ambiguous Codex arguments: more than one positional argument before a \
+                 recognised subcommand",
+            )),
+            _ => Ok(None),
+        }
+    }
+
+    fn overrides_hooks(value: &str) -> bool {
+        let key = value.split('=').next().unwrap_or("").trim();
+        key == "hooks" || key.starts_with("hooks.")
+    }
+
+    pub(super) fn codex_guard(caller: &[String]) -> Result<(), ApiError> {
+        let options_end = caller
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(caller.len());
+        let options = &caller[..options_end];
+        if options.iter().any(|arg| {
+            arg == "--daemon" || arg.starts_with("--daemon=") || arg.starts_with("--no-daemon=")
+        }) {
+            return Err(invalid("conflicting Codex daemon mode"));
+        }
+        let mut previous_is_config = false;
+        let mut previous_takes_value = false;
+        for arg in options {
+            let value = if previous_is_config {
+                Some(arg.as_str())
+            } else {
+                arg.strip_prefix("--config=").or_else(|| {
+                    arg.strip_prefix("-c")
+                        .filter(|rest| !rest.is_empty())
+                        .map(|rest| rest.strip_prefix('=').unwrap_or(rest))
+                })
+            };
+            if value.is_some_and(overrides_hooks) {
+                return Err(invalid(
+                    "caller Codex hooks override would replace the owned hook configuration",
+                ));
+            }
+            if !previous_takes_value && MULTI_VALUE_OPTIONS.contains(&arg.as_str()) {
+                return Err(invalid(
+                    "ambiguous Codex arguments: put images as --image=FILE or before --",
+                ));
+            }
+            previous_is_config = !previous_takes_value && (arg == "-c" || arg == "--config");
+            previous_takes_value = !previous_takes_value && VALUE_OPTIONS.contains(&arg.as_str());
+        }
+        let subcommand = form(caller)?;
+        let no_daemon: Vec<usize> = options
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| *arg == "--no-daemon")
+            .map(|(index, _)| index)
+            .collect();
+        if no_daemon.len() > 1 {
+            return Err(invalid("duplicate Codex --no-daemon"));
+        }
+        if let (Some(&at), Some(subcommand)) = (no_daemon.first(), subcommand)
+            && at > subcommand
+        {
+            return Err(invalid(
+                "Codex --no-daemon is a top-level flag; it must precede the subcommand",
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub fn launch_registration(
     registry: &super::registry::Registry,
     harness: Harness,

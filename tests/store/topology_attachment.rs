@@ -662,3 +662,93 @@ fn begin_first_live_child_remains_live_and_import_never_suppresses_it() {
     );
     tx.commit().unwrap();
 }
+
+/// Upgrade simulation: the genuine literal V1 report stays byte-identical
+/// while today's prompt renderer and/or composer change. Pending deciding
+/// completion and exact historical replay must still accept it; corrupted
+/// reports still refuse with both fences unchanged.
+#[test]
+fn genuine_v1_report_completes_and_replays_after_current_composition_drift() {
+    use herdr_threads::harness::launch::{compose_native_argv, current_drift};
+    use sha2::{Digest, Sha256};
+    for (label, suffix, rejected) in [
+        ("prose", Some(" Re-read the task body."), None),
+        ("admission", None, Some("fixed")),
+        ("both", Some(" Re-read the task body."), Some("fixed")),
+    ] {
+        let mut db = fixture();
+        let tx = db.transaction().unwrap();
+        let id = identity();
+        let a = linked(&tx, &id);
+        let command = completion(&id, &a);
+        let genuine = serde_json::to_vec(&command.retained).unwrap();
+        let _drift = current_drift::arm(suffix, rejected);
+        if rejected.is_some() {
+            assert!(
+                compose_native_argv(
+                    id.payload.launch.harness,
+                    id.payload.launch.argv.clone(),
+                    vec![]
+                )
+                .is_err(),
+                "{label}: current composer observes the drift"
+            );
+        }
+        for change in ["options", "owned", "prompt", "routing", "body", "recipient"] {
+            let mut bad = command.clone();
+            match change {
+                "options" => bad.retained.report["argv"][1] = "changed".into(),
+                "owned" => bad.retained.report["argv"]
+                    .as_array_mut()
+                    .unwrap()
+                    .insert(0, "-chooks.Stop=[x]".into()),
+                "prompt" => bad.retained.report["argv"][2] = "invented prompt".into(),
+                "routing" => {
+                    let p = bad.retained.report["argv"][2].as_str().unwrap().replace(
+                        "JSON data): null",
+                        r#"JSON data): {"instance":"00000000-0000-4000-8000-000000000001","state_dir":"/state","host_endpoint":"/host.sock"}"#,
+                    );
+                    bad.retained.report["argv"][2] = p.into();
+                }
+                "body" => {
+                    let p = format!("{} work", bad.retained.report["argv"][2].as_str().unwrap());
+                    bad.retained.report["argv"][2] = p.into();
+                }
+                "recipient" => bad.retained.recipient = SeatId::new("other"),
+                _ => unreachable!(),
+            }
+            bad.retained.report_digest = format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&bad.retained.report).unwrap())
+            );
+            assert!(
+                topology_handoff::complete_linked_pending(&tx, &namespace(), &bad, UtcMillis(2))
+                    .is_err(),
+                "{label}/{change}"
+            );
+            assert_eq!(
+                handoff::current(&tx, &a.handoff).unwrap().unwrap().state,
+                HandoffState::Live,
+                "{label}/{change}"
+            );
+        }
+        let done =
+            topology_handoff::complete_linked_pending(&tx, &namespace(), &command, UtcMillis(3))
+                .unwrap_or_else(|e| panic!("{label}: genuine V1 report refused: {e:?}"));
+        assert_eq!(serde_json::to_vec(&done.retained).unwrap(), genuine);
+        assert_eq!(
+            topology_handoff::complete_linked_pending(&tx, &namespace(), &command, UtcMillis(4))
+                .unwrap(),
+            done,
+            "{label}"
+        );
+        assert_eq!(
+            topology_handoff::current(&tx, &namespace(), &id)
+                .unwrap()
+                .unwrap()
+                .state,
+            BootstrapState::Completed
+        );
+        tx.commit().unwrap();
+    }
+}

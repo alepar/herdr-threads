@@ -1057,10 +1057,23 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
         let request = if let Some(template) = startup_input {
             prepare_saved_startup(launcher, plan, claim, Some(&thread), template)?.request
         } else {
+            // Frozen V1 Root input. Its retained report is later validated
+            // against frozen V1 composition, so refuse before any start when
+            // today's composer would launch different native arguments.
             let mut request = plan.request.launch.clone();
-            request
-                .argv
-                .push(bootstrap(&thread, &plan.context, &claim.instance));
+            request.argv.push(bootstrap_v1::prompt(
+                thread.as_str(),
+                &plan.context,
+                &claim.instance,
+            ));
+            let harness = request.harness.into();
+            if crate::harness::launch::compose_native_argv(harness, request.argv.clone(), vec![])?
+                != crate::harness::launch::compose_bootstrap_v1_argv(harness, request.argv.clone())?
+            {
+                return Err(super::invalid_request(
+                    "current native composition differs from frozen V1 bootstrap contract",
+                ));
+            }
             request
         };
         let launched = launcher.launch(&request, &plan.recipient, &mut |possible| {
@@ -1356,7 +1369,233 @@ fn render_bootstrap<W: Write>(
         writer,
         "`. The task for thread {} is stored in inbox; follow its printed next: commands for complete bodies. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.",
         thread
-    )
+    )?;
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(suffix) = crate::harness::launch::current_drift::prompt_suffix() {
+        writer.write_all(suffix.as_bytes())?;
+    }
+    Ok(())
+}
+
+/// Frozen version-1 Root bootstrap prompt: the single generated native
+/// argument a version-1 bootstrap (`BootstrapPlan.version == 1`, also every
+/// plan without a startup-input template) appends to its caller arguments.
+/// Retained successful launch reports are validated against these exact
+/// bytes, so its routing JSON, quoting, token order and prose are a
+/// compatibility record: never edit them to follow [`bootstrap`], the
+/// current generic renderer used by startup-input templates.
+pub(crate) mod bootstrap_v1 {
+    use crate::protocol::output::ContinuationContext;
+    use std::path::Path;
+
+    const PREFIX: &str = "Expected handoff command routing (JSON data): ";
+    const INSTRUCTION: &str = " Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox using that matching group. Otherwise use the exact fallback: `";
+    const THREAD: &str = "`. The task for thread ";
+    const SUFFIX: &str = " is stored in inbox; follow its printed next: commands for complete bodies. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.";
+    const ARGV0: &str = "herdr-threads";
+
+    /// Unicode 16.0.0 General_Category=Cf ranges, as V1 quoted them.
+    const FORMAT_RANGES: [(u32, u32); 21] = [
+        (0x00AD, 0x00AD),
+        (0x0600, 0x0605),
+        (0x061C, 0x061C),
+        (0x06DD, 0x06DD),
+        (0x070F, 0x070F),
+        (0x0890, 0x0891),
+        (0x08E2, 0x08E2),
+        (0x180E, 0x180E),
+        (0x200B, 0x200F),
+        (0x202A, 0x202E),
+        (0x2060, 0x2064),
+        (0x2066, 0x206F),
+        (0xFEFF, 0xFEFF),
+        (0xFFF9, 0xFFFB),
+        (0x110BD, 0x110BD),
+        (0x110CD, 0x110CD),
+        (0x13430, 0x1343F),
+        (0x1BCA0, 0x1BCA3),
+        (0x1D173, 0x1D17A),
+        (0xE0001, 0xE0001),
+        (0xE0020, 0xE007F),
+    ];
+
+    /// The V1 expected routing object (`instance`, `state_dir`,
+    /// `host_endpoint`, in that order).
+    pub(crate) struct Routing {
+        instance: uuid::Uuid,
+        state_dir: String,
+        host_endpoint: String,
+    }
+
+    /// The routing outcome the V1 producer captures at launch time: the
+    /// canonical state directory and endpoint parent, or none when the UUID,
+    /// either path or its canonicalization is unavailable.
+    fn produced(instance: &str, context: &ContinuationContext) -> Option<Routing> {
+        let state = Path::new(context.state_dir.as_deref()?)
+            .canonicalize()
+            .ok()?;
+        let host = Path::new(context.host.as_deref()?);
+        let endpoint = host.parent()?.canonicalize().ok()?.join(host.file_name()?);
+        Some(Routing {
+            instance: uuid::Uuid::parse_str(instance).ok()?,
+            state_dir: state.to_str()?.to_owned(),
+            host_endpoint: endpoint.to_str()?.to_owned(),
+        })
+    }
+
+    /// The routing object of an already canonical retained namespace, taken
+    /// verbatim. Validation never repeats today's filesystem lookup.
+    fn retained(instance: &str, context: &ContinuationContext) -> Option<Routing> {
+        Some(Routing {
+            instance: uuid::Uuid::parse_str(instance).ok()?,
+            state_dir: context.state_dir.clone()?,
+            host_endpoint: context.host.clone()?,
+        })
+    }
+
+    fn json_string(value: &str, out: &mut String) {
+        out.push('"');
+        for ch in value.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\u{8}' => out.push_str("\\b"),
+                '\u{c}' => out.push_str("\\f"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                ch if (ch as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", ch as u32)),
+                ch => out.push(ch),
+            }
+        }
+        out.push('"');
+    }
+
+    fn needs_escape(ch: char) -> bool {
+        let cp = ch as u32;
+        ch.is_control()
+            || matches!(ch, '\u{2028}' | '\u{2029}')
+            || FORMAT_RANGES
+                .iter()
+                .any(|&(low, high)| (low..=high).contains(&cp))
+    }
+
+    fn shell_token(arg: &str, out: &mut String) {
+        if arg.chars().any(needs_escape) {
+            out.push_str("$'");
+            for ch in arg.chars() {
+                match ch {
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    '\'' => out.push_str("\\'"),
+                    '\\' => out.push_str("\\\\"),
+                    ch if needs_escape(ch) => {
+                        let mut buffer = [0; 4];
+                        for byte in ch.encode_utf8(&mut buffer).bytes() {
+                            out.push_str(&format!("\\x{byte:02x}"));
+                        }
+                    }
+                    ch => out.push(ch),
+                }
+            }
+            out.push('\'');
+        } else if !arg.is_empty()
+            && arg
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte))
+        {
+            out.push_str(arg);
+        } else {
+            out.push('\'');
+            for ch in arg.chars() {
+                if ch == '\'' {
+                    out.push_str("'\\''");
+                } else {
+                    out.push(ch);
+                }
+            }
+            out.push('\'');
+        }
+    }
+
+    fn render(thread: &str, routing: Option<&Routing>, context: &ContinuationContext) -> String {
+        let mut out = String::from(PREFIX);
+        match routing {
+            None => out.push_str("null"),
+            Some(routing) => {
+                out.push_str("{\"instance\":\"");
+                out.push_str(&routing.instance.hyphenated().to_string());
+                out.push_str("\",\"state_dir\":");
+                json_string(&routing.state_dir, &mut out);
+                out.push_str(",\"host_endpoint\":");
+                json_string(&routing.host_endpoint, &mut out);
+                out.push('}');
+            }
+        }
+        out.push_str(INSTRUCTION);
+        let mut fallback = vec![ARGV0];
+        if let Some(state) = &context.state_dir {
+            fallback.extend(["--state-dir", state.as_str()]);
+        }
+        if let Some(host) = &context.host {
+            fallback.extend(["--host-endpoint", host.as_str()]);
+        }
+        fallback.push("inbox");
+        for (index, token) in fallback.into_iter().enumerate() {
+            if index > 0 {
+                out.push(' ');
+            }
+            shell_token(token, &mut out);
+        }
+        out.push_str(THREAD);
+        out.push_str(thread);
+        out.push_str(SUFFIX);
+        out
+    }
+
+    /// Produce the V1 prompt for a launch happening now.
+    pub(crate) fn prompt(thread: &str, context: &ContinuationContext, instance: &str) -> String {
+        render(thread, produced(instance, context).as_ref(), context)
+    }
+
+    /// Every prompt a V1 producer could have retained for this canonical
+    /// namespace: the verbatim canonical routing object (only for a valid
+    /// UUID) and the documented null-routing outcome.
+    pub(crate) fn retained_prompts(
+        thread: &str,
+        context: &ContinuationContext,
+        instance: &str,
+    ) -> Vec<String> {
+        let mut prompts = Vec::with_capacity(2);
+        if let Some(routing) = retained(instance, context) {
+            prompts.push(render(thread, Some(&routing), context));
+        }
+        prompts.push(render(thread, None, context));
+        prompts
+    }
+
+    /// Whether a retained successful report's `argv` is the exact frozen V1
+    /// composition of `caller` plus one V1 prompt. The frozen grammar still
+    /// refuses caller arguments V1 never admitted.
+    pub(crate) fn retained_argv_matches(
+        harness: crate::protocol::authority::Harness,
+        caller: &[String],
+        thread: &str,
+        context: &ContinuationContext,
+        instance: &str,
+        retained: Option<&serde_json::Value>,
+    ) -> Result<bool, crate::protocol::results::ApiError> {
+        for prompt in retained_prompts(thread, context, instance) {
+            let mut argv = caller.to_vec();
+            argv.push(prompt);
+            let expected = crate::harness::launch::compose_bootstrap_v1_argv(harness, argv)?;
+            if retained == Some(&serde_json::json!(expected)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 fn bootstrap_text(
     thread: &str,
@@ -1480,15 +1719,23 @@ fn report_core(
     }
     manual.push("--".into());
     if let Some(thread) = &progress.thread {
-        let text = bootstrap(thread, &plan.context, &claim.instance);
-        if let Some(template) = &plan.startup_input
-            && let Ok((argv, _)) = template.apply(&plan.request.launch.argv, &text)
-        {
-            manual.extend(argv);
+        if let Some(template) = &plan.startup_input {
+            let text = bootstrap(thread, &plan.context, &claim.instance);
+            if let Ok((argv, _)) = template.apply(&plan.request.launch.argv, &text) {
+                manual.extend(argv);
+            } else {
+                manual.extend(plan.request.launch.argv.clone());
+                manual.push(text);
+            }
         } else {
-            // Historical caller arrays are display only; do not reselect a transport.
+            // Historical caller arrays are display only; do not reselect a
+            // transport. Template-free plans carry the frozen V1 input.
             manual.extend(plan.request.launch.argv.clone());
-            manual.push(text);
+            manual.push(bootstrap_v1::prompt(
+                thread.as_str(),
+                &plan.context,
+                &claim.instance,
+            ));
         }
     } else {
         manual.clear();
