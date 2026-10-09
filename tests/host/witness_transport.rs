@@ -162,6 +162,7 @@ fn synthetic_reuse_before_after_and_between_streams_and_exit_reject() {
             &budget,
             UNREACHED_WALL_LIMIT,
             Some(&provider),
+            &|_| {},
         );
         assert_eq!(result.unwrap_err().code, ErrorCode::StaleHostObservation);
     }
@@ -262,6 +263,7 @@ fn fix1_error_capture_observes_cancel_expiry_and_live_budget_before_write_and_af
                 &budget,
                 UNREACHED_WALL_LIMIT,
                 Some(&provider),
+                &|_| {},
             );
             assert_eq!(
                 result.unwrap_err().code,

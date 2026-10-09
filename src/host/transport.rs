@@ -314,7 +314,8 @@ fn request_inner(
     budget: &CallBudget,
     limit: Duration,
     provider: Option<&dyn ProcessInfoProvider>,
-) -> Result<(String, Option<LocalEndpointWitness>, HostRelease), ApiError> {
+    observe: &PingObserver<'_>,
+) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
     let started = Instant::now();
     // HostPort is synchronous and may be called from inside a Tokio runtime.
     // Keep this one transport task owned and joined on every return path.
@@ -351,11 +352,14 @@ fn request_inner(
                         return Err(error(ErrorCode::Unsupported, "host API ping failed"));
                     }
                     // A version floor only: `protocol` is recorded, never gated.
-                    let release = super::compatibility::admit(
+                    // The answered ping is published before the operation, so
+                    // a failed operation never leaves the observation stale.
+                    let admitted = super::compatibility::admit(
                         pong.get("version").and_then(Value::as_str),
                         pong.get("protocol").and_then(Value::as_u64),
-                    )
-                    .map_err(|detail| error(ErrorCode::Unsupported, detail))?;
+                    );
+                    observe(admitted.as_ref().ok().cloned());
+                    admitted.map_err(|detail| error(ErrorCode::Unsupported, detail))?;
                     let (result, witness) = exchange(
                         socket, id, method, params, clock, budget, started, limit, provider,
                     )
@@ -405,7 +409,7 @@ fn request_inner(
                         )
                     })?;
                     check(clock, budget, started, limit)?;
-                    Ok((encoded, witness, release))
+                    Ok((encoded, witness))
                 })
             })
             .join()
@@ -438,10 +442,18 @@ mod tests {
 pub struct WitnessedResponse {
     pub body: String,
     pub witness: super::continuity::LocalEndpointWitness,
-    /// What this call's `ping` reported.
-    pub release: HostRelease,
 }
+
+/// Called once per call whose `ping` Herdr answered with a `pong`, before the
+/// operation is sent and whatever the operation's outcome: `Some` for an
+/// admitted release, `None` for one refused by the floor (or without a
+/// readable version), so a stale earlier release is never kept. Not called
+/// when the ping itself was not answered.
+pub(crate) type PingObserver<'a> = dyn Fn(Option<HostRelease>) + Sync + 'a;
+
 /// Existing callers retain their original transport and capability behavior.
+// Allowed: request_inner's inputs plus the ping observer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn request(
     socket: &Path,
     id: &str,
@@ -450,9 +462,12 @@ pub(crate) fn request(
     clock: &dyn Clock,
     budget: &CallBudget,
     limit: Duration,
-) -> Result<(String, HostRelease), ApiError> {
-    request_inner(socket, id, method, params, clock, budget, limit, None)
-        .map(|(body, _, release)| (body, release))
+    observe: &PingObserver<'_>,
+) -> Result<String, ApiError> {
+    request_inner(
+        socket, id, method, params, clock, budget, limit, None, observe,
+    )
+    .map(|(body, _)| body)
 }
 
 /// Each actual stream is checked before sending and after correlated response
@@ -466,7 +481,23 @@ pub fn request_witnessed(
     budget: &CallBudget,
     limit: Duration,
 ) -> Result<WitnessedResponse, ApiError> {
-    let (body, witness, release) = request_inner(
+    request_witnessed_observed(socket, id, method, params, clock, budget, limit, &|_| {})
+}
+
+/// `request_witnessed` that also reports the answered ping to `observe`.
+// Allowed: request_witnessed's inputs plus the ping observer.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn request_witnessed_observed(
+    socket: &Path,
+    id: &str,
+    method: &str,
+    params: Value,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+    limit: Duration,
+    observe: &PingObserver<'_>,
+) -> Result<WitnessedResponse, ApiError> {
+    let (body, witness) = request_inner(
         socket,
         id,
         method,
@@ -475,6 +506,7 @@ pub fn request_witnessed(
         budget,
         limit,
         Some(&KernelProcessInfo),
+        observe,
     )?;
     let witness = witness.ok_or_else(|| {
         error(
@@ -482,11 +514,7 @@ pub fn request_witnessed(
             "endpoint witness unavailable",
         )
     })?;
-    Ok(WitnessedResponse {
-        body,
-        witness,
-        release,
-    })
+    Ok(WitnessedResponse { body, witness })
 }
 fn witness_error(error_value: super::continuity::CaptureError) -> ApiError {
     let code = if error_value == super::continuity::CaptureError::Unsupported {
