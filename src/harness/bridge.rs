@@ -1038,13 +1038,17 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
         (read_digest(client, &claim.seat, budget), false)
     };
     let mut mark = None;
-    if let Ok(digest) = &digest {
-        // Spec D7: a live mod channel delivers attention itself. Stay quiet
-        // and leave the mark alone, so what is pending is presented once the
-        // channel is gone.
-        if digest.mod_channel_live {
-            return Ok(ToolBoundary::default());
-        }
+    // Spec D7: a live mod channel delivers attention itself, so the digest,
+    // ready commands and mark stay out of this boundary; the stored mark is
+    // left alone, so what is pending is presented once the channel is gone.
+    // Informational notices do not travel on the channel (as in
+    // `lifecycle_check_in`, where the offered notices still show), so pending
+    // ones are still offered here.
+    let live = digest.as_ref().is_ok_and(|digest| digest.mod_channel_live);
+    if live && !notices_pending {
+        return Ok(ToolBoundary::default());
+    }
+    if let (Ok(digest), false) = (&digest, live) {
         let advanced = match &last {
             Some(last) => digest.token.advanced_beyond(last) || notices_pending,
             // No mark (first call, or a compaction): present what is pending.
@@ -1093,7 +1097,8 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     )?;
     // The carried notice page rides with the digest summary, which survives
     // the hook's oversize fallback: the offer settles exactly what it shows.
-    let digest = digest.ok();
+    // A live channel offers the notice page alone: no digest, no summary line.
+    let digest = digest.ok().filter(|digest| !digest.mod_channel_live);
     Ok(ToolBoundary {
         text: hook.bytes,
         summary: join_summaries(
