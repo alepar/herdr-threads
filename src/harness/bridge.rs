@@ -959,6 +959,8 @@ pub struct ToolBoundary {
     /// The digest read before the offer, for the ready-to-run command block.
     pub digest: Option<AttentionDigest>,
     pub mark: Option<(Uuid, AttentionToken)>,
+    /// A live mod channel delivers attention: the ready commands stay omitted.
+    pub live: bool,
 }
 
 /// Non-durable tool-boundary attention read (harness design: tool context is
@@ -1062,6 +1064,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
                 summary: None,
                 digest: None,
                 mark: (stored != Some(next)).then_some((saved.execution, next)),
+                live: false,
             });
         }
         mark = Some((saved.execution, next));
@@ -1107,6 +1110,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
         ),
         digest,
         mark,
+        live,
     })
 }
 

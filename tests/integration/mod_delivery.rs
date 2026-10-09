@@ -2034,6 +2034,11 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
         shown.stdout
     );
     assert!(
+        !shown.stdout.contains("pending mail"),
+        "ready commands while live: {:?}",
+        shown.stdout
+    );
+    assert!(
         shown.stdout.contains("thread-notice-live"),
         "the offer names the notice's thread: {:?}",
         shown.stdout

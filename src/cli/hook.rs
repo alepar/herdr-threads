@@ -1932,7 +1932,7 @@ impl PaneCall<'_> {
             });
             return Ok(CheckedIn {
                 command_routing: None,
-                actions: Some(next_actions(&prefix, boundary.digest.as_ref())),
+                actions: (!boundary.live).then(|| next_actions(&prefix, boundary.digest.as_ref())),
                 text: boundary.text,
                 fallback,
                 summary: boundary.summary,
