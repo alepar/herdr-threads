@@ -26,6 +26,7 @@ const msg = (id: string, extra: Any = {}) => ({
 const lazy = (id: string) => msg(id, { kind: 'lazy', ack_required: false })
 const attention = (v: number) => ({ schema: 1, id: `attention:${v}`, kind: 'attention', attention_version: v, text: `attention marker ${v}` })
 const connected = { schema: 1, id: 'status:1', kind: 'status', state: 'connected' }
+const status = (state: string, reason: string, exit: number) => ({ schema: 1, id: 'status:9', kind: 'status', state, reason, exit })
 
 // A fake io. `submitMode: 'manual'` leaves submit promises for the test to settle.
 function harness(opts: Any = {}) {
@@ -107,9 +108,14 @@ function harness(opts: Any = {}) {
     await h.core.onTick()
     await flush()
   }
+  h.connect = async () => {
+    h.line(connected)
+    await flush()
+  }
   h.boot = async () => {
     await h.core.onLoad()
     await flush()
+    if (h.spawns.length > 0 && opts.connect !== false) await h.connect()
     return h
   }
   h.kinds = () => h.entries.map((e: Any) => e.kind)
@@ -444,6 +450,7 @@ test('attention is delivered like a message, never acked, once per version and o
   h.exit(0)
   await h.advance(1000)
   expect(h.spawns.length).toBe(2)
+  await h.connect()
   h.line(attention(5))
   await flush()
   expect(h.submits.length).toBe(2)
@@ -569,6 +576,7 @@ test('/clear discards the delivered set, resume keeps it and re-acks, /branch st
   expect(c.storeMap.has('delivered:s1')).toBe(false)
   expect(c.child().argv.at(-1)).toBe('s2')
   expect(c.core.snapshot().rec.unacked).toEqual({})
+  await c.connect()
   c.line(msg('m1'))
   await flush()
   expect(c.submits.length).toBe(2) // streamed again, delivered again
@@ -580,6 +588,7 @@ test('/clear discards the delivered set, resume keeps it and re-acks, /branch st
   b.sid = 's3'
   await b.advance(1000)
   expect(b.core.snapshot().rec.delivered).toEqual({})
+  await b.connect()
   b.line(msg('m1'))
   await flush()
   expect(b.submits.length).toBe(2)
@@ -685,6 +694,156 @@ test('stale callbacks of a replaced child are ignored', async () => {
   await h.advance(60_000)
   expect(h.spawns.length).toBe(n)
   expect(h.submits.length).toBe(0)
+})
+
+test('a stall close drops held items: cooldown then a normal turn neither attaches nor submits', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.core.onTurnStart({ turnId: 't1' })
+  h.core.onTurnComplete({ turnId: 't1', isAborted: true })
+  h.line(msg('m1'))
+  await h.advance(1000)
+  expect(h.submits.length).toBe(0)
+  h.line(status('closing', 'stalled', 0))
+  h.exit(0)
+  await h.advance(1000)
+  expect(h.spawns.length).toBe(2)
+  h.line(status('refused', 'cooldown', 2))
+  h.exit(2)
+  expect(h.core.snapshot().queue).toEqual([])
+  const lost = h.entries.find((e: Any) => e.kind === 'refused' && String(e.reason).startsWith('channel_lost:'))
+  expect(lost.ids).toEqual(['m1'])
+  h.core.onTurnStart({ turnId: 't2' })
+  expect(await h.core.onToolCall({ tool: 'Bash' }, answered)).toBe(answered)
+  h.core.onTurnComplete({ turnId: 't2' })
+  await flush()
+  await h.advance(200_000)
+  expect(h.submits.length).toBe(0)
+  expect(h.appends.length).toBe(0)
+  expect(h.ackRuns().length).toBe(0)
+
+  // the busy path, with a lazy row stuck behind a denying append
+  const b = await harness({ state: busyState() }).boot()
+  b.appendResult = () => ({ deny: 'x' })
+  b.line(msg('m1'))
+  b.line(lazy('l1'))
+  await flush()
+  expect(b.appends.length).toBe(1)
+  b.line(status('closing', 'stalled', 0))
+  b.exit(0)
+  expect(b.core.snapshot().queue).toEqual([])
+  expect(await b.core.onToolCall({ tool: 'Bash' }, answered)).toBe(answered)
+  b.appendResult = () => ({})
+  await b.advance(1000)
+  await b.connect()
+  await b.advance(60_000)
+  expect(b.appends.length).toBe(1)
+  expect(await b.core.onToolCall({ tool: 'Bash' }, answered)).toBe(answered)
+})
+
+test('child exit with queued items: the reconnect re-stream delivers each item once', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.ackResult = (argv: string[]) => {
+    const ids = argv.slice(argv.indexOf('--via') + 2)
+    return { code: 0, stdout: ids.map((id) => JSON.stringify({ id, result: 'retryable' })).join('\n') }
+  }
+  h.line(msg('m0'))
+  await h.core.onToolCall({ tool: 'Bash' }, answered)
+  await flush()
+  expect(Object.keys(h.core.snapshot().rec.unacked)).toEqual(['m0'])
+  h.line(msg('m1'))
+  h.line(msg('m2'))
+  h.exit(1)
+  expect(h.core.snapshot().queue).toEqual([])
+  expect(Object.keys(h.core.snapshot().rec.unacked)).toEqual(['m0'])
+  await flush()
+  const before = h.ackRuns().length
+  await h.advance(1000)
+  h.ackResult = (argv: string[]) => {
+    const ids = argv.slice(argv.indexOf('--via') + 2)
+    return { code: 0, stdout: ids.map((id) => JSON.stringify({ id, result: 'settled' })).join('\n') }
+  }
+  await h.connect()
+  const reack = h.ackRuns().slice(before)
+  expect(reack.map((r: string[]) => r.slice(5))).toEqual([['--via', 'context', 'm0']])
+  h.line(msg('m1'))
+  h.line(msg('m2'))
+  const r = await h.core.onToolCall({ tool: 'Bash' }, answered)
+  expect(r.context.length).toBe(1)
+  const count = (s: string) => r.context[0].split(s).length - 1
+  expect(count('message m1 in')).toBe(1)
+  expect(count('message m2 in')).toBe(1)
+  h.core.onTurnComplete({ turnId: 't1' })
+  await flush()
+  expect(h.submits.length).toBe(0)
+  expect(h.ackRuns().slice(before + 1).map((x: string[]) => x.slice(5))).toEqual([['--via', 'context', 'm1', 'm2']])
+})
+
+test('an in-flight submit across a channel loss: success is delivered, a late drop is discarded unless re-streamed', async () => {
+  const start = async () => {
+    const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+    h.line(msg('m1'))
+    await flush()
+    expect(h.pending.length).toBe(1)
+    return h
+  }
+  const a = await start()
+  a.exit(0)
+  expect(a.core.snapshot().queue).toEqual(['m1'])
+  a.pending[0].res({})
+  await flush()
+  expect(a.core.snapshot().rec.delivered.m1).toBe('submit')
+  expect(a.ackRuns().length).toBe(1)
+  expect(a.core.snapshot().queue).toEqual([])
+
+  const b = await start()
+  b.exit(0)
+  b.pending[0].res({ drop: 'late' })
+  await flush()
+  expect(b.core.snapshot().queue).toEqual([])
+  await b.advance(1000)
+  await b.connect()
+  await b.advance(60_000)
+  expect(b.submits.length).toBe(1)
+
+  const c = await start()
+  c.exit(0)
+  await c.advance(1000)
+  await c.connect()
+  c.line(msg('m1'))
+  c.pending[0].res({ drop: 'late' })
+  await flush()
+  expect(c.core.snapshot().queue).toEqual(['m1'])
+  c.pending.length = 0
+  c.submitMode = 'auto'
+  await c.advance(30_000)
+  expect(c.submits.length).toBe(2)
+})
+
+test('nothing is delivered before the run reports connected', async () => {
+  const h = await harness({ state: IDLE, connect: false }).boot()
+  h.line(msg('m1'))
+  h.line(lazy('l1'))
+  await h.advance(10_000)
+  expect(h.submits.length).toBe(0)
+  expect(h.appends.length).toBe(0)
+  await h.connect()
+  expect(h.submits.length).toBe(1)
+  expect(h.appends.length).toBe(1)
+})
+
+test('resume drops the queue; the new run re-streams and delivers once', async () => {
+  const h = await harness({ state: IDLE, box: 'draft' }).boot()
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits.length).toBe(0)
+  h.core.onSessionEnd('resume')
+  await h.advance(1000)
+  expect(h.core.snapshot().queue).toEqual([])
+  h.box = ''
+  await h.connect()
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits.length).toBe(1)
 })
 
 test('missing APIs leave the mod inert with a ledger reason', async () => {
