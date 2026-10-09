@@ -1,0 +1,10 @@
+# Preserve exact imported forensic snapshots; source and product docs stay checked.
+docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions-roast-design-1.md -whitespace
+docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions-roast-design-2.md -whitespace
+docs/superpowers/runs/2026-10-07-installer-human-permissions/graph-pass-input.md -whitespace
+docs/superpowers/runs/2026-10-07-installer-human-permissions/promotion-input.md -whitespace
+docs/superpowers/runs/2026-10-07-installer-human-permissions/roast-design-1-engine/engine-report.md -whitespace
+docs/superpowers/runs/2026-10-07-installer-human-permissions/roast-design-2-engine/engine-report.md -whitespace
+docs/superpowers/runs/2026-10-07-lazy-messages/coverage-inputs-round-1.md -whitespace
+docs/superpowers/runs/2026-10-07-lazy-messages/coverage-inputs-round-2.md -whitespace
+docs/superpowers/runs/2026-10-07-lazy-messages/graph-pass-review-prompt.md -whitespace
