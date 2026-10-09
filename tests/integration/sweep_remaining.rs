@@ -33,7 +33,10 @@ use herdr_threads::{
     store::retention::RETENTION_BATCH_ROWS,
 };
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::{
     fs,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
