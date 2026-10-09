@@ -45,12 +45,12 @@ Ruling: audit and reconcile actual main08cea7091202d7c47e992612d2de1a82f8474ea0 
 User verification/ownership override remains: focused worker checks, main final exact combined suite/CI; worker never runs a fullsuite or claims five-minute suite qualification. Main owns actual merge/release/local installation/tab closure; source worktrees/evidence remain until independently verifiedDONE+MERGED.
 
 codeBuckets:
-  completed: ht-qhz.1, ht-qhz.19, ht-qhz.2.1, ht-qhz.2.2, ht-qhz.2.3, ht-qhz.20, ht-qhz.3, ht-qhz.4.1, ht-qhz.4.2, ht-qhz.4.3, ht-qhz.5.1, ht-qhz.5.2, ht-qhz.6, ht-qhz.7, ht-qhz.8, ht-qhz.9
+  completed: ht-qhz.1, ht-qhz.19, ht-qhz.2.1, ht-qhz.2.2, ht-qhz.2.3, ht-qhz.20, ht-qhz.3, ht-qhz.4.1, ht-qhz.4.2, ht-qhz.4.3, ht-qhz.5.1, ht-qhz.5.2, ht-qhz.6, ht-qhz.7, ht-qhz.8, ht-qhz.9, ht-qhz.21
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (actual-main composition06a settled NEEDS FIXES; I2 missing pending report and C1 duplicate actor gate remain Must-fix; original PR roast1 now running; matched actual-main pressure awaits final recovery source)
+  review: not ready (C1 independently approved and integrated b3d6d268; I2 and original PR1 recovery/presentation/historical/inspection fixes remain; original PR1 settled, phase5 recovery .25 now implementing; matched actual-main pressure awaits final source)
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: historical overages retained; final changed-source builds/lint under60s; soft archival bundle limits remain explicit
   worktreesKept: all owned source/evidence worktrees — user requires retention until DONE+MERGED
@@ -75,3 +75,10 @@ cluster dropped: archival-parent-association — Reuse exact parent associations
 scope-filter: 6 in-scope · 1 punch-listed
 
 Ruling: Preserve the canonical scope disposition: archival C*M recurring lookup cost is real and Should-fix, but is an out-of-scope performance improvement for this goal because no incorrect archival decision, unbounded page or named traversal deadline was established. Carry exact open key to next round/report; no source redesign or severity downgrade. Cost if wrong: cumulative background work remains for separate performance work; existing bounded pages/fair writer/conservative coverage hold, no wall-clock starvation claim. Other six entries remain in-scope, C1 source-reviewed final-item routes directly under original autonomous phase5; I2 is covered by the pending-presentation cluster. No reset/additional SDD allowance.
+
+
+## Original PR1 fix-loop continuation
+
+Task17/ht-qhz.21 independently reviewed Approved0C0I0M at a125/f9cfa, source-equivalent rebase226 preserved original ref evidence/ht-qhz.21-reviewed-a125dfad; own integration b3d6d268/treefe5a319d verified both configured build-only checks before commit/leaf closure. Allfeature root build60.264s overage retained; default57.391s and author changed-source47.59/44.34s+lint30.733s are separate qualified measurements. No fullsuite/native qualification or main mutation. C1 final-review item resolved by actual evidence; I2 remains pending, no second finalSDD wave/rereview.
+
+Original phase5 appended leaves: ordinal18/.22 admitted-pending output;19/.23 immutable V1 launch validation;20/.24 parser-valid inspection (consumes exact reviewed .22 output);21/.25 canonical inspected-state recovery. Original16 remain closed. Fresh recovery scoped design review83f7c0c1 Approved0C0I0M, adopted auditf7005fc3; .25 implementing from cleanb3 in isolated task-ht-qhz.25 by the same original author. All new leaf taskFix/seamFix/invalidReviews/checkAborts0; root same run/phase/roast counters. No adapter/Lazy semantic dependency or coordinator permission/HOLD. Capability/history/actor/state binding constraints and exact pre-edit footprint remain binding; code review not yet run for .25. Main readiness/merge/release/install/close remain separate.
