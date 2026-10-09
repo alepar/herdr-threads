@@ -27,3 +27,6 @@ L26 · r2 · GAP · R10 launched pane · applied — ht-4ne.4 null-witness test 
 L27 · r2 · GAP · version skew · rejected — premise unverified in the inputs; the spec's bridge spawns the absolute executable pinned in bridge_config.json at setup, not PATH
 L28 · r2 · UNOWNED-SEAM · resume and wake limits · applied — merged into L17
 L29 · r2 · UNOWNED-SEAM · cli_session_start meaning · applied — ht-4ne.1 acceptance follows spec D2a combos and refusals
+G1 · graph · GRAPH-EDGE · ht-4ne.4 <- ht-4ne.1 · kept — consumes the enrollment seam and envelope parse; shared files
+G2 · graph · GRAPH-EDGE · ht-4ne.3 <- ht-4ne.4 · kept — smoke needs the shipped enrollment behavior
+G3 · graph · GRAPH-EDGE · ht-4ne.2 <- ht-4ne.4 · kept — docs source limits from ht-4ne.4's TRUST-POLICY text
