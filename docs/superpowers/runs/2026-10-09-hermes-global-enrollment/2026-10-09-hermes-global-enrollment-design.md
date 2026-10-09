@@ -48,7 +48,7 @@ Enrollment and check-in are split across two callbacks. A top-level Hermes CLI
 resolver Claude/Codex use; no check-in, no offer). The existing qualified `pre_llm_call` then
 checks in against the now-resolved seat and delivers context, unchanged. As a fallback, a
 qualified top-level CLI `pre_llm_call` that finds the pane `Unowned` may enroll too, within its
-own budget, without starting the daemon. The top-level witness is in-band and Hermes-specific: the native `platform` tag.
+own budget, on the existing turn path, including its deadline-bounded `ensure_running`. The top-level witness is in-band and Hermes-specific: the native `platform` tag.
 Hermes 0.21.5 starts delegated children with `platform="subagent"`
 (`hermes-agent/tools/delegate_tool.py:239`) and fires `on_session_start` from
 `agent/conversation_loop.py:833-835` with `platform=agent.platform`; the CLI's top-level agent
@@ -234,7 +234,7 @@ stay manual).
 (AGENTS.md):** C2 "Startup enrollment" names the Hermes CLI start callback and the turn fallback
 as enrollment events through the same resolver; the accepted limit "Hermes enrolls only through
 `launch`" is replaced by "Hermes enrolls through its CLI hooks" stating the platform witness, the
-no-check-in start, the absent C1 resume continuity (D5) and the wake limit (D6); a decision record
+no-check-in start, the absent C1 resume continuity (D5), the wake limit (D6) and the CLI side-agent limit (D2); a decision record
 entry (2026-10-09, ht-4ne) records the choice and the rejected alternatives. User-facing text that
 says "launch only" is updated separately: `integrations/skill/SKILL.md:43`, `src/cli/launch.rs:119-129`,
 `README.md` (the Hermes paragraph), and setup/status guidance where it mentions launch.
@@ -269,6 +269,17 @@ Recorded so the tree and the spec agree (coverage ledger L2–L29):
   (redesign, roast round 1); a concurrent start and first turn leave one
   seat and one check-in with context.
 - A null witness on a launch-created seat still checks in with context (R10).
+- Cross-harness pane reuse (design roast round 2): the per-seat client context journal keeps the last
+  occupant's context, and today a lifecycle check-in retires it only for a newer binding generation or a
+  `Human` occupant (`src/cli/hook.rs:2347-2394`), so a Hermes turn after Claude (or Claude after Hermes)
+  on the same seat fails with `ContextError::Conflict`. ht-4ne.4 changes that path: a lifecycle
+  check-in retires a `current` **agent** context whose harness differs from the event's, mirroring the
+  `Human` case. The journal is client-local hint state (A2: never authority), the daemon still decides
+  the check-in against the canonical view, and TRUST-POLICY A4 gets one sentence in the same commit.
+  Tested in both orders.
+- Operator retire: a seat retired by the operator while its Hermes session runs leaves the pane
+  `Unowned`, so the next CLI turn re-enrolls through the ordinary guarded resolver (a fresh seat, never
+  the retired one). Accepted limit, noted in TRUST-POLICY next to the Hermes enrollment text.
 - CLI side agents (`/background`): a second concurrent CLI session on the same bridge enrolls no new
   seat (resolver reuse) and its turns check in as on a launch-created seat today (accepted limit, D2).
 - `ht-4ne.1` changes only setup (writes the new bridge) and setup-status (stale-bridge hint) visibly;
@@ -286,7 +297,8 @@ session-start callbacks for harnesses that have it later in the turn; keep enrol
 
 - Wake recognition for bare Hermes via Herdr's `agent_session` (D6): needs a policy decision and a
   lifetime probe with a live Hermes.
-- Hermes resume continuity (D5): needs a native resume signal.
+- Hermes resume continuity (D5): needs a native resume signal (ht-3u6).
+- CLI side agents (`/background`) checking in as the pane's top-level session (D2): needs a native side-agent signal (ht-e73).
 - Live bare-Hermes end-to-end run in an isolated `HERMES_HOME` that does not touch the real install.
 
 ## Post-Implementation Notes
