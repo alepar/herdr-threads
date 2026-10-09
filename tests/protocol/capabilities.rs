@@ -818,6 +818,7 @@ fn harness_states_round_trips_on_the_wire() {
             }),
             hook_parse_failures: 3,
         }],
+        mod_channels: None,
     });
     let encoded = serde_json::to_value(&result).unwrap();
     assert_eq!(encoded["kind"], "harness_states");

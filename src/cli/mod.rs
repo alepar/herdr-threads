@@ -27,6 +27,7 @@ pub mod setup;
 pub mod skill;
 pub mod summary;
 pub mod threads;
+pub mod watch;
 
 use crate::{
     app::SystemClock,
@@ -359,6 +360,12 @@ where
         writer.write_all(crate::harness::contract::render_contract_ids(name, json).as_bytes())?;
         writer.flush()?;
         return Ok(());
+    }
+    if let CliAction::Watch(request) = &parsed.action {
+        return watch::run_watch(request, writer);
+    }
+    if let CliAction::WatchAck(request) = &parsed.action {
+        return watch::run_ack(request, writer);
     }
     if let CliAction::HarnessVersionNormalize { harness, raw } = &parsed.action {
         let json = parsed.output.format == OutputFormat::Json;
@@ -756,6 +763,9 @@ where
         CliAction::Skill => unreachable!("skill is handled before context resolution"),
         CliAction::ContractId { .. } | CliAction::HarnessVersionNormalize { .. } => {
             unreachable!("contract-id and harness-version are handled before context resolution")
+        }
+        CliAction::Watch(_) | CliAction::WatchAck(_) => {
+            unreachable!("watch is handled before context resolution")
         }
         CliAction::InstallerIntegrations { .. } | CliAction::InternalJsonField { .. } => {
             unreachable!("internal json-field is handled before context resolution")

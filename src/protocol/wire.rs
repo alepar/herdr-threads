@@ -29,6 +29,8 @@ use std::io::{self, Write};
 ///    fences refuse older peers before dispatch. Stored results remain readable.
 /// 5: optional recorded user intent and rule-change evidence in messages and summaries.
 /// 6: canonical compound handoff fences and the quiet-channel lifecycle lane.
+///    The mod watch connection (`protocol::watch`) rides version 6 behind
+///    capability `mod.watch_v1`.
 pub const PROTOCOL_VERSION: u16 = 6;
 pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
 
@@ -99,10 +101,10 @@ impl<'de> Deserialize<'de> for WireRequest {
     }
 }
 
-fn valid_wire_id(value: &str) -> bool {
+pub(crate) fn valid_wire_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_graphic())
 }
-fn valid_uuid(value: &str) -> bool {
+pub(crate) fn valid_uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok_and(|id| id.hyphenated().to_string() == value)
 }
 impl WireRequest {

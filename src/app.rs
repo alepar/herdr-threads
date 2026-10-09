@@ -1400,7 +1400,9 @@ where
                 identity,
             )
             .with_operator_owner(crate::daemon::paths::effective_uid())
-            .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer);
+            .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer)
+            // Inert registry; ht-j16.2 replaces it with the shared one.
+            .with_mod_channels(Arc::new(crate::ports::NoModChannels));
             let stop = StopController::new(instance, boot, cancellation);
             let provider = elected_health_provider(
                 instance,

@@ -2940,6 +2940,91 @@ pub struct HostCallContext {
     pub expected_epoch: Option<u64>,
 }
 
+/// Process-local id of one watch connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModChannelId(pub u64);
+
+/// A registration the transport has decided against A2 (spec D2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModChannelRegistration {
+    pub seat: SeatId,
+    pub binding_generation: u64,
+    pub native_session: NativeSessionId,
+    pub harness: Harness,
+    pub registered_at: UtcMillis,
+}
+
+/// Where the registry pushes frames for one connection; `false`: it is gone.
+pub trait ModChannelSink: Send + Sync {
+    fn push(&self, frame: crate::protocol::watch::WatchFrame) -> bool;
+}
+
+/// The registry of live mod delivery channels (spec D2, D7). Every method has
+/// a no-op default; the defaults ARE the inert behaviour ([`NoModChannels`]).
+pub trait ModChannels: Send + Sync {
+    /// Register a channel: at most one per seat. A newer one for the same seat
+    /// and generation replaces the older (`Close{replaced}`); a new-generation
+    /// registration ends a rebind grace; a same-generation re-registration
+    /// within reconnect grace ends the grace (the mod re-acks). Refuses `busy`
+    /// over `MAX_WATCH_CONNECTIONS`, `cooldown` within `MOD_STALL_COOLDOWN_MS`
+    /// of a stall for that generation, `disabled` when `mod_delivery` is off.
+    fn register(
+        &self,
+        _registration: ModChannelRegistration,
+        _sink: std::sync::Arc<dyn ModChannelSink>,
+    ) -> Result<ModChannelId, crate::protocol::watch::WatchRefusalReason> {
+        Err(crate::protocol::watch::WatchRefusalReason::Disabled)
+    }
+    /// The stream ended without a Close (exit, crash, reload): keep the entry
+    /// in reconnect grace for `MOD_RECONNECT_GRACE_MS`; on expiry remove it
+    /// and kick the wake lane for the seat.
+    fn unregister(&self, _channel: ModChannelId, _now: UtcMillis) {}
+    /// Push `Close{reason}` and end the stream. `binding_changed` starts the
+    /// seat-level rebind grace (`MOD_REBIND_GRACE_MS`); `retired`,
+    /// `unresolved`, `stalled`, `disabled` and `stopping` remove at once and
+    /// kick; `stalled` also starts the cooldown.
+    fn close(
+        &self,
+        _seat: &SeatId,
+        _reason: crate::protocol::watch::WatchCloseReason,
+        _now: UtcMillis,
+    ) {
+    }
+    /// True from registration until the stream ends **and through reconnect
+    /// grace**; during a rebind grace true for every generation of the seat
+    /// (so the SessionStart check-in that rotated the generation omits its
+    /// digest). Consumers: wake dispatcher (`attempt`, `can_reserve_poke`),
+    /// Claude SessionStart/PreToolUse(Bash) check-in result
+    /// (`mod_channel_live`), `AckModDelivered`.
+    fn is_live(&self, _seat: &SeatId, _binding_generation: u64) -> bool {
+        false
+    }
+    /// Push `Attention{version}` to the seat's channel (call sites per spec D2).
+    fn notify(&self, _seat: &SeatId, _attention_version: u64) {}
+    /// An Attention frame was pushed to the seat's channel at `now`.
+    fn record_attention_push(&self, _seat: &SeatId, _now: UtcMillis) {}
+    /// A mod ack landed for the seat (only `settled`/`already_settled` count).
+    fn record_ack(&self, _seat: &SeatId, _now: UtcMillis) {}
+    /// Spec D7 predicate: the channel is live; its last mod ack or
+    /// registration is older than `MOD_STALL_AFTER_MS`; and some ordinary,
+    /// non-truncated pending receipt for the seat, published at or before the
+    /// last pushed Attention, is itself older than `MOD_STALL_AFTER_MS`. A mod
+    /// hold counts; there is no heartbeat.
+    fn stalled(&self, _seat: &SeatId, _now: UtcMillis) -> bool {
+        false
+    }
+    /// Live channels and the daemon setting for setup-status. `None`: this
+    /// daemon keeps no registry.
+    fn status(&self) -> Option<crate::protocol::watch::ModChannelStatus> {
+        None
+    }
+}
+
+/// The default registry: nothing is ever live.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoModChannels;
+impl ModChannels for NoModChannels {}
+
 pub trait NotificationPort: Send + Sync {
     fn attempt_wake(
         &self,

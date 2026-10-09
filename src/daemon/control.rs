@@ -257,6 +257,7 @@ where
                     Some(provider) => provider.report(budget)?,
                     None => crate::protocol::results::HarnessStatesReport {
                         harnesses: Vec::new(),
+                        mod_channels: None,
                     },
                 }))
             }

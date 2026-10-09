@@ -514,6 +514,7 @@ fn doctor_json_carries_harness_states_or_the_reason() {
             unattributed: None,
             hook_parse_failures: 0,
         }],
+        mod_channels: None,
     };
     let value = serde_json::to_value(&state).unwrap();
     assert_eq!(value["harnesses"][0]["harness"], "claude");
