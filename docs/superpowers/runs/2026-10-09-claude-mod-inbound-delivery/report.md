@@ -1,6 +1,6 @@
 # super-auto report — 2026-10-09-claude-mod-inbound-delivery
 
-status: completed with 0 unresolved Blocking, 4 escalations [degraded: coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage]
+status: completed with 0 unresolved Blocking, 3 escalations [degraded: coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage]
 metrics: sent — upstream-feedback-draft.md, delivered to the superpowers workspace agent tab (wB:p8)
 
 Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 3793cf88 after absorbing main at 53b6df93). Goal and spec: [design](2026-10-09-claude-mod-inbound-delivery-design.md).
@@ -25,19 +25,19 @@ Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 3793cf88 
 
 ## Verification
 
-- Sweep: 4032 passed, 0 failed, 43 skipped @ 573841ed (260 s, budget 5 min); leak check clean; clippy, fmt, check-default-features clean. Loaded runs at earlier tips (load ~21-25 from concurrent worktree suites) each failed one different untouched test that passed alone: flakes ht-wur, ht-uy3 — run.md `codeBuckets.sweep`
+- Sweep: 4032 passed, 0 failed, 43 skipped @ b7a408c0, the exact tip (150 s, budget 5 min); also @ 573841ed (same code, 260 s); leak check clean; clippy, fmt, check-default-features clean. Loaded runs at earlier tips each failed one different untouched test that passed alone: flakes ht-wur, ht-uy3 — run.md `codeBuckets.sweep`
 - Mod JS tests: 84/84 (`scripts/test-claude-mod`) at 73a75cbf — code-final-review-9.md
 - Live stress at 573841ed (final code SHA): 14/14 scenarios 3/3, 51 ACK + 3 lazy messages all settled — [evidence README](../../../evidence/claude-mod-delivery/README.md); earlier: first run found D1-D3, b562d1e4 13/14, 73a75cbf reload/clear/idle 3/3 — run.md `liveStress`
+- Closing whole-epic review at b7a408c0: ready, no must-fix; escalation triage (1 open for a human, 1 resolved, 2 accepted limits) — [code-final-review-11.md](code-final-review-11.md)
 - Whole-epic final review 10 at 8e7eaa41: one defect (mod attention ignored main's `warning_wakes_seat`, so bystander seats got prompts) → ht-j16.34, fixed at 2945d1ee, independent review ready — [code-final-review-10.md](code-final-review-10.md), run.md `postLoopFix`
 - Re-review of the post-review-8 fixes (dc5b2f6c, 73a75cbf): ready, no must-fix — [code-final-review-9.md](code-final-review-9.md)
 - Post-cap audit roast (bd8e6661 → 23fb8208 + merge 81dbb244 resolution): clean (1 nit) [converged] — [report](2026-10-09-claude-mod-inbound-delivery-roast-pr-post-cap-audit.md)
 
 ## Remaining
 
-- Escalation (design roast 1): idle check vs submit non-atomic (user Enter between check and engine acceptance) — run.md `parked`; live `esc_interrupt_hold`/`queued_user_prompt` pass 3/3, not proven race-free
-- Escalation (design roast 1): `$.session.id()` in `session.end` returns the ending id — run.md `parked`; this is live defect D1, fixed by ht-j16.28, `clear_rebind` 3/3 live
-- Escalation (security review): frame markers spoofable by peer text — run.md `parked`; mitigated by ht-j16.27 indentation, recorded as a TRUST-POLICY accepted limit
-- Escalation (post-cap audit): D3 heuristic may hold idle submits up to 120 s after an ordinary failed/denied tool call, engine signal unverified — run.md `parked`, audit report
+- Escalation, OPEN for a human decision (design roast 1): idle check vs submit non-atomic — narrowed by re-checks before a synchronous submit; whether the engine keeps a plugin prompt queued behind a user Enter across Esc is unverified; accept as a named limit or run the spike check (code-final-review-11.md) (user Enter between check and engine acceptance) — run.md `parked`; live `esc_interrupt_hold`/`queued_user_prompt` pass 3/3, not proven race-free
+- Escalation, accepted limit (security review): frame markers spoofable by peer text — run.md `parked`; mitigated by ht-j16.27 indentation, recorded as a TRUST-POLICY accepted limit
+- Escalation, accepted documented heuristic (post-cap audit): D3 heuristic may hold idle submits up to 120 s after an ordinary failed/denied tool call, engine signal unverified — run.md `parked`, audit report
 - Re-review 9 minors: a successor still ledgers a predecessor's attention id a second time (noise only); the stale-submitting case is covered only by a targeted test — code-final-review-9.md
 - Final review 8 minors: stress model does not count predecessor submits; session-start double presentation (digest + native wake before the mod registers) not named in TRUST-POLICY; `rec.attentionVersions` dead state; drain re-pages pending bodies per attention frame; rebind-grace ack accepted before re-registration — final review, [code-final-review-8.md](code-final-review-8.md)
 - out of scope (filtered): [Nit] src/service/mod_channels.rs:240 sweep stall close by seat only — scopeFilter-round-1
@@ -50,6 +50,9 @@ Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 3793cf88 
 - Not exercised live: truncated bodies, 120 s hold and draft timers, 10-min stall/cooldown, daemon restart, in-session `/resume`/`/branch`, subagent tool calls, non-default permission modes, a real Herdr server (stand-in endpoint) — evidence README
 - Post-cap audit FYI: Claude-specific branch in the shared setup dispatcher (src/cli/setup.rs:745) — audit report
 - worktreesKept: none; processSweep survivors: none — run.md `codeBuckets`
+
+- Resolved escalation (design roast 1): `$.session.id()` in `session.end` — became live D1, fixed by ht-j16.28, clear_rebind live 3/3 in three runs — run.md `escalationResolved`
+- CHANGELOG minors for the release owner: line 8 cites the 13/14 run (final is 14/14); line 13 omits that the mod channel follows the focused-warning narrowing — code-final-review-11.md
 
 ## Gotchas & surprises
 
