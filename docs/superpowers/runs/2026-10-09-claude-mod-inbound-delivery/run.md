@@ -35,7 +35,7 @@ codeBuckets:
   worktreesKept:
   processSweep: stopped 0 · survived 0
 roastCodeRound: 2
-roast-code: 2026-10-09-claude-mod-inbound-delivery-roast-pr-1.md
+roast-code: 2026-10-09-claude-mod-inbound-delivery-roast-pr-1.md, 2026-10-09-claude-mod-inbound-delivery-roast-pr-2.md
 stepBackCode-round-1: patch — Round 1, no recurrence yet; findings mostly independent, one registry-liveness cluster (per-generation liveness query + stale-snapshot closes) and one mod-test-enforcement cluster swept by rule
 scopeFilter-round-1: [Should-fix] integrations/claude/mod/hooks/register.js:228; src/cli/watch.rs:719 in-scope — Backlogs over 100 unacked ids are rejected whole on every retry and never settle, so the goal's 'each fully delivered message settles its receipt' fails.
 scopeFilter-round-1: [Should-fix] src/cli/watch.rs:340 in-scope — A transient Capabilities failure makes the mod stop watching for the whole session, so mod delivery in the goal-named path is wrongly and permanently disabled.
@@ -47,3 +47,5 @@ scopeFilter-round-1: [Nit] src/cli/setup.rs:1708 punch-list — Interactive-prom
 scopeFilter-round-1: [Nit] scripts/test-claude-mod:13; scripts/test-claude-mod:1 punch-list — The finding concerns CI enforcement of existing tests, a quality improvement rather than a missing or failing test of goal-named behavior.
 cluster dropped: mod-test-enforcement — `scripts/test-claude-mod` gets a required mode (fails instead of skipping when `claude` is absent or old), the integration sweep/AGENTS.md per-change check for mod changes invokes it, and the sweep runs the mod's installed argv with no extra flags so `r1 [Must-fix] integrations/claude/mod/hooks/register.js watch argv (F3 bare binary, no state-dir/host-endpoint)` is covered by the same enforced path once its own fix (setup hands the mod the hooks' `installed_argv`) lands.
 scope-filter: 4 in-scope · 4 punch-listed
+roastCodeExit: converged
+regressionPass-round-2: [Should-fix] src/protocol/watch.rs:86 (marker lacks instance selectors) filed with [Nit] src/protocol/watch.rs:86 (lazy-row marker) folded in — same function, same fix; deviation: final-review-3 F1 (mod frame drops author_role/relays_user/user_intent) filed in the same re-entry instead of the punch list — correctness defect on the default-on delivery path of a goal-named behaviour
