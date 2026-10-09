@@ -1371,6 +1371,7 @@ fn relaxed_commit_durability_is_a_per_context_test_hook() {
     relaxed.relax_commit_durability();
     assert_eq!(synchronous(&relaxed.open_writer().unwrap()), 1, "NORMAL");
     let durable = StoreContext::new(path, Arc::new(FixedClock));
+    durable.require_commit_durability();
     assert_eq!(synchronous(&durable.open_writer().unwrap()), 2, "FULL");
 }
 
@@ -1378,6 +1379,7 @@ fn relaxed_commit_durability_is_a_per_context_test_hook() {
 fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     let path = db_path();
     let store = StoreContext::new(path.clone(), Arc::new(FixedClock));
+    store.require_commit_durability();
     let db = store.open_writer().unwrap();
     assert_eq!(
         db.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))

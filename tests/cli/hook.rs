@@ -2891,7 +2891,15 @@ mod continuity_gate {
             }),
         };
         let client = SlowDigest {
-            delay: Duration::from_millis(if current_budget_ms < 1500 { 600 } else { 100 }),
+            // An expired-window case's digest overruns its window by 600 ms;
+            // otherwise the digest is quick. Windows are wide enough that the
+            // in-process setup before the digest (journal and context writes)
+            // cannot consume them on a loaded machine.
+            delay: Duration::from_millis(if current_budget_ms < 2000 {
+                current_budget_ms + 600
+            } else {
+                100
+            }),
             clock: Arc::clone(&call_clock),
             seen: Mutex::new(vec![]),
         };
@@ -2932,11 +2940,12 @@ mod continuity_gate {
     }
     #[test]
     fn qualified_current_coordinator_slow_digest_shares_one_tool_deadline() {
-        let seen = qualified_slow_digest(false, true, 1500);
+        // A 2500 ms current window (the production lifecycle budget is 5000).
+        let seen = qualified_slow_digest(false, true, 2500);
         assert_eq!(seen.len(), 2);
         assert!(seen[0].0 && !seen[1].0);
         assert!(
-            seen[0].1 - seen[0].2 <= 1500,
+            seen[0].1 - seen[0].2 <= 2500,
             "digest was given lifecycle budget: {seen:?}"
         );
         assert!(
@@ -2944,7 +2953,7 @@ mod continuity_gate {
             "dispatch extended the digest deadline: {seen:?}"
         );
         assert!(
-            seen[1].1 - seen[1].2 < 1450,
+            seen[1].1 - seen[1].2 < 2450,
             "slow digest did not consume dispatch budget: {seen:?}"
         );
     }
@@ -2952,14 +2961,14 @@ mod continuity_gate {
     // the durable Current request with a newly started transport window.
     #[test]
     fn qualified_current_coordinator_expired_digest_never_dispatches() {
-        let seen = qualified_slow_digest(false, true, 500);
+        let seen = qualified_slow_digest(false, true, 1500);
         assert_eq!(seen.len(), 1, "expired callback still dispatched: {seen:?}");
         assert!(seen[0].0);
     }
     #[test]
     fn qualified_startup_and_clear_coordinator_retain_lifecycle_deadline() {
         for (reset, registered) in [(false, false), (true, true)] {
-            let seen = qualified_slow_digest(reset, registered, 1500);
+            let seen = qualified_slow_digest(reset, registered, 2500);
             assert_eq!(seen.len(), 2);
             assert!(
                 seen[0].1 - seen[0].2 > 4000,
@@ -6290,7 +6299,12 @@ mod registered_resume {
                 &claude(),
                 &i.bytes,
                 &herdr(),
-                Instant::now() + LIFECYCLE_BUDGET,
+                // The fixture service is a spawned child; on a loaded machine
+                // it can miss the 5 s production lifecycle budget and the
+                // hook (correctly) reports UnknownOutcome. These tests assert
+                // eligibility and replay, not that budget, so the fixture
+                // grants four times it.
+                Instant::now() + LIFECYCLE_BUDGET * 4,
                 Arc::new(SystemClock::new()),
                 None,
             );
