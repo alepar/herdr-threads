@@ -339,6 +339,7 @@ pub mod synthetic_fourth {
                 event_id: payload.event_id,
                 intent,
                 metadata: EventMetadata {
+                    enrollment_witness: None,
                     skill_pointer: false,
                     callback_deadline: None,
                     context_source: payload.event.clone(),

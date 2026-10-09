@@ -195,7 +195,10 @@ struct Association {
     role: String,
     provenance: String,
     session_id: String,
-    turn_id: String,
+    turn_id: Option<String>,
+    /// Absent (an older bridge) decodes exactly as null.
+    #[serde(default)]
+    enrollment_witness: Option<String>,
 }
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -310,6 +313,25 @@ fn now() -> i64 {
 fn fields(v: &serde_json::Value, keys: &[&str]) -> bool {
     v.as_object()
         .is_some_and(|m| m.len() == keys.len() && keys.iter().all(|k| m.contains_key(*k)))
+}
+/// The legacy four association keys, or those plus `enrollment_witness`.
+fn association_keys(v: &serde_json::Value, witness_required: bool) -> bool {
+    let legacy = ["role", "provenance", "session_id", "turn_id"];
+    let full = [
+        "role",
+        "provenance",
+        "session_id",
+        "turn_id",
+        "enrollment_witness",
+    ];
+    fields(v, &full) || (!witness_required && fields(v, &legacy))
+}
+fn witness(a: &Association) -> Result<Option<EnrollmentWitness>, ()> {
+    match a.enrollment_witness.as_deref() {
+        None => Ok(None),
+        Some("cli_platform") => Ok(Some(EnrollmentWitness::CliPlatform)),
+        Some(_) => Err(()),
+    }
 }
 fn parse(input: &HookInput) -> Result<Envelope, DecodeFailure> {
     let invalid = || DecodeFailure::Invalid("invalid Hermes bridge envelope".into());
@@ -520,29 +542,43 @@ fn parse(input: &HookInput) -> Result<Envelope, DecodeFailure> {
     if e.callback == "pre_llm_call" {
         let parent = e.parent_session_id.as_deref().ok_or_else(invalid)?;
         let association = e.role_association.as_ref().ok_or_else(invalid)?;
-        if !fields(
-            &value["role_association"],
-            &["role", "provenance", "session_id", "turn_id"],
-        ) || association.provenance != "explicit_parent"
+        let turn = association.turn_id.as_deref().ok_or_else(invalid)?;
+        let granted = witness(association).map_err(|()| invalid())?;
+        if !association_keys(&value["role_association"], false)
+            || association.provenance != "explicit_parent"
             || association.role != if parent.is_empty() { "top" } else { "child" }
             || Some(&association.session_id) != e.session_id.as_ref()
-            || Some(&association.turn_id) != e.turn_id.as_ref()
-            || !text(&association.turn_id, 256, false)
+            || Some(turn) != e.turn_id.as_deref()
+            || !text(turn, 256, false)
             || e.shape["parent_session_id"].presence != "present"
+            || (granted.is_some()
+                && (association.role != "top" || e.platform.as_deref() != Some("cli")))
         {
             return Err(invalid());
         }
     } else if e.callback == "post_tool_call" {
         let association = e.role_association.as_ref().ok_or_else(invalid)?;
-        if !fields(
-            &value["role_association"],
-            &["role", "provenance", "session_id", "turn_id"],
-        ) || association.role != "top"
+        let turn = association.turn_id.as_deref().ok_or_else(invalid)?;
+        if !association_keys(&value["role_association"], false)
+            || association.role != "top"
             || association.provenance != "qualified_pre_llm_cache"
             || Some(&association.session_id) != e.session_id.as_ref()
-            || Some(&association.turn_id) != e.turn_id.as_ref()
-            || !text(&association.turn_id, 256, false)
+            || Some(turn) != e.turn_id.as_deref()
+            || !text(turn, 256, false)
+            || association.enrollment_witness.is_some()
             || e.shape["parent_session_id"].presence != "missing"
+        {
+            return Err(invalid());
+        }
+    } else if e.callback == "on_session_start" {
+        if let Some(association) = e.role_association.as_ref()
+            && (!association_keys(&value["role_association"], true)
+                || association.provenance != "cli_session_start"
+                || association.role != "top"
+                || Some(&association.session_id) != e.session_id.as_ref()
+                || association.turn_id.is_some()
+                || witness(association) != Ok(Some(EnrollmentWitness::CliPlatform))
+                || e.platform.as_deref() != Some("cli"))
         {
             return Err(invalid());
         }
@@ -726,11 +762,22 @@ impl HarnessAdapter for HermesAdapter {
         if state.bytes != input.bytes || e != state.envelope {
             return Err(DecodeFailure::RegistrationMismatch);
         }
-        let role = match e.role_association.as_ref().map(|a| a.role.as_str()) {
+        // on_session_start stays an observer with an unknown role until the
+        // Hermes policy flips (ht-4ne.4); only the turn callbacks carry a role.
+        let role = match e
+            .role_association
+            .as_ref()
+            .filter(|_| matches!(e.callback.as_str(), "pre_llm_call" | "post_tool_call"))
+            .map(|a| a.role.as_str())
+        {
             Some("top") => EventRole::TopLevel,
             Some("child") => EventRole::Subagent,
             _ => EventRole::Unknown,
         };
+        let enrollment_witness = e
+            .role_association
+            .as_ref()
+            .and_then(|a| witness(a).ok().flatten());
         let session = e.session_id.clone().unwrap();
         let intent = if e.callback == "pre_llm_call" {
             EventIntent::QualifiedTurn(super::context::QualifiedTurn {
@@ -756,6 +803,7 @@ impl HarnessAdapter for HermesAdapter {
             event_id: e.event_id,
             intent,
             metadata: EventMetadata {
+                enrollment_witness,
                 context_source: e.callback.clone(),
                 native_event: e.callback,
                 shape_fields: e.shape.keys().cloned().collect(),
@@ -837,7 +885,10 @@ impl HarnessAdapter for HermesAdapter {
             return Err("runtime mismatch".into());
         }
         Ok(
-            if e.role_association.as_ref().is_some_and(|a| a.role == "top") {
+            if e.role_association
+                .as_ref()
+                .is_some_and(|a| a.role == "top" && a.provenance != "cli_session_start")
+            {
                 request
                     .descriptor
                     .qualifications
@@ -1031,7 +1082,15 @@ impl HarnessAdapter for HermesAdapter {
     }
 }
 fn asset_projection(s: &assets::AssetStatus) -> serde_json::Value {
-    serde_json::json!({"installed":s.installed,"configured_enabled":s.configured_enabled,"repairable":s.repairable,"manual_argv":s.manual_argv,"native_acceptance":"unmet"})
+    let mut projection = serde_json::json!({"installed":s.installed,"configured_enabled":s.configured_enabled,"repairable":s.repairable,"manual_argv":s.manual_argv,"native_acceptance":"unmet","bridge_current":s.bridge_current});
+    if s.bridge_current == Some(false) {
+        projection["stale_bridge"] = serde_json::json!({
+            "reason": "installed Hermes bridge is from an older herdr-threads generation",
+            "setup_argv": ["herdr-threads", "setup", "hermes", "--profile", s.profile],
+            "hint": format!("run `herdr-threads setup hermes --profile {}` to refresh the bridge", s.profile),
+        });
+    }
+    projection
 }
 fn asset_error(e: super::setup::SetupError) -> SetupFailure {
     SetupFailure::Invalid(format!("Hermes owned assets: {e:?}"))
@@ -1202,6 +1261,270 @@ mod adapter_tests {
                 .expect("concrete Hermes registry consumer is missing"),
         )
         .unwrap()
+    }
+    fn json(input: &HookInput) -> serde_json::Value {
+        serde_json::from_slice(&input.bytes).unwrap()
+    }
+    fn rebuild(v: &serde_json::Value) -> HookInput {
+        HookInput {
+            bytes: serde_json::to_vec(v).unwrap(),
+            registered_event: None,
+        }
+    }
+    fn set_platform(v: &mut serde_json::Value, platform: Option<&str>) {
+        match platform {
+            Some(p) => {
+                v["platform"] = p.into();
+                v["shape"]["platform"] = serde_json::json!({"presence":"present","type":"string"});
+            }
+            None => {
+                v["platform"] = serde_json::Value::Null;
+                v["shape"]["platform"] = serde_json::json!({"presence":"missing","type":"absent"});
+            }
+        }
+    }
+    fn with_witness(v: &mut serde_json::Value, w: serde_json::Value) {
+        v["role_association"]["enrollment_witness"] = w;
+    }
+    fn start_envelope(platform: Option<&str>, association: serde_json::Value) -> HookInput {
+        let mut v = json(&fixture("on_session_start"));
+        v["turn_id"] = serde_json::Value::Null;
+        v["shape"]["turn_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+        v["parent_session_id"] = serde_json::Value::Null;
+        v["shape"]["parent_session_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+        set_platform(&mut v, platform);
+        v["role_association"] = association;
+        rebuild(&v)
+    }
+    fn cli_start_association() -> serde_json::Value {
+        serde_json::json!({"role":"top","provenance":"cli_session_start",
+            "session_id":"fixture-session","turn_id":null,"enrollment_witness":"cli_platform"})
+    }
+    fn admit_decode(input: &HookInput) -> DecodedEvent {
+        let r = registration();
+        let (_, budget) = timing();
+        let h = r
+            .admit(
+                &AdmissionRequest {
+                    installed: InstallObservation::Unsupported(UnsupportedOperation {
+                        adapter: "hermes",
+                        operation: "PATH",
+                    }),
+                    input: Some(HookInput {
+                        bytes: input.bytes.clone(),
+                        registered_event: None,
+                    }),
+                    runtime_candidate: None,
+                },
+                &budget,
+            )
+            .unwrap();
+        r.decode(&h, input).unwrap()
+    }
+    #[test]
+    fn hermes_enrollment_envelope_d2a_rows_round_trip_and_refusals() {
+        use EnrollmentPolicy::{Lifecycle, WitnessedStartAndUnownedTurn as Witnessed};
+        let cli = Some(EnrollmentWitness::CliPlatform);
+        // Row 1: platform CLI session start carries the cli_session_start association.
+        let input = start_envelope(Some("cli"), cli_start_association());
+        assert!(parse(&input).is_ok(), "row 1 parses");
+        let e = admit_decode(&input);
+        assert!(matches!(e.intent, EventIntent::Observer));
+        assert_eq!(e.role, EventRole::Unknown);
+        assert!(matches!(e.delivery, DeliveryEligibility::ObserverOnly));
+        assert_eq!(e.metadata.enrollment_witness, cli);
+        assert!(!e.can_check_in());
+        assert_eq!(e.enrollment(Witnessed), None);
+        // Rows 2 and 3: non-cli platform and old bridge start have a null association.
+        for platform in [Some(""), Some("cli")] {
+            let input = start_envelope(platform, serde_json::Value::Null);
+            assert!(parse(&input).is_ok(), "null start parses: {platform:?}");
+            let e = admit_decode(&input);
+            assert!(matches!(e.intent, EventIntent::Observer));
+            assert_eq!(e.metadata.enrollment_witness, None);
+        }
+        // Rows 4 to 6: turn witness.
+        let turn = |platform: &str, w: Option<serde_json::Value>| {
+            let mut v = json(&fixture("pre_llm_call"));
+            set_platform(&mut v, Some(platform));
+            if let Some(w) = w {
+                with_witness(&mut v, w);
+            }
+            rebuild(&v)
+        };
+        let e = admit_decode(&turn("cli", Some("cli_platform".into())));
+        assert!(matches!(e.intent, EventIntent::QualifiedTurn(_)));
+        assert_eq!(e.role, EventRole::TopLevel);
+        assert_eq!(e.metadata.enrollment_witness, cli);
+        assert_eq!(e.enrollment(Witnessed), Some(EnrollmentKind::UnownedTurn));
+        assert_eq!(e.enrollment(Lifecycle), None);
+        let null_case = admit_decode(&turn("", Some(serde_json::Value::Null)));
+        assert!(matches!(null_case.intent, EventIntent::QualifiedTurn(_)));
+        assert_eq!(null_case.metadata.enrollment_witness, None);
+        assert_eq!(null_case.enrollment(Witnessed), None);
+        let legacy = admit_decode(&turn("cli", None));
+        assert!(matches!(legacy.intent, EventIntent::QualifiedTurn(_)));
+        assert_eq!(legacy.role, null_case.role);
+        assert_eq!(legacy.metadata.enrollment_witness, None);
+        assert_eq!(legacy.enrollment(Witnessed), None);
+        // Row 7: post_tool_call, null and legacy.
+        for w in [Some(serde_json::Value::Null), None] {
+            let mut v = json(&fixture("post_tool_call"));
+            if let Some(w) = w {
+                with_witness(&mut v, w);
+            }
+            let e = admit_decode(&rebuild(&v));
+            assert_eq!(e.metadata.enrollment_witness, None);
+        }
+        // Row 8: reset keeps a null association.
+        let e = admit_decode(&fixture("on_session_reset"));
+        assert!(matches!(e.intent, EventIntent::DeclaredReset(_)));
+        // Evidence notes for the new start are byte-identical to a null association.
+        let r = registration();
+        let (_, budget) = timing();
+        let runtime = parse(&input).unwrap().runtime_identity;
+        let req = EvidenceQualificationRequest {
+            input: &input,
+            runtime: &runtime,
+            descriptor: &r.contracts()[0],
+        };
+        assert_eq!(
+            HermesAdapter.evidence_qualifications(&req, &budget),
+            Ok(vec![])
+        );
+
+        // Refusals.
+        let refused = |name: &str, input: HookInput| {
+            assert!(parse(&input).is_err(), "must refuse: {name}");
+        };
+        let mutate = |callback: &str, f: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = json(&fixture(callback));
+            f(&mut v);
+            rebuild(&v)
+        };
+        refused(
+            "a: witness on post_tool_call",
+            mutate("post_tool_call", &|v| {
+                with_witness(v, "cli_platform".into())
+            }),
+        );
+        refused(
+            "b: witness on child turn",
+            mutate("pre_llm_call", &|v| {
+                v["parent_session_id"] = "parent-session".into();
+                v["role_association"]["role"] = "child".into();
+                with_witness(v, "cli_platform".into());
+            }),
+        );
+        refused(
+            "c: witness with non-cli platform",
+            turn("", Some("cli_platform".into())),
+        );
+        refused("d: other string witness", turn("cli", Some("cli".into())));
+        refused("d: non-string witness", turn("cli", Some(true.into())));
+        {
+            let provenance = "cli_session_start";
+            refused(
+                "e: pre_llm_call",
+                mutate("pre_llm_call", &|v| {
+                    v["role_association"]["provenance"] = provenance.into();
+                    v["role_association"]["turn_id"] = serde_json::Value::Null;
+                    with_witness(v, "cli_platform".into());
+                }),
+            );
+            refused(
+                "e: pre_llm_call with turn id",
+                mutate("pre_llm_call", &|v| {
+                    v["role_association"]["provenance"] = provenance.into();
+                    with_witness(v, "cli_platform".into());
+                }),
+            );
+            refused(
+                "e: post_tool_call",
+                mutate("post_tool_call", &|v| {
+                    v["role_association"]["provenance"] = provenance.into();
+                    v["role_association"]["turn_id"] = serde_json::Value::Null;
+                    with_witness(v, "cli_platform".into());
+                }),
+            );
+        }
+        let start = |platform: Option<&str>, f: &dyn Fn(&mut serde_json::Value)| {
+            let mut a = cli_start_association();
+            f(&mut a);
+            start_envelope(platform, a)
+        };
+        refused(
+            "e/j: on_session_reset with association",
+            mutate("on_session_reset", &|v| {
+                v["role_association"] = cli_start_association();
+            }),
+        );
+        refused(
+            "f: null witness",
+            start(Some("cli"), &|a| {
+                a["enrollment_witness"] = serde_json::Value::Null
+            }),
+        );
+        refused(
+            "f: absent witness key",
+            start(Some("cli"), &|a| {
+                a.as_object_mut().unwrap().remove("enrollment_witness");
+            }),
+        );
+        refused(
+            "f: other witness",
+            start(Some("cli"), &|a| a["enrollment_witness"] = "other".into()),
+        );
+        refused(
+            "f: non-null turn_id",
+            start(Some("cli"), &|a| a["turn_id"] = "fixture-turn".into()),
+        );
+        refused(
+            "f: child role",
+            start(Some("cli"), &|a| a["role"] = "child".into()),
+        );
+        refused(
+            "f: foreign session",
+            start(Some("cli"), &|a| a["session_id"] = "other-session".into()),
+        );
+        refused("f: empty platform", start(Some(""), &|_| {}));
+        refused("f: null platform", start(None, &|_| {}));
+        for provenance in ["explicit_parent", "qualified_pre_llm_cache"] {
+            refused(
+                "g: non-start association on on_session_start",
+                start(Some("cli"), &|a| a["provenance"] = provenance.into()),
+            );
+        }
+        refused(
+            "h: witness without cli_session_start",
+            start(Some("cli"), &|a| {
+                a["provenance"] = "explicit_parent".into();
+                a["turn_id"] = "fixture-turn".into();
+            }),
+        );
+        refused(
+            "i: null turn_id with explicit_parent on pre_llm_call",
+            mutate("pre_llm_call", &|v| {
+                v["role_association"]["turn_id"] = serde_json::Value::Null
+            }),
+        );
+        refused(
+            "i: null turn_id with cache provenance on post_tool_call",
+            mutate("post_tool_call", &|v| {
+                v["role_association"]["turn_id"] = serde_json::Value::Null
+            }),
+        );
+        refused(
+            "k: unknown association key on turn",
+            mutate("pre_llm_call", &|v| {
+                with_witness(v, "cli_platform".into());
+                v["role_association"]["x"] = 1.into();
+            }),
+        );
+        refused(
+            "k: unknown association key on start",
+            start(Some("cli"), &|a| a["x"] = 1.into()),
+        );
     }
     #[test]
     fn hermes_admission_actual_runtime_and_two_domain_milestones_keep_observers_nonconsuming() {

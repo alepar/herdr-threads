@@ -23,6 +23,10 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         super::context::QualifiedTurnPolicy::Strict
     }
+    /// Which decoded events may enroll a seat. Grants no authority by itself.
+    fn enrollment_policy(&self) -> EnrollmentPolicy {
+        EnrollmentPolicy::Lifecycle
+    }
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection> {
         let observed = self.classify(input);
         self.contracts()
@@ -319,11 +323,35 @@ pub enum EventIntent {
     Lifecycle(crate::harness::context::EventKind),
     Current,
     QualifiedTurn(crate::harness::context::QualifiedTurn),
+    /// A witnessed top-level session start. Nothing produces it yet.
+    Enroll,
     Observer,
     DeclaredReset(super::context::DeclaredReset),
 }
+/// What an adapter lets enroll a seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrollmentPolicy {
+    /// Only original admitted lifecycle intent enrolls.
+    Lifecycle,
+    /// Lifecycle, plus a witnessed session start and a witnessed turn on an unowned pane.
+    WitnessedStartAndUnownedTurn,
+}
+/// Why a decoded event may enroll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrollmentKind {
+    Lifecycle,
+    SessionStart,
+    /// Eligible for the Unowned fallback; the seat check belongs to the caller.
+    UnownedTurn,
+}
+/// Who vouched that the event came from an interactive top-level session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrollmentWitness {
+    CliPlatform,
+}
 #[derive(Clone)]
 pub struct EventMetadata {
+    pub enrollment_witness: Option<EnrollmentWitness>,
     pub skill_pointer: bool,
     /// An adapter callback can shorten the core end-to-end limit.
     pub callback_deadline: Option<std::time::Instant>,
@@ -910,6 +938,36 @@ impl DecodedEvent {
                 EventIntent::Lifecycle(_) | EventIntent::Current | EventIntent::QualifiedTurn(_)
             )
     }
+    /// The enrollment this event earns under `policy`, if any.
+    pub fn enrollment(&self, policy: EnrollmentPolicy) -> Option<EnrollmentKind> {
+        use super::context::EventKind;
+        let top = matches!(self.role, EventRole::TopLevel);
+        // A qualified turn's normalized Startup/Clear is not lifecycle evidence.
+        if matches!(
+            self.intent,
+            EventIntent::Lifecycle(EventKind::Startup | EventKind::Clear | EventKind::Resume)
+        ) && top
+            && matches!(self.delivery, DeliveryEligibility::Context)
+            && self.can_check_in()
+        {
+            return Some(EnrollmentKind::Lifecycle);
+        }
+        if policy != EnrollmentPolicy::WitnessedStartAndUnownedTurn
+            || !top
+            || self.metadata.enrollment_witness != Some(EnrollmentWitness::CliPlatform)
+        {
+            return None;
+        }
+        match self.intent {
+            EventIntent::Enroll => Some(EnrollmentKind::SessionStart),
+            EventIntent::QualifiedTurn(_)
+                if matches!(self.delivery, DeliveryEligibility::Context) =>
+            {
+                Some(EnrollmentKind::UnownedTurn)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// The default daemon observation: install availability, then admission.
@@ -1117,6 +1175,7 @@ mod tests {
             event_id: "event".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                enrollment_witness: None,
                 context_source: "PreToolUse".into(),
                 callback_deadline: None,
                 skill_pointer: false,
@@ -1138,6 +1197,120 @@ mod tests {
             assert_eq!(event.can_check_in(), role == EventRole::TopLevel);
             event.intent = EventIntent::Observer;
             assert!(!event.can_check_in());
+        }
+    }
+    #[test]
+    fn enrollment_policy_maps_decoded_events_to_kinds() {
+        use super::super::context::{EventKind, QualifiedTurn};
+        use EnrollmentKind as K;
+        use EnrollmentPolicy::{Lifecycle as L, WitnessedStartAndUnownedTurn as W};
+        let cli = Some(EnrollmentWitness::CliPlatform);
+        let mut event = DecodedEvent {
+            harness: super::super::registry::builtins().agent("codex").unwrap(),
+            role: EventRole::TopLevel,
+            native_session: Some("s".into()),
+            event_id: "event".into(),
+            intent: EventIntent::Current,
+            metadata: EventMetadata {
+                enrollment_witness: None,
+                context_source: "SessionStart".into(),
+                callback_deadline: None,
+                skill_pointer: false,
+                capability: crate::harness::Capability::ObservedInput,
+                domain: ContractDomain::Native,
+                native_event: "SessionStart".into(),
+                shape_fields: vec![],
+            },
+            delivery: DeliveryEligibility::Context,
+            runtime: RuntimeAttribution::Unavailable {
+                diagnostic: "unavailable".into(),
+            },
+        };
+        let turn = || {
+            EventIntent::QualifiedTurn(QualifiedTurn {
+                session: "s".into(),
+                event_key: "event".into(),
+                reset: None,
+                ordering: None,
+            })
+        };
+        for policy in [L, W] {
+            for kind in [EventKind::Startup, EventKind::Clear, EventKind::Resume] {
+                event.role = EventRole::TopLevel;
+                event.intent = EventIntent::Lifecycle(kind);
+                assert_eq!(event.enrollment(policy), Some(K::Lifecycle));
+                for role in [EventRole::Subagent, EventRole::Unknown] {
+                    event.role = role;
+                    assert_eq!(event.enrollment(policy), None);
+                }
+            }
+            event.role = EventRole::TopLevel;
+            for kind in [EventKind::Compact, EventKind::Restart] {
+                event.intent = EventIntent::Lifecycle(kind);
+                assert_eq!(event.enrollment(policy), None);
+            }
+            event.intent = EventIntent::Lifecycle(EventKind::Startup);
+            event.delivery = DeliveryEligibility::ObserverOnly;
+            assert_eq!(event.enrollment(policy), None);
+            event.delivery = DeliveryEligibility::Context;
+            for intent in [
+                EventIntent::Current,
+                EventIntent::Observer,
+                EventIntent::Enroll,
+            ] {
+                event.intent = intent;
+                assert_eq!(event.enrollment(policy), None);
+            }
+        }
+        // Under Lifecycle a witnessed turn or start is not admitted.
+        event.metadata.enrollment_witness = cli;
+        event.intent = turn();
+        assert_eq!(event.enrollment(L), None);
+        event.intent = EventIntent::Enroll;
+        assert_eq!(event.enrollment(L), None);
+        // Under the witnessed policy.
+        assert_eq!(event.enrollment(W), Some(K::SessionStart));
+        event.intent = turn();
+        assert_eq!(event.enrollment(W), Some(K::UnownedTurn));
+        event.delivery = DeliveryEligibility::ObserverOnly;
+        assert_eq!(event.enrollment(W), None);
+        event.delivery = DeliveryEligibility::Context;
+        for role in [EventRole::Subagent, EventRole::Unknown] {
+            event.role = role;
+            event.intent = EventIntent::Enroll;
+            assert_eq!(event.enrollment(W), None);
+            event.intent = turn();
+            assert_eq!(event.enrollment(W), None);
+        }
+        event.role = EventRole::TopLevel;
+        event.intent = EventIntent::DeclaredReset(super::super::context::DeclaredReset {
+            session: "s".into(),
+            event_key: "event".into(),
+            ordering: super::super::context::ObservationOrder {
+                process_nonce: uuid::Uuid::nil(),
+                sequence: 0,
+                observed_at_millis: 0,
+                callback_budget_millis: 0,
+            },
+        });
+        assert_eq!(event.enrollment(W), None);
+        event.intent = EventIntent::Observer;
+        assert_eq!(event.enrollment(W), None);
+        event.metadata.enrollment_witness = None;
+        event.intent = EventIntent::Enroll;
+        assert_eq!(event.enrollment(W), None);
+        event.intent = turn();
+        assert_eq!(event.enrollment(W), None);
+        // Enroll is neither a check-in nor a context event.
+        event.intent = EventIntent::Enroll;
+        assert!(!event.can_check_in());
+        assert!(event.context_event().is_none());
+        // No builtin overrides the default yet.
+        for registration in super::super::registry::builtins().registrations() {
+            assert_eq!(
+                registration.enrollment_policy(),
+                EnrollmentPolicy::Lifecycle
+            );
         }
     }
     #[test]
@@ -1281,6 +1454,7 @@ impl DecodedEvent {
                 EventIntent::Lifecycle(event.kind)
             },
             metadata: EventMetadata {
+                enrollment_witness: None,
                 context_source: event.source,
                 callback_deadline: None,
                 skill_pointer: native_event == "SessionStart",
@@ -1314,7 +1488,9 @@ impl DecodedEvent {
                         super::context::EventKind::Startup
                     }
                 }
-                EventIntent::Observer | EventIntent::DeclaredReset(_) => return None,
+                EventIntent::Enroll | EventIntent::Observer | EventIntent::DeclaredReset(_) => {
+                    return None;
+                }
             },
             native_session: self.native_session.clone(),
             role: match self.role {

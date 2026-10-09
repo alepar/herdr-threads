@@ -3390,6 +3390,72 @@ fn task51_public_assertions(
 }
 
 #[test]
+fn public_hermes_setup_writes_enrollment_bridge_and_status_flags_stale_generation() {
+    use sha2::Digest;
+    let f = task51_installed();
+    let bridge = f
+        .selected_home("work")
+        .join("plugins/herdr-threads/__init__.py");
+    let installed = fs::read(&bridge).unwrap();
+    for needle in ["enrollment_witness", "cli_session_start"] {
+        assert!(text(&installed).contains(needle), "bridge lacks {needle}");
+    }
+    let status = |json_format: bool| {
+        let out = task51_command(&f, "setup-status", json_format)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}{}",
+            text(&out.stdout),
+            text(&out.stderr)
+        );
+        out
+    };
+    let fresh = json(&status(true));
+    assert_eq!(fresh["installed"], true, "{fresh}");
+    assert_eq!(fresh["bridge_current"], true, "{fresh}");
+    assert!(fresh.get("stale_bridge").is_none(), "{fresh}");
+
+    // An older generation: the installed bridge and its manifest record differ
+    // from the bridge this build ships.
+    let older = [installed.as_slice(), b"\n# older\n"].concat();
+    let manifest_path = task51_manifest(&f);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["assets"]["__init__.py"]["bytes"] = serde_json::json!(older);
+    manifest["assets"]["__init__.py"]["digest"] =
+        format!("sha256:{:x}", sha2::Sha256::digest(&older)).into();
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    fs::write(&bridge, &older).unwrap();
+    let stale = json(&status(true));
+    assert_eq!(stale["bridge_current"], false, "{stale}");
+    assert_eq!(
+        stale["stale_bridge"]["setup_argv"],
+        serde_json::json!(["herdr-threads", "setup", "hermes", "--profile", "work"]),
+        "{stale}"
+    );
+    let rendered = text(&status(false).stdout);
+    assert!(
+        rendered.contains("setup hermes --profile work"),
+        "{rendered}"
+    );
+
+    // Re-running setup refreshes the bridge.
+    let out = task51_command(&f, "setup", true).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    assert_eq!(fs::read(&bridge).unwrap(), installed);
+    let current = json(&status(true));
+    assert_eq!(current["bridge_current"], true, "{current}");
+    assert!(current.get("stale_bridge").is_none(), "{current}");
+}
+
+#[test]
 fn task51_public_hermes_removal_reports_modified_residue_and_no_removal() {
     // The removal removes nothing, so both report formats run against one
     // install; the whole tree is asserted unchanged by each run.

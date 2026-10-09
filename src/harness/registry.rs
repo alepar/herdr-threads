@@ -189,6 +189,7 @@ trait ErasedAdapter: Send + Sync {
     fn legacy_contract_id(&self) -> Option<String>;
     fn hook_admission_policy(&self) -> HookAdmissionPolicy;
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy;
+    fn enrollment_policy(&self) -> EnrollmentPolicy;
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection>;
     fn nonholding_unavailable_reasons(
         &self,
@@ -293,6 +294,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         self.0.qualified_turn_policy()
+    }
+    fn enrollment_policy(&self) -> EnrollmentPolicy {
+        self.0.enrollment_policy()
     }
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection> {
         self.0.evidence_observations(input)
@@ -534,6 +538,9 @@ impl Registration {
     }
     pub fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         self.adapter.qualified_turn_policy()
+    }
+    pub fn enrollment_policy(&self) -> EnrollmentPolicy {
+        self.adapter.enrollment_policy()
     }
     pub fn evidence_observations(
         &self,
@@ -2280,6 +2287,7 @@ mod tests {
             event_id: "event".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                enrollment_witness: None,
                 context_source: "PreToolUse".into(),
                 callback_deadline: None,
                 skill_pointer: false,
