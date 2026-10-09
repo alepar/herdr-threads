@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-07-handoff-topology
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: report
+phase: fix-loop
 codeMechanism: ordinary-subagents
 
 idea: lgtm, let's $super-auto this, fully autonomous, both roasts ar eon
@@ -46,10 +46,10 @@ User verification/ownership override remains: focused worker checks, main final 
 
 codeBuckets:
   completed: ht-qhz.1, ht-qhz.19, ht-qhz.2.1, ht-qhz.2.2, ht-qhz.2.3, ht-qhz.20, ht-qhz.3, ht-qhz.4.1, ht-qhz.4.2, ht-qhz.4.3, ht-qhz.5.1, ht-qhz.5.2, ht-qhz.6, ht-qhz.7, ht-qhz.8, ht-qhz.9, ht-qhz.21
-  escalated: ht-qhz.25, ht-qhz.26
-  pendingRetry:
+  escalated: ht-qhz.25
+  pendingRetry: ht-qhz.26 (reviewed/adopted; actual integration not started)
   parked:
-  stalled: true
+  stalled: false
   review: not ready (Task21 and Task22 quarantined for compilation budget; Task22 old-reader control passed; pending presentation/historical/inspection fixes and final matched pressure/original PR2/3 remain)
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: historical overages retained; Task21 test compilation61.191s and Task22 test-profile148.187/112.248s fail60; separate dev/lint passes do not waive; soft archival limits remain explicit
@@ -90,3 +90,7 @@ Original same ht-qhz run remains unfinished. Task21/.25 cfc functional source re
 Current ready query found zero own epic leaves. Pending.22/.23 depend on reviewed.26, .24 on.22; .25/.26 remain open/quarantined. No original completed leaf reopened, root goal incomplete, no Main readiness/merge/release. NextMain25db audit read-only236bindings18absences6artifacts verified; no source import/performance inference. Compile owner must deliver immutable independently reviewed causalrepair packet with actual9d applicability; feature owns subsequent scoped composition and genuine same-profile changed-source qualification, then downstream source/tests/freshreview/matchedpressure/originalPR2/3. Same run/counters retained; resume exact unfinished queue when prerequisite is supplied, not new preflight/root.
 
 All owned processes QUIET:38fixPIDs absent, physicalownedrows0, UUIDe60da2cf-a70b-4064-8d46-2444e9a719a2 checker0/signals0. Source/evidence/worktrees preserved; actual old/current probes retained outsideCargo. No polling/sharedserver/native/config/push/main mutation. This is a stalled report boundary, not feature completion or a global HOLD. Evidence pointers: ../../../../.superpowers/sdd/ht-qhz-plan/task-22-fix-pass.md, controller-task22-fix-parent-verification.json, controller-task22-triage.json, progress.md and current-controller-checkpoint.md.
+
+## User-requested pause and session transfer
+
+User paused at a safe boundary before any Task26 integration merge. Exact627 compiler packet is reviewed and FF-adopted only in task-ht-qhz.26; Task21 remains quarantined. Earlier merging ledger entry was intent only, superseded here. No counters reset. All subagents and owned fixtures QUIET; UUID cleanup0. No new tests/builds/reviews. Continue the existing unfinished run only with user authorization; see session-handoff.md and controller-user-pause-freeze.json. Earlier stalled report remains historical evidence, not current readiness.
