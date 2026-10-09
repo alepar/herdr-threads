@@ -553,7 +553,7 @@ fn operator_service_recovery_uses_observed_boot_and_generation() {
     let boot = "00000000-0000-4000-8000-000000000001";
     let disconnect = parse_argv(["herdr-threads", "human", "service", "disconnect", "--expected-boot", boot, "--expected-generation", "7"]).unwrap();
     assert!(matches!(disconnect.action, CliAction::Wire(Command::ServiceDisconnect(request)) if request.expected_boot == boot && request.expected_generation == 7));
-    assert!(parse_argv(["herdr-threads", "service", "disconnect", "--expected-boot", boot]).is_err());
+    assert!(parse_argv(["herdr-threads", "human", "service", "disconnect", "--expected-boot", boot]).is_err());
 }
 
 #[test]
@@ -1341,7 +1341,7 @@ fn exit_status_help_names_both_exit_3_remedies() {
 
 #[test]
 fn seat_retire_requires_operator_flag() {
-    let error = parse_argv(["herdr-threads", "seat", "retire", "s1"]).unwrap_err();
+    let error = parse_argv(["herdr-threads", "human", "seat", "retire", "s1"]).unwrap_err();
     assert!(error.detail.contains("operator required"), "{}", error.detail);
     let parsed = parse_argv(["herdr-threads", "human", "seat", "retire", "s1", "--operator"]).unwrap();
     assert!(
@@ -1380,7 +1380,7 @@ fn seat_rebind_replace_parses_to_operator_replace() {
         CliAction::Mutation(MutationSpec::Rebind { .. })
     ));
     assert!(
-        parse_argv(["herdr-threads", "seat", "rebind", "s1", "--pane", "p1", "--replace", "s2"])
+        parse_argv(["herdr-threads", "human", "seat", "rebind", "s1", "--pane", "p1", "--replace", "s2"])
             .is_err()
     );
 }
@@ -1699,6 +1699,138 @@ fn handoff_thread_name_uses_shared_canonical_resolution() {
     crate::cli::threads::resolve_cli_threads::<ApiError>(&mut parsed, |selector| { assert_eq!(selector,"review channel"); Ok(ThreadId::new("tFrozen")) }).unwrap();
     assert!(parsed.thread_selector.is_none());
     assert!(matches!(parsed.action,CliAction::Handoff(request) if request.thread.as_ref().unwrap().as_str()=="tFrozen"));
+}
+
+#[test]
+fn handoff_new_tab_grammar() {
+    for target in [vec!["--new-tab", "peer"], vec!["--new-tab", "peer", "--space", "work", "--cwd", "/tmp"]] {
+        let mut argv = vec!["herdr-threads", "handoff", "--new-thread", "--kind", "codex"];
+        argv.extend(target);
+        argv.extend(["--agent-arg=--model", "--agent-arg=literal $HOME", "--", "quoted work"]);
+        assert!(parse_argv(argv).is_ok(), "valid new-tab grammar must parse");
+    }
+}
+#[test]
+fn handoff_new_tab_conflicts_and_required_fields() {
+    for extra in [vec!["--existing"], vec!["--tab", "t1"], vec!["--pane", "w1:p1"], vec!["--seat", "peer"]] {
+        let mut argv=vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--kind", "codex"];
+        argv.extend(extra); argv.extend(["--", "work"]);
+        assert!(parse_argv(argv.clone()).is_err(), "accepted conflict: {argv:?}");
+    }
+    for argv in [
+        vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--", "work"],
+        vec!["herdr-threads", "handoff", "--new-tab", "peer", "--kind", "codex", "--", "work"],
+        vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--kind", "codex"],
+        vec!["herdr-threads", "handoff", "--pane", "w1:p1", "--cwd", "/tmp", "--new-thread", "--kind", "codex", "--", "work"],
+    ] { assert!(parse_argv(argv.clone()).is_err(), "accepted missing/conflict: {argv:?}"); }
+}
+
+#[test]
+fn handoff_existing_target_matrix_and_no_launch_options() {
+    for target in [vec!["--pane", "w1:p1"], vec!["--seat", "peer"], vec!["--space", "work", "--tab", "tab", "--pane", "peer"]] {
+        let mut argv=vec!["herdr-threads","handoff","--existing","--thread","selected"];
+        argv.extend(target); argv.extend(["--","work"]);
+        assert!(parse_argv(argv).is_ok());
+    }
+    for target in [vec![],vec!["--space","work"],vec!["--tab","tab"],vec!["--seat","peer","--pane","w1:p1"],vec!["--seat","peer","--space","work"],vec!["--pane","w1:p1","--kind","codex"],vec!["--pane","w1:p1","--agent-arg=--model"],vec!["--pane","w1:p1","--harness-binary","/bin/codex"],vec!["--pane","w1:p1","--name","peer"],vec!["--pane","w1:p1","--cwd","/tmp"]] {
+        let mut argv=vec!["herdr-threads","handoff","--existing","--thread","selected"];
+        argv.extend(target); argv.extend(["--","work"]);
+        assert!(parse_argv(argv.clone()).is_err(),"accepted: {argv:?}");
+    }
+    let parsed=parse_argv(["herdr-threads","handoff","--new-tab","peer","--new-thread","--kind","codex","--agent-arg=--model","--agent-arg=$HOME","--agent-arg=--model","--","literal body"]).unwrap();
+    let CliAction::TopologyHandoff(request)=parsed.action else {panic!("wrong route")};
+    assert_eq!(request.argv,vec!["--model","$HOME","--model"]);
+    assert_eq!(request.body,"literal body");
+    assert!(parsed.thread_selector.is_none());
+}
+
+// Removing immediate actor routing would reject honest Human invocations and
+// accept ordinary Agent person/account actions; these are real parser calls.
+#[test]
+fn actor_prerequisite_human_grammar_preserves_routing_and_format() {
+    let parsed = parse_argv(["ht", "human", "--state-dir", "state space", "--host-endpoint=host space", "--machine", "me", "init"]).unwrap();
+    assert!(matches!(parsed.action, CliAction::MeInit { .. }));
+    assert_eq!(parsed.output.context.state_dir.as_deref(), Some("state space"));
+    assert_eq!(parsed.output.context.host.as_deref(), Some("host space"));
+    for argv in [
+        vec!["ht", "me", "init"],
+        vec!["ht", "--human", "me", "init"],
+        vec!["ht", "seat", "retire", "seat-1", "--operator"],
+        vec!["ht", "service", "disconnect", "--expected-boot", "00000000-0000-4000-8000-000000000001", "--expected-generation", "7"],
+        vec!["ht", "seat", "rebind", "seat-1", "--pane", "pane", "--operator"],
+        vec!["ht", "seat", "resolve", "--pane", "pane", "--new-seat", "--operator"],
+        vec!["ht", "invite", "thread-1", "--seat", "seat-1", "--operator"],
+    ] {
+        let failure = parse_argv(argv).unwrap_err();
+        assert!(failure.detail.contains("immediate human namespace"), "{failure:?}");
+    }
+    let failure = parse_argv(["ht binary", "--state-dir", "state space", "--host-endpoint", "host space", "human", "me", "init"]).unwrap_err();
+    assert!(failure.detail.contains("'ht binary' human --state-dir 'state space' --host-endpoint 'host space' me init"), "{failure:?}");
+    assert!(parse_argv(["ht", "--state-dir", "human", "--human", "inbox"]).is_ok());
+    assert!(parse_argv(["ht", "human", "--state-dir", "a", "me", "init", "--state-dir", "b"]).unwrap_err().detail.contains("conflicting values"));
+}
+
+#[test]
+fn actor_prerequisite_human_refuses_cooperative_agent_selectors() {
+    let failure = parse_argv(["ht", "human", "--cooperative-seat", "seat", "--cooperative-target", "pane", "--cooperative-harness", "codex", "--cooperative-role", "top-level", "ack", "message"]).unwrap_err();
+    assert!(failure.detail.contains("cannot be mixed with cooperative agent selectors"), "{failure:?}");
+}
+
+#[test]
+fn actor_prerequisite_real_os_parser_keeps_human_data_and_opaque_guidance() {
+    use crate::cli::actor_route::InvocationActor;
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let parsed = parse_argv(["ht", "--state-dir", "human", "--human", "inbox"]).unwrap();
+    assert_eq!(parsed.actor, InvocationActor::Agent);
+    let parsed = parse_argv(["ht", "human", "--json", "inbox"]).unwrap();
+    assert_eq!(parsed.actor, InvocationActor::Human);
+    let argv = vec![OsString::from_vec(vec![b'h', 0xff]), "--state-dir".into(), "state space".into(), "human".into(), "me".into(), "init".into()];
+    let error = parse_argv(argv).unwrap_err();
+    assert!(error.detail.contains("opaque argv cannot be rendered as UTF-8"), "{error:?}");
+}
+
+#[test]
+fn human_topology_recovery_accepts_exact_attempt_qualified_grammar() {
+    for suffix in [vec!["--created-pane", "w1:p2"], vec!["--not-created"], vec!["--cancel", "--reason", "inspected abandonment"]] {
+        let mut argv = vec!["ht", "human", "--state-dir", "/quoted state", "--host-endpoint", "/quoted host.sock", "--json", "handoff", "recover", "local:1", "--attempt", "7"];
+        argv.extend(suffix);
+        let parsed = parse_argv(argv).expect("approved human recovery grammar must parse");
+        assert_eq!(parsed.actor, super::super::actor_route::InvocationActor::Human);
+        assert_eq!(parsed.output.format, OutputFormat::Json);
+    }
+}
+
+#[test]
+fn human_topology_recovery_rejects_missing_extra_and_invalid_assertions() {
+    let cases = [vec!["--not-created"], vec!["--attempt", "0", "--not-created"], vec!["--attempt", "1"], vec!["--attempt", "1", "--not-created", "--cancel", "--reason", "x"], vec!["--attempt", "1", "--cancel"], vec!["--attempt", "1", "--cancel", "--reason", "   "], vec!["--attempt", "1", "--not-created", "--reason", "x"]];
+    for suffix in cases {
+        let mut argv = vec!["ht", "human", "handoff", "recover", "local:1"];
+        argv.extend(suffix);
+        assert!(parse_argv(argv.clone()).is_err(), "unexpected accepted argv: {argv:?}");
+    }
+    for reason in ["x".repeat(4097), "é".repeat(2049)] {
+        assert!(parse_argv(["ht", "human", "handoff", "recover", "local:1", "--attempt", "1", "--cancel", "--reason", reason.as_str()]).is_err());
+    }
+    assert!(parse_argv(["ht", "handoff", "recover", "local:1", "--attempt", "1", "--not-created"]).is_err());
+    assert!(parse_argv(["ht", "--json", "human", "handoff", "recover", "local:1", "--attempt", "1", "--not-created"]).is_err());
+}
+
+#[test]
+fn legacy_handoff_body_word_recover_remains_data() {
+    let parsed = parse_argv(["ht", "handoff", "--pane", "w1:p2", "--new-thread", "--kind", "codex", "--", "recover"]).unwrap();
+    let CliAction::Handoff(request) = parsed.action else { panic!("legacy launch route changed") };
+    assert_eq!(request.body, "recover");
+}
+
+#[test]
+fn human_topology_recovery_help_and_errors_use_only_canonical_route() {
+    let ParseFailure::Informational(help)=parse_argv_or_informational(["ht","human","handoff","recover","--help"]).unwrap_err() else {panic!("expected help")};
+    assert!(help.contains("ht human handoff recover"),"{help}");assert!(help.contains("--attempt"));assert!(!help.contains("_topology-recover"));
+    let error=parse_argv(["ht","human","handoff","recover","local:1","--not-created"]).unwrap_err();assert!(error.detail.contains("human handoff recover"),"{error:?}");assert!(!error.detail.contains("_topology-recover"));
+    for argv in [vec!["ht","human","_topology-recover","local:1","--attempt","1","--not-created"],vec!["ht","--state-dir","human","handoff","recover","local:1","--attempt","1","--not-created"],vec!["ht","handoff","human","recover","local:1","--attempt","1","--not-created"],vec!["ht","handoff","recover","local:1","--attempt","1","--not-created","--operator"]] { assert!(parse_argv(argv).is_err()); }
+    let parsed=parse_argv(["ht","human","--state-dir","human","handoff","recover","local:1","--attempt","1","--not-created"]).unwrap();assert_eq!(parsed.output.context.state_dir.as_deref(),Some("human"));
+    let parsed=parse_argv(["ht","handoff","--pane","w1:p2","--thread","t1","--kind","codex","--agent-arg=recover","--","human handoff recover local:1"]).unwrap();let CliAction::Handoff(request)=parsed.action else {panic!("legacy route changed")};assert_eq!(request.body,"human handoff recover local:1");assert_eq!(request.launch.argv,vec!["recover"]);
 }
 
 #[test]

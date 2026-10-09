@@ -217,7 +217,8 @@ fn cheap_blocker(
  OR EXISTS(SELECT 1 FROM catch_up WHERE thread_id=?2 AND state='active')
  OR EXISTS(SELECT 1 FROM summary_jobs WHERE thread_id=?2 AND block_id IS NULL AND lease_token IS NOT NULL AND lease_until>?3)
  OR EXISTS(SELECT 1 FROM channel_handoff_fences WHERE thread_id=?2 AND state='live')
- OR EXISTS(SELECT 1 FROM channel_handoff_fences WHERE instance_id=?1 AND thread_id IS NULL AND state='live')",params![instance,thread,now],|r|r.get(0)).map_err(store_error)
+ OR EXISTS(SELECT 1 FROM channel_handoff_fences WHERE instance_id=?1 AND thread_id IS NULL AND state='live')
+ OR EXISTS(SELECT 1 FROM bootstrap_handoffs WHERE instance_id=?1 AND (thread_id=?2 OR thread_id IS NULL) AND state NOT IN ('completed','cancelled'))",params![instance,thread,now],|r|r.get(0)).map_err(store_error)
 }
 
 fn advance_channel(
@@ -851,13 +852,112 @@ pub(crate) fn budgeted<R>(
         },
     )
 }
+/// A local legacy child can only fence an exact canonical attachment in the
+/// selected namespace. Terminal cancellation suppresses absence, never a live
+/// legacy fence. No unscoped key match can canonize a foreign parent.
+fn import_linked_hint(
+    tx: &Transaction<'_>,
+    identity: &crate::protocol::handoff::HandoffIdentity,
+    progress_thread: Option<&ThreadId>,
+    source: &crate::archival_legacy::HintSource,
+    coverage: &str,
+    now: UtcMillis,
+) -> Result<Option<bool>, ApiError> {
+    use crate::protocol::handoff::{BootstrapIdentity, BootstrapState};
+    if super::handoff::current(tx, identity)?.is_some() {
+        return Ok(None);
+    }
+    let ns = &source.namespace;
+    let actor = format!("seat:{}", identity.claim.seat.as_str());
+    let row: Option<(Vec<u8>,Option<String>)> = tx.query_row(
+        "SELECT substr(p.identity_json,1,?6),p.thread_id FROM bootstrap_child_keys k JOIN bootstrap_handoffs p ON p.id=k.parent_id WHERE k.instance_id=?1 AND k.state_dir=?2 AND k.host_endpoint=?3 AND k.actor_scope=?4 AND k.operation_key=?5 AND k.role='handoff'",
+        params![ns.instance,ns.state_dir.to_str(),ns.host_endpoint.to_str(),actor,identity.compound.as_str(),(super::topology_handoff::MAX_IDENTITY_BYTES+1) as u32],
+        |r| Ok((r.get(0)?,r.get(1)?)),
+    ).optional().map_err(store_error)?;
+    let Some((bytes, thread)) = row else {
+        return Ok(None);
+    };
+    if bytes.len() > super::topology_handoff::MAX_IDENTITY_BYTES {
+        return Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "oversized legacy bootstrap parent",
+        ));
+    }
+    let parent: BootstrapIdentity = serde_json::from_slice(&bytes)
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid legacy bootstrap parent"))?;
+    let status = super::topology_handoff::current(tx, ns, &parent)?
+        .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "missing legacy bootstrap parent"))?;
+    let Some(attachment) = status.attachment else {
+        return Ok(Some(false));
+    };
+    if &attachment.handoff != identity {
+        return Err(api_error(
+            ErrorCode::OperationPayloadMismatch,
+            "legacy hint differs from canonical bootstrap attachment",
+        ));
+    }
+    if status.state == BootstrapState::Cancelled {
+        return Ok(Some(true));
+    }
+    if status.state == BootstrapState::Completed {
+        return Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "completed bootstrap has no completed legacy child",
+        ));
+    }
+    if status.state != BootstrapState::Attached {
+        return Ok(Some(false));
+    }
+    if progress_thread.is_some_and(|hint| Some(hint.as_str()) != thread.as_deref()) {
+        return Err(api_error(
+            ErrorCode::Conflict,
+            "legacy progress differs from canonical bootstrap thread",
+        ));
+    }
+    // The row above comes from the deciding parent/create transaction, never
+    // body/name matching or a local progress thread. This is the unchanged
+    // hint-only legacy representation, with no canonical Begin/attempt writes.
+    tx.execute("INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,original_thread,thread_id,origin,state,created_at,source_identity) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'legacy_local_journal_hint','live',?12,?13)",params![identity.claim.instance,actor,identity.compound.as_str(),identity.digest,serde_json::to_string(&identity.claim).map_err(|_|api_error(ErrorCode::InvalidRequest,"invalid legacy claim"))?,identity.recipient.as_str(),identity.create_key.as_str(),identity.invite_key.as_str(),identity.send_key.as_str(),identity.thread.as_ref().map(ThreadId::as_str),thread,now.0,coverage]).map_err(store_error)?;
+    Ok(Some(true))
+}
+
+fn validate_hint_source(
+    tx: &Transaction<'_>,
+    instance: &str,
+    source: &crate::archival_legacy::HintSource,
+) -> Result<(), ApiError> {
+    let file: String = tx
+        .query_row(
+            "SELECT file FROM pragma_database_list WHERE name='main'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if source.namespace.instance != instance
+        || source.namespace.validate().is_err()
+        || source.database_path.as_os_str() != std::path::Path::new(&file).as_os_str()
+    {
+        return Err(api_error(
+            ErrorCode::InstanceMismatch,
+            "legacy source differs from deciding database",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn store_pass(
     store: &super::SqliteStore,
     rt: &Runtime,
     hints: &[crate::archival_legacy::Hint],
     budget: &crate::protocol::time::CallBudget,
 ) -> Result<Progress, ApiError> {
+    let mark_uncertain = || {
+        for marker in hints.iter().filter_map(crate::archival_legacy::Hint::veto) {
+            marker.store(true, std::sync::atomic::Ordering::Release);
+        }
+    };
     if hints.len() > crate::archival_legacy::ENTRIES_PER_PAGE {
+        mark_uncertain();
         return Err(api_error(
             ErrorCode::InvalidRequest,
             "archival hint page too large",
@@ -865,23 +965,115 @@ pub(crate) fn store_pass(
     }
     budgeted(store, rt, budget, |tx, rt| {
         if !instance_initialized(tx, &store.instance)? {
+            mark_uncertain();
             return Ok((Progress::default(), None));
         }
+        let mut rt = rt.clone();
         for hint in hints {
-            if hint.identity.claim.instance != store.instance {
-                return Err(api_error(ErrorCode::InvalidRequest, "foreign legacy hint"));
+            match hint {
+                crate::archival_legacy::Hint::Coverage { .. } => {}
+                crate::archival_legacy::Hint::Handoff {
+                    identity,
+                    progress_thread,
+                    source,
+                    retained_completion,
+                } => {
+                    if identity.claim.instance != store.instance {
+                        return Err(api_error(ErrorCode::InvalidRequest, "foreign legacy hint"));
+                    }
+                    if let Some(source) = source {
+                        validate_hint_source(tx, &store.instance, source)?;
+                    }
+                    if let Some(retained) = retained_completion {
+                        if super::handoff::current(tx, identity)?.as_ref() != Some(retained) {
+                            mark_uncertain();
+                            rt.legacy_source = None;
+                        }
+                        continue;
+                    }
+                    if let Some(source) = source
+                        && let Some(covered) = import_linked_hint(
+                            tx,
+                            identity,
+                            progress_thread.as_ref(),
+                            source,
+                            rt.legacy_source
+                                .as_deref()
+                                .unwrap_or("partial-readonly-source"),
+                            rt.utc,
+                        )?
+                    {
+                        if !covered {
+                            mark_uncertain();
+                            rt.legacy_source = None;
+                        }
+                        continue;
+                    }
+                    super::handoff::import_hint(
+                        tx,
+                        identity,
+                        progress_thread.as_ref(),
+                        rt.legacy_source
+                            .as_deref()
+                            .unwrap_or("partial-readonly-source"),
+                        rt.utc,
+                    )?;
+                }
+                crate::archival_legacy::Hint::Bootstrap { identity, source, retained_child, retained_completion } => {
+                    validate_hint_source(tx, &store.instance, source)?;
+                    if identity.claim.instance != store.instance {
+                        return Err(api_error(
+                            ErrorCode::InvalidRequest,
+                            "foreign bootstrap hint",
+                        ));
+                    }
+                    // Local publication is never a canonical Begin or reserve. An
+                    // absent parent remains uncertain; actual live rows already fence
+                    // their selected/atomically created thread. Exact terminal replay
+                    // validates the complete retained identity/report/decision in A2.
+                    match super::topology_handoff::current(tx, &source.namespace, identity)? {
+                        None => {
+                            mark_uncertain();
+                            rt.legacy_source = None;
+                        }
+                        Some(status) => {
+                            if let Some((attachment, thread)) = retained_child.as_deref() {
+                                if status.attachment.as_ref().map(serde_json::to_value).transpose().map_err(|_| api_error(ErrorCode::StoreCorrupt, "cannot compare retained bootstrap evidence"))?
+                                    != Some(serde_json::to_value(attachment).map_err(|_| api_error(ErrorCode::StoreCorrupt, "cannot compare retained bootstrap evidence"))?) {
+                                    return Err(api_error(ErrorCode::InvalidRequest, "retained bootstrap child attachment differs from canonical attachment"));
+                                }
+                                if let Some(thread) = thread
+                                    && super::handoff::current(tx, &attachment.handoff)?.and_then(|child| child.thread).as_ref() != Some(thread) {
+                                    return Err(api_error(ErrorCode::InvalidRequest, "retained bootstrap child thread differs from canonical child"));
+                                }
+                            }
+                            if let Some(retained) = retained_completion
+                                && status.completed.as_ref().map(serde_json::to_value).transpose().map_err(|_| api_error(ErrorCode::StoreCorrupt, "cannot compare retained bootstrap evidence"))?
+                                    != Some(serde_json::to_value(retained).map_err(|_| api_error(ErrorCode::StoreCorrupt, "cannot compare retained bootstrap evidence"))?) {
+                                return Err(api_error(ErrorCode::InvalidRequest, "retained bootstrap completion differs from canonical completed result"));
+                            }
+                            if let Some(done) = status.completed
+                                && super::handoff::current(tx, &done.attachment.handoff)?.as_ref()
+                                    != Some(&done.legacy_result)
+                            {
+                                return Err(api_error(
+                                    ErrorCode::StoreCorrupt,
+                                    "completed bootstrap differs from canonical child completion",
+                                ));
+                            }
+                        }
+                    }
+                }
             }
-            super::handoff::import_hint(
-                tx,
-                &hint.identity,
-                hint.progress_thread.as_ref(),
-                rt.legacy_source
-                    .as_deref()
-                    .unwrap_or("partial-readonly-source"),
-                rt.utc,
-            )?;
         }
-        let progress = advance_in(tx, &store.instance, rt)?;
+        if hints
+            .iter()
+            .filter_map(crate::archival_legacy::Hint::veto)
+            .any(|veto| veto.load(std::sync::atomic::Ordering::Acquire))
+        {
+            rt.legacy_source = None;
+        }
+        let progress = advance_in(tx, &store.instance, &rt)?;
         let expiry = if let Some(thread) = progress.archived.first() {
             tx.query_row(
                 "SELECT scan_expiry FROM channel_archival WHERE thread_id=?1",
@@ -894,6 +1086,7 @@ pub(crate) fn store_pass(
         };
         Ok((progress, expiry))
     })
+    .inspect_err(|_| mark_uncertain())
 }
 pub(crate) fn store_next(
     store: &super::SqliteStore,

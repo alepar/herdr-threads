@@ -1,0 +1,48 @@
+{
+  "hash": "94c045083495d78c9c818cac9bcad6f732be85d6082577af6a67396c66388881",
+  "result": {
+    "groups": [
+      {
+        "ids": [
+          1,
+          2,
+          6,
+          8,
+          11
+        ],
+        "suggestedSeverity": "Blocking",
+        "rank": 1,
+        "mergedClaim": "The recovery CLI does not specify an immutable binding to the inspected attempt, allowing a delayed or repeated recovery invocation to apply an old operator assertion to a newer uncertain attempt."
+      },
+      {
+        "ids": [
+          0,
+          3,
+          5,
+          9,
+          10,
+          13
+        ],
+        "suggestedSeverity": "Should-fix",
+        "rank": 2,
+        "mergedClaim": "A bootstrap whose confirmed created pane becomes unavailable before downstream completion has no terminal abandonment path and can indefinitely block archival of its selected existing thread."
+      },
+      {
+        "ids": [
+          7,
+          12
+        ],
+        "suggestedSeverity": "Should-fix",
+        "rank": 3,
+        "mergedClaim": "The design does not specify how to reconcile a downstream-complete but bootstrap-incomplete crash when caller or topology guards become invalid before retry, potentially stranding the live outer fence."
+      },
+      {
+        "ids": [
+          4
+        ],
+        "suggestedSeverity": "Should-fix",
+        "rank": 4
+      }
+    ]
+  }
+}

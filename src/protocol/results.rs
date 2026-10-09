@@ -96,6 +96,12 @@ pub enum CommandResult {
     OperatorFreshSeat(SeatId),
     OperatorInvited(InvitationId),
     OperatorRetired(SeatId),
+    Bootstrap(Box<crate::protocol::handoff::BootstrapResult>),
+    BootstrapReserved(Box<crate::protocol::handoff::ReserveBootstrapResult>),
+    BootstrapSubmissionChecked(crate::protocol::handoff::BootstrapSubmissionChecked),
+    BootstrapRecovered(Box<crate::protocol::handoff::BootstrapRecoveryResult>),
+    LinkedBootstrapCompleted(Box<crate::protocol::handoff::CompletedBootstrapResult>),
+    HandoffDelivery(crate::protocol::handoff::DeliveryResult),
 }
 
 /// Retained recipient decision; reason is untrusted peer data.
@@ -1491,6 +1497,9 @@ pub enum IntentKind {
     OperatorRetire,
     OperatorReplace,
     ContinuityCheckIn,
+    HandoffBootstrap,
+    HandoffDelivery,
+    OperatorRecoverBootstrap,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

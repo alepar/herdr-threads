@@ -5,6 +5,12 @@
 
 use std::collections::BTreeSet;
 
+/// Advertised only by an elected runtime with required scoped observer and canonical deciding handlers.
+/// Only concrete runtimes enforcing immutable inspected-state recovery advertise this.
+pub const BOOTSTRAP_INSPECTED_RECOVERY_V1: &str = "handoff.bootstrap_inspected_recovery_v1";
+
+pub const BOOTSTRAP_GUARDED_RESOLUTION_V1: &str = "handoff.bootstrap_guarded_resolution_v1";
+
 pub const PICKER_DIRECTORY_V1: &str = "picker.directory_v1";
 
 pub const HISTORY_FULL_BODIES: &str = "history.full_bodies";

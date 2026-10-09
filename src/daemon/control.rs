@@ -67,6 +67,7 @@ pub struct ControlService<H, S> {
     stop: StopController,
     health: H,
     domain: S,
+    bootstrap_guarded: bool,
     hook_parse_failures: Option<std::sync::Arc<crate::daemon::logs::HookParseFailures>>,
     /// The harness version manifest (the evidence recorder and the version
     /// states hold their own handles). Not read here.
@@ -90,6 +91,7 @@ where
             stop,
             health,
             domain,
+            bootstrap_guarded: false,
             hook_parse_failures: None,
             harness_manifest: None,
             harness_evidence: None,
@@ -153,6 +155,27 @@ where
     ) -> Self {
         self.harness_manifest = Some(manifest);
         self
+    }
+}
+
+impl<H> ControlService<H, crate::service::dispatch::DomainService>
+where
+    H: Fn(&CallBudget) -> HealthInputs + Send + Sync,
+{
+    /// Only the concrete fully equipped domain can enable this capability.
+    pub fn new_guarded(
+        stop: StopController,
+        health: H,
+        domain: crate::service::dispatch::DomainService,
+    ) -> Result<Self, ApiError> {
+        if !domain.bootstrap_available() {
+            return Err(ApiError::unsupported(
+                "bootstrap runtime composition incomplete",
+            ));
+        }
+        let mut service = Self::new(stop, health, domain);
+        service.bootstrap_guarded = true;
+        Ok(service)
     }
 }
 
@@ -281,21 +304,30 @@ where
                 Ok(CommandResult::HarnessHealthV2(provider.report_v2(budget)?))
             }
             ApiCommand::Health => Ok(CommandResult::Health((self.health)(budget).assemble())),
-            ApiCommand::Capabilities => Ok(CommandResult::Capabilities(CapabilityList {
-                capabilities: crate::protocol::capabilities::ADVERTISED
-                    .iter()
-                    .filter(|name| {
-                        (**name != crate::protocol::capabilities::HARNESS_EVIDENCE_V2
-                            || self.harness_evidence_v2.is_some())
-                            && (**name != crate::protocol::capabilities::HARNESS_HEALTH_V2
-                                || self
-                                    .harness_health_v2
-                                    .as_ref()
-                                    .is_some_and(|p| p.has_observations()))
-                    })
-                    .map(|name| (*name).to_owned())
-                    .collect(),
-            })),
+            ApiCommand::Capabilities => {
+                Ok(CommandResult::Capabilities(CapabilityList {
+                    capabilities: crate::protocol::capabilities::ADVERTISED
+                        .iter()
+                        .filter(|name| {
+                            (**name != crate::protocol::capabilities::HARNESS_EVIDENCE_V2
+                                || self.harness_evidence_v2.is_some())
+                                && (**name != crate::protocol::capabilities::HARNESS_HEALTH_V2
+                                    || self
+                                        .harness_health_v2
+                                        .as_ref()
+                                        .is_some_and(|p| p.has_observations()))
+                        })
+                        .copied()
+                        .chain(self.bootstrap_guarded.then_some(
+                            crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,
+                        ))
+                        .chain(self.bootstrap_guarded.then_some(
+                            crate::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1,
+                        ))
+                        .map(str::to_owned)
+                        .collect(),
+                }))
+            }
             ApiCommand::HookParseFailure(report) => {
                 if let Some(failures) = &self.hook_parse_failures {
                     failures.record(&report.harness, &report.detail);

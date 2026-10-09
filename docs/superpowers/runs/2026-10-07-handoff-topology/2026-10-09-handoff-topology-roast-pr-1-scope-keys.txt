@@ -1,0 +1,7 @@
+[Blocking] src/cli/topology_runtime.rs:534
+[Should-fix] src/cli/topology_handoff.rs:1423; src/cli/topology_handoff.rs:1398
+[Should-fix] src/cli/handoff_delivery.rs:761
+[Should-fix] src/store/topology_handoff/attachment.rs:627
+[Should-fix] src/archival_legacy.rs:712
+[Should-fix] src/cli/topology_handoff.rs:1678
+[Should-fix] tests/cli/topology_handoff.rs:3307

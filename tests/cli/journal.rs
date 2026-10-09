@@ -1594,6 +1594,250 @@ fn user_intent_send_retry_preserves_recorded_claim() {
 }
 
 #[test]
+fn topology_contract_legacy_handoff_bytes_and_digest_unchanged() {
+    const BODY: &str = r#"{"kind":"frozen","claim":{"instance":"i","seat":"legacy-fixture","binding_generation":0,"role":"top_level","harness":"codex","native_session":"session-secret","execution":"execution-secret","target":"target-secret"},"mutation":{"kind":"handoff","request":{"thread":"thread-1","thread_name":null,"topic":null,"goal":null,"body":"work","launch":{"target":"target-2","harness":"Codex","harness_binary":"/bin/codex","argv":["--model","fixed"],"name":"peer","pane_label":null}},"context":{"state_dir":"/state","host":"/host.sock"},"recipient":"recipient","create_key":"create","invite_key":"invite","send_key":"send"}}"#;
+    const DIGEST: &str = r#"787970572282c2ae3f6c165411d223fb41429b4c043ee39f0163d225a15c5bad"#;
+    const COMMAND: &str = r#"{"kind":"complete_handoff","args":{"identity":{"compound":"compound","digest":"787970572282c2ae3f6c165411d223fb41429b4c043ee39f0163d225a15c5bad","claim":{"instance":"i","seat":"legacy-fixture","binding_generation":0,"role":"top_level","harness":"codex","native_session":"session-secret","execution":"execution-secret","target":"target-secret"},"thread":"thread-1","recipient":"recipient","create_key":"create","invite_key":"invite","send_key":"send"},"operation":"complete"}}"#;
+    const RESULT: &str = r#"{"compound":"compound","thread":"thread-1","state":"completed"}"#;
+    let semantic: SemanticMutation = serde_json::from_str(BODY).unwrap();
+    assert_eq!(serde_json::to_string(&semantic).unwrap(), BODY);
+    assert_eq!(format!("{:x}", Sha256::digest(BODY.as_bytes())), DIGEST);
+    let command: Command = serde_json::from_str(COMMAND).unwrap();
+    assert_eq!(serde_json::to_string(&command).unwrap(), COMMAND);
+    let result: crate::protocol::handoff::HandoffResult = serde_json::from_str(RESULT).unwrap();
+    assert_eq!(serde_json::to_string(&result).unwrap(), RESULT);
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let reference = IntentRef {
+        ordinal: 1,
+        operation: OperationId::new("00000000-0000-4000-8000-000000000001"),
+    };
+    let header = IntentHeader {
+        reference: reference.clone(),
+        scope: IntentScope::Cooperative {
+            instance: "i".into(),
+            seat: claim().seat,
+        },
+        created_at_millis: 123,
+        kind: IntentKind::Handoff,
+        thread: Some(ThreadId::new("thread-1")),
+        semantic_digest: DIGEST.into(),
+    };
+    fs::write(
+        journal.path(&reference),
+        format!("{}\n{BODY}\n", serde_json::to_string(&header).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(journal.load(&reference).unwrap().semantic, semantic);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn topology_contract_new_variant_decoding() {
+    for tag in ["handoff_bootstrap", "handoff_delivery"] {
+        let encoded = format!("{{\"kind\":\"{tag}\",\"version\":1}}");
+        let result = serde_json::from_str::<SemanticMutation>(&encoded);
+        assert!(
+            !result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.to_string().contains("unknown variant")),
+            "new journal tag must be recognized: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn topology_contract_new_journal_variants_roundtrip_and_validate() {
+    use crate::protocol::handoff::{HandoffChannel, topology_contract_tests as fixture};
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let claim = fixture::claim();
+    let scope = IntentScope::Cooperative {
+        instance: claim.instance.clone(),
+        seat: claim.seat.clone(),
+    };
+    let bootstrap = BootstrapPlan {
+        version: 1,
+        payload: fixture::payload(),
+    };
+    let delivery = DeliveryPlan {
+        version: 1,
+        payload: fixture::payload().handoff,
+        recipient: SeatId::new("peer"),
+    };
+    let variants = [
+        SemanticMutation::HandoffBootstrap(Box::new(bootstrap.clone())),
+        SemanticMutation::HandoffDelivery(Box::new(delivery.clone())),
+    ];
+    let mut digests = Vec::new();
+    for semantic in variants {
+        let frozen = SemanticMutation::freeze(semantic, claim.clone()).unwrap();
+        let reference = journal.record(scope.clone(), frozen.clone(), 1).unwrap();
+        let loaded = journal.load(&reference).unwrap();
+        assert_eq!(loaded.semantic, frozen);
+        assert_eq!(loaded.header.scope, scope);
+        assert_eq!(loaded.semantic.frozen_claim(), Some(&claim));
+        assert!(
+            loaded
+                .semantic
+                .to_command(OperationId::new("generic"), None)
+                .is_err()
+        );
+        if let SemanticMutation::Frozen { claim, mutation } = &loaded.semantic
+            && let SemanticMutation::HandoffBootstrap(plan) = mutation.as_ref()
+        {
+            let identity = crate::protocol::handoff::BootstrapIdentity {
+                compound: plan.payload.handoff.keys.compound.clone(),
+                scope: loaded.header.scope.clone(),
+                claim: claim.clone(),
+                digest: loaded.header.semantic_digest.clone(),
+                payload: plan.payload.clone(),
+            };
+            assert_eq!(
+                identity.semantic_digest().unwrap(),
+                loaded.header.semantic_digest,
+                "identity must hash the journal semantic payload, excluding its own digest envelope"
+            );
+            assert!(identity.validate().is_ok());
+        }
+        digests.push(loaded.header.semantic_digest.clone());
+        let raw = fs::read_to_string(journal.path(&reference)).unwrap();
+        let (header, body) = raw.split_once('\n').unwrap();
+        for replacement in ["namespace", "body", "recipient", "argv", "attempt_keys"] {
+            let mut changed: serde_json::Value = serde_json::from_str(body).unwrap();
+            let plan = &mut changed["mutation"];
+            match replacement {
+                "namespace" => {
+                    if plan["kind"] == "handoff_bootstrap" {
+                        plan["payload"]["handoff"]["namespace"]["host_endpoint"] =
+                            "/foreign.sock".into();
+                    } else {
+                        plan["payload"]["namespace"]["host_endpoint"] = "/foreign.sock".into();
+                    }
+                }
+                "body" => {
+                    if plan["kind"] == "handoff_bootstrap" {
+                        plan["payload"]["handoff"]["body"] = "different work".into();
+                    } else {
+                        plan["payload"]["body"] = "different work".into();
+                    }
+                }
+                "attempt_keys" if plan["kind"] == "handoff_bootstrap" => {
+                    plan["payload"]["handoff"]["keys"]["compound"] = "other-compound".into();
+                }
+                "recipient" if plan["kind"] == "handoff_delivery" => {
+                    plan["recipient"] = "other-peer".into()
+                }
+                "argv" if plan["kind"] == "handoff_bootstrap" => {
+                    plan["payload"]["launch"]["argv"][1] = "other-model".into()
+                }
+                _ => continue,
+            }
+            let altered: SemanticMutation = serde_json::from_value(changed.clone()).unwrap();
+            assert!(
+                altered.validate().is_ok(),
+                "tamper fixture must reach the digest check"
+            );
+            fs::write(journal.path(&reference), format!("{header}\n{changed}\n")).unwrap();
+            assert!(
+                journal
+                    .load(&reference)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("semantic mismatch")
+            );
+        }
+        fs::write(journal.path(&reference), raw).unwrap();
+        let foreign = IntentScope::Cooperative {
+            instance: "foreign".into(),
+            seat: claim.seat.clone(),
+        };
+        assert!(journal.record(foreign, frozen, 1).is_err());
+    }
+    assert_ne!(digests[0], digests[1]);
+    for digest in &digests {
+        assert_ne!(
+            digest,
+            "787970572282c2ae3f6c165411d223fb41429b4c043ee39f0163d225a15c5bad"
+        );
+    }
+    assert_ne!(
+        digests[0],
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&send()).unwrap()))
+    );
+    for version in [0, 2] {
+        let mut bad = bootstrap.clone();
+        bad.version = version;
+        assert!(bad.validate().is_err());
+        let mut bad = delivery.clone();
+        bad.version = version;
+        assert!(bad.validate().is_err());
+    }
+    let mut bad = delivery.clone();
+    bad.payload.channel = HandoffChannel::New {
+        name: None,
+        topic: "topic".into(),
+        goal: "".into(),
+    };
+    assert!(bad.validate().is_err());
+    let invalid_channel =
+        serde_json::json!({"kind":"existing", "thread":"thread", "topic":"extra"});
+    assert!(serde_json::from_value::<HandoffChannel>(invalid_channel).is_err());
+    let mut bad = delivery;
+    bad.payload.namespace.instance = "foreign".into();
+    assert!(
+        SemanticMutation::freeze(SemanticMutation::HandoffDelivery(Box::new(bad)), claim).is_err()
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn operator_bootstrap_recovery_has_own_actor_without_reclassifying_reference() {
+    use crate::protocol::handoff::*;
+    let identity = topology_contract_tests::identity();
+    let mut request = RecoverBootstrap {
+        inspection: None,
+        identity,
+        expected_attempt: BootstrapAttempt::first(),
+        operation: OperationId::new("placeholder"),
+        disposition: BootstrapRecoveryDisposition::NotCreated {
+            quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+        },
+    };
+    request.operation = request.decision_operation().unwrap();
+    let raw = serde_json::json!({"kind":"operator_recover_bootstrap", "version":1, "original_ref":{"ordinal":1,"operation":"original"},"operator_uid":42,"request":request});
+    let semantic: SemanticMutation =
+        serde_json::from_value(raw).expect("operator recovery must have separate durable semantic");
+    assert!(semantic.is_operator());
+    assert!(
+        semantic.frozen_claim().is_none(),
+        "nested original claim is a reference, never operator caller"
+    );
+    assert_eq!(
+        classify_original_actor(
+            &IntentScope::Operator {
+                instance: "i".into(),
+                local_user_uid: 42
+            },
+            &semantic
+        )
+        .unwrap(),
+        OriginalActor::HumanOrOperator
+    );
+    assert!(
+        classify_original_actor(
+            &IntentScope::Operator {
+                instance: "i".into(),
+                local_user_uid: 43
+            },
+            &semantic
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn retry_preflight_read_only_absent_journal() {
     let dir = temp();
     assert_eq!(

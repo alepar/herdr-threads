@@ -1270,6 +1270,122 @@ impl OrdinaryResolutionGuard {
         &self.operation
     }
 }
+/// One qualified pane.get response and its structural workspace/tab fields.
+/// The native integration must construct this from the SAME response as the
+/// observation, never labels, a cached scan or frozen creation evidence.
+#[derive(Debug)]
+pub struct BootstrapPaneObservation {
+    observation: HostObservation,
+    witness: crate::host::continuity::LocalEndpointWitness,
+    workspace: HostTargetId,
+    tab: HostTargetId,
+}
+impl BootstrapPaneObservation {
+    /// Publish this same response before deriving its canonical attachment guard.
+    pub fn observation(&self) -> &HostObservation {
+        &self.observation
+    }
+
+    pub(crate) fn try_new(
+        observation: HostObservation,
+        workspace: HostTargetId,
+        tab: HostTargetId,
+        witness: crate::host::continuity::LocalEndpointWitness,
+    ) -> Result<Self, &'static str> {
+        let identity = format!(
+            "herdr-server:pid={}:start={}.{:06}:uid={}",
+            witness.peer_pid, witness.start_seconds, witness.start_microseconds, witness.peer_uid
+        );
+        let proof = observation
+            .verified_structural_proof()
+            .ok_or("bootstrap requires qualified same-response pane scope")?;
+        if witness.schema != 1
+            || witness.platform != "macos-proc-bsdinfo-v1"
+            || witness.peer_pid == 0
+            || witness.start_seconds == 0
+            || witness.start_microseconds >= 1_000_000
+            || witness.socket.inode == 0
+            || !crate::protocol::handoff::frozen_absolute_path(&witness.endpoint)
+            || observation.host_boot.as_str() != identity
+            || proof.incarnation() != identity
+        {
+            return Err("bootstrap witness does not qualify the same-response incarnation");
+        }
+        let prefix = format!("{}:", workspace.as_str());
+        if observation.provenance != ObservationProvenance::FreshCurrentTarget
+            || observation.verified_structural_proof().is_none()
+            || workspace.as_str().is_empty()
+            || workspace.as_str().contains(':')
+            || !observation.target.as_str().starts_with(&prefix)
+            || !tab.as_str().starts_with(&prefix)
+            || tab == observation.target
+        {
+            return Err("bootstrap requires qualified same-response pane scope");
+        }
+        Ok(Self {
+            observation,
+            witness,
+            workspace,
+            tab,
+        })
+    }
+    pub fn witness(&self) -> &crate::host::continuity::LocalEndpointWitness {
+        &self.witness
+    }
+    pub fn workspace(&self) -> &HostTargetId {
+        &self.workspace
+    }
+    pub fn tab(&self) -> &HostTargetId {
+        &self.tab
+    }
+}
+
+/// Required native same-response scope producer; ordinary host support does not
+/// imply this capability. No default may manufacture or discard qualified scope.
+pub trait BootstrapObserver: Send + Sync {
+    fn observe_bootstrap_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<BootstrapPaneObservation, ApiError>;
+}
+/// Sealed fresh tab-scope evidence paired to the exact ordinary resolution
+/// proof and admission. It confers no seat allocation or receipt authority.
+#[derive(Debug)]
+pub struct BootstrapAttachmentGuard {
+    witness: crate::host::continuity::LocalEndpointWitness,
+    ordinary: OrdinaryResolutionGuard,
+    workspace: HostTargetId,
+    tab: HostTargetId,
+}
+impl BootstrapAttachmentGuard {
+    pub(crate) fn try_new(
+        request: &ResolveSeat,
+        pane: BootstrapPaneObservation,
+        admission: &HostObservationAdmission,
+    ) -> Result<Self, &'static str> {
+        let ordinary = OrdinaryResolutionGuard::try_new(request, pane.observation, admission)?;
+        Ok(Self {
+            ordinary,
+            witness: pane.witness,
+            workspace: pane.workspace,
+            tab: pane.tab,
+        })
+    }
+    pub fn witness(&self) -> &crate::host::continuity::LocalEndpointWitness {
+        &self.witness
+    }
+    pub fn ordinary(&self) -> &OrdinaryResolutionGuard {
+        &self.ordinary
+    }
+    pub fn workspace(&self) -> &HostTargetId {
+        &self.workspace
+    }
+    pub fn tab(&self) -> &HostTargetId {
+        &self.tab
+    }
+}
+
 #[derive(Debug)]
 // Allowed: a transient per-resolution value; boxing the guard would change the port API.
 #[allow(clippy::large_enum_variant)]
@@ -1695,8 +1811,13 @@ impl NativeLaunchRequest {
     /// Largest total of all native arguments.
     pub const MAX_ARGV_BYTES: usize = 32 * 1024;
 
+    /// Validate the same native argument geometry before allocating launch effects.
+    pub fn validate_argv(argv: &[String]) -> Result<(), &'static str> {
+        validate_native_argv(argv)
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
-        validate_native_argv(&self.argv)?;
+        Self::validate_argv(&self.argv)?;
         if self.expected_incarnation.is_empty()
             || self.expected_incarnation.len() > 128
             || self.configured_hook.scope.is_empty()
@@ -2402,6 +2523,74 @@ pub struct ModSeatView {
 /// Store implementations inject a clock at construction and sample UTC inside each
 /// deciding write transaction, after validation and lock/queue waits. Mutation and due
 /// methods have no caller-provided UTC decision time.
+/// Required deciding bootstrap adapter, supplied only by an equipped runtime.
+/// Namespace is independently selected by election; guards remain transient.
+pub trait BootstrapStorePort: Send + Sync {
+    fn bootstrap_begin_permit(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        command: &crate::protocol::handoff::BeginBootstrap,
+        budget: &CallBudget,
+    ) -> Result<MutationPermit, ApiError>;
+    fn bootstrap_prepare_send_step(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        command: &crate::protocol::commands::SendMessage,
+        admission: DurableWorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<SendPreparationProgress, ApiError>;
+    fn delivery_query(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        request: &crate::protocol::handoff::DeliveryMutation,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+    fn delivery_mutate(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        request: &crate::protocol::handoff::DeliveryMutation,
+        permit: MutationPermit,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+    fn delivery_prepare_send_step(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        request: &crate::protocol::handoff::DeliveryMutation,
+        admission: DurableWorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<SendPreparationProgress, ApiError>;
+
+    fn bootstrap_mutate(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        command: PermitMutation,
+        permit: MutationPermit,
+        guard: Option<BootstrapAttachmentGuard>,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+    fn bootstrap_query(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        command: &Command,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+    fn bootstrap_recovery_replay(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        request: &crate::protocol::handoff::RecoverBootstrap,
+        actor: &crate::protocol::authority::OperatorActor,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::protocol::handoff::BootstrapRecoveryResult>, ApiError>;
+    fn bootstrap_recover(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        request: &crate::protocol::handoff::RecoverBootstrap,
+        actor: &crate::protocol::authority::OperatorActor,
+        guard: Option<BootstrapAttachmentGuard>,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+}
+
 pub trait StorePort: ModStoreReads + Send + Sync {
     fn clock(&self) -> &dyn Clock;
     fn archival_pass(
@@ -3678,6 +3867,89 @@ mod allocation_tests {
         ));
     }
 
+    #[test]
+    fn bootstrap_pane_scope_requires_qualified_same_response_structure() {
+        let mut observation = operator_observation("w1:p2");
+        observation.host_boot =
+            crate::protocol::handoff::topology_contract_tests::created().host_incarnation;
+        observation.terminal = Some(TerminalId::new("terminal"));
+        observation.observation_sequence = 1;
+        observation.incarnation = IncarnationEvidence::Verified {
+            identity: "herdr-server:pid=42:start=1.000002:uid=501".into(),
+            evidence_kind: EvidenceKind::NativeCurrentTarget,
+        };
+        let request = ResolveSeat {
+            target: HostTargetId::new("w1:p2"),
+            operation: OperationId::new("resolve"),
+        };
+        let admission = HostObservationAdmission {
+            instance: "i".into(),
+            sequence: 1,
+            expected_active: None,
+            expected_boot: Some(HostBootId::new("b1")),
+            expected_epoch: 4,
+            lifecycle_revision: 0,
+            invalidation_revision: 0,
+        };
+        for change in [
+            "valid",
+            "workspace",
+            "tab",
+            "target",
+            "terminal",
+            "cache",
+            "unknown",
+            "boot",
+            "incarnation",
+            "platform",
+            "schema",
+            "pid",
+            "start",
+            "inode",
+            "endpoint",
+        ] {
+            let mut current = observation.clone();
+            let mut workspace = HostTargetId::new("w1");
+            let mut tab = HostTargetId::new("w1:t2");
+            let mut witness = crate::protocol::handoff::topology_contract_tests::created().witness;
+            match change {
+                "workspace" => workspace = HostTargetId::new("w2"),
+                "tab" => tab = HostTargetId::new("w2:t2"),
+                "target" => current.target = HostTargetId::new("w2:p2"),
+                "terminal" => current.terminal = None,
+                "cache" => current.provenance = ObservationProvenance::UncharacterizedCache,
+                "unknown" => current.incarnation = IncarnationEvidence::Unknown,
+                "boot" => current.host_boot = HostBootId::new("wrong"),
+                "incarnation" => {
+                    current.incarnation = IncarnationEvidence::Verified {
+                        identity: "wrong".into(),
+                        evidence_kind: EvidenceKind::NativeCurrentTarget,
+                    }
+                }
+                "platform" => witness.platform = "unsupported".into(),
+                "schema" => witness.schema = 2,
+                "pid" => witness.peer_pid = 0,
+                "start" => witness.start_microseconds = 1_000_000,
+                "inode" => witness.socket.inode = 0,
+                "endpoint" => witness.endpoint = "relative.sock".into(),
+                _ => {}
+            }
+            let proof = BootstrapPaneObservation::try_new(current, workspace, tab, witness);
+            if change == "valid" {
+                let guard = BootstrapAttachmentGuard::try_new(&request, proof.unwrap(), &admission)
+                    .unwrap();
+                assert_eq!(guard.workspace().as_str(), "w1");
+                assert_eq!(guard.tab().as_str(), "w1:t2");
+                assert_eq!(
+                    guard.ordinary().structural_proof().target().as_str(),
+                    "w1:p2"
+                );
+            } else {
+                assert!(proof.is_err(), "{change}");
+            }
+        }
+    }
+
     fn operator_observation(target: &str) -> HostObservation {
         HostObservation {
             focused: false,
@@ -4245,4 +4517,66 @@ mod contract_adapter_tests {
             Ok(CommandResult::Health(_))
         ));
     }
+}
+
+/// Future required typed topology boundary, deliberately separate from HostPort.
+/// An adapter rechecks the expected socket/process witness at its final write.
+pub trait CreateTabPort: Send + Sync {
+    fn create_tab(&self, request: &CreateTabRequest, context: &HostCallContext)
+    -> CreateTabOutcome;
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateTabRequest {
+    pub correlation: HostCallId,
+    pub workspace: HostTargetId,
+    pub cwd: std::path::PathBuf,
+    pub label: String,
+    pub focus: bool,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub expected_witness: crate::host::continuity::LocalEndpointWitness,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreatedTab {
+    pub correlation: HostCallId,
+    pub workspace: HostTargetId,
+    pub tab: HostTargetId,
+    pub root_pane: HostTargetId,
+    pub terminal: TerminalId,
+    /// Derived from transport peer/process/socket, never a response field.
+    pub host_incarnation: HostBootId,
+    pub witness: crate::host::continuity::LocalEndpointWitness,
+}
+impl CreatedTab {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let w = &self.witness;
+        let incarnation = format!(
+            "herdr-server:pid={}:start={}.{:06}:uid={}",
+            w.peer_pid, w.start_seconds, w.start_microseconds, w.peer_uid
+        );
+        let prefix = format!("{}:", self.workspace.as_str());
+        if w.schema != 1
+            || w.platform != "macos-proc-bsdinfo-v1"
+            || w.peer_pid == 0
+            || w.start_seconds == 0
+            || w.start_microseconds >= 1_000_000
+            || w.socket.inode == 0
+            || !crate::protocol::handoff::frozen_absolute_path(&w.endpoint)
+            || self.host_incarnation.as_str() != incarnation
+            || !self.tab.as_str().starts_with(&prefix)
+            || !self.root_pane.as_str().starts_with(&prefix)
+            || self.tab == self.root_pane
+        {
+            return Err("invalid correlated creation evidence");
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateTabOutcome {
+    Created(Box<CreatedTab>),
+    /// Transport-proven zero submission, never inferred from a guessed error.
+    NotSubmitted(ApiError),
+    OutcomeUnknown(ApiError),
 }

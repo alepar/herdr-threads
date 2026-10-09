@@ -23,25 +23,69 @@ use std::{
     os::unix::fs::OpenOptionsExt,
 };
 
-pub const HANDOFF_HELP: &str =
-    "Choose exactly one of --new-thread or --thread ID_OR_NAME, and an explicit --pane.
-New threads join the sender; existing threads require a joined sender. --thread-name,
---topic and --goal apply only to new threads. Topic defaults to Handoff to DISPLAY;
-goal defaults to topic. --name names the native agent, not the channel.
+pub const HANDOFF_HELP: &str = "Choose exactly one channel: --new-thread or --thread ID_OR_NAME.
+Choose one target mode:
+  --pane PANE --kind claude|codex launches in an existing explicit pane;
+  --new-tab LABEL --kind claude|codex creates a tab and launches there;
+  --existing with exactly one --seat SEAT or --pane PANE delivers durable work
+    to an existing canonical seat without launching or restarting its session.
+New modes require an original top-level Agent and the guarded daemon capability.
+--new-tab conflicts with --existing, --tab, --pane and --seat. --cwd is new-tab
+only: an absolute existing directory, defaulting to the invocation cwd, normalized
+before publication. --space selects one live workspace by exact ID or unique label;
+omission for creation uses the caller's live workspace, never UI focus. New-tab is
+intentional creation even if its label already exists; it does not focus the tab.
+For --existing, --space and --tab may qualify --pane, but conflict with --seat.
+Delivery forbids --kind, --harness-binary, --name and --agent-arg and ignores the
+launch-option environment. An unresolved, held, retired or foreign seat refuses.
+An unbound resolved seat may receive staged work; this does not establish a
+working or available session. Delivery reports staged work, not a launch result.
 
-The one quoted body after -- is durable work. Native options use repeatable
---agent-arg=OPTION; launch -- native arguments is unchanged.
-HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS prepend optional arguments,
-using shell-style quotes and escapes without variable or command expansion. Unset
-or empty adds nothing. Handoff freezes these options before preflight; retry uses
-the saved arguments even if the environment changes.
-Handoff invites and sends before guarded launch. Startup gets fixed inbox
-instructions, not a second copy of the body. Launch never accepts or ACKs.
+New threads join the sender; existing threads require a joined sender. --thread-name,
+--topic and --goal apply only to new threads. Topic defaults to Handoff to DISPLAY:
+legacy launch uses the pane display, new-tab uses its label, delivery uses the
+canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
+The one quoted body after -- is durable work (1..1024 UTF-8 bytes), never native argv.
+Native launch options use repeatable --agent-arg=OPTION; launch -- native arguments
+is unchanged. HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS prepend optional
+arguments using shell-style quotes and escapes without variable or command
+expansion. Unset or empty adds nothing. Launch handoff freezes the combined options
+before preflight; retry uses saved arguments even if the environment changes.
+Handoff stages an invitation when needed and a message addressed to the exact
+recipient; launch modes then perform guarded launch. Startup gets fixed inbox
+instructions, not a second copy of the body. Handoff never accepts or ACKs for
+the recipient, nor declares task adoption or task completion.
+Native execution still needs the selected harness's approval/configuration.
 
 Committed work survives failure. pending-ops lists the compound reference; retry REF
-resumes exact keyed steps. A confirmed pre-start refusal can retry after repair.
-Possible start, unknown outcome or a crash across submission never auto-launches
-again: inspect the reported pane/seat before using the reported manual launch argv.";
+resumes exact keyed steps without duplicate messages or invitations. A confirmed
+pre-start refusal can retry after repair. Unknown creation cannot automatically
+create another tab: inspect the reported exact namespace and attempt. It is distinct
+from downstream possible start; possible start, unknown launch outcome or a crash
+across launch submission never automatically launches again. Inspect the exact
+downstream pane/seat before using any reported manual launch argv after confirming no
+agent started. Manual launch guidance does not prove tab noncreation.
+Completed retry presents the retained historical report and cleans its own local
+intent without repeating effects or proving current availability.
+
+Administrative bootstrap recovery uses human immediately after the executable:
+  herdr-threads human [GLOBALS] handoff recover REF --attempt N --created-pane EXACT_PANE
+  herdr-threads human [GLOBALS] handoff recover REF --attempt N --not-created
+  herdr-threads human [GLOBALS] handoff recover REF --attempt N --cancel --reason TEXT
+Keep the exact reported reference, positive attempt N, state directory and endpoint;
+routing/output globals follow immediate human. Root --human selects output only.
+Recovery needs the guarded daemon capability and records a separate local-account
+operator assertion, preserving the original agent identity. Created-pane asserts
+this exact result belongs to the inspected attempt and needs fresh coherent
+structural evidence and ordinary guards; labels are not ownership evidence.
+Not-created asserts inspected noncreation and quiescence. Cancellation asserts
+quiescence and administrative abandonment, not completion; reason is nonblank and
+at most 4096 UTF-8 bytes. A known in-flight invocation refuses conflicting recovery;
+snapshots or guessed PIDs do not prove quiescence. Recovery never launches downstream
+work. Bootstrap cancellation refuses while an exact legacy child fence or live hint
+remains; that child may stay protected indefinitely after pane loss or retirement.
+Recovery replay presents its exact recorded decision, never authorizes a newer
+attempt. Product cleanup never closes created topology.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoffRequest {
@@ -104,12 +148,151 @@ impl HandoffPlan {
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Progress {
-    thread: Option<ThreadId>,
-    invitation: Option<CommandResult>,
-    message: Option<CommandResult>,
-    possible_start: bool,
-    launch: Option<serde_json::Value>,
+pub(crate) struct Progress {
+    pub thread: Option<ThreadId>,
+    pub invitation: Option<CommandResult>,
+    pub message: Option<CommandResult>,
+    pub possible_start: bool,
+    pub launch: Option<serde_json::Value>,
+}
+
+/// Exact keyed durable work, independent of native launch and receipt actions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct StagedWork {
+    pub thread: Option<ThreadId>,
+    pub invitation: Option<CommandResult>,
+    pub message: Option<CommandResult>,
+    #[serde(default)]
+    pub invitation_attempted: bool,
+}
+pub(crate) struct Staging<'a> {
+    pub channel: &'a crate::protocol::handoff::HandoffChannel,
+    pub body: &'a str,
+    pub recipient: &'a SeatId,
+    pub create_key: &'a OperationId,
+    pub invite_key: &'a OperationId,
+    pub send_key: &'a OperationId,
+    pub skip_joined: bool,
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stage_work<C: LocalClient + ?Sized>(
+    plan: Staging<'_>,
+    progress: &mut StagedWork,
+    phase: &mut &'static str,
+    call: &dyn Fn(SemanticMutation, &OperationId) -> Result<CommandResult, RunError>,
+    save: &mut dyn FnMut(&StagedWork) -> Result<(), RunError>,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    use crate::protocol::handoff::HandoffChannel;
+    *phase = "create";
+    if progress.thread.is_none() {
+        progress.thread = Some(match plan.channel {
+            HandoffChannel::Existing { thread } => thread.clone(),
+            HandoffChannel::New { name, topic, goal } => match call(
+                SemanticMutation::CreateThread {
+                    name: name.clone(),
+                    topic: topic.clone(),
+                    goal: goal.clone(),
+                },
+                plan.create_key,
+            )? {
+                CommandResult::ThreadCreated(thread) => thread,
+                _ => return Err(super::invalid_request("unexpected create result")),
+            },
+        });
+        save(progress)?;
+    }
+    let thread = progress.thread.clone().unwrap();
+    *phase = "invite";
+    if progress.invitation.is_none() {
+        let result = if plan.skip_joined
+            && !progress.invitation_attempted
+            && recipient_joined(client, clock, &thread, plan.recipient)?
+        {
+            CommandResult::AlreadyJoined(crate::protocol::results::AlreadyJoined {
+                thread: thread.clone(),
+                seat: plan.recipient.clone(),
+            })
+        } else {
+            // Retain the keyed invitation decision before a possibly lost reply.
+            if plan.skip_joined {
+                progress.invitation_attempted = true;
+                save(progress)?;
+            }
+            call(
+                SemanticMutation::Invite {
+                    thread: thread.clone(),
+                    seat: plan.recipient.clone(),
+                    deadline_millis: None,
+                },
+                plan.invite_key,
+            )?
+        };
+        if !matches!(
+            result,
+            CommandResult::Invitation(_) | CommandResult::AlreadyJoined(_)
+        ) {
+            return Err(super::invalid_request("unexpected invite result"));
+        }
+        progress.invitation = Some(result);
+        save(progress)?;
+    }
+    *phase = "send";
+    if progress.message.is_none() {
+        let result = call(
+            SemanticMutation::SendMessage {
+                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                thread,
+                body: plan.body.into(),
+                invited_recipients: vec![plan.recipient.clone()],
+                deadline_millis: None,
+                relays_user: false,
+                user_intent: None,
+            },
+            plan.send_key,
+        )?;
+        if !matches!(result, CommandResult::MessageSent(_)) {
+            return Err(super::invalid_request("unexpected send result"));
+        }
+        progress.message = Some(result);
+        save(progress)?;
+    }
+    Ok(())
+}
+pub(crate) fn recipient_joined<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    thread: &ThreadId,
+    seat: &SeatId,
+) -> Result<bool, RunError> {
+    use crate::protocol::{
+        commands::ParticipantsQuery, pagination::PageRequest, results::MembershipStatus,
+    };
+    let mut page = PageRequest::default();
+    loop {
+        let CommandResult::Participants(found) = client.call(
+            Command::Participants(ParticipantsQuery {
+                thread: thread.clone(),
+                page: page.clone(),
+                caller: None,
+            }),
+            &super::cooperative_budget(clock),
+        )?
+        else {
+            return Err(super::invalid_request("unexpected participants result"));
+        };
+        if let Some(row) = found.items.iter().find(|row| &row.seat == seat) {
+            return Ok(row.joined
+                && !row.retired
+                && row.effective_state == MembershipStatus::Joined
+                && row.requirement.is_none());
+        }
+        match found.next_cursor {
+            Some(cursor) => page.cursor = Some(cursor),
+            None => return Ok(false),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,12 +426,26 @@ pub trait HandoffLauncher {
         gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
     ) -> Result<super::launch::LaunchReport, RunError>;
 }
-fn progress_path(journal: &Journal, reference: &IntentRef) -> std::path::PathBuf {
+pub(crate) fn progress_path(journal: &Journal, reference: &IntentRef) -> std::path::PathBuf {
     journal
         .root()
         .join(format!("handoff-{}.progress", reference.operation.as_str()))
 }
 fn save(journal: &Journal, reference: &IntentRef, progress: &Progress) -> io::Result<()> {
+    save_progress(journal, reference, progress)
+}
+pub(crate) fn save_progress<T: Serialize>(
+    journal: &Journal,
+    reference: &IntentRef,
+    progress: &T,
+) -> io::Result<()> {
+    save_progress_at(journal, &progress_path(journal, reference), progress)
+}
+pub(crate) fn save_progress_at<T: Serialize>(
+    journal: &Journal,
+    path: &std::path::Path,
+    progress: &T,
+) -> io::Result<()> {
     let temp = journal
         .root()
         .join(format!(".handoff-{}", uuid::Uuid::new_v4()));
@@ -259,17 +456,23 @@ fn save(journal: &Journal, reference: &IntentRef, progress: &Progress) -> io::Re
         .open(&temp)?;
     serde_json::to_writer(&mut file, progress)?;
     file.sync_all()?;
-    fs::rename(temp, progress_path(journal, reference))?;
+    fs::rename(temp, path)?;
     File::open(journal.root())?.sync_all()
 }
 fn load(journal: &Journal, reference: &IntentRef) -> io::Result<Progress> {
+    load_progress(journal, reference)
+}
+pub(crate) fn load_progress<T: serde::de::DeserializeOwned + Default>(
+    journal: &Journal,
+    reference: &IntentRef,
+) -> io::Result<T> {
     let file = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(progress_path(journal, reference))
     {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Progress::default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(T::default()),
         Err(error) => return Err(error),
     };
     let metadata = file.metadata()?;
@@ -284,7 +487,7 @@ fn load(journal: &Journal, reference: &IntentRef) -> io::Result<Progress> {
     }
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
-fn lock(journal: &Journal, reference: &IntentRef) -> io::Result<File> {
+pub(crate) fn lock(journal: &Journal, reference: &IntentRef) -> io::Result<File> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -301,7 +504,7 @@ fn lock(journal: &Journal, reference: &IntentRef) -> io::Result<File> {
     Ok(file)
 }
 
-fn membership<C: LocalClient + ?Sized>(
+pub(crate) fn membership<C: LocalClient + ?Sized>(
     client: &C,
     thread: &ThreadId,
     claim: &CallerClaim,
@@ -668,107 +871,30 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
             "handoff canonical and retained thread disagree",
         ));
     }
-    let mut phase = "create";
-    let call = |semantic: SemanticMutation, key: &OperationId| -> Result<CommandResult, RunError> {
-        Ok(client.call(
-            semantic.to_command(key.clone(), Some(claim.clone()))?,
-            &super::cooperative_budget(clock),
-        )?)
-    };
-    let attempt = (|| -> Result<(), RunError> {
-        if progress.thread.is_none() {
-            progress.thread = match &plan.request.thread {
-                Some(thread) => Some(thread.clone()),
-                None => match call(
-                    SemanticMutation::CreateThread {
-                        name: plan.request.thread_name.clone(),
-                        topic: plan.request.topic.clone().unwrap(),
-                        goal: plan.request.goal.clone().unwrap(),
-                    },
-                    &plan.create_key,
-                )? {
-                    CommandResult::ThreadCreated(thread) => Some(thread),
-                    _ => return Err(super::invalid_request("unexpected create result")),
-                },
-            };
-            save(journal, reference, &progress)?;
-        }
-        let thread = progress.thread.clone().unwrap();
-        if current
-            .thread
-            .as_ref()
-            .is_some_and(|canonical| canonical != &thread)
-        {
-            return Err(super::invalid_request(
-                "created handoff thread disagrees with canonical fence",
-            ));
-        }
-        let effective = prepare_saved_startup(launcher, &plan, &claim, Some(&thread), &template)?;
-        phase = "invite";
-        if progress.invitation.is_none() {
-            let result = call(
-                SemanticMutation::Invite {
-                    thread: thread.clone(),
-                    seat: plan.recipient.clone(),
-                    deadline_millis: None,
-                },
-                &plan.invite_key,
-            )?;
-            if !matches!(
-                result,
-                CommandResult::Invitation(_) | CommandResult::AlreadyJoined(_)
-            ) {
-                return Err(super::invalid_request("unexpected invite result"));
-            }
-            progress.invitation = Some(result);
-            save(journal, reference, &progress)?;
-            if classify_progress(&plan, &progress) == ProgressPhase::UncertainAbsorbing {
+    let (phase, attempt) = execute_steps(
+        &plan,
+        &claim,
+        &mut progress,
+        &mut |progress| {
+            save(journal, reference, progress)?;
+            if current
+                .thread
+                .as_ref()
+                .zip(progress.thread.as_ref())
+                .is_some_and(|(canonical, retained)| canonical != retained)
+            {
                 return Err(super::invalid_request(
-                    "incompatible retained invitation result",
+                    "created handoff thread disagrees with canonical fence",
                 ));
             }
-        }
-        phase = "send";
-        if progress.message.is_none() {
-            let result = call(
-                SemanticMutation::SendMessage {
-                    delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
-                    thread: thread.clone(),
-                    body: plan.request.body.clone(),
-                    invited_recipients: vec![plan.recipient.clone()],
-                    deadline_millis: None,
-                    relays_user: false,
-                    user_intent: None,
-                },
-                &plan.send_key,
-            )?;
-            if !matches!(result, CommandResult::MessageSent(_)) {
-                return Err(super::invalid_request("unexpected send result"));
-            }
-            progress.message = Some(result);
-            save(journal, reference, &progress)?;
-        }
-        phase = "launch";
-        let launched = launcher.launch(&effective.request, &plan.recipient, &mut |possible| {
-            if possible {
-                progress.possible_start = true;
-                save(journal, reference, &progress)
-            } else {
-                let mut reset = progress.clone();
-                reset.possible_start = false;
-                save(journal, reference, &reset).map(|()| progress = reset)
-            }
-            .map_err(|error| ApiError::new(ErrorCode::StoreCorrupt, error.to_string()))
-        });
-        match launched {
-            Ok(report) => {
-                progress.launch = Some(report.report);
-                save(journal, reference, &progress)?;
-            }
-            Err(error) => return Err(error),
-        }
-        Ok(())
-    })();
+            Ok(())
+        },
+        client,
+        launcher,
+        clock,
+        &mut || Ok(()),
+        Some(&template),
+    );
     let retained_phase = classify_progress(&plan, &progress);
     let unknown = retained_phase == ProgressPhase::UncertainAbsorbing;
     let mut report = if retained_phase == ProgressPhase::TerminalCompletionEligible {
@@ -837,12 +963,178 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
             "handoff lacks complete retained successful progress",
         ));
     }
-    let completed = fence(client, clock, &identity, true)?;
-    if completed.thread != progress.thread {
-        return Err(super::invalid_request("handoff completion thread mismatch"));
-    }
+    complete_with(
+        &identity,
+        OperationId::new(format!("handoff:complete:{}", identity.compound.as_str())),
+        &progress,
+        &mut |mutation, _, _| {
+            keyed_fence(client, clock, &mutation.identity, mutation.operation, true)
+        },
+    )?;
     journal.complete(reference)?;
     Ok(())
+}
+/// Shared legacy launch machinery, with a caller-owned durable progress record.
+/// The save callback must persist possible-start before native submission.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
+    plan: &HandoffPlan,
+    claim: &CallerClaim,
+    progress: &mut Progress,
+    save: &mut dyn FnMut(&Progress) -> Result<(), RunError>,
+    client: &C,
+    launcher: &mut dyn HandoffLauncher,
+    clock: &dyn Clock,
+    before_start: &mut dyn FnMut() -> Result<(), ApiError>,
+    startup_input: Option<&crate::harness::adapter::StartupInputTemplate>,
+) -> (&'static str, Result<(), RunError>) {
+    let mut phase = "create";
+    let call = |semantic: SemanticMutation, key: &OperationId| -> Result<CommandResult, RunError> {
+        Ok(client.call(
+            semantic.to_command(key.clone(), Some(claim.clone()))?,
+            &super::cooperative_budget(clock),
+        )?)
+    };
+    let attempt = (|| -> Result<(), RunError> {
+        let channel = match &plan.request.thread {
+            Some(thread) => crate::protocol::handoff::HandoffChannel::Existing {
+                thread: thread.clone(),
+            },
+            None => crate::protocol::handoff::HandoffChannel::New {
+                name: plan.request.thread_name.clone(),
+                topic: plan.request.topic.clone().unwrap(),
+                goal: plan.request.goal.clone().unwrap(),
+            },
+        };
+        let mut staged = StagedWork {
+            thread: progress.thread.clone(),
+            invitation: progress.invitation.clone(),
+            message: progress.message.clone(),
+            invitation_attempted: false,
+        };
+        stage_work(
+            Staging {
+                channel: &channel,
+                body: &plan.request.body,
+                recipient: &plan.recipient,
+                create_key: &plan.create_key,
+                invite_key: &plan.invite_key,
+                send_key: &plan.send_key,
+                skip_joined: false,
+            },
+            &mut staged,
+            &mut phase,
+            &call,
+            &mut |staged| {
+                progress.thread = staged.thread.clone();
+                progress.invitation = staged.invitation.clone();
+                progress.message = staged.message.clone();
+                save(progress)?;
+                if let Some(template) = startup_input {
+                    if classify_progress(plan, progress) == ProgressPhase::UncertainAbsorbing {
+                        return Err(super::invalid_request(
+                            "incompatible retained staging result",
+                        ));
+                    }
+                    prepare_saved_startup(
+                        launcher,
+                        plan,
+                        claim,
+                        progress.thread.as_ref(),
+                        template,
+                    )?;
+                }
+                Ok(())
+            },
+            client,
+            clock,
+        )?;
+        let thread = staged.thread.clone().unwrap();
+        phase = "launch";
+        if progress.launch.is_some() || progress.possible_start {
+            return Ok(());
+        }
+        let request = if let Some(template) = startup_input {
+            prepare_saved_startup(launcher, plan, claim, Some(&thread), template)?.request
+        } else {
+            // Frozen V1 Root input. Its retained report is later validated
+            // against frozen V1 composition, so refuse before any start when
+            // today's composer would launch different native arguments.
+            let mut request = plan.request.launch.clone();
+            request.argv.push(bootstrap_v1::prompt(
+                thread.as_str(),
+                &plan.context,
+                &claim.instance,
+            ));
+            let harness = request.harness.into();
+            if crate::harness::launch::compose_native_argv(harness, request.argv.clone(), vec![])?
+                != crate::harness::launch::compose_bootstrap_v1_argv(harness, request.argv.clone())?
+            {
+                return Err(super::invalid_request(
+                    "current launch composition differs from bootstrap plan V1; a new bootstrap plan version is required",
+                ));
+            }
+            request
+        };
+        let launched = launcher.launch(&request, &plan.recipient, &mut |possible| {
+            if possible {
+                // Linked bootstrap revalidates the original canonical caller at
+                // the actual launcher boundary; standalone retains its contract.
+                before_start()?;
+                // A failed write may already have published the fence: retain
+                // the conservative in-memory outcome as well.
+                progress.possible_start = true;
+                save(progress)
+            } else {
+                // Only adapter-proven NotSubmitted reaches this branch. Keep
+                // the old in-memory fence unless its reset is durably saved.
+                let mut reset = progress.clone();
+                reset.possible_start = false;
+                save(&reset).map(|()| *progress = reset)
+            }
+            .map_err(|e| ApiError::new(ErrorCode::StoreCorrupt, e.to_string()))
+        });
+        match launched {
+            Ok(report) => {
+                progress.launch = Some(report.report);
+                save(progress)?;
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    })();
+    (phase, attempt)
+}
+/// Internal completion callback; it never derives identity from a local ref.
+/// Linked callers pass the frozen legacy child key and commit both fences in
+/// their callback; standalone handoff retains its historical completion command.
+pub(crate) fn complete_with<T>(
+    identity: &crate::protocol::handoff::HandoffIdentity,
+    operation: OperationId,
+    progress: &Progress,
+    complete: &mut dyn FnMut(
+        crate::protocol::handoff::HandoffMutation,
+        &ThreadId,
+        &serde_json::Value,
+    ) -> Result<T, RunError>,
+) -> Result<T, RunError> {
+    let thread = progress
+        .thread
+        .as_ref()
+        .ok_or_else(|| super::invalid_request("handoff has no retained thread"))?;
+    let launch = progress
+        .launch
+        .as_ref()
+        .filter(|v| v["outcome"] == "started")
+        .ok_or_else(|| super::invalid_request("handoff requires its retained successful report"))?;
+    complete(
+        crate::protocol::handoff::HandoffMutation {
+            identity: identity.clone(),
+            operation,
+        },
+        thread,
+        launch,
+    )
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_completed_retry<C: LocalClient + ?Sized, W: Write>(
@@ -954,9 +1246,24 @@ fn fence<C: LocalClient + ?Sized>(
     complete: bool,
 ) -> Result<crate::protocol::handoff::HandoffResult, RunError> {
     let phase = if complete { "complete" } else { "begin" };
+    keyed_fence(
+        client,
+        clock,
+        identity,
+        OperationId::new(format!("handoff:{phase}:{}", identity.compound.as_str())),
+        complete,
+    )
+}
+pub(crate) fn keyed_fence<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    identity: &crate::protocol::handoff::HandoffIdentity,
+    operation: OperationId,
+    complete: bool,
+) -> Result<crate::protocol::handoff::HandoffResult, RunError> {
     let mutation = crate::protocol::handoff::HandoffMutation {
         identity: identity.clone(),
-        operation: OperationId::new(format!("handoff:{phase}:{}", identity.compound.as_str())),
+        operation,
     };
     let command = if complete {
         Command::CompleteHandoff(mutation)
@@ -1006,7 +1313,7 @@ fn cleanup_completed<W: Write>(
     journal.complete(reference)?;
     Ok(())
 }
-fn bootstrap(
+pub(crate) fn bootstrap(
     thread: &ThreadId,
     context: &crate::protocol::output::ContinuationContext,
     instance: &str,
@@ -1062,7 +1369,233 @@ fn render_bootstrap<W: Write>(
         writer,
         "`. The task for thread {} is stored in inbox; follow its printed next: commands for complete bodies. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.",
         thread
-    )
+    )?;
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(suffix) = crate::harness::launch::current_drift::prompt_suffix() {
+        writer.write_all(suffix.as_bytes())?;
+    }
+    Ok(())
+}
+
+/// Frozen version-1 Root bootstrap prompt: the single generated native
+/// argument a version-1 bootstrap (`BootstrapPlan.version == 1`, also every
+/// plan without a startup-input template) appends to its caller arguments.
+/// Retained successful launch reports are validated against these exact
+/// bytes, so its routing JSON, quoting, token order and prose are a
+/// compatibility record: never edit them to follow [`bootstrap`], the
+/// current generic renderer used by startup-input templates.
+pub(crate) mod bootstrap_v1 {
+    use crate::protocol::output::ContinuationContext;
+    use std::path::Path;
+
+    const PREFIX: &str = "Expected handoff command routing (JSON data): ";
+    const INSTRUCTION: &str = " Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox using that matching group. Otherwise use the exact fallback: `";
+    const THREAD: &str = "`. The task for thread ";
+    const SUFFIX: &str = " is stored in inbox; follow its printed next: commands for complete bodies. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.";
+    const ARGV0: &str = "herdr-threads";
+
+    /// Unicode 16.0.0 General_Category=Cf ranges, as V1 quoted them.
+    const FORMAT_RANGES: [(u32, u32); 21] = [
+        (0x00AD, 0x00AD),
+        (0x0600, 0x0605),
+        (0x061C, 0x061C),
+        (0x06DD, 0x06DD),
+        (0x070F, 0x070F),
+        (0x0890, 0x0891),
+        (0x08E2, 0x08E2),
+        (0x180E, 0x180E),
+        (0x200B, 0x200F),
+        (0x202A, 0x202E),
+        (0x2060, 0x2064),
+        (0x2066, 0x206F),
+        (0xFEFF, 0xFEFF),
+        (0xFFF9, 0xFFFB),
+        (0x110BD, 0x110BD),
+        (0x110CD, 0x110CD),
+        (0x13430, 0x1343F),
+        (0x1BCA0, 0x1BCA3),
+        (0x1D173, 0x1D17A),
+        (0xE0001, 0xE0001),
+        (0xE0020, 0xE007F),
+    ];
+
+    /// The V1 expected routing object (`instance`, `state_dir`,
+    /// `host_endpoint`, in that order).
+    pub(crate) struct Routing {
+        instance: uuid::Uuid,
+        state_dir: String,
+        host_endpoint: String,
+    }
+
+    /// The routing outcome the V1 producer captures at launch time: the
+    /// canonical state directory and endpoint parent, or none when the UUID,
+    /// either path or its canonicalization is unavailable.
+    fn produced(instance: &str, context: &ContinuationContext) -> Option<Routing> {
+        let state = Path::new(context.state_dir.as_deref()?)
+            .canonicalize()
+            .ok()?;
+        let host = Path::new(context.host.as_deref()?);
+        let endpoint = host.parent()?.canonicalize().ok()?.join(host.file_name()?);
+        Some(Routing {
+            instance: uuid::Uuid::parse_str(instance).ok()?,
+            state_dir: state.to_str()?.to_owned(),
+            host_endpoint: endpoint.to_str()?.to_owned(),
+        })
+    }
+
+    /// The routing object of an already canonical retained namespace, taken
+    /// verbatim. Validation never repeats today's filesystem lookup.
+    fn retained(instance: &str, context: &ContinuationContext) -> Option<Routing> {
+        Some(Routing {
+            instance: uuid::Uuid::parse_str(instance).ok()?,
+            state_dir: context.state_dir.clone()?,
+            host_endpoint: context.host.clone()?,
+        })
+    }
+
+    fn json_string(value: &str, out: &mut String) {
+        out.push('"');
+        for ch in value.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\u{8}' => out.push_str("\\b"),
+                '\u{c}' => out.push_str("\\f"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                ch if (ch as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", ch as u32)),
+                ch => out.push(ch),
+            }
+        }
+        out.push('"');
+    }
+
+    fn needs_escape(ch: char) -> bool {
+        let cp = ch as u32;
+        ch.is_control()
+            || matches!(ch, '\u{2028}' | '\u{2029}')
+            || FORMAT_RANGES
+                .iter()
+                .any(|&(low, high)| (low..=high).contains(&cp))
+    }
+
+    fn shell_token(arg: &str, out: &mut String) {
+        if arg.chars().any(needs_escape) {
+            out.push_str("$'");
+            for ch in arg.chars() {
+                match ch {
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    '\'' => out.push_str("\\'"),
+                    '\\' => out.push_str("\\\\"),
+                    ch if needs_escape(ch) => {
+                        let mut buffer = [0; 4];
+                        for byte in ch.encode_utf8(&mut buffer).bytes() {
+                            out.push_str(&format!("\\x{byte:02x}"));
+                        }
+                    }
+                    ch => out.push(ch),
+                }
+            }
+            out.push('\'');
+        } else if !arg.is_empty()
+            && arg
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte))
+        {
+            out.push_str(arg);
+        } else {
+            out.push('\'');
+            for ch in arg.chars() {
+                if ch == '\'' {
+                    out.push_str("'\\''");
+                } else {
+                    out.push(ch);
+                }
+            }
+            out.push('\'');
+        }
+    }
+
+    fn render(thread: &str, routing: Option<&Routing>, context: &ContinuationContext) -> String {
+        let mut out = String::from(PREFIX);
+        match routing {
+            None => out.push_str("null"),
+            Some(routing) => {
+                out.push_str("{\"instance\":\"");
+                out.push_str(&routing.instance.hyphenated().to_string());
+                out.push_str("\",\"state_dir\":");
+                json_string(&routing.state_dir, &mut out);
+                out.push_str(",\"host_endpoint\":");
+                json_string(&routing.host_endpoint, &mut out);
+                out.push('}');
+            }
+        }
+        out.push_str(INSTRUCTION);
+        let mut fallback = vec![ARGV0];
+        if let Some(state) = &context.state_dir {
+            fallback.extend(["--state-dir", state.as_str()]);
+        }
+        if let Some(host) = &context.host {
+            fallback.extend(["--host-endpoint", host.as_str()]);
+        }
+        fallback.push("inbox");
+        for (index, token) in fallback.into_iter().enumerate() {
+            if index > 0 {
+                out.push(' ');
+            }
+            shell_token(token, &mut out);
+        }
+        out.push_str(THREAD);
+        out.push_str(thread);
+        out.push_str(SUFFIX);
+        out
+    }
+
+    /// Produce the V1 prompt for a launch happening now.
+    pub(crate) fn prompt(thread: &str, context: &ContinuationContext, instance: &str) -> String {
+        render(thread, produced(instance, context).as_ref(), context)
+    }
+
+    /// Every prompt a V1 producer could have retained for this canonical
+    /// namespace: the verbatim canonical routing object (only for a valid
+    /// UUID) and the documented null-routing outcome.
+    pub(crate) fn retained_prompts(
+        thread: &str,
+        context: &ContinuationContext,
+        instance: &str,
+    ) -> Vec<String> {
+        let mut prompts = Vec::with_capacity(2);
+        if let Some(routing) = retained(instance, context) {
+            prompts.push(render(thread, Some(&routing), context));
+        }
+        prompts.push(render(thread, None, context));
+        prompts
+    }
+
+    /// Whether a retained successful report's `argv` is the exact frozen V1
+    /// composition of `caller` plus one V1 prompt. The frozen grammar still
+    /// refuses caller arguments V1 never admitted.
+    pub(crate) fn retained_argv_matches(
+        harness: crate::protocol::authority::Harness,
+        caller: &[String],
+        thread: &str,
+        context: &ContinuationContext,
+        instance: &str,
+        retained: Option<&serde_json::Value>,
+    ) -> Result<bool, crate::protocol::results::ApiError> {
+        for prompt in retained_prompts(thread, context, instance) {
+            let mut argv = caller.to_vec();
+            argv.push(prompt);
+            let expected = crate::harness::launch::compose_bootstrap_v1_argv(harness, argv)?;
+            if retained == Some(&serde_json::json!(expected)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 fn bootstrap_text(
     thread: &str,
@@ -1088,7 +1621,7 @@ fn bounded_bootstrap_text(
     Ok(String::from_utf8(writer.bytes).expect("UTF-8 bootstrap"))
 }
 
-fn report(
+pub(crate) fn report(
     reference: &IntentRef,
     plan: &HandoffPlan,
     progress: &Progress,
@@ -1186,15 +1719,23 @@ fn report_core(
     }
     manual.push("--".into());
     if let Some(thread) = &progress.thread {
-        let text = bootstrap(thread, &plan.context, &claim.instance);
-        if let Some(template) = &plan.startup_input
-            && let Ok((argv, _)) = template.apply(&plan.request.launch.argv, &text)
-        {
-            manual.extend(argv);
+        if let Some(template) = &plan.startup_input {
+            let text = bootstrap(thread, &plan.context, &claim.instance);
+            if let Ok((argv, _)) = template.apply(&plan.request.launch.argv, &text) {
+                manual.extend(argv);
+            } else {
+                manual.extend(plan.request.launch.argv.clone());
+                manual.push(text);
+            }
         } else {
-            // Historical caller arrays are display only; do not reselect a transport.
+            // Historical caller arrays are display only; do not reselect a
+            // transport. Template-free plans carry the frozen V1 input.
             manual.extend(plan.request.launch.argv.clone());
-            manual.push(text);
+            manual.push(bootstrap_v1::prompt(
+                thread.as_str(),
+                &plan.context,
+                &claim.instance,
+            ));
         }
     } else {
         manual.clear();

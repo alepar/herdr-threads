@@ -1,0 +1,31 @@
+{
+  "hash": "bfabc73d98fde8280fb045e70121dba0b800e6b037bc4598fefcc49bb4aa91a3",
+  "result": {
+    "findings": [
+      {
+        "claim": "A confirmed bootstrap whose exact pane disappears before downstream completion has no specified terminal abandonment path, so its existing-thread archival protection can remain permanently live.",
+        "location": "artifact.md:67,73,75,81 (Topology state machine and response loss; Human recovery, authority and cleanup)",
+        "category": "failure-mode",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "The spec says the live fence never expires or completes because a local file disappears or a seat retires (line 67), missing pane or incarnation change must refuse without relocating (line 73), and bootstrap completion requires canonical downstream completion (line 75). Its two recovery decisions concern uncertain creation: created-pane supplies creation evidence and not-created asserts noncreation (line 81). After confirmed creation, an independently closed pane or replaced host makes the required downstream path unavailable; asserting not-created would be false, and substituting another pane would violate the exact-topology contract. No cancellation/abandonment transition or operator procedure retires this fence while retaining honest creation inventory. The combined task tree adds no such transition."
+      },
+      {
+        "claim": "The recovery surface does not specify how a lost-reply operator invocation stays bound to its original attempt after agent retry advances the bootstrap to a later attempt.",
+        "location": "artifact.md:53,63,81 and task ht-qhz.6",
+        "category": "failure-mode",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "The documented command is human handoff recover REF --not-created or --created-pane EXACT_PANE (line 53), with no attempt or recovery-operation selector. Mutation keys are children of compound and phase/attempt (line 63); recovery references an exact attempt and replaying its key must be presentation only, while not-created enables a distinct next attempt (line 81). Consider a committed not-created decision whose reply is lost, then an original-agent retry that reaches possible_creation on the next attempt, then a retry of the operator command. The design does not define a durable recovery invocation journal/key, expected-attempt precondition exposed to the operator, or other binding that prevents resolving REF to the newer attempt and treating the old inspection assertion as a new decision. Merely making each selected attempt/key idempotent does not resolve this cross-attempt ambiguity."
+      },
+      {
+        "claim": "The design leaves recovery from downstream-complete/bootstrap-incomplete crashes unspecified when the original live seat or host evidence becomes invalid before retry.",
+        "location": "artifact.md:73,75 and bootstrap-coordinator section Downstream launch and terminal bootstrap replay (lines 177\u2013183)",
+        "category": "failure-mode",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "The downstream handoff has its own canonical completion, and only afterward can the bootstrap complete with validated retained presentation (line 75). These are separate named Complete commands and no atomic cross-completion transaction is specified. Retry ordinarily revalidates exact topology, incarnation and guarded seat mapping and refuses missing panes or changed incarnation (line 73); the explicit bypass and zero-effect retained presentation guarantee applies to a completed bootstrap (line 75 and line 183). A crash after downstream completion but before CompleteBootstrap therefore leaves an outer live fence even though all work is already terminal. If the host restarts or recipient binding changes before retry, the text does not require checking the attached downstream terminal state before those live guards, nor authorize finishing only the outer canonical bookkeeping from that retained result. The downstream-complete/outer-live intermediate state needs an explicit recovery branch and failure test; tests for an already completed bootstrap do not cover it."
+      }
+    ]
+  }
+}

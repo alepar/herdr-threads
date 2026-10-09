@@ -195,7 +195,6 @@ impl LaunchRequest {
         self.parse_configured_options(variable, options)
     }
 
-    #[cfg(test)]
     pub(crate) fn with_configured_options(
         self,
         options: Option<std::ffi::OsString>,
@@ -203,7 +202,6 @@ impl LaunchRequest {
         self.with_configured_options_with_registry(crate::harness::registry::builtins(), options)
     }
 
-    #[cfg(test)]
     pub(crate) fn with_configured_options_with_registry(
         self,
         registry: &crate::harness::registry::Registry,

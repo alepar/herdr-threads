@@ -1,0 +1,16 @@
+{
+  "canonical-bootstrap": [
+    "ht-qhz.2.1",
+    "ht-qhz.2.2",
+    "ht-qhz.2.3"
+  ],
+  "bootstrap-coordinator": [
+    "ht-qhz.4.1",
+    "ht-qhz.4.2",
+    "ht-qhz.4.3"
+  ],
+  "existing-delivery": [
+    "ht-qhz.5.1",
+    "ht-qhz.5.2"
+  ]
+}

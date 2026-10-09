@@ -135,3 +135,6 @@ mod readme_tryout;
 #[cfg(feature = "test-support")]
 #[path = "integration/harness_adapter_wiring.rs"]
 mod harness_adapter_wiring;
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+#[path = "integration/topology_activation.rs"]
+mod topology_activation;

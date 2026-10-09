@@ -1,0 +1,23 @@
+{
+  "hash": "ce05f2c2700c24960f0e013b8bc4ad73fc4d28be7a46bb42f9789eb4807a3dee",
+  "result": {
+    "findings": [
+      {
+        "claim": "The recovery CLI does not specify how a saved recovery command binds to the inspected attempt, so replaying that command after a subsequent uncertain attempt cannot reliably distinguish presentation of the old decision from authorization to recover the new attempt.",
+        "location": "artifact.md:53, 63, 79\u201385 (CLI and compatibility; Human recovery, authority and cleanup); ht-qhz.6 description",
+        "category": "feasibility",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "The advertised surface is `human handoff recover REF --created-pane EXACT_PANE` or `--not-created`, while ordinary `retry REF` advances the same bootstrap through distinct attempts. The contract requires recovery to reference the \"exact attempt\", makes mutation keys children of the compound and phase/attempt, and says \"Replaying either recovery key is presentation only\". Neither the grammar nor the task tree defines an attempt-qualified REF, an explicit expected-attempt argument, or a separately published durable recovery reference. Consider successful --not-created for attempt A, retry creating uncertain attempt B, then re-execution of the previously emitted --not-created command for A: selecting the current attempt B applies an inspection assertion to the wrong attempt, while always selecting A makes the displayed syntax insufficient to recover B. The exact attempt must be frozen in an operator-visible invocation/reference, not inferred from the mutable current attempt."
+      },
+      {
+        "claim": "A confirmed creation whose pane disappears before downstream completion permanently blocks archival of its selected existing thread under the specified transitions, because the design provides no terminal abandonment or repair path for that bootstrap.",
+        "location": "artifact.md:67, 73\u201375, 81, 89 (Topology state machine and response loss; Human recovery; Archival and compatibility); canonical-bootstrap nested spec",
+        "category": "feasibility",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Begin protects the selected existing thread; the live fence never expires because local state disappears or a seat retires. Retry must refuse \"missing pane, incarnation change\" without relocating, and bootstrap completion requires canonical downstream completion. The recovery options address an uncertain creation: --created-pane records the asserted result of that attempt and --not-created asserts noncreation. Neither is truthful when creation was durably confirmed but a human later closed the exact pane before launch. The listed canonical commands and complete task tree provide no abandon/cancel transition that retains the evidence while releasing archival protection. Thus an ordinary post-creation topology loss leaves a permanent live veto even though all safe automatic effects correctly refuse; an explicit administrative terminal disposition or an explicitly accepted permanent-veto limit is missing."
+      }
+    ]
+  }
+}

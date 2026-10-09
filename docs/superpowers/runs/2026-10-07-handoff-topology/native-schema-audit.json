@@ -1,0 +1,199 @@
+{
+  "source_command": "/Users/alepar/.local/bin/herdr api schema --output /private/tmp/handoff-herdr-api-schema.json",
+  "sha256": "226d4ecbd128d2e6bc84e4c8ddcec21ba9c7e51a0aafffcf087111ead3f1fa9a",
+  "protocol": 22,
+  "schema_version": 1,
+  "TabCreateParams": {
+    "properties": {
+      "cwd": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "env": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "focus": {
+        "default": false,
+        "type": "boolean"
+      },
+      "label": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "workspace_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "type": "object"
+  },
+  "TabInfo": {
+    "properties": {
+      "agent_status": {
+        "$ref": "#/schemas/success_response/$defs/AgentStatus"
+      },
+      "focused": {
+        "type": "boolean"
+      },
+      "label": {
+        "type": "string"
+      },
+      "number": {
+        "format": "uint",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "pane_count": {
+        "format": "uint",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "tab_id": {
+        "type": "string"
+      },
+      "workspace_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "tab_id",
+      "workspace_id",
+      "number",
+      "label",
+      "focused",
+      "pane_count",
+      "agent_status"
+    ],
+    "type": "object"
+  },
+  "PaneInfo": {
+    "properties": {
+      "agent": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "agent_session": {
+        "anyOf": [
+          {
+            "$ref": "#/schemas/success_response/$defs/AgentSessionInfo"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "agent_status": {
+        "$ref": "#/schemas/success_response/$defs/AgentStatus"
+      },
+      "cwd": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "display_agent": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "focused": {
+        "type": "boolean"
+      },
+      "foreground_cwd": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "label": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "pane_id": {
+        "type": "string"
+      },
+      "revision": {
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "scroll": {
+        "anyOf": [
+          {
+            "$ref": "#/schemas/success_response/$defs/PaneScrollInfo"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "state_labels": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "tab_id": {
+        "type": "string"
+      },
+      "terminal_id": {
+        "type": "string"
+      },
+      "terminal_title": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "terminal_title_stripped": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "title": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tokens": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "maxProperties": 32,
+        "propertyNames": {
+          "pattern": "^[A-Za-z0-9_-]{1,32}$"
+        },
+        "type": "object"
+      },
+      "workspace_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "pane_id",
+      "terminal_id",
+      "workspace_id",
+      "tab_id",
+      "focused",
+      "agent_status",
+      "revision"
+    ],
+    "type": "object"
+  }
+}

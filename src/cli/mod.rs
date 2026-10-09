@@ -5,6 +5,7 @@ pub mod doctor;
 pub mod exit;
 pub mod follow;
 pub mod handoff;
+pub mod handoff_delivery;
 pub mod hook;
 pub mod hook_evidence;
 pub mod human;
@@ -27,6 +28,9 @@ pub mod setup;
 pub mod skill;
 pub mod summary;
 pub mod threads;
+pub mod topology_handoff;
+pub mod topology_recover;
+mod topology_runtime;
 pub mod watch;
 
 use crate::{
@@ -441,6 +445,9 @@ where
         deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
         cancellation: Cancellation::default(),
     };
+    if topology_runtime::run_operator(&parsed, &context, &paths, &clock, writer)? {
+        return Ok(());
+    }
     let host =
         crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock));
     // Canonical terminal cleanup precedes caller selection,
@@ -457,6 +464,17 @@ where
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
             host: Some(context.host_endpoint.to_string_lossy().into_owned()),
         };
+        if topology_runtime::try_completed(
+            parsed,
+            &journal,
+            instance,
+            &context,
+            &client,
+            clock.as_ref(),
+            writer,
+        )? {
+            return Ok(true);
+        }
         handoff::try_completed_retry(
             parsed,
             &journal,
@@ -765,6 +783,7 @@ where
             let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
             let reference = journal.resolve_recovery_ref(recovery.as_str())?;
             let pending = journal.load(&reference)?;
+            commands::reject_inert_handoff(&pending.semantic)?;
             match (&pending.header.scope, &pending.semantic) {
                 (
                     IntentScope::ServiceAllocation {
@@ -822,7 +841,10 @@ where
         CliAction::InstallerIntegrations { .. } | CliAction::InternalJsonField { .. } => {
             unreachable!("internal json-field is handled before context resolution")
         }
-        CliAction::Launch(_) | CliAction::Handoff(_) => {
+        CliAction::Launch(_)
+        | CliAction::Handoff(_)
+        | CliAction::TopologyHandoff(_)
+        | CliAction::TopologyRecover(_) => {
             unreachable!("launch is handled after context resolution")
         }
         CliAction::MeInit { .. } => unreachable!("me init is handled after context resolution"),
@@ -1561,10 +1583,11 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         }
     }
     let compound = match &parsed.action {
-        CliAction::Handoff(_) => true,
+        CliAction::Handoff(_) | CliAction::TopologyHandoff(_) => true,
         CliAction::Retry(recovery) => {
-            let reference = journal.resolve_recovery_ref(recovery.as_str())?;
-            handoff::is_handoff(&journal.load(&reference)?.semantic)
+            let original = retry::load_original_for_actor(&journal, recovery.as_str())?;
+            handoff::is_handoff(&original.semantic)
+                || topology_runtime::is_compound(&original.semantic)
         }
         _ => false,
     };
@@ -1576,7 +1599,18 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
             .as_ref()
             .ok_or_else(|| caller_not_located("handoff requires lifecycle check-in"))?;
         let claim = crate::harness::bridge::caller_claim(saved).map_err(context_run_error)?;
-        return handoff::run(parsed, claim, &journal, paths, writer);
+        let topology = match &parsed.action {
+            CliAction::TopologyHandoff(_) => true,
+            CliAction::Retry(recovery) => topology_runtime::is_compound(
+                &retry::load_original_for_actor(&journal, recovery.as_str())?.semantic,
+            ),
+            _ => false,
+        };
+        return if topology {
+            topology_runtime::run(parsed, claim, &journal, paths, writer)
+        } else {
+            handoff::run(parsed, claim, &journal, paths, writer)
+        };
     }
     let initial = if (current.is_none() || fresh_lifecycle) && lifecycle {
         let execution = uuid::Uuid::new_v4();
@@ -1686,6 +1720,7 @@ fn exact_check_in_replay(
         CliAction::Retry(recovery) => {
             let reference = journal.resolve_recovery_ref(recovery.as_str())?;
             let pending = journal.load(&reference)?;
+            commands::reject_inert_handoff(&pending.semantic)?;
             if pending.header.scope == scope
                 && matches!(
                     pending.semantic,
@@ -1874,16 +1909,19 @@ fn caller_need(
         CliAction::CachedCheckIn(_)
         | CliAction::Summary(_)
         | CliAction::Handoff(_)
+        | CliAction::TopologyHandoff(_)
         | CliAction::Watch(_)
         | CliAction::WatchAck(_) => CallerNeed::Selection,
+        CliAction::TopologyRecover(_) => CallerNeed::None,
         CliAction::Retry(recovery) => {
             // Retry needs the daemon; report it unavailable (exit 3, intent
             // kept) before inspecting the local journal.
             published_endpoint(paths)?;
             let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
-            let reference = journal.resolve_recovery_ref(recovery.as_str())?;
             if matches!(
-                journal.load(&reference)?.header.scope,
+                retry::load_original_for_actor(&journal, recovery.as_str())?
+                    .header
+                    .scope,
                 IntentScope::Cooperative { .. }
             ) {
                 CallerNeed::Selection
@@ -2274,13 +2312,13 @@ fn validate_actor_harness(
     actor: actor_route::InvocationActor,
     harness: crate::harness::context::Harness,
 ) -> Result<(), RunError> {
-    use crate::harness::context::Harness;
+    use crate::harness::registry::OccupantHarness;
     use actor_route::InvocationActor;
-    match (actor, harness) {
-        (InvocationActor::Agent, Harness::Human) => Err(invalid_request(
+    match (actor, harness.occupant()) {
+        (InvocationActor::Agent, OccupantHarness::Human) => Err(invalid_request(
             "this command selects a Human context; use `herdr-threads human` immediately after the executable, before routing flags",
         )),
-        (InvocationActor::Human, Harness::Claude | Harness::Codex) => Err(invalid_request(
+        (InvocationActor::Human, OccupantHarness::Agent(_)) => Err(invalid_request(
             "the human namespace cannot act through an agent cooperative selection; use the ordinary root command for that agent",
         )),
         _ => Ok(()),
@@ -2420,6 +2458,37 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     clock: &dyn Clock,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    if let CliAction::Retry(recovery) = &parsed.action {
+        retry::preflight_original_actor(
+            journal.root(),
+            recovery.as_str(),
+            parsed.actor,
+            &parsed.output.context,
+        )?;
+    }
+    let own_text_inbox = parsed.caller_read_default
+        && matches!(&parsed.action, CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
+        && parsed.output.format == OutputFormat::Text
+        && parsed.presentation != output::Presentation::Machine;
+    if !matches!(&parsed.action, CliAction::Wire(_) | CliAction::Retry(_)) || own_text_inbox {
+        let current = contexts.current().map_err(context_run_error)?;
+        // Match the context consumed below: only lifecycle check-in selects
+        // its service-resolved initial seed; fresh actions consume current.
+        let selected = if matches!(
+            &parsed.action,
+            CliAction::Mutation(MutationSpec::CheckInLifecycle { .. })
+        ) {
+            initial.or(current.as_ref())
+        } else {
+            current.as_ref().or(initial)
+        };
+        if let Some(context) = selected {
+            validate_actor_harness(parsed.actor, context.harness)?;
+        }
+    }
+    if let CliAction::Retry(recovery) = &parsed.action {
+        reject_inert_retry(journal, recovery.as_str())?;
+    }
     use crate::harness::{
         Capability, LifecycleEvent, bridge,
         context::{EventKind, Role},
@@ -2449,12 +2518,6 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             parsed.actor,
             &parsed.output.context,
         )?;
-    }
-    if !matches!(&parsed.action, CliAction::Wire(_) | CliAction::Retry(_)) || own_text_inbox {
-        let current = contexts.current().map_err(context_run_error)?;
-        if let Some(context) = initial.or(current.as_ref()) {
-            validate_actor_harness(parsed.actor, context.harness)?;
-        }
     }
     if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
         && own_text_inbox
@@ -2589,6 +2652,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         CliAction::Retry(recovery) => {
             let reference = journal.resolve_recovery_ref(recovery.as_str())?;
             let pending = journal.load(&reference)?;
+            commands::reject_inert_handoff(&pending.semantic)?;
             let seed = contexts
                 .current()
                 .map_err(context_run_error)?
@@ -2862,6 +2926,17 @@ fn require_mutation_capability<C: LocalClient + ?Sized>(
     }
 }
 
+fn reject_inert_retry(journal: &journal::Journal, recovery: &str) -> Result<(), RunError> {
+    let pending = match journal.new_handoff_retry(recovery)? {
+        Some(pending) => pending,
+        // Delivery terminals retain the exact original after intent cleanup.
+        // Public activation stays inert for those references too.
+        None => retry::load_original_for_actor(journal, recovery)?,
+    };
+    commands::reject_inert_handoff(&pending.semantic)?;
+    Ok(())
+}
+
 /// Refuse unsupported lazy delivery before publishing an intent or replaying it.
 fn require_lazy_send_capability<C: LocalClient + ?Sized>(
     client: &C,
@@ -2888,5 +2963,167 @@ fn require_lazy_send_capability<C: LocalClient + ?Sized>(
         _ => Err(unsupported(
             "daemon lacks send.lazy_v1; upgrade the daemon before sending lazy messages",
         )),
+    }
+}
+
+#[cfg(test)]
+mod topology_contract_retry_tests {
+    use super::*;
+    use crate::protocol::handoff::topology_contract_tests as fixture;
+    use crate::protocol::results::ErrorCode;
+    #[test]
+    fn topology_contract_retry_refuses_unavailable_or_unconfigured_runtime_before_presentation() {
+        let root = std::env::temp_dir().join(format!("topology-retry-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = InstancePaths::resolve(
+            &crate::daemon::paths::RuntimeContext::explicit(
+                root.join("state"),
+                root.join("host.sock"),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let journal = journal::Journal::open(paths.instance_dir.join("intents")).unwrap();
+        for bootstrap in [true, false] {
+            for frozen in [true, false] {
+                let semantic = if bootstrap {
+                    SemanticMutation::HandoffBootstrap(Box::new(journal::BootstrapPlan {
+                        version: 1,
+                        payload: fixture::payload(),
+                    }))
+                } else {
+                    SemanticMutation::HandoffDelivery(Box::new(journal::DeliveryPlan {
+                        version: 1,
+                        payload: fixture::payload().handoff,
+                        recipient: crate::protocol::ids::SeatId::new("peer"),
+                    }))
+                };
+                let (semantic, scope) = if frozen {
+                    (
+                        SemanticMutation::freeze(semantic, fixture::claim()).unwrap(),
+                        IntentScope::Cooperative {
+                            instance: "i".into(),
+                            seat: fixture::claim().seat,
+                        },
+                    )
+                } else {
+                    (
+                        semantic,
+                        IntentScope::Native {
+                            instance: "i".into(),
+                            seat: fixture::claim().seat,
+                        },
+                    )
+                };
+                let reference = journal.record(scope, semantic, 1).unwrap();
+                let progress = journal
+                    .root()
+                    .join(format!("handoff-{}.progress", reference.operation.as_str()));
+                std::fs::write(
+                    progress,
+                    br#"{"completed":true,"launch":{"outcome":"started"}}"#,
+                )
+                .unwrap();
+                let snapshot = || {
+                    let mut entries: Vec<_> = std::fs::read_dir(journal.root())
+                        .unwrap()
+                        .map(|entry| {
+                            let path = entry.unwrap().path();
+                            (
+                                path.file_name().unwrap().to_owned(),
+                                std::fs::read(path).unwrap(),
+                            )
+                        })
+                        .collect();
+                    entries.sort();
+                    entries
+                };
+                let before = snapshot();
+                let argv = vec![
+                    "ht".to_owned(),
+                    "--state-dir".into(),
+                    root.join("state").display().to_string(),
+                    "--host-endpoint".into(),
+                    root.join("host.sock").display().to_string(),
+                    "retry".into(),
+                    reference.recovery_ref(),
+                ];
+                let mut output = Vec::new();
+                let error = run_in_pane(argv, None, &mut output).unwrap_err();
+                assert!(
+                    if frozen {
+                        matches!(
+                            error,
+                            RunError::Api(ApiError {
+                                code: ErrorCode::HostUnavailable,
+                                ..
+                            })
+                        )
+                    } else {
+                        matches!(error, RunError::Io(ref error) if error.to_string().contains("handoff needs frozen caller"))
+                    },
+                    "must refuse before presentation or host work: {error:?}"
+                );
+                assert!(output.is_empty());
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(root.join("contexts"))
+                    .unwrap();
+                let contexts = crate::harness::context::ContextJournal::open(
+                    &root.join("contexts").canonicalize().unwrap(),
+                    uuid::Uuid::from_u128(1),
+                    "sender",
+                    std::time::Duration::from_millis(20),
+                )
+                .unwrap();
+                struct CountingClient(std::sync::atomic::AtomicUsize);
+                impl crate::ports::LocalClient for CountingClient {
+                    crate::default_output_local_client!();
+                    fn call(
+                        &self,
+                        _: Command,
+                        _: &CallBudget,
+                    ) -> Result<crate::protocol::results::CommandResult, ApiError>
+                    {
+                        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Err(ApiError::new(ErrorCode::HostUnavailable, "test transport"))
+                    }
+                }
+                let client = CountingClient(std::sync::atomic::AtomicUsize::new(0));
+                let parsed =
+                    commands::parse_argv(["ht", "retry", &reference.recovery_ref()]).unwrap();
+                let error = run_cooperative(
+                    parsed,
+                    &journal,
+                    &contexts,
+                    None,
+                    crate::harness::context::Role::TopLevel,
+                    &client,
+                    &crate::app::SystemClock::new(),
+                    &mut output,
+                )
+                .unwrap_err();
+                assert!(if frozen {
+                    matches!(
+                        error,
+                        RunError::Api(ApiError {
+                            code: ErrorCode::Unsupported,
+                            ..
+                        })
+                    )
+                } else {
+                    matches!(error, RunError::Io(ref error) if error.to_string().contains("handoff needs frozen caller"))
+                });
+                assert_eq!(client.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+                assert!(output.is_empty());
+                assert_eq!(snapshot(), before);
+                assert!(!paths.descriptor_path.exists());
+                assert!(!paths.database_path.exists());
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

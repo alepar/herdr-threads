@@ -2222,9 +2222,11 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
     rt.coherent = false;
     let mut identity = super::handoff_fences::identity();
     identity.thread = None;
-    let hints = [herdr_threads::archival_legacy::Hint {
-        identity,
+    let hints = [herdr_threads::archival_legacy::Hint::Handoff {
+        identity: Box::new(identity),
         progress_thread: None,
+        source: None,
+        retained_completion: None,
     }];
     assert_eq!(
         store.archival_pass(&rt, &hints, &budget).unwrap(),

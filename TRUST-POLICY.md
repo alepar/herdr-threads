@@ -414,6 +414,61 @@ completion it is presentation bookkeeping (no ACK actor, adoption or proof of co
 
 ## Accepted limits
 
+Delivery-only cleanup recovery retains a private, bounded versioned terminal record after
+intent/progress removal. It preserves exact original immutable intent bytes and the genuine
+completed fence result and staged-work report; it records no new provenance. This local
+record never authorizes live work or proves canonical completion: every replay must classify
+the original actor, compare the canonical namespace and obtain the exact canonical Completed
+fence before presentation or cleanup. It permits honest replay after output, unlink or directory
+sync failure, at the cost of retained local disk records. It is not live archival protection;
+malformed or contradictory records conservatively refuse, and canonical terminal state dominates
+stale archival scans. Public new modes require the guarded runtime capability. Delivery
+carries the exact frozen Agent original and namespace on restricted phase and read
+requests; the daemon compares its independently selected path bytes before preparation,
+effects, replay and historical presentation. Read-only preparation checks the canonical
+caller, channel and recipient before local publication. Each live effect checks current
+recipient eligibility in its deciding transaction. A resolved unbound recipient is allowed;
+this neither starts an agent nor accepts an invitation or ACKs a receipt. Completed
+presentation checks the exact canonical fence and retained report without live mapping
+requirements. Generic runtimes without the required producer/deciding adapter do not
+advertise this capability and cannot execute these routes.
+Linked bootstrap Invite and Send phases derive their required namespace and exact
+payload from canonical child-key registration, full frozen parent and attachment.
+Missing selected context refuses even cached history; unregistered legacy phases
+retain their existing behavior. Completed linked history skips only live guards.
+
+A retained successful version-1 bootstrap launch report (the only plan version) is
+validated against frozen V1 composition: the original generated prompt bytes and the
+original Codex/Claude acceptance grammar with empty owned argv, never today's renderer
+or registry. Deciding completion, completed preview, terminal decode and presentation
+share it. Validation does not repeat the producer's filesystem routing lookup: it
+accepts only the verbatim canonical-namespace routing object (valid instance UUID) or
+the null-routing form, with identical fallback and suffix; any other routing refuses.
+So if a symlink component appears in a not-yet-existing namespace suffix, or the host
+endpoint parent changes, between preparation and launch, the launch-time canonical
+object differs and that genuine report refuses, without relaunch or data loss.
+Fresh Root preparation and launch still apply today's native admission and geometry,
+and refuse before effects when today's composer would differ from frozen V1, so a
+future composer change stops new Root launches rather than producing reports that
+completion cannot validate.
+
+Canonical topology storage has encoded-byte ceilings for retained bootstrap envelopes:
+128 KiB for the full frozen identity, creation evidence and attachment; 256 KiB for
+an immutable recovery decision; and 2 MiB for the full completed result, including
+identity, attachment, launcher report and legacy result. The launch report's inner
+JSON retains its independent 1 MiB protocol bound. JSON escaping and repeated nested
+fields count toward the storage ceiling; a protocol-shaped envelope need not fit.
+Oversized writes must refuse before effects and preserve existing records; bounded
+reads of oversized or corrupt data must refuse, never present clipped data or grant
+submission permission. Records are never truncated to fit. These limits neither
+change attribution nor authorize from a client-local journal or today's occupant.
+Public preparation also checks the actual serialized request-bearing local progress
+against its existing 128 KiB cap using the observed endpoint witness, before publication,
+Begin or reservation. A canonical maximum-size identity need not fit that larger producer
+envelope. Future native response metadata is not statically known; an unpersistable created
+response conservatively retains possible creation and refuses automatic resubmission.
+Transition writers retain the canonical guards and enforce the same limits.
+
 These are decisions, not bugs. Each is safe to rely on only as stated.
 
 - **Bounded advisory evidence suppression.** Negotiated v2 recording remembers resumed creating-CLI
@@ -631,3 +686,92 @@ only the marker.
 | ht-5n6 Codex launched without a prompt never checks in, so no lost-prompt wake | `managed_launch` binding after a correlated launch | A3, A4, A5, Accepted limits |
 | W6-R2 "mark it self" wording | "when run in this pane" | A1 |
 | Waves 29/19 identifier sizes | accepted; fix the 104-bit comment (it is 112) | Accepted limits |
+
+## Bootstrap creation attempts and administrative recovery (2026-10-08)
+
+A bootstrap freezes the original agent claim, scope, namespace and payload. Its
+canonical first attempt exists at Begin. Only the transaction first reserving a
+prepared attempt issues submission authorization; status, restart and lost-reply
+replay never issue another authorization. A fresh pre-submit decision checks the
+original A2 claim, exact attempt and reservation administrative revision. A
+transport-proven `NotSubmitted` closes that attempt and allocates a distinct next
+attempt. A recorded unknown cannot later be reclassified as transport zero submission.
+Unknown creation remains fenced; delayed older creation cannot replace
+an inspected noncreation decision or a later attempt.
+
+The public administrative grammar is immediate `human handoff recover REF --attempt N`
+with exactly one `--created-pane EXACT_PANE`, `--not-created`, or `--cancel --reason TEXT`.
+Pinned routing and output flags follow immediate `human`; a root `--operator` form
+cannot substitute for this namespace. Recovery accepts bootstrap references only.
+The separate local recovery intent has operator UID scope and retains the original
+bootstrap reference, agent identity and exact inspected attempt as immutable data.
+Its nested original caller claim is a reference, never the operator decision's caller.
+The same effective UID must retry it. Original actor classification runs before
+completed presentation or cleanup; root agent retry refuses an operator decision.
+Public recovery execution remains inert until the production canonical guards are integrated.
+
+Administrative recovery is recorded separately as `operator:local-user:<uid>`,
+using the authenticated local-account peer UID. The decision freezes an explicit
+attempt number and the complete assertion payload. Exact replay presents that
+historical decision even after later attempts; stale undecided attempts and
+contradictory assertions refuse. Each attempt retains at most one creation or
+noncreation recovery decision and one subsequent cancellation decision. Cancelling
+a confirmed creation retains its earlier decision for historical presentation.
+Recovery never rewrites original actor claims,
+produces receipts, proves occupancy or reports successful launch. Created-pane
+assertions need fresh coherent canonical structural evidence and the ordinary
+restore/hold/ownership guards; they do not move or allocate a seat. The retained
+`structural_reference` is historical operator-assertion correlation, not fresh
+admission or authority. A deciding daemon read has its own unchanged call ID and
+must supply full workspace/tab/pane/terminal/process incarnation and genuine
+endpoint witness from that same response, published through the canonical lane.
+Fresh creation recovery compares the complete witness to the assertion and checks
+the admission's lifecycle revision plus exactly one publication for both owned
+and unowned targets. Exact saved decisions replay before any fresh host read.
+Full witness equality is deliberately conservative: socket metadata changes or
+an auxiliary socket for the same server may prevent fresh recovery even when
+process identity remains unchanged. Metadata does not prove creation, occupancy
+or caller authority, and refusal never repairs or rewrites a frozen witness. The normal
+operation lock continuously excludes a known in-flight invocation from fresh
+canonical inspection through immutable assertion publication and deciding dispatch.
+The frozen recovery request retains a versioned digest of the actual canonical
+attempt state, creation, attachment and latest recovery sampled under that lock.
+Saved retry never refreshes this inspection. After exact committed historical replay,
+the deciding transaction requires the retained binding to match its canonical view;
+missing old bindings and changed undecided snapshots conservatively refuse.
+New-client fresh recovery and every operator retry require the concrete inspected-
+recovery capability before publication or deciding dispatch, even for old unbound
+plans. Exact old committed requests keep their absent-field bytes, keys and results.
+Older clients may fail closed on new guarded recovery results, including results
+nested in bootstrap status; an inspection-aware client is required to present these
+new records. Guards are never stripped to fabricate older-client compatibility. No heuristic PID or topology
+snapshot proves quiescence, and recovery never kills an unowned process.
+
+Herdr offers correlation rather than creation idempotency. The product therefore
+sacrifices automatic progress after an uncertain submission. An operator's
+mistaken inspected noncreation or quiescence assertion can permit duplicate
+topology. That assertion is retained honestly as an administrative claim, never
+as transport proof of zero submission. Created topology is never automatically
+closed by product cleanup.
+
+Bootstrap cancellation is an absorbing administrative tombstone, not successful
+completion. A nonblank reason of at most 4096 UTF-8 bytes and inspected quiescence
+are retained with the original identity, attempt, evidence and exact attachment.
+Its deciding transaction must prove that no exact downstream legacy child fence
+or live local-journal hint exists. Cancellation retains messages, invitations,
+membership, receipts and topology; it releases only the bootstrap's protection.
+An already completed bootstrap cannot be cancelled or reactivated. A live legacy
+child remains protected indefinitely, including after pane loss or seat
+retirement; bootstrap cancellation cannot release that child fence. Broader
+legacy-child cancellation is outside this feature.
+
+The additive `RecordBootstrapNotSubmitted` boundary reports only the actual
+typed transport's zero-byte branch. It uses its own frozen deterministic attempt
+key, distinct from creation evidence; the daemon rechecks the original A2 claim
+and canonical namespace before closing that attempt. This is a cooperative
+original-caller transport-outcome claim under the frozen `cooperative_top_level`
+attribution, not independent daemon attestation of a host write, an operator
+inspection or receipt provenance. An incorrect producer claim can permit
+duplicate topology. Error classes, response loss and unknown submission never
+stand in for this claim. Public dispatch remains inert until the actual typed
+transport producer is integrated with all canonical guards.

@@ -130,6 +130,10 @@ fn set(lanes: &[Lane]) -> LaneSet {
 /// the other rows isolate update hooks with foreign keys and triggers off.
 const INSERTS: &[(&str, &str)] = &[
     (
+        "bootstrap_handoffs",
+        "INSERT INTO bootstrap_handoffs(instance_id,state_dir,host_endpoint,actor_scope,compound,digest,identity_json,create_key,state,current_attempt,created_at) VALUES ('i','/state','/host','seat:s1','c',printf('%064d',0),x'7b7d','create','prepared',1,0)",
+    ),
+    (
         "archival_instances",
         "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES ('i','b')",
     ),

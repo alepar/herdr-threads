@@ -223,6 +223,27 @@ async fn exchange(
                 "host endpoint changed before operation write",
             ));
         }
+        if method == "tab.create" {
+            let after = budgeted_capture(
+                || {
+                    capture_peer_witness_with(
+                        &stream,
+                        socket,
+                        provider.expect("typed creation requires provider"),
+                    )
+                },
+                clock,
+                budget,
+                started,
+                limit,
+            )?;
+            if &after != fence.expected {
+                return Err(error(
+                    ErrorCode::StaleHostObservation,
+                    "creation endpoint witness changed before write",
+                ));
+            }
+        }
         (fence.validate)(fence.pong, fence.expected)?;
         check(clock, budget, started, limit)?;
     }
@@ -382,6 +403,12 @@ fn request_inner_response(
     preserve_start_refusal: bool,
     observe: &PingObserver<'_>,
 ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
+    if method == "tab.create" {
+        return Err(error(
+            ErrorCode::InvalidRequest,
+            "tab.create requires the typed witnessed boundary",
+        ));
+    }
     let started = Instant::now();
     // HostPort is synchronous and may be called from inside a Tokio runtime.
     // Keep this one transport task owned and joined on every return path.
@@ -655,6 +682,155 @@ pub(crate) fn request_guarded_start(
         validate,
         observe,
     )
+}
+
+struct CreationGuard<'a> {
+    expected: &'a LocalEndpointWitness,
+    attempted: Cell<bool>,
+}
+
+/// The typed, one-use creation boundary preserves uncertainty after any write poll.
+pub(crate) fn create_tab(
+    socket: &Path,
+    request: &crate::ports::CreateTabRequest,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+    limit: Duration,
+    observe: &PingObserver<'_>,
+) -> Result<WitnessedResponse, crate::ports::CreateTabOutcome> {
+    create_tab_with_provider(
+        socket,
+        request,
+        clock,
+        budget,
+        limit,
+        &KernelProcessInfo,
+        observe,
+    )
+}
+
+fn create_tab_with_provider(
+    socket: &Path,
+    request: &crate::ports::CreateTabRequest,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+    limit: Duration,
+    provider: &dyn ProcessInfoProvider,
+    observe: &PingObserver<'_>,
+) -> Result<WitnessedResponse, crate::ports::CreateTabOutcome> {
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let guard = CreationGuard {
+                    expected: &request.expected_witness,
+                    attempted: Cell::new(false),
+                };
+                let result = (|| -> Result<WitnessedResponse, ApiError> {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_io()
+                        .enable_time()
+                        .build()
+                        .map_err(|e| {
+                            error(ErrorCode::HostUnavailable, format!("host API runtime: {e}"))
+                        })?;
+                    runtime.block_on(async {
+                        let (ping, witness) = exchange(
+                            socket,
+                            &format!("{}:ping", request.correlation.as_str()),
+                            "ping",
+                            json!({}),
+                            clock,
+                            budget,
+                            started,
+                            limit,
+                            Some(provider),
+                            None,
+                        )
+                        .await?;
+                        let pong = compatible_pong(&ping, observe)?;
+                        if witness.as_ref() != Some(guard.expected) {
+                            return Err(error(
+                                ErrorCode::StaleHostObservation,
+                                "creation ping witness changed",
+                            ));
+                        }
+                        let validate = |_: &Value, witness: &LocalEndpointWitness| {
+                            if witness != guard.expected {
+                                Err(error(
+                                    ErrorCode::StaleHostObservation,
+                                    "creation endpoint witness changed before write",
+                                ))
+                            } else {
+                                Ok(())
+                            }
+                        };
+                        let fence = OperationFence {
+                            pong,
+                            expected: guard.expected,
+                            validate: &validate,
+                            attempted: &guard.attempted,
+                        };
+                        let params = json!({
+                            "workspace_id": request.workspace.as_str(),
+                            "cwd": request.cwd,
+                            "label": request.label,
+                            "focus": false,
+                            "env": {},
+                        });
+                        let (response, witness) = exchange(
+                            socket,
+                            request.correlation.as_str(),
+                            "tab.create",
+                            params,
+                            clock,
+                            budget,
+                            started,
+                            limit,
+                            Some(provider),
+                            Some(&fence),
+                        )
+                        .await?;
+                        if let Some(e) = super::observation::structured_host_error(&response) {
+                            return Err(e);
+                        }
+                        if response.pointer("/result/type").and_then(Value::as_str)
+                            != Some("tab_created")
+                        {
+                            return Err(error(
+                                ErrorCode::StaleHostObservation,
+                                "unexpected host API result type",
+                            ));
+                        }
+                        check(clock, budget, started, limit)?;
+                        let body = serde_json::to_string(&response).map_err(|_| {
+                            error(
+                                ErrorCode::StaleHostObservation,
+                                "host API response encoding failed",
+                            )
+                        })?;
+                        let witness = witness.ok_or_else(|| {
+                            error(ErrorCode::StaleHostObservation, "creation witness missing")
+                        })?;
+                        Ok(WitnessedResponse { body, witness })
+                    })
+                })();
+                result.map_err(|error| {
+                    if guard.attempted.get() {
+                        crate::ports::CreateTabOutcome::OutcomeUnknown(error)
+                    } else {
+                        crate::ports::CreateTabOutcome::NotSubmitted(error)
+                    }
+                })
+            })
+            .join()
+            .map_err(|_| {
+                crate::ports::CreateTabOutcome::OutcomeUnknown(error(
+                    ErrorCode::HostUnavailable,
+                    "host API task panicked; outcome unknown",
+                ))
+            })?
+    })
 }
 
 #[cfg(test)]
@@ -1205,3 +1381,7 @@ fn witness_error(error_value: super::continuity::CaptureError) -> ApiError {
 #[cfg(all(test, target_os = "macos"))]
 #[path = "../../tests/host/witness_transport.rs"]
 mod witness_tests;
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "../../tests/host/topology_creation.rs"]
+mod topology_creation;

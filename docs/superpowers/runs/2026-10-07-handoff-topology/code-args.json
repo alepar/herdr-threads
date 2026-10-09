@@ -1,0 +1,23 @@
+{
+  "epicId": "ht-qhz",
+  "integrationBranch": "super-auto/handoff-topology",
+  "integrationWorktree": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-workflows",
+  "skillsRoot": "/Users/alepar/.aisw/profiles/codex/codex-3/plugins/cache/superpowers-alepar/superpowers/6.4.2-alepar4.20/skills",
+  "codeMechanism": "ordinary-subagents",
+  "deferSweep": true,
+  "callerOwnsFinish": true,
+  "config": {
+    "mergeCheck": "nice cargo build --locked --all-targets --all-features && nice cargo build --locked --all-targets",
+    "sweep": "nice cargo nextest run --locked --all-targets --all-features",
+    "testPaths": [
+      "tests/**",
+      "src/**"
+    ],
+    "concurrency": 1
+  },
+  "userOverrides": [
+    "worker focused checks only; main owns exact combined full suite/CI/release/localinstall",
+    "reviewed main-only landing already authorized, concrete coordinator mutation window required",
+    "retain owned worker worktrees/tab/evidence until independently verified DONE+MERGED"
+  ]
+}

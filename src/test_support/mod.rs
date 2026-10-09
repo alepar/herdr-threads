@@ -13,6 +13,12 @@ pub mod search_barrier;
 pub mod server_completion;
 pub mod spawn;
 
+/// Explicit authenticated-peer fixture for direct handler controls.
+/// Production peers are constructed only from the socket kernel credential.
+pub fn peer_identity(uid: u32) -> crate::protocol::authority::PeerIdentity {
+    crate::protocol::authority::PeerIdentity::from_kernel(uid)
+}
+
 /// The `Unsupported` rejection a fixture returns for a port route it does not serve.
 pub fn unserved(detail: &str) -> crate::protocol::results::ApiError {
     crate::protocol::results::ApiError::unsupported(detail)
@@ -637,5 +643,19 @@ macro_rules! no_durable_work {
     };
 }
 
+/// Construct sealed bootstrap attachment evidence from a qualified test current
+/// observation and explicit same-response scope. Absent in ordinary builds.
+pub fn bootstrap_attachment_guard(
+    request: &crate::protocol::commands::ResolveSeat,
+    observation: crate::ports::HostObservation,
+    workspace: crate::protocol::ids::HostTargetId,
+    tab: crate::protocol::ids::HostTargetId,
+    admission: &crate::ports::HostObservationAdmission,
+    witness: crate::host::continuity::LocalEndpointWitness,
+) -> Result<crate::ports::BootstrapAttachmentGuard, &'static str> {
+    let pane =
+        crate::ports::BootstrapPaneObservation::try_new(observation, workspace, tab, witness)?;
+    crate::ports::BootstrapAttachmentGuard::try_new(request, pane, admission)
+}
 #[cfg(feature = "test-support")]
 pub mod archival_composer_fixture;

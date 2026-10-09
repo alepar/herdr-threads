@@ -1,0 +1,790 @@
+[
+  {
+    "id": "ht-qhz.19",
+    "title": "Seam integration: live-effect authority guards",
+    "description": "Verify shared live-effect authority guard wiring across canonical reservation, native submission, attachment, downstream delivery and human recovery.\nowns: cross-effect authority-guard integration tests;\nconsumes: canonical bootstrap transitions/attachment, native submission progress, downstream replay, delivery execution and administrative recovery dispatch.\nFiles: tests/handoff_topology_authority.rs or combined module; no new guard policy.\nAcceptance: deterministic RED/GREEN invalidate caller/attempt/host incarnation between earlier preparation and final pre-submit boundary, all effects refuse under current canonical guards; no static client claim becomes authority; completed cleanup bypasses only currentlive checks after original actor classification; operator incorrectquiescence accepted limit honestly asserted, no distributed atomicity claim.\nblocked-by ht-qhz.2.2: consumes canonical bootstrap state transitions\nblocked-by ht-qhz.2.3: consumes canonical bootstrap attachment\nblocked-by ht-qhz.4.2: consumes BootstrapPlan live resume\nblocked-by ht-qhz.4.3: consumes bootstrap downstream completion\nblocked-by ht-qhz.5.1: consumes DeliveryPlan staged-work execution\nblocked-by ht-qhz.6: consumes administrative recovery dispatch",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:09:16Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:09:16Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.19",
+        "depends_on_id": "ht-qhz.2.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:09:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.19",
+        "depends_on_id": "ht-qhz.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:09:17Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.19",
+        "depends_on_id": "ht-qhz.4.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:09:19Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.19",
+        "depends_on_id": "ht-qhz.4.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:09:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.19",
+        "depends_on_id": "ht-qhz.5.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:09:20Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.19",
+        "depends_on_id": "ht-qhz",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:09:16Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.19",
+        "depends_on_id": "ht-qhz.6",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:09:21Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 6,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-qhz"
+  },
+  {
+    "id": "ht-qhz.5.2",
+    "title": "Delivery retry and completed presentation cleanup",
+    "description": "Integrate journal retry and terminal reporting for existing-peer durable delivery.\nowns: DeliveryPlan retry and absorbing terminal presentation;\nconsumes: DeliveryPlan staged-work execution.\nFiles: src/cli/handoff_delivery.rs (retry/report), src/cli/retry.rs.\nAcceptance: RED/GREEN changedcurrentbinding/archive/restart completion cleanuponly, failedflush/removal retry, exactorigin classifier before all paths, zero duplicate invitation/message or nativeeffects; retained report corruption refuses.\n\nblocked-by ht-qhz.5.1: consumes DeliveryPlan staged-work execution",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:01:23Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:01:39Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.5.2",
+        "depends_on_id": "ht-qhz.5",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:01:23Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.5.2",
+        "depends_on_id": "ht-qhz.5.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:40Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-qhz.5"
+  },
+  {
+    "id": "ht-qhz.5.1",
+    "title": "Exact existing recipient and durable staged-work delivery",
+    "description": "Implement --existing selector grammar, canonical seat lookup and keyed shared staging with immutable DeliveryPlan.\nowns: DeliveryPlan staged-work execution and existingpeer selector resolution;\nowns: delivery canonical guards; no-launch/invitation-episode tests.\nconsumes: topology/delivery boundary contract and existing canonical Handoff fences.\nFiles: src/cli/handoff_delivery.rs, src/cli/commands.rs (existing mode), src/cli/handoff.rs (shared staging extraction).\nAcceptance: actualCLI RED/GREEN no allocation/rebind/start/preflight/registration, held/unresolved/retired/foreign refusal, canonical joined/pendinginvited/unboundreporting, exact invitation episode reuse and send children; original Handoff serialization/golden unchanged.\nblocked-by ht-qhz.1: consumes boundary contract\nboundary contract: ht-qhz.1",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:01:21Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:10:33Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.5.1",
+        "depends_on_id": "ht-qhz.5",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:01:21Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.5.1",
+        "depends_on_id": "ht-qhz.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:22Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-qhz.5"
+  },
+  {
+    "id": "ht-qhz.4.3",
+    "title": "Downstream launch and terminal bootstrap replay",
+    "description": "Compose exact existing Handoff downstream with persistent possible-start fence and bootstrap completion/report cleanup.\nowns: bootstrap downstream completion and absorbing terminal replay;\nowns: downstream canonical guard enforcement; report/flush/removal replay tests.\nconsumes: BootstrapPlan live resume and canonical bootstrap attachment.\nFiles: src/cli/topology_handoff.rs (downstream/terminal), src/cli/retry.rs, src/cli/handoff.rs (existing compound helper only).\nAcceptance: RED/GREEN no duplicate create/invite/message/launch on failed flush/removal/restart/archive/binding change; frozen terminal report required; completed replay only presents/removes owned intent, wrongnamespace refuses; launch possible-start preserved.\n\nblocked-by ht-qhz.4.2: consumes BootstrapPlan live resume\nblocked-by ht-qhz.2.3: consumes canonical bootstrap attachment\nboundary contract: ht-qhz.1\nblocked-by ht-qhz.1: consumes boundary contract",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:01:20Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:10:33Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.4.3",
+        "depends_on_id": "ht-qhz.2.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:38Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.4.3",
+        "depends_on_id": "ht-qhz.4.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:36Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.4.3",
+        "depends_on_id": "ht-qhz.4",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:01:20Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.4.3",
+        "depends_on_id": "ht-qhz.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:09:10Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 3,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-qhz.4"
+  },
+  {
+    "id": "ht-qhz.4.2",
+    "title": "At-most-one native creation and exact seat attachment",
+    "description": "Implement operation-lock/reserve/local-progress/native-call/evidence/guarded-resolution path.\nowns: BootstrapPlan live resume and native submission progress;\nowns: final canonical guard enforcement; crash/concurrency/loss/seat-guard tests.\nconsumes: frozen bootstrap publication, canonical bootstrap state transitions, canonical bootstrap attachment and typed CreatedTab/submission outcomes.\nFiles: src/cli/topology_handoff.rs (live coordinator), src/cli/retry.rs.\nAcceptance: RED/GREEN successful create, lost reserve/host reply/save, crash/concurrentcopiedjournal, local/canonical recovery, incarnation/restorehold exactrecipient guards and deterministic resolution; never close user tab or auto adopt label; reports retain exact IDs/attempts.\n\nblocked-by ht-qhz.4.1: consumes frozen bootstrap publication\nblocked-by ht-qhz.2.2: consumes canonical bootstrap state transitions\nblocked-by ht-qhz.2.3: consumes canonical bootstrap attachment\nblocked-by ht-qhz.3: consumes typed CreatedTab/submission outcomes\nSession promotion override: fresh reviewer counted six sequencing steps, but canonical transitions and typed native transport are separately owned predecessors. This leaf is one atomic live coordinator deliverable consuming those APIs, with no unresolved design decision or independently reviewable split beyond already-separated publication and terminal handling. Kept LEAF to satisfy cohesion/floor; not size denial.\nboundary contract: ht-qhz.1\nblocked-by ht-qhz.1: consumes boundary contract",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:01:08Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:10:34Z",
+    "labels": [
+      "sp:demoted-by-session",
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.4.2",
+        "depends_on_id": "ht-qhz.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:34Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.4.2",
+        "depends_on_id": "ht-qhz.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:09:08Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.4.2",
+        "depends_on_id": "ht-qhz.4.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:29Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.4.2",
+        "depends_on_id": "ht-qhz.2.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:33Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.4.2",
+        "depends_on_id": "ht-qhz.4",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:01:08Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.4.2",
+        "depends_on_id": "ht-qhz.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 5,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-qhz.4"
+  },
+  {
+    "id": "ht-qhz.4.1",
+    "title": "New-tab grammar and immutable publication",
+    "description": "Implement strict target/channel grammar and additive BootstrapPlan publication.\nowns: frozen bootstrap publication and normalized new-tab grammar;\nconsumes: topology boundary contract.\nFiles: src/cli/commands.rs (new-tab arguments), src/cli/topology_handoff.rs (publication), src/cli/mod.rs.\nAcceptance: actual CLI parse-conflict RED/GREEN; absolute existing cwd, livecaller workspace vs focus, exact state/socket/options/child keys; no manual nativecreate or effects during parse; historical pane grammar unchanged.\nblocked-by ht-qhz.1: consumes boundary contract",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:01:04Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:01:04Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.4.1",
+        "depends_on_id": "ht-qhz.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:05Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.4.1",
+        "depends_on_id": "ht-qhz.4",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:01:04Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-qhz.4"
+  },
+  {
+    "id": "ht-qhz.2.3",
+    "title": "Atomic recipient/thread attachment and absorbing completion",
+    "description": "Implement cross-fence exact resolution/recipient/downstream attachment and bootstrap terminal state.\nowns: canonical bootstrap attachment, archival protection and absorbing completion;\nowns: canonical attachment/completion guards; atomic/race/terminal tests.\nconsumes: canonical bootstrap persistence and exact identity lookup.\nFiles: src/store/topology_handoff.rs (attachment module if split), src/store/control.rs, src/store/archival.rs.\nAcceptance: existing-thread protected before topology; create-thread attaches in deciding create transaction to both fences; deterministic resolve key/result; contradictory attach refuses; completed historical presentation bypasses only live guards, no effects or revived protection; delayed importer terminal precedence; RED/GREEN.\n\nblocked-by ht-qhz.2.1: consumes canonical bootstrap persistence and exact identity lookup\nboundary contract: ht-qhz.1\nblocked-by ht-qhz.1: consumes boundary contract",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:01:03Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:10:34Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.2.3",
+        "depends_on_id": "ht-qhz.2",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:01:03Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.2.3",
+        "depends_on_id": "ht-qhz.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:09:06Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.2.3",
+        "depends_on_id": "ht-qhz.2.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:27Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 4,
+    "comment_count": 0,
+    "parent": "ht-qhz.2"
+  },
+  {
+    "id": "ht-qhz.2.2",
+    "title": "One-use creation attempts and operator recovery decisions",
+    "description": "Implement canonical reserve/evidence/recovery state transitions in deciding transactions.\nowns: canonical bootstrap state transitions, one-use submission authorization and administrative recovery decisions;\nowns: final pre-submit canonical guards; concurrent/lost-reserve/recovery tests.\nconsumes: canonical bootstrap persistence and exact identity lookup.\nFiles: src/store/topology_handoff.rs (attempt transition module if split), tests/store/topology_attempts.rs.\nAcceptance: concurrent/lost-reserve reply yields at most one authorization; exact same-attempt evidence replay; proven NotSubmitted vs unknown; operator created-pane/not-created replay/contradiction and late older creation conflict; live A2 checks and completed recovery cannot reactivate; meaningful RED/GREEN.\n\nblocked-by ht-qhz.2.1: consumes canonical bootstrap persistence and exact identity lookup\nboundary contract: ht-qhz.1\nblocked-by ht-qhz.1: consumes boundary contract",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:00:19Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:10:35Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.2.2",
+        "depends_on_id": "ht-qhz.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:09:04Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.2.2",
+        "depends_on_id": "ht-qhz.2",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:00:19Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.2.2",
+        "depends_on_id": "ht-qhz.2.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:25Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-qhz.2"
+  },
+  {
+    "id": "ht-qhz.2.1",
+    "title": "Schema and exact bootstrap identity",
+    "description": "Land minimal additive0028 schema, unique immutable namespace/keys and bootstrap current-state lookup with inert command wiring.\nowns: canonical bootstrap persistence and exact identity lookup;\nconsumes: topology boundary contract.\nFiles: migrations/0028_handoff_topology.sql, src/store/topology_handoff.rs, src/store/schema.rs, src/store/mod.rs.\nAcceptance: actual reviewed0026/0027 predecessors absorbed before migration edit; no placeholders; migration/upgrade/tamper and exact payload/namespace mismatch RED/GREEN; historical bytes and old Handoff shapes unchanged; bounded indexed lookups.\nblocked-by ht-qhz.1: consumes boundary contract\nExternal source gate: main approved ONE0028 via mp6wXQY6o; absorb actual reviewed lazy0026/adapters0027 before edits, no placeholders. Only this leaf is parked while unavailable; independent ready work proceeds.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:00:13Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:01:48Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.2.1",
+        "depends_on_id": "ht-qhz.2",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:00:13Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.2.1",
+        "depends_on_id": "ht-qhz.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:00:15Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-qhz.2"
+  },
+  {
+    "id": "ht-qhz.9",
+    "title": "Configuration smoke: pane-launch, new-tab and existing-peer",
+    "description": "Actually exercise all three command modes with explicit pinned routing and both Claude/Codex option payloads using owned model-free helpers.\nowns: mode matrix actual CLI fixtures and source-bound RED/GREEN smoke evidence;\nowns: cross-component failure tests; owned topology/child teardown; UUID-scoped leak evidence.\nconsumes: BootstrapPlan resume and DeliveryPlan execution.\nFiles: tests/handoff_topology_cli.rs or combined module, tests/combined.rs only if needed, run smoke evidence.\nAcceptance: new-tab creates exactly one tab, legacy launch uses exact pane, existing-peer invokes zero start; retries do not duplicate topology/invites/messages/launch; isolated HOME/config dirs, test_support owned children stopped/reaped and UUID-scoped cleanup; no per-tab full suite.\nblocked-by ht-qhz.4.3: consumes bootstrap downstream completion and terminal replay\nblocked-by ht-qhz.5.2: consumes DeliveryPlan retry and terminal presentation",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:37Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:10:35Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.9",
+        "depends_on_id": "ht-qhz",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:37Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.9",
+        "depends_on_id": "ht-qhz.4.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:45Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.9",
+        "depends_on_id": "ht-qhz.5.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:47Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-qhz"
+  },
+  {
+    "id": "ht-qhz.8",
+    "title": "Handoff-first operation guidance and CLI help",
+    "description": "Replace manual new-tab bootstrap recipes with practical handoff-first routing and preserve invitation relevance/ACK semantics.\nowns: integrations/skill/SKILL.md operation priorities, handoff help and pressure scenario inputs;\nconsumes: approved topology/delivery/recovery grammar boundary contract.\nFiles: integrations/skill/SKILL.md, src/cli/handoff.rs (help only), docs/cli.md or existing handoff doc after source audit, run pressure-scenarios.md.\nAcceptance: FIRSThandoff SECONDverifiedtopic-goal+participant send THIRDjoin/invite, ambiguous membership surfaces, existing peer no relaunch, human recovery argv honest, no installed-permission claim before peer approval; meaningful BEFORE/AFTER pressure evaluation is parent orchestrator-owned rather than implementer spawning agents.\nblocked-by ht-qhz.1: consumes boundary contract",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:35Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:57:27Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.8",
+        "depends_on_id": "ht-qhz",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:35Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.8",
+        "depends_on_id": "ht-qhz.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:55:36Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-qhz"
+  },
+  {
+    "id": "ht-qhz.7",
+    "title": "Bootstrap and delivery legacy archival compatibility",
+    "description": "Extend bounded read-only importer for new identities/progress and exact namespace protection without granting topology submission or caller authority.\nowns: bootstrap/delivery legacy veto and terminal precedence integration;\nowns: exact namespace/delayed-scan/restart terminal-veto tests.\nconsumes: canonical bootstrap state transitions and new journal boundary contract.\nFiles: src/archival_legacy.rs, src/store/archival.rs, tests/archival*.rs.\nAcceptance: RED/GREEN custom namespace/copiedUUID, malformed/inaccessible/oversized/symlink/partial scans, delayed scan after completed bootstrap, restart retained journal, atomic created-thread protection, delivery completed replay; zero old journal rewriting or revived fence.\nblocked-by ht-qhz.2.3: consumes canonical bootstrap attachment and absorbing completion",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:34Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:10:36Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.7",
+        "depends_on_id": "ht-qhz",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:34Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.7",
+        "depends_on_id": "ht-qhz.2.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:44Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-qhz"
+  },
+  {
+    "id": "ht-qhz.6",
+    "title": "Explicit human uncertain-topology recovery",
+    "description": "Integrate human handoff recover through the approved peer InvocationActor/classify_original_actor boundary with separate operator scope and exact original bootstrap/attempt references.\nowns: administrative recovery dispatch and operator audit provenance;\nowns: recovery canonical guards; contradiction/quiescence-claim tests.\nconsumes: canonical bootstrap state transitions and peer human namespace actor classifier.\nFiles: src/cli/topology_recover.rs, src/cli/commands.rs (peer-approved human handoff recovery integration), src/cli/retry.rs, TRUST-POLICY.md.\nAcceptance: RED/GREEN root refusal before ANY completed cleanup, created-pane ordinary structural/seat guards, not-created next-attempt authorization, contradictory/concurrent/repeated assertions, delayed prior creation conflict, completed absorbing refusal; never reclassifies frozen origin or performs downstream actions; document mistaken not-created accepted limit. Exact human integration is gated only on named peer source availability; no root --operator fallback.\nblocked-by ht-qhz.2.2: consumes canonical bootstrap state transitions\nboundary contract: ht-qhz.1\nblocked-by ht-qhz.1: consumes boundary contract\n--not-created is the explicit cooperative assertion both inspected noncreation and original attempt quiescence/cannot still create. Refuse known in-flight normaloperationlock; never infer quiescence from PID/labels/current snapshot or kill unowned process. Incorrect assertion can duplicate; record accepted limit.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:32Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:10:36Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.6",
+        "depends_on_id": "ht-qhz.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:01:42Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.6",
+        "depends_on_id": "ht-qhz.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:09:13Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.6",
+        "depends_on_id": "ht-qhz",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:32Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-qhz"
+  },
+  {
+    "id": "ht-qhz.5",
+    "title": "Existing-peer delivery without native launch",
+    "description": "Implement HandoffDelivery immutable journal and exact staged create/invite/send composition without launch preflight, native start or registration.\nowns: DeliveryPlan execution and --existing grammar;\nconsumes: topology/delivery boundary contract and existing canonical Handoff fences.\nFiles: src/cli/handoff_delivery.rs, src/cli/handoff.rs (extract staged-work helper preserving serialization), src/cli/commands.rs (existing selector parser), src/cli/retry.rs.\nAcceptance: actual CLI RED/GREEN pane/seat modes, joined/invited/unbound recipient reporting, zero native launches, no seat allocation/rebind, exact keyed invite/send replay including reinvitation episode safety, canonical held/unresolved/retired refusal, historical Handoff golden unchanged.",
+    "design": "docs/superpowers/runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology--existing-delivery-design.md",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:30Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:01:24Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 3
+    },
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.5",
+        "depends_on_id": "ht-qhz",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:30Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-qhz"
+  },
+  {
+    "id": "ht-qhz.4",
+    "title": "New-tab durable CLI bootstrap coordinator",
+    "description": "Own new-tab durable BootstrapPlan publication, live submission and terminal replay.\nowns: BootstrapPlan publication/resume and new-tab dispatch;\nconsumes: canonical bootstrap state transitions and typed CreatedTab/submission outcomes.\nFiles: src/cli/topology_handoff.rs, src/cli/commands.rs (new-tab parser only), src/cli/mod.rs, src/cli/retry.rs.\nAcceptance: meaningful actual CLI RED/GREEN new-tab success/retry, concurrent invocation, reserve/host reply loss, save/output/removal failure; zero duplicated creates; exact state/socket/argv/options, restore holds/incarnation refusal; fence existing thread before create; never closes user topology; old pane handoff unchanged.",
+    "design": "docs/superpowers/runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology--bootstrap-coordinator-design.md",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:28Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:10:01Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 2
+    },
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.4",
+        "depends_on_id": "ht-qhz",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:28Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-qhz"
+  },
+  {
+    "id": "ht-qhz.3",
+    "title": "Witnessed bounded native tab creation",
+    "description": "Implement the exact audited tab.create socket request/result mapping under the existing host witness and budget machinery.\nowns: typed CreatedTab and submission outcome production boundary;\nowns: final native witness recheck; correlated response-loss tests.\nconsumes: topology boundary contract and adapter-owner launch/registry seam.\nFiles: src/host/transport.rs, src/host/native.rs, src/host/mod.rs.\nAcceptance: recheck installed protocol/schema model-free; strict correlation, coherent tab/root_pane/workspace/incarnation; refusal before submission, cancellation/lost/malformed reply outcome_unknown; deterministic fake socket RED/GREEN; one owned isolated native fixture if available with read-only schema fallback documented, no real agent start/config write.\nblocked-by ht-qhz.1: consumes boundary contract",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:26Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:10:36Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.3",
+        "depends_on_id": "ht-qhz",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:26Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-qhz.3",
+        "depends_on_id": "ht-qhz.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:55:27Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-qhz"
+  },
+  {
+    "id": "ht-qhz.2",
+    "title": "Canonical bootstrap attempt fences and atomic attachment",
+    "description": "Implement canonical exact namespace identity, one-use Reserve authorization, durable creation evidence/attempt decisions and absorbing completion with indexed archival protection.\nowns: canonical bootstrap state transitions and submission permission;\nconsumes: topology boundary contract.\nFiles: src/store/topology_handoff.rs, src/store/mod.rs, src/store/control.rs, src/store/archival.rs, src/store/schema.rs, migrations/0028_handoff_topology.sql (number only after main allocation).\nAcceptance: meaningful RED/GREEN exact payload mismatch, concurrent reserve one permission, lost reserve replay no permission, creation attachment in deciding transaction, current A2 guards, completed current-state presentation and stale recovery conflict tests; one additive migration only; old migration bytes unchanged. Bound unique rows/indexes and replay statements.\nExternal source gate: main approved ONE additive topology migration0028 via mp6wXQY6o. This leaf must absorb actual reviewed migrations0026lazy and0027adapters before editing/applying0028; no fabricated placeholder predecessors or historical-byte changes. Parent scheduler parks only this leaf while actual predecessors are unavailable.",
+    "design": "docs/superpowers/runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology--canonical-bootstrap-design.md",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:25Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:01:03Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 1
+    },
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.2",
+        "depends_on_id": "ht-qhz",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:25Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-qhz"
+  },
+  {
+    "id": "ht-qhz.1",
+    "title": "Seam contract: topology bootstrap and delivery identities",
+    "description": "Land only compilable additive BootstrapPlan/DeliveryPlan, state/result types and inert protocol/CLI/journal dispatch wiring without changing old Handoff serialization.\nowns: versioned topology and delivery boundary contract;\nowns: guard inputs/results wired end-to-end inert-by-default.\nconsumes: existing CallerClaim, IntentScope, HandoffIdentity and peer actor-route/classify_original_actor seam.\nFiles: src/protocol/handoff.rs, src/protocol/commands.rs, src/protocol/results.rs, src/cli/journal.rs, src/cli/commands.rs, src/ports.rs, src/cli/mod.rs.\nAcceptance: inert-by-default compiles, original actor classification runs before new journal retry, exact historical journal/digest golden unchanged; no topology effect or speculated human shortcut.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:24Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:10:37Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-qhz.1",
+        "depends_on_id": "ht-qhz",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:24Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 10,
+    "comment_count": 0,
+    "parent": "ht-qhz"
+  },
+  {
+    "id": "ht-qhz",
+    "title": "Native topology handoff and existing-peer delivery",
+    "description": "Deliver approved native new-tab handoff, no-relaunch peer delivery and exact durable topology recovery; closable at reviewed merge-ready source. Spec docs/superpowers/runs/2026-10-07-handoff-topology/2026-10-07-handoff-topology-design.md. Release and main window are external follow-on.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:54:22Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:54:22Z",
+    "labels": [
+      "sp:ht-qhz"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "hash": "349e0604d6bfac5afa26bc601835e3ce30a4f06d405d4f608bb4c4fdddf0c3b9",
+  "result": {
+    "findings": [
+      {
+        "claim": "The bootstrap has no terminal abandonment transition, so a confirmed creation that becomes permanently unusable before downstream completion leaves its selected thread permanently protected from archival.",
+        "location": "artifact.md lines 67, 73\u201375, 81, 89: Topology state machine and response loss; Human recovery; Archival and compatibility",
+        "category": "domain:distributed-systems",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "Begin protects an existing selected thread; the live fence never completes because a seat retired or a local file disappeared (line 67). A missing created pane or changed host incarnation must refuse retry (line 73), and bootstrap completion requires canonical downstream completion (line 75). Consider confirmed creation recorded before attachment, followed by deletion of that pane: retry cannot proceed and cannot recreate. The two recovery operations address uncertain creation only: --created-pane cannot truthfully adopt a replacement, and --not-created cannot truthfully assert that no creation happened (line 81). The fence continues vetoing archival (line 89). No cancel/abandon transition, operator release of protection, or explicit acceptance of this permanent archival blockage appears in the root, nested specs, or task descriptions. The same missing lifecycle exit matters if the frozen original actor permanently loses authority before downstream work."
+      },
+      {
+        "claim": "The recovery CLI does not specify how a repeated recovery invocation remains pinned to the attempt the operator inspected after a lost response and advancement to a later attempt.",
+        "location": "artifact.md lines 53, 63, 81, 85: recovery grammar and exact-attempt recovery contract; task ht-qhz.6",
+        "category": "domain:distributed-systems",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "The only public recovery grammar is human handoff recover REF --created-pane EXACT_PANE or --not-created (line 53). Decisions must reference an exact attempt, keys are children of phase/attempt, and replaying a recovery key must be presentation-only (lines 63 and 81), but the contract never defines REF as an attempt-specific recovery reference, exposes an expected-attempt/key argument, or persists a recovery invocation identity before submission. If --not-created for attempt A commits but its reply is lost, an original-agent retry can reserve attempt B before the operator repeats the same displayed recovery command. Resolving the compound REF to the latest attempt then constructs a new B recovery key, so key-level idempotency does not preserve the operator's original assertion about A. The design needs to specify the mechanism tying the inspection and recovery command to A across response loss; listing attempt IDs in reports (line 85) and retaining exact decisions alone does not define that mechanism."
+      }
+    ]
+  }
+}

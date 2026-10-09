@@ -3,8 +3,9 @@
 use crate::{
     identity::repair::OrdinaryIdentity,
     ports::{
-        DurableWorkAdmission, HostPort, LocalService, ReadContext, RegisterAvailableRequest,
-        SendPreparationProgress, ServiceAuthorityGate, ServiceConnectionAuthority, StorePort,
+        BootstrapObserver, BootstrapStorePort, DurableWorkAdmission, HostPort, LocalService,
+        ReadContext, RegisterAvailableRequest, SendPreparationProgress, ServiceAuthorityGate,
+        ServiceConnectionAuthority, StorePort,
     },
     protocol::{
         authority::{
@@ -22,6 +23,12 @@ use crate::{
 };
 use std::sync::Arc;
 
+struct BootstrapRuntime {
+    canonical: crate::protocol::handoff::HandoffNamespace,
+    observer: Arc<dyn BootstrapObserver>,
+    store: Arc<dyn BootstrapStorePort>,
+}
+
 pub struct DomainService {
     instance: String,
     store: Arc<dyn StorePort>,
@@ -30,6 +37,7 @@ pub struct DomainService {
     current_target: Option<Arc<OrdinaryIdentity>>,
     operator_owner_uid: Option<u32>,
     cooperative_runtime: Option<(u32, Arc<FairWriter>)>,
+    bootstrap: Option<BootstrapRuntime>,
     mod_channels: Arc<dyn crate::ports::ModChannels>,
 }
 
@@ -43,6 +51,7 @@ impl DomainService {
             current_target: None,
             operator_owner_uid: None,
             cooperative_runtime: None,
+            bootstrap: None,
             mod_channels: Arc::new(crate::ports::NoModChannels),
         }
     }
@@ -67,6 +76,315 @@ impl DomainService {
     pub fn with_cooperative_owner(mut self, owner_uid: u32, writer: Arc<FairWriter>) -> Self {
         self.cooperative_runtime = Some((owner_uid, writer));
         self
+    }
+
+    /// Every input is supplied by the elected runtime, never a command.
+    pub fn with_bootstrap_runtime(
+        mut self,
+        canonical: crate::protocol::handoff::HandoffNamespace,
+        observer: Arc<dyn BootstrapObserver>,
+        store: Arc<dyn BootstrapStorePort>,
+    ) -> Result<Self, ApiError> {
+        canonical.validate().map_err(ApiError::invalid_request)?;
+        if canonical.instance != self.instance
+            || self.current_target.is_none()
+            || self.operator_owner_uid.is_none()
+            || self.cooperative_runtime.is_none()
+        {
+            return Err(error(
+                ErrorCode::Unsupported,
+                "bootstrap runtime composition incomplete",
+            ));
+        }
+        self.bootstrap = Some(BootstrapRuntime {
+            canonical,
+            observer,
+            store,
+        });
+        Ok(self)
+    }
+    pub(crate) fn bootstrap_available(&self) -> bool {
+        self.bootstrap.is_some()
+    }
+
+    fn delivery_command(
+        &self,
+        request: &crate::protocol::handoff::DeliveryMutation,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        request
+            .validate()
+            .map_err(|why| error(ErrorCode::InvalidRequest, why))?;
+        let runtime = self.bootstrap.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::Unsupported,
+                "delivery guarded runtime unavailable",
+            )
+        })?;
+        let canonical = &runtime.canonical;
+        let frozen = &request.plan.payload.namespace;
+        if canonical.instance != frozen.instance
+            || canonical.state_dir.as_os_str() != frozen.state_dir.as_os_str()
+            || canonical.host_endpoint.as_os_str() != frozen.host_endpoint.as_os_str()
+        {
+            return Err(error(
+                ErrorCode::InstanceMismatch,
+                "delivery selected namespace differs",
+            ));
+        }
+        let (owner, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if matches!(
+            request.action,
+            crate::protocol::handoff::DeliveryAction::Status(_)
+                | crate::protocol::handoff::DeliveryAction::Prepare(_)
+        ) {
+            let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+            return runtime.store.delivery_query(canonical, request, budget);
+        }
+        if matches!(
+            request.action,
+            crate::protocol::handoff::DeliveryAction::Send(_)
+        ) {
+            loop {
+                let progress = {
+                    let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                    runtime.store.delivery_prepare_send_step(
+                        canonical,
+                        request,
+                        DurableWorkAdmission::new(16)
+                            .map_err(|why| error(ErrorCode::InvalidRequest, why))?,
+                        budget,
+                    )?
+                };
+                match progress {
+                    SendPreparationProgress::Committed(result) => return Ok(result),
+                    SendPreparationProgress::Ready { .. } => break,
+                    SendPreparationProgress::More { .. } => {}
+                }
+            }
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        let permit = self.store.issue_cooperative_permit(
+            crate::store::cooperative_permit_request(
+                &request.inner().map_err(ApiError::invalid_request)?,
+            )?,
+            budget,
+        )?;
+        runtime
+            .store
+            .delivery_mutate(canonical, request, permit, budget)
+    }
+
+    fn bootstrap_command(
+        &self,
+        command: Command,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        command
+            .validate()
+            .map_err(|why| error(ErrorCode::InvalidRequest, why))?;
+        let runtime = self.bootstrap.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::Unsupported,
+                "bootstrap guarded runtime unavailable",
+            )
+        })?;
+        let (owner, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        let validate_original =
+            |identity: &crate::protocol::handoff::BootstrapIdentity| -> Result<(), ApiError> {
+                crate::store::topology_handoff::encode_identity(&runtime.canonical, identity)?;
+                let semantic = crate::cli::journal::SemanticMutation::Frozen {
+                    claim: identity.claim.clone(),
+                    mutation: Box::new(crate::cli::journal::SemanticMutation::HandoffBootstrap(
+                        Box::new(crate::cli::journal::BootstrapPlan {
+                            version: 1,
+                            payload: identity.payload.clone(),
+                        }),
+                    )),
+                };
+                if crate::cli::journal::classify_original_actor(&identity.scope, &semantic)
+                    .map_err(|_| {
+                        error(
+                            ErrorCode::InvalidRequest,
+                            "invalid bootstrap original actor",
+                        )
+                    })?
+                    != crate::cli::journal::OriginalActor::Agent
+                {
+                    return Err(error(
+                        ErrorCode::CallerUnverified,
+                        "bootstrap requires an original agent",
+                    ));
+                }
+                Ok(())
+            };
+        if let Command::RecoverBootstrap(request) = &command {
+            validate_original(&request.identity)?;
+            let actor = OperatorActor::from_peer(
+                peer,
+                self.operator_owner_uid.ok_or_else(|| {
+                    error(ErrorCode::Unauthorized, "operator runtime unavailable")
+                })?,
+            )
+            .ok_or_else(|| error(ErrorCode::Unauthorized, "operator owner differs"))?;
+            {
+                let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                if let Some(saved) = runtime.store.bootstrap_recovery_replay(
+                    &runtime.canonical,
+                    request,
+                    &actor,
+                    budget,
+                )? {
+                    return Ok(CommandResult::BootstrapRecovered(Box::new(saved)));
+                }
+            }
+            request
+                .inspection
+                .as_ref()
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidRequest,
+                        "undecided recovery needs retained canonical inspection",
+                    )
+                })?
+                .validate()
+                .map_err(|detail| error(ErrorCode::InvalidRequest, detail))?;
+            if let crate::protocol::handoff::BootstrapRecoveryDisposition::CreatedPane {
+                evidence,
+                ..
+            } = &request.disposition
+            {
+                let resolving = crate::protocol::commands::ResolveSeat {
+                    target: evidence.root_pane.clone(),
+                    operation: request.identity.payload.resolve_key.clone(),
+                };
+                return self
+                    .current_target
+                    .as_ref()
+                    .ok_or_else(|| error(ErrorCode::Unsupported, "bootstrap identity unavailable"))?
+                    .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+                        runtime.store.bootstrap_recover(
+                            &runtime.canonical,
+                            request,
+                            &actor,
+                            Some(guard),
+                            budget,
+                        )
+                    });
+            }
+            let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+            return runtime.store.bootstrap_recover(
+                &runtime.canonical,
+                request,
+                &actor,
+                None,
+                budget,
+            );
+        }
+        if let Command::BootstrapStatus(request) = &command {
+            validate_original(&request.identity)?;
+            let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+            return runtime
+                .store
+                .bootstrap_query(&runtime.canonical, &command, budget);
+        }
+        let mutation = PermitMutation::try_from(command)
+            .map_err(|_| error(ErrorCode::InvalidRequest, "invalid bootstrap mutation"))?;
+        let identity = match &mutation {
+            PermitMutation::BeginBootstrap(v) => &v.identity,
+            PermitMutation::ReserveBootstrapAttempt(v) => &v.identity,
+            PermitMutation::RecordBootstrapCreated(v) => &v.identity,
+            PermitMutation::RecordBootstrapNotSubmitted(v) => &v.identity,
+            PermitMutation::ResolveBootstrapSeat(v) => &v.identity,
+            PermitMutation::AttachBootstrapHandoff(v) => &v.identity,
+            PermitMutation::CompleteLinkedBootstrap(v) => &v.identity,
+            PermitMutation::CheckBootstrapSubmission(v) => &v.identity,
+            _ => {
+                return Err(error(
+                    ErrorCode::InvalidRequest,
+                    "invalid bootstrap mutation",
+                ));
+            }
+        };
+        validate_original(identity)?;
+        let deciding = matches!(
+            mutation,
+            PermitMutation::ResolveBootstrapSeat(_) | PermitMutation::AttachBootstrapHandoff(_)
+        );
+        if deciding {
+            let status = runtime.store.bootstrap_query(
+                &runtime.canonical,
+                &Command::BootstrapStatus(Box::new(crate::protocol::handoff::BootstrapStatus {
+                    identity: identity.clone(),
+                })),
+                budget,
+            )?;
+            let CommandResult::Bootstrap(status) = status else {
+                return Err(error(ErrorCode::StoreCorrupt, "invalid bootstrap status"));
+            };
+            let creation = status
+                .creation
+                .ok_or_else(|| error(ErrorCode::Conflict, "bootstrap creation unavailable"))?;
+            let resolving = crate::protocol::commands::ResolveSeat {
+                target: creation.root_pane,
+                operation: identity.payload.resolve_key.clone(),
+            };
+            return self
+                .current_target
+                .as_ref()
+                .ok_or_else(|| error(ErrorCode::Unsupported, "bootstrap identity unavailable"))?
+                .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+                    let permit = self.store.issue_cooperative_permit(
+                        crate::store::cooperative_permit_request(&mutation)?,
+                        budget,
+                    )?;
+                    runtime.store.bootstrap_mutate(
+                        &runtime.canonical,
+                        mutation,
+                        permit,
+                        Some(guard),
+                        budget,
+                    )
+                });
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        let permit = if let PermitMutation::BeginBootstrap(command) = &mutation {
+            runtime
+                .store
+                .bootstrap_begin_permit(&runtime.canonical, command, budget)?
+        } else {
+            self.store.issue_cooperative_permit(
+                crate::store::cooperative_permit_request(&mutation)?,
+                budget,
+            )?
+        };
+        runtime
+            .store
+            .bootstrap_mutate(&runtime.canonical, mutation, permit, None, budget)
     }
 
     fn cooperative_mutation(
@@ -116,12 +434,18 @@ impl DomainService {
             loop {
                 let progress = {
                     let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
-                    self.store.prepare_send_step(
-                        command,
-                        DurableWorkAdmission::new(16)
-                            .map_err(|detail| error(ErrorCode::InvalidRequest, detail))?,
-                        budget,
-                    )?
+                    let admission = DurableWorkAdmission::new(16)
+                        .map_err(|detail| error(ErrorCode::InvalidRequest, detail))?;
+                    if let Some(runtime) = &self.bootstrap {
+                        runtime.store.bootstrap_prepare_send_step(
+                            &runtime.canonical,
+                            command,
+                            admission,
+                            budget,
+                        )?
+                    } else {
+                        self.store.prepare_send_step(command, admission, budget)?
+                    }
                 };
                 match progress {
                     SendPreparationProgress::Committed(result) => return Ok(result),
@@ -137,6 +461,18 @@ impl DomainService {
         // through the decision; the store rechecks context, budget and permit age.
         let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
         let permit = self.store.issue_cooperative_permit(request, budget)?;
+        let permit = if matches!(
+            mutation,
+            PermitMutation::Invite(_) | PermitMutation::SendMessage(_)
+        ) {
+            if let Some(runtime) = &self.bootstrap {
+                permit.with_bootstrap_child(&runtime.canonical, &mutation)
+            } else {
+                permit
+            }
+        } else {
+            permit
+        };
         match mutation {
             PermitMutation::CheckIn(command) => self.store.register_available(
                 RegisterAvailableRequest {
@@ -147,6 +483,17 @@ impl DomainService {
                 permit,
                 budget,
             ),
+            mutation
+                if matches!(
+                    mutation,
+                    PermitMutation::BeginHandoff(_) | PermitMutation::CreateThread(_)
+                ) && self.bootstrap.is_some() =>
+            {
+                let runtime = self.bootstrap.as_ref().expect("equipped runtime");
+                runtime
+                    .store
+                    .bootstrap_mutate(&runtime.canonical, mutation, permit, None, budget)
+            }
             mutation => self.store.mutate(mutation, permit, budget),
         }
     }
@@ -402,6 +749,17 @@ impl LocalService for DomainService {
             return self.store.query(&command, &read, budget);
         }
         match command {
+            Command::HandoffDelivery(request) => self.delivery_command(&request, peer, budget),
+            command @ (Command::BeginBootstrap(_)
+            | Command::ReserveBootstrapAttempt(_)
+            | Command::RecordBootstrapCreated(_)
+            | Command::RecordBootstrapNotSubmitted(_)
+            | Command::AttachBootstrapHandoff(_)
+            | Command::CompleteLinkedBootstrap(_)
+            | Command::CheckBootstrapSubmission(_)
+            | Command::BootstrapStatus(_)
+            | Command::ResolveBootstrapSeat(_)
+            | Command::RecoverBootstrap(_)) => self.bootstrap_command(command, peer, budget),
             Command::Directory(_)
             | Command::PickerDirectory(_)
             | Command::Seats(_)
@@ -832,6 +1190,61 @@ mod operator_tests {
 #[cfg(test)]
 #[path = "../../tests/service/cooperative.rs"]
 mod cooperative_tests;
+
+#[cfg(test)]
+mod topology_contract_dispatch_tests {
+    use super::*;
+    #[test]
+    fn topology_contract_new_commands_are_inert() {
+        let root = std::env::temp_dir().join(format!("topology-dispatch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("store.db");
+        let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
+        let store = Arc::new(
+            crate::store::SqliteStore::new(
+                crate::store::connection::StoreContext::new(path.clone(), clock.clone()),
+                "i",
+                crate::store::StoreSettings::default(),
+            )
+            .unwrap(),
+        );
+        let domain = DomainService::new("i".into(), store, clock.clone());
+        let db = rusqlite::Connection::open(path).unwrap();
+        let before: i64 = db
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .unwrap();
+        for command in crate::protocol::handoff::topology_contract_tests::commands() {
+            assert!(command.validate().is_ok());
+            let error = domain
+                .handle(
+                    command,
+                    PeerIdentity::from_kernel(501),
+                    &CallBudget {
+                        deadline: crate::protocol::time::MonoInstant(
+                            clock.monotonic_now().0 + 1000,
+                        ),
+                        cancellation: Default::default(),
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported);
+            assert_eq!(
+                db.query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                before
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM operations", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+        drop(domain);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
 
 #[cfg(test)]
 #[path = "../../tests/service/mod_ack_dispatch.rs"]

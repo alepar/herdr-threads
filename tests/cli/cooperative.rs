@@ -2355,6 +2355,12 @@ mod scoped_runtime {
             if json {
                 argv.push("--json".into());
             }
+            let args = if args.first() == Some(&"human") {
+                argv.insert(1, "human".into());
+                &args[1..]
+            } else {
+                args
+            };
             argv.extend(args.iter().map(|value| value.to_string()));
             crate::cli::run_in_pane(argv, Some(caller), &mut Vec::new())
         }
@@ -2873,6 +2879,714 @@ mod scoped_runtime {
         );
         assert!(runtime.calls.lock().unwrap().is_empty());
     }
+}
+
+// Missing original-actor preflight reaches context selection instead of refusing
+// the honest frozen Human/operator origin, and may consume completed intents.
+#[test]
+fn actor_prerequisite_human_and_operator_retry_refuses_before_context_or_transport() {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("actor-preflight-{}", uuid::Uuid::new_v4()));
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let contexts = crate::harness::context::ContextJournal::open(
+        &root,
+        uuid::Uuid::from_u128(1),
+        "seat",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    struct Never;
+    impl crate::ports::LocalClient for Never {
+        crate::default_output_local_client!();
+        fn call(
+            &self,
+            _: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            panic!("Human/operator retry reached transport");
+        }
+    }
+    let mut human = claim();
+    human.harness = Harness::Human;
+    let cases = [
+        (
+            IntentScope::Cooperative {
+                instance: human.instance.clone(),
+                seat: human.seat.clone(),
+            },
+            SemanticMutation::freeze(
+                SemanticMutation::Ack {
+                    messages: vec![MessageId::new("message")],
+                },
+                human,
+            )
+            .unwrap(),
+        ),
+        (
+            IntentScope::Operator {
+                instance: "instance".into(),
+                local_user_uid: 1,
+            },
+            SemanticMutation::OperatorRetire {
+                seat: SeatId::new("seat"),
+            },
+        ),
+    ];
+    for (scope, semantic) in cases {
+        let reference = journal.record(scope, semantic, 1).unwrap();
+        let before = journal.load(&reference).unwrap();
+        let parsed = crate::cli::commands::parse_argv([
+            "ht",
+            "--state-dir",
+            "state space",
+            "--host-endpoint",
+            "host space",
+            "retry",
+            &reference.recovery_ref(),
+        ])
+        .unwrap();
+        let mut output = Vec::new();
+        let failure = crate::cli::run_cooperative(
+            parsed,
+            &journal,
+            &contexts,
+            None,
+            crate::harness::context::Role::TopLevel,
+            &Never,
+            &crate::app::SystemClock::new(),
+            &mut output,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{failure:?}")
+                .contains("person/operator retry requires immediate human namespace"),
+            "{failure:?}"
+        );
+        assert!(
+            format!("{failure:?}")
+                .contains("human --state-dir 'state space' --host-endpoint 'host space' retry"),
+            "{failure:?}"
+        );
+        assert!(output.is_empty());
+        assert_eq!(journal.load(&reference).unwrap().semantic, before.semantic);
+        assert_eq!(
+            journal.load(&reference).unwrap().header.semantic_digest,
+            before.header.semantic_digest
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn actor_prerequisite_agent_fresh_action_refuses_selected_human_context() {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("actor-fresh-{}", uuid::Uuid::new_v4()));
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let contexts = crate::harness::context::ContextJournal::open(
+        &root,
+        uuid::Uuid::from_u128(1),
+        "seat-1",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    struct Never;
+    impl crate::ports::LocalClient for Never {
+        crate::default_output_local_client!();
+        fn call(
+            &self,
+            _: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            panic!("fresh Agent action reached transport through Human context");
+        }
+    }
+    let parsed = crate::cli::commands::parse_argv(["ht", "ack", "message"]).unwrap();
+    let mut output = Vec::new();
+    let failure = crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        Some(&human_context("pane")),
+        crate::harness::context::Role::TopLevel,
+        &Never,
+        &crate::app::SystemClock::new(),
+        &mut output,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{failure:?}").contains("this command selects a Human context"),
+        "{failure:?}"
+    );
+    assert!(output.is_empty());
+    assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn actor_prerequisite_all_unfrozen_handoffs_refuse_before_dispatch() {
+    use crate::protocol::handoff::topology_contract_tests as fixture;
+    let legacy: SemanticMutation = serde_json::from_value(serde_json::json!({"kind":"handoff","request":{"thread":"thread-1","thread_name":null,"topic":null,"goal":null,"body":"work","launch":{"target":"target-2","harness":"Codex","harness_binary":"/bin/codex","argv":[],"name":"peer","pane_label":null}},"context":{"state_dir":"/state","host":"/host.sock"},"recipient":"recipient","create_key":"create","invite_key":"invite","send_key":"send"})).unwrap();
+    for semantic in [
+        legacy,
+        SemanticMutation::HandoffBootstrap(Box::new(crate::cli::journal::BootstrapPlan {
+            version: 1,
+            payload: fixture::payload(),
+        })),
+        SemanticMutation::HandoffDelivery(Box::new(crate::cli::journal::DeliveryPlan {
+            version: 1,
+            payload: fixture::payload().handoff,
+            recipient: SeatId::new("peer"),
+        })),
+    ] {
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("actor-unfrozen-{}", uuid::Uuid::new_v4()));
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap();
+        let journal = Journal::open(root.join("intents")).unwrap();
+        let reference = journal
+            .record(
+                IntentScope::Native {
+                    instance: "i".into(),
+                    seat: SeatId::new("sender"),
+                },
+                semantic,
+                1,
+            )
+            .unwrap();
+        let contexts = crate::harness::context::ContextJournal::open(
+            &root,
+            uuid::Uuid::from_u128(1),
+            "sender",
+            std::time::Duration::from_millis(20),
+        )
+        .unwrap();
+        struct Never;
+        impl crate::ports::LocalClient for Never {
+            crate::default_output_local_client!();
+            fn call(
+                &self,
+                _: Command,
+                _: &crate::protocol::time::CallBudget,
+            ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+                panic!("unfrozen handoff reached transport")
+            }
+        }
+        let parsed =
+            crate::cli::commands::parse_argv(["ht", "retry", &reference.recovery_ref()]).unwrap();
+        let mut output = Vec::new();
+        let error = crate::cli::run_cooperative(
+            parsed,
+            &journal,
+            &contexts,
+            None,
+            crate::harness::context::Role::TopLevel,
+            &Never,
+            &crate::app::SystemClock::new(),
+            &mut output,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:?}").contains("handoff needs frozen caller"),
+            "{error:?}"
+        );
+        assert!(output.is_empty());
+        assert!(journal.load(&reference).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn actor_prerequisite_public_retry_refuses_before_daemon_state_or_connect() {
+    use crate::daemon::paths::{InstancePaths, RuntimeContext};
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("actor-public-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let runtime =
+        RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
+    let paths = InstancePaths::resolve(&runtime).unwrap();
+    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let mut human = claim();
+    human.harness = Harness::Human;
+    let reference = journal
+        .record(
+            IntentScope::Cooperative {
+                instance: human.instance.clone(),
+                seat: human.seat.clone(),
+            },
+            SemanticMutation::freeze(
+                SemanticMutation::Ack {
+                    messages: vec![MessageId::new("message")],
+                },
+                human,
+            )
+            .unwrap(),
+            1,
+        )
+        .unwrap();
+    let snapshot = || {
+        let mut rows: Vec<_> = std::fs::read_dir(journal.root())
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                (
+                    path.file_name().unwrap().to_owned(),
+                    std::fs::read(path).unwrap(),
+                )
+            })
+            .collect();
+        rows.sort();
+        rows
+    };
+    let before = snapshot();
+    let argv = vec![
+        "ht".to_owned(),
+        "--state-dir".into(),
+        runtime.state_dir.display().to_string(),
+        "--host-endpoint".into(),
+        runtime.host_endpoint.display().to_string(),
+        "retry".into(),
+        reference.recovery_ref(),
+    ];
+    let mut output = Vec::new();
+    let error = crate::cli::run_in_pane(argv, None, &mut output).unwrap_err();
+    assert!(
+        format!("{error:?}").contains("person/operator retry requires immediate human namespace"),
+        "{error:?}"
+    );
+    assert_eq!(snapshot(), before);
+    assert!(output.is_empty());
+    assert!(!paths.descriptor_path.exists());
+    assert!(!paths.database_path.exists());
+    assert!(!paths.instance_dir.join("contexts").exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn actor_prerequisite_fresh_mutation_validates_consumed_current_not_initial_seed() {
+    actor_current_ack_fixture(false, true);
+}
+
+#[test]
+fn actor_prerequisite_human_ack_refuses_current_agent_despite_human_seed() {
+    actor_current_ack_fixture(true, false);
+}
+
+#[test]
+fn actor_prerequisite_agent_ack_uses_current_despite_unused_human_seed() {
+    actor_current_ack_fixture(false, false);
+}
+
+#[test]
+fn actor_prerequisite_human_ack_uses_current_despite_unused_agent_seed() {
+    actor_current_ack_fixture(true, true);
+}
+
+fn actor_fixture_snapshot(
+    root: &std::path::Path,
+) -> std::collections::BTreeMap<std::path::PathBuf, (bool, Vec<u8>)> {
+    fn visit(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        saved: &mut std::collections::BTreeMap<std::path::PathBuf, (bool, Vec<u8>)>,
+    ) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let directory = path.is_dir();
+            saved.insert(
+                path.strip_prefix(root).unwrap().to_path_buf(),
+                (
+                    directory,
+                    if directory {
+                        vec![]
+                    } else {
+                        std::fs::read(&path).unwrap()
+                    },
+                ),
+            );
+            if directory {
+                visit(root, &path, saved);
+            }
+        }
+    }
+    let mut saved = Default::default();
+    visit(root, root, &mut saved);
+    saved
+}
+
+fn actor_current_ack_fixture(human_route: bool, human_current: bool) {
+    use crate::harness::context::{Harness as ContextHarness, Role, SessionReference};
+    let isolation = crate::test_support::isolation::TestIsolation::new("actor-current-ack");
+    let root = isolation.state_root().canonicalize().unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let contexts = crate::harness::context::ContextJournal::open(
+        &root,
+        uuid::Uuid::from_u128(1),
+        "seat-1",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    let mut current = human_context("current-pane");
+    if !human_current {
+        current.harness = ContextHarness::Codex;
+    }
+    contexts.install_reattached(current.clone()).unwrap();
+    let mut seed = current.clone();
+    seed.instance = uuid::Uuid::from_u128(9);
+    seed.seat = "unused-seat".into();
+    seed.target = "unused-pane".into();
+    seed.binding_generation = 99;
+    seed.execution = uuid::Uuid::from_u128(3);
+    seed.session = SessionReference::Native("unused-session".into());
+    seed.harness = if human_current {
+        ContextHarness::Codex
+    } else {
+        ContextHarness::Human
+    };
+    // Literal full claim for current, independent of bridge::caller_claim.
+    let expected = CallerClaim {
+        instance: "00000000-0000-0000-0000-000000000001".into(),
+        seat: SeatId::new("seat-1"),
+        binding_generation: 1,
+        role: CallerRole::TopLevel,
+        harness: if human_current {
+            Harness::Human
+        } else {
+            Harness::Codex
+        },
+        native_session: NativeSessionId::new("plugin_context:00000000-0000-0000-0000-000000000002"),
+        execution: ExecutionId::new("00000000-0000-0000-0000-000000000002"),
+        target: HostTargetId::new("current-pane"),
+    };
+    struct Client<'a> {
+        journal: &'a Journal,
+        expected: CallerClaim,
+        calls: std::sync::Mutex<Vec<Command>>,
+    }
+    impl crate::ports::LocalClient for Client<'_> {
+        crate::default_output_local_client!();
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            let Command::Ack(ack) = &command else {
+                panic!("fresh ACK attempted an unrelated effect: {command:?}")
+            };
+            assert_eq!(ack.claim, self.expected);
+            assert_eq!(ack.messages, vec![MessageId::new("message")]);
+            let page = self.journal.page(&Default::default()).unwrap();
+            assert_eq!(page.items.len(), 1, "submit only the one published ACK");
+            let reference = self
+                .journal
+                .resolve_recovery_ref(page.items[0].recovery_ref.as_str())
+                .unwrap();
+            let pending = self.journal.load(&reference).unwrap();
+            assert_eq!(reference.operation, ack.operation);
+            assert_eq!(
+                pending.header.scope,
+                IntentScope::Cooperative {
+                    instance: self.expected.instance.clone(),
+                    seat: SeatId::new("seat-1"),
+                }
+            );
+            let SemanticMutation::Frozen { claim, mutation } = pending.semantic else {
+                panic!("ACK original was not frozen")
+            };
+            assert_eq!(claim, self.expected);
+            assert!(
+                matches!(*mutation, SemanticMutation::Ack { messages } if messages == vec![MessageId::new("message")])
+            );
+            self.calls.lock().unwrap().push(command);
+            Ok(CommandResult::Acknowledged(AckResult {
+                acknowledged: vec![MessageId::new("message")],
+                already_acknowledged: vec![],
+            }))
+        }
+    }
+    let client = Client {
+        journal: &journal,
+        expected,
+        calls: Default::default(),
+    };
+    let parsed = if human_route {
+        crate::cli::commands::parse_argv(["ht", "human", "ack", "message"]).unwrap()
+    } else {
+        crate::cli::commands::parse_argv(["ht", "ack", "message"]).unwrap()
+    };
+    let before = actor_fixture_snapshot(&root);
+    let mut output = Vec::new();
+    let outcome = crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        Some(&seed),
+        Role::TopLevel,
+        &client,
+        &crate::app::SystemClock::new(),
+        &mut output,
+    );
+    if human_route == human_current {
+        assert!(
+            outcome.is_ok(),
+            "unused opposite-harness initial vetoed current: {outcome:?}"
+        );
+        assert_eq!(
+            client.calls.lock().unwrap().len(),
+            1,
+            "one typed submission"
+        );
+        assert!(String::from_utf8(output).unwrap().contains("message"));
+    } else {
+        let error = outcome.unwrap_err();
+        let expected_detail = if human_route {
+            "human namespace cannot act through an agent cooperative selection"
+        } else {
+            "this command selects a Human context"
+        };
+        assert!(format!("{error:?}").contains(expected_detail), "{error:?}");
+        assert!(client.calls.lock().unwrap().is_empty());
+        assert!(output.is_empty());
+        assert_eq!(actor_fixture_snapshot(&root), before);
+    }
+    assert_eq!(contexts.current().unwrap().unwrap(), current);
+    assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+}
+
+#[test]
+fn actor_prerequisite_false_default_plain_inbox_reads_without_acknowledging_human_context() {
+    use crate::protocol::pagination::{Consistency, Page, StopReason};
+    let isolation = crate::test_support::isolation::TestIsolation::new("actor-plain-inbox");
+    let root = isolation.state_root().canonicalize().unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let contexts = crate::harness::context::ContextJournal::open(
+        &root,
+        uuid::Uuid::from_u128(1),
+        "seat-1",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    let human = human_context("current-pane");
+    contexts.install_reattached(human.clone()).unwrap();
+    struct ReadClient(std::sync::Mutex<Vec<Command>>);
+    impl crate::ports::LocalClient for ReadClient {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.call(command, budget)
+        }
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            assert!(
+                matches!(&command, Command::Inbox(query) if query.seat.is_none()),
+                "plain read attempted an accountable/display action: {command:?}"
+            );
+            self.0.lock().unwrap().push(command);
+            Ok(CommandResult::Inbox(Page {
+                items: vec![],
+                next_cursor: None,
+                next_argv: None,
+                high_water_ordinal: 0,
+                scope_revision: None,
+                has_more: false,
+                stop_reason: StopReason::Complete,
+                consistency: Consistency::BoundedLive,
+            }))
+        }
+    }
+    // This parsed public seam shape is non-default and read-only. Normal CLI
+    // resolves its explicit recipient to Some(seat) before run_cooperative;
+    // this control does not claim to test pane-selector resolution.
+    let parsed = crate::cli::commands::parse_argv(["ht", "inbox", "--pane", "w1:p2"]).unwrap();
+    assert!(!parsed.caller_read_default);
+    assert!(
+        matches!(&parsed.action, crate::cli::commands::CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
+    );
+    let client = ReadClient(Default::default());
+    let before = actor_fixture_snapshot(&root);
+    let mut output = Vec::new();
+    let outcome = crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        None,
+        crate::harness::context::Role::TopLevel,
+        &client,
+        &crate::app::SystemClock::new(),
+        &mut output,
+    );
+    assert!(
+        outcome.is_ok(),
+        "plain non-default inbox was incorrectly accountable: {outcome:?}"
+    );
+    assert_eq!(client.0.lock().unwrap().len(), 1);
+    assert_eq!(contexts.current().unwrap().unwrap(), human);
+    assert_eq!(actor_fixture_snapshot(&root), before);
+    assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+}
+
+#[test]
+fn actor_prerequisite_lifecycle_guard_uses_its_selected_initial_seed() {
+    use crate::protocol::{
+        pagination::{Consistency, Page, StopReason},
+        results::{CheckInContextDisposition, CheckInResult},
+    };
+    fn empty<T>() -> Page<T> {
+        Page {
+            items: vec![],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: StopReason::Complete,
+            consistency: Consistency::BoundedLive,
+        }
+    }
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("actor-lifecycle-{}", uuid::Uuid::new_v4()));
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let contexts = crate::harness::context::ContextJournal::open(
+        &root,
+        uuid::Uuid::from_u128(1),
+        "seat-1",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    let human = human_context("pane");
+    contexts.install_reattached(human.clone()).unwrap();
+    let mut seed = human.clone();
+    seed.harness = crate::harness::context::Harness::Codex;
+    struct Client(std::sync::atomic::AtomicUsize);
+    impl crate::ports::LocalClient for Client {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.call(command, budget)
+        }
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            let Command::CheckIn(check) = command else {
+                panic!("lifecycle attempted an unrelated command: {command:?}")
+            };
+            assert_eq!(check.claim.harness, Harness::Codex);
+            assert_eq!(
+                check.mode,
+                crate::protocol::commands::CheckInMode::Lifecycle {
+                    expected_binding_generation: 1
+                }
+            );
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut context = check.claim;
+            context.binding_generation = 2;
+            Ok(CommandResult::CheckedIn(CheckInResult {
+                seat: context.seat.clone(),
+                context,
+                context_disposition: CheckInContextDisposition::Current,
+                offered_through: None,
+                warning_count: 0,
+                warning_count_has_more: false,
+                warnings: empty(),
+                notices: Default::default(),
+                inbox: empty(),
+            }))
+        }
+    }
+    let client = Client(std::sync::atomic::AtomicUsize::new(0));
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "human",
+        "check-in",
+        "--lifecycle-event",
+        "human-through-agent",
+    ])
+    .unwrap();
+    let error = crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        Some(&seed),
+        crate::harness::context::Role::TopLevel,
+        &client,
+        &crate::app::SystemClock::new(),
+        &mut Vec::new(),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:?}")
+            .contains("human namespace cannot act through an agent cooperative selection"),
+        "{error:?}"
+    );
+    assert_eq!(client.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(contexts.current().unwrap().unwrap(), human);
+    assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+    // The real run_selected path retires this exact Human current context
+    // after service mapping selection before seeding an Agent lifecycle. The
+    // bridge's unchanged local harness guard refuses that transition otherwise.
+    assert!(contexts.retire_current(&human).unwrap());
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "check-in",
+        "--lifecycle-event",
+        "agent-lifecycle",
+    ])
+    .unwrap();
+    crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        Some(&seed),
+        crate::harness::context::Role::TopLevel,
+        &client,
+        &crate::app::SystemClock::new(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(client.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        contexts.current().unwrap().unwrap().harness,
+        crate::harness::context::Harness::Codex
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -3553,4 +4267,454 @@ fn public_join_cli_capability_refusal_precedes_journal_submission() {
         "incompatible retry must retain its intent"
     );
     std::fs::remove_dir_all(root).unwrap();
+}
+
+mod main539_composition {
+    use super::*;
+    use crate::{
+        ports::{LocalClient, LocalService},
+        protocol::{
+            authority::PeerIdentity,
+            time::{CallBudget, Clock},
+        },
+    };
+    use std::sync::Arc;
+
+    struct Client {
+        domain: Box<dyn LocalService>,
+        join_capability: std::sync::atomic::AtomicBool,
+        calls: std::sync::Mutex<Vec<Command>>,
+    }
+    impl LocalClient for Client {
+        crate::default_output_local_client!();
+        fn call(
+            &self,
+            command: Command,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.calls.lock().unwrap().push(command.clone());
+            let result = self
+                .domain
+                .handle(command, PeerIdentity::from_kernel(501), budget)?;
+            if let CommandResult::Capabilities(mut capabilities) = result {
+                assert!(
+                    capabilities
+                        .capabilities
+                        .iter()
+                        .any(|s| s == crate::protocol::capabilities::THREAD_JOIN)
+                );
+                assert!(
+                    !capabilities.capabilities.iter().any(
+                        |s| s == crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1
+                    )
+                );
+                if !self
+                    .join_capability
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    capabilities
+                        .capabilities
+                        .retain(|s| s != crate::protocol::capabilities::THREAD_JOIN);
+                }
+                return Ok(CommandResult::Capabilities(capabilities));
+            }
+            Ok(result)
+        }
+    }
+    struct Fixture {
+        client: Client,
+        journal: Journal,
+        contexts: crate::harness::context::ContextJournal,
+        claim: CallerClaim,
+        root: std::path::PathBuf,
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+    impl Fixture {
+        fn new(human: bool) -> Self {
+            use crate::harness::context::{
+                ContextJournal, Harness, OccupantContext, Role, SessionReference,
+            };
+            let root = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("ht-main539-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&root).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let instance = uuid::Uuid::new_v4();
+            let contexts = ContextJournal::open(
+                &root,
+                instance,
+                "seat-test",
+                std::time::Duration::from_millis(20),
+            )
+            .unwrap();
+            contexts
+                .install_reattached(OccupantContext {
+                    format_version: 1,
+                    instance,
+                    seat: "seat-test".into(),
+                    target: "w1:p1".into(),
+                    harness: if human {
+                        Harness::Human
+                    } else {
+                        Harness::Codex
+                    },
+                    binding_generation: 1,
+                    execution: uuid::Uuid::new_v4(),
+                    session: SessionReference::Native("n".into()),
+                    role: Role::TopLevel,
+                })
+                .unwrap();
+            let claim = crate::harness::bridge::caller_claim(&contexts.current().unwrap().unwrap())
+                .unwrap();
+            let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
+            let context =
+                crate::store::connection::StoreContext::new(root.join("state.db"), clock.clone());
+            let db = context.open_writer().unwrap();
+            db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)", [&claim.instance]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![claim.seat.as_str(),claim.instance,claim.target.as_str()]).unwrap();
+            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,1,?3,'fresh','term','inc','coherent_enumeration',1)", rusqlite::params![claim.instance,claim.target.as_str(),clock.utc_now().0]).unwrap();
+            db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,1,?2,'b',1,?3,?4,?5,?6,?7,'term','inc')", rusqlite::params![claim.seat.as_str(),claim.target.as_str(),if human {"human"} else {"codex"},claim.native_session.as_str(),claim.execution.as_str(),if human {"operator_human"} else {"cooperative_top_level"},clock.utc_now().0]).unwrap();
+            db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [&claim.instance]).unwrap();
+            drop(db);
+            let store = Arc::new(
+                crate::store::SqliteStore::new(context, claim.instance.clone(), Default::default())
+                    .unwrap(),
+            );
+            let domain =
+                crate::service::dispatch::DomainService::new(claim.instance.clone(), store, clock)
+                    .with_cooperative_owner(
+                        501,
+                        Arc::new(crate::service::fair_writer::FairWriter::new(8)),
+                    );
+            let boot = uuid::Uuid::new_v4();
+            let domain = crate::daemon::control::ControlService::new(
+                crate::daemon::control::StopController::new(instance, boot, Default::default()),
+                move |_: &CallBudget| crate::daemon::health::HealthInputs::unknown(instance, boot),
+                domain,
+            );
+            let journal = Journal::open(root.join("intents")).unwrap();
+            Self {
+                client: Client {
+                    domain: Box::new(domain),
+                    join_capability: std::sync::atomic::AtomicBool::new(true),
+                    calls: Default::default(),
+                },
+                journal,
+                contexts,
+                claim,
+                root,
+            }
+        }
+        fn record_join(&self) -> crate::cli::journal::IntentRef {
+            self.journal
+                .record(
+                    IntentScope::Cooperative {
+                        instance: self.claim.instance.clone(),
+                        seat: self.claim.seat.clone(),
+                    },
+                    SemanticMutation::freeze(
+                        SemanticMutation::Join {
+                            thread: ThreadId::new("t"),
+                        },
+                        self.claim.clone(),
+                    )
+                    .unwrap(),
+                    0,
+                )
+                .unwrap()
+        }
+        fn run(&self, argv: Vec<String>, output: &mut Vec<u8>) -> Result<(), crate::cli::RunError> {
+            crate::cli::run_cooperative(
+                crate::cli::commands::parse_argv(argv).unwrap(),
+                &self.journal,
+                &self.contexts,
+                None,
+                crate::harness::context::Role::TopLevel,
+                &self.client,
+                &crate::app::SystemClock::new(),
+                output,
+            )
+        }
+    }
+    #[test]
+    fn fresh_agent_and_human_join_capability_refusal_precedes_publication() {
+        for human in [false, true] {
+            let f = Fixture::new(human);
+            f.client
+                .join_capability
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            let before: Vec<_> = std::fs::read_dir(f.journal.root())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            let mut argv = vec!["ht".to_owned()];
+            if human {
+                argv.push("human".into());
+            }
+            argv.extend(["join".into(), "t".into()]);
+            let mut output = Vec::new();
+            assert!(
+                f.run(argv, &mut output)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("thread.join_v1")
+            );
+            assert!(output.is_empty());
+            assert_eq!(*f.client.calls.lock().unwrap(), vec![Command::Capabilities]);
+            let after: Vec<_> = std::fs::read_dir(f.journal.root())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(before, after);
+        }
+    }
+    #[test]
+    fn original_human_join_refuses_root_then_exact_human_and_agent_replays_complete() {
+        for human in [true, false] {
+            let f = Fixture::new(human);
+            let reference = f.record_join();
+            let path = f.journal.root().join(format!(
+                "{:020}-{}.intent",
+                reference.ordinal,
+                reference.operation.as_str()
+            ));
+            let before = std::fs::read(&path).unwrap();
+            if human {
+                let mut output = Vec::new();
+                let error = f
+                    .run(
+                        vec!["ht".into(), "retry".into(), reference.recovery_ref()],
+                        &mut output,
+                    )
+                    .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("person/operator retry requires immediate human namespace")
+                );
+                assert!(f.client.calls.lock().unwrap().is_empty());
+                assert!(output.is_empty());
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+            }
+            let mut argv = vec!["ht".into()];
+            if human {
+                argv.push("human".into());
+            }
+            argv.extend(["retry".into(), reference.recovery_ref()]);
+            let mut output = Vec::new();
+            f.run(argv, &mut output).unwrap();
+            assert!(!output.is_empty());
+            assert!(f.journal.load(&reference).is_err());
+            assert!(
+                matches!(&f.client.calls.lock().unwrap()[..],[Command::Capabilities,Command::Join(v)] if v.claim==f.claim && v.operation==reference.operation)
+            );
+        }
+    }
+    #[test]
+    fn public_root_human_join_retry_refuses_before_context_transport_and_cleanup() {
+        use crate::daemon::paths::{InstancePaths, RuntimeContext};
+        let f = Fixture::new(true);
+        let runtime = RuntimeContext::explicit(
+            f.root.join("isolated-state"),
+            f.root.join("absent-host.sock"),
+            None,
+        )
+        .unwrap();
+        let paths = InstancePaths::resolve(&runtime).unwrap();
+        let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+        let reference = journal
+            .record(
+                IntentScope::Cooperative {
+                    instance: f.claim.instance.clone(),
+                    seat: f.claim.seat.clone(),
+                },
+                SemanticMutation::freeze(
+                    SemanticMutation::Join {
+                        thread: ThreadId::new("t"),
+                    },
+                    f.claim.clone(),
+                )
+                .unwrap(),
+                0,
+            )
+            .unwrap();
+        let snapshot = || {
+            let mut rows: Vec<_> = std::fs::read_dir(journal.root())
+                .unwrap()
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    (
+                        path.file_name().unwrap().to_owned(),
+                        std::fs::read(path).unwrap(),
+                    )
+                })
+                .collect();
+            rows.sort();
+            rows
+        };
+        let before = snapshot();
+        let mut output = Vec::new();
+        let error = crate::cli::run_in_pane(
+            vec![
+                "ht".into(),
+                "--state-dir".into(),
+                runtime.state_dir.display().to_string(),
+                "--host-endpoint".into(),
+                runtime.host_endpoint.display().to_string(),
+                "retry".into(),
+                reference.recovery_ref(),
+            ],
+            None,
+            &mut output,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:?}")
+                .contains("person/operator retry requires immediate human namespace"),
+            "{error:?}"
+        );
+        assert!(output.is_empty());
+        assert_eq!(snapshot(), before);
+        assert!(!paths.descriptor_path.exists());
+        assert!(!paths.database_path.exists());
+        assert!(!paths.instance_dir.join("contexts").exists());
+    }
+
+    #[test]
+    fn joined_result_is_refused_by_handoff_invitation_stage_and_durable_retry() {
+        let f = Fixture::new(false);
+        let invite = SemanticMutation::Invite {
+            thread: ThreadId::new("t"),
+            seat: SeatId::new("recipient"),
+            deadline_millis: None,
+        };
+        let reference = f
+            .journal
+            .record(
+                IntentScope::Cooperative {
+                    instance: f.claim.instance.clone(),
+                    seat: f.claim.seat.clone(),
+                },
+                SemanticMutation::freeze(invite.clone(), f.claim.clone()).unwrap(),
+                0,
+            )
+            .unwrap();
+        let mut output = Vec::new();
+        let failure = retry::run_retry_api_to_writer(
+            &f.journal,
+            &reference,
+            &IntentScope::Cooperative {
+                instance: f.claim.instance.clone(),
+                seat: f.claim.seat.clone(),
+            },
+            || Ok(f.claim.clone()),
+            |_| Ok(CommandResult::Joined(ThreadId::new("t"))),
+            &Default::default(),
+            &mut output,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(failure, retry::RetryFailure::Local(ref e) if e.to_string().contains("unexpected mutation result"))
+        );
+        assert!(output.is_empty());
+        assert!(f.journal.load(&reference).is_ok());
+        let channel = crate::protocol::handoff::HandoffChannel::Existing {
+            thread: ThreadId::new("t"),
+        };
+        let create = OperationId::new("create");
+        let send = OperationId::new("send");
+        let recipient = SeatId::new("recipient");
+        let mut progress = crate::cli::handoff::StagedWork::default();
+        let mut phase = "unset";
+        let error = crate::cli::handoff::stage_work(
+            crate::cli::handoff::Staging {
+                channel: &channel,
+                body: "work",
+                recipient: &recipient,
+                create_key: &create,
+                invite_key: &reference.operation,
+                send_key: &send,
+                skip_joined: false,
+            },
+            &mut progress,
+            &mut phase,
+            &|semantic, key| {
+                assert_eq!(semantic, invite);
+                assert_eq!(key, &reference.operation);
+                Ok(CommandResult::Joined(ThreadId::new("t")))
+            },
+            &mut |_| Ok(()),
+            &f.client,
+            &crate::app::SystemClock::new(),
+        )
+        .unwrap_err();
+        assert_eq!(phase, "invite");
+        assert!(error.to_string().contains("unexpected invite result"));
+        assert!(progress.invitation.is_none());
+        assert!(progress.message.is_none());
+        assert!(f.client.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn current_main_human_selected_registered_agent_refuses_before_effects() {
+    use crate::harness::context::{Harness as ContextHarness, Role};
+    let isolation = crate::test_support::isolation::TestIsolation::new("human-selected-hermes");
+    let root = isolation.state_root().canonicalize().unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let contexts = crate::harness::context::ContextJournal::open(
+        &root,
+        uuid::Uuid::from_u128(1),
+        "seat-1",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    let mut current = human_context("current-pane");
+    current.harness = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
+        crate::harness::registry::builtins()
+            .agent("hermes")
+            .unwrap(),
+    ));
+    contexts.install_reattached(current).unwrap();
+    struct Never;
+    impl crate::ports::LocalClient for Never {
+        crate::default_output_local_client!();
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            panic!("Human selected registered Agent reached accountable submission: {command:?}")
+        }
+    }
+    let before = actor_fixture_snapshot(&root);
+    let parsed = crate::cli::commands::parse_argv(["ht", "human", "ack", "message"]).unwrap();
+    let mut output = Vec::new();
+    let error = crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        None,
+        Role::TopLevel,
+        &Never,
+        &crate::app::SystemClock::new(),
+        &mut output,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:?}")
+            .contains("human namespace cannot act through an agent cooperative selection"),
+        "{error:?}"
+    );
+    assert_eq!(actor_fixture_snapshot(&root), before);
+    assert!(output.is_empty());
 }

@@ -2279,6 +2279,68 @@ fn builtin_warning_dedup_recipients_and_successor_have_independent_frontiers() {
 // Kills a migration that updates only the new-event trigger: already recorded
 // canonical built-in events must gain delivery rows without deleting history.
 #[test]
+fn builtin_warning_dedup_migration_backfills_existing_attributed_transitions() {
+    let (store, mut conn, clock, _) = fixture_with_context();
+    seed_warning_dedup_thread(&conn);
+    let first = check_in(&store, lifecycle(claim(), "dedup-initial")).unwrap();
+    let warning = open_warning_dedup_invitation(&mut conn, 1);
+    drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
+    conn.execute_batch(
+        "DROP TRIGGER digest_transition_warning_projected;
+        DELETE FROM digest_programmatic_warnings;
+        INSERT OR IGNORE INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id) SELECT 'job',ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id FROM warning_jobs;
+        INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT wr.seat_id,d.warning_id,d.thread_id,d.source,d.source_ordinal FROM digest_open_warnings d JOIN warning_recipients wr ON wr.warning_id=d.warning_id;",
+    )
+    .unwrap();
+    // Replay the exact warning backfill on prepared current-schema data. A
+    // version-24 label would misrepresent the retained later tables/columns.
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    tx.execute_batch(include_str!(
+        "../../migrations/0025_warning_notice_delivery.sql"
+    ))
+    .unwrap();
+    tx.commit().unwrap();
+    schema::initialize(&conn, || UtcMillis(100)).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM digest_open_warnings WHERE warning_id=?1",
+            [warning.as_str()],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "migration removes backfilled canonical transitions from legacy pending walks"
+    );
+    let upgraded = check_in(&store, current(&first.context, "dedup-upgraded")).unwrap();
+    assert_eq!(
+        carried(&upgraded),
+        (names(std::slice::from_ref(&warning)), false)
+    );
+    let repeated = check_in(&store, current(&first.context, "dedup-upgraded-repeat")).unwrap();
+    assert!(repeated.notices.is_empty());
+    assert_eq!(repeated.warning_count, 0);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM warning_conditions WHERE open_warning_id=?1",
+            [warning.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    conn.execute_batch("DROP TRIGGER digest_transition_warning_projected;")
+        .unwrap();
+    assert_eq!(
+        schema::initialize(&conn, || UtcMillis(100))
+            .unwrap_err()
+            .code,
+        ErrorCode::IncompatibleSchema
+    );
+}
+
+#[test]
 fn builtin_warning_dedup_upgrade_backfills_existing_attributed_transitions() {
     // Build the actual historical schema: opening a current StoreContext first
     // would already install v26, which cannot honestly be relabelled v24.

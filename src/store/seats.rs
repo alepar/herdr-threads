@@ -2644,6 +2644,41 @@ fn validate_resolution_allocation(
     Ok(())
 }
 
+/// Reuse ordinary current-target/hold/recovery guards without allocating or
+/// changing a seat. Bootstrap evidence never bypasses restore continuity.
+pub(crate) fn validate_bootstrap_creation(
+    tx: &Transaction<'_>,
+    instance: &str,
+    guard: &OrdinaryResolutionGuard,
+) -> Result<Option<SeatId>, ApiError> {
+    let owner = current_resolution_owner(tx, instance, guard)?;
+    if owner.is_none() {
+        let lifecycle: i64 = tx
+            .query_row(
+                "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
+                [instance],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        let published_lifecycle = checked_host_number(guard.admission().lifecycle_revision)?
+            .checked_add(1)
+            .ok_or_else(|| {
+                api_error(
+                    ErrorCode::SequenceExhausted,
+                    "resolution lifecycle revision exhausted",
+                )
+            })?;
+        if lifecycle != published_lifecycle {
+            return Err(api_error(
+                ErrorCode::TargetUnresolved,
+                "allocation observation predates a lifecycle change",
+            ));
+        }
+        validate_resolution_allocation(tx, instance, guard.structural_proof())?;
+    }
+    Ok(owner)
+}
+
 pub fn resolve_seat(
     context: &StoreContext,
     conn: &mut Connection,
@@ -2673,6 +2708,18 @@ pub fn resolve_seat(
     let OrdinaryResolutionAttempt::Observed(guard) = attempt else {
         unreachable!()
     };
+    resolve_observed(context, conn, instance, &request, &guard, budget)
+}
+
+fn resolve_observed(
+    context: &StoreContext,
+    conn: &mut Connection,
+    instance: &str,
+    request: &crate::protocol::commands::ResolveSeat,
+    guard: &OrdinaryResolutionGuard,
+    budget: &CallBudget,
+) -> Result<OrdinaryResolutionOutcome, ApiError> {
+    let digest = ordinary_resolution_digest(instance, request)?;
     // The shared helper performs exact-key replay before this guard validation.
     let result = schema::execute_idempotent_transaction(
         context,
@@ -2690,46 +2737,13 @@ pub fn resolve_seat(
                     "resolution guard request mismatch",
                 ));
             }
-            if current_resolution_owner(tx, instance, &guard)?.is_none() {
-                // A previously unowned target can allocate only before a known
-                // lifecycle change after this explicit read. A concurrent new
-                // allocation is handled by the valid existing-owner branch.
-                let lifecycle: i64 = tx
-                    .query_row(
-                        "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
-                        [instance],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                let published_lifecycle =
-                    checked_host_number(guard.admission().lifecycle_revision)?
-                        .checked_add(1)
-                        .ok_or_else(|| {
-                            api_error(
-                                ErrorCode::SequenceExhausted,
-                                "resolution lifecycle revision exhausted",
-                            )
-                        })?;
-                if lifecycle != published_lifecycle {
-                    return Err(api_error(
-                        ErrorCode::TargetUnresolved,
-                        "allocation observation predates a lifecycle change",
-                    ));
-                }
-                validate_resolution_allocation(tx, instance, guard.structural_proof())?;
-            }
+            validate_bootstrap_creation(tx, instance, guard)?;
             Ok(())
         },
         |tx, at| {
             snapshot_budget(context, budget)?;
-            let owner: Option<String> = tx.query_row(
-                "SELECT id FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",
-                params![instance,request.target.as_str()], |r| r.get(0),
-            ).optional().map_err(store_error)?;
-            match owner {
-                Some(seat) => Ok(CommandResult::SeatResolved(SeatId::new(seat))),
-                None => insert_ordinary_allocation(tx, at, instance, guard.structural_proof()),
-            }
+            ordinary_resolution_apply(tx, at, instance, &request.target, guard.structural_proof())
+                .map(|(result, _)| result)
         },
     )?;
     match result {
@@ -2738,6 +2752,188 @@ pub fn resolve_seat(
             ErrorCode::StoreCorrupt,
             "ordinary resolution replay has wrong result type",
         )),
+    }
+}
+
+/// Bootstrap-only fresh exact scope before allocation, including retained
+/// operation replay. Public handler/permit/namespace integration remains19.
+pub fn resolve_bootstrap_seat(
+    context: &StoreContext,
+    conn: &mut Connection,
+    canonical: &crate::protocol::handoff::HandoffNamespace,
+    request: &crate::protocol::handoff::ResolveBootstrapSeat,
+    guard: &crate::ports::BootstrapAttachmentGuard,
+    budget: &CallBudget,
+) -> Result<SeatId, ApiError> {
+    resolve_bootstrap_seat_impl(context, conn, canonical, request, guard, budget, None)
+}
+/// Permit consumption shares the exact ordinary allocation transaction.
+pub(crate) fn resolve_bootstrap_seat_accountable(
+    context: &StoreContext,
+    conn: &mut Connection,
+    canonical: &crate::protocol::handoff::HandoffNamespace,
+    request: &crate::protocol::handoff::ResolveBootstrapSeat,
+    guard: &crate::ports::BootstrapAttachmentGuard,
+    budget: &CallBudget,
+    permit: MutationPermit,
+) -> Result<SeatId, ApiError> {
+    resolve_bootstrap_seat_impl(
+        context,
+        conn,
+        canonical,
+        request,
+        guard,
+        budget,
+        Some(permit),
+    )
+}
+fn resolve_bootstrap_seat_impl(
+    context: &StoreContext,
+    conn: &mut Connection,
+    canonical: &crate::protocol::handoff::HandoffNamespace,
+    request: &crate::protocol::handoff::ResolveBootstrapSeat,
+    guard: &crate::ports::BootstrapAttachmentGuard,
+    budget: &CallBudget,
+    mut permit: Option<MutationPermit>,
+) -> Result<SeatId, ApiError> {
+    let input = super::cooperative_permit_request(
+        &crate::protocol::commands::PermitMutation::ResolveBootstrapSeat(Box::new(request.clone())),
+    )?;
+    let issuance = permit
+        .as_ref()
+        .map(|permit| permit.cooperative_metadata().1);
+    snapshot_budget(context, budget)?;
+    request
+        .validate()
+        .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
+    let status = super::topology_handoff::current(conn, canonical, &request.identity)?
+        .ok_or_else(|| api_error(ErrorCode::NotFound, "bootstrap missing"))?;
+    let created = status
+        .creation
+        .ok_or_else(|| api_error(ErrorCode::Conflict, "bootstrap creation missing"))?;
+    let ordinary = crate::protocol::commands::ResolveSeat {
+        target: created.root_pane,
+        operation: request.operation.clone(),
+    };
+    let digest = ordinary_resolution_digest(&canonical.instance, &ordinary)?;
+    let own_allocation = std::cell::Cell::new(false);
+    let validate = |tx: &Transaction<'_>, allocated: bool| -> Result<Option<SeatId>, ApiError> {
+        snapshot_budget(context, budget)?;
+        let attached =
+            super::topology_handoff::validate_bootstrap_resolution(tx, canonical, request, guard)?;
+        let expected = checked_host_number(guard.ordinary().admission().lifecycle_revision)?
+            .checked_add(1)
+            .and_then(|n| n.checked_add(i64::from(allocated)))
+            .ok_or_else(|| {
+                api_error(
+                    ErrorCode::SequenceExhausted,
+                    "bootstrap resolution lifecycle exhausted",
+                )
+            })?;
+        let lifecycle: i64 = tx
+            .query_row(
+                "SELECT lifecycle_revision FROM host_instances WHERE id=?1",
+                [&canonical.instance],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if lifecycle != expected {
+            return Err(api_error(
+                ErrorCode::StaleHostObservation,
+                "bootstrap resolution observation predates a lifecycle change",
+            ));
+        }
+        let owner = current_resolution_owner(tx, &canonical.instance, guard.ordinary())?;
+        if attached.is_some() && attached != owner {
+            return Err(api_error(
+                ErrorCode::TargetUnresolved,
+                "bootstrap attached recipient is no longer exact owner",
+            ));
+        }
+        Ok(owner)
+    };
+    let result = schema::execute_budgeted_idempotent_transaction_with_constraints(
+        context,
+        conn,
+        budget,
+        issuance.as_ref(),
+        &format!("service-allocation:{}", canonical.instance),
+        request.operation.as_str(),
+        digest,
+        |tx| super::seats::cooperative_instance(tx, &canonical.instance, &request.identity.claim),
+        |tx| {
+            if validate(tx, false)?.is_none() {
+                validate_resolution_allocation(
+                    tx,
+                    &canonical.instance,
+                    guard.ordinary().structural_proof(),
+                )?;
+            }
+            Ok(())
+        },
+        |tx, at| {
+            snapshot_budget(context, budget)?;
+            if let Some(permit) = permit.as_mut() {
+                super::control::decide_accountable(
+                    tx,
+                    at,
+                    permit,
+                    &input.claim,
+                    &input.claim.seat,
+                    &input.operation,
+                    &input.obligation,
+                    &input.payload_hash,
+                )?;
+            }
+            let (result, allocated) = ordinary_resolution_apply(
+                tx,
+                at,
+                &canonical.instance,
+                &ordinary.target,
+                guard.ordinary().structural_proof(),
+            )?;
+            own_allocation.set(allocated);
+            Ok(result)
+        },
+        |tx, result| {
+            let owner = validate(tx, own_allocation.get())?;
+            let CommandResult::SeatResolved(seat) = &result else {
+                return Err(api_error(
+                    ErrorCode::StoreCorrupt,
+                    "bootstrap resolution result differs",
+                ));
+            };
+            if owner.as_ref() != Some(seat) {
+                return Err(api_error(
+                    ErrorCode::TargetUnresolved,
+                    "bootstrap resolution result is no longer current owner",
+                ));
+            }
+            Ok(result)
+        },
+    )?;
+    let CommandResult::SeatResolved(seat) = result else {
+        return Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "bootstrap resolution result differs",
+        ));
+    };
+    Ok(seat)
+}
+
+/// Shared unchanged ordinary allocation recipe. The boolean records only this
+/// call's successful new seat insert; it is never inferred on replay.
+fn ordinary_resolution_apply(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    instance: &str,
+    target: &HostTargetId,
+    proof: &DurableStructuralProof,
+) -> Result<(CommandResult, bool), ApiError> {
+    let owner:Option<String>=tx.query_row("SELECT id FROM seats WHERE instance_id=?1 AND target_id=?2 AND state='resolved' LIMIT 1",params![instance,target.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
+    match owner {
+        Some(seat) => Ok((CommandResult::SeatResolved(SeatId::new(seat)), false)),
+        None => insert_ordinary_allocation(tx, at, instance, proof).map(|result| (result, true)),
     }
 }
 
@@ -3707,6 +3903,49 @@ pub(crate) fn cooperative_instance(
     Ok(())
 }
 
+/// Delivery's current recipient predicate uses canonical continuity without
+/// allocating, binding or requiring a working session on an unbound seat.
+pub(crate) fn eligible_delivery_recipient(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+) -> Result<(), ApiError> {
+    type Row = (
+        String,
+        Option<String>,
+        i64,
+        Option<String>,
+        i64,
+        Option<i64>,
+        Option<i64>,
+    );
+    let row: Option<Row> = db.query_row("SELECT s.state,s.target_id,s.target_generation,h.host_boot,h.host_epoch,s.retired_at,s.retired_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2", params![seat.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
+    let Some((state, Some(target), generation, boot, epoch, retired_at, retired_seq)) = row else {
+        return Err(api_error(
+            ErrorCode::TargetUnresolved,
+            "delivery recipient missing or foreign",
+        ));
+    };
+    let held: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL)", params![instance, target], |r| r.get(0)).map_err(store_error)?;
+    let observation = effective::effective_observation(db, instance, &target)?;
+    if state != "resolved"
+        || retired_at.is_some()
+        || retired_seq.is_some()
+        || held
+        || observation.as_ref().is_none_or(|o| {
+            o.structural_generation != generation
+                || Some(o.host_boot.as_str()) != boot.as_deref()
+                || o.epoch != epoch
+        })
+    {
+        return Err(api_error(
+            ErrorCode::TargetUnresolved,
+            "delivery recipient unresolved, held or invalidated",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn cooperative_mapping(
     db: &Connection,
     claim: &crate::protocol::authority::CallerClaim,
@@ -3836,6 +4075,45 @@ pub(crate) fn cooperative_mapping(
         terminal: observation.as_ref().and_then(|o| o.terminal_id.clone()),
         incarnation: observation.and_then(|o| o.incarnation),
     })
+}
+
+/// Parent Begin is canonically retained separately from the legacy child Begin
+/// which deliberately shares its frozen operation key. Never consult the child ledger.
+pub(crate) fn issue_bootstrap_begin_permit(
+    context: &StoreContext,
+    db: &Connection,
+    instance: &str,
+    canonical: &crate::protocol::handoff::HandoffNamespace,
+    command: &crate::protocol::handoff::BeginBootstrap,
+    budget: &CallBudget,
+) -> Result<MutationPermit, ApiError> {
+    crate::protocol::commands::Command::BeginBootstrap(Box::new(command.clone()))
+        .validate()
+        .map_err(ApiError::invalid_request)?;
+    super::topology_handoff::encode_identity(canonical, &command.identity)?;
+    cooperative_instance(db, instance, &command.identity.claim)?;
+    let current = super::topology_handoff::current(db, canonical, &command.identity)?;
+    let mapping = if current
+        .is_some_and(|v| v.state == crate::protocol::handoff::BootstrapState::Completed)
+    {
+        // Historical replay cannot consume a live deciding fence.
+        (0, 0)
+    } else {
+        let mapping = cooperative_mapping(db, &command.identity.claim, None)?;
+        (mapping.revision, mapping.invalidation_revision)
+    };
+    let request = crate::store::cooperative_permit_request(
+        &crate::protocol::commands::PermitMutation::BeginBootstrap(Box::new(command.clone())),
+    )?;
+    Ok(MutationPermit::cooperative(
+        request.claim,
+        request.operation,
+        request.obligation,
+        request.payload_hash,
+        context.clock().monotonic_now(),
+        mapping,
+        budget.clone(),
+    ))
 }
 
 pub(crate) fn issue_cooperative_permit(

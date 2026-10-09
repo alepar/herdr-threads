@@ -1,0 +1,73 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "unknownLanes": [],
+  "domainsDropped": [],
+  "rawFindings": 14,
+  "dedupedFindings": 4,
+  "dedupeOrphans": 0,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 4,
+  "spotCount": 0,
+  "promotedCount": 0,
+  "judgeLost": 0,
+  "spotLost": 0,
+  "laneYield": {
+    "premortem": {
+      "found": 2,
+      "confirmed": 2,
+      "unique": 0,
+      "refuted": 0
+    },
+    "completeness": {
+      "found": 2,
+      "confirmed": 2,
+      "unique": 0,
+      "refuted": 0
+    },
+    "yagni": {
+      "found": 1,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 1
+    },
+    "failure-mode": {
+      "found": 3,
+      "confirmed": 3,
+      "unique": 0,
+      "refuted": 0
+    },
+    "feasibility": {
+      "found": 2,
+      "confirmed": 2,
+      "unique": 0,
+      "refuted": 0
+    },
+    "domain:distributed-systems": {
+      "found": 2,
+      "confirmed": 2,
+      "unique": 0,
+      "refuted": 0
+    },
+    "domain:auth": {
+      "found": 0,
+      "confirmed": 0,
+      "unique": 0,
+      "refuted": 0
+    },
+    "domain:durable-workflows": {
+      "found": 2,
+      "confirmed": 2,
+      "unique": 0,
+      "refuted": 0
+    }
+  },
+  "judgeCompletionPct": 100,
+  "lowCoverage": false,
+  "panelCappedTag": "",
+  "emptyLateRound": false,
+  "convergenceEligible": false
+}

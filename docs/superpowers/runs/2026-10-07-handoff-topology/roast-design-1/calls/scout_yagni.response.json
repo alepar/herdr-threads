@@ -1,0 +1,15 @@
+{
+  "hash": "137cde00df3f525d1b5e6e7a31d67ddf430c48766177ec17cae213cb71f5bab1",
+  "result": {
+    "findings": [
+      {
+        "claim": "The single mandatory seam task couples independently implementable native transport and canonical schema work to the external actor-routing integration, so unavailable peer actor source can stall work that does not consume it.",
+        "location": "artifact.md: Follow-on and implementation ownership; tree-settled.json tasks ht-qhz.1, ht-qhz.3 and ht-qhz.2.1",
+        "category": "yagni",
+        "external": false,
+        "kind": "GAP",
+        "evidence": "The root requires that \u201conly actual blocking shared boundaries gate their integration leaf, no global HOLD.\u201d Yet ht-qhz.1 must land compilable protocol/CLI/journal dispatch wiring, consumes the \u201cpeer actor-route/classify_original_actor seam,\u201d and requires original actor classification before new journal retry. Both ht-qhz.3 (typed native socket creation) and ht-qhz.2.1 (schema and canonical identity persistence) depend on completion of that entire task even though their consumed boundary is the topology data contract, not actor-route integration. The artifact provides no independently completable contract-only prerequisite or deferred actor-wiring subtask. Splitting the pure topology type boundary from actor-dependent dispatch would retain the declared interfaces without making that external integration a gate for these unrelated deliverables."
+      }
+    ]
+  }
+}

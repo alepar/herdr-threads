@@ -23,12 +23,18 @@ mod channel_archival;
 mod contracts;
 #[path = "store/handoff_fences.rs"]
 mod handoff_fences;
+#[path = "handoff_topology_authority.rs"]
+mod handoff_topology_authority;
+#[path = "handoff_topology_cli.rs"]
+mod handoff_topology_cli;
 #[path = "host_adapter.rs"]
 mod host_adapter;
 #[path = "cli/inbox_continuation_context.rs"]
 mod inbox_continuation_context;
 #[path = "installer_integrations.rs"]
 mod installer_integrations;
+#[path = "store/lazy26_prerequisite.rs"]
+mod lazy26_prerequisite;
 #[path = "protocol/lazy_delivery.rs"]
 mod lazy_delivery;
 #[path = "cli/lazy_recovery_context.rs"]
@@ -45,6 +51,8 @@ mod local_endpoint;
 mod read_picker_pty;
 #[path = "setup_cli.rs"]
 mod setup_cli;
+#[path = "store/topology_handoff.rs"]
+mod topology_handoff;
 #[path = "view.rs"]
 mod view;
 

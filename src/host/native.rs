@@ -122,6 +122,137 @@ pub enum PromptOutcome {
     Rejected(ApiError),
 }
 
+impl ports::BootstrapObserver for NativeCli {
+    fn observe_bootstrap_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<ports::BootstrapPaneObservation, ApiError> {
+        self.check_context(context)?;
+        let epoch = self.epoch();
+        let started = self.clock.monotonic_now();
+        let (pane, witness) = self.pane_witnessed(target.as_str(), &context.budget)?;
+        self.check_epoch(epoch)?;
+        let witness = witness.ok_or_else(|| {
+            error(
+                ErrorCode::StaleHostObservation,
+                "bootstrap pane lacks a qualified transport witness",
+            )
+        })?;
+        let incarnation = ServerIncarnation::from_witness(&witness)?;
+        self.check_boot(context, Some(&incarnation))?;
+        let workspace = HostTargetId::parse(pane.workspace_id.clone()).map_err(|_| {
+            error(
+                ErrorCode::StaleHostObservation,
+                "invalid same-response workspace",
+            )
+        })?;
+        let tab = HostTargetId::parse(pane.tab_id.clone())
+            .map_err(|_| error(ErrorCode::StaleHostObservation, "invalid same-response tab"))?;
+        let ui = status_ui(&pane, self.registry);
+        let mut observation = self.observation(
+            pane,
+            epoch,
+            started,
+            Some(&incarnation),
+            ObservationProvenance::FreshCurrentTarget,
+            EvidenceKind::NativeCurrentTarget,
+            self.next_sequence(),
+        );
+        observation.ui = ui;
+        ports::BootstrapPaneObservation::try_new(observation, workspace, tab, witness)
+            .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))
+    }
+}
+
+impl ports::CreateTabPort for NativeCli {
+    fn create_tab(
+        &self,
+        request: &ports::CreateTabRequest,
+        context: &HostCallContext,
+    ) -> ports::CreateTabOutcome {
+        use ports::CreateTabOutcome::{Created, NotSubmitted, OutcomeUnknown};
+        if !self.socket.is_absolute()
+            || self.socket != request.expected_witness.endpoint
+            || !crate::protocol::handoff::frozen_absolute_path(&request.cwd)
+            || request.cwd.to_str().is_none()
+            || request.label.trim().is_empty()
+            || request.focus
+            || !request.env.is_empty()
+        {
+            return NotSubmitted(error(
+                ErrorCode::InvalidRequest,
+                "invalid frozen tab creation request",
+            ));
+        }
+        let incarnation = match ServerIncarnation::from_witness(&request.expected_witness) {
+            Ok(value) => value,
+            Err(error) => return NotSubmitted(error),
+        };
+        if context
+            .expected_boot
+            .as_ref()
+            .is_some_and(|boot| boot != &incarnation.boot)
+            || context
+                .expected_epoch
+                .is_some_and(|epoch| epoch != self.epoch())
+        {
+            return NotSubmitted(error(
+                ErrorCode::StaleHostObservation,
+                "tab creation host fence changed",
+            ));
+        }
+        let response = match super::transport::create_tab(
+            &self.socket,
+            request,
+            self.clock.as_ref(),
+            &context.budget,
+            Duration::from_secs(30),
+            &|release| self.record_release(release),
+        ) {
+            Ok(response) => response,
+            Err(outcome) => return outcome,
+        };
+        let decode = || -> Option<ports::CreatedTab> {
+            let value: serde_json::Value = serde_json::from_str(&response.body).ok()?;
+            let result = value.get("result")?;
+            if value.get("id")?.as_str()? != request.correlation.as_str()
+                || result.get("type")?.as_str()? != "tab_created"
+            {
+                return None;
+            }
+            let tab = result.get("tab")?;
+            let pane = result.get("root_pane")?;
+            if tab.get("workspace_id")?.as_str()? != request.workspace.as_str()
+                || pane.get("workspace_id")?.as_str()? != request.workspace.as_str()
+                || tab.get("tab_id")? != pane.get("tab_id")?
+            {
+                return None;
+            }
+            let created = ports::CreatedTab {
+                correlation: request.correlation.clone(),
+                workspace: request.workspace.clone(),
+                tab: HostTargetId::parse(tab.get("tab_id")?.as_str()?).ok()?,
+                root_pane: HostTargetId::parse(pane.get("pane_id")?.as_str()?).ok()?,
+                terminal: TerminalId::parse(pane.get("terminal_id")?.as_str()?).ok()?,
+                host_incarnation: ServerIncarnation::from_witness(&response.witness)
+                    .ok()?
+                    .boot,
+                witness: response.witness.clone(),
+            };
+            created.validate().ok()?;
+            Some(created)
+        };
+        match decode() {
+            Some(created) => Created(Box::new(created)),
+            None => OutcomeUnknown(error(
+                ErrorCode::StaleHostObservation,
+                "missing or incoherent correlated tab creation evidence",
+            )),
+        }
+    }
+}
+
 impl NativeCli {
     /// Herdr's guarded start (`agent.start`): Herdr itself checks that the
     /// pane is at its interactive shell prompt before it starts the agent, and
@@ -5869,4 +6000,5 @@ pub(crate) mod tests {
             "advisory failure must not invalidate continuity"
         );
     }
+    include!("../../tests/host/bootstrap_recovery.rs");
 }

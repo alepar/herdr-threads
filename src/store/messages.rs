@@ -106,6 +106,67 @@ pub fn prepare_send_step(
     budget: &CallBudget,
     admission: DurableWorkAdmission,
 ) -> Result<SendPreparationProgress, ApiError> {
+    prepare_send_step_impl(context, conn, request, limits, budget, admission, None)
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_delivery_send_step(
+    context: &StoreContext,
+    conn: &mut Connection,
+    request: &SendMessage,
+    limits: MessageLimits,
+    budget: &CallBudget,
+    admission: DurableWorkAdmission,
+    delivery: &crate::protocol::handoff::DeliveryMutation,
+) -> Result<SendPreparationProgress, ApiError> {
+    let requirement =
+        crate::protocol::authority::HandoffRequirement::Delivery(Box::new(delivery.clone()));
+    prepare_send_step_impl(
+        context,
+        conn,
+        request,
+        limits,
+        budget,
+        admission,
+        Some(&requirement),
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_bootstrap_send_step(
+    context: &StoreContext,
+    conn: &mut Connection,
+    request: &SendMessage,
+    limits: MessageLimits,
+    budget: &CallBudget,
+    admission: DurableWorkAdmission,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+) -> Result<SendPreparationProgress, ApiError> {
+    let requirement = crate::protocol::authority::HandoffRequirement::BootstrapChild {
+        namespace: namespace.clone(),
+        command: Box::new(crate::protocol::commands::PermitMutation::SendMessage(
+            request.clone(),
+        )),
+    };
+    prepare_send_step_impl(
+        context,
+        conn,
+        request,
+        limits,
+        budget,
+        admission,
+        Some(&requirement),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_send_step_impl(
+    context: &StoreContext,
+    conn: &mut Connection,
+    request: &SendMessage,
+    limits: MessageLimits,
+    budget: &CallBudget,
+    admission: DurableWorkAdmission,
+    delivery: Option<&crate::protocol::authority::HandoffRequirement>,
+) -> Result<SendPreparationProgress, ApiError> {
     validate_delivery_options(request)?;
     require_live_budget(context, budget)?;
     let max_units = admission.max_units;
@@ -122,6 +183,16 @@ pub fn prepare_send_step(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(store_error)?;
+    if let Some(delivery) = delivery {
+        super::handoff::validate_handoff_requirement(&tx, delivery, true)?;
+    } else {
+        super::topology_handoff::guard_unscoped_child_phase(
+            &tx,
+            &request.claim.instance,
+            &scope,
+            request.operation.as_str(),
+        )?;
+    }
     let prior: Option<(Vec<u8>, String)> = tx
         .query_row(
             "SELECT digest,result_json FROM operations WHERE actor_scope=?1 AND operation_key=?2",
@@ -141,6 +212,15 @@ pub fn prepare_send_step(
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "stored send result invalid"))?;
         tx.rollback().map_err(store_error)?;
         return Ok(SendPreparationProgress::Committed(result));
+    }
+    if let Some(delivery) = delivery {
+        if matches!(
+            delivery,
+            crate::protocol::authority::HandoffRequirement::Delivery(_)
+        ) {
+            super::seats::cooperative_mapping(&tx, &request.claim, None)?;
+        }
+        super::handoff::validate_handoff_requirement(&tx, delivery, false)?;
     }
     if request.body.is_empty() || request.body.len() > limits.body_bytes.min(MAX_BODY_BYTES) {
         return Err(api_error(

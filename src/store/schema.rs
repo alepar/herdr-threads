@@ -63,7 +63,8 @@ const V24: &str = include_str!("../../migrations/0024_harness_contract_diagnosti
 const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sql");
 const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
 const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
-pub(crate) const LATEST_VERSION: i64 = 27;
+const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
+pub(crate) const LATEST_VERSION: i64 = 28;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -164,6 +165,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V25))
                 .and_then(|_| conn.execute_batch(V26))
                 .and_then(|_| conn.execute_batch(V27))
+                .and_then(|_| conn.execute_batch(V28))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -404,7 +406,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=27 => verify_existing(conn),
+        18..=28 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -553,7 +555,26 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_existing_v23(conn)?;
-    verify_existing_v27(conn)
+    verify_existing_v27(conn)?;
+    if (1..=27).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V28)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v28(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 28)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_existing_v28(conn)
 }
 
 fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
@@ -3800,6 +3821,7 @@ pub(crate) fn execute_accountable_transaction(
     cooperative: (
         crate::protocol::authority::CallerClaim,
         crate::protocol::time::CallBudget,
+        Option<crate::protocol::authority::HandoffRequirement>,
     ),
     actor_scope: &str,
     operation_key: &str,
@@ -3807,7 +3829,7 @@ pub(crate) fn execute_accountable_transaction(
     validate: impl FnOnce(&Transaction<'_>) -> Result<(), ApiError>,
     apply: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<CommandResult, ApiError>,
 ) -> Result<CommandResult, ApiError> {
-    let (claim, issuance) = cooperative;
+    let (claim, issuance, delivery) = cooperative;
     execute_budgeted_idempotent_transaction_with_constraints(
         context,
         conn,
@@ -3816,7 +3838,20 @@ pub(crate) fn execute_accountable_transaction(
         actor_scope,
         operation_key,
         digest,
-        |tx| super::seats::cooperative_instance(tx, &claim.instance, &claim),
+        |tx| {
+            super::seats::cooperative_instance(tx, &claim.instance, &claim)?;
+            if let Some(delivery) = &delivery {
+                super::handoff::validate_handoff_requirement(tx, delivery, true)?;
+            } else {
+                super::topology_handoff::guard_unscoped_child_phase(
+                    tx,
+                    &claim.instance,
+                    actor_scope,
+                    operation_key,
+                )?;
+            }
+            Ok(())
+        },
         validate,
         apply,
         |_, result| Ok(result),
@@ -3845,6 +3880,43 @@ fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
                 format!("missing or altered harness diagnostic {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_existing_v28(conn: &Connection) -> Result<(), ApiError> {
+    let ddl = V28
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Each top-level CREATE begins on its own line; trigger-body semicolons
+    // remain part of the complete SQL. Preserve constraints, FK clauses,
+    // predicates and quoted literals exactly, as in the archival23 audit.
+    let normalize = |sql: &str| sql.trim().trim_end_matches(';').trim().to_owned();
+    for object in ddl.trim().split("\nCREATE ") {
+        let sql = if object.starts_with("CREATE ") {
+            object.to_owned()
+        } else {
+            format!("CREATE {object}")
+        };
+        let mut words = sql.split_whitespace().skip(1);
+        let kind = words.next().unwrap_or_default().to_ascii_lowercase();
+        let name = words.next().unwrap_or_default();
+        let installed: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if installed.as_deref().map(normalize) != Some(normalize(&sql)) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered bootstrap topology {kind} {name}"),
             ));
         }
     }

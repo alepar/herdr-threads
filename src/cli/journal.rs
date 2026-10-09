@@ -66,21 +66,18 @@ pub fn classify_original_actor(
         return Err(invalid("intent authority scope mismatch"));
     }
     if let Some(claim) = semantic.frozen_claim() {
-        return Ok(
-            if claim.harness == crate::protocol::authority::Harness::Human {
-                OriginalActor::HumanOrOperator
-            } else {
-                OriginalActor::Agent
-            },
-        );
+        return classify_original_claim(scope, claim);
     }
     match (scope, semantic) {
         (IntentScope::Operator { .. }, semantic) if semantic.is_operator() => {
             Ok(OriginalActor::HumanOrOperator)
         }
-        (IntentScope::Native { .. }, SemanticMutation::Handoff(_)) => {
-            Err(invalid("handoff needs frozen caller"))
-        }
+        (
+            IntentScope::Native { .. },
+            SemanticMutation::Handoff(_)
+            | SemanticMutation::HandoffBootstrap(_)
+            | SemanticMutation::HandoffDelivery(_),
+        ) => Err(invalid("handoff needs frozen caller")),
         (IntentScope::Native { .. }, _)
         | (IntentScope::Continuity { .. }, SemanticMutation::ContinuityCheckIn { .. })
         | (IntentScope::ServiceAllocation { .. }, SemanticMutation::ResolveSeat { .. }) => {
@@ -88,6 +85,24 @@ pub fn classify_original_actor(
         }
         _ => Err(invalid("unsupported original intent actor")),
     }
+}
+
+/// Scope-checked frozen caller origin, also used before fresh preparation reads.
+pub(crate) fn classify_original_claim(
+    scope: &IntentScope,
+    claim: &CallerClaim,
+) -> io::Result<OriginalActor> {
+    if !matches!(scope, IntentScope::Cooperative { instance, seat } if instance == &claim.instance && seat == &claim.seat)
+    {
+        return Err(invalid("intent authority scope mismatch"));
+    }
+    Ok(
+        if claim.harness == crate::protocol::authority::Harness::Human {
+            OriginalActor::HumanOrOperator
+        } else {
+            OriginalActor::Agent
+        },
+    )
 }
 
 /// Native evidence is refreshed; cooperative claims are frozen as durable payload.
@@ -210,7 +225,56 @@ pub enum SemanticMutation {
         seat: SeatId,
         deadline_millis: Option<u64>,
     },
+    HandoffBootstrap(Box<BootstrapPlan>),
+    HandoffDelivery(Box<DeliveryPlan>),
+    /// Separate local-account decision; nested original agent claim is a reference.
+    OperatorRecoverBootstrap(Box<super::topology_recover::RecoveryPlan>),
 }
+
+/// Independent versioned immutable plans; old HandoffPlan stays byte-for-byte.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootstrapPlan {
+    pub version: u32,
+    pub payload: crate::protocol::handoff::BootstrapPayload,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliveryPlan {
+    pub version: u32,
+    pub payload: crate::protocol::handoff::HandoffPayload,
+    pub recipient: SeatId,
+}
+impl BootstrapPlan {
+    pub fn validate(&self) -> io::Result<()> {
+        if self.version != 1 {
+            return Err(invalid("unsupported bootstrap plan version"));
+        }
+        self.payload.validate().map_err(invalid)
+    }
+}
+impl DeliveryPlan {
+    pub fn validate(&self) -> io::Result<()> {
+        if self.version != 1 {
+            return Err(invalid("unsupported delivery plan version"));
+        }
+        self.payload.validate().map_err(invalid)
+    }
+}
+impl SemanticMutation {
+    pub fn namespace(&self) -> Option<&crate::protocol::handoff::HandoffNamespace> {
+        match self {
+            Self::HandoffBootstrap(p) => Some(&p.payload.handoff.namespace),
+            Self::HandoffDelivery(p) => Some(&p.payload.namespace),
+            Self::OperatorRecoverBootstrap(p) => {
+                Some(&p.request.identity.payload.handoff.namespace)
+            }
+            Self::Frozen { mutation, .. } => mutation.namespace(),
+            _ => None,
+        }
+    }
+}
+
 impl SemanticMutation {
     pub fn freeze(mutation: Self, claim: CallerClaim) -> io::Result<Self> {
         if mutation.is_operator()
@@ -260,6 +324,9 @@ impl SemanticMutation {
         }
         match self {
             Self::Handoff(plan) => plan.validate(),
+            Self::HandoffBootstrap(plan) => plan.validate(),
+            Self::HandoffDelivery(plan) => plan.validate(),
+            Self::OperatorRecoverBootstrap(plan) => plan.validate(),
             Self::Frozen { mutation, .. } => {
                 if mutation.is_operator()
                     || matches!(
@@ -273,7 +340,14 @@ impl SemanticMutation {
                 {
                     return Err(invalid("invalid nested cooperative mutation"));
                 }
-                mutation.validate()
+                mutation.validate()?;
+                if mutation
+                    .namespace()
+                    .is_some_and(|ns| ns.instance != self.frozen_claim().unwrap().instance)
+                {
+                    return Err(invalid("frozen namespace differs from original claim"));
+                }
+                Ok(())
             }
             Self::CooperativeCheckIn {
                 claim,
@@ -384,11 +458,15 @@ impl SemanticMutation {
                 | Self::OperatorRetire { .. }
                 | Self::OperatorReplace { .. }
                 | Self::OperatorOrphanInvite { .. }
+                | Self::OperatorRecoverBootstrap(_)
         )
     }
     pub fn kind(&self) -> IntentKind {
         match self {
             Self::Handoff(_) => IntentKind::Handoff,
+            Self::HandoffBootstrap(_) => IntentKind::HandoffBootstrap,
+            Self::HandoffDelivery(_) => IntentKind::HandoffDelivery,
+            Self::OperatorRecoverBootstrap(_) => IntentKind::OperatorRecoverBootstrap,
             Self::Frozen { mutation, .. } => mutation.kind(),
             Self::CooperativeCheckIn { .. } => IntentKind::CheckIn,
             Self::ResolveSeat { .. } => IntentKind::ResolveSeat,
@@ -418,6 +496,8 @@ impl SemanticMutation {
     pub fn thread(&self) -> Option<&ThreadId> {
         match self {
             Self::Handoff(plan) => plan.request.thread.as_ref(),
+            Self::HandoffBootstrap(plan) => plan.payload.handoff.channel.thread(),
+            Self::HandoffDelivery(plan) => plan.payload.channel.thread(),
             Self::Frozen { mutation, .. } => mutation.thread(),
             Self::Invite { thread, .. }
             | Self::Join { thread }
@@ -446,6 +526,11 @@ impl SemanticMutation {
         };
         let command = match self {
             Self::Handoff(_) => return Err(invalid("handoff requires compound coordinator")),
+            Self::HandoffBootstrap(_)
+            | Self::HandoffDelivery(_)
+            | Self::OperatorRecoverBootstrap(_) => {
+                return Err(invalid("topology contract is inert"));
+            }
             Self::Frozen { claim, mutation } => {
                 return mutation.to_command(operation, Some(claim.clone()));
             }
@@ -671,6 +756,10 @@ pub struct PendingIntent {
     pub operation: OperationId,
 }
 pub type PendingPage = Page<LocalIntent>;
+// Compact published semantic and header each fit the canonical identity envelope;
+// fixed reference/digest/header fields have 4096 bytes of additional headroom.
+pub(crate) const MAX_BOOTSTRAP_ORIGIN_BYTES: usize =
+    2 * crate::store::topology_handoff::MAX_IDENTITY_BYTES + 4096;
 pub struct Journal {
     root: PathBuf,
 }
@@ -1253,8 +1342,129 @@ impl Journal {
             })?;
         Ok(reference)
     }
+    /// Read-only early gate probe. Legacy refs retain their existing daemon-first
+    /// error order; only validated additive kinds enter the inert boundary here.
+    pub(crate) fn new_handoff_retry(&self, recovery: &str) -> io::Result<Option<PendingIntent>> {
+        let Some(ordinal) = recovery
+            .strip_prefix("local:")
+            .and_then(|s| s.parse::<u64>().ok())
+        else {
+            return Ok(None);
+        };
+        if ordinal == 0 || recovery != format!("local:{ordinal}") {
+            return Ok(None);
+        }
+        for entry in fs::read_dir(&self.root)? {
+            let path = entry?.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("intent") {
+                continue;
+            }
+            let Some(header) = read_intent_header(&path) else {
+                continue;
+            };
+            if header.reference.ordinal == ordinal
+                && matches!(
+                    header.kind,
+                    IntentKind::HandoffBootstrap | IntentKind::HandoffDelivery
+                )
+            {
+                return self.load(&header.reference).map(Some);
+            }
+        }
+        Ok(None)
+    }
     pub fn load(&self, reference: &IntentRef) -> io::Result<PendingIntent> {
-        let mut reader = BufReader::new(File::open(self.path(reference))?);
+        Self::decode_reader(reference, BufReader::new(File::open(self.path(reference))?))
+    }
+    /// Exact bounded original bytes for delivery-only terminal cleanup recovery.
+    pub(crate) fn snapshot_delivery_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
+        self.snapshot_origin(reference, IntentKind::HandoffDelivery, 65536, "delivery")
+    }
+    pub(crate) fn decode_delivery_origin(
+        reference: &IntentRef,
+        bytes: &[u8],
+    ) -> io::Result<PendingIntent> {
+        Self::decode_origin(
+            reference,
+            bytes,
+            IntentKind::HandoffDelivery,
+            65536,
+            "delivery",
+        )
+    }
+    /// Typed bounded bootstrap original; exact historical bytes are retained.
+    pub(crate) fn snapshot_bootstrap_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
+        self.snapshot_origin(
+            reference,
+            IntentKind::HandoffBootstrap,
+            MAX_BOOTSTRAP_ORIGIN_BYTES,
+            "bootstrap",
+        )
+    }
+    pub(crate) fn decode_bootstrap_origin(
+        reference: &IntentRef,
+        bytes: &[u8],
+    ) -> io::Result<PendingIntent> {
+        Self::decode_origin(
+            reference,
+            bytes,
+            IntentKind::HandoffBootstrap,
+            MAX_BOOTSTRAP_ORIGIN_BYTES,
+            "bootstrap",
+        )
+    }
+    fn snapshot_origin(
+        &self,
+        reference: &IntentRef,
+        kind: IntentKind,
+        limit: usize,
+        label: &str,
+    ) -> io::Result<Vec<u8>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(self.path(reference))?;
+        if !file.metadata()?.is_file() || file.metadata()?.len() > limit as u64 {
+            return Err(invalid(format!("unsafe or oversized {label} origin")));
+        }
+        let mut bytes = Vec::new();
+        file.take((limit + 1) as u64).read_to_end(&mut bytes)?;
+        Self::decode_origin(reference, &bytes, kind, limit, label)?;
+        Ok(bytes)
+    }
+    fn decode_origin(
+        reference: &IntentRef,
+        bytes: &[u8],
+        kind: IntentKind,
+        limit: usize,
+        label: &str,
+    ) -> io::Result<PendingIntent> {
+        if bytes.len() > limit
+            || reference.ordinal == 0
+            || Uuid::parse_str(reference.operation.as_str()).is_err()
+        {
+            return Err(invalid(format!("invalid retained {label} origin")));
+        }
+        let pending = Self::decode_reader(reference, BufReader::new(bytes))?;
+        if pending.header.kind != kind {
+            return Err(invalid(format!("retained origin is not {label}")));
+        }
+        let original = std::str::from_utf8(bytes).map_err(invalid)?;
+        let (header, body) = original
+            .split_once('\n')
+            .ok_or_else(|| invalid(format!("missing {label} origin header")))?;
+        if serde_json::from_str::<serde_json::Value>(header)?
+            != serde_json::to_value(&pending.header)?
+            || serde_json::from_str::<serde_json::Value>(body)?
+                != serde_json::to_value(&pending.semantic)?
+        {
+            return Err(invalid(format!(
+                "unexpected retained {label} origin fields"
+            )));
+        }
+        Ok(pending)
+    }
+    fn decode_reader(reference: &IntentRef, mut reader: impl BufRead) -> io::Result<PendingIntent> {
         let mut line = String::new();
         reader.read_line(&mut line)?;
         let header: IntentHeader = serde_json::from_str(&line)?;
@@ -1505,6 +1715,18 @@ impl Journal {
     }
 }
 fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
+    if let Some(namespace) = semantic.namespace() {
+        let instance = match scope {
+            IntentScope::Cooperative { instance, .. }
+            | IntentScope::Native { instance, .. }
+            | IntentScope::Operator { instance, .. }
+            | IntentScope::ServiceAllocation { instance, .. }
+            | IntentScope::Continuity { instance, .. } => instance,
+        };
+        if namespace.instance != *instance {
+            return false;
+        }
+    }
     match (scope, semantic) {
         (IntentScope::Cooperative { instance, seat }, semantic) => semantic
             .frozen_claim()
@@ -1529,6 +1751,10 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
                         | SemanticMutation::CompleteInboxDelivery { .. }
                 )
         }
+        (
+            IntentScope::Operator { local_user_uid, .. },
+            SemanticMutation::OperatorRecoverBootstrap(plan),
+        ) => *local_user_uid == plan.operator_uid,
         (IntentScope::Operator { .. }, request) => request.is_operator(),
         _ => false,
     }
