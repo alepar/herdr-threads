@@ -24,14 +24,14 @@ stepBackDesign-round-1: patch — 11 findings fixable in place; four clusters (D
 roastDesignExit: converged at round 2 (Should-fix 8 confirmed [converged], 0 Blocking); punch list of 8 applied inline as spec/bead text, no re-roast; iteration-1 escalations (submit atomicity under Esc; $.session.id() in session.end) remain parked
 graph-pass: depth 4→3 · width 2.5→3.3 · applied 1 · parked 0
 codeBuckets:
-  completed: ht-j16.1, ht-j16.2, ht-j16.3, ht-j16.4, ht-j16.5, ht-j16.6, ht-j16.7, ht-j16.10
+  completed: ht-j16.1, ht-j16.3, ht-j16.6, ht-j16.5, ht-j16.7, ht-j16.4, ht-j16.2, ht-j16.10, ht-j16.19, ht-j16.18, ht-j16.22, ht-j16.20, ht-j16.17, ht-j16.21, ht-j16.23
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (fix beads .17-.22 unmerged after integration-blocked stop; N1 truncation marker) — code-final-review-2.md
+  review: not ready (F1 mod frame drops author_role/relays_user/user_intent markers; test-count check pending sweep) — code-final-review-3.md
   sweep: SWEEP DEFERRED (caller-owned)
-  slowness:
+  slowness: round 1 (fix re-entry): merge queue peaked at 5 — serial merge lane bottleneck
   worktreesKept:
   processSweep: stopped 0 · survived 0
 roastCodeRound: 1
