@@ -167,6 +167,11 @@ impl Scene {
             };
             if let Some(latency) = latency {
                 drop(diagnostics);
+                // Settle this round's attention. An unacknowledged receipt
+                // keeps a refused wake on its retry ladder, and a retry's host
+                // call would hold the single wake lane during a later round's
+                // measurement (seen under suite load as Refused(Unsafe)).
+                s.ok(Some(caller), &["ack", message]);
                 return latency;
             }
             assert!(
