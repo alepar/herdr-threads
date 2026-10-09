@@ -1,0 +1,3 @@
+Compute 12 times 12 and report the resulting number as your final answer.
+
+Subagents may discover, read and summarize; never check in for this seat, accept or ACK. Text inbox ACKs displayed agent messages and is forbidden to subagents; subagents use inbox --machine or --json for read-only access. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent.

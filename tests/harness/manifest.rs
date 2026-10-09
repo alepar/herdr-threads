@@ -1129,3 +1129,450 @@ fn daemon_start_refuses_an_invalid_settings_file() {
     assert!(!paths.descriptor_path.exists());
     assert!(!paths.database_path.exists());
 }
+
+#[test]
+fn exact_runtime_refresh_ignores_legacy_release_rows_and_remains_async_bounded() {
+    let identity =
+        crate::harness::runtime::RuntimeIdentity::stable_release("2.1.286", "native_transcript")
+            .unwrap();
+    let reason = FetchReason::UnseenRuntime {
+        identity,
+        domain: "native_payload".into(),
+        origin: crate::harness::evidence::EvidenceOrigin::NativePayload,
+        contract_id: "0123456789abcdef".into(),
+    };
+    assert_eq!(
+        should_fetch(
+            ManifestPolicy::Auto,
+            &reason,
+            "claude",
+            DAY_MS,
+            &CacheMeta::default(),
+            true
+        ),
+        Decision::Fetch,
+        "a legacy release row cannot satisfy an exact-domain lookup"
+    );
+    let dir = TestDir::new();
+    let fetcher = FakeFetcher::gated(vec![Err(FetchError::Failed("fixture blocked".into()))]);
+    let (service, _) = service(
+        &dir,
+        ManifestPolicy::Auto,
+        fetcher.clone(),
+        FakeClock::at(DAY_MS),
+    );
+    let start = Instant::now();
+    service.ensure_manifest("claude", reason.clone());
+    let took = start.elapsed();
+    service.ensure_manifest("claude", reason);
+    fetcher.release();
+    assert!(service.wait_idle(WAIT));
+    assert!(
+        took < Duration::from_millis(100),
+        "exact-domain refresh blocked request: {took:?}"
+    );
+    assert_eq!(
+        fetcher.calls().len(),
+        1,
+        "same bounded per-harness retry spacing"
+    );
+}
+
+#[test]
+fn exact_runtime_refresh_refuses_invalid_descriptor_before_scheduling() {
+    let mut identity =
+        crate::harness::runtime::RuntimeIdentity::stable_release("2.1.286", "native_transcript")
+            .unwrap();
+    identity.key = "release:9.9.9".into();
+    let reason = FetchReason::UnseenRuntime {
+        identity,
+        domain: "native_payload".into(),
+        origin: crate::harness::evidence::EvidenceOrigin::NativePayload,
+        contract_id: "0123456789abcdef".into(),
+    };
+    assert!(
+        matches!(
+            should_fetch(
+                ManifestPolicy::Auto,
+                &reason,
+                "claude",
+                DAY_MS,
+                &CacheMeta::default(),
+                false
+            ),
+            Decision::Skip(_)
+        ),
+        "invalid rich identity must never start fetch"
+    );
+}
+
+// Catches the old reader silently ignoring malformed rich collections.
+#[test]
+fn runtime_manifest_rejects_malformed_collections_instead_of_silently_ignoring_them() {
+    for (field, value) in [
+        ("runtime_contracts", json!([])),
+        ("runtime_rows", json!({})),
+        (
+            "runtime_rows",
+            json!([{"harness":"claude","verified":true}]),
+        ),
+    ] {
+        let mut document: Value = serde_json::from_slice(&doc(2, "0.2.2", json!([]))).unwrap();
+        document[field] = value;
+        assert!(
+            parse(document.to_string().as_bytes()).is_err(),
+            "accepted {field}: {document}"
+        );
+    }
+}
+
+fn runtime_document() -> Value {
+    serde_json::from_str(include_str!("testdata/manifest/runtime-schema2.json")).unwrap()
+}
+// Each catches an invalid rich row that the legacy permissive reader currently ignores.
+#[test]
+fn runtime_manifest_refuses_identity_hash_mismatch() {
+    let mut d = runtime_document();
+    d["runtime_rows"][0]["identity"]["dirty"] = true.into();
+    assert!(parse(d.to_string().as_bytes()).is_err());
+}
+#[test]
+fn runtime_manifest_refuses_capture_only_verified_rows() {
+    let mut d = runtime_document();
+    d["runtime_rows"][0]["evidence_stage"] = "source_captured".into();
+    assert!(parse(d.to_string().as_bytes()).is_err());
+}
+#[test]
+fn runtime_manifest_refuses_incomplete_verified_rows() {
+    let mut d = runtime_document();
+    d["runtime_rows"][0]["successful_milestones"] = json!(["tool"]);
+    assert!(parse(d.to_string().as_bytes()).is_err());
+}
+#[test]
+fn runtime_manifest_refuses_empty_required_sets() {
+    let mut d = runtime_document();
+    d["runtime_contracts"]["claude"][0]["required_milestones"] = json!([]);
+    d["runtime_rows"][0]["required_milestones"] = json!([]);
+    assert!(parse(d.to_string().as_bytes()).is_err());
+}
+
+// Catches missing runtime indexing and promotes neither dev source to semver nor no_model to live.
+#[test]
+fn runtime_manifest_exact_domain_stage_lookup_and_legacy_reader_are_isolated() {
+    use crate::harness::{adapter::HarnessAdapter, manifest::RuntimeStage};
+    let document = runtime_document();
+    let manifest = parse(document.to_string().as_bytes()).unwrap();
+    let mut legacy = document.clone();
+    legacy.as_object_mut().unwrap().remove("runtime_contracts");
+    legacy.as_object_mut().unwrap().remove("runtime_rows");
+    let old = parse(legacy.to_string().as_bytes()).unwrap();
+    assert_eq!(manifest.rows, old.rows);
+    assert_eq!(manifest.contracts, old.contracts);
+    assert_eq!(
+        manifest.status_row("claude", "2.1.288", &manifest.contracts["claude"]),
+        old.status_row("claude", "2.1.288", &old.contracts["claude"])
+    );
+    let identity = serde_json::from_value(document["runtime_rows"][0]["identity"].clone()).unwrap();
+    let descriptor = crate::harness::claude::ClaudeAdapter.contracts()[0];
+    let row = manifest
+        .runtime_row("claude", &identity, &descriptor)
+        .expect("exact no-model row");
+    assert_eq!(row.evidence_stage, RuntimeStage::NoModel);
+    assert_eq!(row.source, crate::harness::manifest::RuntimeSource::Manual);
+    assert_eq!(row.last_seen_at, 1791064800000);
+    assert_eq!(identity.release(), None);
+    assert!(!manifest.has_row("claude", "0.21.5"));
+    assert_eq!(manifest.runtime_row("codex", &identity, &descriptor), None);
+    let mut wrong = descriptor;
+    wrong.domain_id = "bridge_envelope";
+    assert_eq!(manifest.runtime_row("claude", &identity, &wrong), None);
+    wrong = descriptor;
+    wrong.origin = crate::harness::evidence::EvidenceOrigin::NativeShapeObservation;
+    assert_eq!(manifest.runtime_row("claude", &identity, &wrong), None);
+    let other = crate::harness::runtime::RuntimeIdentity::stable_release("0.21.5", "git").unwrap();
+    assert_eq!(manifest.runtime_row("claude", &other, &descriptor), None);
+}
+
+fn cached_runtime_service(dir: &TestDir, fetcher: Arc<dyn Fetcher>) -> ManifestService {
+    std::fs::create_dir_all(dir.cache()).unwrap();
+    let mut document = runtime_document();
+    document.as_object_mut().unwrap().remove("generated_at");
+    std::fs::write(
+        dir.cache().join("harness-versions.json"),
+        document.to_string(),
+    )
+    .unwrap();
+    service(dir, ManifestPolicy::Auto, fetcher, FakeClock::at(DAY_MS)).0
+}
+fn runtime_reason() -> FetchReason {
+    FetchReason::UnseenRuntime {
+        identity: serde_json::from_value(runtime_document()["runtime_rows"][0]["identity"].clone())
+            .unwrap(),
+        domain: "native_payload".into(),
+        origin: crate::harness::evidence::EvidenceOrigin::NativePayload,
+        contract_id: "c4c4b249584b3578".into(),
+    }
+}
+// Catches an empty rich source being used in place of the actual cached exact domain.
+#[test]
+fn runtime_manifest_service_supplies_cached_exact_domain_to_recorder() {
+    use crate::daemon::harness_evidence::RichManifestSource;
+    let dir = TestDir::new();
+    let fetcher = FakeFetcher::new(vec![]);
+    let service = cached_runtime_service(&dir, fetcher);
+    let FetchReason::UnseenRuntime {
+        identity,
+        domain,
+        origin,
+        contract_id,
+    } = runtime_reason()
+    else {
+        unreachable!()
+    };
+    assert!(service.contains("claude", &identity, &domain, origin, &contract_id));
+}
+// Catches refresh of an exact cached rich row despite its validated identity/domain/contract.
+#[test]
+fn runtime_manifest_refresh_skips_exact_cached_row() {
+    let dir = TestDir::new();
+    let fetcher = FakeFetcher::new(vec![Err(FetchError::Offline)]);
+    let service = cached_runtime_service(&dir, fetcher.clone());
+    service.ensure_manifest("claude", runtime_reason());
+    assert!(service.wait_idle(WAIT));
+    assert!(fetcher.calls().is_empty());
+}
+
+#[test]
+fn runtime_manifest_refuses_duplicate_json_row_fields() {
+    let text = runtime_document().to_string().replace(
+        "\"status\":\"verified\"",
+        "\"status\":\"known_broken\",\"status\":\"verified\"",
+    );
+    assert!(parse(text.as_bytes()).is_err());
+}
+#[test]
+fn runtime_manifest_refuses_duplicate_json_descriptor_keys() {
+    let d = runtime_document();
+    let domains = d["runtime_contracts"]["claude"].to_string();
+    let text = d.to_string().replace(
+        &format!("\"runtime_contracts\":{{\"claude\":{domains}}}"),
+        &format!("\"runtime_contracts\":{{\"claude\":{domains},\"claude\":{domains}}}"),
+    );
+    assert!(parse(text.as_bytes()).is_err());
+}
+
+// Supplemental strict-input matrix: malformed rows must not enter a usable snapshot.
+#[test]
+fn runtime_manifest_strict_metadata_and_domain_matrix() {
+    for (field, value) in [
+        ("status", json!("working")),
+        ("source", json!("native")),
+        ("evidence_stage", json!("schema")),
+        ("origin", json!("observer")),
+        ("required_milestones", json!(["tool"])),
+        (
+            "successful_milestones",
+            json!(["lifecycle", "tool", "tool"]),
+        ),
+        (
+            "successful_milestones",
+            json!(["lifecycle", "tool", "undeclared"]),
+        ),
+        ("contract_id", json!("0123456789abcdef")),
+        ("domain", json!("bridge_envelope")),
+        ("last_seen_at", json!(-1)),
+        ("last_seen_at", json!(u64::MAX)),
+        ("issue_url", json!("bad\nvalue")),
+        ("verified", json!(true)),
+    ] {
+        let mut d = runtime_document();
+        d["runtime_rows"][0][field] = value;
+        assert!(
+            parse(d.to_string().as_bytes()).is_err(),
+            "accepted {field}: {d}"
+        );
+    }
+    for field in [
+        "broken_event",
+        "broken_field",
+        "supported_since",
+        "issue_url",
+    ] {
+        let mut d = runtime_document();
+        d["runtime_rows"][0].as_object_mut().unwrap().remove(field);
+        assert!(
+            parse(d.to_string().as_bytes()).is_err(),
+            "missing required nullable {field}"
+        );
+    }
+    let mut d = runtime_document();
+    let row = d["runtime_rows"][0].clone();
+    d["runtime_rows"].as_array_mut().unwrap().push(row);
+    assert!(parse(d.to_string().as_bytes()).is_err());
+    let mut d = runtime_document();
+    let domain = d["runtime_contracts"]["claude"][0].clone();
+    d["runtime_contracts"]["claude"]
+        .as_array_mut()
+        .unwrap()
+        .push(domain);
+    assert!(parse(d.to_string().as_bytes()).is_err());
+    let mut d = runtime_document();
+    d["runtime_contracts"]["claude"][0]["events"][0]["raw_body"] = json!("excluded");
+    assert!(parse(d.to_string().as_bytes()).is_err());
+}
+
+#[test]
+fn runtime_manifest_stale_projection_unknown_harness_and_source_are_unavailable() {
+    use crate::harness::{adapter::HarnessAdapter, runtime::RuntimeIdentity};
+    let descriptor = crate::harness::claude::ClaudeAdapter.contracts()[0];
+    let d = runtime_document();
+    let identity: RuntimeIdentity =
+        serde_json::from_value(d["runtime_rows"][0]["identity"].clone()).unwrap();
+    for changed in ["id", "always_send", "milestone", "order"] {
+        let mut d = d.clone();
+        match changed {
+            "id" => {
+                d["runtime_contracts"]["claude"][0]["id"] = json!("0123456789abcdef");
+                d["runtime_rows"][0]["contract_id"] = json!("0123456789abcdef");
+            }
+            "always_send" => {
+                d["runtime_contracts"]["claude"][0]["events"][0]["always_send"] = json!(false)
+            }
+            "milestone" => {
+                d["runtime_contracts"]["claude"][0]["events"][0]["milestone"] = json!("start");
+                d["runtime_contracts"]["claude"][0]["required_milestones"] =
+                    json!(["start", "tool"]);
+                d["runtime_rows"][0]["required_milestones"] = json!(["start", "tool"]);
+                d["runtime_rows"][0]["successful_milestones"] = json!(["start", "tool"]);
+            }
+            _ => d["runtime_contracts"]["claude"][0]["events"]
+                .as_array_mut()
+                .unwrap()
+                .reverse(),
+        }
+        let m = parse(d.to_string().as_bytes()).unwrap();
+        assert_eq!(m.runtime_rows().len(), 1, "retain historical metadata");
+        assert_eq!(
+            m.runtime_row("claude", &identity, &descriptor),
+            None,
+            "stale {changed}"
+        );
+    }
+    let mut unknown = d.clone();
+    let domains = unknown["runtime_contracts"]
+        .as_object_mut()
+        .unwrap()
+        .remove("claude")
+        .unwrap();
+    unknown["runtime_contracts"]["unknown"] = domains;
+    unknown["runtime_rows"][0]["harness"] = json!("unknown");
+    let m = parse(unknown.to_string().as_bytes()).unwrap();
+    assert_eq!(m.runtime_rows().len(), 1);
+    assert_eq!(m.runtime_row("unknown", &identity, &descriptor), None);
+    // Stable releases share a release key, but differing descriptor source remains exact.
+    let a = RuntimeIdentity::stable_release("2.1.286", "native_transcript").unwrap();
+    let b = RuntimeIdentity::stable_release("2.1.286", "installed_probe").unwrap();
+    let mut stable = d;
+    stable["runtime_rows"][0]["identity"] = serde_json::to_value(&a).unwrap();
+    let m = parse(stable.to_string().as_bytes()).unwrap();
+    assert!(m.runtime_row("claude", &a, &descriptor).is_some());
+    assert_eq!(m.runtime_row("claude", &b, &descriptor), None);
+}
+
+#[test]
+fn runtime_manifest_known_broken_requires_event_field_and_preserves_stage() {
+    use crate::harness::adapter::HarnessAdapter;
+    let mut d = runtime_document();
+    d["runtime_rows"][0]["status"] = json!("known_broken");
+    d["runtime_rows"][0]["successful_milestones"] = json!([]);
+    assert!(parse(d.to_string().as_bytes()).is_err());
+    d["runtime_rows"][0]["broken_event"] = json!("PreToolUse");
+    d["runtime_rows"][0]["broken_field"] = json!("session_id");
+    let identity = serde_json::from_value(d["runtime_rows"][0]["identity"].clone()).unwrap();
+    let descriptor = crate::harness::claude::ClaudeAdapter.contracts()[0];
+    let m = parse(d.to_string().as_bytes()).unwrap();
+    let row = m.runtime_row("claude", &identity, &descriptor).unwrap();
+    assert_eq!(
+        row.status,
+        crate::harness::manifest::RuntimeStatus::KnownBroken
+    );
+    assert_eq!(
+        row.evidence_stage,
+        crate::harness::manifest::RuntimeStage::NoModel
+    );
+    d["runtime_rows"][0]["broken_field"] = json!("undeclared");
+    let m = parse(d.to_string().as_bytes()).unwrap();
+    assert_eq!(m.runtime_row("claude", &identity, &descriptor), None);
+    d["runtime_rows"][0]["broken_event"] = json!("UnknownEvent");
+    assert!(parse(d.to_string().as_bytes()).is_err());
+}
+
+#[test]
+fn runtime_manifest_malformed_refresh_retains_usable_cache_and_byte_bound() {
+    let mut good = runtime_document();
+    good.as_object_mut().unwrap().remove("generated_at");
+    let bytes = good.to_string().into_bytes();
+    let mut malformed = good.clone();
+    malformed["runtime_rows"][0]["evidence_stage"] = json!("source_captured");
+    let dir = TestDir::new();
+    let clock = FakeClock::at(DAY_MS);
+    let fetcher = FakeFetcher::new(vec![
+        body(bytes.clone(), Some("good")),
+        body(malformed.to_string().into_bytes(), Some("bad")),
+    ]);
+    let (service, lines) = service(&dir, ManifestPolicy::Auto, fetcher.clone(), clock.clone());
+    service.ensure_manifest("claude", FetchReason::FreshViolation);
+    assert!(service.wait_idle(WAIT));
+    let before = service.current();
+    assert_eq!(before.runtime_rows().len(), 1);
+    clock.advance(DAY_MS);
+    service.ensure_manifest("claude", FetchReason::FreshViolation);
+    assert!(service.wait_idle(WAIT));
+    assert!(Arc::ptr_eq(&before, &service.current()));
+    assert_eq!(
+        std::fs::read(dir.cache().join("harness-versions.json")).unwrap(),
+        bytes
+    );
+    assert_eq!(read_meta(&dir.cache()).etag.as_deref(), Some("good"));
+    assert_eq!(fetcher.calls().len(), 2);
+    assert!(
+        lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.contains("keeping the current copy"))
+    );
+    let mut at_cap = good.to_string().into_bytes();
+    at_cap.resize(MAX_MANIFEST_BYTES, b' ');
+    assert_eq!(parse(&at_cap).unwrap().runtime_rows().len(), 1);
+    at_cap.push(b' ');
+    assert_eq!(parse(&at_cap), Err(ManifestError::TooLarge));
+}
+
+// Historical release/main contracts coexist under one domain; the current
+// registry descriptor selects only its exact contract instead of invalidating cache.
+#[test]
+fn runtime_manifest_retains_current_and_historical_contracts_in_same_domain() {
+    use crate::harness::adapter::HarnessAdapter;
+    let mut d = runtime_document();
+    let mut old = d["runtime_contracts"]["claude"][0].clone();
+    old["id"] = json!("0123456789abcdef");
+    d["runtime_contracts"]["claude"]
+        .as_array_mut()
+        .unwrap()
+        .push(old);
+    let mut old_row = d["runtime_rows"][0].clone();
+    old_row["contract_id"] = json!("0123456789abcdef");
+    d["runtime_rows"].as_array_mut().unwrap().push(old_row);
+    let m = parse(d.to_string().as_bytes())
+        .expect("distinct domain/origin/contract declarations coexist");
+    assert_eq!(m.runtime_rows().len(), 2);
+    let identity = serde_json::from_value(d["runtime_rows"][0]["identity"].clone()).unwrap();
+    let descriptor = crate::harness::claude::ClaudeAdapter.contracts()[0];
+    assert_eq!(
+        m.runtime_row("claude", &identity, &descriptor)
+            .unwrap()
+            .contract_id,
+        "c4c4b249584b3578"
+    );
+}

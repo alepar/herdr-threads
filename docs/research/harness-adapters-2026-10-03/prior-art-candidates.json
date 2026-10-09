@@ -1,0 +1,219 @@
+{
+  "facet": "primary-source harness adapter prior art",
+  "retrieved_at": "2026-10-03",
+  "mode": "bounded worker, lead owns canonical ledgers",
+  "query_provenance": [
+    {
+      "batch": 1,
+      "queries": [
+        "site.agentclientprotocol.com protocol initialization agent capabilities session load",
+        "site:github.com/zed-industries claude-code-acp codex-acp README adapter"
+      ],
+      "purpose": "ACP capability contract and maintained adapters"
+    },
+    {
+      "batch": 2,
+      "queries": [
+        "hcom agent messaging hooks Claude Codex GitHub installation hooks adapters"
+      ],
+      "opens": [
+        "https://github.com/agentclientprotocol/codex-acp",
+        "https://github.com/zed-industries/claude-agent-acp",
+        "https://agentclientprotocol.com/protocol/initialization"
+      ],
+      "purpose": "distinguish protocol wrapper from hook-first integration"
+    },
+    {
+      "batch": 3,
+      "opens": [
+        "https://raw.githubusercontent.com/agentclientprotocol/codex-acp/main/README.md",
+        "https://raw.githubusercontent.com/agentclientprotocol/claude-agent-acp/main/README.md",
+        "https://github.com/aannoo/hcom/tree/main/src",
+        "https://agentclientprotocol.com/protocol/v1/initialization"
+      ],
+      "purpose": "current ownership, installation, optional capabilities"
+    },
+    {
+      "batch": 4,
+      "opens": [
+        "https://raw.githubusercontent.com/aannoo/hcom/main/src/hooks/mod.rs",
+        "https://raw.githubusercontent.com/aannoo/hcom/main/src/core/tools.rs",
+        "https://raw.githubusercontent.com/aannoo/hcom/main/README.md",
+        "https://raw.githubusercontent.com/agentclientprotocol/codex-acp/main/docs/subagent-sessions.md"
+      ],
+      "purpose": "actual Rust normalization, ack ordering, child capability evidence"
+    }
+  ],
+  "sources": [
+    {
+      "id": "prior-acp-v1-init",
+      "title": "Agent Client Protocol v1 Initialization",
+      "url": "https://agentclientprotocol.com/protocol/v1/initialization",
+      "kind": "normative primary documentation",
+      "evidence": [
+        {
+          "locator": "Capabilities, web lines 98-100",
+          "passage": "Clients and Agents MUST treat all capabilities omitted in the `initialize` request as UNSUPPORTED."
+        }
+      ],
+      "supported_claims": [
+        "ACP initializes before session creation, negotiates version and supported capabilities, and treats absence as unsupported.",
+        "v1 baseline session operations are new, prompt, cancel, update; richer session methods are optional."
+      ],
+      "inferences": [
+        "Use an explicit minimal adapter contract and optional typed capability providers; do not silently assume hook delivery or child attribution for an unknown harness.",
+        "Bind observed version and admitted capability set into a runtime session object instead of scattering repeated probes through callers."
+      ]
+    },
+    {
+      "id": "prior-acp-v2-migration",
+      "title": "Agent Client Protocol v2 Migration",
+      "url": "https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v2/migration.mdx",
+      "kind": "normative primary documentation on main",
+      "evidence": [
+        {
+          "locator": "Session setup and lifecycle / Baseline methods",
+          "passage": "`session/delete` remains optional behind `session.delete`."
+        }
+      ],
+      "supported_claims": [
+        "v2 changes capability shape and makes list/resume/close baseline when session is advertised; v1 loadSession and session/load disappear."
+      ],
+      "inferences": [
+        "Capabilities must have a named semantic contract/version, not a timeless boolean bag.",
+        "The herdr adapter interface should not import ACP's entire evolving protocol surface merely to gain extensibility."
+      ]
+    },
+    {
+      "id": "prior-codex-acp",
+      "title": "ACP adapter for Codex CLI README",
+      "url": "https://raw.githubusercontent.com/agentclientprotocol/codex-acp/main/README.md",
+      "kind": "maintainer primary source",
+      "evidence": [
+        {
+          "locator": "README lines 6, 38",
+          "passage": "It starts the Codex App Server"
+        },
+        {
+          "locator": "README lines 85-89",
+          "passage": "enabled only after bilateral capability negotiation"
+        }
+      ],
+      "supported_claims": [
+        "codex-acp hosts an ACP stdio server and translates Codex App Server requests/events, rather than decorating an already-running TUI with hooks.",
+        "Its npm package includes a compatible Codex dependency and offers CODEX_PATH override.",
+        "Native subagent sessions are negotiated; unsupported peers receive ordinary ACP tool-call representation."
+      ],
+      "inferences": [
+        "A compatible dependency pin is a concrete example of recipe/version ownership; a bare executable name cannot certify integration behavior.",
+        "Do not mistake a mapped child display or fallback root interaction for authenticated child identity/provenance.",
+        "Adopting ACP would replace the interaction model and broaden process/auth/permission ownership; this is larger than introducing local harness adapters."
+      ]
+    },
+    {
+      "id": "prior-claude-acp",
+      "title": "ACP adapter for the Claude Agent SDK README",
+      "url": "https://raw.githubusercontent.com/agentclientprotocol/claude-agent-acp/main/README.md",
+      "kind": "maintainer primary source",
+      "evidence": [
+        {
+          "locator": "README lines 6-7",
+          "passage": "using the official [Claude Agent SDK]"
+        },
+        {
+          "locator": "README lines 35-42",
+          "passage": "child interactions stay on the root session"
+        }
+      ],
+      "supported_claims": [
+        "Current claude-agent-acp uses the Claude Agent SDK.",
+        "Its README describes SDK control API handling for MCP actions refused in SDK mode.",
+        "Native child sessions require bilateral negotiation; absent that signal, child lifecycle is ordinary tool-call representation on the root session."
+      ],
+      "inferences": [
+        "An adapter needs integration-mode-specific capability evidence; CLI hooks, SDK control, and ACP hosting are different backends even when the harness brand is identical.",
+        "Preserve native permission refusal rather than claiming wrappers manufacture unavailable approval functionality."
+      ]
+    },
+    {
+      "id": "prior-hcom-readme",
+      "title": "hcom README",
+      "url": "https://raw.githubusercontent.com/aannoo/hcom/main/README.md",
+      "kind": "maintainer primary source",
+      "evidence": [
+        {
+          "locator": "How it works",
+          "passage": "Hooks activate only when an agent is launched with `hcom` in front."
+        },
+        {
+          "locator": "How it works",
+          "passage": "Any other AI tool without hooks can join"
+        }
+      ],
+      "supported_claims": [
+        "hcom coordinates multiple existing CLI agents through hooks and a shared database.",
+        "Its integration is activated by launch rather than ordinary CLI usage.",
+        "Its README offers a manual fallback for agents without hooks and hook removal tooling."
+      ],
+      "inferences": [
+        "This is the closest scoped prior art for herdr: normalize existing harness hooks while retaining user-owned terminal/runtime.",
+        "Separate launcher-only/manual support from automatic native integration; allow a future adapter to expose partial capabilities honestly.",
+        "Setup/unsetup should identify owned modifications and preserve foreign config; README claims safe removal, but removal implementation was not audited."
+      ]
+    },
+    {
+      "id": "prior-hcom-hooks",
+      "title": "hcom shared hook infrastructure Rust source",
+      "url": "https://raw.githubusercontent.com/aannoo/hcom/main/src/hooks/mod.rs",
+      "kind": "implementation primary source",
+      "evidence": [
+        {
+          "locator": "HookPayload documentation, lines 198-202",
+          "passage": "Each tool's raw hook JSON is different."
+        },
+        {
+          "locator": "HookResult Allow delivery_ack documentation, lines 485-486",
+          "passage": "Delivery ack to commit after stdout is successfully written."
+        }
+      ],
+      "supported_claims": [
+        "HookPayload normalizes multiple harness inputs into common fields, including optional session/transcript identifiers and retained raw payload.",
+        "Its common module contains separate harness-specific constructor functions.",
+        "HookResult models Allow, Block, and UpdateInput; delivery acknowledgments are documented to commit after stdout write."
+      ],
+      "inferences": [
+        "Shared normalized observations are useful, but central from_claude/from_codex constructors still require central edits for each harness; place decode/output mapping inside each registered adapter.",
+        "Keep optional absence explicit; transcript_path=None is preferable to invented evidence.",
+        "A normalized effect must retain output delivery/ack ordering; output rendering is part of the adapter contract, not a generic successful receipt assumption.",
+        "Copying a global normalized result with universal exit code meanings can erase event-specific differences; adapter output encoding should validate which native event admits each effect."
+      ]
+    }
+  ],
+  "contradictions": [
+    {
+      "issue": "Older Zed Codex adapter location versus maintained implementation",
+      "resolution": "https://github.com/zed-industries/codex-acp is archived and points to agentclientprotocol/codex-acp; use the maintained App Server implementation for current architecture facts."
+    },
+    {
+      "issue": "Search results call Claude adapter a CLI wrapper, current maintainer README calls it Agent SDK adapter",
+      "resolution": "Use current README; do not assume native TUI hook semantics from ACP support."
+    },
+    {
+      "issue": "ACP site default initialization redirects to v1 while repository also contains v2 documentation",
+      "resolution": "Record protocol version explicitly. This bounded audit does not establish every client's released v2 support."
+    },
+    {
+      "issue": "hcom indexed README variants disagree on global first-run activation versus launch-only activation",
+      "resolution": "Current raw main README describes launch-only activation. Treat runtime behavior as unverified until code/version is pinned."
+    }
+  ],
+  "gaps": [
+    "No native installation or runtime tests were performed; documentation/code evidence is not native PASS.",
+    "Main-branch sources are mutable, not commit-pinned; pin selected code snapshots before turning them into release claims.",
+    "hcom setup/removal implementation, receipt persistence, and provenance policy were not audited within the four-batch budget.",
+    "Attempted hcom src/core/tools.rs fetch returned Internal Error and supports no claims.",
+    "An unknown future harness may lack native context injection or stable session IDs; interface implementation can represent this limit but cannot create those capabilities."
+  ],
+  "recommendation_inference": "Use a small built-in registry of Rust HarnessAdapter implementations returning typed optional capability objects and an admitted runtime session/recipe. Each adapter owns launch/config footprint, native event decode and output encoding. Keep canonical attribution/receipt transitions in the daemon and require evidence provenance on normalized observations. Avoid a new universal network protocol or ACP dependency in this refactor. Test a deliberately limited fake adapter to ensure missing features fail explicitly without new core match arms.",
+  "retrieval_stop": "Four query/fetch batches complete; primary-source evidence sufficient for design tradeoffs. Runtime, ownership implementation and version pinning are explicit follow-up gaps."
+}

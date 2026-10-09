@@ -1,0 +1,1431 @@
+//! In-memory author contract. Observations grant no seat or receipt authority.
+use crate::protocol::time::CallBudget;
+use std::ffi::OsString;
+
+pub trait HarnessAdapter: Send + Sync + 'static {
+    type Admission: Send + Sync + 'static;
+    fn metadata(&self) -> &'static AdapterMetadata;
+    fn receipt_admission_summary(&self) -> Option<String> {
+        None
+    }
+    fn output_policy(&self) -> OutputPolicy {
+        OutputPolicy::default()
+    }
+    /// Explicit compatibility projection; rich domains do not imply a legacy scalar.
+    fn legacy_contract_id(&self) -> Option<String> {
+        None
+    }
+    /// Selects the sole source of hook admission. Callback input is supplied
+    /// only for startup-qualified adapters; the policy itself grants no authority.
+    fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+        HookAdmissionPolicy::InstalledObservation
+    }
+    fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
+        super::context::QualifiedTurnPolicy::Strict
+    }
+    fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection> {
+        let observed = self.classify(input);
+        self.contracts()
+            .iter()
+            .find(|d| d.domain == observed.domain)
+            .map(|d| {
+                vec![EvidenceProjection {
+                    domain: d.domain,
+                    origin: d.origin,
+                    contract_id: d.contract_id_v2().unwrap_or_default(),
+                    classification: observed.classification,
+                }]
+            })
+            .unwrap_or_default()
+    }
+    fn nonholding_unavailable_reasons(&self, _: &ContractDescriptor) -> &'static [&'static str] {
+        &[]
+    }
+    fn contracts(&self) -> &'static [ContractDescriptor];
+    fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation;
+    /// None means observation reuse is unsafe. Implementers include every observed
+    /// input (profile/config/assets as applicable), not merely the executable.
+    fn observation_fingerprint(&self, _: &InstallEnvironment) -> Option<String> {
+        None
+    }
+    fn observe_daemon(&self, env: &InstallEnvironment, budget: &CallBudget) -> DaemonObservation {
+        observe_daemon_default(self, env, budget)
+    }
+    fn admit(
+        &self,
+        request: &AdmissionRequest,
+        budget: &CallBudget,
+    ) -> AdmissionDecision<Self::Admission>;
+    fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder;
+    fn classify(&self, input: &HookInput) -> ContractObservation;
+    fn decode(
+        &self,
+        admitted: &Self::Admission,
+        input: &HookInput,
+    ) -> Result<DecodedEvent, DecodeFailure>;
+    fn encode(
+        &self,
+        admitted: &Self::Admission,
+        event: &DecodedEvent,
+        offer: &NeutralOffer,
+    ) -> Result<EncodedOutput, EncodeFailure>;
+    fn attribute_runtime(&self, input: &HookInput, budget: &CallBudget) -> RuntimeAttribution;
+    /// Cooperative facts about this exact input/runtime/domain, never native attestation.
+    /// The default supplies no qualification, including for unavailable runtime identity.
+    fn evidence_qualifications(
+        &self,
+        _: &EvidenceQualificationRequest<'_>,
+        _: &CallBudget,
+    ) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+    fn setup(
+        &self,
+        request: &SetupRequest,
+        budget: &CallBudget,
+    ) -> Result<SetupOutcome, SetupFailure>;
+    fn status(&self, request: &StatusRequest, budget: &CallBudget) -> SetupStatus;
+    /// Optional frozen doctor projection and explicitly safe owned-local repair policy.
+    /// Setup status alone never authorizes native enablement, trust or removal.
+    fn doctor_projection(
+        &self,
+        _: &StatusRequest,
+        _: &serde_json::Value,
+        _: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        None
+    }
+
+    fn unsetup(
+        &self,
+        request: &UnsetupRequest,
+        budget: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure>;
+    /// Resolve one local operation with the caller's captured inputs/deadline.
+    fn resolve_setup_scope_for(
+        &self,
+        request: &SetupScopeResolutionRequest<'_>,
+        budget: &CallBudget,
+    ) -> Result<SetupScopeResolution, SetupFailure> {
+        check_setup_budget(request.environment, budget)?;
+        let scope = self.resolve_setup_scope(request.selector, request.environment)?;
+        check_setup_budget(request.environment, budget)?;
+        Ok(SetupScopeResolution {
+            scope,
+            removal_generation: None,
+        })
+    }
+    /// Legacy adapters cannot silently consume an owned-generation receipt.
+    fn unsetup_resolved(
+        &self,
+        request: &UnsetupRequest,
+        resolution: &SetupScopeResolution,
+        budget: &CallBudget,
+    ) -> Result<RemovalOutcome, SetupFailure> {
+        check_setup_budget(&request.environment, budget)?;
+        if request.scope != resolution.scope || resolution.removal_generation.is_some() {
+            return Err(SetupFailure::Invalid(
+                "unsupported or mismatched removal resolution".into(),
+            ));
+        }
+        self.unsetup(request, budget)
+    }
+    fn setup_options(&self) -> &'static [SetupOption] {
+        &[]
+    }
+    fn setup_environment_inputs(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn resolve_setup_scope(
+        &self,
+        request: &SetupScopeRequest,
+        environment: &SetupEnvironment,
+    ) -> Result<ResolvedSetupScope, SetupFailure> {
+        match request {
+            SetupScopeRequest::Default => environment
+                .config_roots
+                .get(self.metadata().id)
+                .cloned()
+                .map(ResolvedSetupScope::ConfigRoot)
+                .ok_or_else(|| {
+                    SetupFailure::Invalid(format!(
+                        "{}: config root unavailable",
+                        self.metadata().id
+                    ))
+                }),
+            SetupScopeRequest::Profile(_) => Err(SetupFailure::Invalid(format!(
+                "{}: named profile is unsupported",
+                self.metadata().id
+            ))),
+        }
+    }
+    fn settle_setup_consent(
+        &self,
+        _: &SetupEnvironment,
+        _: &mut serde_json::Value,
+        _: &mut dyn std::io::BufRead,
+        _: &mut dyn std::io::Write,
+    ) -> Result<(), SetupFailure> {
+        Ok(())
+    }
+    fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
+        None
+    }
+    fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
+        None
+    }
+    fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
+        None
+    }
+    fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
+        None
+    }
+}
+
+pub struct AdapterMetadata {
+    pub id: &'static str,
+    pub display_label: &'static str,
+    pub context_spelling: &'static str,
+    pub context_aliases: &'static [&'static str],
+    pub executable: ExecutableLookup,
+    pub host_kinds: &'static [&'static str],
+    pub setup_scopes: &'static [SetupScopeKind],
+    pub budget: EventBudgetPolicy,
+    pub runtime_sources: &'static [&'static str],
+}
+pub enum ExecutableLookup {
+    Path(&'static str),
+    Unsupported,
+}
+pub enum SetupScopeKind {
+    ConfigRoot,
+    Profile,
+}
+pub struct EventBudgetPolicy {
+    pub lifecycle_ms: u64,
+    pub observer_ms: u64,
+}
+pub struct InstallEnvironment {
+    /// Clock whose monotonic epoch defines the supplied CallBudget.
+    pub clock: std::sync::Arc<dyn crate::protocol::time::Clock>,
+    pub path: Option<std::ffi::OsString>,
+    pub config_root: Option<std::path::PathBuf>,
+    pub state_dir: Option<std::path::PathBuf>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookAdmissionPolicy {
+    InstalledObservation,
+    RegisteredContract,
+    QualifiedCallback,
+}
+pub enum InstallObservation {
+    /// Executable availability alone, without invoking it or identifying its runtime.
+    ExecutableAvailable {
+        binary: std::path::PathBuf,
+    },
+    /// Hook-only selection under an explicit registered-contract policy.
+    NotRequested,
+    /// Carries the unforgeable installed binary/schema witness, never a payload claim.
+    CodexWitness(super::codex::InstalledVersion),
+    Available {
+        binary: std::path::PathBuf,
+        identity: RuntimeIdentity,
+    },
+    Unavailable {
+        diagnostic: String,
+    },
+    Unsupported(UnsupportedOperation),
+}
+pub use super::runtime::RuntimeIdentity;
+pub struct AdmissionRequest {
+    pub installed: InstallObservation,
+    pub input: Option<HookInput>,
+    pub runtime_candidate: Option<RuntimeIdentity>,
+}
+pub enum AdmissionDecision<A> {
+    ContractDeclared {
+        state: A,
+        recipe: &'static str,
+    },
+    Listed {
+        state: A,
+        recipe: &'static str,
+    },
+    SchemaMatched {
+        state: A,
+        recipe: &'static str,
+    },
+    Optimistic {
+        state: A,
+        recipe: &'static str,
+        diagnostic: String,
+    },
+    Refused {
+        diagnostic: String,
+    },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionKind {
+    ContractDeclared,
+    Listed,
+    SchemaMatched,
+    Optimistic,
+}
+pub use super::state::Ladder;
+pub struct HookInput {
+    pub bytes: Vec<u8>,
+    pub registered_event: Option<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractDomain {
+    Native,
+    Bridge,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct ContractDescriptor {
+    pub domain_id: &'static str,
+    pub origin: super::evidence::EvidenceOrigin,
+    pub events: &'static [super::evidence::EvidenceEvent],
+    pub required_milestones: &'static [&'static str],
+    pub qualifications: &'static [&'static str],
+    pub holding: super::evidence::AttributionHolding,
+    pub resumed_unavailable_reason: Option<&'static str>,
+    pub domain: ContractDomain,
+    pub contract: &'static crate::harness::contract::HarnessContract,
+}
+pub struct EvidenceQualificationRequest<'a> {
+    pub input: &'a HookInput,
+    pub runtime: &'a RuntimeIdentity,
+    pub descriptor: &'a ContractDescriptor,
+}
+pub struct EvidenceProjection {
+    pub domain: ContractDomain,
+    pub origin: super::evidence::EvidenceOrigin,
+    pub contract_id: String,
+    pub classification: crate::harness::contract::Classification,
+}
+pub struct ContractObservation {
+    pub domain: ContractDomain,
+    pub classification: crate::harness::contract::Classification,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventRole {
+    TopLevel,
+    Subagent,
+    Unknown,
+}
+#[derive(Clone)]
+pub enum EventIntent {
+    Lifecycle(crate::harness::context::EventKind),
+    Current,
+    QualifiedTurn(crate::harness::context::QualifiedTurn),
+    Observer,
+    DeclaredReset(super::context::DeclaredReset),
+}
+#[derive(Clone)]
+pub struct EventMetadata {
+    pub skill_pointer: bool,
+    /// An adapter callback can shorten the core end-to-end limit.
+    pub callback_deadline: Option<std::time::Instant>,
+    pub context_source: String,
+    pub capability: super::Capability,
+    pub domain: ContractDomain,
+    pub native_event: String,
+    pub shape_fields: Vec<String>,
+}
+#[derive(Clone)]
+pub enum DeliveryEligibility {
+    Context,
+    ObserverOnly,
+    Ineligible,
+}
+#[derive(Clone)]
+pub enum RuntimeAttribution {
+    Attributed(RuntimeIdentity),
+    Unavailable { diagnostic: String },
+}
+#[derive(Clone)]
+pub struct DecodedEvent {
+    pub harness: crate::harness::registry::AgentHarnessId,
+    pub role: EventRole,
+    pub native_session: Option<String>,
+    pub event_id: String,
+    pub intent: EventIntent,
+    pub metadata: EventMetadata,
+    pub delivery: DeliveryEligibility,
+    pub runtime: RuntimeAttribution,
+}
+pub struct NeutralOffer {
+    pub fixed_guidance: String,
+    pub peer_data: serde_json::Value,
+    pub ready_argv: Vec<Vec<String>>,
+}
+pub enum EncodedOutput {
+    ContextBearing { bytes: Vec<u8> },
+    ObserverOnly { bytes: Vec<u8> },
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedSetupScope {
+    ConfigRoot(std::path::PathBuf),
+    Profile {
+        name: String,
+        home: std::path::PathBuf,
+    },
+}
+/// Local inputs captured once; paths never pass through UTF-8 conversion.
+#[derive(Clone)]
+pub struct SetupEnvironment {
+    /// Monotonic epoch shared by local requests and their CallBudget.
+    pub clock: std::sync::Arc<dyn crate::protocol::time::Clock>,
+    pub home: Option<OsString>,
+    pub path: Option<OsString>,
+    pub cwd: std::path::PathBuf,
+    pub executable: std::path::PathBuf,
+    pub state_dir: Option<std::path::PathBuf>,
+    pub host_endpoint: Option<std::path::PathBuf>,
+    pub instance_source: serde_json::Value,
+    pub config_roots: std::collections::BTreeMap<String, std::path::PathBuf>,
+    pub declared: std::collections::BTreeMap<String, OsString>,
+}
+impl Default for SetupEnvironment {
+    fn default() -> Self {
+        Self {
+            clock: std::sync::Arc::new(crate::app::SystemClock::new()),
+            home: None,
+            path: None,
+            cwd: Default::default(),
+            executable: Default::default(),
+            state_dir: None,
+            host_endpoint: None,
+            instance_source: serde_json::Value::Null,
+            config_roots: Default::default(),
+            declared: Default::default(),
+        }
+    }
+}
+impl std::fmt::Debug for SetupEnvironment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SetupEnvironment")
+            .field("cwd", &self.cwd)
+            .field("executable", &self.executable)
+            .field("state_dir", &self.state_dir)
+            .field("host_endpoint", &self.host_endpoint)
+            .field("config_roots", &self.config_roots)
+            .finish_non_exhaustive()
+    }
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SetupScopeRequest {
+    #[default]
+    Default,
+    Profile(String),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupScopeOperation {
+    Install,
+    Status,
+    Remove,
+}
+#[derive(Debug)]
+pub struct SetupScopeResolutionRequest<'a> {
+    pub operation: SetupScopeOperation,
+    pub selector: &'a SetupScopeRequest,
+    pub native_binary: Option<&'a std::path::Path>,
+    pub environment: &'a SetupEnvironment,
+}
+/// Local ownership generation only; conveys no native/runtime qualification.
+#[derive(Debug, Clone)]
+pub struct SetupScopeResolution {
+    pub scope: ResolvedSetupScope,
+    pub removal_generation: Option<String>,
+}
+pub(crate) fn check_setup_budget(
+    environment: &SetupEnvironment,
+    budget: &CallBudget,
+) -> Result<(), SetupFailure> {
+    if budget.cancellation.is_cancelled() || budget.deadline_passed(environment.clock.as_ref()) {
+        return Err(SetupFailure::Invalid(
+            "local operation deadline elapsed or request cancelled".into(),
+        ));
+    }
+    Ok(())
+}
+#[derive(Debug, Clone, Copy)]
+pub struct SetupOption {
+    pub name: &'static str,
+    pub conflicts: &'static [&'static str],
+}
+pub type SetupOptions = std::collections::BTreeMap<String, bool>;
+#[derive(Debug, Clone)]
+pub struct SetupRequest {
+    pub scope: ResolvedSetupScope,
+    pub executable: std::path::PathBuf,
+    pub environment: SetupEnvironment,
+    pub native_binary: Option<std::path::PathBuf>,
+    pub options: SetupOptions,
+}
+#[derive(Debug, Clone)]
+pub struct StatusRequest {
+    pub scope: ResolvedSetupScope,
+    pub environment: SetupEnvironment,
+    pub native_binary: Option<std::path::PathBuf>,
+}
+#[derive(Debug, Clone)]
+pub struct UnsetupRequest {
+    pub scope: ResolvedSetupScope,
+    pub environment: SetupEnvironment,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticSeverity {
+    Info,
+    Warning,
+    Error,
+}
+#[derive(Debug, Clone)]
+pub struct SetupDiagnostic {
+    pub code: String,
+    pub severity: DiagnosticSeverity,
+    pub text: String,
+    manual_argv: Option<Vec<OsString>>,
+}
+impl SetupDiagnostic {
+    pub fn new(code: &str, severity: DiagnosticSeverity, text: &str) -> Self {
+        Self {
+            code: code.chars().take(64).collect(),
+            severity,
+            text: text.chars().take(1024).collect(),
+            manual_argv: None,
+        }
+    }
+    pub fn manual_argv(&self) -> Option<&[OsString]> {
+        self.manual_argv.as_deref()
+    }
+    pub fn with_manual_argv(mut self, argv: Vec<OsString>) -> Result<Self, SetupFailure> {
+        if argv.is_empty()
+            || argv.len() > 32
+            || argv.iter().any(|word| {
+                word.is_empty()
+                    || word.len() > 4096
+                    || word
+                        .as_encoded_bytes()
+                        .iter()
+                        .any(|byte| *byte < 32 || *byte == 127)
+            })
+        {
+            return Err(SetupFailure::Invalid(
+                "manual argv exceeds the local instruction bounds".into(),
+            ));
+        }
+        self.manual_argv = Some(argv);
+        Ok(self)
+    }
+}
+#[derive(Debug, Clone)]
+pub enum LocalRepair {
+    InstallOwned,
+    RepairOwned,
+    RemoveOwned,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Top-level local installation action; concrete projection retains substeps.
+pub enum SetupAction {
+    InstalledOwned,
+    AdoptedOwned,
+    RemovedOwned,
+    Unchanged,
+}
+pub struct SetupOutcome {
+    pub actions: Vec<SetupAction>,
+    pub diagnostic: String,
+    pub projection: serde_json::Value,
+    pub diagnostics: Vec<SetupDiagnostic>,
+}
+pub struct RemovalOutcome {
+    pub actions: Vec<SetupAction>,
+    pub diagnostic: String,
+    pub residue: Vec<std::path::PathBuf>,
+    pub projection: serde_json::Value,
+    pub diagnostics: Vec<SetupDiagnostic>,
+}
+pub struct DoctorProjection {
+    /// Captured in the same bounded observation as hooks; avoids a second probe.
+    pub status: Option<SetupStatus>,
+    pub hooks: serde_json::Value,
+    pub limitations: Vec<String>,
+    pub manual_repairs: Vec<serde_json::Value>,
+    pub safe_repairs: Vec<LocalRepair>,
+    pub repair_options: SetupOptions,
+}
+pub struct LocalSetupStatus {
+    pub scope: ResolvedSetupScope,
+    pub installed: bool,
+    pub enabled: Option<bool>,
+    pub admitted: Option<bool>,
+    pub observed: Option<bool>,
+    pub configured_hook: Option<crate::ports::ConfiguredHook>,
+    pub fingerprint: Option<String>,
+    pub diagnostics: Vec<SetupDiagnostic>,
+    pub repairs: Vec<LocalRepair>,
+    pub projection: serde_json::Value,
+}
+pub enum SetupStatus {
+    Detailed(Box<LocalSetupStatus>),
+    Failed(SetupFailure),
+    Unsupported(UnsupportedOperation),
+    Available {
+        installed: bool,
+        enabled: Option<bool>,
+        diagnostic: String,
+    },
+    Unavailable {
+        diagnostic: String,
+    },
+}
+#[derive(Debug)]
+pub enum DecodeFailure {
+    Native(super::context::ContextError),
+    Unsupported(UnsupportedOperation),
+    Invalid(String),
+    RegistrationMismatch,
+}
+#[derive(Debug)]
+pub enum EncodeFailure {
+    Unsupported(UnsupportedOperation),
+    Invalid(String),
+    RegistrationMismatch,
+}
+#[derive(Debug)]
+pub enum SetupFailure {
+    Api(crate::protocol::results::ApiError),
+    Io(std::io::Error),
+    Unsupported(UnsupportedOperation),
+    Invalid(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedOperation {
+    pub adapter: &'static str,
+    pub operation: &'static str,
+}
+impl std::fmt::Display for UnsupportedOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {} is unsupported", self.adapter, self.operation)
+    }
+}
+impl std::error::Error for UnsupportedOperation {}
+
+/// Adapter-local launch inputs. No seat, binding or host mutation capability.
+pub struct LaunchRequest {
+    pub argv: Vec<String>,
+    pub environment: SetupEnvironment,
+    pub native_binary: Option<std::path::PathBuf>,
+}
+#[derive(Debug, Clone)]
+pub struct LaunchScope {
+    pub setup: ResolvedSetupScope,
+    pub working_directory: std::path::PathBuf,
+    pub config_source: &'static str,
+}
+pub struct LaunchPreparation {
+    pub argv: Vec<String>,
+    pub hook: crate::ports::ConfiguredHook,
+    pub working_directory: std::path::PathBuf,
+    pub environment_overrides: std::collections::BTreeMap<String, OsString>,
+    pub report: serde_json::Value,
+}
+/// Opaque startup text data; composition declares grammar without inspecting text.
+#[derive(Debug, Clone, Copy)]
+pub struct StartupInputSpec {
+    pub max_text_bytes: usize,
+}
+
+/// Exactly one text argument inserted among unchanged caller tokens.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartupInputTemplate {
+    pub insertion_index: usize,
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+    pub prefix: String,
+    pub suffix: String,
+    pub max_arg_bytes: usize,
+}
+impl StartupInputTemplate {
+    pub fn positional(insertion_index: usize) -> Self {
+        Self {
+            insertion_index,
+            before: vec![],
+            after: vec![],
+            prefix: String::new(),
+            suffix: String::new(),
+            max_arg_bytes: crate::ports::NativeLaunchRequest::MAX_ARG_BYTES,
+        }
+    }
+    pub fn validate(&self, caller_len: usize) -> Result<(), crate::protocol::results::ApiError> {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        let invalid = || ApiError::new(ErrorCode::InvalidRequest, "invalid startup input template");
+        if self.insertion_index > caller_len
+            || self.max_arg_bytes == 0
+            || self.max_arg_bytes > crate::ports::NativeLaunchRequest::MAX_ARG_BYTES
+            || self
+                .before
+                .len()
+                .checked_add(self.after.len())
+                .is_none_or(|count| count > 8)
+            || self.prefix.len() > 128
+            || self.suffix.len() > 128
+            || self
+                .prefix
+                .chars()
+                .chain(self.suffix.chars())
+                .any(char::is_control)
+        {
+            return Err(invalid());
+        }
+        let mut bytes = 0usize;
+        for token in self.before.iter().chain(&self.after) {
+            if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
+                return Err(invalid());
+            }
+            bytes = bytes.checked_add(token.len()).ok_or_else(invalid)?;
+        }
+        if bytes > 16384 {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+    pub fn apply(
+        &self,
+        caller: &[String],
+        text: &str,
+    ) -> Result<(Vec<String>, usize), crate::protocol::results::ApiError> {
+        use crate::protocol::results::{ApiError, ErrorCode};
+        self.validate(caller.len())?;
+        let bytes = self
+            .prefix
+            .len()
+            .checked_add(text.len())
+            .and_then(|n| n.checked_add(self.suffix.len()));
+        if bytes.is_none_or(|n| n > self.max_arg_bytes) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidRequest,
+                "startup input exceeds complete native argument limit",
+            ));
+        }
+        let mut argv = caller[..self.insertion_index].to_vec();
+        argv.extend(self.before.iter().cloned());
+        let slot = argv.len();
+        argv.push(format!("{}{}{}", self.prefix, text, self.suffix));
+        argv.extend(self.after.iter().cloned());
+        argv.extend_from_slice(&caller[self.insertion_index..]);
+        crate::ports::validate_native_argv(&argv)
+            .map_err(|detail| ApiError::new(ErrorCode::InvalidRequest, detail))?;
+        Ok((argv, slot))
+    }
+}
+
+pub trait LaunchPolicy: Send + Sync {
+    /// Optional pure original-caller grammar. Absence is honest unsupported handoff.
+    fn prepare_startup_input(
+        &self,
+        _: &[String],
+        _: &StartupInputSpec,
+    ) -> Result<Option<StartupInputTemplate>, crate::protocol::results::ApiError> {
+        Ok(None)
+    }
+    /// Optional adapter-owned configured arguments; absent providers inherit no key.
+    /// Declarations must be ASCII, at most 128 bytes, and match
+    /// HERDR_THREADS_[A-Z0-9_]+_OPTS with a nonempty middle. Consumers validate
+    /// before environment lookup or recovery serialization; no key is inferred.
+    fn native_options_env(&self) -> Option<&'static str> {
+        None
+    }
+    /// Cooperative host recognition input; never caller or runtime authority.
+    fn requires_process_hint(&self) -> bool {
+        false
+    }
+    /// Separately observed launch-only API/profile facts, never callback admission.
+    fn uses_prelaunch_observation(&self) -> bool {
+        false
+    }
+    fn observe_prelaunch(
+        &self,
+        _: &LaunchRequest,
+        _: &LaunchScope,
+        _: &CallBudget,
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "prelaunch observation unavailable",
+        ))
+    }
+    fn prepare_prelaunch(
+        &self,
+        _: &LaunchRequest,
+        _: &LaunchScope,
+        _: &(dyn std::any::Any + Send + Sync),
+        _: &LocalSetupStatus,
+        _: &dyn super::launch::CodexShellProbe,
+        _: &CallBudget,
+    ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "prelaunch preparation unavailable",
+        ))
+    }
+    fn recheck_prelaunch(
+        &self,
+        _: &LaunchRequest,
+        _: &LaunchScope,
+        _: &(dyn std::any::Any + Send + Sync),
+        _: &CallBudget,
+    ) -> Result<String, crate::protocol::results::ApiError> {
+        Err(crate::protocol::results::ApiError::unsupported(
+            "prelaunch recheck unavailable",
+        ))
+    }
+    fn resolve_scope(
+        &self,
+        request: &LaunchRequest,
+        probe: &dyn super::launch::CodexShellProbe,
+        budget: &CallBudget,
+    ) -> Result<LaunchScope, crate::protocol::results::ApiError>;
+    fn validate_native_argv(
+        &self,
+        argv: &[String],
+    ) -> Result<(), crate::protocol::results::ApiError>;
+    fn compose_argv(
+        &self,
+        caller: Vec<String>,
+        owned: Vec<String>,
+    ) -> Result<Vec<String>, crate::protocol::results::ApiError>;
+    fn prepare_launch(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+        admitted: &super::registry::AdmittedHandle,
+        status: &LocalSetupStatus,
+        probe: &dyn super::launch::CodexShellProbe,
+        budget: &CallBudget,
+    ) -> Result<LaunchPreparation, crate::protocol::results::ApiError>;
+    fn configuration_fingerprint(
+        &self,
+        request: &LaunchRequest,
+        scope: &LaunchScope,
+    ) -> Result<String, crate::protocol::results::ApiError>;
+    fn expected_host_kinds(&self) -> &'static [&'static str];
+}
+pub trait ComposerPolicy: Send + Sync {
+    /// Recipe declarations for the observed installed version; evidence never adds support.
+    fn capabilities(&self, installed: Option<&str>) -> super::recipe::PokeCapabilities;
+    fn read(&self, detection: &str, pane_width: Option<u16>) -> super::composer::ComposerRead;
+    fn clear_key(&self) -> &'static str;
+    /// Retyped text only: restoring a draft must never submit it.
+    fn restore_text(&self, saved: &str) -> String;
+}
+/// Pure local metadata. Providers must not observe installations or invoke native code.
+pub trait CanaryStrategy: Send + Sync {
+    fn descriptor(&self) -> CanaryDescriptor;
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanaryKind {
+    NpmRelease,
+    ExactRuntime,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateKind {
+    StableRelease,
+    ExactBuild,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanaryDescriptor {
+    pub kind: CanaryKind,
+    pub candidate_kind: CandidateKind,
+    #[serde(deserialize_with = "required_canary_nullable")]
+    pub npm_package: Option<String>,
+    #[serde(deserialize_with = "required_canary_nullable")]
+    pub model_key_env: Option<String>,
+    pub companion: String,
+    pub artifact_schema_version: u8,
+}
+fn required_canary_nullable<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <Option<String> as serde::Deserialize>::deserialize(d)
+}
+macro_rules! failure {
+    ($ty:ident, $operation:literal, $($mismatch:ident)?) => {
+        impl std::fmt::Display for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    Self::Unsupported(e) => e.fmt(f),
+                    Self::Invalid(message) => write!(f, "{}: invalid adapter input: {}", $operation, message.chars().take(256).collect::<String>()),
+                    $(Self::$mismatch => write!(f, "{}: adapter registration mismatch", $operation),)?
+                }
+            }
+        }
+        impl std::error::Error for $ty {}
+    };
+}
+impl std::fmt::Display for DecodeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Native(error) => write!(f, "native decode: {error:?}"),
+            Self::Unsupported(error) => error.fmt(f),
+            Self::Invalid(message) => write!(
+                f,
+                "decode: invalid adapter input: {}",
+                message.chars().take(256).collect::<String>()
+            ),
+            Self::RegistrationMismatch => write!(f, "decode: adapter registration mismatch"),
+        }
+    }
+}
+impl std::error::Error for DecodeFailure {}
+
+failure!(EncodeFailure, "encode", RegistrationMismatch);
+impl std::fmt::Display for SetupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Api(e) => f.write_str(&e.detail),
+            Self::Io(e) => e.fmt(f),
+            Self::Invalid(e) => write!(
+                f,
+                "setup: invalid adapter input: {}",
+                e.chars().take(256).collect::<String>()
+            ),
+            Self::Unsupported(e) => e.fmt(f),
+        }
+    }
+}
+impl std::error::Error for SetupFailure {}
+
+impl DecodedEvent {
+    pub fn can_check_in(&self) -> bool {
+        matches!(self.role, EventRole::TopLevel)
+            && matches!(
+                self.intent,
+                EventIntent::Lifecycle(_) | EventIntent::Current | EventIntent::QualifiedTurn(_)
+            )
+    }
+}
+
+/// The default daemon observation: install availability, then admission.
+pub fn observe_daemon_default<A: HarnessAdapter + ?Sized>(
+    adapter: &A,
+    env: &InstallEnvironment,
+    budget: &CallBudget,
+) -> DaemonObservation {
+    let installed = adapter.observe_install(env, budget);
+    let identity = match &installed {
+        InstallObservation::Available { identity, .. } => Some(identity.clone()),
+        InstallObservation::CodexWitness(version) => {
+            RuntimeIdentity::stable_release(version.as_str(), "installed_probe").ok()
+        }
+        _ => None,
+    };
+    let status = match &installed {
+        InstallObservation::Unavailable { diagnostic } => {
+            HarnessStatus::Refused(diagnostic.clone())
+        }
+        InstallObservation::Unsupported(operation) => HarnessStatus::Refused(operation.to_string()),
+        _ => match adapter.admit(
+            &AdmissionRequest {
+                installed,
+                input: None,
+                runtime_candidate: None,
+            },
+            budget,
+        ) {
+            AdmissionDecision::ContractDeclared { recipe, .. } => HarnessStatus::ContractDeclared {
+                detail: format!(
+                    "{recipe}; contract_declared; runtime metadata unavailable; rich optional capabilities unavailable"
+                ),
+            },
+            AdmissionDecision::Listed { recipe, .. } => HarnessStatus::Cooperative {
+                detail: recipe.into(),
+                live_unverified: false,
+            },
+            AdmissionDecision::SchemaMatched { recipe, .. } => HarnessStatus::Cooperative {
+                detail: recipe.into(),
+                live_unverified: true,
+            },
+            AdmissionDecision::Optimistic { diagnostic, .. } => {
+                HarnessStatus::Optimistic(diagnostic)
+            }
+            AdmissionDecision::Refused { diagnostic } => HarnessStatus::Refused(diagnostic),
+        },
+    };
+    DaemonObservation {
+        status,
+        identity,
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    #[test]
+    fn local_manual_diagnostics_refuse_unbounded_argv() {
+        let diagnostic = SetupDiagnostic::new(
+            "manual_native_enable",
+            DiagnosticSeverity::Info,
+            "Enable explicitly in the native CLI",
+        );
+        for argv in [
+            vec![],
+            vec!["word".into(); 33],
+            vec!["x".repeat(4097).into()],
+            vec!["line\nbreak".into()],
+            vec!["".into()],
+        ] {
+            assert!(
+                diagnostic.clone().with_manual_argv(argv).is_err(),
+                "manual instructions must retain the shared argv bounds"
+            );
+        }
+        use std::os::unix::ffi::OsStringExt;
+        let diagnostic = diagnostic
+            .with_manual_argv(vec![
+                "native".into(),
+                OsString::from_vec(b"/profile-\xff".to_vec()),
+            ])
+            .unwrap();
+        assert_eq!(diagnostic.manual_argv().unwrap()[0], "native");
+        assert_eq!(
+            diagnostic.manual_argv().unwrap()[1].as_encoded_bytes(),
+            b"/profile-\xff"
+        );
+    }
+
+    #[test]
+    fn local_options_reject_undeclared_disabled_flag_before_writes() {
+        let registry = super::super::registry::builtins();
+        let registration = registry.by_id(registry.agent("claude").unwrap()).unwrap();
+        let options = [("invented".into(), false)].into_iter().collect();
+        assert!(
+            super::super::setup::validate_local_request(
+                Some(registration),
+                true,
+                &SetupScopeRequest::Default,
+                &options
+            )
+            .is_err(),
+            "unknown options cannot bypass metadata validation by being disabled"
+        );
+    }
+
+    #[test]
+    fn setup_registry_dispatch_freezes_environment_and_rejects_ambiguous_profile() {
+        let budget = CallBudget {
+            deadline: crate::protocol::time::MonoInstant(100),
+            cancellation: Default::default(),
+        };
+        let registry = super::super::registry::builtins();
+        let registration = registry.by_id(registry.agent("claude").unwrap()).unwrap();
+        let root = std::env::temp_dir().join(format!("local-status-{}", uuid::Uuid::new_v4()));
+        let mut environment = SetupEnvironment {
+            executable: root.join("plugin"),
+            state_dir: Some(root.join("state")),
+            cwd: root.clone(),
+            host_endpoint: Some(root.join("herdr.sock")),
+            ..Default::default()
+        };
+        environment
+            .config_roots
+            .insert("claude".into(), root.join("claude"));
+        environment
+            .declared
+            .insert("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION".into(), "0".into());
+        let scope = registration
+            .resolve_setup_scope(&SetupScopeRequest::Default, &environment)
+            .unwrap();
+        let status = registration.status(
+            &StatusRequest {
+                scope,
+                environment: environment.clone(),
+                native_binary: None,
+            },
+            &budget,
+        );
+        let SetupStatus::Detailed(status) = status else {
+            panic!("registered local status must dispatch to its backend")
+        };
+        assert!(!status.installed);
+        assert_eq!(status.enabled, None);
+        assert_eq!(status.observed, None);
+        assert_eq!(
+            status.projection["prompt_suggestions"]["env_override"],
+            "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0"
+        );
+        assert!(
+            !root.exists(),
+            "status created config, state, or daemon directories"
+        );
+        let profile = SetupScopeRequest::Profile("work".into());
+        assert!(
+            super::super::setup::validate_local_request(None, true, &profile, &Default::default())
+                .is_err()
+        );
+        assert!(
+            super::super::setup::validate_local_request(
+                Some(registration),
+                true,
+                &profile,
+                &Default::default()
+            )
+            .is_err()
+        );
+        assert!(!root.exists(), "profile refusal must precede writes");
+        let options = [
+            ("disable-prompt-suggestions".into(), true),
+            ("keep-prompt-suggestions".into(), true),
+        ]
+        .into_iter()
+        .collect();
+        assert!(
+            super::super::setup::validate_local_request(
+                Some(registration),
+                true,
+                &SetupScopeRequest::Default,
+                &options
+            )
+            .is_err()
+        );
+        let options = [("invented".into(), true)].into_iter().collect();
+        assert!(
+            super::super::setup::validate_local_request(
+                Some(registration),
+                true,
+                &SetupScopeRequest::Default,
+                &options
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn only_top_level_lifecycle_and_current_can_check_in() {
+        let mut event = DecodedEvent {
+            harness: super::super::registry::builtins().agent("codex").unwrap(),
+            role: EventRole::TopLevel,
+            native_session: None,
+            event_id: "event".into(),
+            intent: EventIntent::Current,
+            metadata: EventMetadata {
+                context_source: "PreToolUse".into(),
+                callback_deadline: None,
+                skill_pointer: false,
+                capability: crate::harness::Capability::ObservedInput,
+                domain: ContractDomain::Native,
+                native_event: "Tool".into(),
+                shape_fields: vec![],
+            },
+            delivery: DeliveryEligibility::Context,
+            runtime: RuntimeAttribution::Unavailable {
+                diagnostic: "unavailable".into(),
+            },
+        };
+        for role in [EventRole::TopLevel, EventRole::Subagent, EventRole::Unknown] {
+            event.role = role;
+            event.intent = EventIntent::Lifecycle(super::super::context::EventKind::Startup);
+            assert_eq!(event.can_check_in(), role == EventRole::TopLevel);
+            event.intent = EventIntent::Current;
+            assert_eq!(event.can_check_in(), role == EventRole::TopLevel);
+            event.intent = EventIntent::Observer;
+            assert!(!event.can_check_in());
+        }
+    }
+    #[test]
+    fn builtin_hook_admission_refuses_missing_install_and_classifies_without_admission() {
+        let budget = CallBudget {
+            deadline: crate::protocol::time::MonoInstant(100),
+            cancellation: Default::default(),
+        };
+        for registration in super::super::registry::builtins().registrations() {
+            let request = AdmissionRequest {
+                installed: InstallObservation::Unavailable {
+                    diagnostic: "test".into(),
+                },
+                input: None,
+                runtime_candidate: None,
+            };
+            assert!(registration.admit(&request, &budget).is_err());
+            let status = registration.status(
+                &StatusRequest {
+                    scope: ResolvedSetupScope::ConfigRoot(PathBuf::from("unused")),
+                    environment: SetupEnvironment::default(),
+                    native_binary: None,
+                },
+                &budget,
+            );
+            if matches!(registration.metadata().id, "hermes" | "synthetic_fourth") {
+                assert!(matches!(status, SetupStatus::Failed(_)));
+            } else {
+                assert!(matches!(status, SetupStatus::Detailed(_)));
+            }
+            assert!(
+                registration
+                    .setup(
+                        &SetupRequest {
+                            scope: ResolvedSetupScope::ConfigRoot(PathBuf::from("unused")),
+                            environment: SetupEnvironment::default(),
+                            native_binary: None,
+                            executable: PathBuf::from("unused"),
+                            options: Default::default()
+                        },
+                        &budget
+                    )
+                    .is_err()
+            );
+            assert!(
+                registration
+                    .unsetup(
+                        &UnsetupRequest {
+                            scope: ResolvedSetupScope::ConfigRoot(PathBuf::from("unused")),
+                            environment: SetupEnvironment::default()
+                        },
+                        &budget
+                    )
+                    .is_err()
+            );
+            // Providers exist independently of admission: an unobserved
+            // installed recipe must still declare no poke capability.
+            match registration.metadata().id {
+                "claude" | "codex" => {
+                    assert_eq!(
+                        registration.composer_policy().unwrap().capabilities(None),
+                        crate::harness::recipe::PokeCapabilities::NONE
+                    );
+                    assert!(registration.canary_strategy().is_some());
+                }
+                "hermes" => {
+                    assert!(registration.composer_policy().is_none());
+                    assert!(registration.canary_strategy().is_some());
+                }
+                "synthetic_fourth" => {
+                    assert!(registration.composer_policy().is_none());
+                    assert!(registration.canary_strategy().is_none());
+                }
+                other => panic!("unexpected builtin {other}"),
+            }
+            assert_eq!(
+                registration.version_ladder(
+                    &RuntimeIdentity::stable_release("999.0.0", "native_transcript").unwrap()
+                ),
+                Ladder::Admitted
+            );
+            let input = HookInput {
+                bytes: b"not json".to_vec(),
+                registered_event: None,
+            };
+            let observation = registration.classify(&input);
+            assert_eq!(
+                observation.domain,
+                if registration.metadata().id == "hermes" {
+                    ContractDomain::Bridge
+                } else {
+                    ContractDomain::Native
+                }
+            );
+            assert_eq!(
+                observation.classification,
+                crate::harness::contract::Classification::Malformed(
+                    crate::harness::contract::Malformed::NotJson
+                )
+            );
+            assert!(matches!(
+                registration.attribute_runtime(&input, &budget),
+                RuntimeAttribution::Unavailable { .. }
+            ));
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct OutputPolicy {
+    /// Legacy native child startup stays silent without a local daemon endpoint.
+    pub child_requires_endpoint: bool,
+    pub extra_guidance: &'static str,
+    pub empty_lifecycle: bool,
+    pub session_start_hint: bool,
+}
+impl DecodedEvent {
+    pub fn from_native(event: super::LifecycleEvent) -> Self {
+        let crate::harness::registry::OccupantHarness::Agent(harness) = event.harness.occupant()
+        else {
+            unreachable!("native agent event")
+        };
+        let native_event = if event.kind == super::context::EventKind::Tool {
+            "PreToolUse"
+        } else if event.source == "SubagentStart" {
+            "SubagentStart"
+        } else {
+            "SessionStart"
+        };
+        Self {
+            harness,
+            role: match event.role {
+                super::context::Role::TopLevel => EventRole::TopLevel,
+                super::context::Role::Subagent => EventRole::Subagent,
+            },
+            native_session: event.native_session,
+            event_id: event.event_id,
+            intent: if event.kind == super::context::EventKind::Tool {
+                EventIntent::Current
+            } else {
+                EventIntent::Lifecycle(event.kind)
+            },
+            metadata: EventMetadata {
+                context_source: event.source,
+                callback_deadline: None,
+                skill_pointer: native_event == "SessionStart",
+                capability: event.capability,
+                domain: ContractDomain::Native,
+                native_event: native_event.into(),
+                shape_fields: vec![],
+            },
+            delivery: DeliveryEligibility::Context,
+            runtime: RuntimeAttribution::Unavailable {
+                diagnostic: "runtime attribution is separate".into(),
+            },
+        }
+    }
+    pub fn context_event(&self) -> Option<super::LifecycleEvent> {
+        Some(super::LifecycleEvent {
+            harness: super::registry::OccupantHarness::Agent(self.harness).into(),
+            source: self.metadata.context_source.clone(),
+            kind: match self.intent {
+                EventIntent::Lifecycle(kind) => kind,
+                EventIntent::Current => super::context::EventKind::Tool,
+                EventIntent::QualifiedTurn(ref turn) => {
+                    if self.native_session.as_deref() != Some(&turn.session)
+                        || self.event_id != turn.event_key
+                    {
+                        return None;
+                    }
+                    if turn.reset.is_some() {
+                        super::context::EventKind::Clear
+                    } else {
+                        super::context::EventKind::Startup
+                    }
+                }
+                EventIntent::Observer | EventIntent::DeclaredReset(_) => return None,
+            },
+            native_session: self.native_session.clone(),
+            role: match self.role {
+                EventRole::TopLevel => super::context::Role::TopLevel,
+                EventRole::Subagent => super::context::Role::Subagent,
+                EventRole::Unknown => return None,
+            },
+            event_id: self.event_id.clone(),
+            capability: self.metadata.capability,
+        })
+    }
+}
+pub(crate) fn encode_context(
+    event: &DecodedEvent,
+    offer: &NeutralOffer,
+) -> Result<EncodedOutput, EncodeFailure> {
+    let context = &offer.fixed_guidance;
+    if context.len() > 4096 {
+        return Err(EncodeFailure::Invalid("context exceeds budget".into()));
+    }
+    let bytes = if context.is_empty() {
+        vec![]
+    } else {
+        serde_json::to_vec(&serde_json::json!({"hookSpecificOutput": {"hookEventName": event.metadata.native_event, "additionalContext": context}})).map_err(|error| EncodeFailure::Invalid(error.to_string()))?
+    };
+    if matches!(event.delivery, DeliveryEligibility::Context)
+        && !matches!(event.intent, EventIntent::Observer)
+        && matches!(event.role, EventRole::TopLevel)
+    {
+        Ok(EncodedOutput::ContextBearing { bytes })
+    } else {
+        Ok(EncodedOutput::ObserverOnly { bytes })
+    }
+}
+
+/// One harness as the daemon observed it on its own `PATH` (the bounded
+/// boot observation). Hook installation is per harness environment
+/// (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`), so `doctor`, run in that
+/// environment, checks it; the daemon does not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum HarnessStatus {
+    /// The observation has not completed.
+    #[default]
+    Unknown,
+    /// No executable on the daemon's `PATH`: a note, never a degradation.
+    NotInstalled(String),
+    /// Executable present; callback/runtime qualification is unavailable.
+    /// Grants no operational contract, enablement, runtime or receipt basis.
+    PresentUnqualified { detail: String },
+    /// Present but its `--version` could not be observed or recognized, which
+    /// blocks the hook: a limitation that degrades Health.
+    Refused(String),
+    /// Present, observed, and its version is below the recipe floor or inside
+    /// a known-broken range. Whether that matters is the version verdict's
+    /// (`harness::state`, rendered from evidence and the manifest), so Health
+    /// shows nothing for it here; doctor shows the detected-version line.
+    VersionRefused(String),
+    /// Registered core input contract; no runtime recipe admission.
+    ContractDeclared { detail: String },
+    /// Admitted by a recipe whose receipts are cooperative
+    /// (`cooperative_top_level`). `live_unverified` marks a schema-matched
+    /// admission, which stays listed as a limitation.
+    Cooperative {
+        detail: String,
+        live_unverified: bool,
+    },
+    /// Admitted by a recipe that declares native-verified receipt: a listed
+    /// version whose recipe proves native receipt, never an unlisted one.
+    Supported(String),
+    /// Unlisted but admitted by the ladder's optimistic rows, parsed under an
+    /// assumed recipe, live-unverified. The detail is the operator-facing
+    /// label (`crate::harness::optimistic_label`); Health renders it as an
+    /// informational note, never a limitation or a degradation.
+    Optimistic(String),
+}
+
+/// Cached install facts only. Runtime rows cannot change these scope-local axes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DaemonObservation {
+    pub status: HarnessStatus,
+    pub identity: Option<RuntimeIdentity>,
+    pub enablement: crate::protocol::results::HealthAxis<crate::protocol::results::EnablementState>,
+    pub callback_observation:
+        crate::protocol::results::HealthAxis<crate::protocol::results::CallbackObservationState>,
+    pub receipt_basis: Option<String>,
+}
+pub fn executable_observation_fingerprint(env: &InstallEnvironment, name: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let binary = crate::cli::hook::resolve_on_path(name, env.path.as_deref())?;
+    let identity = super::BinaryIdentity::observe(&binary)?;
+    Some(format!(
+        "{:x}",
+        Sha256::digest(format!("{identity:?}").as_bytes())
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallerHookState {
+    Missing,
+    Owned,
+}
+#[derive(Debug, Clone)]
+pub struct InstallerSkillDestination {
+    pub root: std::path::PathBuf,
+    pub file: std::path::PathBuf,
+}
+pub trait InstallerPolicy: Send + Sync {
+    fn inspect_hooks(
+        &self,
+        request: &StatusRequest,
+        budget: &CallBudget,
+    ) -> Result<InstallerHookState, SetupFailure>;
+    fn skill_destination(&self, scope: &ResolvedSetupScope) -> Option<InstallerSkillDestination>;
+}

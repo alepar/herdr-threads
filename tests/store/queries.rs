@@ -68,6 +68,11 @@ fn page(cursor: Option<String>) -> PageRequest {
 }
 
 fn bind_query_agent(db: &rusqlite::Connection) {
+    db.execute(
+        "UPDATE seats SET target_id='w:p1',target_generation=1 WHERE id='s'",
+        [],
+    )
+    .unwrap();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'w:p1','host',1,'codex','session','exec','cooperative_top_level',0,0,'term','inc')", []).unwrap();
 }
 
@@ -4786,6 +4791,95 @@ fn recent_picker_committed_notices_update_activity_duplicates_and_rollback_do_no
         serde_json::to_value(query).unwrap().get("recent").is_none(),
         "historical persisted defaults must omit false"
     );
+}
+
+// Catches a stale open binding conferring display eligibility after the seat's
+// canonical binding generation has advanced. Reading the message remains allowed.
+#[test]
+fn adapter_inbox_batch_stale_generation_cannot_offer_display_ack() {
+    let (store, db) = fixture();
+    bind_query_agent(&db);
+    db.execute_batch("UPDATE seats SET generation=2 WHERE id='s'; INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,body,decision_at) VALUES ('i',1,'stale','t',1,'ordinary','body',0); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('stale','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+    let CommandResult::InboxBatch(batch) = query(
+        &store,
+        "i",
+        &Command::InboxBatch(InboxQuery {
+            seat: Some(SeatId::new("s")),
+            page: page(None),
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("batch");
+    };
+    let crate::protocol::results::InboxBatchItem::Message {
+        ack_candidate,
+        body,
+        ..
+    } = &batch.items[0]
+    else {
+        panic!("message");
+    };
+    assert_eq!(body, "body");
+    assert_eq!(ack_candidate, &None);
+}
+
+#[test]
+fn adapter_inbox_batch_candidates_require_canonical_registered_agent() {
+    for (change, candidate) in [
+        ("target_id='different'", false),
+        ("harness='codex'", true),
+        ("harness='claude'", true),
+        ("harness='human'", false),
+        ("harness='future_agent'", false),
+        ("registered_at=NULL", false),
+        ("observation_provenance='managed_launch'", false),
+        ("native_session=''", false),
+        ("execution_id=''", false),
+    ] {
+        let (store, db) = fixture();
+        bind_query_agent(&db);
+        db.execute_batch("UPDATE seats SET target_id='w:p1',target_generation=1 WHERE id='s'; INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,body,decision_at) VALUES ('i',1,'m','t',1,'ordinary','body',0); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+        db.execute(
+            &format!("UPDATE occupant_bindings SET {change} WHERE seat_id='s'"),
+            [],
+        )
+        .unwrap();
+        let CommandResult::InboxBatch(batch) = query(
+            &store,
+            "i",
+            &Command::InboxBatch(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                page: page(None),
+            }),
+            &budget(),
+        )
+        .unwrap() else {
+            panic!("batch");
+        };
+        if change != "harness='human'" {
+            assert!(
+                !batch.items.is_empty(),
+                "message remains readable: {change}"
+            );
+        }
+        let offered = batch.items.iter().any(|item| {
+            matches!(
+                item,
+                crate::protocol::results::InboxBatchItem::Message {
+                    ack_candidate: Some(_),
+                    ..
+                }
+            )
+        });
+        assert_eq!(offered, candidate, "{change}");
+        assert_eq!(
+            db.query_row("SELECT ended_at FROM occupant_bindings", [], |r| r
+                .get::<_, Option<i64>>(0))
+                .unwrap(),
+            None
+        );
+    }
 }
 
 #[test]

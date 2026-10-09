@@ -51,28 +51,12 @@ def command(rec):
     return str(tool_input.get("command", "")) if isinstance(tool_input, dict) else ""
 
 
-def final_text(raw):
-    """The model's final message: claude --output-format json -> `result`; codex --json -> last agent_message."""
-    if harness == "claude":
-        try:
-            doc = json.loads(raw)
-        except ValueError:
-            return ""
-        items = doc if isinstance(doc, list) else [doc]
-        for item in reversed(items):
-            if isinstance(item, dict) and isinstance(item.get("result"), str):
-                return item["result"]
-        return ""
-    last = ""
-    for line in raw.splitlines():
-        try:
-            ev = json.loads(line)
-        except ValueError:
-            continue
-        item = ev.get("item") if isinstance(ev, dict) else None
-        if isinstance(item, dict) and item.get("type") == "agent_message" and isinstance(item.get("text"), str):
-            last = item["text"]
-    return last
+# The owned companion interprets its native output format.
+import importlib.util
+spec = importlib.util.spec_from_file_location("owned_canary", sys.argv[7])
+owned = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(owned)
+final_text = owned.final_text
 
 
 try:
@@ -113,42 +97,14 @@ PY
   hookcmd=$(printf '%q %q %q %q' "$(command -v python3)" "$CANARY/capture_hook.py" "$P/capture/tier1" "$T1/nonces.json")
 
   local rc=0 note=
-  if [ "$H" = claude ]; then
-    python3 - "$P/proj/.claude/settings.local.json" "$hookcmd" <<'PY'
-import json, os, sys
-os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
-hook = {"type": "command", "command": sys.argv[2], "timeout": 10}
-json.dump({"hooks": {"SessionStart": [{"hooks": [hook]}],
-                     "PreToolUse": [{"matcher": "Bash", "hooks": [hook]}]},
-           "permissions": {"allow": ["Bash(echo canary-ok)"]}}, open(sys.argv[1], "w"))
-PY
-    t1_xrun t1-run 180 "$keyvar" "$T1/key" "$P/proj" "$T1/bin/claude" -p "$T1_PROMPT" \
-      --model "${HT_CANARY_CLAUDE_MODEL:-claude-haiku-4-5-20251001}" --max-budget-usd 0.10 \
-      --setting-sources project,local --output-format json
-    rc=$XRC
-  else
-    # shellcheck disable=SC2016  # $1/$2 expand in the inner sh
-    xrun t1-login 60 sh -c 'exec "$1" login --with-api-key < "$2"' sh "$T1/bin/codex" "$T1/key"
-    if [ "$XRC" -ne 0 ]; then
-      rc=$XRC; note="codex login --with-api-key exited $XRC: $(tail_of "$LOGS/t1-login.err")"
-    else
-      local esc=${hookcmd//\\/\\\\}
-      esc=${esc//\"/\\\"}
-      local hs="[{hooks=[{type=\"command\",command=\"$esc\",timeout=10}]}]"
-      local hb="[{matcher=\"^Bash\$\",hooks=[{type=\"command\",command=\"$esc\",timeout=10}]}]"
-      t1_xrun t1-run 180 - "$T1/key" "$P/proj" "$T1/bin/codex" --no-daemon exec --ephemeral --ignore-user-config \
-        --dangerously-bypass-hook-trust --json --skip-git-repo-check -s read-only \
-        -m "${HT_CANARY_CODEX_MODEL:-gpt-6-luna}" -c 'model_reasoning_effort="low"' \
-        -c "hooks.SessionStart=$hs" -c "hooks.PreToolUse=$hb" "$T1_PROMPT"
-      rc=$XRC
-    fi
-  fi
+  adapter_model_run
   rm -f "$T1/key"
   [ "$rc" -eq 0 ] || [ -n "$note" ] || note="$H exited $rc: $(tail_of "$LOGS/t1-run.err")"
 
   local out id status detail
   touch "$LOGS/t1-run.out"
-  out=$(t1_eval "$P/capture/tier1" "$T1/nonces.json" "$LOGS/t1-run.out" "$H" "$rc" "$note") || out=
+  out=$(t1_eval "$P/capture/tier1" "$T1/nonces.json" "$LOGS/t1-run.out" "$H" "$rc" "$note" \
+    "${HT_CANARY_COMPANION:-$CANARY/adapters/$H.py}") || out=
   if [ -z "$out" ]; then
     for id in session-start pre-tool-use context-delivery; do record_check "t1.$id" fail "tier-1 evaluation failed"; done
   else

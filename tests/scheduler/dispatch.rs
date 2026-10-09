@@ -6531,6 +6531,761 @@ fn cooperative_reservation() -> WakeReservation {
     }
 }
 
+/// Records the real dispatcher's optional-interface calls without changing the
+/// existing cooperative host defaults or inventing native occupant evidence.
+struct RegisteredPokeHost {
+    inner: CooperativeStashingHost,
+    during_turn: Mutex<Vec<(SafeWakeTarget, String, HostCallContext)>>,
+    submissions: Mutex<Vec<(SafeWakeTarget, String, HostCallContext)>>,
+    submit_keys: AtomicU64,
+    reads: Mutex<Vec<HostCallContext>>,
+    target_override: Option<SafeWakeTarget>,
+    read_clock: Option<(Arc<FakeClock>, u64)>,
+    submission_error: Option<ApiError>,
+    submission_unknown: bool,
+}
+impl RegisteredPokeHost {
+    fn new(ui: HostUiState) -> Self {
+        let mut inner =
+            CooperativeStashingHost::over_typed_input(ComposerStash::Saved("typed".into()));
+        inner.observation.ui = ui;
+        Self {
+            inner,
+            during_turn: Mutex::new(Vec::new()),
+            submissions: Mutex::new(Vec::new()),
+            submit_keys: AtomicU64::new(0),
+            reads: Mutex::new(Vec::new()),
+            target_override: None,
+            read_clock: None,
+            submission_error: None,
+            submission_unknown: false,
+        }
+    }
+}
+impl HostPort for RegisteredPokeHost {
+    fn native_launch_capability(&self) -> NativeLaunchCapability {
+        self.inner.native_launch_capability()
+    }
+    fn observe_current_target_for_archival(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<crate::ports::ComposerObservation, ApiError> {
+        self.inner
+            .observe_current_target_for_archival(target, context)
+    }
+    fn observe_current_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<HostObservation, ApiError> {
+        self.reads.lock().unwrap().push(context.clone());
+        if let Some((clock, at)) = &self.read_clock {
+            clock.0.store(*at, Ordering::SeqCst);
+        }
+        self.inner.observe_current_target(target, context)
+    }
+    fn enumerate_targets(&self, context: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+        self.inner.enumerate_targets(context)
+    }
+    fn safe_wake_target(
+        &self,
+        seat: &SeatId,
+        observation: &HostObservation,
+    ) -> Option<SafeWakeTarget> {
+        self.target_override
+            .clone()
+            .or_else(|| self.inner.safe_wake_target(seat, observation))
+    }
+    fn submit_prompt(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        if let Some(error) = &self.submission_error {
+            return Err(error.clone());
+        }
+        let result = self.inner.submit_prompt(target, text, context)?;
+        self.submissions
+            .lock()
+            .unwrap()
+            .push((target.clone(), text.into(), context.clone()));
+        Ok(if self.submission_unknown {
+            PromptOutcome::OutcomeUnknown
+        } else {
+            result
+        })
+    }
+    fn submit_prompt_during_turn(
+        &self,
+        target: &SafeWakeTarget,
+        text: &str,
+        context: &HostCallContext,
+    ) -> Result<PromptOutcome, ApiError> {
+        self.during_turn
+            .lock()
+            .unwrap()
+            .push((target.clone(), text.into(), context.clone()));
+        self.submit_prompt(target, text, context)
+    }
+    fn pane_agent_state(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<crate::ports::AgentComposerState, ApiError> {
+        self.inner.pane_agent_state(target, context)
+    }
+    fn send_submit_key(&self, _: &SafeWakeTarget, _: &HostCallContext) -> Result<(), ApiError> {
+        self.submit_keys.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+    fn launch_native(
+        &self,
+        request: NativeLaunchRequest,
+        context: &HostCallContext,
+    ) -> Result<NativeLaunchOutcome, ApiError> {
+        self.inner.launch_native(request, context)
+    }
+    fn stash_composer(
+        &self,
+        target: &SafeWakeTarget,
+        context: &HostCallContext,
+    ) -> Result<ComposerStash, ApiError> {
+        self.inner.stash_composer(target, context)
+    }
+    fn restore_composer(
+        &self,
+        target: &SafeWakeTarget,
+        saved: &str,
+        context: &HostCallContext,
+    ) -> Result<(), ApiError> {
+        self.inner.restore_composer(target, saved, context)
+    }
+}
+
+struct RegisteredPokeCaps {
+    selected: Harness,
+    calls: Mutex<Vec<Harness>>,
+    declared: PokeCapabilities,
+}
+impl PokeCapabilitySource for RegisteredPokeCaps {
+    fn capabilities(&self, harness: Harness) -> PokeCapabilities {
+        self.calls.lock().unwrap().push(harness);
+        if harness == self.selected {
+            self.declared
+        } else {
+            PokeCapabilities::NONE
+        }
+    }
+}
+
+/// Kills: dropping a registered cooperative bound identity before capability
+/// selection. This injected seam is not proof of any shipped native capability.
+#[test]
+fn cooperative_registered_poke_identity_reaches_capability_source() {
+    let ids = vec![
+        "hermes",
+        #[cfg(feature = "test-support")]
+        "synthetic_fourth",
+        "codex",
+        "claude",
+    ];
+    let mut cases = Vec::new();
+    for bound in ids {
+        let selected = Harness::Agent(crate::harness::registry::builtins().agent(bound).unwrap());
+        let caps = RegisteredPokeCaps {
+            selected,
+            calls: Mutex::new(Vec::new()),
+            declared: DURING_TURN.0,
+        };
+        let host = RegisteredPokeHost::new(HostUiState::ActiveTurn);
+        let clock = FakeClock(AtomicU64::new(0));
+        let check = FakeReservationCheck {
+            current: true,
+            calls: AtomicU64::new(0),
+        };
+        let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+        let mut reservation = cooperative_reservation();
+        if let ReservedWakeAuthority::Cooperative { harness, .. } = &mut reservation.authority {
+            *harness = Some(bound.into());
+        }
+        let attempt = dispatcher
+            .attempt_poke(
+                reservation,
+                &poke_plan_for_tests(),
+                PokeMode::PokeOnly,
+                &caps,
+                &dispatch_context(),
+            )
+            .unwrap();
+        let calls = caps.calls.lock().unwrap().clone();
+        let submitted = host.during_turn.lock().unwrap().clone();
+        eprintln!(
+            "registered-poke case={bound} source={calls:?} outcome={:?} poked={} during_turn={}",
+            attempt.outcome,
+            attempt.poked,
+            submitted.len()
+        );
+        assert!(host.inner.observation.occupant.is_none());
+        assert_eq!(
+            host.inner.observation.occupancy,
+            StructuralOccupancy::Unknown
+        );
+        assert!(matches!(
+            host.inner.observation.execution,
+            ExecutionEvidence::Unknown
+        ));
+        assert_eq!(host.inner.stash_calls.load(Ordering::SeqCst), 0);
+        assert!(host.inner.restored.lock().unwrap().is_empty());
+        assert_eq!(host.submit_keys.load(Ordering::SeqCst), 0);
+        cases.push((
+            bound,
+            selected,
+            calls,
+            submitted,
+            attempt,
+            host.inner.prompts.lock().unwrap().clone(),
+        ));
+    }
+    for (bound, selected, calls, submitted, attempt, prompts) in cases {
+        assert_eq!(
+            calls,
+            [selected],
+            "{bound}: exact registered identity reaches source once"
+        );
+        assert_eq!(attempt.outcome, WakeOutcome::Submitted, "{bound}");
+        assert!(attempt.poked, "{bound}");
+        assert_eq!(prompts, [POKE_TEXT], "{bound}");
+        assert_eq!(submitted.len(), 1, "{bound}: during-turn submission");
+        assert_eq!(submitted[0].0.bound_harness.as_deref(), Some(bound));
+        assert_eq!(submitted[0].1, POKE_TEXT);
+        assert_eq!(submitted[0].2.budget.deadline, MonoInstant(2_000));
+        assert_eq!(submitted[0].2.expected_boot, Some(HostBootId::new("boot")));
+        assert_eq!(submitted[0].2.expected_epoch, Some(1));
+    }
+}
+
+fn registered_poke_reservation(bound: Option<&str>) -> WakeReservation {
+    let mut reservation = cooperative_reservation();
+    if let ReservedWakeAuthority::Cooperative { harness, .. } = &mut reservation.authority {
+        *harness = bound.map(str::to_owned);
+    }
+    reservation
+}
+
+fn registered_poke_caps(bound: &str, declared: PokeCapabilities) -> RegisteredPokeCaps {
+    RegisteredPokeCaps {
+        selected: Harness::Agent(crate::harness::registry::builtins().agent(bound).unwrap()),
+        calls: Mutex::new(Vec::new()),
+        declared,
+    }
+}
+
+fn assert_no_registered_poke_effects(host: &RegisteredPokeHost) {
+    assert!(host.inner.prompts.lock().unwrap().is_empty());
+    assert!(host.during_turn.lock().unwrap().is_empty());
+    assert_eq!(host.inner.stash_calls.load(Ordering::SeqCst), 0);
+    assert!(host.inner.restored.lock().unwrap().is_empty());
+    assert_eq!(host.submit_keys.load(Ordering::SeqCst), 0);
+}
+
+/// Kills: registration or missing optional composer granting rich behavior,
+/// and a poke-carrying ordinary wake stashing a person's draft.
+#[test]
+fn cooperative_registered_poke_none_stays_conservative() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    for registration in crate::harness::registry::builtins().registrations() {
+        let bound = registration.metadata().id;
+        for (ui, mode, declared, outcome, poked, prompt, stash) in [
+            (
+                HostUiState::ActiveTurn,
+                PokeMode::PokeOnly,
+                PokeCapabilities::NONE,
+                WakeOutcome::Unsafe,
+                false,
+                None,
+                false,
+            ),
+            (
+                HostUiState::HumanInput,
+                PokeMode::PokeOnly,
+                PokeCapabilities::NONE,
+                WakeOutcome::Unsafe,
+                false,
+                None,
+                false,
+            ),
+            (
+                HostUiState::Idle,
+                PokeMode::PokeOnly,
+                PokeCapabilities::NONE,
+                WakeOutcome::Submitted,
+                true,
+                Some(POKE_TEXT),
+                false,
+            ),
+            (
+                HostUiState::HumanInput,
+                PokeMode::WithWake,
+                PokeCapabilities::NONE,
+                WakeOutcome::Submitted,
+                false,
+                Some(crate::notification::policy::MARKER),
+                false,
+            ),
+            (
+                HostUiState::HumanInput,
+                PokeMode::WithWake,
+                STASH.0,
+                WakeOutcome::Submitted,
+                false,
+                Some(crate::notification::policy::MARKER),
+                false,
+            ),
+            (
+                HostUiState::HumanInput,
+                PokeMode::PokeOnly,
+                STASH.0,
+                WakeOutcome::Submitted,
+                true,
+                Some(POKE_TEXT),
+                true,
+            ),
+        ] {
+            let host = RegisteredPokeHost::new(ui);
+            let caps = registered_poke_caps(bound, declared);
+            let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+            let attempt = dispatcher
+                .attempt_poke(
+                    registered_poke_reservation(Some(bound)),
+                    &poke_plan_for_tests(),
+                    mode,
+                    &caps,
+                    &dispatch_context(),
+                )
+                .unwrap();
+            assert_eq!(
+                (attempt.outcome, attempt.poked),
+                (outcome, poked),
+                "{bound} {ui:?} {mode:?}"
+            );
+            assert_eq!(*caps.calls.lock().unwrap(), [caps.selected]);
+            assert_eq!(
+                *host.inner.prompts.lock().unwrap(),
+                prompt.into_iter().map(str::to_owned).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                host.inner.stash_calls.load(Ordering::SeqCst),
+                u64::from(stash)
+            );
+            assert_eq!(
+                *host.inner.restored.lock().unwrap(),
+                if stash {
+                    vec!["typed".to_owned()]
+                } else {
+                    vec![]
+                }
+            );
+            assert_eq!(host.submit_keys.load(Ordering::SeqCst), 0);
+            for (target, text, _) in host.submissions.lock().unwrap().iter() {
+                assert_eq!(target.bound_harness.as_deref(), Some(bound));
+                assert_eq!(Some(text.as_str()), prompt);
+            }
+            assert!(host.inner.observation.occupant.is_none());
+            eprintln!(
+                "none-control case={bound} ui={ui:?} mode={mode:?} declared={declared:?} outcome={outcome:?} poked={poked} stash={stash}"
+            );
+        }
+    }
+}
+
+/// Kills: string presence, Human or a child being promoted to recognized
+/// agent; also kills bound fallback overriding the verified occupant identity.
+#[test]
+fn cooperative_poke_invalid_identity_never_calls_capability_source() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    for (label, bound, occupant) in [
+        ("unknown", Some("unregistered"), None),
+        ("human", Some("human"), None),
+        ("Human", Some("Human"), None),
+        ("context spelling", Some("Hermes"), None),
+        ("absent", None, None),
+        (
+            "explicit Human",
+            Some("hermes"),
+            Some((Harness::Human, true)),
+        ),
+        ("child", Some("hermes"), Some((Harness::Codex, false))),
+    ] {
+        let mut host = RegisteredPokeHost::new(HostUiState::Idle);
+        host.inner.observation.occupant = occupant.map(|(harness, is_top_level)| NativeOccupant {
+            harness,
+            is_top_level,
+            session: NativeSessionId::new("session"),
+            execution: ExecutionId::new("execution"),
+        });
+        let caps = registered_poke_caps("hermes", DURING_TURN.0);
+        let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+        let attempt = dispatcher
+            .attempt_poke(
+                registered_poke_reservation(bound),
+                &poke_plan_for_tests(),
+                PokeMode::PokeOnly,
+                &caps,
+                &dispatch_context(),
+            )
+            .unwrap();
+        assert_eq!(attempt.outcome, WakeOutcome::Unsafe, "{label}");
+        assert!(!attempt.poked);
+        assert!(caps.calls.lock().unwrap().is_empty(), "{label}");
+        assert_no_registered_poke_effects(&host);
+        eprintln!("invalid-identity case={label} source=0 prompts=0");
+    }
+    // Registered-basis evidence uses the observed occupant, even when the
+    // injected target carries a different bound hint.
+    let mut host = RegisteredPokeHost::new(HostUiState::ActiveTurn);
+    host.inner.observation = fresh_observation();
+    host.inner.observation.ui = HostUiState::ActiveTurn;
+    let mut target = host
+        .inner
+        .safe_wake_target(&SeatId::new("seat"), &host.inner.observation)
+        .unwrap();
+    target.basis = crate::ports::WakeTargetBasis::VerifiedOccupant {
+        session: NativeSessionId::new("session"),
+        execution: ExecutionId::new("execution"),
+    };
+    target.bound_harness = Some("hermes".into());
+    host.target_override = Some(target);
+    let reservation = WakeReservation {
+        authority: ReservedWakeAuthority::Registered {
+            binding_generation: 1,
+            execution: ExecutionId::new("execution"),
+        },
+        ..test_reservation()
+    };
+    let caps = registered_poke_caps("codex", DURING_TURN.0);
+    let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+    let attempt = dispatcher
+        .attempt_poke(
+            reservation,
+            &poke_plan_for_tests(),
+            PokeMode::PokeOnly,
+            &caps,
+            &dispatch_context(),
+        )
+        .unwrap();
+    assert_eq!(*caps.calls.lock().unwrap(), [Harness::Codex]);
+    assert_eq!(
+        (attempt.outcome, attempt.poked),
+        (WakeOutcome::Submitted, true)
+    );
+    assert_eq!(*host.inner.prompts.lock().unwrap(), [POKE_TEXT]);
+}
+
+struct RegisteredPokeCheck {
+    result: Result<bool, ApiError>,
+    clock: Option<(Arc<FakeClock>, u64)>,
+    budgets: Mutex<Vec<CallBudget>>,
+}
+impl ReservationCheck for RegisteredPokeCheck {
+    fn is_current(&self, _: &WakeReservation, budget: &CallBudget) -> Result<bool, ApiError> {
+        self.budgets.lock().unwrap().push(budget.clone());
+        if let Some((clock, at)) = &self.clock {
+            clock.0.store(*at, Ordering::SeqCst);
+        }
+        self.result.clone()
+    }
+}
+
+/// Kills: identity selection bypassing structural, UI, current-reservation or
+/// original deadline/cancellation fences, and failed sends marking a poke.
+#[test]
+fn cooperative_registered_poke_preserves_fences_and_budget() {
+    type Change = Box<dyn Fn(&mut RegisteredPokeHost)>;
+    let mut changes: Vec<(&str, Change)> = vec![
+        (
+            "target",
+            Box::new(|h| h.inner.observation.target = HostTargetId::new("other")),
+        ),
+        (
+            "boot",
+            Box::new(|h| h.inner.observation.host_boot = HostBootId::new("other")),
+        ),
+        ("epoch", Box::new(|h| h.inner.observation.epoch = 2)),
+        (
+            "generation",
+            Box::new(|h| h.inner.observation.generation = 2),
+        ),
+        (
+            "terminal",
+            Box::new(|h| h.inner.observation.terminal = Some(TerminalId::new("other"))),
+        ),
+        (
+            "stale",
+            Box::new(|h| {
+                h.inner.observation.provenance = ObservationProvenance::UncharacterizedCache
+            }),
+        ),
+        (
+            "incarnation",
+            Box::new(|h| {
+                h.inner.observation.incarnation = IncarnationEvidence::Verified {
+                    identity: "other".into(),
+                    evidence_kind: EvidenceKind::NativeCurrentTarget,
+                }
+            }),
+        ),
+        (
+            "empty shell",
+            Box::new(|h| h.inner.observation.occupancy = StructuralOccupancy::EmptyShell),
+        ),
+        (
+            "basis",
+            Box::new(|h| {
+                let mut target = h
+                    .inner
+                    .safe_wake_target(&SeatId::new("seat"), &h.inner.observation)
+                    .unwrap();
+                target.basis = crate::ports::WakeTargetBasis::VerifiedOccupant {
+                    session: NativeSessionId::new("session"),
+                    execution: ExecutionId::new("execution"),
+                };
+                h.target_override = Some(target);
+            }),
+        ),
+    ];
+    for field in [
+        "seat",
+        "target",
+        "boot",
+        "epoch",
+        "generation",
+        "terminal",
+        "incarnation",
+    ] {
+        changes.push((
+            field,
+            Box::new(move |host| {
+                let mut target = host
+                    .inner
+                    .safe_wake_target(&SeatId::new("seat"), &host.inner.observation)
+                    .unwrap();
+                match field {
+                    "seat" => target.seat = SeatId::new("other"),
+                    "target" => target.target = HostTargetId::new("other"),
+                    "boot" => target.host_boot = HostBootId::new("other"),
+                    "epoch" => target.epoch = 2,
+                    "generation" => target.generation = 2,
+                    "terminal" => target.terminal = TerminalId::new("other"),
+                    "incarnation" => target.incarnation = "other".into(),
+                    _ => unreachable!(),
+                }
+                host.target_override = Some(target);
+            }),
+        ));
+    }
+    for (label, change) in changes {
+        for mode in [PokeMode::PokeOnly, PokeMode::WithWake] {
+            let clock = FakeClock(AtomicU64::new(0));
+            let check = FakeReservationCheck {
+                current: true,
+                calls: AtomicU64::new(0),
+            };
+            let mut host = RegisteredPokeHost::new(HostUiState::Idle);
+            change(&mut host);
+            let caps = registered_poke_caps("hermes", DURING_TURN.0);
+            let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+            let attempt = dispatcher
+                .attempt_poke(
+                    registered_poke_reservation(Some("hermes")),
+                    &poke_plan_for_tests(),
+                    mode,
+                    &caps,
+                    &dispatch_context(),
+                )
+                .unwrap();
+            assert_eq!(
+                attempt.outcome,
+                if mode == PokeMode::PokeOnly {
+                    WakeOutcome::Unsafe
+                } else {
+                    WakeOutcome::Refused(RefusalCause::Unsafe)
+                },
+                "{label} {mode:?}"
+            );
+            assert!(!attempt.poked);
+            assert!(caps.calls.lock().unwrap().is_empty());
+            assert_eq!(check.calls.load(Ordering::SeqCst), 0);
+            assert_no_registered_poke_effects(&host);
+            eprintln!("fence case={label} mode={mode:?} source=0 prompts=0");
+        }
+    }
+    for (ui, focused) in [
+        (HostUiState::Idle, true),
+        (HostUiState::Unknown, false),
+        (HostUiState::ApprovalOrQuestion, false),
+    ] {
+        let clock = FakeClock(AtomicU64::new(0));
+        let check = FakeReservationCheck {
+            current: true,
+            calls: AtomicU64::new(0),
+        };
+        let mut host = RegisteredPokeHost::new(ui);
+        host.inner.observation.focused = focused;
+        let caps = registered_poke_caps("hermes", DURING_TURN.0);
+        let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+        let attempt = dispatcher
+            .attempt_poke(
+                registered_poke_reservation(Some("hermes")),
+                &poke_plan_for_tests(),
+                PokeMode::PokeOnly,
+                &caps,
+                &dispatch_context(),
+            )
+            .unwrap();
+        assert_eq!(
+            (attempt.outcome, attempt.poked),
+            (WakeOutcome::Unsafe, false)
+        );
+        assert_eq!(*caps.calls.lock().unwrap(), [caps.selected]);
+        assert_no_registered_poke_effects(&host);
+        eprintln!("ui-fence ui={ui:?} focused={focused} source=1 prompts=0");
+    }
+    for mode in [PokeMode::PokeOnly, PokeMode::WithWake] {
+        for case in [
+            "exhausted",
+            "cancelled",
+            "read deadline",
+            "current false",
+            "current error",
+            "prompt deadline",
+            "decreasing",
+            "unknown send",
+            "rejected send",
+        ] {
+            let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+            let mut host = RegisteredPokeHost::new(HostUiState::Idle);
+            let mut context = dispatch_context();
+            let mut check = RegisteredPokeCheck {
+                result: Ok(true),
+                clock: None,
+                budgets: Mutex::new(Vec::new()),
+            };
+            match case {
+                "exhausted" => context.budget.deadline = MonoInstant(0),
+                "cancelled" => context.budget.cancellation.cancel(),
+                "read deadline" => host.read_clock = Some((clock.clone(), 750)),
+                "current false" => check.result = Ok(false),
+                "current error" => {
+                    check.result = Err(ApiError::new(
+                        ErrorCode::HostUnavailable,
+                        "check unavailable",
+                    ))
+                }
+                "prompt deadline" => check.clock = Some((clock.clone(), 10_000)),
+                "decreasing" => {
+                    context.budget.deadline = MonoInstant(600);
+                    host.read_clock = Some((clock.clone(), 200));
+                }
+                "unknown send" => host.submission_unknown = true,
+                "rejected send" => {
+                    host.submission_error =
+                        Some(ApiError::new(ErrorCode::TargetUnsafe, "prompt rejected"))
+                }
+                _ => unreachable!(),
+            }
+            let caps = registered_poke_caps("hermes", DURING_TURN.0);
+            let dispatcher = NativeWakeDispatcher::new(&host, &check, clock.as_ref());
+            let result = dispatcher.attempt_poke(
+                registered_poke_reservation(Some("hermes")),
+                &poke_plan_for_tests(),
+                mode,
+                &caps,
+                &context,
+            );
+            if case == "current error" && mode == PokeMode::PokeOnly || case == "rejected send" {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    if case == "rejected send" {
+                        ErrorCode::TargetUnsafe
+                    } else {
+                        ErrorCode::HostUnavailable
+                    }
+                );
+            } else {
+                let attempt = result.unwrap();
+                let plain = match case {
+                    "exhausted" | "cancelled" | "read deadline" | "prompt deadline" => {
+                        WakeOutcome::TimedOut
+                    }
+                    "current false" => WakeOutcome::Unsafe,
+                    "current error" => WakeOutcome::Refused(RefusalCause::Unavailable),
+                    "decreasing" => WakeOutcome::Submitted,
+                    "unknown send" => WakeOutcome::OutcomeUnknown,
+                    _ => unreachable!(),
+                };
+                let expected = if mode == PokeMode::WithWake && plain == WakeOutcome::TimedOut {
+                    WakeOutcome::Refused(RefusalCause::TimedOut)
+                } else if mode == PokeMode::WithWake && plain == WakeOutcome::Unsafe {
+                    WakeOutcome::Refused(RefusalCause::Unsafe)
+                } else {
+                    plain
+                };
+                assert_eq!(attempt.outcome, expected, "{case} {mode:?}");
+                assert_eq!(attempt.poked, case == "decreasing");
+            }
+            let before_source = matches!(case, "exhausted" | "cancelled" | "read deadline");
+            assert_eq!(
+                caps.calls.lock().unwrap().len(),
+                usize::from(!before_source)
+            );
+            if !matches!(case, "decreasing" | "unknown send") {
+                assert_no_registered_poke_effects(&host);
+            }
+            for read in host.reads.lock().unwrap().iter() {
+                assert!(read.budget.deadline.0 <= context.budget.deadline.0);
+            }
+            for budget in check.budgets.lock().unwrap().iter() {
+                assert_eq!(budget.deadline, context.budget.deadline);
+            }
+            for (_, _, prompt_context) in host.submissions.lock().unwrap().iter() {
+                assert!(prompt_context.budget.deadline.0 <= context.budget.deadline.0);
+                if case == "decreasing" {
+                    assert_eq!(prompt_context.budget.deadline, MonoInstant(600));
+                    assert_eq!(
+                        host.reads.lock().unwrap()[0].budget.deadline,
+                        MonoInstant(600)
+                    );
+                }
+            }
+            context.budget.cancellation.cancel();
+            for read in host.reads.lock().unwrap().iter() {
+                assert!(read.budget.cancellation.is_cancelled());
+            }
+            for budget in check.budgets.lock().unwrap().iter() {
+                assert!(budget.cancellation.is_cancelled());
+            }
+            for (_, _, prompt_context) in host.submissions.lock().unwrap().iter() {
+                assert!(prompt_context.budget.cancellation.is_cancelled());
+            }
+            eprintln!(
+                "budget-fence case={case} mode={mode:?} source={} prompts={}",
+                caps.calls.lock().unwrap().len(),
+                host.inner.prompts.lock().unwrap().len()
+            );
+        }
+    }
+}
+
 /// Kills: composer content refusing an ordinary wake, and a skipped poke
 /// that is not confined to the poke.
 #[test]

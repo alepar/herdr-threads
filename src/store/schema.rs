@@ -62,7 +62,8 @@ const V23: &str = include_str!("../../migrations/0023_channel_archival.sql");
 const V24: &str = include_str!("../../migrations/0024_harness_contract_diagnostics.sql");
 const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sql");
 const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
-pub(crate) const LATEST_VERSION: i64 = 26;
+const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
+pub(crate) const LATEST_VERSION: i64 = 27;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -162,6 +163,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V24))
                 .and_then(|_| conn.execute_batch(V25))
                 .and_then(|_| conn.execute_batch(V26))
+                .and_then(|_| conn.execute_batch(V27))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -402,7 +404,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=26 => verify_existing(conn),
+        18..=27 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -486,17 +488,22 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
             .execute_batch(V24)
-            .and_then(|_| conn.pragma_update(None, "user_version", 24));
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v24(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 24)
+                    .map_err(store_error)
+            });
         match result {
             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
             Err(error) => {
                 let _ = conn.execute_batch("ROLLBACK");
-                return Err(store_error(error));
+                return Err(error);
             }
         }
     }
-    verify_existing_v24(conn)?;
     if (1..=24).contains(&version) {
+        verify_existing_v24(conn)?;
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
             .execute_batch(V25)
@@ -523,7 +530,28 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_existing_v26(conn)
+    verify_existing_v26(conn)?;
+    if (1..=26).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V27)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v23(conn))
+            .and_then(|_| verify_existing_v27(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 27)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_existing_v23(conn)?;
+    verify_existing_v27(conn)
 }
 
 fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
@@ -598,34 +626,6 @@ fn verify_existing_v25(conn: &Connection) -> Result<(), ApiError> {
             ErrorCode::IncompatibleSchema,
             "missing or altered warning delivery projection",
         ));
-    }
-    Ok(())
-}
-
-fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {
-    let ddl = V24
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("--"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for sql in ddl.split(';').map(str::trim).filter(|sql| !sql.is_empty()) {
-        let mut words = sql.split_whitespace().skip(1);
-        let kind = words.next().unwrap_or_default().to_ascii_lowercase();
-        let name = words.next().unwrap_or_default();
-        let installed: Option<String> = conn
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
-                params![kind, name],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(store_error)?;
-        if installed.as_deref().map(str::trim) != Some(sql) {
-            return Err(api_error(
-                ErrorCode::IncompatibleSchema,
-                format!("missing or altered harness diagnostic {kind} {name}"),
-            ));
-        }
     }
     Ok(())
 }
@@ -757,6 +757,65 @@ fn verify_existing_v22(conn: &Connection) -> Result<(), ApiError> {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
                 format!("missing or altered user intent column {table}.{column}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_existing_v27(conn: &Connection) -> Result<(), ApiError> {
+    let normalize = |sql: &str| {
+        sql.split_whitespace()
+            .collect::<String>()
+            .trim_end_matches(';')
+            .replace('"', "")
+            .to_ascii_lowercase()
+    };
+    for statement in V27.split(';') {
+        let clean = statement
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let statement = clean.trim();
+        let kind = if statement.starts_with("CREATE TABLE ") {
+            "table"
+        } else if statement.starts_with("CREATE INDEX ")
+            || statement.starts_with("CREATE UNIQUE INDEX ")
+        {
+            "index"
+        } else {
+            continue;
+        };
+        let rest = statement
+            .strip_prefix("CREATE TABLE ")
+            .or_else(|| statement.strip_prefix("CREATE INDEX "))
+            .or_else(|| statement.strip_prefix("CREATE UNIQUE INDEX "))
+            .expect("create statement");
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if name == "harness_binding_sequence_v22" {
+            continue;
+        }
+        let installed_name = name
+            .strip_suffix("_v22")
+            .or_else(|| name.strip_suffix("_v25"))
+            .unwrap_or(&name);
+        let expected = statement.replacen(&name, installed_name, 1);
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, installed_name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(normalize) != Some(normalize(&expected)) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("incompatible v26 {kind} {installed_name}"),
             ));
         }
     }
@@ -1072,6 +1131,13 @@ fn verify_existing_v11_shape(conn: &Connection) -> Result<(), ApiError> {
 /// v12 (ht-xoc.4): both evidence tables and the `last_seen` index must exist as
 /// the migration wrote them (same whitespace/case normalization as v11).
 fn verify_v12_harness_evidence(conn: &Connection) -> Result<(), ApiError> {
+    if conn
+        .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+        .map_err(store_error)?
+        >= 27
+    {
+        return verify_existing_v27(conn);
+    }
     let normalize = |sql: &str| {
         sql.trim()
             .trim_end_matches(';')
@@ -1598,9 +1664,27 @@ fn migrate_v10_to_v11(conn: &Connection) -> Result<(), ApiError> {
 
 fn migrate_v8_to_v9(conn: &Connection) -> Result<(), ApiError> {
     conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    // The v8 shape was already validated. Carry the allocation high-water
+    // across v9's surviving-row rebuild inside that same transaction, rather
+    // than reading malformed historical stores before their canonical audit.
+    // The historical SQL itself remains byte-for-byte unchanged.
     let result = conn
-        .execute_batch(V9)
-        .and_then(|_| conn.pragma_update(None, "user_version", 9));
+        .query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .and_then(|sequence| {
+            conn.execute_batch(V9)?;
+            if let Some(sequence) = sequence {
+                conn.execute(
+                    "UPDATE sqlite_sequence SET seq=MAX(seq,?1) WHERE name='occupant_bindings'",
+                    [sequence],
+                )?;
+            }
+            conn.pragma_update(None, "user_version", 9)
+        });
     match result {
         Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
         Err(error) => {
@@ -1612,6 +1696,13 @@ fn migrate_v8_to_v9(conn: &Connection) -> Result<(), ApiError> {
 
 /// v9: occupant bindings accept the `human` harness of `me init`.
 fn verify_existing_v9(conn: &Connection) -> Result<(), ApiError> {
+    if conn
+        .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+        .map_err(store_error)?
+        >= 27
+    {
+        return verify_existing_v27(conn);
+    }
     let sql: Option<String> = conn
         .query_row(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='occupant_bindings'",
@@ -3728,4 +3819,32 @@ pub(crate) fn execute_accountable_transaction(
         apply,
         |_, result| Ok(result),
     )
+}
+
+fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {
+    let ddl = V24
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for sql in ddl.split(';').map(str::trim).filter(|sql| !sql.is_empty()) {
+        let mut words = sql.split_whitespace().skip(1);
+        let kind = words.next().unwrap_or_default().to_ascii_lowercase();
+        let name = words.next().unwrap_or_default();
+        let installed: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if installed.as_deref().map(str::trim) != Some(sql) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered harness diagnostic {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
 }

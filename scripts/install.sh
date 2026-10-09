@@ -679,12 +679,7 @@ OUT_LINKED=$registered
 
 # --- harness setup ----------------------------------------------------------
 
-harnesses=$(detected_harnesses | tr '\n' ' ')
-harnesses=${harnesses% }
-if [ -z "$harnesses" ]; then
-    OUT_SETUP=none_found
-    say "no supported harness (claude, codex) found on PATH; skipping hook setup"
-elif [ "$setup" = no ]; then
+if [ "$setup" = no ]; then
     OUT_SETUP=skipped
     say "skipping hook setup (--no-setup)"
 elif [ "$registered" = 0 ]; then
@@ -700,48 +695,56 @@ elif installer_integrations; then
         OUT_SETUP=complete
     else
         OUT_SETUP=failed
-        OUT_SETUP_FAILED=$harnesses
         warn "harness integration reconciliation failed; see the per-component verdicts above"
     fi
-elif bare_setup; then
-    if [ "$setup" = ask ] && ! can_prompt; then
-        OUT_SETUP=suggested
-        say "detected $harnesses; hook setup not run (no terminal and no --setup)"
-    elif [ "$setup" = ask ] && ! confirm "Install herdr-threads hooks for every detected harness ($harnesses) (herdr-threads setup)?"; then
-        OUT_SETUP=declined
-        say "skipping hook setup"
-    elif "$installed_binary" setup; then
-        OUT_SETUP=complete
-        case " $harnesses " in *" codex "*) OUT_CODEX_SET_UP=1 ;; esac
-        say "set up hooks for the detected harnesses (summary above)"
-    else
-        OUT_SETUP=failed
-        OUT_SETUP_FAILED=$harnesses
-        warn "\`herdr-threads setup\` failed for a harness; see its output above"
-    fi
 else
-    OUT_SETUP=suggested
-    for h in $harnesses; do
-        if [ "$setup" = ask ]; then
-            if ! can_prompt; then
-                say "detected $h; its hook setup not run (no terminal and no --setup)"
-                continue
-            fi
-            if ! confirm "Install herdr-threads hooks for $h (herdr-threads setup $h)?"; then
-                OUT_SETUP=declined
-                continue
-            fi
-        fi
-        if "$installed_binary" setup "$h"; then
-            [ "$OUT_SETUP" = failed ] || OUT_SETUP=complete
-            [ "$h" != codex ] || OUT_CODEX_SET_UP=1
-            say "set up $h hooks"
+    # Older binaries use the historical Claude/Codex fallback. Modern binaries
+    # own registry membership and optional-component reconciliation themselves.
+    harnesses=$(detected_harnesses | tr '\n' ' ')
+    harnesses=${harnesses% }
+    if [ -z "$harnesses" ]; then
+        OUT_SETUP=none_found
+        say "no supported harness (claude, codex) found on PATH; skipping hook setup"
+    elif bare_setup; then
+        if [ "$setup" = ask ] && ! can_prompt; then
+            OUT_SETUP=suggested
+            say "detected $harnesses; hook setup not run (no terminal and no --setup)"
+        elif [ "$setup" = ask ] && ! confirm "Install herdr-threads hooks for every detected harness ($harnesses) (herdr-threads setup)?"; then
+            OUT_SETUP=declined
+            say "skipping hook setup"
+        elif "$installed_binary" setup; then
+            OUT_SETUP=complete
+            case " $harnesses " in *" codex "*) OUT_CODEX_SET_UP=1 ;; esac
+            say "set up hooks for the detected harnesses (summary above)"
         else
             OUT_SETUP=failed
-            OUT_SETUP_FAILED="${OUT_SETUP_FAILED:+$OUT_SETUP_FAILED }$h"
-            warn "\`herdr-threads setup $h\` failed; see its output above"
+            OUT_SETUP_FAILED=$harnesses
+            warn "\`herdr-threads setup\` failed for a harness; see its output above"
         fi
-    done
+    else
+        OUT_SETUP=suggested
+        for h in $harnesses; do
+            if [ "$setup" = ask ]; then
+                if ! can_prompt; then
+                    say "detected $h; its hook setup not run (no terminal and no --setup)"
+                    continue
+                fi
+                if ! confirm "Install herdr-threads hooks for $h (herdr-threads setup $h)?"; then
+                    OUT_SETUP=declined
+                    continue
+                fi
+            fi
+            if "$installed_binary" setup "$h"; then
+                [ "$OUT_SETUP" = failed ] || OUT_SETUP=complete
+                [ "$h" != codex ] || OUT_CODEX_SET_UP=1
+                say "set up $h hooks"
+            else
+                OUT_SETUP=failed
+                OUT_SETUP_FAILED="${OUT_SETUP_FAILED:+$OUT_SETUP_FAILED }$h"
+                warn "\`herdr-threads setup $h\` failed; see its output above"
+            fi
+        done
+    fi
 fi
 
 # --- next steps and final status -------------------------------------------
@@ -781,7 +784,13 @@ next_steps() {
         printf '    %s\n' "and check it: herdr-threads doctor"
     fi
     case "$OUT_SETUP" in
-        failed) step "Fix agent hook setup (see above): herdr-threads setup; check: herdr-threads setup-status" ;;
+        failed)
+            if [ -n "$OUT_SETUP_FAILED" ]; then
+                step "Fix agent hook setup (see above): herdr-threads setup; check: herdr-threads setup-status"
+            else
+                step "Fix the failed integration components (see above), then rerun: herdr-threads internal installer-integrations"
+            fi
+            ;;
         none_found) step "No supported harness (claude, codex) found on PATH; after installing one, run: herdr-threads setup" ;;
         not_registered) step "After the plugin is registered, set up agent hooks: herdr-threads setup (every detected harness; check: herdr-threads setup-status)" ;;
         per_project) step "Set up agent hooks inside each project: herdr-threads setup claude|codex" ;;
@@ -816,8 +825,13 @@ finish() {
         exit 3
     fi
     if [ "$OUT_SETUP" = failed ]; then
-        status_line "installed and linked; setup incomplete: $OUT_SETUP_FAILED"
-        printf '  finish it with: herdr-threads setup\n'
+        if [ -n "$OUT_SETUP_FAILED" ]; then
+            status_line "installed and linked; setup incomplete: $OUT_SETUP_FAILED"
+            printf '  finish it with: herdr-threads setup\n'
+        else
+            status_line "installed and linked; harness integration reconciliation incomplete"
+            printf '  retry it with: herdr-threads internal installer-integrations\n'
+        fi
         exit 3
     fi
     if [ "$OUT_UPGRADED" = 1 ]; then

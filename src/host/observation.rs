@@ -58,7 +58,10 @@ pub fn structured_host_error(value: &Value) -> Option<ApiError> {
         .unwrap_or("host error");
     let code = match host_code {
         "permission_denied" | "unauthorized" | "access_denied" => ErrorCode::Unauthorized,
-        "unsupported_version" | "version_mismatch" | "protocol_mismatch" => ErrorCode::Unsupported,
+        "unsupported_version"
+        | "version_mismatch"
+        | "protocol_mismatch"
+        | "agent_process_hint_unsupported" => ErrorCode::Unsupported,
         "invalid_request" | "parse_error" | "invalid_json" => ErrorCode::InvalidRequest,
         "agent_pane_busy" | "agent_name_taken" | "agent_blocked" | "target_unsafe" => {
             ErrorCode::TargetUnsafe

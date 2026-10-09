@@ -1,0 +1,31 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.3 (<TASK14_WORKTREE>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.03s
+     Running unittests src/lib.rs (<INTEGRATION_TARGET>/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
+
+running 7 tests
+test harness::hermes::assets::tests::lock_child ... ok
+test harness::hermes::assets::tests::stages_completed_bridge_and_six_settings_in_observed_home ... ok
+test harness::hermes::assets::tests::symlink_asset_directory_and_replaced_lock_inode_refuse_generation ... FAILED
+test harness::hermes::assets::tests::foreign_modified_and_missing_unsetup_never_claim_or_create_assets ... ok
+test harness::hermes::assets::tests::hermes_owned_assets_share_physical_profile_lock_and_remove_only_locked_generation ... ok
+test harness::hermes::assets::tests::process_death_releases_physical_lock_without_replacing_inode ... ok
+test harness::hermes::assets::tests::default_named_isolation_interruption_and_config_selection_are_independent ... ok
+
+failures:
+
+---- harness::hermes::assets::tests::symlink_asset_directory_and_replaced_lock_inode_refuse_generation stdout ----
+
+thread 'harness::hermes::assets::tests::symlink_asset_directory_and_replaced_lock_inode_refuse_generation' (61733631) panicked at src/harness/hermes/assets.rs:625:9:
+assertion `left == right` failed
+  left: Ok(AssetStatus { installed: true, repairable: false, configured_enabled: Some(false), manual_argv: ["hermes", "--profile", "default", "plugins", "enable", "herdr-threads"] })
+ right: Err(Conflict)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    harness::hermes::assets::tests::symlink_asset_directory_and_replaced_lock_inode_refuse_generation
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 2688 filtered out; finished in 0.55s
+
+error: test failed, to rerun pass `--lib`

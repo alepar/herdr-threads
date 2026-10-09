@@ -1,0 +1,17 @@
+r1 [Should-fix] integrations/hermes/__init__.py:493
+r1 [Should-fix] src/daemon/harness_evidence.rs:631
+r1 [Should-fix] src/store/schema.rs:658
+r1 [Should-fix] src/daemon/harness_states.rs:146
+r1 [Should-fix] src/harness/adapter.rs:19
+r1 [Should-fix] src/harness/adapter.rs:675
+r1 [Nit] integrations/hermes/__init__.py:575
+r1 [Nit] integrations/hermes/__init__.py:621
+r1 [Nit] src/cli/hook_evidence.rs:865
+r1 [Should-fix] src/daemon/harness_states.rs:146
+r1 [Should-fix] integrations/hermes/test_bridge.py:338
+r1 [Should-fix] integrations/hermes/__init__.py:235
+r1 [Must-fix] src/harness/hermes.rs:566
+r1 [Must-fix] src/harness/hermes.rs:614
+r1 [Must-fix] src/cli/setup.rs:664
+r1 [Must-fix] bead ht-92q
+r1 [Must-fix] untested: genuine final-SHA Hermes original-launcher/plugin/API/context, top-level/child, lifecycle/reset/receipt and model acceptance

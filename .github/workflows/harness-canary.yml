@@ -11,9 +11,8 @@ on:
     inputs:
       harness:
         description: Harness to check
-        type: choice
-        options: [both, claude, codex]
-        default: both
+        type: string
+        default: all
       versions:
         description: latest, since-verified, or a comma-separated version list
         type: string
@@ -105,7 +104,7 @@ jobs:
       - name: Run canary
         id: canary
         env:
-          CANARY_HARNESS: ${{ inputs.harness || 'both' }}
+          CANARY_HARNESS: ${{ inputs.harness || 'all' }}
           CANARY_VERSIONS: ${{ inputs.versions || 'since-verified' }}
           CANARY_MODEL_TIER: ${{ inputs.model_tier || 'auto' }}
           # Empty when the secret is absent: tier 1 is then skipped for that harness.
@@ -126,6 +125,10 @@ jobs:
           path: |
             ${{ env.CANARY_OUT }}/canary-report.json
             ${{ env.CANARY_OUT }}/summary.md
+            ${{ env.CANARY_OUT }}/artifact-index.json
+            ${{ env.CANARY_OUT }}/work/**/result.json
+            ${{ env.CANARY_OUT }}/work/**/capture-*.json
+            ${{ env.CANARY_OUT }}/work/**/legacy/work/**/capture/**
             ${{ env.CANARY_OUT }}/work/**/logs/**
           if-no-files-found: ignore
           retention-days: 30

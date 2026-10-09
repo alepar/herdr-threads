@@ -1,17 +1,10 @@
 //! Installer-only consent policy over canonical setup and the embedded agent skill.
 use super::{
     RunError, hook,
-    installer_skill::{SkillFile, read_optional},
-    setup::{self, PromptSuggestionPolicy, SetupEnv, SetupRequest, SetupVerb},
+    installer_skill::SkillFile,
+    setup::{self, SetupEnv, SetupVerb},
 };
-use crate::{
-    harness::{
-        codex_config,
-        context::Harness,
-        setup::{self as owned, NativeObservation, SettingsKind},
-    },
-    protocol::output::{OutputFormat, OutputSpec},
-};
+use crate::protocol::output::{OutputFormat, OutputSpec};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -22,118 +15,83 @@ fn failure(detail: impl Into<String>) -> RunError {
     RunError::Io(io::Error::other(detail.into()))
 }
 
-fn hooks_installed(env: &SetupEnv, harness: Harness) -> Result<bool, RunError> {
-    let (kind, path, manifest) = match harness {
-        Harness::Claude => {
-            let (path, manifest) = setup::claude_paths(env)?;
-            (SettingsKind::ClaudeUser, path, manifest)
-        }
-        Harness::Codex => {
-            let paths = setup::codex_paths(env)?;
-            let allowance =
-                codex_config::inspect(&paths.config, &paths.config_manifest).map_err(|error| {
-                    failure(format!("invalid Codex allowance ownership: {error:?}"))
-                })?;
-            if allowance.recorded.as_ref().is_some_and(|manifest| {
-                manifest.phase != owned::InstallPhase::Installed || !allowance.present
-            }) {
-                return Err(failure(
-                    "recorded Codex allowance is partial or edited; preserved",
-                ));
-            }
-            (SettingsKind::CodexUser, paths.hooks, paths.hooks_manifest)
-        }
-        Harness::Human => return Err(failure("human panes have no hooks")),
-    };
-    let bytes = read_optional(&path)?;
-    let recorded = owned::read_settings_manifest(&manifest)
-        .map_err(|error| failure(format!("invalid hook ownership manifest: {error:?}")))?;
-    if let Some(recorded) = recorded {
-        if recorded.phase != owned::InstallPhase::Installed {
-            return Err(failure("hook installation is partial; preserved"));
-        }
-        // Canonical install verifies exact recorded groups/command before upgrading old declarations.
-        // A completeness status alone would incorrectly classify valid older owned hooks as missing.
-        return Ok(true);
-    }
-    let argv = env.hook_argv(harness)?;
-    let inspection = owned::inspect_user_settings_for(
-        kind,
-        &path,
-        &manifest,
-        NativeObservation::Unknown,
-        Some(&argv),
-    )
-    .map_err(|error| failure(format!("hook ownership inspection failed: {error:?}")))?;
-    if inspection.installed {
-        return Ok(true);
-    }
-    if let Some(bytes) = bytes {
-        let value: Value = serde_json::from_slice(&bytes)
-            .map_err(|_| failure("invalid hook settings; preserved"))?;
-        if !value.is_object() {
-            return Err(failure("hook settings are not an object; preserved"));
-        }
-        if let Some(hooks) = value.get("hooks") {
-            let map = hooks
-                .as_object()
-                .ok_or_else(|| failure("invalid hooks map; preserved"))?;
-            if map.values().any(|groups| !groups.is_array()) {
-                return Err(failure("invalid hook groups; preserved"));
-            }
-        }
-        // This conservative conflict check grants no ownership; canonical setup handles all writes.
-        if value.get("hooks").is_some_and(foreign_hooks) {
-            return Err(failure(
-                "unowned or partial herdr-threads hooks; preserved (use setup-status to inspect)",
-            ));
-        }
-    }
-    Ok(false)
-}
-
-fn foreign_hooks(value: &Value) -> bool {
-    match value {
-        Value::Object(object) => object.iter().any(|(key, value)| {
-            (key == "command" && value.as_str().is_some_and(|s| s.contains("herdr-threads")))
-                || foreign_hooks(value)
-        }),
-        Value::Array(array) => array.iter().any(foreign_hooks),
-        _ => false,
-    }
-}
-
 /// Consent is asked separately per missing component; owned writes are validated by their backend.
-fn execute<F: FnMut(&str) -> io::Result<bool>>(
+fn execute_for_registry<F: FnMut(&str) -> io::Result<bool>>(
+    registry: &crate::harness::registry::Registry,
     env: &SetupEnv,
     confirm_missing: bool,
     interactive: bool,
     mut confirm: F,
 ) -> Value {
+    use crate::harness::adapter::*;
+    let snapshot = env.snapshot();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(
+            snapshot.clock.monotonic_now().0.saturating_add(30_000),
+        ),
+        cancellation: Default::default(),
+    };
     let mut entries = Vec::new();
     let mut failed = false;
-    for harness in setup::HARNESSES {
-        let name = match harness {
-            Harness::Claude => "claude",
-            Harness::Codex => "codex",
-            Harness::Human => continue,
+    for registration in registry.registrations() {
+        let name = registration.metadata().id;
+        let ExecutableLookup::Path(executable) = registration.metadata().executable else {
+            continue;
         };
-        if hook::resolve_on_path(name, env.path.as_deref()).is_none() {
+        if hook::resolve_on_path(executable, env.path.as_deref()).is_none() {
             continue;
         }
+        if registration.installer_policy().is_none() {
+            entries.push(json!({"harness":name,"component":"installer","outcome":"unavailable","detail":"registered adapter declares no installer policy"}));
+            continue;
+        }
+        let request = registration
+            .resolve_setup_scope_for(
+                &SetupScopeResolutionRequest {
+                    operation: SetupScopeOperation::Status,
+                    selector: &SetupScopeRequest::Default,
+                    native_binary: None,
+                    environment: &snapshot,
+                },
+                &budget,
+            )
+            .map(|resolution| StatusRequest {
+                scope: resolution.scope,
+                environment: snapshot.clone(),
+                native_binary: None,
+            });
         for component in ["hooks", "skill"] {
             let mut skill_file = None;
-            let state = if component == "hooks" {
-                hooks_installed(env, harness)
-            } else {
-                SkillFile::inspect(env, harness).map(|file| {
-                    let installed = file.installed();
-                    skill_file = Some(file);
-                    installed
-                })
-            };
+            let state = request
+                .as_ref()
+                .map_err(|e| failure(e.to_string()))
+                .and_then(|request| {
+                    if component == "hooks" {
+                        registration
+                            .inspect_installer_hooks(request, &budget)
+                            .map(|state| Some(state == InstallerHookState::Owned))
+                            .map_err(|e| failure(e.to_string()))
+                    } else {
+                        let Some(destination) = registration
+                            .installer_skill_destination(&request.scope)
+                            .map_err(|e| failure(e.to_string()))?
+                        else {
+                            return Ok(None);
+                        };
+                        SkillFile::inspect(env, name, &destination).map(|file| {
+                            let installed = file.installed();
+                            skill_file = Some(file);
+                            Some(installed)
+                        })
+                    }
+                });
             let mut entry = json!({"harness":name,"component":component});
             let result = state.and_then(|installed| {
+                let Some(installed) = installed else {
+                    entry["outcome"] = json!("unavailable");
+                    entry["detail"] = json!("registered adapter declares no skill destination");
+                    return Ok(());
+                };
                 if !installed && !confirm_missing {
                     if !interactive {
                         entry["outcome"] = json!("skipped");
@@ -148,21 +106,36 @@ fn execute<F: FnMut(&str) -> io::Result<bool>>(
                     }
                 }
                 if component == "hooks" {
-                    // Consent can wait indefinitely; foreign or partial state introduced while
-                    // asking must still refuse before canonical setup reads a new baseline.
-                    if hooks_installed(env, harness)? != installed {
+                    let request = request.as_ref().map_err(|e| failure(e.to_string()))?;
+                    if registration
+                        .inspect_installer_hooks(request, &budget)
+                        .map_err(|e| failure(e.to_string()))?
+                        != if installed {
+                            InstallerHookState::Owned
+                        } else {
+                            InstallerHookState::Missing
+                        }
+                    {
                         return Err(failure(
                             "hook ownership changed during reconciliation; preserved",
                         ));
                     }
-                    let report = setup::execute(
-                        &SetupRequest {
-                            verb: SetupVerb::Install,
-                            harness,
-                            harness_binary: None,
-                            prompt_suggestions: PromptSuggestionPolicy::Keep,
-                        },
-                        env,
+                    let mut options = SetupOptions::new();
+                    if registration
+                        .setup_options()
+                        .iter()
+                        .any(|o| o.name == "keep-prompt-suggestions")
+                    {
+                        options.insert("keep-prompt-suggestions".into(), true);
+                    }
+                    let report = setup::execute_registered_with_expected_scope(
+                        registration,
+                        SetupVerb::Install,
+                        &SetupScopeRequest::Default,
+                        None,
+                        options,
+                        &snapshot,
+                        Some(&request.scope),
                     )?;
                     entry["warnings"] = report["warnings"].clone();
                     entry["trust"] = report["trust"]["note"].clone();
@@ -180,7 +153,21 @@ fn execute<F: FnMut(&str) -> io::Result<bool>>(
             entries.push(entry);
         }
     }
-    json!({"integrations": entries, "exit_status": if failed {1} else {0}})
+    json!({"integrations":entries,"exit_status":if failed {1} else {0}})
+}
+fn execute<F: FnMut(&str) -> io::Result<bool>>(
+    env: &SetupEnv,
+    confirm_missing: bool,
+    interactive: bool,
+    confirm: F,
+) -> Value {
+    execute_for_registry(
+        crate::harness::registry::builtins(),
+        env,
+        confirm_missing,
+        interactive,
+        confirm,
+    )
 }
 
 fn confirm<R: BufRead, W: Write>(

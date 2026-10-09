@@ -28,6 +28,13 @@
 //! session idle long enough for its gate file to be pruned, attributes from
 //! the rollout head again (accepted). Every error is ignored: nothing here changes the hook's stdout or exit status.
 //!
+//! Registered adapters with an explicit legacy projection keep that path.
+//! Rich-only adapters use negotiated v2 metadata and a separate strict
+//! `evidence-v2` gate, keyed by exact runtime, domain, origin, contract and
+//! session. Adapter-supplied qualifications are bounded and declared; payload
+//! claims never supply them. Only a timely successful advisory response can
+//! advance a send hint, and an unqualified note cannot spend a required retry.
+//!
 //! Evidence is advisory data about the harness, never authority (see
 //! TRUST-POLICY.md): this module adds no caller attribution and no seat state.
 use super::hook::HookArgs;
@@ -45,7 +52,7 @@ use crate::{
     },
     ports::LocalClient,
     protocol::{
-        capabilities::{Capabilities, HARNESS_EVIDENCE},
+        capabilities::{Capabilities, HARNESS_EVIDENCE, HARNESS_EVIDENCE_V2},
         commands::{Command, HarnessEvidence, HarnessEvidenceOutcome},
         results::CommandResult,
         time::{CallBudget, Clock},
@@ -104,12 +111,9 @@ pub struct Evidence {
     pub session_id: Option<String>,
 }
 
-fn harness_name(harness: Harness) -> Option<&'static str> {
-    match harness {
-        Harness::Claude => Some("claude"),
-        Harness::Codex => Some("codex"),
-        Harness::Human => None,
-    }
+fn registration_for(harness: Harness) -> Option<&'static crate::harness::registry::Registration> {
+    let registry = crate::harness::registry::builtins();
+    registry.by_id(registry.agent(harness.as_str()).ok()?).ok()
 }
 
 /// Classifies `stdin` against the harness's declared contract. `None` for a
@@ -119,13 +123,31 @@ pub fn classify_payload(
     registered_event: Option<&str>,
     stdin: &[u8],
 ) -> Option<Classified> {
-    let name = harness_name(harness)?;
-    let declared = contract::contract_for(name)?;
+    let registration = registration_for(harness)?;
+    classify_legacy(registration, registered_event, stdin)
+}
+
+fn classify_legacy(
+    registration: &crate::harness::registry::Registration,
+    registered_event: Option<&str>,
+    stdin: &[u8],
+) -> Option<Classified> {
+    let name = registration.metadata().id;
+    let input = crate::harness::adapter::HookInput {
+        bytes: stdin.to_vec(),
+        registered_event: registered_event.map(str::to_owned),
+    };
+    let observation = registration.classify(&input);
+    let declared = registration
+        .contracts()
+        .iter()
+        .find(|d| d.domain == observation.domain)?
+        .contract;
     let payload: Option<Value> = (stdin.len() <= contract::MAX_PAYLOAD)
         .then(|| serde_json::from_slice::<Value>(stdin).ok())
         .flatten()
         .filter(Value::is_object);
-    let classification = contract::classify(declared, registered_event, stdin);
+    let classification = observation.classification;
     let discriminator = payload
         .as_ref()
         .and_then(|value| value.get(declared.discriminator))
@@ -159,7 +181,7 @@ pub fn classify_payload(
         .map(str::to_owned);
     Some(Classified {
         harness: name,
-        contract_id: contract::contract_id(declared),
+        contract_id: registration.legacy_contract_id()?,
         event: event.to_owned(),
         outcome,
         session_id,
@@ -168,16 +190,20 @@ pub fn classify_payload(
 }
 
 impl Classified {
-    /// Whether this is a Codex `SessionStart` with source `resume`.
-    fn starts_codex_resume(&self) -> bool {
-        self.harness == "codex"
-            && self.event == "SessionStart"
-            && self
-                .payload
-                .as_ref()
-                .and_then(|p| p.get("source"))
-                .and_then(Value::as_str)
-                == Some("resume")
+    /// The legacy adapter's declared sticky creating-runtime suppression.
+    fn starts_suppressed_resume(
+        &self,
+        registration: &crate::harness::registry::Registration,
+    ) -> bool {
+        registration.contracts().iter().any(|d| {
+            d.holding == crate::harness::evidence::AttributionHolding::SuppressResumed
+                && d.event(&self.event).is_some_and(|e| e.always_send)
+        }) && self
+            .payload
+            .as_ref()
+            .and_then(|p| p.get("source"))
+            .and_then(Value::as_str)
+            == Some("resume")
     }
 
     /// Reads the version from the payload's transcript (bounded, in-process).
@@ -412,12 +438,15 @@ pub enum Delivery {
     Suppressed,
     /// There was no daemon to talk to, or it lacks the capability.
     Unavailable,
+    /// Rich evidence is unsupported by the connected daemon; no legacy downgrade.
+    Unsupported,
     /// The note was sent; the daemon answered `verified`, or `None` on error.
     Sent(Option<bool>),
 }
 
-/// Decides, then (only when sending) attributes, connects and sends.
-/// `connect` is called at most once, only after the gate said "send".
+/// Legacy compatibility helper; `connect` is called only after its gate says send.
+/// The production `report` uses `run_registered` with the shared budget clock;
+/// rich adapters require that entrypoint rather than this clock-less helper.
 pub fn run(
     harness: Harness,
     registered_event: Option<&str>,
@@ -427,7 +456,47 @@ pub fn run(
     budget: &CallBudget,
     connect: impl FnOnce(&CallBudget) -> Option<(Arc<dyn LocalClient>, Capabilities)>,
 ) -> Delivery {
-    let Some(classified) = classify_payload(harness, registered_event, stdin) else {
+    let Some(registration) = registration_for(harness) else {
+        return Delivery::Suppressed;
+    };
+    if registration.legacy_contract_id().is_none() {
+        return Delivery::Unsupported;
+    }
+    run_registered(
+        registration,
+        registered_event,
+        stdin,
+        state_dir,
+        now_ms,
+        (budget, &crate::app::SystemClock::new()),
+        connect,
+    )
+}
+
+/// Actual evidence consumer boundary; transport projection belongs to the adapter.
+/// The clock in `timing` must share the supplied call budget's monotonic epoch.
+pub fn run_registered(
+    registration: &crate::harness::registry::Registration,
+    registered_event: Option<&str>,
+    stdin: &[u8],
+    state_dir: Option<&Path>,
+    now_ms: u64,
+    timing: (&CallBudget, &dyn Clock),
+    connect: impl FnOnce(&CallBudget) -> Option<(Arc<dyn LocalClient>, Capabilities)>,
+) -> Delivery {
+    let (budget, clock) = timing;
+    if registration.legacy_contract_id().is_none() {
+        return run_v2(
+            registration,
+            registered_event,
+            stdin,
+            state_dir,
+            now_ms,
+            timing,
+            connect,
+        );
+    }
+    let Some(classified) = classify_legacy(registration, registered_event, stdin) else {
         return Delivery::Suppressed;
     };
     if let Some(state) = state_dir {
@@ -444,7 +513,7 @@ pub fn run(
     let mut gate = gate_file
         .as_ref()
         .map_or_else(GateState::default, |(_, path)| read_gate(path));
-    if classified.starts_codex_resume() && !gate.resumed {
+    if classified.starts_suppressed_resume(registration) && !gate.resumed {
         gate.resumed = true;
         if let Some((state, path)) = &gate_file {
             let _ = write_gate(state, path, &gate);
@@ -458,6 +527,9 @@ pub fn run(
     ) {
         return Delivery::Suppressed;
     }
+    if budget.is_exhausted(clock) {
+        return Delivery::Unavailable;
+    }
     let Some((client, capabilities)) = connect(budget) else {
         return Delivery::Unavailable;
     };
@@ -466,10 +538,39 @@ pub fn run(
     }
     let event = classified.event.clone();
     let outcome = classified.outcome.clone();
-    let evidence = classified.attribute(gate.resumed);
+    let input = crate::harness::adapter::HookInput {
+        bytes: stdin.to_vec(),
+        registered_event: registered_event.map(str::to_owned),
+    };
+    let (version, unattributed_reason) =
+        match registration.attribute_runtime_for_session(&input, budget, gate.resumed) {
+            crate::harness::adapter::RuntimeAttribution::Attributed(identity)
+                if identity.key.starts_with("release:") =>
+            {
+                (identity.release_version.clone(), None)
+            }
+            crate::harness::adapter::RuntimeAttribution::Attributed(_) => (
+                None,
+                Some("runtime has no legacy release projection".into()),
+            ),
+            crate::harness::adapter::RuntimeAttribution::Unavailable { diagnostic } => {
+                (None, Some(diagnostic))
+            }
+        };
+    let evidence = Evidence {
+        harness: classified.harness,
+        version,
+        unattributed_reason,
+        contract_id: classified.contract_id,
+        event: classified.event,
+        outcome: classified.outcome,
+        session_id: classified.session_id,
+    };
     let reply = client.call(Command::HarnessEvidence(evidence.message()), budget);
     let verified = match reply {
-        Ok(CommandResult::HarnessEvidenceRecorded { verified }) => verified,
+        Ok(CommandResult::HarnessEvidenceRecorded { verified }) if !budget.is_exhausted(clock) => {
+            verified
+        }
         _ => return Delivery::Sent(None),
     };
     if let Some((state, path)) = &gate_file {
@@ -480,6 +581,348 @@ pub fn run(
         );
     }
     Delivery::Sent(Some(verified))
+}
+
+/// Versioned separately from the frozen legacy resumed gate.
+pub const V2_GATE_DIR: &str = "evidence-v2";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct V2GateKey {
+    harness: String,
+    runtime: Option<crate::harness::runtime::RuntimeIdentity>,
+    unavailable_reason: Option<String>,
+    domain: String,
+    origin: crate::harness::evidence::EvidenceOrigin,
+    contract_id: String,
+    session_id: Option<String>,
+}
+impl V2GateKey {
+    fn from_note(note: &crate::protocol::commands::HarnessEvidenceV2) -> Self {
+        Self {
+            harness: note.harness.clone(),
+            runtime: note.runtime.clone(),
+            unavailable_reason: note.unavailable_reason.clone(),
+            domain: note.domain.clone(),
+            origin: note.origin,
+            contract_id: note.contract_id.clone(),
+            session_id: note.session_id.clone(),
+        }
+    }
+    fn path(&self, state: &Path) -> PathBuf {
+        let bytes = serde_json::to_vec(self).expect("bounded gate key serializes");
+        v2_gate_dir(state).join(format!("{:x}.json", Sha256::digest(bytes)))
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct V2GateState {
+    version: u8,
+    key: V2GateKey,
+    verified: bool,
+    milestones: Vec<String>,
+    heartbeat_at_ms: Option<u64>,
+    sent: Vec<String>,
+}
+pub fn v2_gate_dir(state: &Path) -> PathBuf {
+    codex_evidence::dir(state).join(V2_GATE_DIR)
+}
+impl V2GateState {
+    fn fresh(key: V2GateKey) -> Self {
+        Self {
+            version: 2,
+            key,
+            verified: false,
+            milestones: vec![],
+            heartbeat_at_ms: None,
+            sent: vec![],
+        }
+    }
+    fn read(path: &Path, key: V2GateKey) -> Self {
+        let read = || -> Option<Self> {
+            let meta = std::fs::symlink_metadata(path).ok()?;
+            if !meta.is_file()
+                || meta.len() > MAX_GATE_BYTES
+                || meta.uid() != crate::daemon::paths::effective_uid()
+                || meta.permissions().mode() & 0o077 != 0
+            {
+                return None;
+            }
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(path)
+                .ok()?;
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            file.take(MAX_GATE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+            if bytes.len() as u64 > MAX_GATE_BYTES {
+                return None;
+            }
+            let stored: Self = serde_json::from_slice(&bytes).ok()?;
+            (stored.version == 2
+                && stored.key == key
+                && stored.milestones.len() <= 8
+                && stored.sent.len() <= SENT_KEEP)
+                .then_some(stored)
+        };
+        read().unwrap_or_else(|| Self::fresh(key))
+    }
+    fn should_send(
+        &self,
+        descriptor: &crate::harness::adapter::ContractDescriptor,
+        note: &crate::protocol::commands::HarnessEvidenceV2,
+        now: u64,
+    ) -> bool {
+        if descriptor
+            .event(&note.event)
+            .is_some_and(|event| event.always_send)
+        {
+            return true;
+        }
+        if let Some(key) = v2_sent_key(note) {
+            return !self.sent.contains(&key);
+        }
+        let heartbeat = self
+            .heartbeat_at_ms
+            .is_some_and(|at| now.saturating_sub(at) >= HEARTBEAT_MS);
+        let required = descriptor
+            .event(&note.event)
+            .and_then(|e| e.milestone)
+            .is_some_and(|m| {
+                descriptor.required_milestones.contains(&m)
+                    && !self.milestones.iter().any(|sent| sent == m)
+            });
+        (!self.verified && required) || heartbeat
+    }
+    fn after_send(
+        mut self,
+        descriptor: &crate::harness::adapter::ContractDescriptor,
+        note: &crate::protocol::commands::HarnessEvidenceV2,
+        verified: bool,
+        now: u64,
+    ) -> Self {
+        self.verified = verified;
+        if let Some(key) = v2_sent_key(note) {
+            if !self.sent.contains(&key) {
+                self.sent.push(key);
+            }
+            while self.sent.len() > SENT_KEEP {
+                self.sent.remove(0);
+            }
+        } else {
+            self.heartbeat_at_ms = Some(now);
+            if let Some(milestone) = descriptor.event(&note.event).and_then(|e| e.milestone)
+                && note.runtime.is_some()
+                && descriptor
+                    .qualifications
+                    .iter()
+                    .all(|required| note.qualifications.iter().any(|fact| fact == required))
+                && descriptor.required_milestones.contains(&milestone)
+                && !self.milestones.iter().any(|sent| sent == milestone)
+            {
+                self.milestones.push(milestone.into());
+            }
+        }
+        self
+    }
+    fn write(&self, state: &Path, path: &Path) -> io::Result<()> {
+        let mut stored = self.clone();
+        let bytes = loop {
+            let bytes = serde_json::to_vec(&stored).map_err(io::Error::other)?;
+            if bytes.len() as u64 <= MAX_GATE_BYTES {
+                break bytes;
+            }
+            if stored.sent.is_empty() {
+                return Err(io::Error::other("v2 gate exceeds bound"));
+            }
+            stored.sent.remove(0);
+        };
+        codex_evidence::prepare(state)?;
+        crate::daemon::paths::ensure_private_dir(&v2_gate_dir(state))?;
+        let temporary = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .and_then(|mut out| out.write_all(&bytes).and_then(|()| out.sync_all()))
+            .and_then(|()| std::fs::rename(&temporary, path));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        written
+    }
+}
+fn v2_sent_key(note: &crate::protocol::commands::HarnessEvidenceV2) -> Option<String> {
+    use crate::protocol::commands::HarnessEvidenceOutcomeV2 as Outcome;
+    match &note.outcome {
+        Outcome::Ok => None,
+        Outcome::Malformed => Some(format!("{}|", note.event)),
+        Outcome::Violation { field } => Some(format!("{}|{field}", note.event)),
+    }
+}
+
+fn run_v2(
+    registration: &crate::harness::registry::Registration,
+    registered_event: Option<&str>,
+    stdin: &[u8],
+    state_dir: Option<&Path>,
+    now_ms: u64,
+    timing: (&CallBudget, &dyn Clock),
+    connect: impl FnOnce(&CallBudget) -> Option<(Arc<dyn LocalClient>, Capabilities)>,
+) -> Delivery {
+    use crate::harness::adapter::{HookInput, RuntimeAttribution};
+    use crate::protocol::commands::{HarnessEvidenceOutcomeV2 as Outcome, HarnessEvidenceV2};
+    let (budget, clock) = timing;
+    if budget.is_exhausted(clock) {
+        return Delivery::Unavailable;
+    }
+    let input = HookInput {
+        bytes: stdin.to_vec(),
+        registered_event: registered_event.map(str::to_owned),
+    };
+    let projections = match registration.evidence_observations(&input) {
+        Ok(p) => p,
+        Err(_) => return Delivery::Unsupported,
+    };
+    let payload: Option<Value> = (stdin.len() <= contract::MAX_PAYLOAD)
+        .then(|| serde_json::from_slice(stdin).ok())
+        .flatten()
+        .filter(Value::is_object);
+    let (runtime, unavailable_reason) = match registration.attribute_runtime(&input, budget) {
+        RuntimeAttribution::Attributed(r) => (Some(r), None),
+        RuntimeAttribution::Unavailable { diagnostic } => (None, Some(diagnostic)),
+    };
+    let mut notes = Vec::new();
+    // Validate ALL projections before connecting or advancing any domain hint.
+    for projection in projections {
+        let Some(descriptor) = registration.contracts().iter().find(|d| {
+            d.domain == projection.domain
+                && d.origin == projection.origin
+                && d.contract_id_v2().ok().as_deref() == Some(projection.contract_id.as_str())
+        }) else {
+            return Delivery::Unsupported;
+        };
+        let (event, outcome) = match projection.classification {
+            Classification::Ok { event } => (event.to_owned(), Outcome::Ok),
+            Classification::Violation { event, field } => (
+                event.to_owned(),
+                Outcome::Violation {
+                    field: field.into(),
+                },
+            ),
+            Classification::Malformed(_) => (
+                registered_event
+                    .or_else(|| {
+                        payload
+                            .as_ref()?
+                            .get(descriptor.contract.discriminator)?
+                            .as_str()
+                    })
+                    .unwrap_or("unknown")
+                    .into(),
+                Outcome::Malformed,
+            ),
+        };
+        let qualifications = match runtime.as_ref() {
+            Some(runtime) => match registration.evidence_qualifications(
+                &crate::harness::adapter::EvidenceQualificationRequest {
+                    input: &input,
+                    runtime,
+                    descriptor,
+                },
+                budget,
+            ) {
+                Ok(f) => f,
+                Err(_) => return Delivery::Unsupported,
+            },
+            None => Vec::new(),
+        };
+        let note = HarnessEvidenceV2 {
+            harness: registration.metadata().id.into(),
+            domain: descriptor.domain_id.into(),
+            origin: descriptor.origin,
+            runtime: runtime.clone(),
+            unavailable_reason: unavailable_reason.clone(),
+            contract_id: projection.contract_id,
+            event,
+            outcome,
+            session_id: payload
+                .as_ref()
+                .and_then(|p| p.get("session_id"))
+                .and_then(Value::as_str)
+                .filter(|s| crate::harness::runtime::printable(s, 256))
+                .map(str::to_owned),
+            qualifications,
+        };
+        if note.validate().is_err() {
+            return Delivery::Unsupported;
+        }
+        notes.push((descriptor, note));
+    }
+    if let Some(state) = state_dir {
+        prune(&v2_gate_dir(state), now_ms);
+    }
+    let mut pending = Vec::new();
+    let mut all_verified = true;
+    for (descriptor, note) in notes {
+        let key = V2GateKey::from_note(&note);
+        let gate_file = state_dir
+            .zip(note.session_id.as_ref())
+            .map(|(state, _)| (state, key.path(state)));
+        let gate = gate_file.as_ref().map_or_else(
+            || V2GateState::fresh(key.clone()),
+            |(_, path)| V2GateState::read(path, key.clone()),
+        );
+        if gate.should_send(descriptor, &note, now_ms) {
+            pending.push((descriptor, note, gate_file, gate));
+        } else {
+            all_verified &= gate.verified;
+        }
+    }
+    if pending.is_empty() {
+        return Delivery::Suppressed;
+    }
+    if budget.is_exhausted(clock) {
+        return Delivery::Unavailable;
+    }
+    let Some((client, capabilities)) = connect(budget) else {
+        return Delivery::Unavailable;
+    };
+    if !capabilities.supports(HARNESS_EVIDENCE_V2) {
+        return Delivery::Unsupported;
+    }
+    let mut incomplete = false;
+    let mut sent = false;
+    for (descriptor, note, gate_file, gate) in pending {
+        if budget.is_exhausted(clock) {
+            return if sent {
+                Delivery::Sent(None)
+            } else {
+                Delivery::Unavailable
+            };
+        }
+        sent = true;
+        let verified = match client.call(Command::HarnessEvidenceV2(note.clone()), budget) {
+            Ok(CommandResult::HarnessEvidenceV2Recorded(recorded))
+                if !budget.is_exhausted(clock) =>
+            {
+                recorded.verified
+            }
+            _ => {
+                incomplete = true;
+                continue;
+            }
+        };
+        all_verified &= verified;
+        if let Some((state, path)) = gate_file {
+            let _ = gate
+                .after_send(descriptor, &note, verified, now_ms)
+                .write(state, &path);
+        }
+    }
+    Delivery::Sent(if incomplete { None } else { Some(all_verified) })
 }
 
 fn unix_ms() -> u64 {
@@ -531,15 +974,18 @@ pub fn report(
     }
     let budget = super::hook::budget(Instant::now() + cap, clock.as_ref());
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run(
-            args.harness,
+        let Some(registration) = registration_for(args.harness) else {
+            return;
+        };
+        run_registered(
+            registration,
             args.event.as_deref(),
             stdin,
             state_dir,
             unix_ms(),
-            &budget,
+            (&budget, clock.as_ref()),
             |budget| connect_running(args, &clock, budget),
-        )
+        );
     }));
 }
 

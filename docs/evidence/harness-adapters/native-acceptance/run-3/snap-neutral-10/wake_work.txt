@@ -1,0 +1,2 @@
+seat_id | reason_bits | attention_version | checkpoint_version | binding_generation | retry_step | reservation_id | reservation_boot | reserved_at_utc | completed_at_utc | minimum_delay_ms | effective_delay_ms | last_reservation_id | last_reservation_boot | last_reserved_at_utc | last_invitation_seq | last_invitation_offset | last_receipt_seq | last_receipt_offset | last_warning_seq | last_warning_offset | last_outcome
+sOyZueIIm | 1 | 2 | 0 |  | 0 |  |  |  |  | 0 | 0 |  |  |  |  |  |  |  |  |  | 

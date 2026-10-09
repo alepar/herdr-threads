@@ -120,3 +120,8 @@ mod channel_activation;
 #[cfg(feature = "test-support")]
 #[path = "integration/readme_tryout.rs"]
 mod readme_tryout;
+
+/// Registry values through real executable/canonical consumers; synthetic host/callbacks.
+#[cfg(feature = "test-support")]
+#[path = "integration/harness_adapter_wiring.rs"]
+mod harness_adapter_wiring;

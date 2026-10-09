@@ -108,11 +108,13 @@ pub const fn field(path: &'static str, ty: JsonType, required: bool) -> FieldSpe
 
 /// The declared contract for `harness` (`claude` or `codex`).
 pub fn contract_for(harness: &str) -> Option<&'static HarnessContract> {
-    match harness {
-        "claude" => Some(&super::claude::CONTRACT),
-        "codex" => Some(&super::codex::CONTRACT),
-        _ => None,
-    }
+    let registry = super::registry::builtins();
+    let registration = registry.by_id(registry.agent(harness).ok()?).ok()?;
+    registration
+        .contracts()
+        .iter()
+        .find(|d| d.origin == super::evidence::EvidenceOrigin::NativePayload)
+        .map(|d| d.contract)
 }
 
 fn json_string(s: &str) -> String {

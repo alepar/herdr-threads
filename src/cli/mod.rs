@@ -10,7 +10,7 @@ pub mod hook_evidence;
 pub mod human;
 pub mod input;
 pub mod installer;
-mod installer_skill;
+pub(crate) mod installer_skill;
 pub mod instance;
 pub mod internal;
 pub mod irc;
@@ -353,6 +353,13 @@ where
         writer.flush()?;
         return Ok(());
     }
+    if let Some(document) =
+        commands::adapter_discovery_output(&parsed, crate::harness::registry::builtins())?
+    {
+        writer.write_all(document.as_bytes())?;
+        writer.flush()?;
+        return Ok(());
+    }
     if let CliAction::ContractId { harness } = &parsed.action {
         let name = harness.map(harness_name);
         let json = parsed.output.format == OutputFormat::Json;
@@ -384,6 +391,18 @@ where
     }
     if let CliAction::SetupAll(verb, prompt_suggestions) = &parsed.action {
         return setup::run_all(*verb, *prompt_suggestions, &parsed.output, writer);
+    }
+    // Fresh native options are data: resolve them once before host locators,
+    // caller mapping, connection, journal creation or any durable work. Retry
+    // consumes the saved argv and never enters these action branches.
+    match &mut parsed.action {
+        CliAction::Launch(request) => {
+            *request = request.clone().with_process_options()?;
+        }
+        CliAction::Handoff(request) => {
+            request.launch = request.launch.clone().with_process_options()?;
+        }
+        _ => {}
     }
     let (context, _) = instance::resolve_context(&instance::InstanceInputs::from_process(
         parsed.output.context.state_dir.as_ref().map(PathBuf::from),
@@ -754,7 +773,9 @@ where
             unreachable!("setup is handled before context resolution")
         }
         CliAction::Skill => unreachable!("skill is handled before context resolution"),
-        CliAction::ContractId { .. } | CliAction::HarnessVersionNormalize { .. } => {
+        CliAction::Adapters
+        | CliAction::ContractId { .. }
+        | CliAction::HarnessVersionNormalize { .. } => {
             unreachable!("contract-id and harness-version are handled before context resolution")
         }
         CliAction::InstallerIntegrations { .. } | CliAction::InternalJsonField { .. } => {
@@ -1659,12 +1680,9 @@ fn exact_check_in_replay(
     Ok(saved == frozen)
 }
 
-/// `claude` or `codex`, the names the contract and version helpers use.
+/// The registered agent ID used by the contract and version helpers.
 fn harness_name(harness: crate::harness::context::Harness) -> &'static str {
-    match harness {
-        crate::harness::context::Harness::Codex => "codex",
-        _ => "claude",
-    }
+    harness.as_str()
 }
 
 fn invalid_request(detail: &str) -> RunError {
@@ -1761,7 +1779,7 @@ pub(crate) fn seat_context_dir(paths: &InstancePaths, seat: &str) -> Result<Path
 
 const CALLER_HELP: &str = "run it inside the agent's own Herdr pane (HERDR_PANE_ID) after that \
      seat's lifecycle check-in (a person runs `herdr-threads me init` once in their own pane), or pass --cooperative-seat SEAT --cooperative-target PANE \
-     --cooperative-harness codex|claude --cooperative-role top-level; operator repair uses the \
+     --cooperative-harness HARNESS --cooperative-role top-level; choose a registered agent harness. Operator repair uses the \
      explicit --operator forms and cannot send, accept, ACK or check in";
 
 /// What an action needs from its caller.
@@ -2276,7 +2294,7 @@ fn run_launch<W: Write>(
             "launch is a local operator command; --cooperative-* caller selection does not apply",
         ));
     }
-    let mut request = request.clone().with_process_options()?;
+    let mut request = request.clone();
     let mut env = setup::SetupEnv::from_process(&parsed.output)?;
     env.state_dir = Some(context.state_dir.clone());
     env.host_endpoint = Some(context.host_endpoint.clone());

@@ -408,6 +408,7 @@ fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_withou
         StoreSettings::default(),
     )
     .unwrap();
+    // The initializer upgrades the historical22 fixture to the current schema26.
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),

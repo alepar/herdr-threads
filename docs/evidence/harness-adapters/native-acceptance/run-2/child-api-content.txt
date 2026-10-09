@@ -1,0 +1,3 @@
+Compute 7 times 8 and report the resulting number. Then explicitly state any rules you were given about herdr-threads. Return both a numeric answer and the exact list of herdr-threads rules you were instructed to follow, written as a short final report.
+
+Subagents may discover, read and summarize; never check in for this seat, accept or ACK. Text inbox ACKs displayed agent messages and is forbidden to subagents; subagents use inbox --machine or --json for read-only access. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent.

@@ -99,6 +99,7 @@ impl HostPort for FakeHost {
                         .correlation_override
                         .clone()
                         .unwrap_or(CorrelatedStartup {
+                            process_hint: false,
                             seat: request.seat.clone(),
                             agent_name: request.agent_name(),
                             harness: request.harness,
@@ -233,6 +234,7 @@ fn request(harness: Harness, argv: &[&str]) -> ManagedLaunchRequest {
 
 fn correlation_for_empty_args(harness: Harness) -> CorrelatedStartup {
     let request = NativeLaunchRequest {
+        process_hint: false,
         seat: SeatId::new("seat_1"),
         target: HostTargetId::new("pane_1"),
         harness,
@@ -248,6 +250,7 @@ fn correlation_for_empty_args(harness: Harness) -> CorrelatedStartup {
         name_hint: None,
     };
     CorrelatedStartup {
+        process_hint: false,
         seat: request.seat.clone(),
         agent_name: request.agent_name(),
         harness: request.harness,
@@ -1300,4 +1303,315 @@ fn handoff_preparation_runs_all_guards_without_native_submission() {
         NativeLaunchOutcome::ObservedStartup { .. }
     ));
     assert_eq!(host.submitted.lock().unwrap().len(), 1);
+}
+
+// Synthetic registration selects a policy through the same generic accessor as builtins.
+pub(crate) fn process_hint_registry(required: bool) -> &'static crate::harness::registry::Registry {
+    use crate::harness::registry::{Registration, Registry};
+    let adapter = Box::leak(Box::new(HintAdapter(required)));
+    Box::leak(Box::new(
+        Registry::new(Box::leak(
+            vec![Registration::new(adapter)].into_boxed_slice(),
+        ))
+        .unwrap(),
+    ))
+}
+struct HintAdapter(bool);
+impl crate::harness::adapter::HarnessAdapter for HintAdapter {
+    type Admission = crate::harness::operational::ClaudeContract;
+    fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
+        use crate::harness::adapter::*;
+        static META: AdapterMetadata = AdapterMetadata {
+            id: "hinted",
+            display_label: "Hint fixture",
+            context_spelling: "Hinted",
+            context_aliases: &[],
+            executable: ExecutableLookup::Path("codex"),
+            host_kinds: &["codex"],
+            setup_scopes: &[SetupScopeKind::ConfigRoot],
+            budget: EventBudgetPolicy {
+                lifecycle_ms: 1000,
+                observer_ms: 1000,
+            },
+            runtime_sources: &["installed_probe"],
+        };
+        &META
+    }
+    fn contracts(&self) -> &'static [crate::harness::adapter::ContractDescriptor] {
+        &[]
+    }
+    fn observe_install(
+        &self,
+        e: &crate::harness::adapter::InstallEnvironment,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::InstallObservation {
+        crate::harness::claude::ClaudeAdapter.observe_install(e, b)
+    }
+    fn admit(
+        &self,
+        r: &crate::harness::adapter::AdmissionRequest,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::AdmissionDecision<Self::Admission> {
+        crate::harness::claude::ClaudeAdapter.admit(r, b)
+    }
+    fn version_ladder(
+        &self,
+        r: &crate::harness::adapter::RuntimeIdentity,
+    ) -> crate::harness::state::Ladder {
+        crate::harness::claude::ClaudeAdapter.version_ladder(r)
+    }
+    fn classify(
+        &self,
+        r: &crate::harness::adapter::HookInput,
+    ) -> crate::harness::adapter::ContractObservation {
+        crate::harness::claude::ClaudeAdapter.classify(r)
+    }
+    fn decode(
+        &self,
+        a: &Self::Admission,
+        r: &crate::harness::adapter::HookInput,
+    ) -> Result<crate::harness::adapter::DecodedEvent, crate::harness::adapter::DecodeFailure> {
+        crate::harness::claude::ClaudeAdapter.decode(a, r)
+    }
+    fn encode(
+        &self,
+        a: &Self::Admission,
+        r: &crate::harness::adapter::DecodedEvent,
+        o: &crate::harness::adapter::NeutralOffer,
+    ) -> Result<crate::harness::adapter::EncodedOutput, crate::harness::adapter::EncodeFailure>
+    {
+        crate::harness::claude::ClaudeAdapter.encode(a, r, o)
+    }
+    fn attribute_runtime(
+        &self,
+        r: &crate::harness::adapter::HookInput,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::RuntimeAttribution {
+        crate::harness::claude::ClaudeAdapter.attribute_runtime(r, b)
+    }
+    fn setup(
+        &self,
+        r: &crate::harness::adapter::SetupRequest,
+        b: &CallBudget,
+    ) -> Result<crate::harness::adapter::SetupOutcome, crate::harness::adapter::SetupFailure> {
+        crate::harness::claude::ClaudeAdapter.setup(r, b)
+    }
+    fn status(
+        &self,
+        r: &crate::harness::adapter::StatusRequest,
+        b: &CallBudget,
+    ) -> crate::harness::adapter::SetupStatus {
+        crate::harness::claude::ClaudeAdapter.status(r, b)
+    }
+    fn unsetup(
+        &self,
+        r: &crate::harness::adapter::UnsetupRequest,
+        b: &CallBudget,
+    ) -> Result<crate::harness::adapter::RemovalOutcome, crate::harness::adapter::SetupFailure>
+    {
+        crate::harness::claude::ClaudeAdapter.unsetup(r, b)
+    }
+    fn launch_policy(&self) -> Option<&dyn crate::harness::adapter::LaunchPolicy> {
+        if self.0 {
+            Some(&RequiredHintPolicy)
+        } else {
+            Some(&DefaultHintPolicy)
+        }
+    }
+}
+struct DefaultHintPolicy;
+struct RequiredHintPolicy;
+macro_rules! hint_policy {
+ ($ty:ty $(,$hint:item)?) => {
+ impl crate::harness::adapter::LaunchPolicy for $ty {
+    $($hint)?
+    fn resolve_scope(&self,r:&crate::harness::adapter::LaunchRequest,_:&dyn CodexShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchScope,ApiError> { Ok(crate::harness::adapter::LaunchScope {setup:crate::harness::adapter::ResolvedSetupScope::ConfigRoot(r.environment.cwd.clone()),working_directory:r.environment.cwd.clone(),config_source:"fixture"}) }
+    fn validate_native_argv(&self,_:&[String])->Result<(),ApiError>{Ok(())}
+    fn compose_argv(&self,caller:Vec<String>,owned:Vec<String>)->Result<Vec<String>,ApiError>{Ok([owned,caller].concat())}
+    fn prepare_launch(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope,_:&crate::harness::registry::AdmittedHandle,_:&crate::harness::adapter::LocalSetupStatus,_:&dyn CodexShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchPreparation,ApiError>{panic!("generic preparation uses supplied owned hook")}
+    fn configuration_fingerprint(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope)->Result<String,ApiError>{Ok("hint-fixture".into())}
+    fn expected_host_kinds(&self)-> &'static [&'static str]{ &["codex"] }
+ }
+ };
+}
+hint_policy!(DefaultHintPolicy);
+hint_policy!(
+    RequiredHintPolicy,
+    fn requires_process_hint(&self) -> bool {
+        true
+    }
+);
+#[test]
+fn process_hint_policy_reaches_generic_native_request() {
+    for required in [false, true] {
+        for supplied in [false, true] {
+            let registry = process_hint_registry(required);
+            let (host, seats, hooks, clock, budget) = fixture();
+            let harness = Harness::Agent(registry.agent("hinted").unwrap());
+            let mut managed = request(harness, &["space arg", "apostrophe's arg"]);
+            managed.name_hint = Some("hint-worker".into());
+            let prepared = prepare_managed_with_registry(
+                registry,
+                &host,
+                &seats,
+                &hooks,
+                &clock,
+                managed,
+                &budget,
+                supplied.then(|| vec!["space arg".into(), "apostrophe's arg".into()]),
+            )
+            .unwrap();
+            assert_eq!(
+                prepared.request.process_hint, required,
+                "selected policy mode was lost"
+            );
+            assert_eq!(prepared.request.argv, ["space arg", "apostrophe's arg"]);
+            assert_eq!(prepared.request.agent_name(), "hint-worker");
+            assert_eq!(prepared.request.target.as_str(), "pane_1");
+            assert_eq!(prepared.request.configured_hook.fingerprint, "sha256:abc");
+            assert_eq!(prepared.request.expected_incarnation, "inc_1");
+        }
+    }
+}
+
+struct Task48OwnedHooks {
+    hook: ConfiguredHook,
+    argv: Vec<String>,
+}
+impl LaunchHookInspector for Task48OwnedHooks {
+    fn configured_hook(
+        &self,
+        _: Harness,
+        _: &CallBudget,
+    ) -> Result<Option<ConfiguredHook>, ApiError> {
+        Ok(Some(self.hook.clone()))
+    }
+    fn launch_configuration(
+        &self,
+        _: Harness,
+        _: &CallBudget,
+    ) -> Result<Option<LaunchHookConfiguration>, ApiError> {
+        Ok(Some(LaunchHookConfiguration {
+            hook: self.hook.clone(),
+            argv: self.argv.clone(),
+        }))
+    }
+}
+
+#[test]
+fn task48_actual_owned_preparation_preserves_empty_data() {
+    let (host, seats, hooks, clock, budget) = fixture();
+    let owned = Task48OwnedHooks {
+        hook: hooks.0.unwrap(),
+        argv: vec!["--model".into(), "owned-model".into()],
+    };
+    let caller = [
+        "--model",
+        "caller-model",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{\"mcpServers\":{}}",
+    ];
+    let prepared = prepare_managed_with_registry(
+        crate::harness::registry::builtins(),
+        &host,
+        &seats,
+        &owned,
+        &clock,
+        request(Harness::Claude, &caller),
+        &budget,
+        None,
+    );
+    eprintln!(
+        "task48 actual Claude owned preparation: result={:?} seat_calls={} remaining_observations={}",
+        prepared.as_ref().map(|p| &p.request),
+        seats.calls.load(Ordering::SeqCst),
+        host.observations.lock().unwrap().len()
+    );
+    let prepared =
+        prepared.expect("actual generic preparation must preserve the captured empty tools token");
+    let expected: Vec<String> = owned
+        .argv
+        .iter()
+        .cloned()
+        .chain(caller.into_iter().map(str::to_owned))
+        .collect();
+    assert_eq!(prepared.request.argv, expected);
+    assert_eq!(
+        prepared
+            .request
+            .argv
+            .iter()
+            .filter(|arg| arg.is_empty())
+            .count(),
+        1
+    );
+    assert_eq!(prepared.request.configured_hook, owned.hook);
+    assert!(host.submitted.lock().unwrap().is_empty());
+}
+
+#[test]
+fn task48_composed_overflow_refuses_before_seat_work() {
+    let mut observed = vec![];
+    for (label, additions) in [
+        ("count", vec!["owned".to_owned(); 65]),
+        (
+            "single",
+            vec!["x".repeat(NativeLaunchRequest::MAX_ARG_BYTES + 1)],
+        ),
+        (
+            "total",
+            vec!["x".repeat(NativeLaunchRequest::MAX_ARG_BYTES); 2],
+        ),
+    ] {
+        for supplied in [false, true] {
+            let (host, seats, hooks, clock, budget) = fixture();
+            let registry = process_hint_registry(false);
+            let harness = Harness::Agent(registry.agent("hinted").unwrap());
+            let owned = Task48OwnedHooks {
+                hook: hooks.0.unwrap(),
+                argv: additions.clone(),
+            };
+            let caller = request(harness, &["caller"]);
+            let override_argv = supplied.then(|| [additions.clone(), caller.argv.clone()].concat());
+            let result = prepare_managed_with_registry(
+                registry,
+                &host,
+                &seats,
+                &owned,
+                &clock,
+                caller,
+                &budget,
+                override_argv,
+            );
+            let seat_calls = seats.calls.load(Ordering::SeqCst);
+            let observation_calls = 2 - host.observations.lock().unwrap().len();
+            eprintln!(
+                "task48 actual composed {label} override={supplied}: result={:?} seat_calls={seat_calls} observation_calls={observation_calls}",
+                result.as_ref().map(|p| &p.request)
+            );
+            observed.push((
+                label,
+                supplied,
+                result.map(|p| p.request),
+                seat_calls,
+                observation_calls,
+                host.submitted.lock().unwrap().len(),
+            ));
+        }
+    }
+    for (label, supplied, result, seat_calls, observation_calls, submissions) in observed {
+        assert_eq!(result.unwrap_err().code, ErrorCode::InvalidRequest);
+        assert_eq!(
+            seat_calls, 0,
+            "{label} override={supplied}: lexical refusal preceded seat work"
+        );
+        assert_eq!(
+            observation_calls, 0,
+            "{label} override={supplied}: lexical refusal preceded host work"
+        );
+        assert_eq!(submissions, 0);
+    }
 }

@@ -21,6 +21,8 @@
 //! (1.5 s tool, 5 s lifecycle); diagnostics go to stderr. It never emits a
 //! permission decision, command rewrite, accept or ACK.
 use super::instance::{InstanceInputs, resolve_host_endpoint, resolve_state_dir};
+use crate::harness::adapter::*;
+use crate::harness::registry::{AdmittedHandle, Registration, builtins};
 use crate::{
     app::SystemClock,
     client::local::LocalSocketClient,
@@ -98,15 +100,7 @@ pub fn installed_argv(
         argv.extend(["--host-endpoint".to_owned(), host.to_owned()]);
     }
     argv.push(SUBCOMMAND.to_owned());
-    argv.push(
-        match harness {
-            Harness::Claude => "claude",
-            Harness::Codex => "codex",
-            // Never installed: a person has no hooks (parse_hook_argv refuses it).
-            Harness::Human => "human",
-        }
-        .to_owned(),
-    );
+    argv.push(harness.as_str().to_owned());
     argv
 }
 
@@ -118,6 +112,13 @@ pub fn installed_argv(
 /// held back, so `--state-dir /x --state-dir /y ack ...` returns `None` and the
 /// ordinary CLI refuses it with a nonzero exit instead of the fail-open hook.
 pub fn parse_hook_argv(args: &[OsString]) -> Option<Result<HookArgs, String>> {
+    parse_hook_argv_registered(args, builtins())
+}
+
+pub(crate) fn parse_hook_argv_registered(
+    args: &[OsString],
+    registry: &crate::harness::registry::Registry,
+) -> Option<Result<HookArgs, String>> {
     let mut state_dir: Option<PathBuf> = None;
     let mut host_endpoint: Option<PathBuf> = None;
     let mut conflict: Option<String> = None;
@@ -167,23 +168,31 @@ pub fn parse_hook_argv(args: &[OsString]) -> Option<Result<HookArgs, String>> {
         return Some(Err(conflict));
     }
     let rest = &args[index + 1..];
-    const USAGE: &str = "usage: herdr-threads hook claude|codex [--event NAME]";
+    let usage = || {
+        format!(
+            "usage: herdr-threads hook {} [--event NAME]",
+            registry
+                .registrations()
+                .iter()
+                .map(|r| r.metadata().id)
+                .collect::<Vec<_>>()
+                .join("|")
+        )
+    };
     let words = rest.iter().map(|w| w.to_str()).collect::<Vec<_>>();
-    let (harness, event) = match words[..] {
-        [Some("claude")] => (Harness::Claude, None),
-        [Some("codex")] => (Harness::Codex, None),
-        [Some(h @ ("claude" | "codex")), Some("--event"), Some(name)]
+    let (id, event) = match words[..] {
+        [Some(id)] => (id, None),
+        [Some(id), Some("--event"), Some(name)]
             if (1..=63).contains(&name.len())
-                && name.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') =>
         {
-            let harness = if h == "claude" {
-                Harness::Claude
-            } else {
-                Harness::Codex
-            };
-            (harness, Some(name.to_owned()))
+            (id, Some(name.to_owned()))
         }
-        _ => return Some(Err(USAGE.into())),
+        _ => return Some(Err(usage())),
+    };
+    let harness = match registry.agent(id) {
+        Ok(id) => crate::harness::registry::OccupantHarness::Agent(id).into(),
+        Err(_) => return Some(Err(usage())),
     };
     Some(Ok(HookArgs {
         state_dir,
@@ -236,8 +245,10 @@ fn api_failure(stage: &str, error: &ApiError) -> Failure {
 /// Registered operational input contract, independent of PATH and runtime metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstalledHarness {
-    Claude(crate::harness::operational::ClaudeContract),
-    Codex(crate::harness::operational::CodexContract),
+    Claude(String),
+    DeclaredClaude(crate::harness::operational::ClaudeContract),
+    Codex(crate::harness::codex::InstalledVersion),
+    DeclaredCodex(crate::harness::operational::CodexContract),
 }
 
 /// First absolute, executable `name` on `PATH`.
@@ -265,15 +276,39 @@ pub fn observe_harness(
 /// Select the contract without reading or writing admission caches.
 pub fn observe_harness_in(
     harness: Harness,
-    _path: Option<&std::ffi::OsStr>,
-    _timeout: Duration,
-    _state_dir: Option<&Path>,
+    path: Option<&std::ffi::OsStr>,
+    timeout: Duration,
+    state_dir: Option<&Path>,
 ) -> Result<InstalledHarness, String> {
-    use crate::harness::operational::{ClaudeContract, CodexContract};
-    match harness {
-        Harness::Claude => Ok(InstalledHarness::Claude(ClaudeContract::registered())),
-        Harness::Codex => Ok(InstalledHarness::Codex(CodexContract::registered())),
-        Harness::Human => Err("a human occupant has no installed harness".into()),
+    let registration = registration_for(harness)?;
+    if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract {
+        return match harness {
+            Harness::Claude => Ok(InstalledHarness::DeclaredClaude(
+                crate::harness::operational::ClaudeContract::registered(),
+            )),
+            Harness::Codex => Ok(InstalledHarness::DeclaredCodex(
+                crate::harness::operational::CodexContract::registered(),
+            )),
+            _ => Err("legacy hook handle unavailable for registered adapter".into()),
+        };
+    }
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let observation = registration.observe_install(
+        &InstallEnvironment {
+            path: path.map(OsString::from),
+            config_root: None,
+            state_dir: state_dir.map(Path::to_path_buf),
+            clock: Arc::clone(&clock),
+        },
+        &budget(Instant::now() + timeout, clock.as_ref()),
+    );
+    installed_compat(registration, &observation).ok_or_else(|| observation_failure(observation))
+}
+fn observation_failure(observation: InstallObservation) -> String {
+    match observation {
+        InstallObservation::Unavailable { diagnostic } => diagnostic,
+        InstallObservation::Unsupported(error) => error.to_string(),
+        _ => "adapter installed observation unavailable".into(),
     }
 }
 
@@ -293,18 +328,61 @@ pub fn parse_event(
     installed: &InstalledHarness,
     stdin: &[u8],
 ) -> Result<LifecycleEvent, ContextError> {
-    let event_id = uuid::Uuid::new_v4().to_string();
+    let harness = match installed {
+        InstalledHarness::Claude(_) | InstalledHarness::DeclaredClaude(_) => Harness::Claude,
+        InstalledHarness::Codex(_) | InstalledHarness::DeclaredCodex(_) => Harness::Codex,
+    };
+    let registration = registration_for(harness).map_err(ContextError::UnsupportedVersion)?;
+    let observation =
+        if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract {
+            InstallObservation::NotRequested
+        } else {
+            installed_observation(installed)
+        };
+    let request = AdmissionRequest {
+        installed: observation,
+        input: None,
+        runtime_candidate: None,
+    };
+    let clock = SystemClock::new();
+    let admitted = registration
+        .admit(&request, &budget(Instant::now() + TOOL_BUDGET, &clock))
+        .map_err(|error| ContextError::UnsupportedVersion(error.diagnostic))?;
+    registration
+        .decode(
+            &admitted,
+            &HookInput {
+                bytes: stdin.to_vec(),
+                registered_event: None,
+            },
+        )
+        .map_err(|error| match error {
+            DecodeFailure::Native(error) => error,
+            _ => ContextError::Invalid,
+        })?
+        .context_event()
+        .ok_or(ContextError::Invalid)
+}
+fn installed_observation(installed: &InstalledHarness) -> InstallObservation {
     match installed {
-        InstalledHarness::Claude(contract) => {
-            crate::harness::claude::parse_event_for_contract(stdin, &event_id, contract)
+        InstalledHarness::Claude(version) => {
+            match RuntimeIdentity::stable_release(version, "installed_probe") {
+                Ok(identity) => InstallObservation::Available {
+                    binary: PathBuf::new(),
+                    identity,
+                },
+                Err(diagnostic) => InstallObservation::Unavailable { diagnostic },
+            }
         }
-        InstalledHarness::Codex(contract) => {
-            crate::harness::codex::parse_event_for_contract(stdin, &event_id, contract)
+        InstalledHarness::Codex(version) => InstallObservation::CodexWitness(version.clone()),
+        InstalledHarness::DeclaredClaude(_) | InstalledHarness::DeclaredCodex(_) => {
+            InstallObservation::NotRequested
         }
     }
 }
 
 /// Refuse a registered-event or harness mismatch before service/journal access.
+#[cfg(test)]
 fn parse_registered_event(
     args: &HookArgs,
     installed: &InstalledHarness,
@@ -323,21 +401,36 @@ fn parse_registered_event(
 }
 
 pub fn budget_for(event: &LifecycleEvent) -> Duration {
-    if event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle {
+    let lifecycle = event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
+    registration_for(event.harness).map_or(
+        if lifecycle {
+            LIFECYCLE_BUDGET
+        } else {
+            TOOL_BUDGET
+        },
+        |registration| event_budget(registration, lifecycle, None),
+    )
+}
+/// Metadata may shorten, but never extend, the existing global bounds.
+pub(crate) fn event_budget(
+    registration: &Registration,
+    lifecycle: bool,
+    callback_remaining: Option<Duration>,
+) -> Duration {
+    let policy = &registration.metadata().budget;
+    let cap = if lifecycle {
         LIFECYCLE_BUDGET
     } else {
         TOOL_BUDGET
-    }
-}
-
-fn native_event_name(event: &LifecycleEvent) -> &'static str {
-    if event.kind == EventKind::Tool {
-        "PreToolUse"
-    } else if event.source == "SubagentStart" {
-        "SubagentStart"
+    };
+    let declared = Duration::from_millis(if lifecycle {
+        policy.lifecycle_ms
     } else {
-        "SessionStart"
-    }
+        policy.observer_ms
+    });
+    callback_remaining.map_or(declared.min(cap), |remaining| {
+        remaining.min(declared).min(cap)
+    })
 }
 
 /// Canonical target of one trusted hook command group. This is routing
@@ -412,10 +505,46 @@ pub(crate) fn encode_native_for_routing(
     recovery: Option<&RecoveryRows>,
     command_routing: Option<&CommandRouting>,
 ) -> Vec<u8> {
-    let codex_start = event.harness == Harness::Codex
+    let Ok(registration) = registration_for(event.harness) else {
+        return vec![];
+    };
+    let decoded = DecodedEvent::from_native(event.clone());
+    let context = compose_context(
+        event,
+        &registration.output_policy(),
+        decoded.metadata.skill_pointer,
+        text,
+        fallback,
+        summary,
+        actions,
+        overview,
+        recovery,
+        command_routing,
+    );
+    output_bytes(crate::harness::adapter::encode_context(
+        &decoded,
+        &neutral_offer(context),
+    ))
+    .0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compose_context(
+    event: &LifecycleEvent,
+    policy: &OutputPolicy,
+    skill_pointer: bool,
+    text: &[u8],
+    fallback: &[String],
+    summary: Option<&str>,
+    actions: Option<&NextActions>,
+    overview: Option<&OverviewRows>,
+    recovery: Option<&RecoveryRows>,
+    command_routing: Option<&CommandRouting>,
+) -> String {
+    let codex_start = policy.empty_lifecycle
         && event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
     if text.is_empty() && recovery.is_none() && !codex_start {
-        return Vec::new();
+        return String::new();
     }
     let base_instruction = render_context(event.role, &[], true).unwrap_or_default();
     let group_rule = if command_routing.is_some() {
@@ -450,7 +579,7 @@ pub(crate) fn encode_native_for_routing(
     });
     if base_instruction.len()
         + routing.len()
-        + super::skill::CODEX_COMMAND_GUIDANCE.len()
+        + policy.extra_guidance.len()
         + pinned_commands
         + main_row
         + PEER_DATA_NOTICE.len()
@@ -459,11 +588,8 @@ pub(crate) fn encode_native_for_routing(
     {
         routing = "\nHook command routing (JSON data): null".to_owned();
     }
-    let instruction = if event.harness == Harness::Codex {
-        format!(
-            "{base_instruction}{routing}\n{}",
-            super::skill::CODEX_COMMAND_GUIDANCE
-        )
+    let instruction = if !policy.extra_guidance.is_empty() {
+        format!("{base_instruction}{routing}\n{}", policy.extra_guidance)
     } else {
         format!("{base_instruction}{routing}")
     };
@@ -492,7 +618,7 @@ pub(crate) fn encode_native_for_routing(
     // agent skill, right after the instruction, and only when it fits the
     // budget: it is the first thing to give way. PreToolUse and SubagentStart
     // (which is also lifecycle-mode) never carry it (Wave 20).
-    let lifecycle = native_event_name(event) == "SessionStart";
+    let lifecycle = policy.session_start_hint && skill_pointer;
     let envelope = |context: &str| {
         let hint = format!("\n{}", super::skill::HOOK_SKILL_HINT);
         let with_hint;
@@ -503,11 +629,7 @@ pub(crate) fn encode_native_for_routing(
             }
             _ => context,
         };
-        serde_json::to_vec(&serde_json::json!({"hookSpecificOutput": {
-            "hookEventName": native_event_name(event),
-            "additionalContext": context,
-        }}))
-        .unwrap_or_default()
+        context.to_owned()
     };
     let mut head = match actions {
         Some(actions) => format!("{instruction}\n{}", actions.render(all)),
@@ -1063,21 +1185,12 @@ pub fn diagnose_argv(args: &HookArgs, pane: &InstanceInputs) -> Vec<String> {
     argv
 }
 
-fn unavailable_context(event: &LifecycleEvent, reason: &str, diagnose: &[String]) -> Vec<u8> {
-    let context = format!(
+fn unavailable_text(policy: &OutputPolicy, reason: &str, diagnose: &[String]) -> String {
+    format!(
         "{}herdr-threads: check-in unavailable ({reason}). Tool use continues normally; accountable herdr-threads commands fail until the service recovers. Diagnose with argv (JSON data): {}",
-        if event.harness == Harness::Codex {
-            super::skill::CODEX_COMMAND_GUIDANCE
-        } else {
-            ""
-        },
+        policy.extra_guidance,
         serde_json::to_string(diagnose).unwrap_or_default()
-    );
-    serde_json::to_vec(&serde_json::json!({"hookSpecificOutput": {
-        "hookEventName": native_event_name(event),
-        "additionalContext": context,
-    }}))
-    .unwrap_or_default()
+    )
 }
 
 /// Reports one unparsed payload to the daemon, only when it advertised
@@ -1095,6 +1208,7 @@ pub(crate) fn report_parse_failure(
         Harness::Claude => "claude",
         Harness::Codex => "codex",
         Harness::Human => return false,
+        _ => return false,
     };
     if !capabilities.supports(HOOK_PARSE_FAILURE_REPORT) {
         return false;
@@ -1272,6 +1386,7 @@ fn pending_event(pending: &PendingCheckIn) -> LifecycleEvent {
 /// Bridge text, fallback read argv, digest summary and the attention mark to
 /// commit once the text is delivered.
 struct CheckedIn {
+    prepared_kind: Option<EventKind>,
     command_routing: Option<CommandRouting>,
     text: Vec<u8>,
     fallback: Vec<String>,
@@ -1322,14 +1437,23 @@ fn bridge_failure(error: bridge::BridgeError) -> Failure {
 }
 
 /// Composition over the existing daemon/client/bridge APIs. Returns bridge text.
+#[allow(clippy::too_many_arguments)]
 fn check_in(
     args: &HookArgs,
     event: &LifecycleEvent,
+    turn: Option<&crate::harness::context::QualifiedTurn>,
+    enroll: bool,
     env: &HookEnv,
     deadline: Instant,
+    current_deadline: CurrentDeadline,
     clock: Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
 ) -> Result<CheckedIn, Failure> {
+    if let Some(order) = turn.and_then(|turn| turn.ordering.as_ref()) {
+        order
+            .validate_deadline(clock.utc_now().0)
+            .map_err(|e| Failure::Quiet(format!("observation: {e:?}")))?;
+    }
     if !env.herdr_env {
         return Err(Failure::Quiet("not running inside a Herdr pane".into()));
     }
@@ -1394,6 +1518,7 @@ fn check_in(
         instance,
         target: &target,
         deadline,
+        current_deadline,
         clock: Arc::clone(&clock),
         retry: Arc::new(HookDeadline(deadline)),
     };
@@ -1404,8 +1529,6 @@ fn check_in(
     // for a top-level resume. The reattachment is one complete check-in (the
     // daemon rebinds the seat and opens its successor binding), so nothing
     // follows it.
-    let enroll =
-        lifecycle && event.role == Role::TopLevel && native_event_name(event) == "SessionStart";
     let existing = match find_seat(&client, &target, deadline, clock.as_ref())? {
         // A resume in a pane that still looks resolved may be running in a
         // restored Herdr (the same pane id, a new incarnation) the daemon has
@@ -1479,7 +1602,8 @@ fn check_in(
     } else {
         existing.ok_or_else(|| Failure::Quiet(format!("no resolved seat for pane {pane}")))?
     };
-    call.check_in_seat(event, &seat, generation).map(stamp)
+    call.check_in_seat_with_turn(event, turn, &seat, generation)
+        .map(stamp)
 }
 
 /// One hook invocation's connection to the daemon for one pane.
@@ -1490,6 +1614,7 @@ struct PaneCall<'a> {
     instance: uuid::Uuid,
     target: &'a HostTargetId,
     deadline: Instant,
+    current_deadline: CurrentDeadline,
     clock: Arc<dyn Clock>,
     /// Paces retries of a continuity submission (the hook deadline in production).
     retry: Arc<dyn RetryWindow>,
@@ -1548,10 +1673,9 @@ const CONTINUITY_BACKOFF_CAP: Duration = Duration::from_millis(400);
 
 fn wire_harness(harness: Harness) -> Option<crate::protocol::authority::Harness> {
     use crate::protocol::authority::Harness as Wire;
-    match harness {
-        Harness::Claude => Some(Wire::Claude),
-        Harness::Codex => Some(Wire::Codex),
-        Harness::Human => None,
+    match harness.occupant() {
+        occupant @ Wire::Agent(_) => Some(occupant),
+        Wire::Human => None,
     }
 }
 
@@ -1804,6 +1928,7 @@ impl PaneCall<'_> {
         let mut done = self
             .check_in_seat(&presented, &seat, reattached.binding_generation)
             .unwrap_or_else(|_| CheckedIn {
+                prepared_kind: None,
                 command_routing: None,
                 text: Vec::new(),
                 fallback: self.fallback_for(&seat),
@@ -1845,6 +1970,15 @@ impl PaneCall<'_> {
         seat: &SeatId,
         generation: u64,
     ) -> Result<CheckedIn, Failure> {
+        self.check_in_seat_with_turn(event, None, seat, generation)
+    }
+    fn check_in_seat_with_turn(
+        &self,
+        event: &LifecycleEvent,
+        turn: Option<&crate::harness::context::QualifiedTurn>,
+        seat: &SeatId,
+        generation: u64,
+    ) -> Result<CheckedIn, Failure> {
         let (context, paths, client, target) = (self.context, self.paths, self.client, self.target);
         let (instance, deadline) = (self.instance, self.deadline);
         let clock = Arc::clone(&self.clock);
@@ -1878,6 +2012,7 @@ impl PaneCall<'_> {
                 let text = render_context(event.role, &[], true)
                     .map_err(|e| Failure::Unavailable(format!("render: {e:?}")))?;
                 return Ok(CheckedIn {
+                    prepared_kind: None,
                     command_routing: None,
                     text: text.into_bytes(),
                     fallback,
@@ -1889,6 +2024,7 @@ impl PaneCall<'_> {
                 });
             }
             return Ok(CheckedIn {
+                prepared_kind: None,
                 command_routing: None,
                 text: Vec::new(),
                 fallback,
@@ -1931,6 +2067,7 @@ impl PaneCall<'_> {
                 token,
             });
             return Ok(CheckedIn {
+                prepared_kind: None,
                 command_routing: None,
                 actions: Some(next_actions(&prefix, boundary.digest.as_ref())),
                 text: boundary.text,
@@ -1942,10 +2079,28 @@ impl PaneCall<'_> {
             });
         }
         let mut done = lifecycle_check_in(
-            event, contexts, paths, client, target, seat, generation, instance, &output, deadline,
-            clock, fallback, prefix, &routing,
+            event,
+            turn,
+            contexts,
+            paths,
+            client,
+            target,
+            seat,
+            generation,
+            instance,
+            &output,
+            deadline,
+            &self.current_deadline,
+            clock,
+            fallback,
+            prefix,
+            &routing,
         )?;
-        done.recovery = self.recovery_rows(event, seat);
+        let recovery_event = LifecycleEvent {
+            kind: done.prepared_kind.unwrap_or(event.kind),
+            ..event.clone()
+        };
+        done.recovery = self.recovery_rows(&recovery_event, seat);
         Ok(done)
     }
 
@@ -2017,11 +2172,66 @@ fn abandon(
     Ok(())
 }
 
+/// One absolute invocation deadline also fences bridge calls whose local
+/// per-call budget would otherwise start afresh after a digest or replay.
+struct CurrentDeadline {
+    at: Instant,
+    /// Milliseconds from the same production invocation anchor as `at`.
+    watchdog: Option<(Arc<AtomicU64>, u64)>,
+}
+struct DeadlineClient<'a> {
+    inner: &'a dyn LocalClient,
+    deadline: AtomicU64,
+    clock: &'a dyn Clock,
+}
+impl DeadlineClient<'_> {
+    fn shorten(&self, current: &CurrentDeadline) {
+        self.deadline
+            .fetch_min(budget(current.at, self.clock).deadline.0, Ordering::SeqCst);
+        if let Some((watchdog, since_start_ms)) = &current.watchdog {
+            watchdog.fetch_min(*since_start_ms, Ordering::SeqCst);
+        }
+    }
+    fn capped(&self, requested: &CallBudget) -> Result<CallBudget, ApiError> {
+        let mut capped = requested.clone();
+        capped.deadline.0 = capped.deadline.0.min(self.deadline.load(Ordering::SeqCst));
+        if capped.is_exhausted(self.clock) {
+            return Err(ApiError::new(
+                ErrorCode::DeadlineExceeded,
+                "hook callback budget expired",
+            ));
+        }
+        Ok(capped)
+    }
+}
+impl LocalClient for DeadlineClient<'_> {
+    fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.inner.call(command, &self.capped(budget)?)
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        output: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.inner
+            .call_with_output(command, output, &self.capped(budget)?)
+    }
+    fn call_definitive(
+        &self,
+        command: Command,
+        budget: &CallBudget,
+    ) -> Result<Result<CommandResult, ApiError>, ApiError> {
+        self.inner.call_definitive(command, &self.capped(budget)?)
+    }
+}
+
 /// Lifecycle class (startup, clear, resume): the durable Lifecycle CheckIn
 /// through the context journal, with exact replay on response loss.
 #[allow(clippy::too_many_arguments)]
 fn lifecycle_check_in(
     event: &LifecycleEvent,
+    turn: Option<&crate::harness::context::QualifiedTurn>,
     contexts: crate::harness::context::ContextJournal,
     paths: &InstancePaths,
     client: &dyn LocalClient,
@@ -2031,6 +2241,7 @@ fn lifecycle_check_in(
     instance: uuid::Uuid,
     output: &OutputSpec,
     deadline: Instant,
+    current_deadline: &CurrentDeadline,
     clock: Arc<dyn Clock>,
     fallback: Vec<String>,
     prefix: Vec<String>,
@@ -2040,6 +2251,35 @@ fn lifecycle_check_in(
         .map_err(|e| Failure::Unavailable(format!("intent journal: {:?}", e.kind())))?;
     let owned = contexts;
     let contexts = &owned;
+    let bounded = DeadlineClient {
+        inner: client,
+        deadline: AtomicU64::new(budget(deadline, clock.as_ref()).deadline.0),
+        clock: clock.as_ref(),
+    };
+    if let Some(turn) = turn {
+        // Hints only shorten timing. Locked preparation below and the daemon
+        // still select and authorize the immutable ordinary request.
+        let replay = contexts
+            .request_for_event(&turn.event_key)
+            .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
+        let matching = contexts
+            .current()
+            .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?
+            .is_some_and(|saved| {
+                saved.harness == event.harness
+                    && saved.target == target.as_str()
+                    && saved.binding_generation > 0
+                    && saved.binding_generation == generation
+                    && saved.session == SessionReference::Native(turn.session.clone())
+                    && turn.reset.is_none()
+            });
+        if replay.as_ref().map_or(matching, |request| {
+            request.mode == crate::harness::context::CheckInMode::Current
+        }) {
+            bounded.shorten(current_deadline);
+        }
+    }
+    let client: &dyn LocalClient = if turn.is_some() { &bounded } else { client };
     // What the latest offer presented: the notice page it carried (and so
     // settled), shown on the `offered notices:` line that survives the hook's
     // oversize fallback, and the directory overview rows the fallback trims
@@ -2049,6 +2289,22 @@ fn lifecycle_check_in(
                initial: Option<&OccupantContext>,
                writer: &mut Vec<u8>|
      -> Result<(), bridge::BridgeError> {
+        if let Some(turn) = turn.filter(|turn| event.event_id == turn.event_key) {
+            return bridge::run_qualified_hook_event_reporting_notices(
+                &journal,
+                contexts,
+                event,
+                turn,
+                initial,
+                clock.utc_now().0,
+                client,
+                clock.as_ref(),
+                output,
+                writer,
+                &mut carried.borrow_mut(),
+                Some(routing),
+            );
+        }
         bridge::run_hook_event_reporting_notices(
             &journal,
             contexts,
@@ -2141,6 +2397,22 @@ fn lifecycle_check_in(
             role: Role::TopLevel,
         }
     });
+    if let Some(turn) = turn {
+        let request = bridge::prepare_qualified_turn(
+            &journal,
+            contexts,
+            event,
+            turn,
+            initial.as_ref(),
+            clock.utc_now().0,
+        )
+        .map_err(|e| bridge_failure(e.into()))?;
+        if request
+            .is_some_and(|request| request.mode == crate::harness::context::CheckInMode::Current)
+        {
+            bounded.shorten(current_deadline);
+        }
+    }
     let mut text = Vec::new();
     // The lifecycle offer and the tool boundary share one producer: the digest
     // read strictly before the fresh lifecycle CheckIn seeds the mark (joined
@@ -2176,6 +2448,20 @@ fn lifecycle_check_in(
     let summary =
         bridge::join_summaries(seeded.as_ref().map(|(_, digest)| digest.summary()), notices);
     let actions = next_actions(&prefix, seeded.as_ref().map(|(_, digest)| digest));
+    let prepared_kind = if turn.is_some()
+        && registration_for(event.harness)
+            .is_ok_and(|registration| registration.callback_admission())
+    {
+        Some(
+            contexts
+                .prepared_kind_for_event(&event.event_id)
+                .map_err(|e| {
+                    Failure::Unavailable(format!("qualified result kind unavailable: {e:?}"))
+                })?,
+        )
+    } else {
+        None
+    };
     let attention = seeded.map(|(execution, digest)| {
         let token = owned
             .attention_mark(execution)
@@ -2187,6 +2473,7 @@ fn lifecycle_check_in(
         }
     });
     Ok(CheckedIn {
+        prepared_kind,
         command_routing: None,
         text,
         fallback,
@@ -2195,6 +2482,41 @@ fn lifecycle_check_in(
         overview,
         recovery: None,
         attention,
+    })
+}
+
+/// Both entrypoints use the same policy projection for observation bypass.
+fn hook_install_observation(
+    registration: &Registration,
+    environment: &InstallEnvironment,
+    budget: &CallBudget,
+) -> InstallObservation {
+    match registration.hook_admission_policy() {
+        HookAdmissionPolicy::RegisteredContract => InstallObservation::NotRequested,
+        HookAdmissionPolicy::QualifiedCallback => callback_install_observation(registration),
+        HookAdmissionPolicy::InstalledObservation => {
+            registration.observe_install(environment, budget)
+        }
+    }
+}
+fn hook_admission_request(
+    registration: &Registration,
+    installed: InstallObservation,
+    input: &HookInput,
+) -> AdmissionRequest {
+    AdmissionRequest {
+        installed,
+        input: registration.callback_admission().then(|| HookInput {
+            bytes: input.bytes.clone(),
+            registered_event: input.registered_event.clone(),
+        }),
+        runtime_candidate: None,
+    }
+}
+fn callback_install_observation(registration: &Registration) -> InstallObservation {
+    InstallObservation::Unsupported(UnsupportedOperation {
+        adapter: registration.metadata().id,
+        operation: "callback startup identity",
     })
 }
 
@@ -2209,19 +2531,393 @@ pub fn run_hook(
     clock: Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
 ) -> HookOutcome {
-    let event = match parse_registered_event(args, installed, stdin) {
+    let registration = match registration_for(args.harness) {
+        Ok(registration) => registration,
+        Err(detail) => return quiet_outcome(detail),
+    };
+    run_hook_registered(
+        registration,
+        args,
+        installed,
+        stdin,
+        env,
+        deadline,
+        clock,
+        ensure_executable,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_hook_registered(
+    registration: &'static Registration,
+    args: &HookArgs,
+    installed: &InstalledHarness,
+    stdin: &[u8],
+    env: &HookEnv,
+    deadline: Instant,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> HookOutcome {
+    if registration.callback_admission() && (!env.herdr_env || env.pane.is_none()) {
+        return HookOutcome::default();
+    }
+    let input = HookInput {
+        bytes: stdin.to_vec(),
+        registered_event: args.event.clone(),
+    };
+    let installed = match registration.hook_admission_policy() {
+        HookAdmissionPolicy::RegisteredContract => InstallObservation::NotRequested,
+        HookAdmissionPolicy::QualifiedCallback => callback_install_observation(registration),
+        HookAdmissionPolicy::InstalledObservation => installed_observation(installed),
+    };
+    let request = hook_admission_request(registration, installed, &input);
+    let admitted = match registration.admit(&request, &budget(deadline, clock.as_ref())) {
+        Ok(handle) => handle,
+        Err(error) => return quiet_outcome(error.to_string()),
+    };
+    let decoded = match registration.decode(&admitted, &input) {
         Ok(event) => event,
         Err(error) => {
-            report_parse_failure_to_daemon(args, &error, env, deadline, clock);
-            return HookOutcome {
-                stdout: Vec::new(),
-                diagnostic: Some(format!("unsupported hook payload: {error:?}")),
-                attention: None,
-            };
+            {
+                report_parse_failure_to_daemon(
+                    args,
+                    &native_decode_error(&error),
+                    env,
+                    deadline,
+                    clock,
+                );
+            }
+            return quiet_outcome(format!(
+                "unsupported hook payload: {}",
+                decode_failure_detail(registration, &error)
+            ));
         }
     };
-    match check_in(args, &event, env, deadline, clock, ensure_executable) {
+    run_admitted_hook(
+        args,
+        registration,
+        &admitted,
+        &decoded,
+        env,
+        deadline,
+        clock,
+        ensure_executable,
+    )
+}
+fn decode_failure_detail(registration: &Registration, error: &DecodeFailure) -> String {
+    match error {
+        DecodeFailure::Native(inner)
+            if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract =>
+        {
+            format!("{inner:?}")
+        }
+        other => format!("{other:?}"),
+    }
+}
+fn native_decode_error(error: &DecodeFailure) -> ContextError {
+    match error {
+        DecodeFailure::Native(error) => error.clone(),
+        _ => ContextError::Invalid,
+    }
+}
+fn registration_for(harness: Harness) -> Result<&'static Registration, String> {
+    let crate::harness::registry::OccupantHarness::Agent(id) = harness.occupant() else {
+        return Err("a human occupant has no installed harness".into());
+    };
+    builtins().by_id(id).map_err(|error| error.to_string())
+}
+fn neutral_offer(fixed_guidance: String) -> NeutralOffer {
+    NeutralOffer {
+        fixed_guidance,
+        peer_data: serde_json::Value::Null,
+        ready_argv: vec![],
+    }
+}
+fn output_bytes(output: Result<EncodedOutput, EncodeFailure>) -> (Vec<u8>, bool, Option<String>) {
+    match output {
+        Ok(EncodedOutput::ContextBearing { bytes }) => {
+            let consumes = !bytes.is_empty();
+            (bytes, consumes, None)
+        }
+        Ok(EncodedOutput::ObserverOnly { bytes }) => (bytes, false, None),
+        Err(error) => (vec![], false, Some(error.to_string())),
+    }
+}
+/// Encode only the immutable prepared kind; retain the callback's original
+/// admission handle, role, runtime and output eligibility.
+pub(crate) fn encode_prepared_result(
+    registration: &'static Registration,
+    admitted: &crate::harness::registry::AdmittedHandle,
+    decoded: &DecodedEvent,
+    prepared_kind: Option<EventKind>,
+    context: String,
+) -> (Vec<u8>, bool, Option<String>) {
+    let mut encoding_event = decoded.clone();
+    if let Some(kind) = prepared_kind {
+        encoding_event.intent = EventIntent::Lifecycle(kind);
+    }
+    output_bytes(registration.encode(admitted, &encoding_event, &neutral_offer(context)))
+}
+fn quiet_outcome(detail: String) -> HookOutcome {
+    HookOutcome {
+        stdout: vec![],
+        diagnostic: Some(detail),
+        attention: None,
+    }
+}
+fn installed_compat(
+    registration: &Registration,
+    observation: &InstallObservation,
+) -> Option<InstalledHarness> {
+    match observation {
+        InstallObservation::CodexWitness(version) if registration.metadata().id == "codex" => {
+            Some(InstalledHarness::Codex(version.clone()))
+        }
+        InstallObservation::Available { identity, .. }
+            if registration.metadata().id == "claude" =>
+        {
+            identity
+                .release_version
+                .clone()
+                .map(InstalledHarness::Claude)
+        }
+        _ => None,
+    }
+}
+fn child_endpoint_available(args: &HookArgs) -> bool {
+    let Ok(context) =
+        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
+    else {
+        return false;
+    };
+    let Ok(paths) = InstancePaths::resolve(&context) else {
+        return false;
+    };
+    let Ok(Some(instance)) = read_existing_namespace(&paths) else {
+        return false;
+    };
+    read_descriptor(&paths, instance)
+        .is_ok_and(|descriptor| crate::daemon::lifecycle::check_protocol(&descriptor).is_ok())
+}
+fn record_observer_reset(
+    args: &HookArgs,
+    decoded: &DecodedEvent,
+    env: &HookEnv,
+    deadline: Instant,
+    clock: &dyn Clock,
+) {
+    let EventIntent::DeclaredReset(reset) = &decoded.intent else {
+        return;
+    };
+    let Some(target) = env.pane.as_deref() else {
+        return;
+    };
+    let Ok(context) =
+        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
+    else {
+        return;
+    };
+    let Ok(paths) = InstancePaths::resolve_read_only(&context) else {
+        return;
+    };
+    let Ok(Some(instance)) = read_existing_namespace(&paths) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(paths.instance_dir.join("contexts")) else {
+        return;
+    };
+    let mut matching = None;
+    for (index, entry) in entries.enumerate() {
+        if index >= 256 || Instant::now() >= deadline {
+            return;
+        }
+        let Ok(entry) = entry else {
+            return;
+        };
+        let Ok(Some(journal)) = crate::harness::context::ContextJournal::open_existing(
+            &entry.path(),
+            instance,
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(50)),
+        ) else {
+            continue;
+        };
+        if journal
+            .current_snapshot()
+            .ok()
+            .flatten()
+            .is_some_and(|c| c.harness == args.harness && c.target == target)
+        {
+            if matching.is_some() {
+                return;
+            }
+            matching = Some(journal);
+        }
+    }
+    if let Some(journal) = matching {
+        let _ =
+            bridge::record_declared_reset(&journal, args.harness, target, reset, clock.utc_now().0);
+    }
+}
+/// Executes adapter-normalized intent. Ineligible callbacks never reach seat resolution.
+#[allow(clippy::too_many_arguments)]
+pub fn run_admitted_hook(
+    args: &HookArgs,
+    registration: &'static Registration,
+    admitted: &AdmittedHandle,
+    decoded: &DecodedEvent,
+    env: &HookEnv,
+    deadline: Instant,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> HookOutcome {
+    run_admitted_hook_since(
+        args,
+        registration,
+        admitted,
+        decoded,
+        env,
+        deadline,
+        Instant::now(),
+        None,
+        clock,
+        ensure_executable,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn run_admitted_hook_since(
+    args: &HookArgs,
+    registration: &'static Registration,
+    admitted: &AdmittedHandle,
+    decoded: &DecodedEvent,
+    env: &HookEnv,
+    deadline: Instant,
+    started: Instant,
+    watchdog: Option<Arc<AtomicU64>>,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> HookOutcome {
+    if let Err(error) = registration.validate_event(admitted, decoded) {
+        return quiet_outcome(error.to_string());
+    }
+    let lifecycle = matches!(
+        decoded.intent,
+        EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_)
+    );
+    let bound = crate::protocol::time::external_bound(event_budget(registration, lifecycle, None));
+    let deadline = deadline.min(Instant::now() + bound);
+    let deadline = decoded
+        .metadata
+        .callback_deadline
+        .map_or(deadline, |native| native.min(deadline));
+    let deadline = if let EventIntent::QualifiedTurn(turn) = &decoded.intent {
+        if let Some(order) = &turn.ordering {
+            let now = clock.utc_now().0;
+            if let Err(error) = order.validate_deadline(now) {
+                return quiet_outcome(format!("observation: {error:?}"));
+            }
+            let remaining =
+                order.observed_at_millis + i64::from(order.callback_budget_millis) - now;
+            deadline.min(Instant::now() + Duration::from_millis(remaining as u64))
+        } else {
+            deadline
+        }
+    } else {
+        deadline
+    };
+    if deadline <= Instant::now() {
+        return quiet_outcome("hook callback budget expired".into());
+    }
+    if !env.herdr_env || env.pane.is_none() {
+        return quiet_outcome("not running inside a Herdr pane".into());
+    }
+    if matches!(decoded.intent, EventIntent::DeclaredReset(_)) {
+        record_observer_reset(args, decoded, env, deadline, clock.as_ref());
+        return HookOutcome::default();
+    }
+    if matches!(decoded.role, EventRole::Unknown)
+        || matches!(decoded.delivery, DeliveryEligibility::Ineligible)
+    {
+        return HookOutcome::default();
+    }
+    if !decoded.can_check_in() || !matches!(decoded.delivery, DeliveryEligibility::Context) {
+        if matches!(decoded.role, EventRole::Subagent)
+            && registration.output_policy().child_requires_endpoint
+            && !child_endpoint_available(args)
+        {
+            return HookOutcome::default();
+        }
+        let guidance = if matches!(decoded.role, EventRole::Subagent)
+            && matches!(decoded.intent, EventIntent::Lifecycle(_))
+        {
+            decoded.context_event().map_or_else(String::new, |event| {
+                let text = render_context(Role::Subagent, &[], true).unwrap_or_default();
+                compose_context(
+                    &event,
+                    &registration.output_policy(),
+                    decoded.metadata.skill_pointer,
+                    text.as_bytes(),
+                    &[],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            })
+        } else {
+            String::new()
+        };
+        let (stdout, _, diagnostic) =
+            output_bytes(registration.encode(admitted, decoded, &neutral_offer(guidance)));
+        return HookOutcome {
+            stdout,
+            diagnostic,
+            attention: None,
+        };
+    }
+    // Verify registration/handle/event before any canonical operation.
+    let Some(event) = decoded.context_event() else {
+        return HookOutcome::default();
+    };
+    let turn = match &decoded.intent {
+        EventIntent::QualifiedTurn(turn) => Some(turn),
+        _ => None,
+    };
+    // Only original admitted lifecycle intent permits ordinary enrollment.
+    // A qualified turn's normalized Startup/Clear is context preparation, not
+    // native lifecycle enrollment evidence. Actual native metadata stays intact.
+    let enroll = matches!(
+        decoded.intent,
+        EventIntent::Lifecycle(EventKind::Startup | EventKind::Clear | EventKind::Resume)
+    ) && matches!(decoded.role, EventRole::TopLevel)
+        && matches!(decoded.delivery, DeliveryEligibility::Context)
+        && decoded.can_check_in();
+    match check_in(
+        args,
+        &event,
+        turn,
+        enroll,
+        env,
+        deadline,
+        CurrentDeadline {
+            at: deadline.min(started + TOOL_BUDGET),
+            watchdog: watchdog.map(|watchdog| {
+                (
+                    watchdog,
+                    deadline
+                        .min(started + TOOL_BUDGET)
+                        .saturating_duration_since(started)
+                        .as_millis() as u64,
+                )
+            }),
+        },
+        clock,
+        ensure_executable,
+    ) {
         Ok(CheckedIn {
+            prepared_kind,
             command_routing,
             text,
             fallback,
@@ -2230,9 +2926,15 @@ pub fn run_hook(
             overview,
             recovery,
             attention,
-        }) => HookOutcome {
-            stdout: encode_native_for_routing(
-                &event,
+        }) => {
+            let composition_event = LifecycleEvent {
+                kind: prepared_kind.unwrap_or(event.kind),
+                ..event.clone()
+            };
+            let context = compose_context(
+                &composition_event,
+                &registration.output_policy(),
+                decoded.metadata.skill_pointer,
                 &text,
                 &fallback,
                 summary.as_deref(),
@@ -2240,10 +2942,15 @@ pub fn run_hook(
                 overview.as_ref(),
                 recovery.as_ref(),
                 command_routing.as_ref(),
-            ),
-            diagnostic: None,
-            attention,
-        },
+            );
+            let (stdout, consumes, diagnostic) =
+                encode_prepared_result(registration, admitted, decoded, prepared_kind, context);
+            HookOutcome {
+                stdout,
+                diagnostic,
+                attention: if consumes { attention } else { None },
+            }
+        }
         Err(Failure::Quiet(detail)) => HookOutcome {
             stdout: Vec::new(),
             diagnostic: Some(detail),
@@ -2262,7 +2969,16 @@ pub fn run_hook(
                 && event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
             HookOutcome {
                 stdout: if report {
-                    unavailable_context(&event, &reason, &diagnose_argv(args, &pane_inputs()))
+                    output_bytes(registration.encode(
+                        admitted,
+                        decoded,
+                        &neutral_offer(unavailable_text(
+                            &registration.output_policy(),
+                            &reason,
+                            &diagnose_argv(args, &pane_inputs()),
+                        )),
+                    ))
+                    .0
                 } else {
                     Vec::new()
                 },
@@ -2455,49 +3171,97 @@ pub fn run_process_with(
     sequence(
         started,
         tool_budget,
-        |budget| {
-            observe_harness_in(
-                args.harness,
-                std::env::var_os("PATH").as_deref(),
-                budget,
-                state_dir.as_deref(),
-            )
-        },
-        |installed| {
-            let budget = parse_registered_event(&args, &installed, &stdin)
-                .map(|event| crate::protocol::time::external_bound(budget_for(&event)))
-                .unwrap_or(tool_budget);
-            deadline_ms.store(budget.as_millis() as u64, Ordering::SeqCst);
-            // Calls end slightly before the watchdog so failures can still be reported.
-            let deadline = started + budget.saturating_sub(WATCHDOG_MARGIN);
-            let executable = std::env::current_exe().ok();
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_hook(
-                    &args,
-                    &installed,
-                    &stdin,
-                    env,
-                    deadline,
-                    Arc::clone(&clock),
-                    executable.as_deref(),
+        |observe_budget| {
+            let registration = registration_for(args.harness)?;
+            let observation = hook_install_observation(
+                registration,
+                &InstallEnvironment {
+                    path: std::env::var_os("PATH"),
+                    config_root: None,
+                    state_dir: state_dir.clone(),
+                    clock: Arc::clone(&clock),
+                },
+                &budget(Instant::now() + observe_budget, clock.as_ref()),
+            );
+            if registration.hook_admission_policy() == HookAdmissionPolicy::InstalledObservation
+                && matches!(
+                    observation,
+                    InstallObservation::Unavailable { .. } | InstallObservation::Unsupported(_)
                 )
-            }))
-            .unwrap_or_else(|_| HookOutcome {
-                stdout: Vec::new(),
-                diagnostic: Some("internal error".into()),
-                attention: None,
-            });
-            let HookOutcome {
-                stdout,
-                diagnostic,
-                attention,
-            } = outcome;
-            let delivered = emit(&HookOutcome {
-                stdout,
-                diagnostic,
-                attention: None,
-            });
-            if let (true, Some(attention)) = (delivered, attention)
+            {
+                return Err(observation_failure(observation));
+            }
+            Ok((registration, observation))
+        },
+        |(registration, observation)| {
+            let observation_deadline = started + tool_budget.saturating_sub(WATCHDOG_MARGIN);
+            let mut deadline = observation_deadline;
+            let outcome = (|| {
+                let input = HookInput {
+                    bytes: stdin.clone(),
+                    registered_event: args.event.clone(),
+                };
+                let request = hook_admission_request(registration, observation, &input);
+                let admitted = match registration
+                    .admit(&request, &budget(observation_deadline, clock.as_ref()))
+                {
+                    Ok(admitted) => admitted,
+                    Err(error) => return quiet_outcome(error.to_string()),
+                };
+                let event = match registration.decode(&admitted, &input) {
+                    Ok(event) => event,
+                    Err(error) => {
+                        {
+                            report_parse_failure_to_daemon(
+                                &args,
+                                &native_decode_error(&error),
+                                env,
+                                observation_deadline,
+                                Arc::clone(&clock),
+                            );
+                        }
+                        return quiet_outcome(format!(
+                            "unsupported hook payload: {}",
+                            decode_failure_detail(registration, &error)
+                        ));
+                    }
+                };
+                let lifecycle = matches!(
+                    event.intent,
+                    EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_)
+                );
+                let event_bound = crate::protocol::time::external_bound(event_budget(
+                    registration,
+                    lifecycle,
+                    None,
+                ));
+                let event_bound = event
+                    .metadata
+                    .callback_deadline
+                    .map_or(event_bound, |native| {
+                        event_bound.min(native.saturating_duration_since(started))
+                    });
+                deadline_ms.store(event_bound.as_millis() as u64, Ordering::SeqCst);
+                deadline = started + event_bound.saturating_sub(WATCHDOG_MARGIN);
+                let executable = std::env::current_exe().ok();
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_admitted_hook_since(
+                        &args,
+                        registration,
+                        &admitted,
+                        &event,
+                        env,
+                        deadline,
+                        started,
+                        Some(Arc::clone(&deadline_ms)),
+                        Arc::clone(&clock),
+                        executable.as_deref(),
+                    )
+                }))
+                .unwrap_or_else(|_| quiet_outcome("internal error".into()))
+            })();
+            let delivered = emit(&outcome);
+            if let (true, Some(attention)) = (delivered, outcome.attention)
                 && let Err(error) = attention.commit()
             {
                 let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
@@ -2509,11 +3273,7 @@ pub fn run_process_with(
             deadline
         },
         |detail| {
-            emit(&HookOutcome {
-                stdout: Vec::new(),
-                diagnostic: Some(detail),
-                attention: None,
-            });
+            emit(&quiet_outcome(detail));
         },
         |deadline| {
             if read_ok {
@@ -2557,11 +3317,11 @@ fn spawn_watchdog(started: Instant, deadline_ms: Arc<AtomicU64>, quiet: Arc<Atom
 /// never probes an executable. The note never delays the check-in, and a
 /// check-in that uses its whole budget leaves no time for it (the gate file
 /// is then unchanged, so the next event sends it).
-pub(crate) fn sequence(
+pub(crate) fn sequence<T>(
     started: Instant,
     tool_budget: Duration,
-    observe: impl FnOnce(Duration) -> Result<InstalledHarness, String>,
-    check_in: impl FnOnce(InstalledHarness) -> Instant,
+    observe: impl FnOnce(Duration) -> Result<T, String>,
+    check_in: impl FnOnce(T) -> Instant,
     refused: impl FnOnce(String),
     evidence: impl FnOnce(Instant),
 ) {
@@ -2583,3 +3343,14 @@ pub(crate) fn sequence(
 #[cfg(test)]
 #[path = "../../tests/cli/hook.rs"]
 mod tests;
+
+#[cfg(test)]
+fn native_event_name(event: &LifecycleEvent) -> &'static str {
+    if event.kind == EventKind::Tool {
+        "PreToolUse"
+    } else if event.source == "SubagentStart" {
+        "SubagentStart"
+    } else {
+        "SessionStart"
+    }
+}

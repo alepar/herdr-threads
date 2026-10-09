@@ -1,0 +1,225 @@
+{
+  "worker": "other_harness_research",
+  "retrieved_at": "2026-10-03",
+  "scope": "Gemini CLI, OpenCode, Pi: interface counterexamples only; no native integration validation",
+  "queries": [
+    {
+      "round": 1,
+      "queries": [
+        "site.geminicli.com docs hooks BeforeAgent SessionStart context",
+        "site.opencode.ai docs plugins session created shell environment",
+        "site.github.com/badlogic/pi-mono extensions session_start before_agent_start"
+      ],
+      "purpose": "Locate primary lifecycle and context surfaces; discard third-party/fork results"
+    },
+    {
+      "round": 2,
+      "queries": [
+        "site.geminicli.com docs cli reference resume GEMINI_CLI_SYSTEM_SETTINGS_PATH",
+        "site.opencode.ai docs cli --continue --session config OPENCODE_CONFIG",
+        "site.github.com/earendil-works/pi --resume PI_CODING_AGENT_DIR --session"
+      ],
+      "purpose": "Locate launch/session/config isolation APIs; follow original Pi docs links to current canonical repository"
+    }
+  ],
+  "sources": [
+    {
+      "id": "g-hooks",
+      "title": "Gemini CLI hooks",
+      "url": "https://geminicli.com/docs/hooks/",
+      "primary": true,
+      "locator": "What are hooks; Hook events; Security and risks",
+      "passages": [
+        "Hooks run synchronously as part of the agent loop",
+        "Gemini CLI fingerprints project hooks."
+      ],
+      "summary": "Lifecycle command hooks run synchronously; project hook name/command changes trigger new untrusted-hook warning. SessionStart covers startup, resume and clear. BeforeAgent runs after user prompt."
+    },
+    {
+      "id": "g-reference",
+      "title": "Gemini CLI hooks reference",
+      "url": "https://geminicli.com/docs/hooks/reference/",
+      "primary": true,
+      "locator": "Global hook mechanics; Base input schema; BeforeAgent; SessionStart (web extraction lines 267-277, 308-325, 422-434, 520-539)",
+      "passages": [
+        "Startup is never blocked.",
+        "Text that is appended to the prompt for this turn only."
+      ],
+      "summary": "stdin JSON fields include session_id, transcript_path, cwd, hook_event_name and timestamp. stdout must be JSON only, stderr is log/feedback; code 0 parses JSON, code 2 blocks, other failures warn and continue. BeforeAgent additionalContext adds per-turn context; SessionStart context enters first history turn in interactive mode or prefixes noninteractive prompt. Startup ignores decision/continue. timeout milliseconds default 60000. Only command hook execution engine is documented."
+    },
+    {
+      "id": "g-config",
+      "title": "Gemini CLI configuration",
+      "url": "https://geminicli.com/docs/reference/configuration/",
+      "primary": true,
+      "locator": "Settings files; CLI flags (lines 268-284 and 3631-3650)",
+      "passages": [
+        "Displays the version of the CLI."
+      ],
+      "summary": "User settings are ~/.gemini/settings.json; project settings .gemini/settings.json override user; system settings override all, with GEMINI_CLI_SYSTEM_SETTINGS_PATH override. --resume accepts latest/index/full UUID; --prompt is noninteractive, --prompt-interactive gives initial interactive input. --version exists."
+    },
+    {
+      "id": "o-plugins",
+      "title": "OpenCode Plugins",
+      "url": "https://opencode.ai/docs/plugins/",
+      "primary": true,
+      "locator": "From local files; Basic structure; Shell Events; Inject environment variables; Compaction hooks (lines 108-157, 216-244, 310-337, 409-433, 525-618)",
+      "passages": [
+        "Files in these directories are automatically loaded at startup.",
+        "Inject environment variables into all shell execution (AI tools and user terminals)"
+      ],
+      "summary": "JavaScript/TypeScript modules auto-load from .opencode/plugins and ~/.config/opencode/plugins. Factory receives project, client, shell API, directory, worktree and returns hooks object. All sources load in sequence; duplicate npm same-name/version dedupes but local plus npm are separate. session.created/idle/status and other events documented. shell.env permits mutable per-shell environment. experimental.session.compacting supports context or replacing prompt; replacement ignores context array."
+    },
+    {
+      "id": "o-types",
+      "title": "OpenCode plugin Hooks types (development branch)",
+      "url": "https://raw.githubusercontent.com/anomalyco/opencode/dev/packages/plugin/src/index.ts",
+      "primary": true,
+      "locator": "Hooks interface lines 213-325",
+      "passages": [
+        "input: { cwd: string; sessionID?: string; callID?: string }",
+        "output: { env: Record<string, string> }"
+      ],
+      "summary": "shell.env has optional sessionID/callID: caller attribution cannot assume every shell event belongs to a session. chat.message, tool.execute.before/after have sessionID. experimental.chat.system.transform has optional sessionID and mutable system string array. Experimental compaction hook is session-specific. dispose callback exists. Source on mutable dev branch is authoritative code but not pinned release evidence."
+    },
+    {
+      "id": "o-cli",
+      "title": "OpenCode CLI",
+      "url": "https://opencode.ai/docs/cli/",
+      "primary": true,
+      "locator": "tui flags; attach; run flags; environment variables (lines 146-158, 217-255, 575-595, 955-969)",
+      "passages": [
+        "Session ID to continue",
+        "Path to config directory"
+      ],
+      "summary": "--session/-s, --continue/-c and --fork supported. run provides noninteractive command plus --attach server mode, --dir and --format json. TUI can attach to existing backend. OPENCODE_CONFIG, OPENCODE_CONFIG_DIR and OPENCODE_CONFIG_CONTENT give file/directory/inline config; --version prints version. An adapter cannot infer backend caller identity from the TUI terminal process when using attach."
+    },
+    {
+      "id": "p-extensions",
+      "title": "Pi Extensions (current canonical docs)",
+      "url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/docs/extensions.md",
+      "primary": true,
+      "locator": "Create and load; Respect runtime lifecycle; Events and concurrency (lines 10-57, 79-103)",
+      "passages": [
+        "Extensions are TypeScript modules",
+        "agent_settled` is final and notification-only"
+      ],
+      "summary": "Extensions run inside Pi with same OS permissions. Default factory receives ExtensionAPI; jiti loads local TS without compilation; global/project extension discovery and explicit --extension supported. Async factory is awaited, but must not start long-lived resources because invocations may only load extensions; resources should start at session_start and close at idempotent session_shutdown. agent_end may precede recovery/retries/queued work; agent_settled marks true final boundary. before_agent_start permits prompt mutation and persistent custom message; context transforms differ in ownership."
+    },
+    {
+      "id": "p-types",
+      "title": "Pi extension event types (current main)",
+      "url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/core/extensions/types.ts",
+      "primary": true,
+      "locator": "SessionStartEvent lines 677-683; BeforeAgentStartEvent lines 840-850; BeforeAgentStartEventResult lines 1352-1356",
+      "passages": [
+        "reason: \"startup\" | \"reload\" | \"new\" | \"resume\" | \"fork\";",
+        "message?: Pick<CustomMessage, \"customType\" | \"content\" | \"display\" | \"details\">;"
+      ],
+      "summary": "SessionStartEvent consolidates startup/reload/new/resume/fork with previousSessionFile for latter transitions. before_agent_start exposes prompt and mutable systemPromptOptions plus optional complete systemPrompt replacement. Custom context message return has content/customType/display/details. These are in-process typed callbacks, not command-hook stdin/out."
+    },
+    {
+      "id": "p-config",
+      "title": "Pi Configuration",
+      "url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/docs/configuration.md",
+      "primary": true,
+      "locator": "Configuration and Agent directory lines 2-6",
+      "passages": [
+        "Project configuration lives in `.pi` under the working directory"
+      ],
+      "summary": "Default user agent directory ~/.pi/agent can be overridden by PI_CODING_AGENT_DIR or SDK agentDir. Project config loads only after trust granted; sessionDir read before trust is exception."
+    },
+    {
+      "id": "p-cli",
+      "title": "Pi Command Line",
+      "url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/docs/cli.md",
+      "primary": true,
+      "locator": "Invocation/output; Sessions; Resources; Prompts/process (lines 17-42, 64-92, 149-177, 179-205)",
+      "passages": [
+        "Shows the Pi version, then exits.",
+        "Opens by file path, exact ID, or partial ID."
+      ],
+      "summary": "--session accepts path/exact/partial ID and may offer cross-project fork; --session-id exact project ID can create if absent. --resume is picker, --continue latest project. --fork explicit new session. --session-dir overrides storage env/config, --no-session ephemeral. --extension repeatable adds explicit runtime bridge; --no-extensions still allows explicit -e. --append-system-prompt appends; --approve trusts project config for one process and --no-approve ignores it. RPC/JSON modes reserve stdout; terminal redirection affects default mode. -v/--version exists."
+    },
+    {
+      "id": "p-format",
+      "title": "Pi Session Format",
+      "url": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/docs/session-format.md",
+      "primary": true,
+      "locator": "SessionHeader lines 53-65; Entry Base lines 39-49",
+      "passages": [
+        "First line of the file. Metadata only, not part of the tree"
+      ],
+      "summary": "Session JSONL header id/cwd and optional parentSession record explicit fork/clone ancestry. Tree entries have parentId referring to entries, not parent agents. Treat ancestry differently from harness-created child agent attribution."
+    }
+  ],
+  "implications": [
+    {
+      "id": "i1",
+      "inference": true,
+      "sources": [
+        "g-reference",
+        "o-plugins",
+        "p-extensions",
+        "p-types"
+      ],
+      "text": "Cohesive adapter should own bridge assets and invocation shape. Normalize lifecycle/context intents in core but leave JS/TS callbacks, stdin/out codecs, event-to-intent mapping, stdout reservation and timeout units adapter-local. A mandatory command-hook implementation excludes OpenCode/Pi without scattered exceptions."
+    },
+    {
+      "id": "i2",
+      "inference": true,
+      "sources": [
+        "g-reference",
+        "p-types",
+        "p-extensions"
+      ],
+      "text": "Lifecycle capability cannot be a boolean or single universal start/stop pair: startup may be advisory only; session start includes clear/reload/fork and stop may mean turn ended or finally settled. Adapter observations need explicit semantic reason and context lifetime, and unsupported guarantees must remain unsupported."
+    },
+    {
+      "id": "i3",
+      "inference": true,
+      "sources": [
+        "g-hooks",
+        "g-config",
+        "o-plugins",
+        "p-config",
+        "p-cli"
+      ],
+      "text": "Setup plan should distinguish owned executable/bridge assets from edits to shared settings, discovery locations, launch-only injection and native trust/approval effects. Native approval must remain user-visible; installation must not add --approve or otherwise manufacture admission success."
+    },
+    {
+      "id": "i4",
+      "inference": true,
+      "sources": [
+        "o-types",
+        "o-cli",
+        "p-format",
+        "p-cli"
+      ],
+      "text": "Session/caller/child observations require distinct optional provenance. Optional OpenCode session IDs and detached backend/TUI topology prevent assuming terminal environment belongs to every agent action. Pi parentSession and tree parentId prove branching relationships only, not child-agent identity."
+    },
+    {
+      "id": "i5",
+      "inference": true,
+      "sources": [
+        "g-config",
+        "o-cli",
+        "o-types",
+        "p-cli",
+        "p-types"
+      ],
+      "text": "Launch spec should be typed executable+argv+env with explicit fresh/resume/fork mode and resume token format; avoid shared --resume convention. Version readout needs separate installed binary observation from documented recipe/code revision and native probe evidence."
+    }
+  ],
+  "gaps_and_counterevidence": [
+    "No binary was installed/launched; all findings are documentation/code evidence, never native PASS.",
+    "No release versions/commit hashes were pinned. Mutable docs/main/dev cannot establish minimum supported version.",
+    "Pi older indexed fork docs use @mariozechner packages and distinct session_switch/session_fork; direct current badlogic docs link to earendil-works/pi and current session_start reasons differ. Recipes must target observed installed version instead of search snippets.",
+    "OpenCode simultaneously publishes legacy docs and /v2/docs using plugins plural/new service architecture; this audit uses /docs plus anomalyco/opencode dev types. Selecting v1 versus v2 requires installed-version evidence before any support claim.",
+    "Native subagent child markers and exact environment inheritance were not established for these three harnesses. shell.env is a mutation mechanism, not evidence of a correct herdr child marker implementation.",
+    "No supported universal hook guarantees receipt durability, seat continuity or native consent. Those remain herdr daemon/core policy responsibilities.",
+    "Pi explicit extension launch may avoid persistent config edits, but launch-only injection does not establish coverage of independently started Pi sessions.",
+    "Gemini additionalContext differs between SessionStart and BeforeAgent; forcing one renderer/lifetime would silently change behavior."
+  ],
+  "retrieval_stop": "Three independent harnesses expose the intended material variations (command protocol versus in-process bridge; advisory versus actionable lifecycle; per-turn versus persistent context; discovery and trust; detached backend and optional session identity; branching versus child). Further harness breadth is unnecessary for design preview. Remaining native/version/child gaps are explicit follow-up work rather than assumptions."
+}

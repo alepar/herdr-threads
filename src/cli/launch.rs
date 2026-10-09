@@ -27,20 +27,21 @@
 //! when the agent's initial prompt is lost. Each submitted start is appended
 //! to a private launch record in the instance directory.
 
+#[cfg(test)]
+use super::setup::{self, SetupRequest, SetupVerb};
 use super::{
     RunError,
     journal::{IntentScope, Journal, SemanticMutation},
     retry,
-    setup::{self, SetupEnv, SetupRequest, SetupVerb},
+    setup::SetupEnv,
 };
 use crate::{
     client::local::LocalSocketClient,
     harness::{
         context::Harness as ContextHarness,
         launch::{
-            LaunchHookConfiguration, LaunchHookInspector, LaunchSeatResolver, ManagedLaunchRequest,
-            OpenBinding, managed_launch_command, prepare_managed, submit_prepared,
-            submit_prepared_with_evidence,
+            LaunchHookInspector, LaunchSeatResolver, ManagedLaunchRequest, OpenBinding,
+            managed_launch_command, submit_prepared, submit_prepared_with_evidence,
         },
     },
     host::observation::PaneName,
@@ -61,110 +62,13 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{self, Read, Write},
+    io::{self, Write},
     path::Path,
-    process::{Command as Process, Stdio},
     sync::Mutex,
-    time::{Duration, Instant},
 };
 
-/// Reads configuration exports from the pane's interactive shell.
-/// Injected so tests never run the user's real shell.
-pub trait CodexShellProbe {
-    /// The value the pane's interactive shell itself gives `var` (an `export`
-    /// in its startup files), without the launcher's own value; `None` when
-    /// the shell sets none or cannot be asked. Herdr's `agent.start` carries
-    /// no environment, so the agent inherits whatever the pane shell has.
-    fn pane_shell_env(&self, _var: &str) -> Option<String> {
-        None
-    }
-}
-
-/// The bound on configuration-directory shell probes.
-pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Runs the user's `$SHELL` (else `/bin/zsh`) interactively to read exports.
-/// Stdout only; stdin and stderr are null.
-pub struct SystemShellProbe {
-    pub shell: std::path::PathBuf,
-    pub timeout: Duration,
-}
-
-impl SystemShellProbe {
-    pub fn from_process() -> Self {
-        let shell = std::env::var_os("SHELL")
-            .filter(|shell| !shell.is_empty())
-            .map_or_else(|| "/bin/zsh".into(), std::path::PathBuf::from);
-        Self {
-            shell,
-            timeout: crate::protocol::time::external_bound(SHELL_PROBE_TIMEOUT),
-        }
-    }
-}
-
-impl SystemShellProbe {
-    /// Runs `script` in the interactive shell (`-ic`), stdout only, bounded by
-    /// the probe timeout. `unset` removes one inherited variable first.
-    fn run_script(&self, script: &str, unset: Option<&str>) -> Result<String, String> {
-        let mut command = Process::new(&self.shell);
-        command.arg("-ic").arg(script);
-        if let Some(var) = unset {
-            command.env_remove(var);
-        }
-        let mut child = command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("{}: {error}", self.shell.display()))?;
-        let mut stdout = child.stdout.take().ok_or("no shell stdout")?;
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let result = stdout.read_to_end(&mut bytes).map(|_| bytes);
-            let _ = sender.send(result);
-        });
-        let deadline = Instant::now() + self.timeout;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Ok(None) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("the shell probe timed out".into());
-                }
-                Err(error) => return Err(error.to_string()),
-            }
-        };
-        if !status.success() {
-            return Err(format!("the shell probe exited with {status}"));
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let bytes = receiver
-            .recv_timeout(remaining.max(Duration::from_millis(100)))
-            .map_err(|_| "the shell probe output was not closed".to_owned())?
-            .map_err(|error| error.to_string())?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
-    }
-}
-
-impl CodexShellProbe for SystemShellProbe {
-    fn pane_shell_env(&self, var: &str) -> Option<String> {
-        const BEGIN: &str = "HT_PANE_ENV_BEGIN";
-        const END: &str = "HT_PANE_ENV_END";
-        // Only a plain variable name is ever interpolated into the script.
-        if var.is_empty() || !var.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
-            return None;
-        }
-        let script = format!("printf '%s' {BEGIN}\"${{{var}-}}\"{END}");
-        let output = self.run_script(&script, Some(var)).ok()?;
-        let value = output.split(BEGIN).nth(1)?.split(END).next()?;
-        (!value.is_empty()).then(|| value.to_owned())
-    }
-}
+pub use crate::harness::codex::launch::codex_profile;
+pub use crate::harness::launch::{CodexShellProbe, SHELL_PROBE_TIMEOUT, SystemShellProbe};
 
 /// `launch --help` epilogue.
 pub const LAUNCH_HELP: &str = "Target:
@@ -212,6 +116,18 @@ fails launch at once with invalid_request and the pane's last lines. Codex launc
 `codex`: the effective CODEX_HOME, its config.toml and the selected profile (-p/--profile,
 else `profile` in config.toml, else default).
 
+Harness choices come from the same-binary registry. Hermes is experimental, natively
+measured on 0.21.5 with a private Herdr build; it joins only through this launch. Its separate startup/profile/API prelaunch observation
+must match the selected executable, owned generation and configured enabled profile.
+Native Hermes -p/--profile NAME after `--` is emitted once (default when omitted);
+--cli and one policy-owned chat token compose the captured interactive grammar.
+Known-arity model/provider options and chat -q/--query are supported in their native
+positions. Resume, TUI/native/oneshot, arbitrary subcommands, plugin suppression and
+approval bypass forms refuse. Launch never enables a plugin or grants native consent.
+The private host must support guarded process hints; a hint or observed launch is
+neither callback activation nor model consumption. Missing Hermes composer support
+permits no in-turn poke or composer stash/restore.
+
 Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
 inspect the pane (`herdr agent get` / `herdr agent read`) before launching again.";
 
@@ -229,31 +145,82 @@ pub struct LaunchRequest {
     pub pane_label: Option<String>,
 }
 
+/// Resolve and validate the current producer declaration before lookup or shell output.
+pub(crate) fn native_options_env(
+    registry: &crate::harness::registry::Registry,
+    harness: ContextHarness,
+) -> Result<Option<&'static str>, ApiError> {
+    let registration =
+        crate::harness::launch::launch_registration(registry, policy_harness(harness))?;
+    let declaration = registration
+        .launch_policy()
+        .expect("checked provider")
+        .native_options_env();
+    if let Some(key) = declaration {
+        let valid = key.is_ascii()
+            && key.len() <= 128
+            && key
+                .strip_prefix("HERDR_THREADS_")
+                .and_then(|middle| middle.strip_suffix("_OPTS"))
+                .is_some_and(|middle| {
+                    !middle.is_empty()
+                        && middle.bytes().all(|byte| {
+                            byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                        })
+                });
+        if !valid {
+            return Err(api(
+                ErrorCode::InvalidRequest,
+                "invalid native options environment declaration",
+            ));
+        }
+    }
+    Ok(declaration)
+}
+
 impl LaunchRequest {
     /// Resolve optional native arguments once, before launch preflight. Handoff
     /// stores this combined argv in its durable plan; retries must not reread
     /// the environment or prepend these options again.
     pub(crate) fn with_process_options(self) -> Result<Self, RunError> {
-        let options = self.options_variable().and_then(std::env::var_os);
-        self.with_configured_options(options)
+        self.with_process_options_with_registry(crate::harness::registry::builtins())
     }
 
-    fn options_variable(&self) -> Option<&'static str> {
-        match self.harness {
-            ContextHarness::Codex => Some("HERDR_THREADS_CODEX_OPTS"),
-            ContextHarness::Claude => Some("HERDR_THREADS_CLAUDE_OPTS"),
-            ContextHarness::Human => None,
-        }
+    pub(crate) fn with_process_options_with_registry(
+        self,
+        registry: &crate::harness::registry::Registry,
+    ) -> Result<Self, RunError> {
+        let variable = native_options_env(registry, self.harness)?;
+        let options = variable.and_then(std::env::var_os);
+        self.parse_configured_options(variable, options)
     }
 
+    #[cfg(test)]
     pub(crate) fn with_configured_options(
-        mut self,
+        self,
         options: Option<std::ffi::OsString>,
     ) -> Result<Self, RunError> {
-        let Some(options) = options else {
+        self.with_configured_options_with_registry(crate::harness::registry::builtins(), options)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_configured_options_with_registry(
+        self,
+        registry: &crate::harness::registry::Registry,
+        options: Option<std::ffi::OsString>,
+    ) -> Result<Self, RunError> {
+        let variable = native_options_env(registry, self.harness)?;
+        self.parse_configured_options(variable, options)
+    }
+
+    fn parse_configured_options(
+        mut self,
+        variable: Option<&'static str>,
+        options: Option<std::ffi::OsString>,
+    ) -> Result<Self, RunError> {
+        let (Some(variable), Some(options)) = (variable, options) else {
             return Ok(self);
         };
-        let variable = self.options_variable().unwrap_or("launch options");
         let options = options.into_string().map_err(|_| {
             super::invalid_request(&format!("{variable} must contain UTF-8 native arguments"))
         })?;
@@ -306,70 +273,17 @@ fn api(code: ErrorCode, detail: impl Into<String>) -> ApiError {
 }
 
 fn policy_harness(harness: ContextHarness) -> Harness {
-    match harness {
-        ContextHarness::Claude => Harness::Claude,
-        ContextHarness::Codex => Harness::Codex,
-        ContextHarness::Human => Harness::Human,
-    }
+    harness.into()
 }
 
-fn harness_word(harness: ContextHarness) -> &'static str {
-    match harness {
-        ContextHarness::Claude => "claude",
-        ContextHarness::Codex => "codex",
-        ContextHarness::Human => "human",
-    }
-}
-
-/// The owned hook configuration of one launch, read from the setup library:
-/// the exact user-level installation (no extra arguments).
-/// Codex commands use its approved outside-sandbox execution mechanism.
-pub struct SetupHookInspector {
-    env: SetupEnv,
-    harness: ContextHarness,
-    warnings: Mutex<Vec<String>>,
-}
-
-impl SetupHookInspector {
-    fn installed(&self) -> Result<Option<LaunchHookConfiguration>, ApiError> {
-        let (_, inspection) = setup::user_inspection(self.harness, &self.env)
-            .map_err(|detail| api(ErrorCode::Conflict, detail))?;
-        Ok(inspection
-            .configured_hook
-            .map(|hook| LaunchHookConfiguration {
-                hook,
-                argv: Vec::new(),
-            }))
-    }
-}
-
-impl LaunchHookInspector for SetupHookInspector {
+struct PreparedHookInspector(ConfiguredHook);
+impl LaunchHookInspector for PreparedHookInspector {
     fn configured_hook(
         &self,
-        harness: Harness,
-        budget: &CallBudget,
+        _: Harness,
+        _: &CallBudget,
     ) -> Result<Option<ConfiguredHook>, ApiError> {
-        Ok(self
-            .launch_configuration(harness, budget)?
-            .map(|configuration| configuration.hook))
-    }
-
-    fn launch_configuration(
-        &self,
-        harness: Harness,
-        _budget: &CallBudget,
-    ) -> Result<Option<LaunchHookConfiguration>, ApiError> {
-        if harness != policy_harness(self.harness) {
-            return Err(api(ErrorCode::InvalidRequest, "launch harness mismatch"));
-        }
-        match self.harness {
-            ContextHarness::Claude => self.installed(),
-            ContextHarness::Codex => self.installed(),
-            ContextHarness::Human => Err(api(
-                ErrorCode::InvalidRequest,
-                "launch starts agents only; a person uses `herdr-threads me init`",
-            )),
-        }
+        Ok(Some(self.0.clone()))
     }
 }
 
@@ -447,6 +361,24 @@ pub(crate) fn resolve_seat(
 }
 
 impl LaunchSeatResolver for DaemonSeatResolver<'_> {
+    fn existing_seat(
+        &self,
+        target: &HostTargetId,
+        budget: &CallBudget,
+    ) -> Result<Option<SeatId>, ApiError> {
+        let seats = super::collect_pane_seats(target, |command| self.client.call(command, budget))
+            .map_err(|error| match error {
+                super::PaneSeatsError::Api(error) => error,
+                super::PaneSeatsError::Unexpected => {
+                    api(ErrorCode::InvalidRequest, "seat lookup: unexpected result")
+                }
+            })?;
+        Ok(match seats.resolved.as_slice() {
+            [only] => Some(only.seat.clone()),
+            _ => None,
+        })
+    }
+
     fn resolve_for_launch(
         &self,
         target: &HostTargetId,
@@ -542,6 +474,14 @@ struct RecordingResolver<'a> {
     seat: Mutex<Option<SeatId>>,
 }
 impl LaunchSeatResolver for RecordingResolver<'_> {
+    fn existing_seat(
+        &self,
+        target: &HostTargetId,
+        budget: &CallBudget,
+    ) -> Result<Option<SeatId>, ApiError> {
+        self.inner.existing_seat(target, budget)
+    }
+
     fn resolve_for_launch(
         &self,
         target: &HostTargetId,
@@ -687,90 +627,30 @@ fn append_record(dir: &Path, record: &Value) -> io::Result<()> {
     file.write_all(&line)
 }
 
-/// The config directory the agent will use and where that came from: the
-/// pane shell's own `CODEX_HOME` / `CLAUDE_CONFIG_DIR` (an `export` in its
-/// startup files; Herdr's `agent.start` carries no environment, so the agent
-/// inherits the pane's) when it sets an absolute one, else the launcher's
-/// resolved value (the pane then inherits the Herdr server's environment,
-/// which launch cannot read). Returns the environment to inspect with.
-fn effective_env(
-    request: &LaunchRequest,
-    env: &SetupEnv,
-    probe: &dyn CodexShellProbe,
-) -> (SetupEnv, &'static str) {
-    let var = match request.harness {
-        ContextHarness::Codex => "CODEX_HOME",
-        ContextHarness::Claude => "CLAUDE_CONFIG_DIR",
-        ContextHarness::Human => return (env.clone(), "launcher"),
-    };
-    let pane_dir = probe
-        .pane_shell_env(var)
-        .map(std::path::PathBuf::from)
-        .filter(|dir| dir.is_absolute());
-    let Some(dir) = pane_dir else {
-        return (env.clone(), "launcher");
-    };
-    let mut effective = env.clone();
-    match request.harness {
-        ContextHarness::Codex => effective.codex_home = Some(dir),
-        _ => effective.claude_config_dir = Some(dir),
-    }
-    (effective, "pane_shell")
-}
-
-/// The Codex profile Codex applies: `-p/--profile` before `--` (the last one
-/// wins), else the top-level `profile` key of `config.toml`, else none.
-pub fn codex_profile(argv: &[String], config: Option<&str>) -> (String, &'static str) {
-    let options_end = argv.iter().position(|a| a == "--").unwrap_or(argv.len());
-    let options = &argv[..options_end];
-    let mut chosen = None;
-    for (index, arg) in options.iter().enumerate() {
-        let value = match arg.as_str() {
-            "-p" | "--profile" => options.get(index + 1).map(String::as_str),
-            other => other
-                .strip_prefix("--profile=")
-                .or_else(|| other.strip_prefix("-p").filter(|rest| !rest.is_empty())),
-        };
-        if let Some(value) = value {
-            chosen = Some(value.to_owned());
+/// Adapter-local report keys are additive; canonical launch evidence keeps its own fields.
+fn append_adapter_projection(report: &mut Value, projection: &Value) {
+    if let (Some(report), Some(projection)) = (report.as_object_mut(), projection.as_object()) {
+        for (key, value) in projection {
+            report.entry(key.clone()).or_insert_with(|| value.clone());
         }
     }
-    if let Some(profile) = chosen {
-        return (profile, "argv");
-    }
-    let from_config = config
-        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
-        .and_then(|doc| doc.get("profile")?.as_str().map(str::to_owned));
-    match from_config {
-        Some(profile) => (profile, "config.toml"),
-        None => ("default".to_owned(), "none"),
-    }
-}
-
-/// The effective Codex home, its `config.toml` and the selected profile,
-/// which answers "why was my Codex profile not applied?".
-fn codex_report(env: &SetupEnv, argv: &[String]) -> Value {
-    let home = env.codex_home.as_deref();
-    let config_path = home.map(|home| home.join("config.toml"));
-    let config = config_path
-        .as_deref()
-        .and_then(|path| fs::read_to_string(path).ok());
-    let (profile, profile_source) = codex_profile(argv, config.as_deref());
-    json!({
-        "codex_home": home.map(|home| home.display().to_string()),
-        "config_path": config_path.as_ref().map(|path| path.display().to_string()),
-        "config_present": config.is_some(),
-        "profile": profile,
-        "profile_source": profile_source,
-        "command_execution": "approved_outside_sandbox",
-        "command_guidance": "Run herdr-threads commands outside the sandbox through Codex approval; if denied, report the policy refusal without bypassing it",
-    })
 }
 
 /// Run the managed launch preflight and start; errors are refusals before
 /// any start was submitted.
 pub fn execute(request: &LaunchRequest, parts: &LaunchParts<'_>) -> Result<LaunchReport, RunError> {
-    execute_guarded_inner(request, parts, false, false, &mut |_| Ok(()))
+    execute_with_registry(crate::harness::registry::builtins(), request, parts)
+}
+
+/// Injectable registry entrypoint uses exactly the same guarded composition as production.
+pub fn execute_with_registry(
+    registry: &crate::harness::registry::Registry,
+    request: &LaunchRequest,
+    parts: &LaunchParts<'_>,
+) -> Result<LaunchReport, RunError> {
+    execute_guarded_inner(registry, request, parts, false, false, false, &mut |_| {
+        Ok(())
+    })
 }
 
 /// A preflight uses the exact launch guards but does not submit or record a start.
@@ -786,47 +666,376 @@ pub fn execute_guarded(
     preflight: bool,
     boundary: &mut dyn FnMut(LaunchBoundary<'_>) -> Result<(), ApiError>,
 ) -> Result<LaunchReport, RunError> {
-    execute_guarded_inner(request, parts, preflight, true, boundary)
+    execute_guarded_with_registry(
+        crate::harness::registry::builtins(),
+        request,
+        parts,
+        preflight,
+        boundary,
+    )
+}
+pub(crate) fn execute_guarded_with_registry(
+    registry: &crate::harness::registry::Registry,
+    request: &LaunchRequest,
+    parts: &LaunchParts<'_>,
+    preflight: bool,
+    boundary: &mut dyn FnMut(LaunchBoundary<'_>) -> Result<(), ApiError>,
+) -> Result<LaunchReport, RunError> {
+    execute_guarded_inner(registry, request, parts, preflight, true, false, boundary)
+}
+
+/// Actual selected native data, prepared without host or seat resolution.
+#[derive(Debug, Clone)]
+pub(crate) struct NativeInput {
+    pub argv: Vec<String>,
+}
+pub(crate) fn prepare_native_input_with_registry(
+    registry: &crate::harness::registry::Registry,
+    request: &LaunchRequest,
+    parts: &LaunchParts<'_>,
+) -> Result<NativeInput, RunError> {
+    let result = execute_guarded_inner(
+        registry,
+        request,
+        parts,
+        true,
+        true,
+        true,
+        &mut |_| unreachable!(),
+    )?;
+    let argv = serde_json::from_value(result.report["argv"].clone()).map_err(io::Error::other)?;
+    Ok(NativeInput { argv })
 }
 
 fn execute_guarded_inner(
+    registry: &crate::harness::registry::Registry,
     request: &LaunchRequest,
     parts: &LaunchParts<'_>,
     preflight: bool,
     typed_evidence: bool,
+    input_only: bool,
     boundary: &mut dyn FnMut(LaunchBoundary<'_>) -> Result<(), ApiError>,
 ) -> Result<LaunchReport, RunError> {
-    let word = harness_word(request.harness);
-    let (effective, config_dir_source) = effective_env(request, parts.env, parts.shell_probe);
-    let parts = &LaunchParts {
-        env: &effective,
-        ..*parts
+    use crate::harness::adapter::{
+        AdmissionRequest, ExecutableLookup, InstallEnvironment, InstallObservation,
+        LaunchRequest as AdapterLaunchRequest, ResolvedSetupScope, SetupStatus, StatusRequest,
     };
-    // 1. Executable selection and declared contract.
-    let setup_request = SetupRequest {
-        verb: SetupVerb::Status,
-        harness: request.harness,
-        harness_binary: request.harness_binary.clone(),
-        prompt_suggestions: Default::default(),
+    let registration =
+        crate::harness::launch::launch_registration(registry, policy_harness(request.harness))?;
+    let policy = registration.launch_policy().expect("checked provider");
+    let word = registration.metadata().id;
+    // Snapshot starts one decreasing wall-clock budget before any native probe.
+    let mut adapter_request = AdapterLaunchRequest {
+        argv: request.argv.clone(),
+        environment: parts.env.snapshot(),
+        native_binary: request
+            .harness_binary
+            .as_ref()
+            .map(std::path::PathBuf::from),
     };
-    let (observed, _contract) =
-        setup::observe(&setup_request, parts.env).map_err(setup::refuse_executable)?;
-    let inspector = SetupHookInspector {
-        env: parts.env.clone(),
-        harness: request.harness,
-        warnings: Mutex::new(Vec::new()),
+    let local_clock = adapter_request.environment.clock.clone();
+    let local_budget = CallBudget {
+        deadline: MonoInstant(local_clock.monotonic_now().0.saturating_add(30_000)),
+        cancellation: Cancellation::default(),
     };
+    // TRUST-POLICY A4 precedes hook configuration: a missing hook is
+    // reported only after the seat guards pass.
+    let missing_hook = |error: ApiError| -> RunError {
+        if error.code == ErrorCode::MissingHook {
+            let remaining = local_budget
+                .deadline
+                .0
+                .saturating_sub(local_clock.monotonic_now().0);
+            let budget = CallBudget {
+                deadline: MonoInstant(parts.clock.monotonic_now().0.saturating_add(remaining)),
+                cancellation: local_budget.cancellation.clone(),
+            };
+            if let Err(refused) = crate::harness::launch::launch_seat_guards(
+                registry,
+                parts.host,
+                parts.seats,
+                parts.clock,
+                &request.target,
+                &budget,
+            ) {
+                return refused.into();
+            }
+        }
+        error.into()
+    };
+    policy.validate_native_argv(&request.argv)?;
+    let scope = policy.resolve_scope(&adapter_request, parts.shell_probe, &local_budget)?;
+    let root = match &scope.setup {
+        ResolvedSetupScope::ConfigRoot(root) => root,
+        ResolvedSetupScope::Profile { home, .. } => home,
+    };
+    adapter_request
+        .environment
+        .config_roots
+        .insert(word.into(), root.clone());
+    let ExecutableLookup::Path(executable_name) = registration.metadata().executable else {
+        return Err(api(
+            ErrorCode::UnsupportedHarness,
+            format!("{word}: executable lookup is unsupported"),
+        )
+        .into());
+    };
+    let binary = crate::cli::hook::resolve_on_path(
+        executable_name,
+        adapter_request.environment.path.as_deref(),
+    )
+    .ok_or_else(|| {
+        api(
+            ErrorCode::UnsupportedHarness,
+            format!("no executable `{executable_name}` on PATH"),
+        )
+    })?;
+    if let Some(explicit) = &adapter_request.native_binary {
+        if !explicit.is_absolute() {
+            return Err(api(
+                ErrorCode::InvalidRequest,
+                "--harness-binary must be an absolute path",
+            )
+            .into());
+        }
+        use std::os::unix::fs::PermissionsExt;
+        if !fs::metadata(explicit)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        {
+            return Err(api(
+                ErrorCode::UnsupportedHarness,
+                "selected harness binary is not an executable file",
+            )
+            .into());
+        }
+        if fs::canonicalize(explicit).ok() != fs::canonicalize(&binary).ok() {
+            return Err(api(
+                ErrorCode::InvalidRequest,
+                "admitted executable must match the native command on PATH",
+            )
+            .into());
+        }
+    }
+    let binary_identity = crate::harness::BinaryIdentity::observe(&binary).ok_or_else(|| {
+        api(
+            ErrorCode::UnsupportedHarness,
+            "launch executable identity unavailable",
+        )
+    })?;
+    let install_env = InstallEnvironment {
+        clock: local_clock.clone(),
+        path: adapter_request.environment.path.clone(),
+        config_root: Some(root.clone()),
+        state_dir: adapter_request.environment.state_dir.clone(),
+    };
+    let probe_budget = CallBudget {
+        deadline: MonoInstant(
+            local_budget
+                .deadline
+                .0
+                .min(local_clock.monotonic_now().0.saturating_add(5_000)),
+        ),
+        cancellation: local_budget.cancellation.clone(),
+    };
+    let (admitted, prelaunch, version) = if policy.uses_prelaunch_observation() {
+        (
+            None,
+            Some(registration.observe_prelaunch(
+                &adapter_request,
+                &scope,
+                &binary,
+                &local_budget,
+            )?),
+            None,
+        )
+    } else {
+        let installed = registration.observe_install(&install_env, &probe_budget);
+        let version = match &installed {
+            InstallObservation::Available {
+                identity,
+                binary: observed,
+            } => {
+                if fs::canonicalize(observed).ok() != fs::canonicalize(&binary).ok() {
+                    return Err(api(
+                        ErrorCode::Conflict,
+                        "installation observation executable mismatch",
+                    )
+                    .into());
+                }
+                identity.release_version.clone()
+            }
+            InstallObservation::CodexWitness(version) => Some(version.as_str().to_owned()),
+            InstallObservation::ExecutableAvailable { binary: observed } => {
+                if fs::canonicalize(observed).ok() != fs::canonicalize(&binary).ok() {
+                    return Err(api(
+                        ErrorCode::Conflict,
+                        "installation observation executable mismatch",
+                    )
+                    .into());
+                }
+                None
+            }
+            InstallObservation::NotRequested => {
+                return Err(api(
+                    ErrorCode::UnsupportedHarness,
+                    "launch requires executable availability",
+                )
+                .into());
+            }
+            InstallObservation::Unavailable { diagnostic } => {
+                return Err(api(ErrorCode::UnsupportedHarness, diagnostic).into());
+            }
+            InstallObservation::Unsupported(operation) => {
+                return Err(api(ErrorCode::UnsupportedHarness, operation.to_string()).into());
+            }
+        };
+        let admitted = registration
+            .admit(
+                &AdmissionRequest {
+                    installed,
+                    input: None,
+                    runtime_candidate: None,
+                },
+                &local_budget,
+            )
+            .map_err(|err| api(ErrorCode::UnsupportedHarness, err.to_string()))?;
+        (Some(admitted), None, version)
+    };
+    let observed = crate::harness::setup::legacy::Observed {
+        binary: binary.clone(),
+        version,
+        recipe: admitted
+            .as_ref()
+            .map_or("prelaunch_api_profile", |h| h.recipe()),
+    };
+    let status = match registration.status(
+        &StatusRequest {
+            scope: scope.setup.clone(),
+            environment: adapter_request.environment.clone(),
+            native_binary: Some(binary.clone()),
+        },
+        &local_budget,
+    ) {
+        SetupStatus::Detailed(status) => status,
+        SetupStatus::Failed(error) => {
+            return Err(api(ErrorCode::Conflict, error.to_string()).into());
+        }
+        _ => {
+            return Err(missing_hook(api(
+                ErrorCode::MissingHook,
+                format!("{word}: launch setup status is unavailable"),
+            )));
+        }
+    };
+    let config_fingerprint = if status.installed
+        && status.configured_hook.is_some()
+        && status.enabled != Some(false)
+        && status.admitted != Some(false)
+    {
+        Some(if let Some(handle) = &prelaunch {
+            registration.recheck_prelaunch(&adapter_request, &scope, handle, &local_budget)?
+        } else {
+            policy.configuration_fingerprint(&adapter_request, &scope)?
+        })
+    } else {
+        None
+    };
+    let preparation = if let Some(handle) = &prelaunch {
+        registration.prepare_prelaunch(&adapter_request, &scope, handle, &status, parts.shell_probe, &local_budget)
+    } else {
+        registration.prepare_launch(&adapter_request, &scope, admitted.as_ref().expect("ordinary launch handle"), &status, parts.shell_probe, &local_budget)
+    }
+        .map_err(|mut error| {
+            if error.code == ErrorCode::MissingHook {
+                error.detail = format!(
+                    "the owned {word} hooks are not installed in {} ({}): run `herdr-threads setup {word}` first, with the CLAUDE_CONFIG_DIR / CODEX_HOME the agent uses (nothing was started)",
+                    root.display(), error.detail
+                );
+            }
+            missing_hook(error)
+        })?;
+    // The native host carries argv only; providers cannot silently request an environment it cannot submit.
+    if !preparation.environment_overrides.is_empty() {
+        return Err(api(
+            ErrorCode::UnsupportedHarness,
+            "native host cannot apply launch environment overrides",
+        )
+        .into());
+    }
+    if !registration
+        .metadata()
+        .host_kinds
+        .iter()
+        .any(|kind| policy.expected_host_kinds().contains(kind))
+    {
+        return Err(api(
+            ErrorCode::UnsupportedHarness,
+            "launch policy has no registered host kind",
+        )
+        .into());
+    }
+    let config_fingerprint = config_fingerprint.ok_or_else(|| {
+        missing_hook(api(
+            ErrorCode::MissingHook,
+            "owned launch configuration unavailable",
+        ))
+    })?;
+    let inspector = PreparedHookInspector(preparation.hook.clone());
     let seats = RecordingResolver {
         inner: parts.seats,
         seat: Mutex::new(None),
     };
+    let remaining = local_budget
+        .deadline
+        .0
+        .saturating_sub(local_clock.monotonic_now().0);
     let budget = CallBudget {
-        deadline: MonoInstant(parts.clock.monotonic_now().0.saturating_add(40_000)),
-        cancellation: Cancellation::default(),
+        deadline: MonoInstant(parts.clock.monotonic_now().0.saturating_add(remaining)),
+        cancellation: local_budget.cancellation.clone(),
     };
+
+    let config_dir_source = scope.config_source;
     let (name_hint, name_source) = request.name_hint();
+    let recheck_configuration = || -> Result<(), ApiError> {
+        if local_budget.is_exhausted(local_clock.as_ref()) || budget.is_exhausted(parts.clock) {
+            return Err(api(
+                ErrorCode::DeadlineExceeded,
+                "launch budget exhausted before submission",
+            ));
+        }
+        if crate::harness::BinaryIdentity::observe(&binary).as_ref() != Some(&binary_identity)
+            || crate::cli::hook::resolve_on_path(
+                executable_name,
+                adapter_request.environment.path.as_deref(),
+            )
+            .and_then(|path| crate::harness::BinaryIdentity::observe(&path))
+            .as_ref()
+                != Some(&binary_identity)
+            || (if let Some(handle) = &prelaunch {
+                registration.recheck_prelaunch(&adapter_request, &scope, handle, &local_budget)?
+            } else {
+                policy.configuration_fingerprint(&adapter_request, &scope)?
+            }) != config_fingerprint
+        {
+            return Err(api(
+                ErrorCode::Conflict,
+                "launch executable or selected configuration changed before submission",
+            ));
+        }
+        Ok(())
+    };
+    recheck_configuration()?;
+    crate::ports::validate_native_argv(&preparation.argv)
+        .map_err(|detail| api(ErrorCode::InvalidRequest, detail))?;
+    if input_only {
+        return Ok(LaunchReport {
+            report: json!({"argv": preparation.argv}),
+            exit: 0,
+        });
+    }
     // 2-3. Policy: fresh read, seat, owned hooks, recheck, guarded start.
-    let prepared = prepare_managed(
+    let prepared = crate::harness::launch::prepare_managed_with_registry(
+        registry,
         parts.host,
         &seats,
         &inspector,
@@ -835,31 +1044,25 @@ fn execute_guarded_inner(
             target: request.target.clone(),
             harness: policy_harness(request.harness),
             argv: request.argv.clone(),
+
             name_hint: name_hint.clone(),
         },
         &budget,
+        Some(preparation.argv.clone()),
     );
     let seat = seats.seat.lock().ok().and_then(|slot| slot.clone());
-    let prepared = prepared.map_err(|mut error| {
-        if error.code == ErrorCode::MissingHook {
-            let file = setup::user_inspection(request.harness, parts.env)
-                .map(|(file, _)| file.display().to_string())
-                .unwrap_or_else(|detail| detail);
-            error.detail = format!(
-                "the owned {word} hooks are not installed in {file}: run `herdr-threads setup \
-                 {word}` first, with the CLAUDE_CONFIG_DIR / CODEX_HOME the agent uses (nothing \
-                 was started)"
-            );
-        }
-        RunError::Api(error)
-    })?;
+    let prepared = prepared?;
     if preflight {
         return Ok(LaunchReport {
-            report: json!({"seat": prepared.request.seat}),
+            report: json!({"seat": prepared.request.seat, "argv": prepared.request.argv}),
             exit: 0,
         });
     }
     boundary(LaunchBoundary::BeforeSubmit(&prepared.request))?;
+    if let Err(error) = recheck_configuration() {
+        boundary(LaunchBoundary::RefusedBeforeStart)?;
+        return Err(error.into());
+    }
     let outcome = if typed_evidence {
         match submit_prepared_with_evidence(parts.host, parts.clock, prepared) {
             Ok(outcome) => outcome,
@@ -908,11 +1111,7 @@ fn execute_guarded_inner(
         },
         None => Value::Null,
     };
-    let mut warnings = inspector
-        .warnings
-        .lock()
-        .map(|w| w.clone())
-        .unwrap_or_default();
+    let mut warnings = Vec::new();
     if let Some(name) = &request.name
         && name_source == "name"
         && crate::ports::sanitize_agent_name(name).as_deref() != Some(name.as_str())
@@ -921,17 +1120,13 @@ fn execute_guarded_inner(
             "--name `{name}` was fitted to Herdr's agent-name rule [a-z][a-z0-9_-]{{0,31}}"
         ));
     }
-    let config_dir = json!({
-        "path": match request.harness {
-            ContextHarness::Codex => parts.env.codex_home.as_deref(),
-            _ => parts.env.claude_config_dir.as_deref(),
-        }
-        .map(|dir| dir.display().to_string()),
-        "source": config_dir_source,
-    });
-    let codex =
-        (request.harness == ContextHarness::Codex).then(|| codex_report(parts.env, &request.argv));
-    let record = json!({
+    let config_dir = json!({ "path": root.display().to_string(), "source": config_dir_source });
+    let codex = preparation
+        .report
+        .get("codex")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut record = json!({
         "at_utc_ms": parts.clock.utc_now().0,
         "pane": request.target.as_str(),
         "seat": seat.as_ref().map(SeatId::as_str),
@@ -945,10 +1140,11 @@ fn execute_guarded_inner(
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": observed.version,
-        "admission": "contract_declared",
+        "admission": if prelaunch.is_some() { "prelaunch_observed" } else { "contract_declared" },
         "recipe": observed.recipe,
         "binding": binding,
     });
+    append_adapter_projection(&mut record, &preparation.report);
     if let Some(dir) = parts.record_dir
         && let Err(error) = append_record(dir, &record)
     {
@@ -966,7 +1162,7 @@ fn execute_guarded_inner(
         "config_dir": config_dir,
         "codex": codex,
         "harness_version": {
-            "admission": "contract_declared",
+            "admission": if prelaunch.is_some() { "prelaunch_observed" } else { "contract_declared" },
             "binary": observed.binary.display().to_string(),
             "version": observed.version,
             "recipe": observed.recipe,
@@ -981,6 +1177,7 @@ fn execute_guarded_inner(
         ),
         "warnings": warnings,
     });
+    append_adapter_projection(&mut report, &preparation.report);
     if let Some(candidates) = agent_name_candidates {
         report["agent_name_candidates"] = json!(candidates);
     }
@@ -995,4 +1192,760 @@ fn execute_guarded_inner(
 
 #[cfg(test)]
 #[path = "../../tests/cli/launch.rs"]
-mod tests;
+pub(crate) mod tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[allow(dead_code)]
+mod task23_tests {
+    use super::*;
+    use crate::ports::{
+        CorrelatedStartup, EvidenceKind, ExecutionEvidence, HostCallContext, HostSnapshot,
+        HostUiState, IncarnationEvidence, NativeLaunchCapability, NativeLaunchRequest,
+        ObservationProvenance, PromptOutcome, SafeWakeTarget, StructuralOccupancy,
+    };
+    use crate::protocol::{
+        ids::{HostBootId, HostCallId, TerminalId},
+        time::UtcMillis,
+    };
+    use std::{
+        os::unix::fs::{DirBuilderExt, PermissionsExt},
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
+
+    struct Clock0(AtomicU64);
+    impl Clock for Clock0 {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(1_000)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.fetch_add(1, Ordering::SeqCst))
+        }
+    }
+
+    struct FakeHost {
+        sequence: AtomicU64,
+        occupancy: StructuralOccupancy,
+        submitted: Mutex<Vec<NativeLaunchRequest>>,
+        unknown: bool,
+        confirmed_refusal: bool,
+    }
+    impl FakeHost {
+        fn new() -> Self {
+            Self {
+                sequence: AtomicU64::new(1),
+                occupancy: StructuralOccupancy::Unknown,
+                submitted: Mutex::new(Vec::new()),
+                unknown: false,
+                confirmed_refusal: false,
+            }
+        }
+        fn observation(&self) -> HostObservation {
+            let sequence = self.sequence.fetch_add(1, Ordering::SeqCst);
+            HostObservation {
+                focused: false,
+                target: HostTargetId::new("w9:p1"),
+                host_boot: HostBootId::new("boot"),
+                epoch: 1,
+                generation: 1,
+                observed_at_utc: UtcMillis(0),
+                observed_at_mono: MonoInstant(sequence),
+                provenance: ObservationProvenance::FreshCurrentTarget,
+                occupant: None,
+                ui: HostUiState::Unknown,
+                terminal: Some(TerminalId::new("term_9")),
+                occupancy: self.occupancy,
+                incarnation: IncarnationEvidence::Verified {
+                    identity: "herdr-server:pid=1".into(),
+                    evidence_kind: EvidenceKind::NativeCurrentTarget,
+                },
+                execution: ExecutionEvidence::Unknown,
+                call_id: HostCallId::new(format!("call-{sequence}")),
+                connection_epoch: 1,
+                observation_sequence: sequence,
+                started_at_mono: MonoInstant(sequence),
+                completed_at_mono: MonoInstant(sequence),
+            }
+        }
+        fn submitted(&self) -> Vec<NativeLaunchRequest> {
+            self.submitted.lock().unwrap().clone()
+        }
+    }
+    impl HostPort for FakeHost {
+        fn observe_current_target_for_archival(
+            &self,
+            _: &crate::protocol::ids::HostTargetId,
+            _: &crate::ports::HostCallContext,
+        ) -> Result<crate::ports::ComposerObservation, crate::protocol::results::ApiError> {
+            Err(crate::protocol::results::ApiError::unsupported(
+                "test adapter has no composer-aware archival observation",
+            ))
+        }
+        fn native_launch_capability(&self) -> NativeLaunchCapability {
+            NativeLaunchCapability::HostGuardedStart
+        }
+        fn observe_current_target(
+            &self,
+            target: &HostTargetId,
+            _: &HostCallContext,
+        ) -> Result<HostObservation, ApiError> {
+            assert_eq!(target.as_str(), "w9:p1");
+            Ok(self.observation())
+        }
+        fn enumerate_targets(&self, _: &HostCallContext) -> Result<HostSnapshot, ApiError> {
+            unreachable!()
+        }
+        fn safe_wake_target(&self, _: &SeatId, _: &HostObservation) -> Option<SafeWakeTarget> {
+            unreachable!()
+        }
+        fn submit_prompt(
+            &self,
+            _: &SafeWakeTarget,
+            _: &str,
+            _: &HostCallContext,
+        ) -> Result<PromptOutcome, ApiError> {
+            panic!("launch must never prompt")
+        }
+        fn pane_agent_state(
+            &self,
+            _target: &SafeWakeTarget,
+            _context: &HostCallContext,
+        ) -> Result<crate::ports::AgentComposerState, ApiError> {
+            Ok(crate::ports::AgentComposerState::Submitted)
+        }
+
+        fn launch_native_with_evidence(
+            &self,
+            request: NativeLaunchRequest,
+            context: &HostCallContext,
+        ) -> Result<NativeLaunchOutcome, crate::ports::NativeLaunchFailure> {
+            if self.confirmed_refusal {
+                return Err(crate::ports::NativeLaunchFailure::not_submitted(api(
+                    ErrorCode::TargetUnsafe,
+                    "confirmed busy",
+                )));
+            }
+            self.launch_native(request, context).map_err(Into::into)
+        }
+        fn launch_native(
+            &self,
+            request: NativeLaunchRequest,
+            context: &HostCallContext,
+        ) -> Result<NativeLaunchOutcome, ApiError> {
+            self.submitted.lock().unwrap().push(request.clone());
+            if self.unknown {
+                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+            }
+            let mut diagnostic = self.observation();
+            diagnostic.occupancy = StructuralOccupancy::Occupied;
+            Ok(NativeLaunchOutcome::ObservedStartup {
+                correlation: CorrelatedStartup {
+                    process_hint: request.process_hint,
+                    seat: request.seat.clone(),
+                    agent_name: request.agent_name(),
+                    harness: request.harness,
+                    target: request.target.clone(),
+                    terminal: request.expected_terminal.clone(),
+                    expected_generation: request.expected_generation,
+                    expected_incarnation: request.expected_incarnation.clone(),
+                    argv: request.argv.clone(),
+                    host_boot: context.expected_boot.clone().unwrap(),
+                    epoch: context.expected_epoch.unwrap(),
+                    submitted_at_mono: diagnostic.started_at_mono,
+                    completed_at_mono: diagnostic.completed_at_mono,
+                },
+                diagnostic,
+            })
+        }
+        fn send_submit_key(
+            &self,
+            _: &crate::ports::SafeWakeTarget,
+            _: &crate::ports::HostCallContext,
+        ) -> Result<(), crate::protocol::results::ApiError> {
+            Ok(())
+        }
+    }
+
+    /// How the fake daemon answers a `RecordManagedLaunch`.
+    #[derive(Clone)]
+    enum RecordAnswer {
+        Recorded,
+        AlreadyBound,
+        /// An older daemon without the `seat.managed_launch` capability.
+        Unsupported,
+        Refused,
+    }
+    struct FakeSeats {
+        calls: AtomicUsize,
+        held: bool,
+        answer: RecordAnswer,
+        recorded: Mutex<Vec<crate::protocol::commands::RecordManagedLaunch>>,
+    }
+    impl LaunchSeatResolver for FakeSeats {
+        fn resolve_for_launch(
+            &self,
+            _: &HostTargetId,
+            _: &HostObservation,
+            _: &CallBudget,
+        ) -> Result<SeatId, ApiError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.held {
+                return Err(api(ErrorCode::TargetUnresolved, "recovery hold"));
+            }
+            Ok(SeatId::new("seat_launch"))
+        }
+        fn record_managed_launch(
+            &self,
+            startup: &CorrelatedStartup,
+            _: &CallBudget,
+        ) -> Result<Option<ManagedLaunchRecord>, ApiError> {
+            self.recorded
+                .lock()
+                .unwrap()
+                .push(managed_launch_command(startup));
+            let record = |recorded: bool, provenance: &str| {
+                Ok(Some(ManagedLaunchRecord {
+                    seat: startup.seat.clone(),
+                    recorded,
+                    binding_generation: 3,
+                    provenance: provenance.into(),
+                }))
+            };
+            match self.answer {
+                RecordAnswer::Recorded => record(true, "managed_launch"),
+                RecordAnswer::AlreadyBound => record(false, "cooperative_top_level"),
+                RecordAnswer::Unsupported => Ok(None),
+                RecordAnswer::Refused => Err(api(
+                    ErrorCode::StaleHostObservation,
+                    "launch evidence differs from the current pane observation",
+                )),
+            }
+        }
+    }
+
+    /// Answers with a fixed pending handoff and counts reads (never mutations).
+    struct FakeHandoff(AtomicUsize);
+    impl HandoffReader for FakeHandoff {
+        fn pending(&self, seat: &SeatId, _: &CallBudget) -> Result<Value, ApiError> {
+            assert_eq!(seat.as_str(), "seat_launch");
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({"threads":["thread_1"],"pending_invitations":1,"pending_receipts":1}))
+        }
+    }
+
+    /// A canned pane-shell answer for `codex`; never runs a shell.
+    struct FakeProbe(Result<String, String>);
+    impl CodexShellProbe for FakeProbe {}
+
+    struct Scratch {
+        root: std::path::PathBuf,
+        env: SetupEnv,
+    }
+    impl Scratch {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "ht-launch-{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..10]
+            ));
+            fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+            let root = root.canonicalize().unwrap();
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(root.join("state"))
+                .unwrap();
+            fs::create_dir(root.join("bin")).unwrap();
+            let env = SetupEnv {
+                home: None,
+                declared_environment: Default::default(),
+                executable: root.join("h t/herdr-threads"),
+                state_dir: Some(root.join("state")),
+                cwd: root.clone(),
+                path: Some(root.join("bin").into_os_string()),
+                codex_home: Some(root.join("codex home")),
+                claude_config_dir: Some(root.join("claude config")),
+                host_endpoint: Some(root.join("herdr.sock")),
+                instance_source: Value::Null,
+            };
+            Self { root, env }
+        }
+        fn launch(
+            &self,
+            host: &FakeHost,
+            seats: &FakeSeats,
+            handoff: &FakeHandoff,
+            request: LaunchRequest,
+        ) -> Result<LaunchReport, RunError> {
+            let probe = FakeProbe(Ok("codex is /usr/local/bin/codex\n".into()));
+            self.launch_with_probe(host, seats, handoff, request, &probe)
+        }
+        fn launch_with_probe(
+            &self,
+            host: &FakeHost,
+            seats: &FakeSeats,
+            handoff: &FakeHandoff,
+            request: LaunchRequest,
+            probe: &dyn CodexShellProbe,
+        ) -> Result<LaunchReport, RunError> {
+            let clock = Clock0(AtomicU64::new(1));
+            execute(
+                &request,
+                &LaunchParts {
+                    env: &self.env,
+                    host,
+                    seats,
+                    handoff,
+                    clock: &clock,
+                    record_dir: Some(&self.root),
+                    shell_probe: probe,
+                },
+            )
+        }
+        fn records(&self) -> Vec<Value> {
+            fs::read_to_string(self.root.join("launches.jsonl"))
+                .unwrap_or_default()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect()
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn seats() -> FakeSeats {
+        seats_answering(RecordAnswer::Recorded)
+    }
+    fn seats_answering(answer: RecordAnswer) -> FakeSeats {
+        FakeSeats {
+            calls: AtomicUsize::new(0),
+            held: false,
+            answer,
+            recorded: Mutex::new(Vec::new()),
+        }
+    }
+    fn handoff() -> FakeHandoff {
+        FakeHandoff(AtomicUsize::new(0))
+    }
+    fn request(harness: ContextHarness, argv: &[&str]) -> LaunchRequest {
+        LaunchRequest {
+            target: HostTargetId::new("w9:p1"),
+            harness,
+            harness_binary: None,
+            argv: argv.iter().map(|s| (*s).to_owned()).collect(),
+            name: None,
+            pane_label: None,
+        }
+    }
+    fn code(result: Result<LaunchReport, RunError>) -> ErrorCode {
+        match result {
+            Err(RunError::Api(error)) => error.code,
+            other => panic!("expected an API refusal, got {other:?}"),
+        }
+    }
+
+    // Real shared guarded launch with source-shaped Python APIs and real locked
+    // asset producer. These fixtures do not invoke installed Hermes or Herdr.
+    fn hermes_fixture() -> Scratch {
+        hermes_fixture_selected("default")
+    }
+    fn hermes_fixture_selected(selected_profile: &str) -> Scratch {
+        use crate::test_support::spawn::SpawnOwned;
+        let mut scratch = Scratch::new();
+        let integration = Path::new(env!("CARGO_MANIFEST_DIR")).join("integrations/hermes");
+        let script = "import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from test_runtime_helper import RuntimeHelperTests;t=RuntimeHelperTests();t.setUp();t.make_api();t.tmp._finalizer.detach();print(json.dumps({'python':str(Path(sys.executable).resolve()),'native':str(t.native),'selected':str(t.selected),'home':str(t.home)}))";
+        let mut command = crate::test_support::spawn::command("python3");
+        command
+            .args(["-I", "-B", "-c", script])
+            .arg(integration)
+            .env("TMPDIR", &scratch.root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let out = command.spawn_owned().unwrap().wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let python = value["python"].as_str().unwrap();
+        let native = value["native"].as_str().unwrap();
+        let bootstrap = format!(
+            "import sys,runpy;sys.path.insert(0,{});import hermes_bootstrap;runpy.run_module('trace',run_name='__main__',alter_sys=True)",
+            serde_json::to_string(native).unwrap()
+        );
+        let launcher = scratch.root.join("bin/hermes");
+        fs::write(&launcher,format!("#!{python}\nimport json,sys\nprint(json.dumps([{},'-I','-c',{},'--count','--no-report',sys.argv[-3],'--profile',sys.argv[-1]]))\n",serde_json::to_string(python).unwrap(),serde_json::to_string(&bootstrap).unwrap())).unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        scratch.env.home = Some(scratch.root.as_os_str().to_owned());
+        for (key, field) in [
+            ("FIXTURE_HOME", "home"),
+            ("FIXTURE_DEP", "selected"),
+            ("HERMES_HOME", "home"),
+            ("TASK23_NATIVE", "native"),
+        ] {
+            scratch
+                .env
+                .declared_environment
+                .insert(key.into(), value[field].as_str().unwrap().into());
+        }
+        let env = scratch.env.snapshot();
+        let budget = CallBudget {
+            deadline: MonoInstant(10000),
+            cancellation: Default::default(),
+        };
+        let observed = crate::harness::hermes::runtime::discover_selected_profile(
+            &launcher,
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("integrations/hermes/runtime_helper.py"),
+            selected_profile,
+            &env,
+            &budget,
+        );
+        // Machine metadata binds the exact helper entry, so use the unchanged
+        // captured dynamic helper argument, never a guessed bootstrap.
+        let observed = observed.unwrap();
+        crate::harness::hermes::assets::setup(
+            &observed,
+            env.state_dir.as_ref().unwrap(),
+            &env.executable,
+            env.host_endpoint.as_ref().unwrap(),
+        )
+        .unwrap();
+        scratch
+    }
+    #[test]
+    fn hermes_actual_generic_guarded_consumer_uses_launch_only_observation() {
+        let s = hermes_fixture();
+        let host = FakeHost::new();
+        let seats = seats();
+        let handoff = handoff();
+        let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+        let report = s.launch(
+            &host,
+            &seats,
+            &handoff,
+            request(harness, &["--model", "model Ω", "-q", "first turn's text"]),
+        );
+        let report = report.expect("actual generic consumer refuses separate positive prelaunch");
+        assert_eq!(report.exit, 0);
+        let starts = host.submitted();
+        assert_eq!(starts.len(), 1);
+        assert!(starts[0].process_hint);
+        assert_eq!(
+            starts[0].argv,
+            [
+                "--profile",
+                "default",
+                "--cli",
+                "chat",
+                "--model",
+                "model Ω",
+                "--query",
+                "first turn's text"
+            ]
+        );
+        assert_eq!(seats.recorded.lock().unwrap().len(), 1);
+        assert_eq!(report.report["hermes"]["callback_qualified"], false);
+        assert_eq!(report.report["hermes"]["native_acceptance"], "unmet");
+    }
+    #[test]
+    fn hermes_named_profile_actual_consumer_keeps_provider_prompt_bytes() {
+        let s = hermes_fixture_selected("work");
+        let host = FakeHost::new();
+        let seats = seats();
+        let handoff = handoff();
+        let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+        let report = s
+            .launch(
+                &host,
+                &seats,
+                &handoff,
+                request(
+                    harness,
+                    &[
+                        "--profile",
+                        "Work",
+                        "--cli",
+                        "--provider",
+                        "provider's Ω",
+                        "--query",
+                        "first literal turn",
+                    ],
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            host.submitted()[0].argv,
+            [
+                "--profile",
+                "work",
+                "--cli",
+                "chat",
+                "--provider",
+                "provider's Ω",
+                "--query",
+                "first literal turn"
+            ]
+        );
+        assert_eq!(report.report["hermes"]["profile"], "work");
+        assert_eq!(seats.recorded.lock().unwrap().len(), 1);
+    }
+    #[test]
+    fn hermes_foreign_partial_api_and_settings_refuse_before_seat_start() {
+        for kind in ["foreign", "partial", "api", "settings"] {
+            let mut s = hermes_fixture();
+            let home = Path::new(s.env.declared_environment["FIXTURE_HOME"].to_str().unwrap());
+            match kind {
+                "foreign" => fs::write(
+                    home.join("plugins/herdr-threads/__init__.py"),
+                    "# foreign bytes",
+                )
+                .unwrap(),
+                "partial" => {
+                    fs::remove_file(home.join("plugins/herdr-threads/bridge_config.json")).unwrap()
+                }
+                "api" => {
+                    let native = Path::new(
+                        s.env.declared_environment["TASK23_NATIVE"]
+                            .to_str()
+                            .unwrap(),
+                    );
+                    fs::remove_file(native.join("hermes_cli/plugins_dispatch.py")).unwrap();
+                }
+                _ => s.env.host_endpoint = Some(s.root.join("wrong-endpoint")),
+            }
+            let host = FakeHost::new();
+            let seats = seats();
+            let handoff = handoff();
+            let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+            assert!(
+                s.launch(&host, &seats, &handoff, request(harness, &[]))
+                    .is_err(),
+                "accepted {kind}"
+            );
+            assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
+            assert!(host.submitted().is_empty());
+            assert!(seats.recorded.lock().unwrap().is_empty());
+            assert!(s.records().is_empty());
+        }
+    }
+    #[test]
+    fn hermes_disabled_and_unknown_selected_config_refuse_before_seat_start() {
+        for failed in [false, true] {
+            let s = hermes_fixture();
+            let native = Path::new(
+                s.env.declared_environment["TASK23_NATIVE"]
+                    .to_str()
+                    .unwrap(),
+            );
+            fs::write(native.join("hermes_cli/config.py"),if failed {
+                "class FailedConfigRead(dict): pass\ndef load_config_readonly(): return FailedConfigRead({'plugins':{'enabled':['herdr-threads'],'disabled':[]}})\n"
+            } else {"class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':[],'disabled':['herdr-threads']}}\n"}).unwrap();
+            let host = FakeHost::new();
+            let seats = seats();
+            let handoff = handoff();
+            let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+            assert_eq!(
+                code(s.launch(&host, &seats, &handoff, request(harness, &[]))),
+                ErrorCode::MissingHook
+            );
+            assert_eq!(seats.calls.load(Ordering::SeqCst), 0);
+            assert!(host.submitted().is_empty());
+            assert!(seats.recorded.lock().unwrap().is_empty());
+        }
+    }
+    #[test]
+    fn hermes_pre_submit_config_generation_and_binary_drift_never_start() {
+        for kind in ["config", "asset", "binary"] {
+            let s = hermes_fixture();
+            let host = FakeHost::new();
+            let seats = seats();
+            let handoff = handoff();
+            let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+            let req = request(harness, &[]);
+            let clock = Clock0(AtomicU64::new(1));
+            let probe = FakeProbe(Ok("unused".into()));
+            let path = match kind {
+                "config" => Path::new(
+                    s.env.declared_environment["TASK23_NATIVE"]
+                        .to_str()
+                        .unwrap(),
+                )
+                .join("hermes_cli/config.py"),
+                "asset" => Path::new(s.env.declared_environment["FIXTURE_HOME"].to_str().unwrap())
+                    .join("plugins/herdr-threads/__init__.py"),
+                _ => s.root.join("bin/hermes"),
+            };
+            let mut at_boundary = false;
+            let mut boundary = |event: LaunchBoundary<'_>| {
+                if matches!(event, LaunchBoundary::BeforeSubmit(_)) {
+                    at_boundary = true;
+                    let mut bytes = fs::read(&path).unwrap();
+                    bytes.extend_from_slice(b"\n# owned synthetic mutation\n");
+                    fs::write(&path, bytes).unwrap();
+                }
+                Ok(())
+            };
+            let result = execute_guarded_inner(
+                crate::harness::registry::builtins(),
+                &req,
+                &LaunchParts {
+                    env: &s.env,
+                    host: &host,
+                    seats: &seats,
+                    handoff: &handoff,
+                    clock: &clock,
+                    record_dir: Some(&s.root),
+                    shell_probe: &probe,
+                },
+                false,
+                false,
+                false,
+                &mut boundary,
+            );
+            assert!(
+                at_boundary,
+                "initial qualification did not reach final guard for {kind}"
+            );
+            if kind == "config" {
+                // An inert comment is not effective-config drift. It must still
+                // pass: prelaunch is observation, not continuous source freshness.
+                assert_eq!(result.unwrap().exit, 0);
+                assert_eq!(host.submitted().len(), 1);
+            } else {
+                assert!(result.is_err(), "{kind} drift reached start");
+                assert!(host.submitted().is_empty());
+                assert!(seats.recorded.lock().unwrap().is_empty());
+            }
+        }
+    }
+    #[test]
+    fn hermes_effective_enablement_drift_at_final_boundary_is_refused() {
+        let s = hermes_fixture();
+        let host = FakeHost::new();
+        let seats = seats();
+        let handoff = handoff();
+        let harness: ContextHarness = serde_json::from_str("\"Hermes\"").unwrap();
+        let req = request(harness, &[]);
+        let clock = Clock0(AtomicU64::new(1));
+        let probe = FakeProbe(Ok("unused".into()));
+        let config = Path::new(
+            s.env.declared_environment["TASK23_NATIVE"]
+                .to_str()
+                .unwrap(),
+        )
+        .join("hermes_cli/config.py");
+        let mut at_boundary = false;
+        let mut boundary = |event: LaunchBoundary<'_>| {
+            if matches!(event, LaunchBoundary::BeforeSubmit(_)) {
+                at_boundary = true;
+                fs::write(&config,"class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':[],'disabled':['herdr-threads']}}\n").unwrap();
+            }
+            Ok(())
+        };
+        assert!(
+            execute_guarded_inner(
+                crate::harness::registry::builtins(),
+                &req,
+                &LaunchParts {
+                    env: &s.env,
+                    host: &host,
+                    seats: &seats,
+                    handoff: &handoff,
+                    clock: &clock,
+                    record_dir: Some(&s.root),
+                    shell_probe: &probe
+                },
+                false,
+                false,
+                false,
+                &mut boundary
+            )
+            .is_err()
+        );
+        assert!(at_boundary);
+        assert!(host.submitted().is_empty());
+        assert!(seats.recorded.lock().unwrap().is_empty());
+        assert!(s.records().is_empty());
+    }
+    #[test]
+    fn prelaunch_handle_cannot_cross_registration_scope_or_captured_inputs() {
+        use crate::harness::adapter::{
+            LaunchRequest as AdapterRequest, SetupStatus, StatusRequest,
+        };
+        let s = hermes_fixture();
+        let registry = crate::harness::registry::builtins();
+        let reg = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+        let codex = registry.by_id(registry.agent("codex").unwrap()).unwrap();
+        let req = AdapterRequest {
+            argv: vec![],
+            environment: s.env.snapshot(),
+            native_binary: Some(s.root.join("bin/hermes")),
+        };
+        let probe = FakeProbe(Ok("unused".into()));
+        let budget = CallBudget {
+            deadline: MonoInstant(30000),
+            cancellation: Default::default(),
+        };
+        let scope = reg
+            .launch_policy()
+            .unwrap()
+            .resolve_scope(&req, &probe, &budget)
+            .unwrap();
+        assert!(
+            reg.observe_prelaunch(&req, &scope, &s.env.executable, &budget)
+                .is_err()
+        );
+        let handle = reg
+            .observe_prelaunch(&req, &scope, req.native_binary.as_ref().unwrap(), &budget)
+            .unwrap();
+        let SetupStatus::Detailed(status) = reg.status(
+            &StatusRequest {
+                scope: scope.setup.clone(),
+                environment: req.environment.clone(),
+                native_binary: req.native_binary.clone(),
+            },
+            &budget,
+        ) else {
+            panic!("status unavailable")
+        };
+        assert!(
+            codex
+                .prepare_prelaunch(&req, &scope, &handle, &status, &probe, &budget)
+                .is_err()
+        );
+        let mut changed = req;
+        changed.argv = vec!["--profile".into(), "work".into()];
+        assert!(
+            reg.prepare_prelaunch(&changed, &scope, &handle, &status, &probe, &budget)
+                .is_err()
+        );
+        changed.argv.clear();
+        changed.environment.host_endpoint = Some(s.root.join("other-host"));
+        assert!(
+            reg.recheck_prelaunch(&changed, &scope, &handle, &budget)
+                .is_err()
+        );
+        changed.environment.host_endpoint = s.env.host_endpoint.clone();
+        let mut other = scope.clone();
+        other.working_directory = s.root.join("elsewhere");
+        assert!(
+            reg.prepare_prelaunch(&changed, &other, &handle, &status, &probe, &budget)
+                .is_err()
+        );
+        let cancelled = CallBudget {
+            deadline: MonoInstant(30000),
+            cancellation: Default::default(),
+        };
+        cancelled.cancellation.cancel();
+        assert!(
+            reg.observe_prelaunch(
+                &changed,
+                &scope,
+                changed.native_binary.as_ref().unwrap(),
+                &cancelled
+            )
+            .is_err()
+        );
+    }
+}

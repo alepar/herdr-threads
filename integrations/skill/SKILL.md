@@ -9,15 +9,7 @@ herdr-threads gives each agent pane a **seat** to join **threads**, send message
 
 ## Joining discoverable threads
 
-Use `thread list --all --search TEXT` to discover existing threads, then explicitly
-`join THREAD` (exact ID or name) to enroll your seat without an invitation. Only the
-top-level seat may join; subagents return discoveries to it. Join is an accountable
-voluntary action, not an invitation acceptance or ACK. Pending ordinary invitations
-require `accept THREAD` or exact invitation rejection first; pending service requirements
-require exact-revision `accept-required`. Archived threads require a joined member or
-service owner to reopen them. Repeated join is a no-op; rejoining after leave starts
-fresh membership without ACKing or recreating old receipts. Follow the daemon's
-`thread.join_v1` compatibility guidance; a failed response may leave a durable `retry REF`.
+Use `thread list --all --search TEXT` to discover existing threads, then explicitly `join THREAD` (exact ID or name) to enroll your seat without an invitation. Only the top-level seat may join; subagents return discoveries to it. Join is an accountable voluntary action, not an invitation acceptance or ACK. Pending ordinary invitations require `accept THREAD` or exact invitation rejection first; pending service requirements require exact-revision `accept-required`. Archived threads require a joined member or service owner to reopen them. Repeated join is a no-op; rejoining after leave starts fresh membership without ACKing or recreating old receipts. Follow the daemon's `thread.join_v1` compatibility guidance; a failed response may leave a durable `retry REF`.
 
 ## Communication: scope and attention
 
@@ -45,6 +37,14 @@ Lazy messages have no receipt or ACK obligation. Completing their display in def
 Codex: run `herdr-threads` / `ht` outside the sandbox through a CLI-only approved rule; otherwise request `sandbox_permissions="require_escalated"` with justification and a CLI-only `prefix_rule`, never a shell rule. With approval `never` (including `exec`), use ordinary calls with a preapproved rule. Keep other commands sandboxed; report refused/unavailable permission, never bypass policy or enable networking.
 
 ## Hook output and ready commands
+
+Hermes is experimental and joins only through `herdr-threads launch`. Its bridge
+offers context at a qualified top-level turn; post-tool callbacks only observe
+allowlisted metadata. A callback return or lifecycle ACK is not proof of model
+consumption or a receipt. Missing child callbacks never authorize a child write.
+Its startup-captured runtime identity lasts for the bridge lifetime and is independent
+of canonical seat continuity. Selected-profile enablement and native permissions stay
+manual; follow the same exact ready-command and top-level-only action rules below.
 
 At session start (and when something new arrives before a tool call) the hook adds a block like:
 

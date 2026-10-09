@@ -1,30 +1,11 @@
 #!/usr/bin/env bash
-# release_contract.sh — run the latest release's payload contract over the canary's kept probe captures.
-#
-#   release_contract.sh <release-tag> <canary-out-dir>
-#
-# The canary keeps one row per live contract (docs/compatibility/harnesses.md, "Manifest publishing"): the
-# current tree's contract and the latest release's. This script adds a git worktree of <release-tag> under
-# <canary-out-dir>/release-src, builds it (`cargo build --locked`) and asks the built binary for its
-# `contract-id --json`. A release that predates contract ids cannot answer: the script then writes
-# {"tag": "<tag>", "supported": false} to <canary-out-dir>/release-contract.json and exits 0. An infrastructure
-# failure (checkout, no cargo, a build failure, no binary built) is not "unsupported": once the result path is
-# known the script writes {"tag": "<tag>", "error": "<reason>"} instead and exits 2, and the manifest writer keeps
-# the baseline's release-contract rows.
-#
-# Otherwise, for every probe work directory `--keep` left under <canary-out-dir>/work/<harness>-<version>-<n>/
-# (the highest <n> per harness and version), it copies the probe's capture into <canary-out-dir>/release-work/
-# and runs the release tree's gated `canary_payloads` test over the copy (same `env -i` isolation as
-# harness-canary.sh's t0.payload-parse; CARGO_TARGET_DIR=<canary-out-dir>/release-target), so the main run's
-# canary-rust.json files are never overwritten. The payload classifications of each copy's canary-rust.json are
-# collected into
-#   {"tag", "supported": true, "contract_id": {"claude", "codex"},
-#    "probes": [{"harness", "version", "payloads": [{"event", "kind", "field"}]}]}
-# A payload the release tree's test did not classify (its canary_payloads predates classification) is recorded
-# with kind "unclassified", which never verifies and never breaks a row. The worktree is removed on exit.
-# Three result forms: supported (above), {"tag", "supported": false}, {"tag", "error"}.
-# Exit: 0 on a written supported or unsupported release-contract.json, 2 on bad arguments or an infrastructure
-# error (an error document is written when the failure came after the result path was set).
+# release_contract.sh — replay indexed representable legacy payload captures with
+# the built release's own discovery (old releases explicitly use contract-id).
+# Exact build/native-shape/bridge domains without a release replay evaluator are
+# per-domain unsupported. Original identity, attempt and stage accompany results;
+# schema replay never upgrades no_model to live. Infrastructure errors exit 2 and
+# write an error document so the writer preserves all baseline collections.
+# Usage: release_contract.sh <release-tag> <canary-out-dir>
 set -euo pipefail
 
 die() { echo "release_contract.sh: $*" >&2; exit 2; }
@@ -51,7 +32,6 @@ die() {
 
 cleanup() {
   if [ -d "$SRC" ]; then git -C "$ROOT" worktree remove --force "$SRC" >/dev/null 2>&1 || rm -rf "$SRC"; fi
-  git -C "$ROOT" worktree prune >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -71,44 +51,63 @@ mkdir -p "$OUT/release-logs"
   || die "build failed"
 BUILT=$TARGET/debug/herdr-threads
 [ -x "$BUILT" ] || die "no binary was built"
-if ! IDS=$("$BUILT" contract-id --json 2>"$OUT/release-logs/contract-id.err"); then unsupported "contract-id failed"; fi
-printf '%s' "$IDS" | python3 -c 'import json, sys; d = json.load(sys.stdin); assert isinstance(d.get("claude"), str) and isinstance(d.get("codex"), str)' \
-  2>/dev/null || unsupported "contract-id printed no ids"
-
-# one kept work directory per (harness, version): the highest attempt number
+# The built release is the sole authority for its discovery. Older releases
+# explicitly fall back to contract-id; unsupported rich domains stay separate.
+MANIFEST_PY=$SCRIPT_DIR/manifest.py
+QUERY=$OUT/release-discovery.json
+python3 - "$MANIFEST_PY" "$BUILT" > "$QUERY" <<'PYQUERY' || die "release discovery failed"
+import importlib.util, json, sys
+script, binary = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("release_manifest", script)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+registry = m.discovery(binary)
+if registry is None:
+    try:
+        legacy = m.contract_ids(binary)
+        ids = {h: legacy[h] for h in m.HARNESSES}
+    except ValueError:
+        print(json.dumps({"supported": False}))
+        sys.exit(0)
+else:
+    ids = {a["id"]: a["legacy_contract_id"] for a in registry["adapters"] if a["legacy_contract_id"] is not None}
+print(json.dumps({"supported": True, "discovery": registry, "contract_id": ids}))
+PYQUERY
+python3 - "$QUERY" <<'PYSUPPORTED' || unsupported "discovery and legacy contract-id unavailable"
+import json, sys
+sys.exit(0 if json.load(open(sys.argv[1]))["supported"] else 1)
+PYSUPPORTED
+rm -rf "$OUT/release-work"
+PLAN=$OUT/release-plan.json
+python3 - "$MANIFEST_PY" "$OUT" "$QUERY" > "$PLAN" <<'PYPLAN' || die "invalid indexed source artifacts"
+import importlib.util, json, sys
+script, root, query = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("release_manifest", script)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+query = json.load(open(query))
+print(json.dumps(m.prepare_replay(root, query["discovery"], query["contract_id"]), indent=2))
+PYPLAN
 LIST=$OUT/release-probes.tsv
-python3 - "$OUT/work" > "$LIST" <<'PY'
-import os, re, sys
-best = {}
-if os.path.isdir(sys.argv[1]):
-    for name in os.listdir(sys.argv[1]):
-        m = re.fullmatch(r"(claude|codex)-(\d+\.\d+\.\d+)-(\d+)", name)
-        if m and os.path.isfile(os.path.join(sys.argv[1], name, "canary-probe.json")):
-            key = (m.group(1), m.group(2))
-            if key not in best or int(m.group(3)) > best[key][0]:
-                best[key] = (int(m.group(3)), name)
-for (h, v), (_, name) in sorted(best.items()):
-    print(f"{h}\t{v}\t{name}")
-PY
+python3 - "$PLAN" > "$LIST" <<'PYLIST'
+import json, sys
+for p in json.load(open(sys.argv[1]))["probes"]:
+    print(p["harness"] + "\t" + p["version"] + "\t" + p["work_path"])
+PYLIST
 
 cargo_home=${CARGO_HOME:-$REAL_HOME/.cargo}
 rustup_home=${RUSTUP_HOME:-$REAL_HOME/.rustup}
-rm -rf "$OUT/release-work"
 mkdir -p "$OUT/release-work"
 while IFS=$'\t' read -r h v name; do
   [ -n "$name" ] || continue
-  W=$OUT/release-work/$h-$v
+  W=$OUT/$name
   mkdir -p "$W/home" "$W/tmp"
-  cp "$OUT/work/$name/canary-probe.json" "$W/canary-probe.json"
-  for sub in capture help; do
-    if [ -d "$OUT/work/$name/$sub" ]; then cp -R "$OUT/work/$name/$sub" "$W/$sub"; fi
-  done
   e=(env -i "HOME=$W/home" "CLAUDE_CONFIG_DIR=$W/home/.claude" "CODEX_HOME=$W/home/.codex"
     "XDG_CONFIG_HOME=$W/home/.config" "XDG_STATE_HOME=$W/home/.local/state"
     "XDG_DATA_HOME=$W/home/.local/share" "XDG_CACHE_HOME=$W/home/.cache" "TMPDIR=$W/tmp"
     "PATH=$cargo_home/bin:$(dirname "$CARGO_BIN"):/usr/bin:/bin" "LANG=C.UTF-8" "TERM=dumb"
     "CARGO_HOME=$cargo_home" "RUSTUP_HOME=$rustup_home" "CARGO_TARGET_DIR=$TARGET"
-    "HT_CANARY_CAPTURE_DIR=$W")
+    "HT_CANARY_CAPTURE_DIR=$W" "PYTHONDONTWRITEBYTECODE=1")
   if [ -n "${RUSTUP_TOOLCHAIN:-}" ]; then e+=("RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN"); fi
   rc=0
   (cd "$SRC" && python3 "$RUN_PY" --timeout 1800 -- "${e[@]}" nice cargo test --locked --all-features --lib \
@@ -117,29 +116,11 @@ while IFS=$'\t' read -r h v name; do
   [ "$rc" -eq 0 ] || echo "release_contract.sh: canary_payloads at $TAG exited $rc for $h $v (see $W)" >&2
 done < "$LIST"
 
-python3 - "$TAG" "$OUT/release-work" "$LIST" "$IDS" > "$RESULT" <<'PY'
-import json, os, sys
-tag, work, listing, ids = sys.argv[1:5]
-ids = json.loads(ids)
-probes = []
-for line in open(listing, encoding="utf-8"):
-    line = line.rstrip("\n")
-    if not line:
-        continue
-    h, v, _ = line.split("\t")
-    path = os.path.join(work, f"{h}-{v}", "canary-rust.json")
-    try:
-        rust = json.load(open(path, encoding="utf-8"))
-    except (OSError, ValueError):
-        continue
-    payloads = []
-    for p in rust.get("payloads", []):
-        c = p.get("contract") if isinstance(p, dict) else None
-        if isinstance(c, dict) and c.get("kind") in ("ok", "violation", "malformed"):
-            payloads.append({"event": c.get("event"), "kind": c["kind"], "field": c.get("field")})
-        else:
-            payloads.append({"event": p.get("event") or None, "kind": "unclassified", "field": None})
-    probes.append({"harness": h, "version": v, "payloads": payloads})
-print(json.dumps({"tag": tag, "supported": True, "contract_id": {"claude": ids["claude"], "codex": ids["codex"]},
-                  "probes": probes}, indent=2))
-PY
+python3 - "$MANIFEST_PY" "$TAG" "$OUT" "$PLAN" > "$RESULT" <<'PYRESULT'
+import importlib.util, json, sys
+script, tag, root, plan = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("release_manifest", script)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(json.dumps(m.collect_replay(root, json.load(open(plan)), tag), indent=2))
+PYRESULT

@@ -90,8 +90,12 @@ fn resolve_seat(
 }
 
 fn agent_seat_refusal(seat: &SeatId, pane: &HostTargetId, harness: Harness) -> RunError {
+    let harness = match harness.occupant() {
+        crate::harness::registry::OccupantHarness::Agent(id) => id.context_spelling(),
+        crate::harness::registry::OccupantHarness::Human => "human",
+    };
     invalid_request(&format!(
-        "seat {seat} on pane {pane} belongs to a {harness:?} agent; `human me init` never takes over an \
+        "seat {seat} on pane {pane} belongs to a {harness} agent; `human me init` never takes over an \
          agent's seat. Run it in your own shell pane, give this pane a fresh seat with \
          `herdr-threads human seat resolve --pane {pane} --new-seat --operator`, or override as the \
          local account: `herdr-threads human me init --operator`",

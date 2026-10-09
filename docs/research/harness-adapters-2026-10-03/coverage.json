@@ -1,0 +1,362 @@
+{
+  "schema_version": 1,
+  "question": "How should herdr-threads expose a cohesive harness adapter interface, preserving Claude/Codex behavior and trust, with Hermes as a concrete proof and other harnesses/prior art as counterexamples?",
+  "initial_facets": [
+    {
+      "id": "existing",
+      "question": "Which Claude/Codex seams must move, and what trust/behavior must stay?",
+      "priority": "high",
+      "active": true,
+      "expected_source_types": [
+        "repo code",
+        "adopted policy",
+        "design decisions"
+      ],
+      "counterargument": "A shallow wrapper may already be sufficient.",
+      "query_ids": [],
+      "evidence_ids": [],
+      "status": "unsearched",
+      "counterevidence": {},
+      "gap_note": "Retrieval pending"
+    },
+    {
+      "id": "hermes",
+      "question": "Which current Hermes APIs actually support setup, check-in, context, children, resume, launch and attribution?",
+      "priority": "high",
+      "active": true,
+      "expected_source_types": [
+        "official docs",
+        "official source",
+        "installed source"
+      ],
+      "counterargument": "Shell hooks may lack lifecycle, runtime identity or child information needed for parity.",
+      "query_ids": [],
+      "evidence_ids": [],
+      "status": "unsearched",
+      "counterevidence": {},
+      "gap_note": "Retrieval pending"
+    },
+    {
+      "id": "other",
+      "question": "Do Gemini CLI, OpenCode and Pi invalidate the proposed interface?",
+      "priority": "high",
+      "active": true,
+      "expected_source_types": [
+        "official docs",
+        "official source"
+      ],
+      "counterargument": "A JSON command-hook interface may be too narrow for in-process extensions.",
+      "query_ids": [],
+      "evidence_ids": [],
+      "status": "unsearched",
+      "counterevidence": {},
+      "gap_note": "Retrieval pending"
+    },
+    {
+      "id": "prior",
+      "question": "What established adapter designs help and what is unnecessary?",
+      "priority": "high",
+      "active": true,
+      "expected_source_types": [
+        "official protocol specification",
+        "adapter implementation"
+      ],
+      "counterargument": "ACP could replace native hook integration entirely.",
+      "query_ids": [],
+      "evidence_ids": [],
+      "status": "unsearched",
+      "counterevidence": {},
+      "gap_note": "Retrieval pending"
+    },
+    {
+      "id": "proof",
+      "question": "What validation and edit points honestly establish the extensibility criterion?",
+      "priority": "high",
+      "active": true,
+      "expected_source_types": [
+        "repo tests",
+        "release/canary scripts",
+        "API contracts"
+      ],
+      "counterargument": "One registration cannot cover separate host support, native evidence or canary installation strategies.",
+      "query_ids": [],
+      "evidence_ids": [],
+      "status": "unsearched",
+      "counterevidence": {},
+      "gap_note": "Retrieval pending"
+    }
+  ],
+  "facets": [
+    {
+      "id": "existing",
+      "question": "Which Claude/Codex seams must move, and what trust/behavior must stay?",
+      "priority": "high",
+      "active": true,
+      "counterargument": "A shallow wrapper may already be sufficient.",
+      "query_ids": [
+        "q1"
+      ],
+      "evidence_ids": [
+        "dfb0a87826c3293c",
+        "138e1c6040271eaf",
+        "cc0838fc549076b4"
+      ],
+      "status": "supported",
+      "counterevidence": "found",
+      "gap_note": "Counterexamples are documented; no native support claim for other harnesses or prior-art runtimes.",
+      "source_types": [],
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "hermes",
+      "question": "Which current Hermes APIs actually support setup, check-in, context, children, resume, launch and attribution?",
+      "priority": "high",
+      "active": true,
+      "counterargument": "Shell hooks may lack lifecycle, runtime identity or child information needed for parity.",
+      "query_ids": [
+        "q2"
+      ],
+      "evidence_ids": [
+        "c3334ac950b21e2e",
+        "f7140841e89d062d",
+        "5c408b75eb7bd7d4",
+        "5122efb0992416c9",
+        "e0c5982da89e1d68"
+      ],
+      "status": "unresolved",
+      "counterevidence": "found",
+      "gap_note": "Native parity, exact release floor and bridge/consent/resume probes await design approval.",
+      "source_types": [],
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "other",
+      "question": "Do Gemini CLI, OpenCode and Pi invalidate the proposed interface?",
+      "priority": "high",
+      "active": true,
+      "counterargument": "A JSON command-hook interface may be too narrow for in-process extensions.",
+      "query_ids": [
+        "q3"
+      ],
+      "evidence_ids": [
+        "4a71c6b4dc708da3",
+        "2e3b2a2538e0e2cf",
+        "f86ec0733cb92c26",
+        "43cc31ed3e83e531"
+      ],
+      "status": "supported",
+      "counterevidence": "found",
+      "gap_note": "Counterexamples are documented; no native support claim for other harnesses or prior-art runtimes.",
+      "source_types": [],
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "prior",
+      "question": "What established adapter designs help and what is unnecessary?",
+      "priority": "high",
+      "active": true,
+      "counterargument": "ACP could replace native hook integration entirely.",
+      "query_ids": [
+        "q4"
+      ],
+      "evidence_ids": [
+        "ec91f9309cd6ca88",
+        "7692a2ef05fba5e2",
+        "3841fb3c35f6397e",
+        "d4d0bf99bbf77d05"
+      ],
+      "status": "supported",
+      "counterevidence": "found",
+      "gap_note": "Counterexamples are documented; no native support claim for other harnesses or prior-art runtimes.",
+      "source_types": [],
+      "contested_positions": [],
+      "scope_change": null
+    },
+    {
+      "id": "proof",
+      "question": "What validation and edit points honestly establish the extensibility criterion?",
+      "priority": "high",
+      "active": true,
+      "counterargument": "One registration cannot cover separate host support, native evidence or canary installation strategies.",
+      "query_ids": [
+        "q1"
+      ],
+      "evidence_ids": [
+        "28a193378fbdb33e",
+        "26207cee00c45bf3"
+      ],
+      "status": "unresolved",
+      "counterevidence": "found",
+      "gap_note": "Interface proof and native acceptance require the approved implementation; canary installer and compatibility decisions remain open.",
+      "source_types": [],
+      "contested_positions": [],
+      "scope_change": null
+    }
+  ],
+  "completed_rounds": [
+    {
+      "round": 1,
+      "query_ids": [
+        "q1"
+      ],
+      "families": [
+        "source-specific"
+      ],
+      "target_high_priority_facet_ids": [
+        "existing",
+        "proof"
+      ],
+      "new_relevant_source_ids": [
+        "2da7696b21931f12",
+        "88dbd502ca1eaead",
+        "d72a9eefa47e1d7c",
+        "ba9c2e5befc15cf7",
+        "8f54c571a3d970be"
+      ],
+      "material_changes": [
+        {
+          "kind": "status",
+          "facet_id": "existing",
+          "before": "unsearched",
+          "after": "supported"
+        },
+        {
+          "kind": "counterevidence",
+          "facet_id": "existing",
+          "before": "unchecked",
+          "after": "found"
+        },
+        {
+          "kind": "status",
+          "facet_id": "proof",
+          "before": "unsearched",
+          "after": "unresolved"
+        },
+        {
+          "kind": "counterevidence",
+          "facet_id": "proof",
+          "before": "unchecked",
+          "after": "found"
+        }
+      ],
+      "coverage_ready_after": false
+    },
+    {
+      "round": 2,
+      "query_ids": [
+        "q2"
+      ],
+      "families": [
+        "counterevidence"
+      ],
+      "target_high_priority_facet_ids": [
+        "hermes"
+      ],
+      "new_relevant_source_ids": [
+        "94c13c730f6c770f",
+        "644e513b6c23e74d",
+        "b9b921665c208b2d",
+        "cc35996af809b8fc",
+        "c21c9f0fbfdd3ca4"
+      ],
+      "material_changes": [
+        {
+          "kind": "status",
+          "facet_id": "hermes",
+          "before": "unsearched",
+          "after": "unresolved"
+        },
+        {
+          "kind": "counterevidence",
+          "facet_id": "hermes",
+          "before": "unchecked",
+          "after": "found"
+        }
+      ],
+      "coverage_ready_after": false
+    },
+    {
+      "round": 3,
+      "query_ids": [
+        "q3"
+      ],
+      "families": [
+        "counterevidence"
+      ],
+      "target_high_priority_facet_ids": [
+        "other"
+      ],
+      "new_relevant_source_ids": [
+        "e214abd2fa5d6182",
+        "4c56732288be166a",
+        "fba6670183aa1c1b",
+        "0ffd40e2f15d989d"
+      ],
+      "material_changes": [
+        {
+          "kind": "status",
+          "facet_id": "other",
+          "before": "unsearched",
+          "after": "supported"
+        },
+        {
+          "kind": "counterevidence",
+          "facet_id": "other",
+          "before": "unchecked",
+          "after": "found"
+        }
+      ],
+      "coverage_ready_after": false
+    },
+    {
+      "round": 4,
+      "query_ids": [
+        "q4"
+      ],
+      "families": [
+        "source-specific"
+      ],
+      "target_high_priority_facet_ids": [
+        "prior"
+      ],
+      "new_relevant_source_ids": [
+        "ff99c3f9a5934cf3",
+        "cc710ab394c03e9d",
+        "bf2d0b63bdf7f42e",
+        "669ae3a1f59b6450"
+      ],
+      "material_changes": [
+        {
+          "kind": "status",
+          "facet_id": "prior",
+          "before": "unsearched",
+          "after": "supported"
+        },
+        {
+          "kind": "counterevidence",
+          "facet_id": "prior",
+          "before": "unchecked",
+          "after": "found"
+        }
+      ],
+      "coverage_ready_after": false
+    }
+  ],
+  "stop": {
+    "reason": "budget-exhausted",
+    "at": "2026-10-04T04:03:07.815895+00:00",
+    "round": 4,
+    "unresolved_high_priority_facet_ids": [
+      "hermes",
+      "proof"
+    ],
+    "remaining_gaps": [
+      "hermes: exact native/API parity, version floor, bounded runtime attribution, role and resume/reset handling are not qualified by source audit alone.",
+      "proof: fake-adapter and native Hermes acceptance need approved product work; output compatibility and automatic installer strategy remain decisions."
+    ],
+    "basis": "Bounded preliminary research completed disjoint primary-source facets; stop for architecture/scope review, with no claim of retrieval saturation or native PASS."
+  }
+}
