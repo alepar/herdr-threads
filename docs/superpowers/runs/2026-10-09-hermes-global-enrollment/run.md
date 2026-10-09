@@ -12,3 +12,4 @@ epic: ht-4ne
 
 approvals:
 - top-split · auto · ht-4ne.1 LEAF, ht-4ne.2 LEAF, ht-4ne.3 LEAF, ht-4ne.4 LEAF
+- coverage-round-1 · L1 flag-sweep ht-4ne.1 kept (auto) · L2 R2 applied (auto) · L3 R6 applied (auto) · L4 R7 applied (auto) · L5 R9 applied (auto) · L6 R5 rejected (auto) · L7 R10 applied (auto) · L8 bridge refresh applied (auto) · L9 real-Hermes applied in part (auto) · L10 parity merged into L2 (auto) · L11 profile-without-plugin rejected (auto) · L12-L14 seams applied (auto) · R-list: R1-R12 per coverage-round-1-requirements.md · requirements: 10 · mapped: 10 · unmapped: 2 (R6, R9)

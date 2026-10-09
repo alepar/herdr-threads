@@ -8,3 +8,5 @@ R7 Hermes runs outside Herdr stay silent.
 R8 User-facing docs, help and skill text describe Hermes global enrollment, its limits (no resume continuity, macOS wake) and the re-setup step; no "launch only" claim remains.
 R9 The launched Hermes path (`launch --kind hermes`, process hint) keeps working.
 R10 An older installed Hermes bridge that does not send the enrollment witness keeps working (launch-only behavior) rather than being refused.
+R11 `setup hermes --profile NAME` installs or refreshes the bridge that sends the enrollment fields, and status flags an older installed bridge.
+R12 A bare-enrolled first-turn check-in has the same context form as a launched one.
