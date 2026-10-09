@@ -381,7 +381,7 @@ fn actionable(tx: &Connection, warning: &str, seat: &str) -> Result<bool, ApiErr
         [warning], |r| r.get(0),
     ).map_err(store_error)?;
     if transition {
-        return Ok(true);
+        return super::attention::warning_wakes_seat(tx, seat, warning);
     }
     let (kind,condition,affected):(String,String,Option<String>)=tx.query_row("SELECT condition_kind,condition_id,affected_seat_id FROM warning_jobs WHERE warning_id=?1",[warning],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(store_error)?;
     match kind.as_str() {

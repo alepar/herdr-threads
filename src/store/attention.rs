@@ -601,6 +601,27 @@ pub fn seat_has_pending_notices(db: &Connection, seat_id: &str) -> Result<bool, 
     ).map_err(store_error)
 }
 
+/// Is any attributed notice above the current occupant's carried frontier
+/// one that wakes the seat (`warning_wakes_seat`)? One `WINDOW` walk, newest
+/// first; a full window with no waking notice answers true, as the unnarrowed
+/// probe did, so a large unoffered backlog never hides a waking notice.
+pub fn seat_has_pending_wake_notices(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
+    let frontier = notice_frontier(db, seat_id)?;
+    let window: Vec<String> = rows(
+        db,
+        "SELECT warning_id FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2 ORDER BY ordinal DESC LIMIT ?3",
+        params![seat_id, frontier, WINDOW_SQL],
+        |r| r.get(0),
+    )?;
+    let saturated = window.len() >= WINDOW;
+    for warning in window {
+        if warning_wakes_seat(db, seat_id, &warning)? {
+            return Ok(true);
+        }
+    }
+    Ok(saturated)
+}
+
 /// One informational notice of a check-in's offered page, with its
 /// projection ordinal (the frontier key).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -989,10 +1010,31 @@ pub struct WakeSeatAttention {
     pub decision_seq: i64,
 }
 
+/// May this pending warning wake `seat_id`? A canonical condition transition
+/// is an informational notice for every member (TRUST-POLICY A7): it wakes
+/// only the affected seat of a still-open condition, the seat that owes the
+/// overdue ACK or invitation answer. Other members, and every clear, receive
+/// it on their next check-in offer instead of a prompt whose inbox has
+/// nothing for them. Other warnings keep their judged actionability. Unique
+/// index probes only.
+pub fn warning_wakes_seat(
+    db: &Connection,
+    seat_id: &str,
+    warning_id: &str,
+) -> Result<bool, ApiError> {
+    db.query_row(
+        "SELECT CASE WHEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1) OR EXISTS(SELECT 1 FROM warning_conditions WHERE clear_warning_id=?1) THEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND affected_seat_id=?2 AND clear_warning_id IS NULL) ELSE 1 END",
+        params![warning_id, seat_id],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
 /// The wake attention of one seat, from the newest-first per-source walks
 /// and canonical judges (`effective_receipt`, `is_warning_recipient`,
-/// `warning_condition_actionable`): O(`WINDOW` x sources), independent of
-/// retained history. Call it inside the caller's read transaction; the
+/// `warning_condition_actionable`), with warnings narrowed to those that
+/// wake the seat (`warning_wakes_seat`): O(`WINDOW` x sources), independent
+/// of retained history. Call it inside the caller's read transaction; the
 /// decision sequence is read first, so the walks see at least that state.
 pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAttention, ApiError> {
     let decision_seq: i64 = db
@@ -1006,7 +1048,14 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
         .ok_or_else(|| api_error(ErrorCode::NotFound, "seat missing"))?;
     let invitations = pending_invitations(db, seat_id, None, decision_seq)?;
     let receipts = pending_receipts(db, seat_id, None)?;
-    let warnings = seat_pending_warnings(db, seat_id, &|| Ok(()))?;
+    let mut warnings = seat_pending_warnings(db, seat_id, &|| Ok(()))?;
+    let mut wakes = Vec::with_capacity(warnings.items.len());
+    for item in warnings.items {
+        if warning_wakes_seat(db, seat_id, &item.id)? {
+            wakes.push(item);
+        }
+    }
+    warnings.items = wakes;
     let latest_warning_seq = warnings.items.first().map(|item| item.key.0);
     Ok(WakeSeatAttention {
         attention: effective::EffectiveSeatAttention {
