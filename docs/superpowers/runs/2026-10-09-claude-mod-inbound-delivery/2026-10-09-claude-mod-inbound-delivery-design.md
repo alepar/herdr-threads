@@ -145,7 +145,7 @@ Exit 2 covers the race where the mod starts before the SessionStart hook's check
 | `attention` | the existing fixed marker (invitations, warnings, deadlines, notices, anything without a body), carrying the attention version | the attention digest |
 | `status` | connected, refused or closing, with a reason | watch lifecycle |
 
-**Paging.** Bodies over a per-message limit (8 KiB) are streamed as their first 8 KiB with `truncated: true` and `…truncated; run herdr-threads body <id>`. Each page is bounded (at most 32 items or 64 KiB), with paging until drained after every `Attention` frame and after connecting.
+**Paging.** Bodies over a per-message limit (8 KiB) are streamed as their first 8 KiB with `truncated: true` and `…truncated; run herdr-threads body <id>, then herdr-threads ack <id>`. Each page is bounded (at most 32 items or 64 KiB), with paging until drained after every `Attention` frame and after connecting.
 
 **Framing.** The mod frames all peer text as untrusted data, matching the hook's `untrusted_peer_data` convention:
 - a fixed instruction header naming herdr-threads;
@@ -153,7 +153,7 @@ Exit 2 covers the race where the mod starts before the SessionStart hook's check
 
 Text never starts with `/`, which `$.prompt.submit` refuses.
 
-A truncated item is never acked by the mod. It settles when the agent runs `herdr-threads body`, `inbox` or `ack`.
+A truncated item is never acked by the mod, and `body` is read-only. The marker therefore names both steps: `body` to read the rest, then `ack` to settle the receipt; a text `inbox` that displays the item in full also settles it. A truncated lazy row has no receipt and stays pending until a text `inbox` shows it.
 
 **Considered:** delivering only the marker, as the native wake does. That keeps every tool call and loses the main benefit.
 

@@ -316,10 +316,10 @@ fn mod_delivery_setting_and_via_spellings() {
 }
 
 #[test]
-fn truncation_marker_names_body_command() {
+fn truncation_marker_names_body_then_ack() {
     assert_eq!(
         truncation_marker(&MessageId::new("m9")),
-        "…truncated; run herdr-threads body m9"
+        "…truncated; run herdr-threads body m9, then herdr-threads ack m9"
     );
 }
 
