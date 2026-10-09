@@ -540,9 +540,12 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **A daemon restart can deliver twice.** After a restart the wake lane's first pass can run before the mod
   re-registers, so one item may reach the agent both through native wake and through the mod. At-least-once,
   as above; never lost.
-- **Mod frame markers are not escaped.** The mod frames peer bodies, thread and sender names as raw text after
-  its `[human]` / `[relays user]` / intent markers; a cooperative peer could write text that looks like a
-  marked header. The markers are as trustworthy as the peers, as on every other read path.
+- **Mod frames keep peer text off the header column.** The mod indents every body line by two spaces, as the
+  compact `body` read does, and folds thread, sender and id onto the block's header line, so a line starting at
+  column 0 (the fixed preamble and each `[herdr-threads] <kind> <id> in <thread> from <sender>[ markers]:`
+  header) can only come from the mod. Within a header line the thread and sender names are peer-chosen text
+  and may contain words that look like markers; the markers the mod writes come after the sender and attribute
+  the source without granting permission.
 
 ## Decision record
 
