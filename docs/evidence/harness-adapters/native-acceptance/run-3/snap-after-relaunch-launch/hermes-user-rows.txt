@@ -1,0 +1,3 @@
+id | source | parent_session_id | msg | content_len | api_len
+20261008_133346_b76595 | cli |  | 1 | 38 | 2483
+20261008_133346_b76595 | cli |  | 6 | 40 | 2464

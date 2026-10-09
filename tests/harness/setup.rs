@@ -3235,3 +3235,83 @@ fn adoption_finds_evented_marked_copy() {
     fs::remove_dir_all(dir).unwrap();
     fs::remove_dir_all(other_dir).unwrap();
 }
+
+#[test]
+fn operation_scope_defaults_preserve_legacy_resolution_and_refuse_foreign_generations() {
+    use crate::harness::{adapter::*, registry};
+    use crate::protocol::time::{CallBudget, MonoInstant};
+    let registry = registry::builtins();
+    let registration = registry.by_id(registry.agent("claude").unwrap()).unwrap();
+    let root = std::env::temp_dir().join(format!("scope-default-{}", uuid::Uuid::new_v4()));
+    let environment = SetupEnvironment {
+        config_roots: [("claude".into(), root.join("claude"))].into(),
+        ..Default::default()
+    };
+    let selector = SetupScopeRequest::Default;
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let request = SetupScopeResolutionRequest {
+        operation: SetupScopeOperation::Remove,
+        selector: &selector,
+        native_binary: None,
+        environment: &environment,
+    };
+    let mut resolution = registration
+        .resolve_setup_scope_for(&request, &budget)
+        .unwrap();
+    assert_eq!(
+        resolution.scope,
+        registration
+            .resolve_setup_scope(&selector, &environment)
+            .unwrap()
+    );
+    assert!(resolution.removal_generation.is_none());
+    resolution.removal_generation = Some(uuid::Uuid::new_v4().to_string());
+    assert!(
+        registration
+            .unsetup_resolved(
+                &UnsetupRequest {
+                    scope: resolution.scope.clone(),
+                    environment: environment.clone()
+                },
+                &resolution,
+                &budget
+            )
+            .is_err()
+    );
+    resolution.removal_generation = None;
+    assert!(
+        registration
+            .unsetup_resolved(
+                &UnsetupRequest {
+                    scope: ResolvedSetupScope::ConfigRoot(root.join("foreign")),
+                    environment: environment.clone()
+                },
+                &resolution,
+                &budget
+            )
+            .is_err()
+    );
+    let expired = CallBudget {
+        deadline: MonoInstant(0),
+        cancellation: Default::default(),
+    };
+    assert!(
+        registration
+            .resolve_setup_scope_for(&request, &expired)
+            .is_err()
+    );
+    let cancelled = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    cancelled.cancellation.cancel();
+    assert!(
+        registration
+            .resolve_setup_scope_for(&request, &cancelled)
+            .is_err()
+    );
+    assert!(!root.exists(), "refusal created a native or state root");
+}

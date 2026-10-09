@@ -100,6 +100,7 @@ impl Production {
                 incarnation_witness: CapabilityState::Unknown,
                 safe_prompt: CapabilityState::Unsupported,
                 harnesses: Default::default(),
+                release: Default::default(),
             },
         );
         Self {
@@ -1557,6 +1558,7 @@ fn transitions_refused_reaches_health() {
             incarnation_witness: CapabilityState::Unknown,
             safe_prompt: CapabilityState::Unsupported,
             harnesses: Default::default(),
+            release: Default::default(),
         },
     );
     let budget = CallBudget {

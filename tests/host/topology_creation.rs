@@ -272,28 +272,24 @@ fn final_write_recheck_and_cancel_refuse_with_zero_operation_bytes() {
         let peer = Peer::new(result());
         let request = request(&peer);
         let context = context();
-        let guard = CreationGuard {
-            expected: &request.expected_witness,
-            possible: AtomicBool::new(false),
-        };
         let provider = FinalChange {
             calls: AtomicUsize::new(0),
             mode,
             cancel: context.budget.cancellation.clone(),
         };
-        let response = request_inner_guarded(
+        let response = create_tab_with_provider(
             &peer.path,
-            "creation-id",
-            "tab.create",
-            json!({}),
+            &request,
             &crate::app::SystemClock::new(),
             &context.budget,
             Duration::from_secs(10),
-            Some(&provider),
-            Some(&guard),
+            &provider,
+            &|_| {},
         );
-        assert!(response.is_err());
-        assert!(!guard.possible.load(Ordering::Acquire));
+        assert!(matches!(
+            response,
+            Err(crate::ports::CreateTabOutcome::NotSubmitted(_))
+        ));
         assert_eq!(peer.operations.load(Ordering::Acquire), 0);
     }
 }
@@ -448,22 +444,17 @@ fn response_finished_over_budget_retains_possible_submission() {
         clock: &clock,
         calls: AtomicUsize::new(0),
     };
-    let guard = CreationGuard {
-        expected: &request.expected_witness,
-        possible: AtomicBool::new(false),
-    };
-    let result = request_inner_guarded(
+    let result = create_tab_with_provider(
         &peer.path,
-        "creation-id",
-        "tab.create",
-        json!({"workspace_id":"w4", "cwd":"/private/tmp", "label":"test-tab", "focus":false, "env":{}}),
+        &request,
         &clock,
         &context().budget,
         Duration::from_secs(3600),
-        Some(&provider),
-        Some(&guard),
+        &provider,
+        &|_| {},
     );
-    assert_eq!(result.unwrap_err().code, ErrorCode::DeadlineExceeded);
-    assert!(guard.possible.load(Ordering::Acquire));
+    assert!(
+        matches!(result, Err(crate::ports::CreateTabOutcome::OutcomeUnknown(error)) if error.code == ErrorCode::DeadlineExceeded)
+    );
     assert_eq!(peer.operations.load(Ordering::Acquire), 1);
 }

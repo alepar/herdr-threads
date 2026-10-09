@@ -1,0 +1,105 @@
+{
+  "schema_version": 2,
+  "generated_from": "Synthetic offline schema2 reader fixture; runtime row is not a native capture or qualification",
+  "generated_at": "2026-10-02T06:00:00Z",
+  "latest_release": "0.4.0",
+  "contracts": {
+    "claude": "c1a0000000000000000000000000000000000000000000000000000000000001",
+    "codex": "c0de000000000000000000000000000000000000000000000000000000000002"
+  },
+  "future_top_level_field": {
+    "ignored": true
+  },
+  "rows": [
+    {
+      "harness": "claude",
+      "version": "2.1.288",
+      "status": "verified",
+      "evidence": "live",
+      "contract_id": "c1a0000000000000000000000000000000000000000000000000000000000001",
+      "source": "canary",
+      "supported_since": "0.3.0",
+      "broken_event": null,
+      "broken_field": null,
+      "last_working": null,
+      "issue_url": null,
+      "recipe": null,
+      "known_broken": [],
+      "future_row_field": 7
+    },
+    {
+      "harness": "codex",
+      "version": "0.160.0",
+      "status": "known_broken",
+      "evidence": "schema",
+      "contract_id": "c0de000000000000000000000000000000000000000000000000000000000002",
+      "source": "canary",
+      "supported_since": null,
+      "broken_event": "UserPromptSubmit",
+      "broken_field": "session_id",
+      "last_working": "0.159.3",
+      "issue_url": "https://github.com/alepar/herdr-threads/issues/12",
+      "recipe": null,
+      "known_broken": []
+    }
+  ],
+  "runtime_contracts": {
+    "claude": [
+      {
+        "domain": "native_payload",
+        "origin": "native_payload",
+        "id": "c4c4b249584b3578",
+        "events": [
+          {
+            "event": "SessionStart",
+            "milestone": "lifecycle",
+            "always_send": true
+          },
+          {
+            "event": "PreToolUse",
+            "milestone": "tool",
+            "always_send": false
+          }
+        ],
+        "required_milestones": [
+          "lifecycle",
+          "tool"
+        ]
+      }
+    ]
+  },
+  "runtime_rows": [
+    {
+      "harness": "claude",
+      "identity": {
+        "release_version": "0.21.5",
+        "source": "git",
+        "base_version": "0.21.5",
+        "derived_version": "0.21.5+3962.g37daf85",
+        "commit": "37daf85b2ad0ee50ed45d7234dc47b7fa24cec09",
+        "dirty": false,
+        "distance": 3962,
+        "key": "build:4c8ddde495075df759252733ca7e3b52e9fb09519c81eb5c5f10ce914fac78ff"
+      },
+      "domain": "native_payload",
+      "origin": "native_payload",
+      "contract_id": "c4c4b249584b3578",
+      "status": "verified",
+      "evidence_stage": "no_model",
+      "source": "manual",
+      "required_milestones": [
+        "lifecycle",
+        "tool"
+      ],
+      "successful_milestones": [
+        "lifecycle",
+        "tool"
+      ],
+      "broken_event": null,
+      "broken_field": null,
+      "supported_since": null,
+      "issue_url": null,
+      "last_seen_at": 1791064800000
+    }
+  ]
+}

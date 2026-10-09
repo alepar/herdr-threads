@@ -75,6 +75,9 @@ pub struct ControlService<H, S> {
     harness_manifest: Option<std::sync::Arc<crate::harness::manifest::ManifestService>>,
     harness_evidence:
         Option<std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorder>>,
+    harness_evidence_v2:
+        Option<std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorderV2>>,
+    harness_health_v2: Option<std::sync::Arc<crate::daemon::harness_states::HarnessStatesProvider>>,
     harness_states: Option<std::sync::Arc<crate::daemon::harness_states::HarnessStatesProvider>>,
 }
 
@@ -93,6 +96,8 @@ where
             harness_manifest: None,
             harness_evidence: None,
             harness_states: None,
+            harness_health_v2: None,
+            harness_evidence_v2: None,
         }
     }
 
@@ -113,6 +118,23 @@ where
         recorder: std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorder>,
     ) -> Self {
         self.harness_evidence = Some(recorder);
+        self
+    }
+
+    /// Installs the v2 recorder and enables its capability; absence refuses requests.
+    pub fn with_harness_evidence_v2(
+        mut self,
+        recorder: std::sync::Arc<crate::daemon::harness_evidence::HarnessEvidenceRecorderV2>,
+    ) -> Self {
+        self.harness_evidence_v2 = Some(recorder);
+        self
+    }
+
+    pub fn with_harness_health_v2(
+        mut self,
+        provider: std::sync::Arc<crate::daemon::harness_states::HarnessStatesProvider>,
+    ) -> Self {
+        self.harness_health_v2 = Some(provider);
         self
     }
 
@@ -255,11 +277,29 @@ where
     ) -> Result<CommandResult, ApiError> {
         match command {
             // Health reads storage under this request's cancellation and deadline.
+            ApiCommand::HarnessHealthV2 => {
+                let provider = self.harness_health_v2.as_ref().ok_or_else(|| {
+                    ApiError::new(
+                        ErrorCode::Unsupported,
+                        "harness health provider unavailable",
+                    )
+                })?;
+                Ok(CommandResult::HarnessHealthV2(provider.report_v2(budget)?))
+            }
             ApiCommand::Health => Ok(CommandResult::Health((self.health)(budget).assemble())),
             ApiCommand::Capabilities => {
                 Ok(CommandResult::Capabilities(CapabilityList {
                     capabilities: crate::protocol::capabilities::ADVERTISED
                         .iter()
+                        .filter(|name| {
+                            (**name != crate::protocol::capabilities::HARNESS_EVIDENCE_V2
+                                || self.harness_evidence_v2.is_some())
+                                && (**name != crate::protocol::capabilities::HARNESS_HEALTH_V2
+                                    || self
+                                        .harness_health_v2
+                                        .as_ref()
+                                        .is_some_and(|p| p.has_observations()))
+                        })
                         .copied()
                         .chain(self.bootstrap_guarded.then_some(
                             crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,
@@ -280,6 +320,19 @@ where
                     None => false,
                 };
                 Ok(CommandResult::HarnessEvidenceRecorded { verified })
+            }
+            ApiCommand::HarnessEvidenceV2(note) => {
+                let recorder = self.harness_evidence_v2.as_ref().ok_or_else(|| {
+                    ApiError::new(
+                        crate::protocol::results::ErrorCode::Unsupported,
+                        "v2 evidence unavailable",
+                    )
+                })?;
+                Ok(CommandResult::HarnessEvidenceV2Recorded(
+                    crate::protocol::results::HarnessEvidenceV2Recorded {
+                        verified: recorder.record(&note, budget)?,
+                    },
+                ))
             }
             ApiCommand::HarnessStates => {
                 Ok(CommandResult::HarnessStates(match &self.harness_states {

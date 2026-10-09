@@ -1,0 +1,3 @@
+ordinal | thread_id | seat_id | episode | state | joined_at | left_at | retired_at | voluntary_state
+1 | tWNvoblgi | snBYq4WCx | 1 | joined | 1791491684754 |  |  | 
+2 | tWNvoblgi | sOyZueIIm | 1 | invited |  |  |  | invited

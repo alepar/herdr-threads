@@ -247,6 +247,52 @@ jobs:
           install::clean_package_install_lifecycle
           -- --ignored --exact --nocapture
 
+  herdr-releases:
+    name: Herdr release matrix (private Herdr servers; manual)
+    # scripts/herdr-release-smoke: the e2e smoke (plugin link, startup daemon,
+    # seats, required ACK round trip, stand-in agent) against every official
+    # Herdr release in tests/herdr-releases.tsv, each binary checksum-verified
+    # and each run in its own private IsolatedHerdr root. It first fails when
+    # GitHub has an official release >= 0.9.1 that the list lacks (add it with
+    # `scripts/herdr-release-smoke --update`). Manual dispatch, like the
+    # package gate; the release checklist requires it green on the release SHA.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-herdr-releases
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Python for the runner
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11.9'
+          architecture: arm64
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Release list matches GitHub
+        run: scripts/herdr-release-smoke --check-upstream
+
+      - name: Release matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Short TMPDIR: tests bind Unix sockets (104-byte limit on macOS).
+          TMPDIR=$(mktemp -d /tmp/htci.XXXXXX)
+          export TMPDIR
+          scripts/herdr-release-smoke --cache "$RUNNER_TEMP/herdr-releases" \
+            --report "$RUNNER_TEMP/herdr-releases.md"
+
+      - name: Matrix (job summary)
+        if: always()
+        run: cat "$RUNNER_TEMP/herdr-releases.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
   clippy:
     name: Clippy -D warnings
     runs-on: macos-15

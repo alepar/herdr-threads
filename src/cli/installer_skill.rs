@@ -2,7 +2,7 @@
 use super::{RunError, setup, skill};
 use crate::{
     daemon::paths::{ensure_owned_state_root, ensure_private_dir},
-    harness::{context::Harness, setup as owned},
+    harness::setup as owned,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -22,6 +22,7 @@ struct Manifest {
 
 pub(super) struct SkillFile {
     path: PathBuf,
+    root: PathBuf,
     manifest: PathBuf,
     harness: &'static str,
     before: Option<Vec<u8>>,
@@ -33,7 +34,7 @@ fn conflict(detail: impl Into<String>) -> RunError {
     RunError::Io(io::Error::other(detail.into()))
 }
 
-pub(super) fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, RunError> {
+pub(crate) fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, RunError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -75,23 +76,19 @@ fn directory(path: &Path) -> Result<(), RunError> {
 }
 
 impl SkillFile {
-    pub(super) fn inspect(env: &setup::SetupEnv, harness: Harness) -> Result<Self, RunError> {
-        // Destinations belong to these concrete supported harnesses, never guessed from IDs.
-        let (name, root) = match harness {
-            Harness::Claude => ("claude", env.claude_config_dir.as_deref()),
-            Harness::Codex => ("codex", env.codex_home.as_deref()),
-            Harness::Human => return Err(conflict("human panes have no skill installation")),
-        };
-        let root = root.ok_or_else(|| conflict(format!("{name} config root is unknown")))?;
-        if !root.is_absolute() {
-            return Err(conflict("skill config root must be absolute"));
-        }
-        let skills = root.join("skills");
-        let folder = skills.join("herdr-threads");
-        for dir in [root, &skills, &folder] {
+    pub(super) fn inspect(
+        env: &setup::SetupEnv,
+        name: &'static str,
+        destination: &crate::harness::adapter::InstallerSkillDestination,
+    ) -> Result<Self, RunError> {
+        let root = &destination.root;
+        let path = destination.file.clone();
+        let folder = path
+            .parent()
+            .ok_or_else(|| conflict("skill path has no parent"))?;
+        for dir in folder.ancestors().take_while(|dir| dir.starts_with(root)) {
             directory(dir)?;
         }
-        let path = folder.join("SKILL.md");
         let manifest = setup::manifest_path(env.state_dir()?, &format!("{name}-skill"), &path);
         let before = read_optional(&path)?;
         let manifest_before = read_optional(&manifest)?;
@@ -114,7 +111,7 @@ impl SkillFile {
                     "owned skill is partial or edited; preserved (restore the recorded file before updating)",
                 ));
             }
-        } else if before.is_some() || fs::symlink_metadata(&folder).is_ok() {
+        } else if before.is_some() || fs::symlink_metadata(folder).is_ok() {
             return Err(conflict(format!(
                 "unowned skill at {}; preserved",
                 folder.display()
@@ -122,6 +119,7 @@ impl SkillFile {
         }
         Ok(Self {
             path,
+            root: root.clone(),
             manifest,
             harness: name,
             before,
@@ -143,11 +141,10 @@ impl SkillFile {
         ensure_owned_state_root(state)?;
         ensure_private_dir(&state.join("setup"))?;
         let folder = self.path.parent().expect("skill path has parent");
-        for dir in [
-            folder.parent().unwrap().parent().unwrap(),
-            folder.parent().unwrap(),
-            folder,
-        ] {
+        for dir in folder
+            .ancestors()
+            .take_while(|dir| dir.starts_with(&self.root))
+        {
             directory(dir)?;
         }
         if self.recorded.is_some() {

@@ -69,7 +69,7 @@ fn ack_impl(
             "duplicate message in ACK batch",
         ));
     }
-    if displayed && request.claim.harness == Harness::Human {
+    if displayed && !matches!(request.claim.harness, Harness::Agent(_)) {
         return Err(api_error(
             ErrorCode::InvalidRequest,
             "display ACK requires an agent claim",
@@ -101,6 +101,27 @@ fn ack_impl(
                 .map_err(store_error)?;
             if !active {
                 return Err(api_error(ErrorCode::Unauthorized, "seat retired"));
+            }
+            if displayed {
+                let harness: Option<String> = tx.query_row("SELECT harness FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
+                if harness.as_deref().is_some_and(|id| {
+                    id != "human" && crate::harness::registry::builtins().agent(id).is_err()
+                }) {
+                    return Err(api_error(
+                        ErrorCode::Unsupported,
+                        "stored binding harness has no registered adapter",
+                    ));
+                }
+                let exact: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND b.generation=?2 AND b.harness=?3 AND b.native_session=?4 AND b.execution_id=?5 AND b.target_id=?6 AND b.ended_at IS NULL AND b.observation_provenance='cooperative_top_level')",
+                    params![seat.as_str(),i64::try_from(request.claim.binding_generation).map_err(|_| api_error(ErrorCode::CallerUnverified,"binding generation exceeds storage range"))?,request.claim.harness.as_str(),request.claim.native_session.as_str(),request.claim.execution.as_str(),request.claim.target.as_str()],|r|r.get(0)
+                ).map_err(store_error)?;
+                if !exact {
+                    return Err(api_error(
+                        ErrorCode::CallerUnverified,
+                        "display ACK requires the exact cooperative agent binding",
+                    ));
+                }
             }
             // Complete validation precedes every warning, receipt or event write.
             for id in &request.messages {

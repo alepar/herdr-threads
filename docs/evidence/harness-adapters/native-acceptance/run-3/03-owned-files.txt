@@ -1,0 +1,6 @@
+total 80
+-rw-------@ 1 user  group  31823 Oct  8 13:33 __init__.py
+-rw-------@ 1 user  group    331 Oct  8 13:33 bridge_config.json
+-rw-------@ 1 user  group    224 Oct  8 13:33 plugin.yaml
+ae1c731f8d1fea31e3a31a96f2dff35d03ee871ac635aaafb23d73643d03e162  plugin.yaml
+9ed5e59acd5f2774cde6df1d8ccb3d3671d49433740ddacfaeaec2ef4f8366fd  __init__.py

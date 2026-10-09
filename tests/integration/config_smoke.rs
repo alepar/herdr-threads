@@ -144,3 +144,404 @@ fn herdr_restarted_under_running_daemon() {
     s.step("restarted-health", &["daemon", "health"]);
     s.step("restarted-doctor", &["doctor"]);
 }
+
+/// This fixture exercises the real detached daemon and canonical store against
+/// an owned protocol stand-in. It never starts an installed Herdr/Hermes.
+struct SyntheticDaemon {
+    _host: super::sweep::FakeHost,
+    isolation: herdr_threads::test_support::isolation::TestIsolation,
+    state: PathBuf,
+    endpoint: PathBuf,
+}
+impl SyntheticDaemon {
+    fn new() -> Self {
+        let isolation =
+            herdr_threads::test_support::isolation::TestIsolation::new("adapter-config-smoke");
+        let state = isolation.path("state");
+        let endpoint = isolation.socket_path("host.sock");
+        let runtime = herdr_threads::daemon::paths::RuntimeContext::explicit(
+            state.clone(),
+            endpoint.clone(),
+            None,
+        )
+        .unwrap();
+        let paths = herdr_threads::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+        paths.prepare_instance_dir().unwrap();
+        let settings = paths
+            .instance_dir
+            .join(herdr_threads::daemon::settings::SETTINGS_FILE);
+        fs::write(&settings, br#"{"harness_manifest":"off"}"#).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
+        let host = super::sweep::FakeHost::start(
+            &endpoint,
+            (1..=4)
+                .map(|n| super::sweep::pane(&format!("w1:p{n}"), &format!("synthetic-term-{n}")))
+                .collect(),
+        );
+        Self {
+            isolation,
+            state,
+            endpoint,
+            _host: host,
+        }
+    }
+    fn command(&self) -> std::process::Command {
+        let mut command = self.isolation.command(BIN);
+        command
+            .arg("--state-dir")
+            .arg(&self.state)
+            .arg("--host-endpoint")
+            .arg(&self.endpoint)
+            .env("CLAUDE_CONFIG_DIR", self.isolation.path("home/claude"))
+            .env("CODEX_HOME", self.isolation.path("home/codex"))
+            .env("HERMES_HOME", self.isolation.path("home/hermes"));
+        command
+    }
+    fn json(&self, args: &[&str]) -> serde_json::Value {
+        let output = self.command().arg("--json").args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+    fn hook(&self, pane: &str, harness: &str, payload: &serde_json::Value) -> serde_json::Value {
+        use herdr_threads::test_support::spawn::SpawnOwned;
+        use std::io::Write;
+        let mut child = self
+            .command()
+            .args(["hook", harness])
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", pane)
+            .env("HERDR_SOCKET_PATH", &self.endpoint)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn_owned()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(payload).unwrap())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{harness}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if output.stdout.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&output.stdout).unwrap()
+        }
+    }
+    fn db(&self) -> rusqlite::Connection {
+        let runtime = herdr_threads::daemon::paths::RuntimeContext::explicit(
+            self.state.clone(),
+            self.endpoint.clone(),
+            None,
+        )
+        .unwrap();
+        let paths = herdr_threads::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+        rusqlite::Connection::open(paths.database_path).unwrap()
+    }
+    fn accountable_snapshot(&self) -> Vec<Vec<String>> {
+        let db = self.db();
+        [
+            "occupant_bindings",
+            "operations",
+            "receipts",
+            "invitations",
+            "warning_offer",
+            "digest_notice_offer",
+            "receipt_state",
+            "delivery_observations",
+        ]
+        .map(|table| {
+            let mut statement = db.prepare(&format!("SELECT * FROM {table}")).unwrap();
+            let columns = statement.column_count();
+            let mut rows = statement
+                .query_map([], |row| {
+                    let values = (0..columns)
+                        .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    Ok(format!("{values:?}"))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            rows.sort();
+            rows
+        })
+        .into()
+    }
+    /// Accountable row counts. `operations` is left out: lifecycle startup
+    /// enrollment records a fresh guarded resolution per event, which reuses
+    /// the resolved seat and allocates nothing.
+    fn counts(&self) -> [i64; 8] {
+        let db = self.db();
+        [
+            "occupant_bindings",
+            "receipts",
+            "invitations",
+            "warning_offer",
+            "digest_notice_offer",
+            "receipt_state",
+            "delivery_observations",
+            "seat_availability",
+        ]
+        .map(|table| {
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        })
+    }
+}
+impl Drop for SyntheticDaemon {
+    fn drop(&mut self) {
+        let output = self.command().args(["daemon", "stop"]).output();
+        if !std::thread::panicking() {
+            assert!(
+                output.is_ok_and(|out| out.status.success()),
+                "owned daemon did not stop"
+            );
+        }
+    }
+}
+
+fn hermes_envelope(session: &str, event: &str, sequence: u64) -> serde_json::Value {
+    let mut payload: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    payload["session_id"] = session.into();
+    payload["event_id"] = event.into();
+    payload["turn_id"] = event.into();
+    payload["role_association"]["session_id"] = session.into();
+    payload["role_association"]["turn_id"] = event.into();
+    payload["started_at"] = now.into();
+    payload["deadline_at"] = (now + 1200).into();
+    payload["observation_order"]["observed_at_millis"] = now.into();
+    payload["observation_order"]["sequence"] = sequence.into();
+    payload
+}
+
+/// Kills parser-only author proofs: real hook children must durably check in,
+/// replay without binding rotation, and suppress every non-top-level input.
+#[test]
+fn synthetic_four_adapter_hook_configuration_and_canonical_replay() {
+    use serde_json::json;
+    let daemon = SyntheticDaemon::new();
+    daemon.json(&["daemon", "ensure"]);
+    let mut seats = Vec::new();
+    for n in 1..=4 {
+        let value = daemon.json(&["seat", "resolve", "--pane", &format!("w1:p{n}")]);
+        seats.push(value["result"]["data"].as_str().unwrap().to_owned());
+    }
+    let claude = json!({"hook_event_name": "SessionStart", "source": "startup", "session_id": "synthetic-claude"});
+    let codex = json!({"hook_event_name": "SessionStart", "source": "startup", "session_id": "synthetic-codex", "turn_id": "synthetic-turn"});
+    let fourth = json!({"event": "SyntheticStart", "event_id": "synthetic-start", "session_id": "synthetic-fourth-session", "role": "top_level"});
+    for (pane, harness, payload, key) in [
+        ("w1:p1", "claude", claude, "hookSpecificOutput"),
+        ("w1:p2", "codex", codex, "hookSpecificOutput"),
+        (
+            "w1:p3",
+            "hermes",
+            hermes_envelope("synthetic-hermes", "hermes-first", 1),
+            "context",
+        ),
+        (
+            "w1:p4",
+            "synthetic_fourth",
+            fourth.clone(),
+            "synthetic_context",
+        ),
+    ] {
+        let output = daemon.hook(pane, harness, &payload);
+        assert!(
+            !output[key].is_null(),
+            "{harness}: real callback produced no context: {output}"
+        );
+    }
+    let bindings = daemon.db().prepare("SELECT harness,observation_provenance FROM occupant_bindings WHERE ended_at IS NULL ORDER BY harness").unwrap()
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(
+        bindings,
+        ["claude", "codex", "hermes", "synthetic_fourth"]
+            .map(|id| (id.to_owned(), "cooperative_top_level".to_owned()))
+    );
+    let before = daemon.counts();
+    let operations_before: i64 = daemon
+        .db()
+        .query_row(
+            "SELECT COALESCE(MAX(rowid), 0) FROM operations",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let first = daemon.hook("w1:p4", "synthetic_fourth", &fourth);
+    let replay = daemon.hook("w1:p4", "synthetic_fourth", &fourth);
+    assert_eq!(first, replay);
+    assert_eq!(
+        daemon.counts(),
+        before,
+        "exact replay allocated canonical rows"
+    );
+    // The only operations a replay adds are guarded resolutions of the same
+    // already resolved seat: nothing else is decided again.
+    let added: Vec<String> = daemon
+        .db()
+        .prepare("SELECT result_json FROM operations WHERE rowid > ?1")
+        .unwrap()
+        .query_map([operations_before], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let resolved: std::collections::BTreeSet<String> = added
+        .iter()
+        .map(|json| {
+            let value: serde_json::Value = serde_json::from_str(json).unwrap();
+            assert_eq!(
+                value["kind"], "seat_resolved",
+                "replay decided more: {json}"
+            );
+            value["data"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    assert!(
+        resolved.len() <= 1,
+        "replay resolved different seats: {resolved:?}"
+    );
+    daemon.json(&["daemon", "stop"]);
+    daemon.json(&["daemon", "ensure"]);
+    assert_eq!(
+        daemon.hook("w1:p4", "synthetic_fourth", &fourth),
+        replay,
+        "canonical replay changed after process restart"
+    );
+    let after_restart = daemon.counts();
+    assert_eq!(
+        &after_restart[..7],
+        &before[..7],
+        "restart replay allocated accountable rows"
+    );
+    let before = after_restart;
+    let protected = daemon.accountable_snapshot();
+    for role in ["child", "unknown"] {
+        let mut payload = fourth.clone();
+        payload["role"] = role.into();
+        payload["event_id"] = format!("synthetic-{role}").into();
+        daemon.hook("w1:p4", "synthetic_fourth", &payload);
+        assert_eq!(
+            daemon.accountable_snapshot(),
+            protected,
+            "fourth {role} changed accountable rows"
+        );
+        assert_eq!(
+            daemon.counts(),
+            before,
+            "fourth {role} performed accountable work"
+        );
+    }
+    let observer = json!({"event": "SyntheticObserver", "event_id": "synthetic-observer", "session_id": "synthetic-fourth-session", "role": "top_level"});
+    assert!(daemon.hook("w1:p4", "synthetic_fourth", &observer)["synthetic_context"].is_null());
+    assert_eq!(daemon.counts(), before);
+    assert_eq!(
+        daemon.accountable_snapshot(),
+        protected,
+        "fourth observer changed accountable rows"
+    );
+    for (parent, role) in [(Some("parent"), "child"), (None, "unknown")] {
+        let mut payload = hermes_envelope("synthetic-hermes", &format!("hermes-{role}"), 2);
+        if let Some(parent) = parent {
+            payload["parent_session_id"] = parent.into();
+            payload["role_association"]["role"] = "child".into();
+        } else {
+            payload["parent_session_id"] = serde_json::Value::Null;
+            payload["role_association"]["role"] = "unknown".into();
+            payload["shape"]["parent_session_id"] = json!({"presence":"missing", "type":"absent"});
+        }
+        let output = daemon.hook("w1:p3", "hermes", &payload);
+        assert!(output["lifecycle_ack"].is_null());
+        assert_eq!(
+            daemon.accountable_snapshot(),
+            protected,
+            "Hermes {role} changed accountable rows"
+        );
+        assert_eq!(
+            daemon.counts(),
+            before,
+            "Hermes {role} performed accountable work"
+        );
+    }
+    let mut post = hermes_envelope("synthetic-hermes", "hermes-post", 3);
+    post["callback"] = "post_tool_call".into();
+    post["turn_id"] = "hermes-first".into();
+    post["role_association"]["turn_id"] = "hermes-first".into();
+    post["role_association"]["provenance"] = "qualified_pre_llm_cache".into();
+    post["parent_session_id"] = serde_json::Value::Null;
+    post["shape"]["parent_session_id"] = json!({"presence":"missing", "type":"absent"});
+    assert!(daemon.hook("w1:p3", "hermes", &post)["lifecycle_ack"].is_null());
+    assert_eq!(
+        daemon.counts(),
+        before,
+        "qualified post-tool observer performed accountable work"
+    );
+    assert_eq!(
+        daemon.accountable_snapshot(),
+        protected,
+        "post-tool observer changed accountable rows"
+    );
+    let mut reset = hermes_envelope("synthetic-hermes", "hermes-reset", 4);
+    reset["callback"] = "on_session_reset".into();
+    reset["reset_reason"] = "new_session".into();
+    reset["role_association"] = serde_json::Value::Null;
+    assert!(daemon.hook("w1:p3", "hermes", &reset).is_null());
+    assert_eq!(
+        daemon.counts(),
+        before,
+        "declared reset changed canonical binding before qualified turn"
+    );
+    assert_eq!(
+        daemon.accountable_snapshot(),
+        protected,
+        "reset observer changed accountable rows"
+    );
+    let next = daemon.hook(
+        "w1:p3",
+        "hermes",
+        &hermes_envelope("synthetic-hermes-new", "hermes-next", 5),
+    );
+    assert!(next["context"].is_string());
+    assert_eq!(
+        daemon
+            .db()
+            .query_row(
+                "SELECT COUNT(*) FROM occupant_bindings WHERE harness='hermes'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        2
+    );
+    let health = daemon.json(&["daemon", "health"]);
+    assert_eq!(
+        health["result"]["data"]["settings"]["wake_batch_delay_ms"],
+        0
+    );
+    let doctor = daemon.json(&["doctor"]);
+    assert_eq!(doctor["doctor"]["harness_manifest"]["policy"], "off");
+    assert!(doctor.to_string().contains("synthetic_fourth"));
+    assert!(!doctor.to_string().contains("runtime verified"));
+    assert_eq!(
+        seats.iter().collect::<std::collections::HashSet<_>>().len(),
+        4
+    );
+}

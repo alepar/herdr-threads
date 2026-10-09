@@ -70,6 +70,8 @@ def _sibling(name):
 
 def _attempt(probe_cmd, version, tier1):
     """One probe invocation -> (attempt dict, failed_tier)."""
+    if callable(probe_cmd):
+        return probe_cmd(version, tier1)
     argv = [a.replace("{version}", version) for a in shlex.split(probe_cmd)]
     start = time.monotonic()
     failed_tier, checks, detail, contract = None, [], None, None

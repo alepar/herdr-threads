@@ -128,12 +128,25 @@ impl Fixture {
         refuse_start: bool,
         lose_create_reply: bool,
     ) -> Self {
+        Self::with_original_harness(guarded, refuse_start, lose_create_reply, Harness::Codex)
+    }
+    fn with_original_harness(
+        guarded: bool,
+        refuse_start: bool,
+        lose_create_reply: bool,
+        original_harness: Harness,
+    ) -> Self {
         let root = PathBuf::from("/private/tmp").join(format!("ht-a-{}", Uuid::new_v4()));
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(&root)
             .unwrap();
+        let bin = root.join("bin");
+        fs::create_dir(&bin).unwrap();
+        for command in ["codex", "claude"] {
+            std::os::unix::fs::symlink("/usr/bin/true", bin.join(command)).unwrap();
+        }
         let endpoint = root.join("h.sock");
         let listener = UnixListener::bind(&endpoint).unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -327,7 +340,7 @@ impl Fixture {
         ] {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0)",rusqlite::params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
         }
-        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1)",rusqlite::params![observation.host_boot.as_str(),execution.to_string()]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,1,1,?3,'session',?2,'cooperative_top_level',0,0,'term_1',?1)",rusqlite::params![observation.host_boot.as_str(),execution.to_string(), original_harness.as_str()]).unwrap();
         drop(db);
         drop(store);
         use sha2::{Digest, Sha256};
@@ -347,7 +360,7 @@ impl Fixture {
                 instance,
                 seat: "sender".into(),
                 target: "w4:p1".into(),
-                harness: Harness::Codex,
+                harness: original_harness,
                 binding_generation: 1,
                 execution,
                 session: SessionReference::Native("session".into()),
@@ -463,7 +476,15 @@ impl Fixture {
             .args(args)
             .env("HOME", self.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
-            .env("CODEX_HOME", self.root.join("codex"));
+            .env("CODEX_HOME", self.root.join("codex"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    self.root.join("bin").display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            );
         if let Some(pane) = pane {
             cmd.env("HERDR_PANE_ID", pane);
         }
@@ -1883,4 +1904,225 @@ fn elected_public_unknown_created_pane_retains_request_through_second_agent_retr
 fn elected_public_unknown_created_pane_without_request_uses_fresh_inspection() {
     let _serial = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
     public_unknown_created_pane_agent_retry_chain(false);
+}
+
+#[test]
+fn current_main_registered_original_caller_preserves_bootstrap_and_delivery_claim() {
+    use herdr_threads::protocol::{
+        authority::{CallerClaim, CallerRole, Harness as AuthorityHarness},
+        handoff::BootstrapIdentity,
+        ids::*,
+    };
+    let _serial = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
+    let hermes = AuthorityHarness::Agent(
+        herdr_threads::harness::registry::builtins()
+            .agent("hermes")
+            .unwrap(),
+    );
+    let f = Fixture::with_original_harness(true, false, false, Harness::from(hermes));
+    let execution: String = f
+        .db()
+        .query_row(
+            "SELECT execution_id FROM occupant_bindings WHERE seat_id='sender'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let expected = CallerClaim {
+        instance: f.instance.to_string(),
+        seat: SeatId::new("sender"),
+        target: HostTargetId::new("w4:p1"),
+        binding_generation: 1,
+        role: CallerRole::TopLevel,
+        harness: hermes,
+        native_session: NativeSessionId::new("session"),
+        execution: ExecutionId::new(execution),
+    };
+    let setup = f.cli(
+        &["setup", "codex", "--harness-binary", "/usr/bin/true"],
+        true,
+    );
+    assert!(
+        setup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+    let selection = [
+        "--cooperative-seat",
+        "sender",
+        "--cooperative-target",
+        "w4:p1",
+        "--cooperative-harness",
+        "hermes",
+        "--cooperative-role",
+        "top-level",
+    ];
+    let mut unsupported = selection.to_vec();
+    unsupported.extend([
+        "handoff",
+        "--new-tab",
+        "Unsupported",
+        "--new-thread",
+        "--kind",
+        "hermes",
+        "--",
+        "opaque",
+    ]);
+    let refusal = f.cli(&unsupported, false);
+    assert!(!refusal.status.success());
+    assert!(refusal.stdout.is_empty());
+    assert_eq!(
+        f.db()
+            .query_row("SELECT count(*) FROM bootstrap_handoffs", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(f.creates.load(Ordering::Relaxed), 0);
+    assert_eq!(f.starts.load(Ordering::Relaxed), 0);
+    for native in [false, true] {
+        let mut args = selection.to_vec();
+        if native {
+            args.extend([
+                "handoff",
+                "--new-tab",
+                "Hermes caller",
+                "--new-thread",
+                "--kind",
+                "codex",
+                "--harness-binary",
+                "/usr/bin/true",
+                "--",
+                "Hermes original '$HOME' body",
+            ]);
+        } else {
+            args.extend([
+                "handoff",
+                "--existing",
+                "--seat",
+                "recipient",
+                "--new-thread",
+                "--",
+                "Hermes original '$HOME' body",
+            ]);
+        }
+        let out = f.cli(&args, false);
+        assert!(
+            out.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let frame: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let report = &frame[if native { "handoff" } else { "delivery" }];
+        let reference = report["recovery_ref"].as_str().unwrap();
+        if native {
+            let bytes: Vec<u8> = f
+                .db()
+                .query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let identity: BootstrapIdentity = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(identity.claim, expected);
+            assert_eq!(identity.payload.launch.harness, AuthorityHarness::Codex);
+            assert_eq!(identity.digest, identity.semantic_digest().unwrap());
+        }
+        let db = f.db();
+        let mut stmt = db
+            .prepare("SELECT claim_json FROM channel_handoff_fences")
+            .unwrap();
+        for claim in stmt.query_map([], |r| r.get::<_, String>(0)).unwrap() {
+            assert_eq!(
+                serde_json::from_str::<CallerClaim>(&claim.unwrap()).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            db.query_row(
+                "SELECT observation_provenance FROM occupant_bindings WHERE seat_id='sender'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "cooperative_top_level"
+        );
+        drop(stmt);
+        drop(db);
+        for _ in 0..2 {
+            let retry = f.cli(&["retry", reference], false);
+            assert!(
+                retry.status.success(),
+                "{}",
+                String::from_utf8_lossy(&retry.stderr)
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&retry.stdout).unwrap(),
+                frame
+            );
+        }
+        assert_eq!(f.creates.load(Ordering::Relaxed), usize::from(native));
+        assert_eq!(f.starts.load(Ordering::Relaxed), usize::from(native));
+    }
+}
+
+#[test]
+fn current_main_topology_native_preparation_refuses_before_publication() {
+    let _serial = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
+    let f = Fixture::new();
+    let setup = f.cli(
+        &["setup", "codex", "--harness-binary", "/usr/bin/true"],
+        true,
+    );
+    assert!(
+        setup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+    let out = f.cli(
+        &[
+            "--cooperative-seat",
+            "sender",
+            "--cooperative-target",
+            "w4:p1",
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+            "handoff",
+            "--new-tab",
+            "Refused",
+            "--new-thread",
+            "--kind",
+            "codex",
+            "--harness-binary",
+            "/usr/bin/false",
+            "--",
+            "opaque",
+        ],
+        false,
+    );
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("admitted executable must match"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        f.creates.load(Ordering::Relaxed),
+        0,
+        "statically refused native preparation must precede topology effects"
+    );
+    assert_eq!(f.starts.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        f.db()
+            .query_row("SELECT count(*) FROM bootstrap_handoffs", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(out.stdout.is_empty());
+    let journal =
+        herdr_threads::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+    assert!(journal.page(&Default::default()).unwrap().items.is_empty());
 }

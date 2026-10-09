@@ -1,0 +1,11 @@
+[
+  "/fixture/store python/bin/python3",
+  "-I",
+  "-c",
+  "import os, sys, runpy; os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); os.environ.pop('VIRTUAL_ENV', None); sys.path.insert(0, '/fixture/native source'); os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(__import__('hermes_constants').get_default_hermes_root()); import hermes_bootstrap; runpy.run_module('trace', run_name='__main__', alter_sys=True)",
+  "--count",
+  "--no-report",
+  "/fixture/owned helper/runtime_helper.py",
+  "--profile",
+  "default"
+]

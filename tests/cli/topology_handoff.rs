@@ -1168,7 +1168,7 @@ mod live {
 
     fn downstream<W: std::io::Write>(
         f: &Fixture,
-        launcher: &mut DownstreamLauncher,
+        launcher: &mut dyn super::super::super::handoff::HandoffLauncher,
         writer: &mut W,
     ) -> Result<BootstrapResult, RunError> {
         super::super::super::retry::run_bootstrap_retry_to_writer(
@@ -4387,6 +4387,89 @@ mod live {
         drop(s);
         assert_eq!(result.creation, f.peer.status().creation);
     }
+
+    #[test]
+    fn current_main_linked_none_preserves_root_append_contract() {
+        let mut request = request();
+        request.kind = Some("claude".into());
+        request.argv = vec!["--tools".into(), String::new()];
+        let f = Fixture::with_request(
+            Fault::None,
+            request,
+            Some(vec!["--tools".into(), String::new()]),
+        );
+        let attached = f.run().unwrap().attachment.unwrap();
+        let plan =
+            downstream_plan(&f.peer.identity, &attached.created, &attached.resolved_seat).unwrap();
+        assert!(plan.startup_input.is_none());
+        assert!(
+            serde_json::to_value(&plan)
+                .unwrap()
+                .get("startup_input")
+                .is_none()
+        );
+        assert_eq!(plan.request.launch.argv, ["--tools", ""]);
+        assert_eq!(plan.request.body, "literal '$HOME' body");
+        let ns = &f.peer.identity.payload.handoff.namespace;
+        // Literal historical Root template from immutable2ae; never use current bootstrap/composer as expected output.
+        let fallback = format!(
+            "herdr-threads --state-dir '{}' --host-endpoint {} inbox",
+            ns.state_dir.display(),
+            ns.host_endpoint.display()
+        );
+        let prompt = format!(
+            "Expected handoff command routing (JSON data): null Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox using that matching group. Otherwise use the exact fallback: `{fallback}`. The task for thread canonical-thread is stored in inbox; follow its printed next: commands for complete bodies. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages."
+        );
+        struct LiteralLauncher {
+            expected: Vec<String>,
+            starts: usize,
+        }
+        impl super::super::super::handoff::HandoffLauncher for LiteralLauncher {
+            fn preflight(
+                &mut self,
+                _: &super::super::super::launch::LaunchRequest,
+            ) -> Result<SeatId, RunError> {
+                panic!("linked attachment must not preflight a new seat")
+            }
+            fn launch(
+                &mut self,
+                request: &super::super::super::launch::LaunchRequest,
+                seat: &SeatId,
+                gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
+            ) -> Result<super::super::super::launch::LaunchReport, RunError> {
+                assert_eq!(request.harness, crate::harness::context::Harness::Claude);
+                assert_eq!(
+                    request.argv, self.expected,
+                    "Root fixed prompt must follow original tools recipe and empty value"
+                );
+                gate(true)?;
+                self.starts += 1;
+                assert_eq!(self.starts, 1);
+                Ok(super::super::super::launch::LaunchReport {
+                    report: serde_json::json!({"outcome":"started","pane":request.target,"seat":seat,"harness":"claude","argv":self.expected}),
+                    exit: 0,
+                })
+            }
+        }
+        let mut launcher = LiteralLauncher {
+            expected: vec!["--tools".into(), String::new(), prompt],
+            starts: 0,
+        };
+        let mut first = Vec::new();
+        let result = downstream(&f, &mut launcher, &mut first).unwrap();
+        assert_eq!(result.state, BootstrapState::Completed);
+        assert_eq!(
+            result.completed.as_ref().unwrap().retained.report["argv"],
+            serde_json::json!(launcher.expected)
+        );
+        let frozen = f.peer.status();
+        let mut second = Vec::new();
+        let replay = downstream(&f, &mut launcher, &mut second).unwrap();
+        assert_eq!(replay, frozen);
+        assert_eq!(second, first);
+        assert_eq!(launcher.starts, 1);
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+    }
 }
 
 #[test]
@@ -4415,5 +4498,36 @@ fn phase13_prepublication_capacity_uses_actual_request_envelope_bound() {
     assert!(
         super::preflight_progress_capacity(&identity, &witness).is_err(),
         "a valid canonical max identity must refuse when genuine request metadata cannot fit"
+    );
+}
+
+#[test]
+fn current_main_topology_native_argv_preserves_empty_tokens() {
+    let temp = Temp::new();
+    let mut request = request();
+    request.kind = Some("claude".into());
+    request.argv = vec!["--tools".into(), String::new()];
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: "i".into(),
+        state_dir: temp.path().join("state"),
+        host_endpoint: temp.path().join("host.sock"),
+    };
+    let identity = prepare(
+        &request,
+        Preparation {
+            claim: &claim(),
+            namespace: &namespace,
+            topology: &topology(),
+            invocation_cwd: temp.path(),
+            options: None,
+            client: &ReadOnly,
+            clock: &crate::app::SystemClock::new(),
+        },
+    )
+    .expect("legal empty Claude tools value must survive actual topology preparation");
+    assert_eq!(identity.payload.launch.argv, vec!["--tools", ""]);
+    assert_eq!(
+        identity.payload.launch.harness,
+        crate::protocol::authority::Harness::Claude
     );
 }

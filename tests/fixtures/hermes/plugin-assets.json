@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "status": "observed",
+  "reason": null,
+  "runtime_descriptor": {
+    "release_version": null,
+    "source": "git",
+    "base_version": "0.21.5",
+    "derived_version": "0.21.5+1.g1234567",
+    "commit": "1234567890abcdef1234567890abcdef12345678",
+    "dirty": false,
+    "distance": 1
+  },
+  "profile": "default",
+  "home": "/fixture/custom home",
+  "physical_home": "/fixture/custom home",
+  "interpreter": "/fixture/store python/bin/python3",
+  "source_root": "/fixture/native source",
+  "module_origins": {
+    "hermes_bootstrap": "/fixture/native source/hermes_bootstrap.py",
+    "hermes_constants": "/fixture/native source/hermes_constants.py",
+    "hermes_cli.profiles": "/fixture/native source/hermes_cli/profiles.py",
+    "hermes_cli.version_info": "/fixture/native source/hermes_cli/version_info.py",
+    "hermes_cli.config": "/fixture/native source/hermes_cli/config.py"
+  },
+  "dependency_paths": [
+    "/fixture/deps/site-packages"
+  ],
+  "enabled": [
+    "herdr-threads"
+  ],
+  "disabled": [
+    "herdr-threads"
+  ],
+  "config_quality": "successful",
+  "fallback_kind": null,
+  "environment_scope": "declared_child_input_plus_native_bootstrap_profile_effects",
+  "cli_dotenv_loaded": false,
+  "cli_scratch_rehomed": false,
+  "identity_provenance": "startup_captured",
+  "evidence_stage": "startup_profile_observation"
+}

@@ -31,7 +31,7 @@ use super::{
 };
 use crate::{
     daemon::paths::{InstancePaths, RuntimeContext},
-    harness::context::{ContextJournal, Harness},
+    harness::context::ContextJournal,
     host::{
         native::NativeCli,
         observation::{PaneName, SeatHostLabels},
@@ -403,7 +403,7 @@ impl NickCache {
     ) -> Nick {
         let mut nick = Nick::seat(seat);
         nick.harness = self.harness(seat, generation).map(str::to_owned);
-        if matches!(nick.harness.as_deref(), Some("claude" | "codex")) {
+        if nick.is_agent() {
             if let Some(target) = target {
                 self.refresh_panes(
                     [target.as_str()],
@@ -598,11 +598,7 @@ fn read_harness(
     if current.seat != seat.as_str() || current.binding_generation != generation {
         return None;
     }
-    Some(match current.harness {
-        Harness::Claude => "claude",
-        Harness::Codex => "codex",
-        Harness::Human => "human",
-    })
+    Some(current.harness.as_str())
 }
 
 /// A request budget of `millis` from now on `clock`. It must be the clock

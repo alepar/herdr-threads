@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "status": "metadata_only",
+  "reason": null,
+  "runtime_descriptor": {
+    "release_version": null,
+    "source": "git",
+    "base_version": "0.21.5",
+    "derived_version": "0.21.5+3962.g37daf85",
+    "commit": "37daf85b2ad0ee50ed45d7234dc47b7fa24cec09",
+    "dirty": false,
+    "distance": 3962
+  },
+  "profile": "default",
+  "home": "/fixture/custom home",
+  "physical_home": "/fixture/custom home",
+  "interpreter": "/fixture/store python/bin/python3",
+  "source_root": "/fixture/native source",
+  "enabled": [
+    "herdr-threads"
+  ],
+  "disabled": [],
+  "callback_timeout_ms": null,
+  "api": {
+    "register_hook": true,
+    "invoke_hook": true,
+    "callbacks": [
+      "pre_llm_call",
+      "post_tool_call",
+      "on_session_start",
+      "on_session_reset"
+    ]
+  },
+  "evidence_stage": "model_free_plumbing"
+}

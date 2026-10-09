@@ -141,6 +141,21 @@ fn health_settings_are_typed_and_unknown_until_resolved() {
         1,
     );
     assert!(health.settings.is_none());
+    let legacy: HealthSettings = serde_json::from_value(serde_json::json!({
+        "invitation_default_ms": 300_000,
+        "receipt_default_ms": 300_000,
+        "minimum_wake_delay_ms": 30_000
+    }))
+    .unwrap();
+    assert_eq!(legacy.wake_batch_delay_ms, 30_000);
+    let explicit_zero: HealthSettings = serde_json::from_value(serde_json::json!({
+        "invitation_default_ms": 300_000,
+        "receipt_default_ms": 300_000,
+        "minimum_wake_delay_ms": 30_000,
+        "wake_batch_delay_ms": 0
+    }))
+    .unwrap();
+    assert_eq!(explicit_zero.wake_batch_delay_ms, 0);
     health.settings = Some(HealthSettings {
         invitation_default_ms: 300_000,
         receipt_default_ms: 300_000,
@@ -814,6 +829,7 @@ fn managed_launch_request_preserves_bounded_native_argument_tokens() {
         ids::{HostTargetId, SeatId, TerminalId},
     };
     let mut request = NativeLaunchRequest {
+        process_hint: false,
         seat: SeatId::new("s"),
         target: HostTargetId::new("p"),
         harness: Harness::Codex,
@@ -843,8 +859,14 @@ fn managed_launch_request_preserves_bounded_native_argument_tokens() {
             .unwrap_err()
             .contains("total over 32 KiB")
     );
-    request.argv = vec![String::new()];
-    assert!(request.validate().is_err());
+    for argv in [
+        vec![String::new()],
+        vec!["before".into(), "".into(), "after".into(), "".into()],
+    ] {
+        request.argv = argv.clone();
+        assert!(request.validate().is_ok());
+        assert_eq!(request.argv, argv, "empty native data remains lossless");
+    }
     // Herdr types the command into the pane's shell: a line break would submit it early.
     request.argv = vec!["line one\nline two".into()];
     assert!(request.validate().unwrap_err().contains("line break"));
@@ -2122,4 +2144,481 @@ fn deadline_extension_fields_are_additive_on_pending_receipts_and_recipients() {
     let parsed: Recipient = serde_json::from_value(extended.clone()).unwrap();
     assert_eq!(parsed.effective_deadline.map(|at| at.0), Some(120_000));
     assert_eq!(serde_json::to_value(parsed).unwrap(), extended);
+}
+
+#[test]
+fn v2_evidence_handler_negotiates_strict_domains_without_legacy_wire_changes() {
+    let wire = serde_json::json!({"kind":"harness_evidence_v2","args":{
+        "harness":"claude","domain":"native_payload","origin":"native_payload",
+        "runtime":null,"unavailable_reason":"not yet attributed","contract_id":"0123456789abcdef",
+        "event":"tool_started","outcome":{"kind":"ok"},"session_id":"session",
+        "qualifications":[]
+    }});
+    let command =
+        serde_json::from_value::<herdr_threads::protocol::commands::Command>(wire.clone());
+    assert!(
+        command.is_ok(),
+        "v2 must be a distinct recognized command: {command:?}"
+    );
+    let command = command.unwrap();
+    assert!(command.validate().is_ok());
+    assert_eq!(serde_json::to_value(command).unwrap(), wire);
+}
+
+#[test]
+fn v2_evidence_wire_bounds_and_unknown_fields_leave_legacy_bytes_frozen() {
+    use herdr_threads::protocol::commands::{Command, HarnessEvidence};
+    let legacy = r#"{"kind":"harness_evidence","args":{"harness":"claude","version":"2.1.286","unattributed_reason":null,"contract_id":"0123456789abcdef","event":"SessionStart","outcome":{"kind":"ok"},"session_id":"s"}}"#;
+    let old: Command = serde_json::from_str(legacy).unwrap();
+    assert!(old.validate().is_ok());
+    assert_eq!(serde_json::to_string(&old).unwrap(), legacy);
+    let mut legacy_note = serde_json::from_value::<HarnessEvidence>(
+        serde_json::to_value(&old).unwrap()["args"].clone(),
+    )
+    .unwrap();
+    legacy_note.event = "tool_finished".into();
+    assert!(legacy_note.validate().is_err());
+    let base = serde_json::json!({"kind":"harness_evidence_v2","args":{"harness":"fourth","domain":"native_shape","origin":"native_shape_observation","runtime":null,"unavailable_reason":"unavailable","contract_id":"0123456789abcdef","event":"tool_finished","outcome":{"kind":"ok"},"session_id":"s","qualifications":["observer"]}});
+    assert!(
+        serde_json::from_value::<Command>(base.clone())
+            .unwrap()
+            .validate()
+            .is_ok()
+    );
+    for field in ["verified", "class", "required_milestones", "user_content"] {
+        let mut bad = base.clone();
+        bad["args"][field] = true.into();
+        assert!(
+            serde_json::from_value::<Command>(bad).is_err(),
+            "unknown {field}"
+        );
+    }
+    for (field, value) in [
+        ("harness", serde_json::json!("a".repeat(65))),
+        ("harness", serde_json::json!("Claude")),
+        ("domain", serde_json::json!("d".repeat(33))),
+        ("event", serde_json::json!("e".repeat(64))),
+        ("event", serde_json::json!("bad-event")),
+        ("contract_id", serde_json::json!("ABCDEF0123456789")),
+        ("session_id", serde_json::json!("é".repeat(129))),
+        ("unavailable_reason", serde_json::json!("é".repeat(65))),
+        ("unavailable_reason", serde_json::json!("bad\nreason")),
+        (
+            "qualifications",
+            serde_json::json!(["observer", "observer"]),
+        ),
+        (
+            "qualifications",
+            serde_json::json!(["a", "b", "c", "d", "e", "f", "g", "h", "i"]),
+        ),
+    ] {
+        let mut bad = base.clone();
+        bad["args"][field] = value;
+        assert!(
+            serde_json::from_value::<Command>(bad)
+                .unwrap()
+                .validate()
+                .is_err(),
+            "bound {field}"
+        );
+    }
+    let mut extra = base.clone();
+    extra["args"]["outcome"]["verified"] = true.into();
+    assert!(serde_json::from_value::<Command>(extra).is_err());
+    let result =
+        serde_json::json!({"kind":"harness_evidence_v2_recorded","data":{"verified":false}});
+    let decoded =
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(result.clone())
+            .unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), result);
+}
+#[test]
+fn v2_evidence_recorded_result_rejects_unknown_fields() {
+    let result = serde_json::json!({"kind":"harness_evidence_v2_recorded","data":{"verified":false,"native_proof":true}});
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(result).is_err(),
+        "strict v2 result cannot acquire native proof fields"
+    );
+}
+
+// Catches an unregistered health-v2 command, acceptance of arguments, or changed old bytes.
+#[test]
+fn health_v2_command_is_strict_and_preserves_frozen_health_commands() {
+    let parsed = serde_json::from_str::<herdr_threads::protocol::commands::Command>(
+        r#"{"kind":"harness_health_v2"}"#,
+    );
+    assert!(
+        parsed.is_ok(),
+        "implemented negotiated health command is missing: {parsed:?}"
+    );
+    assert_eq!(
+        serde_json::to_string(&parsed.unwrap()).unwrap(),
+        r#"{"kind":"harness_health_v2"}"#
+    );
+    for bad in [
+        r#"{"kind":"harness_health_v2","args":null}"#,
+        r#"{"kind":"harness_health_v2","args":{"unexpected":true}}"#,
+        r#"{"kind":"harness_health_v2","args":{}}"#,
+        r#"{"kind":"harness_health_v2","extra":true}"#,
+    ] {
+        let request = format!(
+            r#"{{"version":{},"request_id":"health-v2","expected_instance":"00000000-0000-4000-8000-000000000001","command":{bad}}}"#,
+            herdr_threads::protocol::wire::PROTOCOL_VERSION
+        );
+        assert!(
+            herdr_threads::protocol::wire::WireRequest::decode(request.as_bytes()).is_err(),
+            "accepted {bad}"
+        );
+    }
+    assert_eq!(
+        serde_json::to_string(&herdr_threads::protocol::commands::Command::Health).unwrap(),
+        r#"{"kind":"health"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&herdr_threads::protocol::commands::Command::HarnessStates).unwrap(),
+        r#"{"kind":"harness_states"}"#
+    );
+}
+
+fn health_v2_fixture() -> serde_json::Value {
+    serde_json::json!({"kind":"harness_health_v2","data":{"harnesses":{"claude":{
+        "scope":{"kind":"daemon_default","profile":null},
+        "installation":{"state":"present","detail":null},
+        "enablement":{"state":"unknown","detail":null},
+        "admission":{"state":"listed","detail":null},
+        "callback_observation":{"state":"unknown","detail":null},
+        "receipt_basis":"cooperative_top_level", "limitations":[], "notes":[],
+        "runtime_evidence":[], "unattributed":[], "hook_parse_failures":0
+    }}}})
+}
+
+// Catches absent report decoding and silently defaulted required-nullable fields.
+#[test]
+fn health_v2_report_requires_every_axis_and_explicit_null() {
+    let fixture = health_v2_fixture();
+    let parsed =
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(fixture.clone());
+    assert!(parsed.is_ok(), "health-v2 report missing: {parsed:?}");
+    assert_eq!(serde_json::to_value(parsed.unwrap()).unwrap(), fixture);
+    for path in [
+        "scope",
+        "installation",
+        "enablement",
+        "admission",
+        "callback_observation",
+    ] {
+        let field = if path == "scope" { "profile" } else { "detail" };
+        let mut bad = fixture.clone();
+        bad["data"]["harnesses"]["claude"][path]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err(),
+            "missing {path}.{field} accepted"
+        );
+    }
+}
+
+// Catches successful decoding of unbounded text/maps and undeclared nested fields.
+#[test]
+fn health_v2_report_rejects_unbounded_or_unknown_nested_values() {
+    let fixture = health_v2_fixture();
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(fixture.clone())
+            .is_ok(),
+        "missing report decoder"
+    );
+    for path in [
+        "scope",
+        "installation",
+        "enablement",
+        "admission",
+        "callback_observation",
+    ] {
+        let mut bad = fixture.clone();
+        bad["data"]["harnesses"]["claude"][path]["body"] = serde_json::json!("native content");
+        assert!(
+            serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err(),
+            "unknown {path} field accepted"
+        );
+    }
+    for field in ["limitations", "notes"] {
+        for value in [
+            serde_json::json!(["x".repeat(257)]),
+            serde_json::json!(vec!["note"; 17]),
+        ] {
+            let mut bad = fixture.clone();
+            bad["data"]["harnesses"]["claude"][field] = value;
+            assert!(
+                serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad)
+                    .is_err(),
+                "unbounded {field} accepted"
+            );
+        }
+    }
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["installation"]["detail"] =
+        serde_json::json!("x".repeat(257));
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["Bad/ID"] = fixture["data"]["harnesses"]["claude"].clone();
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err(),
+        "invalid map key accepted"
+    );
+}
+
+fn rich_runtime_wire_fixture() -> serde_json::Value {
+    let mut fixture = health_v2_fixture();
+    let identity = herdr_threads::harness::runtime::RuntimeIdentity::build(
+        herdr_threads::harness::runtime::RuntimeDescriptor {
+            release_version: Some("2.1.286".into()),
+            source: "fixture".into(),
+            base_version: None,
+            derived_version: None,
+            commit: None,
+            dirty: None,
+            distance: None,
+        },
+    )
+    .unwrap();
+    fixture["data"]["harnesses"]["claude"]["runtime_evidence"] = serde_json::json!([{"identity":identity,"domain":"native_payload","origin":"native_payload","contract_id":"0123456789abcdef","state":"new","source":"unverified exact domain","line":"new exact runtime","notes":[],"issue_url":null,"last_seen_at":1,"in_health_window":true,"scope":{"kind":"runtime_evidence_all_scopes","profile":null}}]);
+    fixture
+}
+
+// Catches omitted identity nulls, scope conflation, raw bodies and vector/text overflow.
+#[test]
+fn health_v2_runtime_rows_are_strict_required_nullable_and_bounded() {
+    let fixture = rich_runtime_wire_fixture();
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(fixture.clone())
+            .is_ok()
+    );
+    for field in [
+        "release_version",
+        "base_version",
+        "derived_version",
+        "commit",
+        "dirty",
+        "distance",
+    ] {
+        let mut bad = fixture.clone();
+        bad["data"]["harnesses"]["claude"]["runtime_evidence"][0]["identity"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err(),
+            "missing identity {field} accepted"
+        );
+    }
+    for field in ["issue_url", "scope"] {
+        let mut bad = fixture.clone();
+        bad["data"]["harnesses"]["claude"]["runtime_evidence"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+        );
+    }
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["runtime_evidence"][0]["scope"]["kind"] =
+        serde_json::json!("daemon_default");
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["runtime_evidence"][0]["body"] =
+        serde_json::json!("native payload");
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["runtime_evidence"] =
+        serde_json::json!(
+            vec![fixture["data"]["harnesses"]["claude"]["runtime_evidence"][0].clone(); 21]
+        );
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["unattributed"] = serde_json::json!(vec![
+        serde_json::json!({"domain":"native_payload","origin":"native_payload","reason":"missing attribution","at":1});
+        9
+    ]);
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+    let mut bad = fixture.clone();
+    bad["data"]["harnesses"]["claude"]["runtime_evidence"][0]["line"] =
+        serde_json::json!("x".repeat(257));
+    assert!(
+        serde_json::from_value::<herdr_threads::protocol::results::CommandResult>(bad).is_err()
+    );
+}
+
+// Catches Value normalization hiding duplicate fields in the new strict identity boundary.
+#[test]
+fn health_v2_runtime_identity_rejects_duplicate_fields() {
+    let valid = serde_json::to_string(&rich_runtime_wire_fixture()).unwrap();
+    let duplicate = valid.replace("\"dirty\":null", "\"dirty\":null,\"dirty\":null");
+    assert_ne!(
+        duplicate, valid,
+        "fixture must actually contain duplicate identity fields"
+    );
+    assert!(
+        serde_json::from_str::<herdr_threads::protocol::results::CommandResult>(&duplicate)
+            .is_err(),
+        "strict health identity accepted duplicate fields"
+    );
+}
+
+#[test]
+fn process_hint_mode_mismatch_rejects_correlation() {
+    use herdr_threads::ports::{
+        ConfiguredHook, CorrelatedStartup, HostCallContext, NativeLaunchRequest,
+    };
+    use herdr_threads::protocol::{
+        authority::Harness,
+        ids::{HostBootId, HostTargetId, SeatId, TerminalId},
+        time::{CallBudget, Cancellation, MonoInstant},
+    };
+    let request = NativeLaunchRequest {
+        process_hint: false,
+        seat: SeatId::new("seat_1"),
+        target: HostTargetId::new("pane_1"),
+        harness: Harness::Codex,
+        argv: vec!["original arg".into()],
+        configured_hook: ConfiguredHook {
+            scope: "project".into(),
+            path: "/owned/hook".into(),
+            fingerprint: "sha256:fixture".into(),
+        },
+        expected_terminal: TerminalId::new("term_1"),
+        expected_generation: 7,
+        expected_incarnation: "server_1".into(),
+        name_hint: Some("worker".into()),
+    };
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(100),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot_1")),
+        expected_epoch: Some(3),
+    };
+    let mut correlation = CorrelatedStartup {
+        process_hint: false,
+        seat: request.seat.clone(),
+        agent_name: "worker".into(),
+        harness: request.harness,
+        target: request.target.clone(),
+        terminal: request.expected_terminal.clone(),
+        expected_generation: 7,
+        expected_incarnation: "server_1".into(),
+        argv: request.argv.clone(),
+        host_boot: HostBootId::new("boot_1"),
+        epoch: 3,
+        submitted_at_mono: MonoInstant(1),
+        completed_at_mono: MonoInstant(2),
+    };
+    assert!(correlation.matches_request(&request, &context));
+    correlation.process_hint = true;
+    assert!(
+        !correlation.matches_request(&request, &context),
+        "transport mode disagreement was accepted"
+    );
+    correlation.process_hint = false;
+    assert!(correlation.matches_request(&request, &context));
+}
+
+#[test]
+fn task48_native_lexical_and_reserved_boundaries() {
+    use herdr_threads::ports::{
+        NativeLaunchRequest, validate_native_argv, validate_native_argv_with_reserved_bytes,
+    };
+    for argv in [
+        vec![],
+        vec![String::new()],
+        vec!["".into(), "opaque".into(), "".into(), "".into()],
+    ] {
+        let original = argv.clone();
+        validate_native_argv(&argv).unwrap();
+        assert_eq!(argv, original);
+    }
+    for argv in [
+        vec!["a\0b".into()],
+        vec!["a\rb".into()],
+        vec!["a\nb".into()],
+        vec!["".into(); 65],
+        vec!["x".repeat(16385)],
+        vec!["x".repeat(16384), "x".repeat(16384), "x".into()],
+    ] {
+        assert!(validate_native_argv(&argv).is_err());
+    }
+    let bound = NativeLaunchRequest::MAX_ARG_BYTES;
+    let exact = vec!["x".repeat(bound - 128), "x".repeat(bound)];
+    validate_native_argv_with_reserved_bytes(&exact, 0, 128).unwrap();
+    assert!(validate_native_argv_with_reserved_bytes(&exact, 0, 129).is_err());
+    assert!(validate_native_argv_with_reserved_bytes(&exact, 2, 0).is_err());
+    assert!(validate_native_argv_with_reserved_bytes(&exact, 0, usize::MAX).is_err());
+    assert!(validate_native_argv_with_reserved_bytes(&[], 0, 0).is_err());
+    let exact_prefix_suffix = vec![format!("--query={}suffix", "x".repeat(bound - 8 - 6))];
+    validate_native_argv(&exact_prefix_suffix).unwrap();
+    assert!(validate_native_argv_with_reserved_bytes(&exact_prefix_suffix, 0, 1).is_err());
+    validate_native_argv(&vec![String::new(); 64]).unwrap();
+    validate_native_argv(&["é".repeat(bound / 2)]).unwrap();
+    assert!(validate_native_argv(&["é".repeat(bound / 2 + 1)]).is_err());
+}
+
+#[test]
+fn task48_native_empty_data_retains_internal_field_fences() {
+    use herdr_threads::ports::{ConfiguredHook, NativeLaunchRequest};
+    use herdr_threads::protocol::{
+        authority::Harness,
+        ids::{HostTargetId, SeatId, TerminalId},
+    };
+    let original = NativeLaunchRequest {
+        process_hint: false,
+        seat: SeatId::new("seat"),
+        target: HostTargetId::new("pane"),
+        harness: Harness::Claude,
+        argv: vec![String::new()],
+        configured_hook: ConfiguredHook {
+            scope: "project".into(),
+            path: "/tmp/owned".into(),
+            fingerprint: "hash".into(),
+        },
+        expected_terminal: TerminalId::new("terminal"),
+        expected_generation: 1,
+        expected_incarnation: "incarnation".into(),
+        name_hint: None,
+    };
+    original.validate().unwrap();
+    for field in 0..4 {
+        for oversized in [false, true] {
+            let mut request = original.clone();
+            let (value, limit) = match field {
+                0 => (&mut request.expected_incarnation, 128),
+                1 => (&mut request.configured_hook.scope, 128),
+                2 => (&mut request.configured_hook.path, 1024),
+                _ => (&mut request.configured_hook.fingerprint, 256),
+            };
+            *value = if oversized {
+                "x".repeat(limit + 1)
+            } else {
+                String::new()
+            };
+            assert!(
+                request
+                    .validate()
+                    .unwrap_err()
+                    .contains("internal host or hook")
+            );
+        }
+    }
 }

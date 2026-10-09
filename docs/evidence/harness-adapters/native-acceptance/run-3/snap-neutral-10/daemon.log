@@ -1,0 +1,3 @@
+harness manifest: auto
+store startup binding evidence: backfilled 0, still lacking 0
+harness manifest: fetch failed: curl failed or timed out

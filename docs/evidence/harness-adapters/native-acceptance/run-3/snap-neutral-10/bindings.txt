@@ -1,0 +1,4 @@
+seat_id | generation | native_session | observation_provenance | registered_at | ended_at
+sOyZueIIm | 2 | launch:8c9c8f50-efad-421c-bc92-7a9f899d142e | managed_launch |  | 1791491628814
+sOyZueIIm | 3 | 20261008_133346_b76595 | cooperative_top_level | 1791491692529 | 
+snBYq4WCx | 2 | plugin_context:a519ed61-50f8-4bfd-9011-ef62125ebb34 | operator_human | 1791491684705 | 

@@ -72,6 +72,43 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
     ),
     (
         "src/harness/codex.rs",
+        "std::thread::sleep(Duration::from_millis(20))",
+        "SystemShellProbe's bounded child poll (SHELL_PROBE_TIMEOUT) inside \
+         one CLI launch/handoff call; runs in the CLI process, never the daemon",
+    ),
+    (
+        "src/harness/codex.rs",
+        ".recv_timeout(remaining.max(Duration::from_millis(100)))",
+        "SystemShellProbe's bounded read of the exited shell's stdout inside \
+         one CLI launch/handoff call; not periodic, not daemon code",
+    ),
+    (
+        "src/harness/hermes/runtime.rs",
+        "std::thread::sleep(Duration::from_millis(2))",
+        "one Hermes probe's bounded child poll (PROBE_LIMIT within the caller's \
+         budget) during setup/launch inspection, and its unit-test pidfile \
+         watcher; not a periodic daemon loop",
+    ),
+    (
+        "src/host/native.rs",
+        "thread::sleep(Duration::from_millis(2))",
+        "a unit-test fixture inside native.rs: the fake Herdr socket's accept \
+         loop waits for its listener; not daemon code",
+    ),
+    (
+        "src/harness/hermes/assets.rs",
+        "std::thread::sleep(std::time::Duration::from_secs(10))",
+        "unit-test lock_child: a spawned test process holds the profile lock \
+         until its parent test kills it; not daemon code",
+    ),
+    (
+        "src/harness/hermes/assets.rs",
+        "std::thread::sleep(std::time::Duration::from_millis(2))",
+        "unit test polling for lock_child's ready file for at most 2 s; not \
+         daemon code",
+    ),
+    (
+        "src/harness/codex.rs",
         "recv_timeout(remaining)",
         "bounded read of the `--version` child's stdout to the call deadline; \
          not periodic",

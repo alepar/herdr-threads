@@ -33,45 +33,36 @@
 //! The installed hook command is exactly the hook entrypoint's
 //! [`hook::installed_argv`], which its `parse_hook_argv` accepts.
 
-mod foreground;
+pub(crate) mod foreground;
 
 use super::{RunError, hook};
+#[cfg(test)]
+use crate::harness::{prompt_suggestion, setup::shell_command};
 use crate::{
-    daemon::paths::{RuntimeContext, ensure_owned_state_root, ensure_private_dir, instance_dir},
-    harness::{
-        claude, codex, codex_config,
-        context::Harness,
-        prompt_suggestion::{self, SuggestionState},
-        recipe,
-        setup::{
-            self as lib, AllowRuleInspection, AllowRuleOwnership, NativeObservation, SettingsKind,
-            SetupError, adopt_user_settings, adoptable_user_settings, inspect_user_settings,
-            inspect_user_settings_for, install_user_settings, read_settings_manifest,
-            remove_user_settings, shared_command, shell_command,
-        },
-    },
+    daemon::paths::RuntimeContext,
+    harness::{claude, codex, context::Harness},
     protocol::{
         output::{OutputFormat, OutputSpec},
         results::{ApiError, ErrorCode},
     },
 };
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::fs;
 use std::{
     ffi::OsString,
-    fs,
-    io::{self, Read, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
 
 /// Shared `--help` epilogue for the three setup commands.
 pub const SETUP_HELP: &str =
-    "No harness named: every harness. `setup` sets up every detected harness (each
-of claude and codex found on PATH) and prints one line per harness: installed, already
+    "No harness named: every registered harness. `setup` sets up every detected harness
+and prints one line per harness: installed, already
 installed or skipped (not on PATH);
-`unsetup` removes both recorded installations (on PATH or not); `setup-status` reports
-both. The Codex hook-trust reminder is printed once at the end. The exit status is that
+`unsetup` removes recorded installations (on PATH or not); `setup-status` reports
+every registered harness. The Codex hook-trust reminder is printed once at the end. The exit status is that
 of the first harness that failed; skipped harnesses are not failures.
 
 Scope (user level, like Herdr's own agent hooks):
@@ -90,6 +81,17 @@ Scope (user level, like Herdr's own agent hooks):
           owned values and refuses edited ownership records. Codex runs user hooks only once
           you trust them: the next interactive `codex` start lists them for review (or use
           /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.
+  hermes  Experimental; natively measured on 0.21.5 with a private Herdr build. Select
+          `setup hermes --profile NAME` (or explicit default when omitted). --profile
+          requires a named harness and is refused for bare multi-harness commands.
+          The captured official resolver selects lexical/physical HERMES_HOME; no
+          profile is created and a sticky active profile is not silently selected.
+          Installs owned plugin.yaml, __init__.py and bridge_config.json under the
+          selected home's plugins/herdr-threads. Enable manually with the printed
+          `hermes --profile NAME plugins enable herdr-threads` command and retain
+          native consent. Installed, configured enabled and native activation are
+          separate. Unsetup preserves foreign/modified assets and native YAML/enable
+          selection, reporting residue and manual disable guidance.
 
 Foreground agents (user-managed, read-only inspection): setup and setup-status report user
 settings and manual advice for both harnesses. Claude: merge `disableAgentView: true` into
@@ -150,6 +152,7 @@ pub enum SetupVerb {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetupRequest {
+    pub scope: crate::harness::adapter::SetupScopeRequest,
     pub verb: SetupVerb,
     pub harness: Harness,
     pub harness_binary: Option<String>,
@@ -171,35 +174,12 @@ pub enum PromptSuggestionPolicy {
     Keep,
 }
 
-/// Why setup offers to turn Claude's prompt suggestions off.
-pub const PROMPT_SUGGESTION_EXPLANATION: &str = "Claude Code shows a dim prompt suggestion in \
-its input box after every turn (on by default). herdr-threads cannot tell that suggestion from \
-text you typed, so it never sends a soft-deadline reminder (poke) into a Claude pane that shows \
-one; only the hard-deadline warning reaches it. With prompt suggestions off \
-(`promptSuggestionEnabled: false` in Claude's user settings), an idle Claude pane reads empty and \
-pokes reach it. unsetup reverts the setting if setup set it.";
-
-/// The non-interactive advice (nothing was changed).
-fn prompt_suggestion_advice(settings: &Path) -> String {
-    format!(
-        "{PROMPT_SUGGESTION_EXPLANATION} Prompt suggestions are on in {} and were left \
-         unchanged: re-run `herdr-threads setup claude --disable-prompt-suggestions` to turn them \
-         off (or turn off Prompt suggestions in Claude's /config), or pass \
-         --keep-prompt-suggestions to keep them without this note",
-        settings.display()
-    )
-}
-
 /// A person's pane identity (`me init`) has no hooks to set up.
 const NO_HUMAN_SETUP: &str =
     "setup manages agent hooks only; a person uses `herdr-threads me init`";
 
 fn harness_name(harness: Harness) -> &'static str {
-    match harness {
-        Harness::Claude => "claude",
-        Harness::Codex => "codex",
-        Harness::Human => "human",
-    }
+    harness.as_str()
 }
 
 fn api(code: ErrorCode, detail: impl Into<String>) -> RunError {
@@ -210,13 +190,11 @@ fn invalid(detail: impl Into<String>) -> RunError {
     api(ErrorCode::InvalidRequest, detail)
 }
 
-fn failed(detail: impl Into<String>) -> RunError {
-    RunError::Io(io::Error::other(detail.into()))
-}
-
 /// Everything the commands take from the process, injectable for tests.
 #[derive(Debug, Clone)]
 pub struct SetupEnv {
+    pub home: Option<OsString>,
+    pub declared_environment: std::collections::BTreeMap<String, OsString>,
     pub executable: PathBuf,
     pub state_dir: Option<PathBuf>,
     pub cwd: PathBuf,
@@ -354,14 +332,35 @@ pub fn detect_host_endpoint(inputs: &DetectInputs) -> Result<(PathBuf, String), 
     Ok((socket, "herdr status server".into()))
 }
 
+fn capture_declared_environment(
+    registry: &crate::harness::registry::Registry,
+) -> std::collections::BTreeMap<String, OsString> {
+    let names: std::collections::BTreeSet<_> = registry
+        .registrations()
+        .iter()
+        .flat_map(|registration| registration.setup_environment_inputs())
+        .copied()
+        .collect();
+    names
+        .into_iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| (name.into(), value)))
+        .collect()
+}
+
 impl SetupEnv {
     pub(crate) fn from_process(output: &OutputSpec) -> Result<Self, RunError> {
         let executable = std::env::current_exe()?.canonicalize()?;
         let path = std::env::var_os("PATH");
-        let inputs = super::instance::InstanceInputs::from_process(
+        let cwd = std::env::current_dir()?;
+        let declared_environment =
+            capture_declared_environment(crate::harness::registry::builtins());
+        let codex_override = std::env::var_os("CODEX_HOME");
+        let claude_override = std::env::var_os("CLAUDE_CONFIG_DIR");
+        let mut inputs = super::instance::InstanceInputs::from_process(
             output.context.state_dir.as_ref().map(PathBuf::from),
             output.context.host.as_ref().map(PathBuf::from),
         );
+        inputs.herdr = hook::resolve_on_path("herdr", path.as_deref());
         let mut source = serde_json::Map::new();
         let state_dir = match super::instance::resolve_state_dir(&inputs) {
             Ok((state, how)) => {
@@ -386,16 +385,16 @@ impl SetupEnv {
                 None
             }
         };
+        let home = inputs.home.as_ref().map(|home| home.as_os_str().to_owned());
         Ok(Self {
+            home: home.clone(),
+            declared_environment,
             executable,
             state_dir,
-            cwd: std::env::current_dir()?,
+            cwd,
             path,
-            codex_home: codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME")),
-            claude_config_dir: claude_config_dir_from(
-                std::env::var_os("CLAUDE_CONFIG_DIR"),
-                std::env::var_os("HOME"),
-            ),
+            codex_home: codex_home_from(codex_override, home.clone()),
+            claude_config_dir: claude_config_dir_from(claude_override, home.clone()),
             host_endpoint,
             instance_source: Value::Object(source),
         })
@@ -404,17 +403,20 @@ impl SetupEnv {
     /// The environment of a command that already resolved its runtime
     /// context (`doctor`): the instance is that context's.
     pub(crate) fn for_context(context: &RuntimeContext) -> Self {
+        let home = std::env::var_os("HOME");
         Self {
+            home: home.clone(),
+            declared_environment: capture_declared_environment(crate::harness::registry::builtins()),
             executable: std::env::current_exe()
                 .and_then(|path| path.canonicalize())
                 .unwrap_or_default(),
             state_dir: Some(context.state_dir.clone()),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             path: std::env::var_os("PATH"),
-            codex_home: codex_home_from(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME")),
+            codex_home: codex_home_from(std::env::var_os("CODEX_HOME"), home.clone()),
             claude_config_dir: claude_config_dir_from(
                 std::env::var_os("CLAUDE_CONFIG_DIR"),
-                std::env::var_os("HOME"),
+                home.clone(),
             ),
             host_endpoint: Some(context.host_endpoint.clone()),
             instance_source: json!({"state_dir": "context", "host_endpoint": "context"}),
@@ -473,14 +475,14 @@ impl SetupEnv {
         ))
     }
 
-    fn claude_settings(&self) -> Result<PathBuf, RunError> {
+    pub(crate) fn claude_settings(&self) -> Result<PathBuf, RunError> {
         self.claude_config_dir
             .as_ref()
             .map(|dir| dir.join("settings.json"))
             .ok_or_else(|| invalid("neither CLAUDE_CONFIG_DIR nor HOME is set"))
     }
 
-    fn codex_file(&self, name: &str) -> Result<PathBuf, RunError> {
+    pub(crate) fn codex_file(&self, name: &str) -> Result<PathBuf, RunError> {
         self.codex_home
             .as_ref()
             .map(|dir| dir.join(name))
@@ -496,16 +498,25 @@ pub fn run<W: Write>(
     let env = SetupEnv::from_process(output)?;
     let mut report = execute(request, &env)?;
     if request.verb == SetupVerb::Install
-        && request.harness == Harness::Claude
         && request.prompt_suggestions == PromptSuggestionPolicy::Ask
         && interactive()
     {
-        settle_prompt_suggestions(
-            &env,
-            &mut report,
-            &mut io::stdin().lock(),
-            &mut io::stderr(),
-        )?;
+        let registry = crate::harness::registry::builtins();
+        let registration = registry
+            .by_id(
+                registry
+                    .agent(request.harness.as_str())
+                    .map_err(|error| invalid(error.to_string()))?,
+            )
+            .map_err(|error| invalid(error.to_string()))?;
+        registration
+            .settle_setup_consent(
+                &env.snapshot(),
+                &mut report,
+                &mut io::stdin().lock(),
+                &mut io::stderr(),
+            )
+            .map_err(adapter_run_error)?;
     }
     let bytes = match output.format {
         OutputFormat::Json => {
@@ -522,36 +533,213 @@ pub fn run<W: Write>(
 }
 
 /// Run one setup command and return its report; errors carry the exit status.
+fn adapter_run_error(error: crate::harness::adapter::SetupFailure) -> RunError {
+    use crate::harness::adapter::SetupFailure;
+    match error {
+        SetupFailure::Api(e) => RunError::Api(e),
+        SetupFailure::Io(e) => RunError::Io(e),
+        other => invalid(other.to_string()),
+    }
+}
+impl SetupEnv {
+    pub(crate) fn from_snapshot(snapshot: &crate::harness::adapter::SetupEnvironment) -> Self {
+        Self {
+            home: snapshot.home.clone(),
+            declared_environment: snapshot.declared.clone(),
+            executable: snapshot.executable.clone(),
+            state_dir: snapshot.state_dir.clone(),
+            cwd: snapshot.cwd.clone(),
+            path: snapshot.path.clone(),
+            codex_home: snapshot.config_roots.get("codex").cloned(),
+            claude_config_dir: snapshot.config_roots.get("claude").cloned(),
+            host_endpoint: snapshot.host_endpoint.clone(),
+            instance_source: snapshot.instance_source.clone(),
+        }
+    }
+    pub fn snapshot(&self) -> crate::harness::adapter::SetupEnvironment {
+        let mut config_roots = std::collections::BTreeMap::new();
+        if let Some(root) = &self.codex_home {
+            config_roots.insert("codex".into(), root.clone());
+        }
+        if let Some(root) = &self.claude_config_dir {
+            config_roots.insert("claude".into(), root.clone());
+        }
+        crate::harness::adapter::SetupEnvironment {
+            clock: std::sync::Arc::new(crate::app::SystemClock::new()),
+            home: self.home.clone(),
+            executable: self.executable.clone(),
+            state_dir: self.state_dir.clone(),
+            cwd: self.cwd.clone(),
+            path: self.path.clone(),
+            host_endpoint: self.host_endpoint.clone(),
+            instance_source: self.instance_source.clone(),
+            config_roots,
+            declared: self.declared_environment.clone(),
+        }
+    }
+}
 pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
-    // A malformed argument is invalid (status 2), never an executable refusal.
-    harness_binary(request, env)?;
-    // A state directory left behind by an uninstalled plugin must not silently take new
-    // installations (unsetup, status and every other command keep working on it).
-    if request.verb == SetupVerb::Install
-        && request.harness != Harness::Human
-        && let Some(leftover) = env.instance_source["state_dir_leftover"].as_str()
+    let registry = crate::harness::registry::builtins();
+    if request.harness == Harness::Human {
+        return Err(invalid(NO_HUMAN_SETUP));
+    }
+    let registration = registry
+        .by_id(
+            registry
+                .agent(request.harness.as_str())
+                .map_err(|e| invalid(e.to_string()))?,
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+    let snapshot = env.snapshot();
+    let mut options = crate::harness::adapter::SetupOptions::new();
+    match request.prompt_suggestions {
+        PromptSuggestionPolicy::Disable => {
+            options.insert("disable-prompt-suggestions".into(), true);
+        }
+        PromptSuggestionPolicy::Keep => {
+            options.insert("keep-prompt-suggestions".into(), true);
+        }
+        _ => {}
+    }
+    execute_registered(
+        registration,
+        request.verb,
+        &request.scope,
+        request.harness_binary.as_deref().map(Path::new),
+        options,
+        &snapshot,
+    )
+}
+pub fn execute_registered(
+    registration: &crate::harness::registry::Registration,
+    verb: SetupVerb,
+    scope: &crate::harness::adapter::SetupScopeRequest,
+    native_binary: Option<&Path>,
+    options: crate::harness::adapter::SetupOptions,
+    environment: &crate::harness::adapter::SetupEnvironment,
+) -> Result<Value, RunError> {
+    execute_registered_with_expected_scope(
+        registration,
+        verb,
+        scope,
+        native_binary,
+        options,
+        environment,
+        None,
+    )
+}
+
+/// Installer reconciliation binds the final resolution to its inspected scope.
+pub(crate) fn execute_registered_with_expected_scope(
+    registration: &crate::harness::registry::Registration,
+    verb: SetupVerb,
+    scope: &crate::harness::adapter::SetupScopeRequest,
+    native_binary: Option<&Path>,
+    options: crate::harness::adapter::SetupOptions,
+    environment: &crate::harness::adapter::SetupEnvironment,
+    expected_scope: Option<&crate::harness::adapter::ResolvedSetupScope>,
+) -> Result<Value, RunError> {
+    use crate::harness::adapter::*;
+    crate::harness::setup::validate_local_request(
+        Some(registration),
+        verb == SetupVerb::Install,
+        scope,
+        &options,
+    )
+    .map_err(adapter_run_error)?;
+    if verb == SetupVerb::Install && !environment.executable.is_absolute() {
+        return Err(invalid("owned executable must be an absolute path"));
+    }
+    if let Some(binary) = native_binary {
+        if verb == SetupVerb::Remove {
+            return Err(invalid(
+                "--harness-binary is not used by unsetup: removal never depends on the harness version",
+            ));
+        }
+        if !binary.is_absolute() {
+            return Err(invalid("--harness-binary must be an absolute path"));
+        }
+    }
+    if registration.setup_environment_inputs().len() > 32
+        || environment.declared.len() > 32
+        || environment
+            .declared
+            .values()
+            .any(|value| value.len() > 16_384)
     {
-        return Err(invalid(format!("{leftover}; nothing was changed")));
+        return Err(invalid(
+            "declared adapter environment exceeds local request limits",
+        ));
     }
-    let mut report = match (request.harness, request.verb) {
-        (Harness::Claude, SetupVerb::Install) => claude_install(request, env),
-        (Harness::Claude, SetupVerb::Remove) => claude_remove(env),
-        (Harness::Claude, SetupVerb::Status) => claude_status(request, env),
-        (Harness::Codex, SetupVerb::Install) => codex_install(request, env),
-        (Harness::Codex, SetupVerb::Remove) => codex_remove(env),
-        (Harness::Codex, SetupVerb::Status) => codex_status(request, env),
-        (Harness::Human, _) => Err(api(ErrorCode::InvalidRequest, NO_HUMAN_SETUP)),
-    }?;
-    if request.verb != SetupVerb::Remove {
-        foreground::attach(&mut report, request.harness, env);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(
+            environment.clock.monotonic_now().0.saturating_add(30_000),
+        ),
+        cancellation: Default::default(),
+    };
+    let resolution = registration
+        .resolve_setup_scope_for(
+            &SetupScopeResolutionRequest {
+                operation: match verb {
+                    SetupVerb::Install => SetupScopeOperation::Install,
+                    SetupVerb::Remove => SetupScopeOperation::Remove,
+                    SetupVerb::Status => SetupScopeOperation::Status,
+                },
+                selector: scope,
+                native_binary,
+                environment,
+            },
+            &budget,
+        )
+        .map_err(adapter_run_error)?;
+    let scope = resolution.scope.clone();
+    if expected_scope.is_some_and(|expected| expected != &scope) {
+        return Err(invalid(
+            "installer scope changed after ownership inspection; preserved",
+        ));
     }
-    Ok(report)
+    match verb {
+        SetupVerb::Install => registration
+            .setup(
+                &crate::harness::adapter::SetupRequest {
+                    scope,
+                    executable: environment.executable.clone(),
+                    environment: environment.clone(),
+                    native_binary: native_binary.map(Path::to_path_buf),
+                    options,
+                },
+                &budget,
+            )
+            .map(|outcome| outcome.projection)
+            .map_err(adapter_run_error),
+        SetupVerb::Remove => registration
+            .unsetup_resolved(
+                &UnsetupRequest {
+                    scope,
+                    environment: environment.clone(),
+                },
+                &resolution,
+                &budget,
+            )
+            .map(|outcome| outcome.projection)
+            .map_err(adapter_run_error),
+        SetupVerb::Status => match registration.status(
+            &StatusRequest {
+                scope,
+                environment: environment.clone(),
+                native_binary: native_binary.map(Path::to_path_buf),
+            },
+            &budget,
+        ) {
+            SetupStatus::Detailed(status) => Ok(status.projection),
+            SetupStatus::Failed(error) => Err(adapter_run_error(error)),
+            SetupStatus::Unsupported(error) => Err(invalid(error.to_string())),
+            _ => Err(invalid("adapter did not provide local setup status")),
+        },
+    }
 }
 
 // -------------------------------------------------------------- all harnesses
-
-/// Every harness the bare commands cover, in report order.
-pub const HARNESSES: [Harness; 2] = [Harness::Claude, Harness::Codex];
 
 /// `setup`, `unsetup` or `setup-status` with no harness named: the per-harness
 /// summary is rendered, then a nonzero status is returned (as
@@ -567,19 +755,27 @@ pub fn run_all<W: Write>(
     if verb == SetupVerb::Install
         && prompt_suggestions == PromptSuggestionPolicy::Ask
         && interactive()
-        && let Some(entry) = report["harnesses"].as_array_mut().and_then(|entries| {
-            entries
-                .iter_mut()
-                .find(|entry| entry["harness"] == "claude")
-        })
-        && entry["report"].is_object()
+        && let Some(entries) = report["harnesses"].as_array_mut()
     {
-        settle_prompt_suggestions(
-            &env,
-            &mut entry["report"],
-            &mut io::stdin().lock(),
-            &mut io::stderr(),
-        )?;
+        for entry in entries {
+            if !entry["report"].is_object() {
+                continue;
+            }
+            let registry = crate::harness::registry::builtins();
+            if let Some(name) = entry["harness"].as_str()
+                && let Ok(id) = registry.agent(name)
+                && let Ok(registration) = registry.by_id(id)
+            {
+                registration
+                    .settle_setup_consent(
+                        &env.snapshot(),
+                        &mut entry["report"],
+                        &mut io::stdin().lock(),
+                        &mut io::stderr(),
+                    )
+                    .map_err(adapter_run_error)?;
+            }
+        }
     }
     let bytes = match output.format {
         OutputFormat::Json => {
@@ -626,63 +822,125 @@ fn verb_name(verb: SetupVerb) -> &'static str {
 ///   or not the harness is still on PATH (removal never depends on it).
 /// - `setup-status` reports both harnesses.
 ///
-/// `exit_status` is that of the first harness that `failed`, else 0. An
-/// undetectable Herdr instance is refused up front (status 2) whenever a
-/// harness would be written.
+/// `exit_status` is that of the first harness that `failed`, else 0. Each
+/// provider enforces its own local requirements before writing its files.
 pub fn execute_all(
     verb: SetupVerb,
     prompt_suggestions: PromptSuggestionPolicy,
     env: &SetupEnv,
 ) -> Result<Value, RunError> {
-    let found: Vec<(Harness, Option<PathBuf>)> = HARNESSES
+    execute_all_registered(
+        crate::harness::registry::builtins(),
+        verb,
+        prompt_suggestions,
+        &env.snapshot(),
+    )
+}
+
+pub fn execute_all_registered(
+    registry: &crate::harness::registry::Registry,
+    verb: SetupVerb,
+    prompt_suggestions: PromptSuggestionPolicy,
+    snapshot: &crate::harness::adapter::SetupEnvironment,
+) -> Result<Value, RunError> {
+    let env = &SetupEnv::from_snapshot(snapshot);
+    let found: Vec<(
+        &crate::harness::registry::Registration,
+        Harness,
+        Option<PathBuf>,
+    )> = registry
+        .registrations()
         .iter()
-        .map(|&harness| {
+        .map(|registration| {
+            let harness = crate::harness::registry::OccupantHarness::Agent(
+                registry
+                    .agent(registration.metadata().id)
+                    .expect("validated registry identity"),
+            )
+            .into();
             (
+                registration,
                 harness,
-                hook::resolve_on_path(harness_name(harness), env.path.as_deref()),
+                match registration.metadata().executable {
+                    crate::harness::adapter::ExecutableLookup::Path(name) => {
+                        hook::resolve_on_path(name, env.path.as_deref())
+                    }
+                    _ => None,
+                },
             )
         })
         .collect();
-    match verb {
-        SetupVerb::Install if found.iter().any(|(_, binary)| binary.is_some()) => {
-            env.hook_argv(Harness::Claude)?;
-        }
-        SetupVerb::Remove => {
-            env.state_dir()?;
-        }
-        _ => {}
-    }
     let mut entries = Vec::new();
     let mut exit_status = 0;
-    let mut trust_reminder = false;
-    for (harness, binary) in found {
+    let mut trust_reminder = Value::Null;
+    let mut trust_reminders = Vec::new();
+    for (registration, harness, binary) in found {
         let name = harness_name(harness);
         let mut entry = json!({"harness": name, "detected": binary.is_some()});
+        if registration
+            .metadata()
+            .setup_scopes
+            .iter()
+            .any(|scope| matches!(scope, crate::harness::adapter::SetupScopeKind::Profile))
+        {
+            entry["outcome"] = json!("skipped");
+            entry["reason"] = json!("requires explicit harness selection for a profile scope");
+            entries.push(entry);
+            continue;
+        }
+        if !registration
+            .metadata()
+            .setup_scopes
+            .iter()
+            .any(|scope| matches!(scope, crate::harness::adapter::SetupScopeKind::ConfigRoot))
+        {
+            entry["outcome"] = json!("skipped");
+            entry["reason"] = json!("local setup unavailable");
+            entries.push(entry);
+            continue;
+        }
         if verb == SetupVerb::Install && binary.is_none() {
             entry["outcome"] = json!("skipped");
             entry["reason"] = json!(format!("no executable `{name}` on PATH"));
             entries.push(entry);
             continue;
         }
-        let request = SetupRequest {
+        let mut options = crate::harness::adapter::SetupOptions::new();
+        for option in registration.setup_options() {
+            let enabled = match option.name {
+                "disable-prompt-suggestions" => {
+                    prompt_suggestions == PromptSuggestionPolicy::Disable
+                }
+                "keep-prompt-suggestions" => prompt_suggestions == PromptSuggestionPolicy::Keep,
+                _ => false,
+            };
+            if enabled {
+                options.insert(option.name.into(), true);
+            }
+        }
+        match execute_registered(
+            registration,
             verb,
-            harness,
-            harness_binary: None,
-            prompt_suggestions,
-        };
-        match execute(&request, env) {
+            &Default::default(),
+            None,
+            options,
+            snapshot,
+        ) {
             Ok(mut report) => {
                 entry["outcome"] = match verb {
                     SetupVerb::Status => json!("status"),
                     _ => report["action"].clone(),
                 };
-                if harness == Harness::Codex
-                    && verb == SetupVerb::Install
+                if verb == SetupVerb::Install
                     && let Some(trust) = report["trust"].as_object_mut()
                 {
-                    // Printed once for the whole run (`trust_reminder`).
-                    trust.remove("note");
-                    trust_reminder = true;
+                    // Preserve the producer; the scalar is Codex compatibility only.
+                    if let Some(note) = trust.remove("note") {
+                        if name == "codex" {
+                            trust_reminder = note.clone();
+                        }
+                        trust_reminders.push(json!({"harness": name, "note": note}));
+                    }
                 }
                 entry["report"] = report;
             }
@@ -709,13 +967,13 @@ pub fn execute_all(
             SetupVerb::Status => "status",
         }),
         "harnesses": entries,
-        "trust_reminder": if trust_reminder { json!(CODEX_TRUST_NOTE) } else { Value::Null },
+        "trust_reminder": trust_reminder,
+        "trust_reminders": trust_reminders,
         "exit_status": exit_status,
     }))
 }
 
-/// One summary line per harness, its warnings, then the Codex trust
-/// reminder once.
+/// One summary line per harness, its warnings, then each provider's trust advice once.
 pub fn render_all_text(report: &Value) -> String {
     let mut out = String::new();
     let mut warnings = Vec::new();
@@ -806,7 +1064,22 @@ pub fn render_all_text(report: &Value) -> String {
     if report["action"] == "install_all" {
         out.push_str("installed is not observed: run `herdr-threads doctor` for native evidence\n");
     }
-    if let Some(note) = report["trust_reminder"].as_str() {
+    if let Some(reminders) = report["trust_reminders"].as_array() {
+        for reminder in reminders {
+            if let Some(note) = reminder["note"].as_str() {
+                let prefix = if reminder["harness"] == "codex" {
+                    "codex hook trust".to_owned()
+                } else {
+                    format!("{} setup trust", scalar(&reminder["harness"]))
+                };
+                out.push_str(&format!("{prefix}: {}\n", scalar(&json!(note))));
+            }
+        }
+    } else if !report
+        .as_object()
+        .is_some_and(|report| report.contains_key("trust_reminders"))
+        && let Some(note) = report["trust_reminder"].as_str()
+    {
         out.push_str(&format!("codex hook trust: {}\n", scalar(&json!(note))));
     }
     out
@@ -814,710 +1087,10 @@ pub fn render_all_text(report: &Value) -> String {
 
 // ----------------------------------------------------- executable selection
 
-fn harness_binary(request: &SetupRequest, env: &SetupEnv) -> Result<Option<PathBuf>, RunError> {
-    match &request.harness_binary {
-        Some(binary) => {
-            let binary = PathBuf::from(binary);
-            if !binary.is_absolute() {
-                return Err(invalid("--harness-binary must be an absolute path"));
-            }
-            Ok(Some(binary))
-        }
-        None => Ok(hook::resolve_on_path(
-            harness_name(request.harness),
-            env.path.as_deref(),
-        )),
-    }
-}
-
-/// Executable selection and declared contract, without runtime metadata.
-#[derive(Debug, Clone)]
-pub(crate) struct Observed {
-    pub(crate) binary: PathBuf,
-    pub(crate) version: Option<String>,
-    pub(crate) recipe: &'static str,
-}
-
-/// Resolve the selected wrapper without invoking it. The handle declares only
-/// the registered input/setup contract, not runtime support or native delivery.
-pub(crate) fn observe(
-    request: &SetupRequest,
-    env: &SetupEnv,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
-    use crate::harness::operational::{ClaudeContract, CodexContract};
-    let name = harness_name(request.harness);
-    let binary = harness_binary(request, env)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("no executable `{name}` on PATH; pass --harness-binary"))?;
-    use std::os::unix::fs::PermissionsExt;
-    if !fs::metadata(&binary)
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-    {
-        return Err(format!("{} is not an executable file", binary.display()));
-    }
-    let (recipe, contract) = match request.harness {
-        Harness::Claude => {
-            let _contract = ClaudeContract::registered();
-            ("claude-hooks-2.1.283", None)
-        }
-        Harness::Codex => ("codex-hooks-v1", Some(CodexContract::registered())),
-        Harness::Human => return Err(NO_HUMAN_SETUP.to_owned()),
-    };
-    Ok((
-        Observed {
-            binary,
-            version: None,
-            recipe,
-        },
-        contract,
-    ))
-}
-
-fn observation_json(
-    result: &Result<(Observed, Option<crate::harness::operational::CodexContract>), String>,
-) -> Value {
-    match result {
-        Ok((observed, _)) => json!({
-            "admission": "contract_declared",
-            "binary": observed.binary.display().to_string(),
-            "version": observed.version,
-            "recipe": observed.recipe,
-        }),
-        Err(refusal) => json!({"admission": "unavailable", "version": null, "refusal": refusal}),
-    }
-}
-
-pub(crate) fn refuse_executable(refusal: String) -> RunError {
-    api(ErrorCode::UnsupportedHarness, refusal)
-}
-
-// ------------------------------------------------------------ owned files
-
-/// Claude's config directory: a non-empty `CLAUDE_CONFIG_DIR`, else
-/// `$HOME/.claude`.
-pub fn claude_config_dir_from(
-    config_dir: Option<OsString>,
-    home: Option<OsString>,
-) -> Option<PathBuf> {
-    match config_dir.filter(|value| !value.is_empty()) {
-        Some(value) => Some(PathBuf::from(value)),
-        None => home
-            .filter(|value| !value.is_empty())
-            .map(|home| PathBuf::from(home).join(".claude")),
-    }
-}
-
-/// Ownership-manifest location for one owned file: private plugin state,
-/// keyed by the file's path, never beside the file.
-pub fn manifest_path(state_dir: &Path, kind: &str, file: &Path) -> PathBuf {
-    let digest = format!("{:x}", Sha256::digest(file.as_os_str().as_encoded_bytes()));
-    state_dir
-        .join("setup")
-        .join(format!("{kind}-{}.json", &digest[..32]))
-}
-
-/// Records files (and their directory) setup created, so unsetup can delete
-/// exactly those when they are back to their created state. Kept beside the
-/// manifest.
-fn created_marker_path(manifest: &Path) -> PathBuf {
-    manifest.with_extension("created.json")
-}
-
-/// One file setup may create: its path, the bytes it is created with, and
-/// whether this invocation created it or its directory.
-struct OwnedFile {
-    path: PathBuf,
-    manifest: PathBuf,
-    initial: &'static [u8],
-    created_dir: bool,
-    created_file: bool,
-}
-
-impl OwnedFile {
-    fn new(path: PathBuf, manifest: PathBuf, initial: &'static [u8]) -> Self {
-        Self {
-            path,
-            manifest,
-            initial,
-            created_dir: false,
-            created_file: false,
-        }
-    }
-
-    /// Create the file (and one missing directory level) with its initial
-    /// bytes when absent. A non-directory parent refuses.
-    fn prepare(&mut self) -> Result<(), RunError> {
-        let dir = self.path.parent().expect("owned file parent");
-        match fs::symlink_metadata(dir) {
-            Ok(meta) if !meta.is_dir() && !fs::metadata(dir).is_ok_and(|m| m.is_dir()) => {
-                return Err(invalid(format!(
-                    "{} exists but is not a directory",
-                    dir.display()
-                )));
-            }
-            Ok(_) => (),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir(dir).map_err(|error| {
-                    invalid(format!("could not create {}: {error}", dir.display()))
-                })?;
-                self.created_dir = true;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        match fs::symlink_metadata(&self.path) {
-            Ok(_) => (),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&self.path)?
-                    .write_all(self.initial)?;
-                self.created_file = true;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        Ok(())
-    }
-
-    /// Undo what [`prepare`](Self::prepare) created, unless a manifest now
-    /// refers to it (a recorded preparation resumes).
-    fn undo(&self) {
-        if self.manifest.exists() {
-            return;
-        }
-        if self.created_file && fs::read(&self.path).is_ok_and(|b| b == self.initial) {
-            let _ = fs::remove_file(&self.path);
-        }
-        if self.created_dir
-            && let Some(dir) = self.path.parent()
-        {
-            let _ = fs::remove_dir(dir);
-        }
-    }
-
-    /// Record what was created; a warning when the record cannot be kept.
-    fn record(&self, warnings: &mut Vec<String>) {
-        if !(self.created_file || self.created_dir) {
-            return;
-        }
-        let marker =
-            json!({"settings_created": self.created_file, "dir_created": self.created_dir});
-        let result = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode_private()
-            .open(created_marker_path(&self.manifest))
-            .and_then(|mut file| file.write_all(marker.to_string().as_bytes()));
-        if result.is_err() {
-            warnings.push(format!(
-                "could not record that setup created {}; unsetup will leave it",
-                self.path.display()
-            ));
-        }
-    }
-}
-
-/// After removal: delete a file setup created once it is back to its
-/// created bytes (and its directory when setup created it and it is empty).
-fn delete_created(path: &Path, manifest: &Path, initial: &[u8]) -> bool {
-    let marker_path = created_marker_path(manifest);
-    let mut deleted = false;
-    if let Ok(bytes) = fs::read(&marker_path) {
-        let marker: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        if marker["settings_created"] == json!(true)
-            && fs::read(path).is_ok_and(|b| b == initial)
-            && fs::remove_file(path).is_ok()
-        {
-            deleted = true;
-            if marker["dir_created"] == json!(true)
-                && let Some(dir) = path.parent()
-            {
-                // Only an empty directory is removed.
-                let _ = fs::remove_dir(dir);
-            }
-        }
-        let _ = fs::remove_file(&marker_path);
-    }
-    deleted
-}
-
-trait PrivateMode {
-    fn mode_private(&mut self) -> &mut Self;
-}
-impl PrivateMode for fs::OpenOptions {
-    fn mode_private(&mut self) -> &mut Self {
-        use std::os::unix::fs::OpenOptionsExt;
-        self.mode(0o600)
-    }
-}
-
-/// The state directory, made ready to hold setup manifests.
-fn prepare_state(env: &SetupEnv) -> Result<&Path, RunError> {
-    let state = env.state_dir()?;
-    // A detected state directory follows Herdr's plugin state layout, whose
-    // parents Herdr creates on the plugin's first action: create them if
-    // setup runs first. An explicit one must already have its parent.
-    if env.instance_source["state_dir"]
-        .as_str()
-        .is_some_and(|source| source.starts_with("herdr plugin list"))
-        && let Some(parent) = state.parent()
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
-    }
-    ensure_owned_state_root(state)?;
-    ensure_private_dir(&state.join("setup"))?;
-    Ok(state)
-}
-
-fn settings_error(
-    error: SetupError,
-    verb: SetupVerb,
-    kind: SettingsKind,
-    settings: &Path,
-    manifest: &Path,
-) -> RunError {
-    let settings = settings.display();
-    let harness = kind.harness();
-    match (error, verb) {
-        (SetupError::Invalid, _) => invalid(format!(
-            "{settings} is not a JSON object with an object `hooks` (and, for Claude, \
-             `permissions` with an array `allow`), or it or the ownership manifest is a symlink \
-             or damaged; nothing was changed"
-        )),
-        (SetupError::TooLarge, _) => invalid(format!(
-            "{settings} or its ownership manifest exceeds the setup size bound; nothing was changed"
-        )),
-        (SetupError::Conflict, SetupVerb::Remove) => api(
-            ErrorCode::Conflict,
-            format!(
-                "the owned herdr-threads hook groups in {settings} were edited or removed, or the \
-                 file changed during removal; nothing was changed. Restore the groups or remove \
-                 them by hand, then delete the manifest {}",
-                manifest.display()
-            ),
-        ),
-        (SetupError::Conflict, _) => api(
-            ErrorCode::Conflict,
-            format!(
-                "refused to install into {settings}: it changed during setup, already holds an \
-                 unowned identical herdr-threads hook, holds an edited owned hook{rule}, or an \
-                 existing installation uses a different hook command (executable, state \
-                 directory or Herdr instance). Run `herdr-threads unsetup {harness}` (or remove \
-                 the unowned hook) and set up again; nothing was changed",
-                rule = if kind == SettingsKind::ClaudeUser {
-                    format!(
-                        ", lacks the recorded permission allow rule `{}` (removed by hand)",
-                        claude::HERDR_THREADS_ALLOW_RULE
-                    )
-                } else {
-                    String::new()
-                }
-            ),
-        ),
-        (SetupError::Io, _) => failed(format!(
-            "could not read or replace {settings} or its ownership manifest; if a manifest was \
-             recorded, re-run the same command to resume"
-        )),
-    }
-}
-
-fn adopted_warning(kind: SettingsKind, file: &Path, owner: &str) -> String {
-    format!(
-        "{} already held the herdr-threads hook groups of another setup (owner marker {owner}, \
-         e.g. a copied {}); they were adopted in place and the file was not changed{}. \
-         `herdr-threads unsetup {}` here removes only these groups from this file",
-        file.display(),
-        kind.file_name(),
-        if kind == SettingsKind::CodexUser {
-            ", so Codex's recorded trust for them stays valid"
-        } else {
-            ""
-        },
-        kind.harness()
-    )
-}
-
-fn adoption_json(adoption: Option<&lib::Adoption>) -> Value {
-    match adoption {
-        None => Value::Null,
-        Some(adoption) => json!({
-            "owner": adoption.owner,
-            "recorded": adoption.recorded,
-            "note": if adoption.recorded {
-                "the owned groups carry another setup's owner marker; this file's manifest \
-                 adopted them in place"
-            } else {
-                "the groups carry another setup's owner marker and match this command exactly \
-                 (a copied hook file); `setup` adopts them without changing the file"
-            },
-        }),
-    }
-}
-
-/// With no manifest for this file, adopt another setup's exact groups so `unsetup` can remove
-/// them; `None` when nothing is adoptable (or the hook command cannot be resolved).
-fn adopt_for_removal(
-    kind: SettingsKind,
-    env: &SetupEnv,
-    file: &Path,
-    manifest: &Path,
-) -> Result<Option<lib::OwnershipManifest>, RunError> {
-    let map = |e| settings_error(e, SetupVerb::Remove, kind, file, manifest);
-    let Ok(argv) = env.hook_argv(match kind {
-        SettingsKind::ClaudeUser => Harness::Claude,
-        SettingsKind::CodexUser => Harness::Codex,
-    }) else {
-        return Ok(None);
-    };
-    // An unreadable or unparsable file has nothing adoptable: unsetup reports not installed.
-    if !matches!(adoptable_user_settings(kind, file, &argv), Ok(Some(_))) {
-        return Ok(None);
-    }
-    prepare_state(env)?;
-    adopt_user_settings(kind, file, manifest, &argv).map_err(map)
-}
-
-/// The recorded hook command shared by every owned group: the base command, without the
-/// `--event <event>` pair each group registers it with.
-fn recorded_command(manifest: &Path) -> Option<String> {
-    shared_command(&read_settings_manifest(manifest).ok().flatten()?.owned)
-}
-
-/// Setup output when a recorded registration without `--event` is rewritten to the per-event form.
-const EVENT_DOWNGRADE_WARNING: &str = "the hook commands now carry --event; a herdr-threads build \
-     from before per-event registration rejects them, so to downgrade herdr-threads first run \
-     `herdr-threads unsetup <harness>` with this build";
-
-/// Codex trusts hooks by hash, so rewritten commands need review again.
-const CODEX_RETRUST_WARNING: &str = "Codex trusts hooks by hash: the rewritten hook commands need \
-     review again (the next interactive `codex` start, or /hooks) before Codex runs them";
-
-/// Install the owned hook groups into one user-level hook file.
-fn install_settings(
-    kind: SettingsKind,
-    verb: SetupVerb,
-    env: &SetupEnv,
-    file: &mut OwnedFile,
-    warnings: &mut Vec<String>,
-) -> Result<(lib::OwnershipManifest, bool, bool), RunError> {
-    let argv = env.hook_argv(match kind {
-        SettingsKind::ClaudeUser => Harness::Claude,
-        SettingsKind::CodexUser => Harness::Codex,
-    })?;
-    let (path, manifest) = (file.path.clone(), file.manifest.clone());
-    let map = |error| settings_error(error, verb, kind, &path, &manifest);
-    let recorded = read_settings_manifest(&file.manifest).map_err(map)?;
-    let before = recorded
-        .is_some()
-        .then(|| {
-            inspect_user_settings(kind, &file.path, &file.manifest, NativeObservation::Unknown).ok()
-        })
-        .flatten();
-    let already = before
-        .as_ref()
-        .is_some_and(|inspection| inspection.installed);
-    let legacy = before
-        .as_ref()
-        .is_some_and(|inspection| inspection.legacy_event_registration);
-    if recorded.is_none() {
-        file.prepare()?;
-    }
-    let base = match &recorded {
-        Some(recorded) => recorded.original_bytes.clone(),
-        None => fs::read(&file.path)
-            .map_err(|error| failed(format!("could not read {}: {error}", file.path.display())))?,
-    };
-    match install_user_settings(kind, &file.path, &file.manifest, &argv, &base) {
-        Ok(installed) => {
-            file.record(warnings);
-            if legacy {
-                let harness = kind.harness();
-                warnings.push(EVENT_DOWNGRADE_WARNING.replace("<harness>", harness));
-                if kind == SettingsKind::CodexUser {
-                    warnings.push(CODEX_RETRUST_WARNING.to_owned());
-                }
-            }
-            // Adopted now: this run recorded another setup's groups in place, writing no hook.
-            let adopted = recorded.is_none() && installed.adopted;
-            if adopted {
-                warnings.push(adopted_warning(
-                    kind,
-                    &file.path,
-                    &installed.installation_id,
-                ));
-            }
-            Ok((installed, already, adopted))
-        }
-        Err(error) => {
-            file.undo();
-            if error == SetupError::Conflict
-                && let Some(moved) = moved_binary_conflict(kind, &path, recorded.as_ref(), &argv)
-            {
-                return Err(moved);
-            }
-            Err(map(error))
-        }
-    }
-}
-
-/// The first word of a hook command built by `shell_command` (single-quoted, an embedded
-/// quote written `'\''`).
-fn first_shell_word(command: &str) -> Option<String> {
-    let mut chars = command.strip_prefix('\'')?.chars().peekable();
-    let mut word = String::new();
-    while let Some(c) = chars.next() {
-        if c != '\'' {
-            word.push(c);
-        } else if chars.clone().take(3).eq("\\''".chars()) {
-            chars.nth(2);
-            word.push('\'');
-        } else {
-            return Some(word);
-        }
-    }
-    None
-}
-
-/// A re-setup refused because the recorded hook command names another executable than this
-/// one (the binary was moved, reinstalled elsewhere or run from a copy): the generic conflict
-/// message lists causes such as hand removal, which misleads here. Names both paths and the fix.
-fn moved_binary_conflict(
-    kind: SettingsKind,
-    file: &Path,
-    recorded: Option<&lib::OwnershipManifest>,
-    argv: &[String],
-) -> Option<RunError> {
-    let recorded_command = recorded?.owned.first()?.group["hooks"][0]["command"].as_str()?;
-    let recorded_exe = first_shell_word(recorded_command)?;
-    let current_exe = argv.first()?;
-    if &recorded_exe == current_exe {
-        return None;
-    }
-    let harness = kind.harness();
-    Some(api(
-        ErrorCode::Conflict,
-        format!(
-            "{} already holds the herdr-threads hooks of an installation that runs \
-             `{recorded_exe}`, but this is `{current_exe}` (the binary moved, or this is another \
-             copy). Run `herdr-threads unsetup {harness}` (from either binary: it removes the \
-             recorded groups whatever executable they name), then `herdr-threads setup \
-             {harness}` from the binary you want to keep; nothing was changed",
-            file.display()
-        ),
-    ))
-}
-
-// ------------------------------------------------------------------ claude
-
-fn claude_manifest(env: &SetupEnv, settings: &Path) -> Result<PathBuf, RunError> {
-    Ok(manifest_path(env.state_dir()?, "claude-user", settings))
-}
-
-/// The user-level Claude installation's file and manifest paths.
-pub fn claude_paths(env: &SetupEnv) -> Result<(PathBuf, PathBuf), RunError> {
-    let settings = env.claude_settings()?;
-    let manifest = claude_manifest(env, &settings)?;
-    Ok((settings, manifest))
-}
-
-fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
-    let settings = env.claude_settings()?;
-    env.hook_argv(Harness::Claude)?;
-    let (observed, _) = observe(request, env).map_err(refuse_executable)?;
-    prepare_state(env)?;
-    let manifest = claude_manifest(env, &settings)?;
-    let mut file = OwnedFile::new(settings.clone(), manifest.clone(), b"{}");
-    let mut warnings = Vec::new();
-    let (installed, already, adopted) = install_settings(
-        SettingsKind::ClaudeUser,
-        request.verb,
-        env,
-        &mut file,
-        &mut warnings,
-    )?;
-    let allow_rule = inspect_user_settings(
-        SettingsKind::ClaudeUser,
-        &settings,
-        &manifest,
-        NativeObservation::Unknown,
-    )
-    .ok()
-    .and_then(|inspection| inspection.allow_rule);
-    let command = shared_command(&installed.owned).unwrap_or_default();
-    let prompt_suggestions =
-        prompt_suggestion_step(request.prompt_suggestions, env, &settings, &mut warnings)?;
-    Ok(json!({
-        "action": if adopted { "adopted" } else if already { "already_installed" } else { "installed" },
-        "adopted": installed.adopted.then(|| installed.installation_id.clone()),
-        "harness": "claude",
-        "scope": "user",
-        "settings": settings.display().to_string(),
-        "manifest": manifest.display().to_string(),
-        "created_settings": file.created_file,
-        "instance": instance_json(env),
-        "hook_argv": env.hook_argv(Harness::Claude)?,
-        "command": command,
-        "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
-        "allow_rule": allow_rule_json(allow_rule.as_ref()),
-        "harness_version": observation_json(&Ok((observed, None))),
-        "prompt_suggestions": prompt_suggestions,
-        "observed": "unknown",
-        "note": "installed is not observed: run `herdr-threads doctor` for native evidence. \
-                 Claude sessions that run with another CLAUDE_CONFIG_DIR, or with \
-                 --setting-sources excluding `user`, do not load these hooks",
-        "warnings": warnings,
-    }))
-}
-
-/// Report form of the recorded allow rule; `null` when no manifest is recorded.
-pub fn allow_rule_json(allow_rule: Option<&AllowRuleInspection>) -> Value {
-    match allow_rule {
-        None => Value::Null,
-        Some(rule) => {
-            let mut report = json!({
-                "rule": rule.rule,
-                "ownership": match rule.ownership {
-                    AllowRuleOwnership::Owned => "owned",
-                    AllowRuleOwnership::PreExisting => "pre_existing",
-                    AllowRuleOwnership::NotRecorded => "not_recorded",
-                    AllowRuleOwnership::Superseded => "superseded",
-                },
-                "present": rule.present,
-            });
-            if rule.ownership == AllowRuleOwnership::Superseded {
-                report["note"] = json!(format!(
-                    "recorded with the retired rule `{}`; re-run `herdr-threads setup claude` to \
-                     replace it with `{}`",
-                    claude::CALLER_CONTEXT_ALLOW_RULE,
-                    rule.rule
-                ));
-            }
-            report
-        }
-    }
-}
-
-/// Where setup records that it set Claude's prompt-suggestion key.
-pub fn prompt_suggestion_manifest(env: &SetupEnv, settings: &Path) -> Result<PathBuf, RunError> {
-    Ok(manifest_path(
-        env.state_dir()?,
-        "claude-prompt-suggestion",
-        settings,
-    ))
-}
-
-fn prompt_suggestion_error(error: SetupError, settings: &Path) -> RunError {
-    let settings = settings.display();
-    match error {
-        SetupError::Invalid => invalid(format!(
-            "{settings} is not a JSON object, or the prompt-suggestion record is a symlink or \
-             damaged; prompt suggestions were not changed"
-        )),
-        SetupError::TooLarge => invalid(format!(
-            "{settings} or the prompt-suggestion record exceeds the setup size bound; prompt \
-             suggestions were not changed"
-        )),
-        SetupError::Conflict => api(
-            ErrorCode::Conflict,
-            format!(
-                "{settings} changed while setup edited `{}`, or the prompt-suggestion record \
-                 names another file; prompt suggestions were not changed. Re-run the command",
-                claude::PROMPT_SUGGESTION_SETTING
-            ),
-        ),
-        SetupError::Io => failed(format!(
-            "could not read or replace {settings} or the prompt-suggestion record"
-        )),
-    }
-}
-
-/// The report form of the prompt-suggestion setting after `action`.
-fn prompt_suggestion_json(state: SuggestionState, action: &str, recorded: bool) -> Value {
-    json!({
-        "setting": claude::PROMPT_SUGGESTION_SETTING,
-        "state": state.as_str(),
-        "action": action,
-        "set_by_setup": recorded,
-    })
-}
-
-/// `setup claude`, after the hooks: apply the policy. `advised` means the
-/// setting is on and nothing was changed (an interactive run then asks).
-fn prompt_suggestion_step(
-    policy: PromptSuggestionPolicy,
-    env: &SetupEnv,
-    settings: &Path,
-    warnings: &mut Vec<String>,
-) -> Result<Value, RunError> {
-    let manifest = prompt_suggestion_manifest(env, settings)?;
-    let error = |e| prompt_suggestion_error(e, settings);
-    let recorded = prompt_suggestion::recorded(&manifest)
-        .map_err(error)?
-        .is_some();
-    let state = prompt_suggestion::read_state(settings).map_err(error)?;
-    if state == SuggestionState::Disabled {
-        return Ok(prompt_suggestion_json(state, "already_disabled", recorded));
-    }
-    Ok(match policy {
-        PromptSuggestionPolicy::Disable => {
-            prompt_suggestion::disable(settings, &manifest).map_err(error)?;
-            prompt_suggestion_json(SuggestionState::Disabled, "disabled", true)
-        }
-        PromptSuggestionPolicy::Keep => prompt_suggestion_json(state, "kept", recorded),
-        PromptSuggestionPolicy::Ask => {
-            warnings.push(prompt_suggestion_advice(settings));
-            prompt_suggestion_json(state, "advised", recorded)
-        }
-    })
-}
-
 /// Both stdin and stderr are terminals: setup may ask a question.
 fn interactive() -> bool {
     use std::io::IsTerminal;
     io::stdin().is_terminal() && io::stderr().is_terminal()
-}
-
-/// An interactive `setup claude` whose report says `advised`: explain, ask
-/// `Disable prompt suggestions? [y/N]` on `out`, read one line from `input`,
-/// and set the key `false` only on yes. The advice warning is dropped either
-/// way: the person has answered.
-pub fn settle_prompt_suggestions<R: io::BufRead, W: Write>(
-    env: &SetupEnv,
-    report: &mut Value,
-    input: &mut R,
-    out: &mut W,
-) -> Result<(), RunError> {
-    if report["prompt_suggestions"]["action"] != "advised" {
-        return Ok(());
-    }
-    let settings = env.claude_settings()?;
-    writeln!(out, "{PROMPT_SUGGESTION_EXPLANATION}")?;
-    write!(out, "Disable prompt suggestions? [y/N] ")?;
-    out.flush()?;
-    let mut answer = String::new();
-    input.read_line(&mut answer)?;
-    let yes = matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
-    let advice = prompt_suggestion_advice(&settings);
-    if let Some(warnings) = report["warnings"].as_array_mut() {
-        warnings.retain(|warning| warning.as_str() != Some(advice.as_str()));
-    }
-    let suggestions = &mut report["prompt_suggestions"];
-    if yes {
-        let manifest = prompt_suggestion_manifest(env, &settings)?;
-        prompt_suggestion::disable(&settings, &manifest)
-            .map_err(|e| prompt_suggestion_error(e, &settings))?;
-        suggestions["action"] = json!("disabled");
-        suggestions["state"] = json!(SuggestionState::Disabled.as_str());
-        suggestions["set_by_setup"] = json!(true);
-    } else {
-        suggestions["action"] = json!("kept");
-    }
-    Ok(())
 }
 
 /// The one-line summary `setup`/`unsetup` with no harness print for Claude's
@@ -1546,985 +1119,6 @@ fn prompt_suggestion_line(value: &Value) -> Option<String> {
         },
         _ => return None,
     })
-}
-
-fn instance_json(env: &SetupEnv) -> Value {
-    json!({
-        "state_dir": env.state_dir.as_ref().map(|p| p.display().to_string()),
-        "host_endpoint": env.host_endpoint().ok().map(|p| p.display().to_string()),
-        "source": env.instance_source,
-    })
-}
-
-fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
-    let (settings, manifest) = claude_paths(env)?;
-    let kind = SettingsKind::ClaudeUser;
-    // First, so the hook removal below can still restore the file byte for byte.
-    let reverted =
-        prompt_suggestion::revert(&settings, &prompt_suggestion_manifest(env, &settings)?)
-            .map_err(|error| prompt_suggestion_error(error, &settings))?;
-    let mut report = json!({
-        "harness": "claude",
-        "scope": "user",
-        "settings": settings.display().to_string(),
-        "manifest": manifest.display().to_string(),
-        "prompt_suggestions": reverted.as_str(),
-    });
-    let mut recorded = read_settings_manifest(&manifest)
-        .map_err(|e| settings_error(e, SetupVerb::Remove, kind, &settings, &manifest))?;
-    if recorded.is_none() {
-        recorded = adopt_for_removal(kind, env, &settings, &manifest)?;
-    }
-    let Some(recorded) = recorded else {
-        report["action"] = json!("not_installed");
-        report["note"] = json!(
-            "no herdr-threads installation is recorded for these settings and this state \
-             directory; nothing changed"
-        );
-        return Ok(report);
-    };
-    let allow_rule = match recorded.permission.as_ref() {
-        Some(permission) if permission.pre_existing => "left_pre_existing",
-        Some(_) => "removed",
-        None => "not_recorded",
-    };
-    remove_user_settings(kind, &settings, &manifest)
-        .map_err(|e| settings_error(e, SetupVerb::Remove, kind, &settings, &manifest))?;
-    report["action"] = json!("removed");
-    report["allow_rule"] = json!(allow_rule);
-    if recorded.adopted {
-        report["adopted"] = json!(recorded.installation_id);
-        report["note"] = json!(
-            "removed only the adopted hook groups (another setup's owner marker) from this \
-             settings file; that setup's own settings file is unchanged"
-        );
-    }
-    report["deleted_created_settings"] = json!(delete_created(&settings, &manifest, b"{}"));
-    Ok(report)
-}
-
-/// Shared status of one user-level hook file installation.
-fn settings_status(
-    kind: SettingsKind,
-    env: &SetupEnv,
-    settings: &Path,
-    report: &mut Value,
-) -> Result<(), RunError> {
-    let Ok(state) = env.state_dir() else {
-        report["installed"] = json!(false);
-        report["error"] = json!(format!(
-            "state directory unknown: {}",
-            env.instance_source["state_dir_error"]
-                .as_str()
-                .unwrap_or("use --state-dir or HERDR_PLUGIN_STATE_DIR")
-        ));
-        return Ok(());
-    };
-    let manifest = manifest_path(state, &format!("{}-user", kind.harness()), settings);
-    report["manifest"] = json!(manifest.display().to_string());
-    let argv = env
-        .hook_argv(match kind {
-            SettingsKind::ClaudeUser => Harness::Claude,
-            SettingsKind::CodexUser => Harness::Codex,
-        })
-        .ok();
-    let inspection = inspect_user_settings_for(
-        kind,
-        settings,
-        &manifest,
-        NativeObservation::Unknown,
-        argv.as_deref(),
-    )
-    .map_err(|e| settings_error(e, SetupVerb::Status, kind, settings, &manifest))?;
-    report["installed"] = json!(inspection.installed);
-    report["adopted"] = adoption_json(inspection.adopted.as_ref());
-    if kind == SettingsKind::ClaudeUser {
-        report["allow_rule"] = allow_rule_json(inspection.allow_rule.as_ref());
-    }
-    report["observed"] = json!("unknown");
-    if let Some(recorded) = read_settings_manifest(&manifest).ok().flatten() {
-        report["recorded_phase"] = json!(match recorded.phase {
-            lib::InstallPhase::Prepared => "prepared",
-            lib::InstallPhase::Installed => "installed",
-        });
-    }
-    if let Some(command) = recorded_command(&manifest) {
-        report["command"] = json!(command);
-    } else if let Some(adoption) = &inspection.adopted
-        && let Some(argv) = &argv
-        && let Ok(command) = shell_command(argv)
-    {
-        report["command"] = json!(format!(
-            "{command} # herdr-threads-owner:{}",
-            adoption.owner
-        ));
-    }
-    if let Ok(argv) = env.hook_argv(match kind {
-        SettingsKind::ClaudeUser => Harness::Claude,
-        SettingsKind::CodexUser => Harness::Codex,
-    }) && let Ok(expected) = shell_command(&argv)
-    {
-        report["current_command_matches"] = json!(
-            report["command"]
-                .as_str()
-                .is_some_and(|recorded| recorded.starts_with(&format!("{expected} # ")))
-        );
-    }
-    Ok(())
-}
-
-fn claude_status(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
-    let settings = env.claude_settings()?;
-    let mut report = json!({
-        "action": "status",
-        "harness": "claude",
-        "scope": "user",
-        "settings": settings.display().to_string(),
-        "instance": instance_json(env),
-        "recipes": recipe::describe(claude::RECIPES),
-        "harness_version": observation_json(&observe(request, env)),
-    });
-    settings_status(SettingsKind::ClaudeUser, env, &settings, &mut report)?;
-    report["prompt_suggestions"] = prompt_suggestion_status(
-        env,
-        &settings,
-        std::env::var_os(claude::PROMPT_SUGGESTION_ENV),
-    );
-    Ok(report)
-}
-
-/// Claude's prompt-suggestion setting as `setup-status` and `doctor` report
-/// it: the user settings value, whether setup set it, and the per-session
-/// environment override when one is set. Best effort: an unreadable file is
-/// reported, never an error.
-pub fn prompt_suggestion_status(
-    env: &SetupEnv,
-    settings: &Path,
-    env_override: Option<OsString>,
-) -> Value {
-    let state = prompt_suggestion::read_state(settings);
-    let recorded = prompt_suggestion_manifest(env, settings)
-        .ok()
-        .and_then(|manifest| prompt_suggestion::recorded(&manifest).ok().flatten())
-        .is_some();
-    let mut report = json!({
-        "setting": claude::PROMPT_SUGGESTION_SETTING,
-        "state": match &state {
-            Ok(state) => state.as_str(),
-            Err(_) => "unreadable",
-        },
-        "set_by_setup": recorded,
-    });
-    if let Some(value) = env_override {
-        report["env_override"] = json!(format!(
-            "{}={}",
-            claude::PROMPT_SUGGESTION_ENV,
-            value.to_string_lossy()
-        ));
-    }
-    if state != Ok(SuggestionState::Disabled) {
-        report["note"] = json!(
-            "Claude soft-deadline pokes skip a pane that shows a prompt suggestion; run \
-             `herdr-threads setup claude --disable-prompt-suggestions` to turn them off"
-        );
-    }
-    report
-}
-
-// ------------------------------------------------------------------- codex
-
-/// Codex's config home: a non-empty `CODEX_HOME`, else `$HOME/.codex`.
-pub fn codex_home_from(
-    codex_home: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
-) -> Option<PathBuf> {
-    match codex_home.filter(|value| !value.is_empty()) {
-        Some(value) => Some(PathBuf::from(value)),
-        None => home
-            .filter(|value| !value.is_empty())
-            .map(|home| PathBuf::from(home).join(".codex")),
-    }
-}
-
-/// Read bound per Codex config file; a larger file is reported, not parsed.
-const CODEX_CONFIG_LIMIT: u64 = 1 << 20;
-
-/// What one Codex config layer file already declares, observed read-only.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexLayerFile {
-    pub path: PathBuf,
-    /// Owned events this file declares hooks for (hooks.json parsed; TOML by
-    /// a conservative key scan).
-    pub events: Vec<&'static str>,
-    /// The exact herdr-threads hook command setup would pass is already here.
-    pub has_owned_command: bool,
-    /// Some herdr-threads Codex hook command (another executable or state
-    /// directory) is here.
-    pub has_other_herdr_threads_hook: bool,
-    /// Present but not read (too large or unreadable).
-    pub unreadable: Option<String>,
-}
-
-/// The Codex config files whose hooks Codex discovers as separate layers: `$CODEX_HOME/{config.toml,hooks.json}`,
-/// the system `/etc/codex` pair, and each `.codex/` pair from `cwd` up to its
-/// Git root, or only `cwd`'s when no ancestor holds a `.git` (Codex has no project
-/// root then, so it loads no `.codex/` above the working directory; Codex loads
-/// project layers only for trusted projects; they are listed regardless, since
-/// trust is not ours to read).
-pub fn codex_layer_paths(codex_home: Option<&Path>, cwd: &Path) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(home) = codex_home {
-        dirs.push(home.to_path_buf());
-    }
-    dirs.push(PathBuf::from("/etc/codex"));
-    let project_depth = cwd
-        .ancestors()
-        .position(|dir| dir.join(".git").exists())
-        .unwrap_or(0);
-    for dir in cwd.ancestors().take(project_depth + 1) {
-        dirs.push(dir.join(".codex"));
-    }
-    let mut paths = Vec::new();
-    for dir in dirs {
-        for name in ["config.toml", "hooks.json"] {
-            let path = dir.join(name);
-            if !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-    }
-    paths
-}
-
-fn owned_events() -> impl Iterator<Item = &'static str> {
-    codex::DECLARATION.owned_hooks.iter().map(|hook| hook.event)
-}
-
-/// Owned events a `config.toml` declares hooks for, by a conservative scan of
-/// table headers and dotted keys (`[[hooks.E]]`, `[hooks.E]`, `hooks.E =`, and
-/// `E =` inside `[hooks]`). Informational: Codex keeps these hooks either way.
-fn toml_hook_events(text: &str) -> Vec<&'static str> {
-    let mut found = Vec::new();
-    let mut in_hooks_table = false;
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.starts_with('#') || line.is_empty() {
-            continue;
-        }
-        let compact: String = line
-            .chars()
-            .filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
-            .collect();
-        if compact.starts_with('[') {
-            in_hooks_table = compact == "[hooks]";
-        }
-        for event in owned_events() {
-            let header = compact == format!("[[hooks.{event}]]")
-                || compact.starts_with(&format!("[hooks.{event}]"))
-                || compact.starts_with(&format!("[hooks.{event}."));
-            let dotted = compact.starts_with(&format!("hooks.{event}="))
-                || (in_hooks_table && compact.starts_with(&format!("{event}=")));
-            if (header || dotted) && !found.contains(&event) {
-                found.push(event);
-            }
-        }
-    }
-    found
-}
-
-fn json_hook_events(bytes: &[u8]) -> Vec<&'static str> {
-    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
-        return Vec::new();
-    };
-    owned_events()
-        .filter(|event| {
-            value["hooks"][*event]
-                .as_array()
-                .is_some_and(|groups| !groups.is_empty())
-        })
-        .collect()
-}
-
-/// Observe one Codex config file read-only; `None` when it does not exist.
-pub fn observe_codex_layer(path: &Path, owned_command: &str) -> Option<CodexLayerFile> {
-    let meta = fs::metadata(path).ok()?;
-    let mut layer = CodexLayerFile {
-        path: path.to_path_buf(),
-        events: Vec::new(),
-        has_owned_command: false,
-        has_other_herdr_threads_hook: false,
-        unreadable: None,
-    };
-    if !meta.is_file() || meta.len() > CODEX_CONFIG_LIMIT {
-        layer.unreadable = Some("not a regular file within 1 MiB".into());
-        return Some(layer);
-    }
-    let mut bytes = Vec::new();
-    if let Err(error) =
-        fs::File::open(path).and_then(|file| file.take(CODEX_CONFIG_LIMIT).read_to_end(&mut bytes))
-    {
-        layer.unreadable = Some(error.to_string());
-        return Some(layer);
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    layer.events = if path.extension().is_some_and(|ext| ext == "json") {
-        json_hook_events(&bytes)
-    } else {
-        toml_hook_events(&text)
-    };
-    // TOML basic and JSON strings escape `"` and `\` the same way; the shell
-    // form itself uses only single quotes.
-    let escaped = serde_json::to_string(owned_command).unwrap_or_default();
-    let escaped = escaped.trim_matches('"');
-    layer.has_owned_command = text.contains(owned_command) || text.contains(escaped);
-    layer.has_other_herdr_threads_hook = !layer.has_owned_command
-        && text.contains("herdr-threads")
-        && text.contains("'hook' 'codex'");
-    Some(layer)
-}
-
-/// Every existing Codex config layer file, observed read-only.
-pub(crate) fn observe_codex_config(env: &SetupEnv, owned_command: &str) -> Vec<CodexLayerFile> {
-    codex_layer_paths(env.codex_home.as_deref(), &env.cwd)
-        .iter()
-        .filter_map(|path| observe_codex_layer(path, owned_command))
-        .collect()
-}
-
-fn codex_config_json(env: &SetupEnv, layers: &[CodexLayerFile]) -> Value {
-    json!({
-        "codex_home": env.codex_home.as_ref().map(|home| home.display().to_string()),
-        "layers": layers.iter().map(|layer| json!({
-            "path": layer.path.display().to_string(),
-            "owned_events_with_hooks": layer.events,
-            "herdr_threads_hook": if layer.has_owned_command {
-                "identical"
-            } else if layer.has_other_herdr_threads_hook {
-                "different"
-            } else {
-                "none"
-            },
-            "unreadable": layer.unreadable,
-        })).collect::<Vec<_>>(),
-    })
-}
-
-/// Another config layer (not the owned `hooks.json`, whose unowned copies
-/// the installer itself refuses) that already runs the exact hook command
-/// would run it a second time beside the owned one: refuse instead.
-pub(crate) fn refuse_duplicate(
-    layers: &[CodexLayerFile],
-    owned_command: &str,
-    managed: &Path,
-) -> Result<(), RunError> {
-    match layers
-        .iter()
-        .find(|layer| layer.has_owned_command && layer.path != managed)
-    {
-        None => Ok(()),
-        Some(layer) => Err(api(
-            ErrorCode::Conflict,
-            format!(
-                "{} already configures the herdr-threads hook command `{owned_command}`. Codex \
-                 loads hooks from every config layer, so the owned user-level hook would run it \
-                 a second time. Remove it from that file, then set up again; nothing was changed",
-                layer.path.display()
-            ),
-        )),
-    }
-}
-
-pub(crate) fn codex_owned_command(env: &SetupEnv) -> Result<String, RunError> {
-    shell_command(&env.hook_argv(Harness::Codex)?)
-        .map_err(|_| invalid("the hook command cannot be quoted for Codex"))
-}
-
-/// Historical allowance explanation for inspection only; no new allowance is installed.
-pub fn codex_sandbox_note() -> String {
-    "A legacy owned config.toml allowance may enable sandbox networking, a daemon socket and client journal roots. Setup installs none of these values. Run commands through approved outside-sandbox execution; unsetup removes only unchanged owned values.".to_owned()
-}
-
-/// Codex versions on which the allowance's default-deny was measured: the
-/// proxy started, only the allowlisted socket connected, and other Unix
-/// sockets, loopback, external TCP and proxied HTTPS stayed denied (Codex
-/// demo 2 and the ht-910 `codex sandbox` A/B/C/D check, both 0.159.2; the
-/// ht-4is.8.15 no-model `codex sandbox` probe on 0.159.3, evidence in
-/// docs/evidence/codex-1593-sandbox-probe/). The
-/// dangerous half of the allowance is `network_access=true`: on a build that
-/// ignored or did not enforce `features.network_proxy`, it would leave
-/// workspace-write with unrestricted networking. Historical setup admitted
-/// only measured versions; current setup installs no allowance.
-pub const CODEX_SANDBOX_MEASURED_VERSIONS: &[&str] = codex::SANDBOX_MEASURED_VERSIONS;
-
-/// The loud warning for a recorded sandbox allowance that outlived the
-/// version gate: `network_access=true` stays in config.toml and applies to
-/// every Codex session of this CODEX_HOME, so after an upgrade to (or a PATH
-/// change toward) a Codex whose proxy default-deny was never measured, the
-/// risk the gate exists for is live. `None` when no allowance is recorded or
-/// the observed version is measured. `version` is `None` when no admitted
-/// Codex version was observed.
-pub(crate) fn codex_unmeasured_allowance_warning(
-    env: &SetupEnv,
-    version: Option<&str>,
-) -> Option<String> {
-    if version.is_some_and(|version| CODEX_SANDBOX_MEASURED_VERSIONS.contains(&version)) {
-        return None;
-    }
-    let paths = codex_paths(env).ok()?;
-    // An unreadable manifest is treated as recorded: the warning must not
-    // go quiet because the ownership record is damaged.
-    if let Ok(None) = codex_config::read_manifest(&paths.config_manifest) {
-        return None;
-    }
-    let observed = match version {
-        Some(version) => format!("Codex {version}"),
-        None => "a Codex runtime whose metadata is unavailable".to_owned(),
-    };
-    Some(format!(
-        "WARNING: sandbox_workspace_write.network_access=true is installed in {} for an \
-         unmeasured Codex version ({observed}; default-deny measured on: {}). It applies to \
-         every Codex session using this CODEX_HOME and may leave the workspace-write sandbox \
-         with unrestricted networking. Run `herdr-threads unsetup codex` to remove it (then \
-         `herdr-threads setup codex` reinstalls the hooks without it)",
-        paths.config.display(),
-        CODEX_SANDBOX_MEASURED_VERSIONS.join(", ")
-    ))
-}
-
-/// The client-side directories a sandboxed herdr-threads command writes, which the allowance
-/// adds to `sandbox_workspace_write.writable_roots`: `<instance>/intents` (the intent journal:
-/// every mutation records its pending operation there before calling the daemon, for
-/// recovery and `retry`) and `<instance>/contexts` (each seat's caller-context journal,
-/// written by check-in). Nothing else: not the instance directory, the SQLite database, the
-/// endpoint descriptor, the owner lock or the setup manifests. The paths are canonical (the
-/// longest existing prefix resolved, for example `/tmp` to `/private/tmp`), matching the
-/// paths the CLI opens. Computed only: nothing is created.
-pub(crate) fn codex_sandbox_roots(env: &SetupEnv) -> Result<Vec<String>, String> {
-    let state = env.state_dir().map_err(|error| error.to_string())?;
-    let host = env.host_endpoint().map_err(|error| error.to_string())?;
-    let context = RuntimeContext::explicit(state.to_path_buf(), host, None)
-        .map_err(|error| format!("invalid host endpoint: {error}"))?;
-    let instance = canonical_prefix(&instance_dir(&context));
-    CODEX_WRITABLE_DIRS
-        .iter()
-        .map(|name| {
-            instance
-                .join(name)
-                .to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| "the instance directory path is not UTF-8".to_owned())
-        })
-        .collect()
-}
-
-/// The instance subdirectories a sandboxed CLI writes (see [`codex_sandbox_roots`]).
-pub const CODEX_WRITABLE_DIRS: [&str; 2] = ["intents", "contexts"];
-
-/// `path` with its longest existing ancestor canonicalized and the rest appended.
-fn canonical_prefix(path: &Path) -> PathBuf {
-    let mut rest = Vec::new();
-    let mut at = path;
-    loop {
-        if let Ok(real) = at.canonicalize() {
-            return rest.iter().rev().fold(real, |acc, part| acc.join(part));
-        }
-        match (at.parent(), at.file_name()) {
-            (Some(parent), Some(name)) => {
-                rest.push(name.to_owned());
-                at = parent;
-            }
-            _ => return path.to_path_buf(),
-        }
-    }
-}
-
-/// The warning for a recorded allowance that lacks this instance's writable roots (an
-/// installation from before they were part of it): sandboxed mutations then fail with EPERM.
-pub(crate) fn codex_missing_roots_warning(env: &SetupEnv, version: Option<&str>) -> Option<String> {
-    if !version.is_some_and(|version| CODEX_SANDBOX_MEASURED_VERSIONS.contains(&version)) {
-        return None;
-    }
-    let paths = codex_paths(env).ok()?;
-    let inspection = codex_config::inspect(&paths.config, &paths.config_manifest).ok()?;
-    inspection.recorded.as_ref()?;
-    let roots = codex_sandbox_roots(env).ok()?;
-    if inspection.roots_present(&roots) {
-        return None;
-    }
-    Some(format!(
-        "the Codex sandbox allowance in {} does not list this instance's writable roots ({}) in sandbox_workspace_write.writable_roots: under the workspace-write sandbox herdr-threads send, ack, accept, leave, invite and check-in fail with `Operation not permitted`. Run commands through approved outside-sandbox execution; `herdr-threads unsetup codex` removes the legacy allowance",
-        paths.config.display(),
-        roots.join(", ")
-    ))
-}
-
-/// One warning per `features.network_proxy` key the user's config.toml already held when the
-/// allowance was installed (recorded in the manifest): the allowance turns
-/// `sandbox_workspace_write.network_access` on, which makes those settings effective.
-pub(crate) fn codex_foreign_proxy_warnings(env: &SetupEnv) -> Vec<String> {
-    let Ok(paths) = codex_paths(env) else {
-        return Vec::new();
-    };
-    let Ok(Some(manifest)) = codex_config::read_manifest(&paths.config_manifest) else {
-        return Vec::new();
-    };
-    manifest
-        .foreign_network_proxy
-        .iter()
-        .map(|key| {
-            format!(
-                "{key} was already set in {}; enabling network access for the sandbox makes it \
-                 effective",
-                paths.config.display()
-            )
-        })
-        .collect()
-}
-
-/// The user-level Codex installation's hook file, config file and manifests.
-pub struct CodexPaths {
-    pub hooks: PathBuf,
-    pub hooks_manifest: PathBuf,
-    pub config: PathBuf,
-    pub config_manifest: PathBuf,
-}
-
-pub fn codex_paths(env: &SetupEnv) -> Result<CodexPaths, RunError> {
-    let hooks = env.codex_file("hooks.json")?;
-    let config = env.codex_file("config.toml")?;
-    let state = env.state_dir()?;
-    Ok(CodexPaths {
-        hooks_manifest: manifest_path(state, "codex-user", &hooks),
-        config_manifest: manifest_path(state, "codex-config", &config),
-        hooks,
-        config,
-    })
-}
-
-/// Codex's trust-key spelling of a hook event (`hooks.state` keys and
-/// `hooks/list`): `SessionStart` -> `session_start`.
-fn snake(event: &str) -> String {
-    let mut out = String::new();
-    for (index, c) in event.chars().enumerate() {
-        if c.is_ascii_uppercase() {
-            if index > 0 {
-                out.push('_');
-            }
-            out.push(c.to_ascii_lowercase());
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-pub const CODEX_TRUST_NOTE: &str = "Codex runs hooks from hooks.json only once you trust them. \
-     The next interactive `codex` start lists the new hooks as needing review (or open /hooks); \
-     trusting them makes Codex record each hook's hash in config.toml [hooks.state] under the \
-     key `<hooks.json>:<event>:<group>:<hook>`. That is how Herdr's own hooks.json entry is \
-     trusted: Herdr writes the hook, Codex's review records the trust. setup never writes trust. \
-     `codex exec` cannot review: trust once interactively, or (scratch only) pass \
-     --dangerously-bypass-hook-trust. Editing or moving a trusted group asks for review again";
-
-/// The trust keys of the owned groups as they sit in `hooks.json` now, and
-/// whether `config.toml` records a trust hash for each (the hash itself is
-/// Codex's and is not verified here).
-fn codex_trust_json(paths: &CodexPaths, command: Option<&str>) -> Value {
-    let Some(command) = command else {
-        return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
-    };
-    let hooks: Value = fs::read(&paths.hooks)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or(Value::Null);
-    let config = fs::read_to_string(&paths.config);
-    let state = config
-        .as_ref()
-        .ok()
-        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok());
-    let path = paths.hooks.display().to_string();
-    let mut keys = Vec::new();
-    for hook in codex::DECLARATION.owned_hooks {
-        let Some(groups) = hooks["hooks"][hook.event].as_array() else {
-            continue;
-        };
-        for (index, group) in groups.iter().enumerate() {
-            let registered = group["hooks"][0]["command"].as_str();
-            if registered == Some(command)
-                || registered == Some(lib::event_command(command, hook.event).as_str())
-            {
-                let key = format!("{path}:{}:{index}:0", snake(hook.event));
-                let recorded = state.as_ref().is_some_and(|doc| {
-                    doc.get("hooks")
-                        .and_then(|h| h.get("state"))
-                        .and_then(|s| s.get(&key))
-                        .and_then(|e| e.get("trusted_hash"))
-                        .is_some_and(|hash| hash.is_str())
-                });
-                keys.push(json!({"key": key, "trust_recorded": recorded}));
-            }
-        }
-    }
-    let status = if keys.is_empty()
-        || (config.is_ok() && state.is_none())
-        || config
-            .as_ref()
-            .is_err_and(|error| error.kind() != io::ErrorKind::NotFound)
-    {
-        "unknown"
-    } else if keys.iter().all(|key| key["trust_recorded"] == true) {
-        // Codex owns the hashes and may change its matching rules. A record is
-        // evidence of a prior review, not proof the present hook will run.
-        "recorded_unverified"
-    } else {
-        "review_required"
-    };
-    json!({"hooks": keys, "status": status, "note": CODEX_TRUST_NOTE})
-}
-
-/// Read Codex's own recorded hook-review keys without claiming hash validity.
-pub(crate) fn codex_trust_report(env: &SetupEnv) -> Value {
-    let Ok(paths) = codex_paths(env) else {
-        return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
-    };
-    let mut status = json!({});
-    if settings_status(SettingsKind::CodexUser, env, &paths.hooks, &mut status).is_err()
-        || status["installed"] != true
-    {
-        return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
-    }
-    codex_trust_json(&paths, status["command"].as_str())
-}
-
-fn allowance_error(error: codex_config::AllowanceError, config: &Path) -> RunError {
-    match error {
-        codex_config::AllowanceError::Foreign(key) => api(
-            ErrorCode::Conflict,
-            format!(
-                "{} already sets `{key}` to a value the sandbox allowance does not use; setup \
-                 never overwrites it. Remove or change that key yourself (or keep it and add the \
-                 socket allowance by hand), then set up again; nothing was changed",
-                config.display()
-            ),
-        ),
-        codex_config::AllowanceError::Setup(SetupError::Conflict) => api(
-            ErrorCode::Conflict,
-            format!(
-                "the recorded sandbox allowance in {} names another daemon socket or one of its \
-                 keys was edited by hand, or the file changed during setup. Run `herdr-threads \
-                 unsetup codex` and set up again",
-                config.display()
-            ),
-        ),
-        codex_config::AllowanceError::Setup(SetupError::Io) => failed(format!(
-            "could not read or replace {} or its ownership manifest; re-run to resume",
-            config.display()
-        )),
-        codex_config::AllowanceError::Setup(_) => invalid(format!(
-            "{} is not valid TOML within 1 MiB, or it or its ownership manifest is a symlink or \
-             damaged; nothing was changed",
-            config.display()
-        )),
-    }
-}
-
-/// Historical ownership remains inspectable; setup never adds an allowance.
-fn allowance_json(inspection: Option<&codex_config::AllowanceInspection>) -> Value {
-    json!({
-        "socket_path": inspection.and_then(|i| i.recorded.as_ref()).map(|m| &m.socket),
-        "validation": "unvalidated",
-        "omitted": "setup uses approved outside-sandbox commands and installs no sandbox allowance",
-        "recorded": inspection.is_some_and(|i| i.recorded.is_some()),
-        "present": inspection.is_some_and(|i| i.present),
-    })
-}
-
-/// Attach the unmeasured-allowance warning to a `sandbox` report.
-fn with_unmeasured(mut sandbox: Value, warning: Option<String>) -> Value {
-    if let Some(warning) = warning {
-        sandbox["unmeasured_installed"] = json!(true);
-        sandbox["warning"] = json!(warning);
-    }
-    sandbox
-}
-
-fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
-    env.hook_argv(Harness::Codex)?;
-    let paths = codex_paths(env)?;
-    let (observed, contract) = observe(request, env).map_err(refuse_executable)?;
-    let contract = contract.expect("Codex has a registered contract");
-    // Validate the declared composition without manufacturing a version witness.
-    lib::plan_codex_for_contract(&[], &env.hook_argv(Harness::Codex)?, &contract).map_err(
-        |error| {
-            settings_error(
-                error,
-                request.verb,
-                SettingsKind::CodexUser,
-                &paths.hooks,
-                &paths.hooks_manifest,
-            )
-        },
-    )?;
-    let owned_command = codex_owned_command(env)?;
-    let layers = observe_codex_config(env, &owned_command);
-    refuse_duplicate(&layers, &owned_command, &paths.hooks)?;
-    // Legacy allowances are left for owned unsetup. Incomplete or edited
-    // records still refuse before hooks change, preserving the installer seam.
-    // A dangling symlink is still an ownership record, never absence.
-    if fs::symlink_metadata(&paths.config_manifest)
-        .is_ok_and(|metadata| metadata.file_type().is_symlink())
-    {
-        return Err(allowance_error(
-            codex_config::AllowanceError::Setup(SetupError::Invalid),
-            &paths.config,
-        ));
-    }
-    let inspection =
-        codex_config::inspect(&paths.config, &paths.config_manifest).map_err(|error| {
-            allowance_error(codex_config::AllowanceError::Setup(error), &paths.config)
-        })?;
-    if let Some(manifest) = &inspection.recorded
-        && (manifest.phase != lib::InstallPhase::Installed || !inspection.present)
-    {
-        return Err(allowance_error(
-            codex_config::AllowanceError::Setup(SetupError::Conflict),
-            &paths.config,
-        ));
-    }
-    prepare_state(env)?;
-    let mut warnings = Vec::new();
-    let mut hooks_file = OwnedFile::new(paths.hooks.clone(), paths.hooks_manifest.clone(), b"{}");
-    let (installed, already, adopted) = install_settings(
-        SettingsKind::CodexUser,
-        request.verb,
-        env,
-        &mut hooks_file,
-        &mut warnings,
-    )?;
-    for layer in &layers {
-        if layer.has_other_herdr_threads_hook && layer.path != paths.hooks {
-            warnings.push(format!(
-                "{} holds a different herdr-threads Codex hook command (another executable, \
-                 state directory or Herdr instance); both would run",
-                layer.path.display()
-            ));
-        }
-        if let Some(reason) = &layer.unreadable {
-            warnings.push(format!(
-                "{} was not inspected ({reason}); its hooks still run",
-                layer.path.display()
-            ));
-        }
-    }
-    warnings.extend(codex_foreign_proxy_warnings(env));
-    let unmeasured = codex_unmeasured_allowance_warning(env, None);
-    let command = shared_command(&installed.owned);
-    let inspection = codex_config::inspect(&paths.config, &paths.config_manifest).ok();
-    Ok(json!({
-        "action": if adopted {
-            "adopted"
-        } else if already {
-            "already_installed"
-        } else {
-            "installed"
-        },
-        "adopted": installed.adopted.then(|| installed.installation_id.clone()),
-        "harness": "codex",
-        "scope": "user",
-        "hooks_file": paths.hooks.display().to_string(),
-        "config_file": paths.config.display().to_string(),
-        "manifest": paths.hooks_manifest.display().to_string(),
-        "config_manifest": paths.config_manifest.display().to_string(),
-        "created_hooks_file": hooks_file.created_file,
-        "created_config_file": false,
-        "instance": instance_json(env),
-        "hook_argv": env.hook_argv(Harness::Codex)?,
-        "command": command,
-        "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
-        "sandbox": with_unmeasured(
-            allowance_json(inspection.as_ref()),
-            unmeasured
-        ),
-        "trust": codex_trust_json(&paths, command.as_deref()),
-        "harness_version": observation_json(&Ok((observed, None))),
-        "codex_config": codex_config_json(env, &layers),
-        "observed": "unknown",
-        "note": "installed is not observed: run `herdr-threads doctor` for native evidence. \
-                 Codex sessions with another CODEX_HOME, or launched with \
-                 --ignore-user-config, do not load these hooks",
-        "warnings": warnings,
-    }))
-}
-
-fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
-    let paths = codex_paths(env)?;
-    let kind = SettingsKind::CodexUser;
-    let mut report = json!({
-        "harness": "codex",
-        "scope": "user",
-        "hooks_file": paths.hooks.display().to_string(),
-        "config_file": paths.config.display().to_string(),
-        "manifest": paths.hooks_manifest.display().to_string(),
-        "config_manifest": paths.config_manifest.display().to_string(),
-    });
-    let map = |e| {
-        settings_error(
-            e,
-            SetupVerb::Remove,
-            kind,
-            &paths.hooks,
-            &paths.hooks_manifest,
-        )
-    };
-    let mut recorded = read_settings_manifest(&paths.hooks_manifest).map_err(map)?;
-    if recorded.is_none() {
-        recorded = adopt_for_removal(kind, env, &paths.hooks, &paths.hooks_manifest)?;
-    }
-    let allowance = codex_config::read_manifest(&paths.config_manifest).map_err(|error| {
-        allowance_error(codex_config::AllowanceError::Setup(error), &paths.config)
-    })?;
-    if recorded.is_none() && allowance.is_none() {
-        report["action"] = json!("not_installed");
-        report["note"] = json!(
-            "no herdr-threads installation is recorded for this CODEX_HOME and this state \
-             directory; nothing changed"
-        );
-        return Ok(report);
-    }
-    let mut warnings = Vec::new();
-    if let Some(recorded) = &recorded {
-        // Codex keys hook trust by group position: groups after ours under
-        // the same event move up one and need review again.
-        if let Ok(bytes) = fs::read(&paths.hooks)
-            && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
-        {
-            for entry in &recorded.owned {
-                let command = entry.group["hooks"][0]["command"].as_str();
-                if let Some(groups) = value["hooks"][&entry.event].as_array()
-                    && let Some(at) = groups
-                        .iter()
-                        .position(|g| g["hooks"][0]["command"].as_str() == command)
-                    && at + 1 < groups.len()
-                {
-                    warnings.push(format!(
-                        "{}: {} hook group(s) after the removed one move up; Codex asks to \
-                         review them again",
-                        entry.event,
-                        groups.len() - at - 1
-                    ));
-                }
-            }
-        }
-        if recorded.adopted {
-            report["adopted"] = json!(recorded.installation_id);
-            warnings.push(format!(
-                "removing only the adopted hook groups (owner marker {}) from {}; the setup \
-                 that wrote them keeps its own hooks.json. Codex trusts hooks by position, so \
-                 any group that shifts in this file needs review again",
-                recorded.installation_id,
-                paths.hooks.display()
-            ));
-        }
-        remove_user_settings(kind, &paths.hooks, &paths.hooks_manifest).map_err(map)?;
-        report["deleted_created_hooks_file"] =
-            json!(delete_created(&paths.hooks, &paths.hooks_manifest, b"{}"));
-    }
-    if allowance.is_some() {
-        codex_config::remove(&paths.config, &paths.config_manifest).map_err(|error| {
-            allowance_error(codex_config::AllowanceError::Setup(error), &paths.config)
-        })?;
-        report["deleted_created_config_file"] =
-            json!(delete_created(&paths.config, &paths.config_manifest, b""));
-    }
-    report["action"] = json!("removed");
-    report["hooks_removed"] = json!(recorded.is_some());
-    report["allowance_removed"] = json!(allowance.is_some());
-    report["note"] = json!(
-        "Codex's own [hooks.state] trust entries for the removed hooks are Codex state and \
-         are left in config.toml"
-    );
-    report["warnings"] = json!(warnings);
-    Ok(report)
-}
-
-fn codex_status(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
-    let observation = observe(request, env);
-    let mut report = json!({
-        "action": "status",
-        "harness": "codex",
-        "scope": "user",
-        "instance": instance_json(env),
-        "recipes": recipe::describe(codex::RECIPES),
-        "harness_version": observation_json(&observation),
-    });
-    let hooks = env.codex_file("hooks.json")?;
-    report["hooks_file"] = json!(hooks.display().to_string());
-    settings_status(SettingsKind::CodexUser, env, &hooks, &mut report)?;
-    let Ok(paths) = codex_paths(env) else {
-        return Ok(report);
-    };
-    let inspection = codex_config::inspect(&paths.config, &paths.config_manifest).ok();
-    let unmeasured = codex_unmeasured_allowance_warning(env, None);
-    report["config_file"] = json!(paths.config.display().to_string());
-    report["sandbox"] = with_unmeasured(allowance_json(inspection.as_ref()), unmeasured.clone());
-    let warnings: Vec<String> = unmeasured
-        .into_iter()
-        .chain(codex_foreign_proxy_warnings(env))
-        .collect();
-    if !warnings.is_empty() {
-        report["warnings"] = json!(warnings);
-    }
-    report["trust"] = codex_trust_json(&paths, report["command"].as_str());
-    if let Ok(owned_command) = codex_owned_command(env) {
-        let layers = observe_codex_config(env, &owned_command);
-        report["duplicate_hook"] = json!(
-            layers
-                .iter()
-                .any(|layer| layer.has_owned_command && layer.path != paths.hooks)
-        );
-        report["codex_config"] = codex_config_json(env, &layers);
-    }
-    Ok(report)
-}
-
-/// The owned user-level installation for `launch` and `doctor`: the
-/// configured-hook descriptor when every declared hook (and, for Claude, the
-/// allow rule) is installed in the files this environment resolves.
-pub(crate) fn user_inspection(
-    harness: Harness,
-    env: &SetupEnv,
-) -> Result<(PathBuf, lib::HookInspection), String> {
-    let (kind, file) = match harness {
-        Harness::Claude => (
-            SettingsKind::ClaudeUser,
-            env.claude_settings().map_err(|e| e.to_string())?,
-        ),
-        Harness::Codex => (
-            SettingsKind::CodexUser,
-            env.codex_file("hooks.json").map_err(|e| e.to_string())?,
-        ),
-        Harness::Human => return Err(NO_HUMAN_SETUP.to_owned()),
-    };
-    let state = env.state_dir().map_err(|e| e.to_string())?;
-    let manifest = manifest_path(state, &format!("{}-user", kind.harness()), &file);
-    let argv = env.hook_argv(harness).ok();
-    let inspection = inspect_user_settings_for(
-        kind,
-        &file,
-        &manifest,
-        NativeObservation::Unknown,
-        argv.as_deref(),
-    )
-    .map_err(|error| {
-        format!(
-            "the owned {} installation in {} cannot be inspected ({error:?}); run \
-                 `herdr-threads setup-status {}`",
-            kind.harness(),
-            file.display(),
-            kind.harness()
-        )
-    })?;
-    Ok((file, inspection))
 }
 
 // ------------------------------------------------------------------ render
@@ -2592,6 +1186,8 @@ mod tests {
 
     fn env(state: Option<&str>) -> SetupEnv {
         SetupEnv {
+            home: None,
+            declared_environment: Default::default(),
             executable: PathBuf::from("/opt/h t/herdr-threads"),
             state_dir: state.map(PathBuf::from),
             cwd: PathBuf::from("/"),
@@ -3008,3 +1604,30 @@ mod detect_tests {
         assert_eq!(snake("PreToolUse"), "pre_tool_use");
     }
 }
+
+pub use crate::harness::setup::legacy::manifest_path;
+
+#[cfg(test)]
+use crate::harness::setup::legacy::first_shell_word;
+pub(crate) use crate::harness::setup::legacy::user_inspection;
+
+pub use crate::harness::claude::setup::{
+    PROMPT_SUGGESTION_EXPLANATION, allow_rule_json, claude_config_dir_from, claude_paths,
+    prompt_suggestion_manifest, prompt_suggestion_status, settle_prompt_suggestions,
+};
+
+#[cfg(test)]
+use crate::harness::claude::setup::prompt_suggestion_step;
+
+pub use crate::harness::codex::setup::{
+    CODEX_SANDBOX_MEASURED_VERSIONS, CODEX_TRUST_NOTE, CODEX_WRITABLE_DIRS, CodexLayerFile,
+    CodexPaths, codex_home_from, codex_layer_paths, codex_paths, codex_sandbox_note,
+    observe_codex_layer,
+};
+
+pub(crate) use crate::harness::codex::setup::{
+    codex_foreign_proxy_warnings, codex_missing_roots_warning, codex_trust_report,
+    codex_unmeasured_allowance_warning,
+};
+#[cfg(test)]
+use crate::harness::codex::setup::{snake, toml_hook_events};

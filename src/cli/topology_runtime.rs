@@ -224,11 +224,14 @@ pub(crate) fn run(
         CliAction::TopologyHandoff(request) => {
             let topology = host.topology(&super::cooperative_budget(clock.as_ref()))?;
             let cwd = std::env::current_dir()?;
-            let options = match request.kind.as_deref() {
-                Some("codex") => std::env::var_os("HERDR_THREADS_CODEX_OPTS"),
-                Some("claude") => std::env::var_os("HERDR_THREADS_CLAUDE_OPTS"),
-                _ => None,
+            let registry = crate::harness::registry::builtins();
+            let harness = match request.kind.as_deref() {
+                Some("codex") => crate::harness::context::Harness::Codex,
+                Some("claude") => crate::harness::context::Harness::Claude,
+                _ => return Err(super::invalid_request("invalid bootstrap harness")),
             };
+            let options =
+                super::launch::native_options_env(registry, harness)?.and_then(std::env::var_os);
             let identity = super::topology_handoff::prepare(
                 request,
                 super::topology_handoff::Preparation {
@@ -241,6 +244,40 @@ pub(crate) fn run(
                     clock: clock.as_ref(),
                 },
             )?;
+            // Validate the actual selected executable, installed configuration and
+            // full frozen Root append input before allocating durable/native work.
+            // The new target does not exist yet; input-only preparation never
+            // resolves it. Canonical target admission remains after creation.
+            let mut env = super::setup::SetupEnv::from_process(&output)?;
+            env.state_dir = Some(selected.state_dir.clone());
+            env.host_endpoint = Some(selected.host_endpoint.clone());
+            let seats =
+                super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
+            let shell = super::launch::SystemShellProbe::from_process();
+            let effective = super::topology_handoff::preflight_launch_request(&identity)?;
+            let expected = crate::harness::launch::compose_native_argv(
+                identity.payload.launch.harness,
+                effective.argv.clone(),
+                vec![],
+            )?;
+            let input = super::launch::prepare_native_input_with_registry(
+                registry,
+                &effective,
+                &super::launch::LaunchParts {
+                    env: &env,
+                    host: &host,
+                    seats: &seats,
+                    handoff: &client,
+                    clock: clock.as_ref(),
+                    record_dir: Some(&paths.instance_dir),
+                    shell_probe: &shell,
+                },
+            )?;
+            if input.argv != expected {
+                return Err(super::invalid_request(
+                    "selected native input differs from frozen bootstrap append contract",
+                ));
+            }
             // Namespace is checked by the actual selected daemon even before a new row exists.
             match client.call(
                 Command::BootstrapStatus(Box::new(BootstrapStatus {
@@ -379,6 +416,7 @@ pub(crate) fn run(
     let seats = super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
     let shell = super::launch::SystemShellProbe::from_process();
     let mut launcher = super::handoff::NativeLauncher {
+        registry: crate::harness::registry::builtins(),
         parts: super::launch::LaunchParts {
             env: &env,
             host: &host,

@@ -512,6 +512,12 @@ impl Pty {
         loop {
             self.read_for(Duration::from_millis(20));
             if let Some(status) = self.child.try_wait().unwrap() {
+                // The child can write and exit after the last poll above; its
+                // output stays queued on the master (the slave is still open,
+                // so there is no EOF). Drain it before callers inspect `seen`.
+                while !self.read_for(Duration::from_millis(20)).is_empty() {
+                    assert!(Instant::now() < deadline, "CLI output never drained");
+                }
                 return status;
             }
             assert!(Instant::now() < deadline, "CLI ignored cancellation");
@@ -971,11 +977,6 @@ fn empty_picker_and_terminal_machine_boundaries_exit_without_raw_mode() {
     let mut dumb = fixture.command();
     dumb.env("TERM", "dumb");
     let mut unsupported = Pty::start(dumb, &["read", "--human"], 24, 120);
-    let deadline = Instant::now() + WAIT;
-    while unsupported.child.try_wait().unwrap().is_none() {
-        unsupported.read_for(Duration::from_millis(20));
-        assert!(Instant::now() < deadline);
-    }
-    assert!(!unsupported.child.wait().unwrap().success());
+    assert!(!unsupported.exit_status().success());
     assert!(!unsupported.seen.windows(8).any(|b| b == b"\x1b[?1049h"));
 }

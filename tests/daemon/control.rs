@@ -144,6 +144,7 @@ fn retirement_control(
             incarnation_witness: crate::protocol::results::CapabilityState::Unknown,
             safe_prompt: crate::protocol::results::CapabilityState::Unsupported,
             harnesses: Default::default(),
+            release: Default::default(),
         },
     );
     let service = ControlService::new(
@@ -625,6 +626,7 @@ fn production_health_builder_redacts_retirement_failure_and_clears_on_partial_pr
             incarnation_witness: crate::protocol::results::CapabilityState::Unknown,
             safe_prompt: crate::protocol::results::CapabilityState::Unsupported,
             harnesses: Default::default(),
+            release: Default::default(),
         },
     );
     let budget = |clock: &DriverClock, span: u64| CallBudget {
@@ -753,6 +755,7 @@ fn production_health_builder_pins_every_elected_field() {
             incarnation_witness: crate::protocol::results::CapabilityState::Unknown,
             safe_prompt: crate::protocol::results::CapabilityState::Unsupported,
             harnesses: Default::default(),
+            release: Default::default(),
         },
     );
     let budget = CallBudget {
@@ -766,6 +769,7 @@ fn production_health_builder_pins_every_elected_field() {
         schema,
         host,
         host_version,
+        host_release_warning,
         current_execution,
         coherent_enumeration,
         safe_prompt,
@@ -783,7 +787,9 @@ fn production_health_builder_pins_every_elected_field() {
         degraded_lanes,
         transitions_refused,
         harness_version_lines,
+        additional_harnesses,
     } = health(&budget);
+    assert!(additional_harnesses.is_empty());
     // The version lines come from the production wiring (`run_elected`), not
     // from the provider.
     assert!(harness_version_lines.is_empty());
@@ -798,6 +804,7 @@ fn production_health_builder_pins_every_elected_field() {
     // never asserted Ready/Supported, and no reconciliation has completed.
     assert_eq!(host, ComponentStatus::Unknown);
     assert_eq!(host_version, None);
+    assert_eq!(host_release_warning, None);
     assert_eq!(current_execution, CapabilityState::Unsupported);
     assert_eq!(coherent_enumeration, CapabilityState::Unknown);
     assert_eq!(last_reconciliation_at, None);
@@ -1048,6 +1055,7 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
             incarnation_witness: crate::protocol::results::CapabilityState::Unknown,
             safe_prompt: crate::protocol::results::CapabilityState::Unsupported,
             harnesses: Arc::clone(&slot),
+            release: Default::default(),
         },
     );
     let budget = CallBudget {
@@ -1059,8 +1067,20 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
         detail: line.into(),
         live_unverified: true,
     };
-    slot.lock().unwrap().codex = observed.clone();
-    slot.lock().unwrap().claude = HarnessStatus::NotInstalled("absent".into());
+    slot.lock().unwrap().entries.insert(
+        "codex".into(),
+        crate::harness::adapter::DaemonObservation {
+            status: observed.clone(),
+            ..Default::default()
+        },
+    );
+    slot.lock().unwrap().entries.insert(
+        "claude".into(),
+        crate::harness::adapter::DaemonObservation {
+            status: HarnessStatus::NotInstalled("absent".into()),
+            ..Default::default()
+        },
+    );
     assert_eq!(provider(&budget).codex, observed);
     assert_eq!(
         provider(&budget).claude,
@@ -1545,8 +1565,9 @@ fn cooperative_inputs() -> HealthInputs {
 /// limitations; a version admission line that returns to Health.
 #[test]
 fn cooperative_mode_is_healthy_with_notes() {
-    use crate::daemon::health::{COOPERATIVE_WAKE_LINE, cooperative_receipt_line};
+    use crate::daemon::health::{cooperative_receipt_line, cooperative_wake_line_for};
     use crate::protocol::results::HarnessState;
+    let wake_line = cooperative_wake_line_for(crate::harness::registry::builtins());
     let health = cooperative_inputs().assemble();
     assert_eq!(health.state, HealthState::Healthy, "{health:?}");
     assert!(health.validate().is_ok());
@@ -1555,9 +1576,9 @@ fn cooperative_mode_is_healthy_with_notes() {
     assert!(health.limitations.is_empty(), "{:?}", health.limitations);
     assert_eq!(
         health.notes,
-        vec![cooperative_receipt_line(), COOPERATIVE_WAKE_LINE.to_owned(),]
+        vec![cooperative_receipt_line(), wake_line.clone()]
     );
-    assert!(cooperative_receipt_line().len() <= 256 && COOPERATIVE_WAKE_LINE.len() <= 256);
+    assert!(cooperative_receipt_line().len() <= 256 && wake_line.len() <= 256);
     let json = serde_json::to_value(&health).unwrap();
     assert_eq!(json["harness"]["claude"], "cooperative");
     assert_eq!(json["state"], "healthy");

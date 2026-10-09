@@ -70,6 +70,15 @@ where
     });
     (path, handle)
 }
+fn respond_error(stream: &mut UnixStream, request: &Value, code: &str, message: &str) {
+    let id = request["id"].as_str().unwrap();
+    writeln!(
+        stream,
+        "{}",
+        json!({"id":id,"error":{"code":code,"message":message}})
+    )
+    .unwrap();
+}
 fn cleanup(path: PathBuf, handle: thread::JoinHandle<()>) {
     handle.join().unwrap();
     fs::remove_file(path).unwrap();
@@ -82,10 +91,21 @@ fn pane() -> Value {
 }
 
 #[test]
-fn audited_releases_allow_transport_and_snapshot_without_claiming_capabilities() {
-    for version in ["0.9.1", "0.9.3"] {
+fn releases_from_the_floor_allow_transport_and_snapshot_without_claiming_capabilities() {
+    // 0.9.2 and an untested newer release with a bumped private protocol are
+    // admitted: the floor is the version, never the protocol number.
+    for (version, protocol, warning) in [
+        ("0.9.1", 22, None),
+        ("0.9.2", 22, None),
+        ("0.9.3", 22, None),
+        (
+            "0.10.0",
+            23,
+            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.3"),
+        ),
+    ] {
         let snapshot = json!({"type":"session_snapshot","snapshot":{
-            "version":version,"protocol":22,"panes":[pane()],"agents":[],
+            "version":version,"protocol":protocol,"panes":[pane()],"agents":[],
             "layouts":[],"workspaces":[],"tabs":[]}});
         let parsed = normalize_snapshot(&json!({"result":snapshot}).to_string()).unwrap();
         assert_eq!(parsed.panes[0].terminal_id, "term_1");
@@ -104,7 +124,8 @@ fn audited_releases_allow_transport_and_snapshot_without_claiming_capabilities()
             respond(
                 &mut ping,
                 &request,
-                json!({"type":"pong","version":version,"protocol":22}),
+                json!({"type":"pong","version":version,"protocol":protocol,
+                    "future_field":true}),
             );
             drop(ping);
             // A regressed ping gate must fail this test rather than leave
@@ -129,29 +150,107 @@ fn audited_releases_allow_transport_and_snapshot_without_claiming_capabilities()
             respond(&mut stream, &request, snapshot);
         });
         let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
+        assert_eq!(cli.observed_release(), None);
         let result = cli.snapshot(&budget(5000));
         cleanup(path, worker);
         assert_eq!(result.unwrap().panes[0].terminal_id, "term_1");
+        // Health shows the version with the diagnostic protocol, and warns
+        // (without refusing) only above the tested range.
+        let release = cli.observed_release().unwrap();
+        assert_eq!(
+            release.summary(),
+            format!("{version} (protocol {protocol})")
+        );
+        assert_eq!(release.warning().as_deref(), warning);
     }
 }
 
 #[test]
-fn unaudited_snapshot_contracts_remain_unsupported() {
+fn unserved_methods_and_rejected_params_are_unsupported_for_that_operation_only() {
+    for (code, message) in [
+        ("unknown_method", "unknown method: pane.get"),
+        ("invalid_params", "pane_id is malformed"),
+        (
+            "invalid_request",
+            "invalid request: unknown variant `pane.get`, expected one of `ping`",
+        ),
+    ] {
+        let raw = json!({"id":"x","error":{"code":code,"message":message}}).to_string();
+        let error = normalize_pane(&raw, "w4:p1").unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported, "{code}");
+        assert!(
+            error.detail.contains("unsupported by this Herdr"),
+            "{}",
+            error.detail
+        );
+    }
+    // Other invalid requests keep their own type.
+    let raw = json!({"id":"x","error":{"code":"invalid_request","message":"bad"}}).to_string();
+    assert_eq!(
+        normalize_pane(&raw, "w4:p1").unwrap_err().code,
+        ErrorCode::InvalidRequest
+    );
+
+    // Over the socket: the operation fails as Unsupported while the host
+    // answered, and the next operation on the same adapter still works.
+    let (path, worker) = serve_calls(2, |stream, request| {
+        if request["method"] == "agent.get" {
+            respond_error(
+                stream,
+                &request,
+                "unknown_method",
+                "unknown method: agent.get",
+            );
+        } else {
+            respond(stream, &request, json!({"type":"pane_info","pane":pane()}));
+        }
+    });
+    let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
+    let unsupported = cli.run(
+        &["agent", "get", "w4:p1"],
+        &budget(5000),
+        Duration::from_secs(2),
+    );
+    let pane = cli.pane("w4:p1", &budget(5000));
+    cleanup(path, worker);
+    assert_eq!(unsupported.unwrap_err().code, ErrorCode::Unsupported);
+    assert_eq!(pane.unwrap().terminal_id, "term_1");
+}
+
+#[test]
+fn snapshot_contract_is_a_version_floor() {
+    let raw = |version: Value, protocol: Value| {
+        json!({"result":{"type":"session_snapshot","snapshot":{
+            "version":version,"protocol":protocol,"panes":[pane()],"agents":[],
+            "layouts":[],"workspaces":[],"tabs":[],"future_collection":[]}}})
+        .to_string()
+    };
     for (version, protocol) in [
         (json!("0.9.2"), json!(22)),
         (json!("0.9.4"), json!(22)),
         (json!("0.9.3-modified"), json!(22)),
         (json!("0.9.3"), json!(23)),
         (json!("0.9.3"), json!("22")),
+        (json!("1.0.0"), json!(30)),
     ] {
-        let raw = json!({"result":{"type":"session_snapshot","snapshot":{
-            "version":version,"protocol":protocol,"panes":[pane()],"agents":[],
-            "layouts":[],"workspaces":[],"tabs":[]}}});
-        assert_eq!(
-            normalize_snapshot(&raw.to_string()).unwrap_err().code,
-            ErrorCode::Unsupported
+        assert!(
+            normalize_snapshot(&raw(version.clone(), protocol)).is_ok(),
+            "{version}"
         );
     }
+    for version in [json!("0.9.0"), json!("0.9.1-rc1"), json!("dev"), json!(9)] {
+        let error = normalize_snapshot(&raw(version.clone(), json!(22))).unwrap_err();
+        assert!(
+            matches!(
+                error.code,
+                ErrorCode::Unsupported | ErrorCode::StaleHostObservation
+            ),
+            "{version}"
+        );
+    }
+    let error = normalize_snapshot(&raw(json!("0.9.0"), json!(22))).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert!(error.detail.contains("older than the minimum 0.9.1"));
 }
 
 #[test]
@@ -300,7 +399,8 @@ fn malformed_foreign_id_and_partial_frames_fail_closed() {
 
 #[test]
 fn failed_ping_never_opens_operation_connection() {
-    for protocol in [21, 23] {
+    // Below the floor; the protocol number plays no part.
+    for version in ["0.9.0", "0.8.2"] {
         let path = socket_path();
         let listener = UnixListener::bind(&path).unwrap();
         let worker = thread::spawn(move || {
@@ -309,7 +409,7 @@ fn failed_ping_never_opens_operation_connection() {
             respond(
                 &mut ping,
                 &request,
-                json!({"type":"pong","version":"0.9.1","protocol":protocol}),
+                json!({"type":"pong","version":version,"protocol":22}),
             );
             listener.set_nonblocking(true).unwrap();
             thread::sleep(Duration::from_millis(30));
@@ -461,19 +561,15 @@ fn ping_errors_preserve_permission_and_protocol_details_before_dispatch() {
             ErrorCode::Unauthorized,
         ),
         (
-            json!({"result":{"type":"pong","version":"0.9.2","protocol":22}}),
+            json!({"result":{"type":"pong","version":"0.9.0","protocol":22}}),
             ErrorCode::Unsupported,
         ),
         (
-            json!({"result":{"type":"pong","version":"0.9.4","protocol":22}}),
+            json!({"result":{"type":"pong","version":"0.9.1-rc1","protocol":22}}),
             ErrorCode::Unsupported,
         ),
         (
-            json!({"result":{"type":"pong","version":"0.9.3-modified","protocol":22}}),
-            ErrorCode::Unsupported,
-        ),
-        (
-            json!({"result":{"type":"pong","version":"0.9.3","protocol":23}}),
+            json!({"result":{"type":"pong","version":"nightly","protocol":22}}),
             ErrorCode::Unsupported,
         ),
         (
@@ -482,10 +578,6 @@ fn ping_errors_preserve_permission_and_protocol_details_before_dispatch() {
         ),
         (
             json!({"result":{"type":"not_pong","version":"0.9.1","protocol":22}}),
-            ErrorCode::Unsupported,
-        ),
-        (
-            json!({"result":{"type":"pong","version":"0.9.1","protocol":"22"}}),
             ErrorCode::Unsupported,
         ),
     ] {
@@ -1328,4 +1420,106 @@ fn missing_pane_is_typed_not_found_without_epoch_advance() {
     cleanup(path, handle);
     assert_eq!(error.code, ErrorCode::NotFound);
     assert_eq!(cli.epoch(), epoch);
+}
+
+type Operation = Box<dyn FnOnce(&mut UnixStream, Value) + Send>;
+
+/// One accepted connection pair per entry: the ping answered with `pong`,
+/// then (when `Some`) one operation connection handled by the closure. `None`
+/// expects no operation connection (a refused ping).
+fn serve_sequence(calls: Vec<(Value, Option<Operation>)>) -> (PathBuf, thread::JoinHandle<()>) {
+    let path = socket_path();
+    let listener = UnixListener::bind(&path).unwrap();
+    let handle = thread::spawn(move || {
+        for (pong, operation) in calls {
+            let (mut ping, _) = listener.accept().unwrap();
+            let request = read_request(&mut ping);
+            assert_eq!(request["method"], "ping");
+            respond(&mut ping, &request, pong);
+            drop(ping);
+            if let Some(operation) = operation {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                operation(&mut stream, request);
+            }
+        }
+    });
+    (path, handle)
+}
+
+fn pong(version: &str, protocol: u64) -> Value {
+    json!({"type":"pong","version":version,"protocol":protocol})
+}
+
+fn unserved(code: &'static str) -> Operation {
+    Box::new(move |stream, request| respond_error(stream, &request, code, "not served here"))
+}
+
+/// Kills: publishing the release only with a successful operation. An
+/// answered newer ping is observed (with its warning) although the operation
+/// after it is unsupported or its connection fails.
+#[test]
+fn answered_ping_is_observed_even_when_the_operation_fails() {
+    let dropped: Operation = Box::new(|stream, _| drop(stream.try_clone().unwrap()));
+    for (operation, expected) in [
+        (unserved("unknown_method"), Some(ErrorCode::Unsupported)),
+        (unserved("invalid_params"), Some(ErrorCode::Unsupported)),
+        (dropped, None),
+    ] {
+        let (path, worker) = serve_sequence(vec![(pong("0.10.0", 23), Some(operation))]);
+        let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
+        let error = cli
+            .run(&["api", "snapshot"], &budget(5000), Duration::from_secs(2))
+            .unwrap_err();
+        cleanup(path, worker);
+        if let Some(expected) = expected {
+            assert_eq!(error.code, expected);
+            assert!(error.detail.contains("unsupported by this Herdr"));
+        }
+        let release = cli.observed_release().expect("answered ping observed");
+        assert_eq!(release.summary(), "0.10.0 (protocol 23)");
+        assert_eq!(
+            release.warning().as_deref(),
+            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.3")
+        );
+    }
+}
+
+/// Kills: keeping an earlier release after Herdr changed. A 0.9.3 success
+/// followed by an upgraded 0.10.0 whose operation fails reports 0.10.0; a
+/// later ping the floor refuses clears the observation instead of leaving
+/// the last admitted one.
+#[test]
+fn observed_release_follows_the_latest_answered_ping() {
+    let ok: Operation = Box::new(|stream, request| {
+        respond(stream, &request, json!({"type":"pane_info","pane":pane()}))
+    });
+    let (path, worker) = serve_sequence(vec![
+        (pong("0.9.3", 22), Some(ok)),
+        (pong("0.10.0", 23), Some(unserved("invalid_params"))),
+        (pong("0.9.0", 22), None),
+    ]);
+    let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
+    let first = cli.pane("w4:p1", &budget(5000));
+    let tested = cli.observed_release();
+    let second = cli.pane("w4:p1", &budget(5000));
+    let upgraded = cli.observed_release();
+    let third = cli.pane("w4:p1", &budget(5000));
+    let refused = cli.observed_release();
+    cleanup(path, worker);
+
+    assert_eq!(first.unwrap().terminal_id, "term_1");
+    let tested = tested.unwrap();
+    assert_eq!(tested.summary(), "0.9.3 (protocol 22)");
+    assert_eq!(tested.warning(), None);
+
+    assert_eq!(second.unwrap_err().code, ErrorCode::Unsupported);
+    let upgraded = upgraded.unwrap();
+    assert_eq!(upgraded.summary(), "0.10.0 (protocol 23)");
+    assert!(upgraded.warning().is_some());
+
+    let third = third.unwrap_err();
+    assert_eq!(third.code, ErrorCode::Unsupported);
+    assert!(third.detail.contains("older than the minimum 0.9.1"));
+    assert_eq!(refused, None);
 }

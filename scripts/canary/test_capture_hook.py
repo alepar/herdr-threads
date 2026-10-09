@@ -92,9 +92,28 @@ class ScriptTier1(unittest.TestCase):
         self.bin.mkdir()
         self.ht = t / "herdr-threads"
         write_exe(self.ht, "#!/bin/sh\nexit 0\n")
+        # The generic entrypoint builds the binary used for strict adapter discovery.
+        # Payload-parser invocations still record their supplied capture directories below.
+        discovery = json.loads((ROOT / "scripts/harness-canary-selftest/fixtures/adapter-discovery.json").read_text())
+        for descriptor, key in zip(discovery["adapters"], ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")):
+            descriptor["canary_strategy"]["model_key_env"] = key
+        self.discovery_log = t / "discovery-calls.jsonl"
+        self.fixture_target = t / "cargo-target"
+        self.discovery = t / "discovery"
+        write_exe(self.discovery, f"#!{sys.executable}\nimport json, sys\n"
+                  f"with open({str(self.discovery_log)!r}, 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                  "assert sys.argv[1:] == ['adapters', '--json']\n"
+                  f"print({json.dumps(discovery)!r})\n")
         write_exe(self.bin / "cargo", textwrap.dedent(f"""\
             #!{sys.executable}
-            import json, os, sys
+            import json, os, pathlib, shutil, sys
+            if sys.argv[1:2] == ["build"]:
+                target = pathlib.Path(os.environ["CARGO_TARGET_DIR"])
+                assert target == pathlib.Path({str(self.fixture_target)!r}), "fake Cargo requires its own target"
+                binary = target / "debug" / "herdr-threads"
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2({str(self.discovery)!r}, binary)
+                sys.exit(0)
             cap = os.environ.get("HT_CANARY_CAPTURE_DIR", "")
             with open({str(self.cargo_log)!r}, "a") as f:
                 f.write(json.dumps({{"cap": cap, "sub": sorted(os.listdir(os.path.join(cap, "capture"))),
@@ -149,6 +168,8 @@ class ScriptTier1(unittest.TestCase):
         # the fake claude implements --version and the tier-1 run only: keep tier 0 to the checks it can answer
         env.update(HOME=str(self.home), PATH=f"{self.bin}{os.pathsep}{env['PATH']}",
                    HT_CANARY_TIER0_CHECKS="t0.version t0.config-load t0.payload-parse", **extra)
+        if (self.bin / "cargo").exists():
+            env["CARGO_TARGET_DIR"] = str(self.fixture_target)
         return env
 
     def probe_args(self, out, *extra):

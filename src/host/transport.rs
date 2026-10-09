@@ -1,5 +1,6 @@
 //! One bounded audited Herdr API exchange. Dropping this future closes its socket.
 
+use super::compatibility::HostRelease;
 use super::continuity::{
     KernelProcessInfo, LocalEndpointWitness, ProcessInfoProvider, capture_peer_witness_with,
     recheck_witness, socket_identity,
@@ -11,10 +12,10 @@ use crate::protocol::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    cell::Cell,
     future::Future,
     io,
     path::Path,
-    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -25,6 +26,41 @@ use tokio::{
 const MAX_REQUEST: usize = 1024 * 1024;
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 const POLL: Duration = Duration::from_millis(5);
+
+pub(crate) type StartValidator<'a> =
+    dyn Fn(&Value, &LocalEndpointWitness) -> Result<(), ApiError> + Sync + 'a;
+
+struct OperationFence<'a> {
+    pong: &'a Value,
+    expected: &'a LocalEndpointWitness,
+    validate: &'a StartValidator<'a>,
+    attempted: &'a Cell<bool>,
+}
+
+const CONFIRMED_START_REFUSALS: [&str; 3] = [
+    "agent_pane_busy",
+    "agent_name_taken",
+    "agent_process_hint_unsupported",
+];
+
+fn compatible_pong<'a>(ping: &'a Value, observe: &PingObserver<'_>) -> Result<&'a Value, ApiError> {
+    if let Some(error) = super::observation::structured_host_error(ping) {
+        return Err(error);
+    }
+    let pong = ping
+        .get("result")
+        .ok_or_else(|| error(ErrorCode::Unsupported, "host API ping failed"))?;
+    if pong.get("type").and_then(Value::as_str) != Some("pong") {
+        return Err(error(ErrorCode::Unsupported, "host API ping failed"));
+    }
+    let admitted = super::compatibility::admit(
+        pong.get("version").and_then(Value::as_str),
+        pong.get("protocol").and_then(Value::as_u64),
+    );
+    observe(admitted.as_ref().ok().cloned());
+    admitted.map_err(|detail| error(ErrorCode::Unsupported, detail))?;
+    Ok(pong)
+}
 
 #[derive(Deserialize)]
 struct Envelope {
@@ -132,11 +168,6 @@ fn budgeted_capture<T>(
     result.map_err(witness_error)
 }
 
-struct CreationGuard<'a> {
-    expected: &'a LocalEndpointWitness,
-    possible: AtomicBool,
-}
-
 // Allowed: one host RPC exchange with its budget, deadline and peer-identity provider.
 #[allow(clippy::too_many_arguments)]
 async fn exchange(
@@ -149,7 +180,7 @@ async fn exchange(
     started: Instant,
     limit: Duration,
     provider: Option<&dyn ProcessInfoProvider>,
-    creation: Option<&CreationGuard<'_>>,
+    fence: Option<&OperationFence<'_>>,
 ) -> Result<(Value, Option<LocalEndpointWitness>), ApiError> {
     check(clock, budget, started, limit)?;
     let request = encode_request(&json!({"id":id,"method":method,"params":params}))?;
@@ -185,47 +216,48 @@ async fn exchange(
             "host endpoint changed during connect",
         ));
     }
-    if let Some(guard) = creation {
-        let before = witness
-            .as_ref()
-            .ok_or_else(|| error(ErrorCode::StaleHostObservation, "creation witness missing"))?;
-        let after = budgeted_capture(
-            || {
-                capture_peer_witness_with(
-                    &stream,
-                    socket,
-                    provider.expect("creation requires provider"),
-                )
-            },
-            clock,
-            budget,
-            started,
-            limit,
-        )?;
-        if before != guard.expected || &after != guard.expected {
+    if let Some(fence) = fence {
+        if witness.as_ref() != Some(fence.expected) {
             return Err(error(
                 ErrorCode::StaleHostObservation,
-                "creation endpoint witness changed before write",
+                "host endpoint changed before operation write",
             ));
         }
+        if method == "tab.create" {
+            let after = budgeted_capture(
+                || {
+                    capture_peer_witness_with(
+                        &stream,
+                        socket,
+                        provider.expect("typed creation requires provider"),
+                    )
+                },
+                clock,
+                budget,
+                started,
+                limit,
+            )?;
+            if &after != fence.expected {
+                return Err(error(
+                    ErrorCode::StaleHostObservation,
+                    "creation endpoint witness changed before write",
+                ));
+            }
+        }
+        (fence.validate)(fence.pong, fence.expected)?;
         check(clock, budget, started, limit)?;
     }
     let mut position = 0;
     while position < request.len() {
-        // Once the write future may be polled, an error or cancellation cannot
-        // prove zero bytes. Never reset this conservative marker or retry.
-        if let Some(guard) = creation {
-            check(clock, budget, started, limit)?;
-            guard.possible.store(true, Ordering::Release);
-        }
-        let count = bounded(
-            stream.write(&request[position..]),
-            clock,
-            budget,
-            started,
-            limit,
-        )
-        .await?;
+        let write = stream.write(&request[position..]);
+        tokio::pin!(write);
+        let attempt = std::future::poll_fn(|cx| {
+            if let Some(fence) = fence {
+                fence.attempted.set(true);
+            }
+            write.as_mut().poll(cx)
+        });
+        let count = bounded(attempt, clock, budget, started, limit).await?;
         if count == 0 {
             return Err(error(ErrorCode::HostUnavailable, "host API write closed"));
         }
@@ -342,7 +374,7 @@ async fn exchange(
 
 // Allowed: exchange's inputs for the blocking path.
 #[allow(clippy::too_many_arguments)]
-fn request_inner_guarded(
+fn request_inner(
     socket: &Path,
     id: &str,
     method: &str,
@@ -351,9 +383,27 @@ fn request_inner_guarded(
     budget: &CallBudget,
     limit: Duration,
     provider: Option<&dyn ProcessInfoProvider>,
-    creation: Option<&CreationGuard<'_>>,
+    observe: &PingObserver<'_>,
 ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
-    if method == "tab.create" && creation.is_none() {
+    request_inner_response(
+        socket, id, method, params, clock, budget, limit, provider, false, observe,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn request_inner_response(
+    socket: &Path,
+    id: &str,
+    method: &str,
+    params: Value,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+    limit: Duration,
+    provider: Option<&dyn ProcessInfoProvider>,
+    preserve_start_refusal: bool,
+    observe: &PingObserver<'_>,
+) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
+    if method == "tab.create" {
         return Err(error(
             ErrorCode::InvalidRequest,
             "tab.create requires the typed witnessed boundary",
@@ -386,32 +436,9 @@ fn request_inner_guarded(
                         None,
                     )
                     .await?;
-                    if let Some(error) = super::observation::structured_host_error(&ping) {
-                        return Err(error);
-                    }
-                    let pong = ping
-                        .get("result")
-                        .ok_or_else(|| error(ErrorCode::Unsupported, "host API ping failed"))?;
-                    if pong.get("type").and_then(Value::as_str) != Some("pong")
-                        || !super::compatibility::supports_json_api(
-                            pong.get("version").and_then(Value::as_str),
-                            pong.get("protocol").and_then(Value::as_u64),
-                        )
-                    {
-                        return Err(error(
-                            ErrorCode::Unsupported,
-                            "host API version or protocol mismatch",
-                        ));
-                    }
-                    if creation.is_some_and(|guard| ping_witness.as_ref() != Some(guard.expected)) {
-                        return Err(error(
-                            ErrorCode::StaleHostObservation,
-                            "creation ping witness changed",
-                        ));
-                    }
+                    compatible_pong(&ping, observe)?;
                     let (result, witness) = exchange(
-                        socket, id, method, params, clock, budget, started, limit, provider,
-                        creation,
+                        socket, id, method, params, clock, budget, started, limit, provider, None,
                     )
                     .await?;
                     if ping_witness != witness {
@@ -420,11 +447,17 @@ fn request_inner_guarded(
                             "host endpoint changed between ping and operation",
                         ));
                     }
-                    if let Some(error) = super::observation::structured_host_error(&result) {
+                    let confirmed_refusal = preserve_start_refusal
+                        && result
+                            .pointer("/error/code")
+                            .and_then(Value::as_str)
+                            .is_some_and(|code| CONFIRMED_START_REFUSALS.contains(&code));
+                    if !confirmed_refusal
+                        && let Some(error) = super::observation::structured_host_error(&result)
+                    {
                         return Err(error);
                     }
                     let expected = match method {
-                        "tab.create" if creation.is_some() => Some("tab_created"),
                         "pane.get" => Some("pane_info"),
                         "pane.current" => Some("pane_current"),
                         "pane.read" => Some("pane_read"),
@@ -445,9 +478,11 @@ fn request_inner_guarded(
                             ));
                         }
                     };
-                    if expected.is_some_and(|expected| {
-                        result.pointer("/result/type").and_then(Value::as_str) != Some(expected)
-                    }) {
+                    if !confirmed_refusal
+                        && expected.is_some_and(|expected| {
+                            result.pointer("/result/type").and_then(Value::as_str) != Some(expected)
+                        })
+                    {
                         return Err(error(
                             ErrorCode::StaleHostObservation,
                             "unexpected host API result type",
@@ -468,59 +503,334 @@ fn request_inner_guarded(
     })
 }
 
-// Existing exchange callers retain their allowlist and failure contract.
+/// Keep exact confirmed start refusals available to the existing unhinted
+/// run/dispatch path. Ordinary request wrappers still map errors as before.
+// Allowed: existing start inputs plus the diagnostic ping observer.
 #[allow(clippy::too_many_arguments)]
-fn request_inner(
+pub(crate) fn request_unhinted_start(
     socket: &Path,
     id: &str,
-    method: &str,
     params: Value,
     clock: &dyn Clock,
     budget: &CallBudget,
     limit: Duration,
-    provider: Option<&dyn ProcessInfoProvider>,
-) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
-    request_inner_guarded(
-        socket, id, method, params, clock, budget, limit, provider, None,
+    observe: &PingObserver<'_>,
+) -> Result<String, ApiError> {
+    request_inner_response(
+        socket,
+        id,
+        "agent.start",
+        params,
+        clock,
+        budget,
+        limit,
+        None,
+        true,
+        observe,
+    )
+    .map(|(body, _)| body)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn guarded_start_inner(
+    socket: &Path,
+    id: &str,
+    params: Value,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+    limit: Duration,
+    provider: &dyn ProcessInfoProvider,
+    validate: &StartValidator<'_>,
+    observe: &PingObserver<'_>,
+) -> Result<WitnessedResponse, crate::ports::NativeLaunchFailure> {
+    use crate::ports::{NativeLaunchFailure, NativeSubmission};
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let attempted = Cell::new(false);
+                let result: Result<WitnessedResponse, ApiError> = (|| {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_io()
+                        .enable_time()
+                        .build()
+                        .map_err(|e| {
+                            error(ErrorCode::HostUnavailable, format!("host API runtime: {e}"))
+                        })?;
+                    runtime.block_on(async {
+                        let (ping, witness) = exchange(
+                            socket,
+                            &format!("{id}:ping"),
+                            "ping",
+                            json!({}),
+                            clock,
+                            budget,
+                            started,
+                            limit,
+                            Some(provider),
+                            None,
+                        )
+                        .await?;
+                        let pong = compatible_pong(&ping, observe)?;
+                        if pong
+                            .pointer("/capabilities/agent_start_process_hint_v1")
+                            .and_then(Value::as_bool)
+                            != Some(true)
+                        {
+                            return Err(error(
+                                ErrorCode::Unsupported,
+                                "host does not advertise agent_start_process_hint_v1",
+                            ));
+                        }
+                        let witness = witness.ok_or_else(|| {
+                            error(
+                                ErrorCode::StaleHostObservation,
+                                "endpoint witness unavailable",
+                            )
+                        })?;
+                        validate(pong, &witness)?;
+                        let fence = OperationFence {
+                            pong,
+                            expected: &witness,
+                            validate,
+                            attempted: &attempted,
+                        };
+                        let (result, _) = exchange(
+                            socket,
+                            id,
+                            "agent.start",
+                            params,
+                            clock,
+                            budget,
+                            started,
+                            limit,
+                            Some(provider),
+                            Some(&fence),
+                        )
+                        .await?;
+                        let code = result.pointer("/error/code").and_then(Value::as_str);
+                        if let Some(host_error) = super::observation::structured_host_error(&result)
+                        {
+                            if code.is_some_and(|code| CONFIRMED_START_REFUSALS.contains(&code)) {
+                                attempted.set(false);
+                                if code == Some("agent_process_hint_unsupported") {
+                                    return Err(host_error);
+                                }
+                            } else {
+                                return Err(host_error);
+                            }
+                        } else if result.pointer("/result/type").and_then(Value::as_str)
+                            != Some("agent_started")
+                        {
+                            return Err(error(
+                                ErrorCode::StaleHostObservation,
+                                "unexpected host API result type",
+                            ));
+                        }
+                        check(clock, budget, started, limit)?;
+                        let body = serde_json::to_string(&result).map_err(|_| {
+                            error(
+                                ErrorCode::StaleHostObservation,
+                                "host API response encoding failed",
+                            )
+                        })?;
+                        Ok(WitnessedResponse { body, witness })
+                    })
+                })();
+                result.map_err(|error| NativeLaunchFailure {
+                    error,
+                    submission: if attempted.get() {
+                        NativeSubmission::Possible
+                    } else {
+                        NativeSubmission::NotSubmitted
+                    },
+                })
+            })
+            .join()
+            .map_err(|_| NativeLaunchFailure {
+                error: error(
+                    ErrorCode::HostUnavailable,
+                    "host API task panicked; outcome unknown",
+                ),
+                submission: NativeSubmission::Possible,
+            })?
+    })
+}
+
+/// Required-mode start: each actual ping negotiates capability, and the
+/// connected operation peer is fenced before polling the first write.
+// Allowed: existing guarded-start inputs plus the diagnostic ping observer.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn request_guarded_start(
+    socket: &Path,
+    id: &str,
+    params: Value,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+    limit: Duration,
+    validate: &StartValidator<'_>,
+    observe: &PingObserver<'_>,
+) -> Result<WitnessedResponse, crate::ports::NativeLaunchFailure> {
+    guarded_start_inner(
+        socket,
+        id,
+        params,
+        clock,
+        budget,
+        limit,
+        &KernelProcessInfo,
+        validate,
+        observe,
     )
 }
 
-/// The only tab creation admission, tied to the exact caller-frozen witness.
+struct CreationGuard<'a> {
+    expected: &'a LocalEndpointWitness,
+    attempted: Cell<bool>,
+}
+
+/// The typed, one-use creation boundary preserves uncertainty after any write poll.
 pub(crate) fn create_tab(
     socket: &Path,
     request: &crate::ports::CreateTabRequest,
     clock: &dyn Clock,
     budget: &CallBudget,
     limit: Duration,
+    observe: &PingObserver<'_>,
 ) -> Result<WitnessedResponse, crate::ports::CreateTabOutcome> {
-    let guard = CreationGuard {
-        expected: &request.expected_witness,
-        possible: AtomicBool::new(false),
-    };
-    let result = request_inner_guarded(
+    create_tab_with_provider(
         socket,
-        request.correlation.as_str(),
-        "tab.create",
-        json!({"workspace_id":request.workspace.as_str(), "cwd":request.cwd, "label":request.label, "focus":false, "env":{}}),
+        request,
         clock,
         budget,
         limit,
-        Some(&KernelProcessInfo),
-        Some(&guard),
-    );
-    result
-        .and_then(|(body, witness)| {
-            witness
-                .map(|witness| WitnessedResponse { body, witness })
-                .ok_or_else(|| error(ErrorCode::StaleHostObservation, "creation witness missing"))
-        })
-        .map_err(|error| {
-            if guard.possible.load(Ordering::Acquire) {
-                crate::ports::CreateTabOutcome::OutcomeUnknown(error)
-            } else {
-                crate::ports::CreateTabOutcome::NotSubmitted(error)
-            }
-        })
+        &KernelProcessInfo,
+        observe,
+    )
+}
+
+fn create_tab_with_provider(
+    socket: &Path,
+    request: &crate::ports::CreateTabRequest,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+    limit: Duration,
+    provider: &dyn ProcessInfoProvider,
+    observe: &PingObserver<'_>,
+) -> Result<WitnessedResponse, crate::ports::CreateTabOutcome> {
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let guard = CreationGuard {
+                    expected: &request.expected_witness,
+                    attempted: Cell::new(false),
+                };
+                let result = (|| -> Result<WitnessedResponse, ApiError> {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_io()
+                        .enable_time()
+                        .build()
+                        .map_err(|e| {
+                            error(ErrorCode::HostUnavailable, format!("host API runtime: {e}"))
+                        })?;
+                    runtime.block_on(async {
+                        let (ping, witness) = exchange(
+                            socket,
+                            &format!("{}:ping", request.correlation.as_str()),
+                            "ping",
+                            json!({}),
+                            clock,
+                            budget,
+                            started,
+                            limit,
+                            Some(provider),
+                            None,
+                        )
+                        .await?;
+                        let pong = compatible_pong(&ping, observe)?;
+                        if witness.as_ref() != Some(guard.expected) {
+                            return Err(error(
+                                ErrorCode::StaleHostObservation,
+                                "creation ping witness changed",
+                            ));
+                        }
+                        let validate = |_: &Value, witness: &LocalEndpointWitness| {
+                            if witness != guard.expected {
+                                Err(error(
+                                    ErrorCode::StaleHostObservation,
+                                    "creation endpoint witness changed before write",
+                                ))
+                            } else {
+                                Ok(())
+                            }
+                        };
+                        let fence = OperationFence {
+                            pong,
+                            expected: guard.expected,
+                            validate: &validate,
+                            attempted: &guard.attempted,
+                        };
+                        let params = json!({
+                            "workspace_id": request.workspace.as_str(),
+                            "cwd": request.cwd,
+                            "label": request.label,
+                            "focus": false,
+                            "env": {},
+                        });
+                        let (response, witness) = exchange(
+                            socket,
+                            request.correlation.as_str(),
+                            "tab.create",
+                            params,
+                            clock,
+                            budget,
+                            started,
+                            limit,
+                            Some(provider),
+                            Some(&fence),
+                        )
+                        .await?;
+                        if let Some(e) = super::observation::structured_host_error(&response) {
+                            return Err(e);
+                        }
+                        if response.pointer("/result/type").and_then(Value::as_str)
+                            != Some("tab_created")
+                        {
+                            return Err(error(
+                                ErrorCode::StaleHostObservation,
+                                "unexpected host API result type",
+                            ));
+                        }
+                        check(clock, budget, started, limit)?;
+                        let body = serde_json::to_string(&response).map_err(|_| {
+                            error(
+                                ErrorCode::StaleHostObservation,
+                                "host API response encoding failed",
+                            )
+                        })?;
+                        let witness = witness.ok_or_else(|| {
+                            error(ErrorCode::StaleHostObservation, "creation witness missing")
+                        })?;
+                        Ok(WitnessedResponse { body, witness })
+                    })
+                })();
+                result.map_err(|error| {
+                    if guard.attempted.get() {
+                        crate::ports::CreateTabOutcome::OutcomeUnknown(error)
+                    } else {
+                        crate::ports::CreateTabOutcome::NotSubmitted(error)
+                    }
+                })
+            })
+            .join()
+            .map_err(|_| {
+                crate::ports::CreateTabOutcome::OutcomeUnknown(error(
+                    ErrorCode::HostUnavailable,
+                    "host API task panicked; outcome unknown",
+                ))
+            })?
+    })
 }
 
 #[cfg(test)]
@@ -549,7 +859,444 @@ pub struct WitnessedResponse {
     pub body: String,
     pub witness: super::continuity::LocalEndpointWitness,
 }
+
+/// Called once per call whose `ping` Herdr answered with a `pong`, before the
+/// operation is sent and whatever the operation's outcome: `Some` for an
+/// admitted release, `None` for one refused by the floor (or without a
+/// readable version), so a stale earlier release is never kept. Not called
+/// when the ping itself was not answered.
+pub(crate) type PingObserver<'a> = dyn Fn(Option<HostRelease>) + Sync + 'a;
+
+#[cfg(all(test, target_os = "macos"))]
+mod process_hint_tests {
+    use super::*;
+    use crate::{
+        host::native::tests::HintSocketFixture,
+        ports::NativeSubmission,
+        protocol::time::{Cancellation, MonoInstant, UtcMillis},
+    };
+    use std::{
+        io::Write,
+        sync::{
+            Arc,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+        },
+    };
+
+    struct HintClock(Arc<AtomicU64>);
+    impl Clock for HintClock {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.load(Ordering::Acquire))
+        }
+    }
+    struct ChangingProvider {
+        calls: AtomicUsize,
+        change_at: usize,
+        peer: bool,
+    }
+    impl ProcessInfoProvider for ChangingProvider {
+        fn process_info(
+            &self,
+            pid: u32,
+        ) -> Result<super::super::continuity::ProcessInfo, super::super::continuity::CaptureError>
+        {
+            let mut info = KernelProcessInfo.process_info(pid)?;
+            if self.calls.fetch_add(1, Ordering::AcqRel) >= self.change_at {
+                if self.peer {
+                    info.pid += 1;
+                } else {
+                    info.start_seconds += 1;
+                }
+            }
+            Ok(info)
+        }
+    }
+    fn pong() -> Value {
+        json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+    }
+    fn params() -> Value {
+        json!({"name":"hint-worker","kind":"codex","pane_id":"w4:p1","args":["space arg","apostrophe's arg"],"timeout_ms":2000,"process_hint":true})
+    }
+    fn fixture(pong: Value) -> HintSocketFixture {
+        HintSocketFixture::new(move |stream, wire| {
+            let result = if wire["method"] == "ping" {
+                pong.clone()
+            } else {
+                json!({"type":"agent_started"})
+            };
+            writeln!(stream, "{}", json!({"id":wire["id"],"result":result})).unwrap();
+        })
+    }
+    fn assert_no_partial_bytes(frames: &[Value], received: usize) {
+        assert_eq!(
+            received,
+            frames
+                .iter()
+                .map(|frame| frame.to_string().len() + 1)
+                .sum::<usize>(),
+            "uncaptured operation bytes were written"
+        );
+    }
+
+    #[test]
+    fn process_hint_prewrite_fences_are_not_submitted() {
+        for case in [
+            "start-time",
+            "peer",
+            "socket",
+            "epoch",
+            "incarnation",
+            "expired",
+            "cancelled",
+            "expired-before",
+            "cancelled-before",
+            "connect",
+            "encoding",
+        ] {
+            let fixture = fixture(pong());
+            let clock = HintClock(Arc::new(AtomicU64::new(0)));
+            let budget = CallBudget {
+                deadline: MonoInstant(2000),
+                cancellation: Cancellation::default(),
+            };
+            let provider = ChangingProvider {
+                calls: AtomicUsize::new(0),
+                change_at: if matches!(case, "start-time" | "peer") {
+                    2
+                } else {
+                    usize::MAX
+                },
+                peer: case == "peer",
+            };
+            let validations = AtomicUsize::new(0);
+            let validate = |_: &Value, _: &LocalEndpointWitness| {
+                let call = validations.fetch_add(1, Ordering::AcqRel);
+                match (case, call) {
+                    ("socket", 0) => fixture.rebind(),
+                    ("connect", 0) => fixture.stop_listening(),
+                    ("incarnation", 0) | ("epoch", 1) => {
+                        return Err(error(
+                            ErrorCode::StaleHostObservation,
+                            "injected admitted fence changed",
+                        ));
+                    }
+                    ("expired", 1) => clock.0.store(2000, Ordering::Release),
+                    ("cancelled", 1) => budget.cancellation.cancel(),
+                    _ => {}
+                }
+                Ok(())
+            };
+            if case == "expired-before" {
+                clock.0.store(2000, Ordering::Release);
+            }
+            if case == "cancelled-before" {
+                budget.cancellation.cancel();
+            }
+            let mut request = params();
+            if case == "encoding" {
+                request["args"] = json!(["x".repeat(MAX_REQUEST)]);
+            }
+            let result = guarded_start_inner(
+                fixture.endpoint(),
+                "guarded",
+                request,
+                &clock,
+                &budget,
+                Duration::from_secs(30),
+                &provider,
+                &validate,
+                &|_| {},
+            );
+            let (frames, received) = fixture.finish_with_bytes();
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                0,
+                "{case} wrote an operation"
+            );
+            assert_no_partial_bytes(&frames, received);
+            let failure = result.expect_err(case);
+            assert_eq!(failure.submission, NativeSubmission::NotSubmitted, "{case}");
+            let code = match case {
+                "expired" | "expired-before" => ErrorCode::DeadlineExceeded,
+                "cancelled" | "cancelled-before" => ErrorCode::Cancelled,
+                "connect" => ErrorCode::HostUnavailable,
+                "encoding" => ErrorCode::InvalidRequest,
+                _ => ErrorCode::StaleHostObservation,
+            };
+            assert_eq!(failure.error.code, code, "{case}");
+        }
+    }
+
+    #[test]
+    fn process_hint_shared_version_floor_preserves_separate_capability_gate() {
+        for (version, protocol, supported) in [
+            ("0.9.1", 22, true),
+            ("0.9.3", 22, true),
+            ("0.9.2", 22, true),
+            ("0.9.10", 22, true),
+            ("0.9.1-preview", 22, false),
+            ("0.9.3-preview", 22, true),
+            ("0.9.1", 21, true),
+            ("0.9.3", 23, true),
+            ("0.9.0", 22, false),
+        ] {
+            let mut advert = pong();
+            advert["version"] = json!(version);
+            advert["protocol"] = json!(protocol);
+            let fixture = fixture(advert);
+            let clock = HintClock(Arc::new(AtomicU64::new(0)));
+            let budget = CallBudget {
+                deadline: MonoInstant(2000),
+                cancellation: Cancellation::default(),
+            };
+            let result = request_guarded_start(
+                fixture.endpoint(),
+                "guarded",
+                params(),
+                &clock,
+                &budget,
+                Duration::from_secs(30),
+                &|_, _| Ok(()),
+                &|_| {},
+            );
+            let (frames, received) = fixture.finish_with_bytes();
+            assert_no_partial_bytes(&frames, received);
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                usize::from(supported),
+                "{version}/{protocol}"
+            );
+            if supported {
+                result.unwrap();
+            } else {
+                let failure = result.unwrap_err();
+                assert_eq!(failure.error.code, ErrorCode::Unsupported);
+                assert_eq!(failure.submission, NativeSubmission::NotSubmitted);
+            }
+        }
+    }
+
+    #[test]
+    fn guarded_and_unhinted_starts_publish_ping_before_operation_or_capability_refusal() {
+        for guarded in [false, true] {
+            for (version, capability) in [("0.10.0", true), ("0.10.0", false), ("0.9.0", true)] {
+                let observed = std::sync::Mutex::new(Some(
+                    super::super::compatibility::admit(Some("0.9.3"), Some(22)).unwrap(),
+                ));
+                let mut advert = pong();
+                advert["version"] = json!(version);
+                advert["protocol"] = json!(29);
+                advert["capabilities"]["agent_start_process_hint_v1"] = json!(capability);
+                let fixture = HintSocketFixture::new(move |stream, wire| {
+                    let response = if wire["method"] == "ping" {
+                        json!({"id": wire["id"], "result": advert})
+                    } else {
+                        json!({"id": wire["id"], "error": {"code": "unknown_method", "message": "unsupported start"}})
+                    };
+                    writeln!(stream, "{response}").unwrap();
+                });
+                let clock = HintClock(Arc::new(AtomicU64::new(0)));
+                let budget = CallBudget {
+                    deadline: MonoInstant(2000),
+                    cancellation: Cancellation::default(),
+                };
+                let observe = |release| *observed.lock().unwrap() = release;
+                let submitted = version != "0.9.0" && (!guarded || capability);
+                if guarded {
+                    let failure = request_guarded_start(
+                        fixture.endpoint(),
+                        "observed-start",
+                        params(),
+                        &clock,
+                        &budget,
+                        Duration::from_secs(30),
+                        &|_, _| Ok(()),
+                        &observe,
+                    )
+                    .unwrap_err();
+                    assert_eq!(failure.error.code, ErrorCode::Unsupported);
+                    assert_eq!(
+                        failure.submission,
+                        if submitted {
+                            NativeSubmission::Possible
+                        } else {
+                            NativeSubmission::NotSubmitted
+                        }
+                    );
+                } else {
+                    let failure = request_unhinted_start(
+                        fixture.endpoint(),
+                        "observed-start",
+                        params(),
+                        &clock,
+                        &budget,
+                        Duration::from_secs(30),
+                        &observe,
+                    )
+                    .unwrap_err();
+                    assert_eq!(failure.code, ErrorCode::Unsupported);
+                }
+                let (frames, received) = fixture.finish_with_bytes();
+                assert_no_partial_bytes(&frames, received);
+                assert_eq!(
+                    frames
+                        .iter()
+                        .filter(|frame| frame["method"] == "agent.start")
+                        .count(),
+                    usize::from(submitted)
+                );
+                let release = observed.into_inner().unwrap();
+                if version == "0.9.0" {
+                    assert!(
+                        release.is_none(),
+                        "refused pong must clear the earlier release"
+                    );
+                } else {
+                    let release = release.unwrap();
+                    assert!(release.summary().contains("0.10.0"));
+                    assert!(release.warning().is_some());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn process_hint_transport_serialization_preserves_empty_token_only_at_private_boundary() {
+        // Serialization evidence only: NativeLaunchRequest still rejects empty elements.
+        let fixture = fixture(pong());
+        let clock = HintClock(Arc::new(AtomicU64::new(0)));
+        let budget = CallBudget {
+            deadline: MonoInstant(2000),
+            cancellation: Cancellation::default(),
+        };
+        let mut request = params();
+        request["args"] = json!(["", "space arg", "apostrophe's arg"]);
+        let result = request_guarded_start(
+            fixture.endpoint(),
+            "guarded",
+            request.clone(),
+            &clock,
+            &budget,
+            Duration::from_secs(30),
+            &|_, _| Ok(()),
+            &|_| {},
+        );
+        let (frames, received) = fixture.finish_with_bytes();
+        assert_no_partial_bytes(&frames, received);
+        result.unwrap();
+        let starts: Vec<_> = frames
+            .iter()
+            .filter(|frame| frame["method"] == "agent.start")
+            .collect();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0]["params"], request);
+    }
+
+    #[test]
+    fn process_hint_postwrite_uncertainty_is_possible_and_exact_refusal_is_not_submitted() {
+        for case in [
+            "malformed",
+            "eof",
+            "timeout",
+            "cancelled",
+            "witness",
+            "unsupported-exact",
+            "unsupported-lookalike",
+            "other-unsupported",
+        ] {
+            let clock = HintClock(Arc::new(AtomicU64::new(0)));
+            let budget = CallBudget {
+                deadline: MonoInstant(2000),
+                cancellation: Cancellation::default(),
+            };
+            let reply_clock = clock.0.clone();
+            let cancellation = budget.cancellation.clone();
+            let fixture = HintSocketFixture::new(move |stream, wire| {
+                if wire["method"] == "ping" {
+                    writeln!(stream, "{}", json!({"id":wire["id"],"result":pong()})).unwrap();
+                    return;
+                }
+                assert_eq!(wire["method"], "agent.start");
+                match case {
+                    "malformed" => {
+                        writeln!(stream, "{{invalid").unwrap();
+                        return;
+                    }
+                    "eof" => return,
+                    "timeout" => reply_clock.store(2000, Ordering::Release),
+                    "cancelled" => cancellation.cancel(),
+                    _ => {}
+                }
+                let response = match case {
+                    "unsupported-exact" => {
+                        json!({"error":{"code":"agent_process_hint_unsupported","message":"unsupported shell"}})
+                    }
+                    "unsupported-lookalike" => {
+                        json!({"error":{"code":"agent_process_hint_unsupported_other","message":"agent_process_hint_unsupported"}})
+                    }
+                    "other-unsupported" => {
+                        json!({"error":{"code":"unsupported_version","message":"unsupported"}})
+                    }
+                    _ => json!({"result":{"type":"agent_started"}}),
+                };
+                let mut response = response;
+                response["id"] = wire["id"].clone();
+                let _ = writeln!(stream, "{response}");
+            });
+            let provider = ChangingProvider {
+                calls: AtomicUsize::new(0),
+                change_at: if case == "witness" { 3 } else { usize::MAX },
+                peer: false,
+            };
+            let result = guarded_start_inner(
+                fixture.endpoint(),
+                "guarded",
+                params(),
+                &clock,
+                &budget,
+                Duration::from_secs(30),
+                &provider,
+                &|_, _| Ok(()),
+                &|_| {},
+            );
+            let (frames, received) = fixture.finish_with_bytes();
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                1,
+                "{case}"
+            );
+            assert_no_partial_bytes(&frames, received);
+            let failure = result.expect_err(case);
+            assert_eq!(
+                failure.submission,
+                if case == "unsupported-exact" {
+                    NativeSubmission::NotSubmitted
+                } else {
+                    NativeSubmission::Possible
+                },
+                "{case}"
+            );
+            if case == "unsupported-exact" {
+                assert_eq!(failure.error.code, ErrorCode::Unsupported);
+            }
+        }
+    }
+}
 /// Existing callers retain their original transport and capability behavior.
+// Allowed: request_inner's inputs plus the ping observer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn request(
     socket: &Path,
     id: &str,
@@ -558,8 +1305,12 @@ pub(crate) fn request(
     clock: &dyn Clock,
     budget: &CallBudget,
     limit: Duration,
+    observe: &PingObserver<'_>,
 ) -> Result<String, ApiError> {
-    request_inner(socket, id, method, params, clock, budget, limit, None).map(|(body, _)| body)
+    request_inner(
+        socket, id, method, params, clock, budget, limit, None, observe,
+    )
+    .map(|(body, _)| body)
 }
 
 /// Each actual stream is checked before sending and after correlated response
@@ -573,6 +1324,22 @@ pub fn request_witnessed(
     budget: &CallBudget,
     limit: Duration,
 ) -> Result<WitnessedResponse, ApiError> {
+    request_witnessed_observed(socket, id, method, params, clock, budget, limit, &|_| {})
+}
+
+/// `request_witnessed` that also reports the answered ping to `observe`.
+// Allowed: request_witnessed's inputs plus the ping observer.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn request_witnessed_observed(
+    socket: &Path,
+    id: &str,
+    method: &str,
+    params: Value,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+    limit: Duration,
+    observe: &PingObserver<'_>,
+) -> Result<WitnessedResponse, ApiError> {
     let (body, witness) = request_inner(
         socket,
         id,
@@ -582,6 +1349,7 @@ pub fn request_witnessed(
         budget,
         limit,
         Some(&KernelProcessInfo),
+        observe,
     )?;
     let witness = witness.ok_or_else(|| {
         error(

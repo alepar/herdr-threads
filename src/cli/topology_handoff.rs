@@ -180,12 +180,7 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         focus: false,
         env: Default::default(),
         launch: BootstrapLaunch {
-            harness: match harness {
-                crate::harness::context::Harness::Codex => {
-                    crate::protocol::authority::Harness::Codex
-                }
-                _ => crate::protocol::authority::Harness::Claude,
-            },
+            harness: harness.occupant(),
             binary: launch.harness_binary,
             name: launch
                 .name
@@ -219,9 +214,9 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
 }
 
 /// Fresh public preparation only: never replace or reinterpret a retained original.
-fn preflight_launch_argv(
+pub(super) fn preflight_launch_request(
     identity: &crate::protocol::handoff::BootstrapIdentity,
-) -> Result<(), RunError> {
+) -> Result<super::launch::LaunchRequest, RunError> {
     use crate::protocol::{handoff::HandoffChannel, ids::ThreadId};
     let namespace = &identity.payload.handoff.namespace;
     let context = crate::protocol::output::ContinuationContext {
@@ -241,10 +236,26 @@ fn preflight_launch_argv(
         &context,
         &identity.claim.instance,
     ));
+    Ok(super::launch::LaunchRequest {
+        target: identity.claim.target.clone(),
+        harness: identity.payload.launch.harness.into(),
+        harness_binary: identity.payload.launch.binary.clone(),
+        name: identity.payload.launch.name.clone(),
+        pane_label: Some(identity.payload.label.clone()),
+        argv,
+    })
+}
+fn preflight_launch_argv(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+) -> Result<(), RunError> {
+    let request = preflight_launch_request(identity)?;
     // Supported production hooks own no native args. This is the same composition
     // and geometry used by prepare_managed, including Codex grammar validation.
-    let argv =
-        crate::harness::launch::compose_native_argv(identity.payload.launch.harness, argv, vec![])?;
+    let argv = crate::harness::launch::compose_native_argv(
+        identity.payload.launch.harness,
+        request.argv,
+        vec![],
+    )?;
     crate::ports::NativeLaunchRequest::validate_argv(&argv).map_err(super::invalid_request)?;
     // The retained successful report has a tighter per-argument ceiling than
     // the native transport, including its generated prompt. Keep both contracts.
@@ -566,16 +577,9 @@ fn downstream_plan(
             (None, name.clone(), Some(topic.clone()), Some(goal.clone()))
         }
     };
-    let harness = match payload.launch.harness {
-        crate::protocol::authority::Harness::Codex => Harness::Codex,
-        crate::protocol::authority::Harness::Claude => Harness::Claude,
-        crate::protocol::authority::Harness::Human => {
-            return Err(super::invalid_request(
-                "bootstrap cannot launch human harness",
-            ));
-        }
-    };
+    let harness = Harness::from(payload.launch.harness);
     let plan = super::handoff::HandoffPlan {
+        startup_input: None,
         request: super::handoff::HandoffRequest {
             thread,
             thread_name,
@@ -1495,6 +1499,7 @@ pub(crate) fn resume_to_writer<
                     )),
                 }
             },
+            None,
         );
         if progress.possible_start
             && progress

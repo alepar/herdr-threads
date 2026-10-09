@@ -1,0 +1,5 @@
+[Should-fix] src/store/schema.rs:658
+[Should-fix] src/harness/adapter.rs:675
+[Nit] integrations/hermes/__init__.py:575
+[Nit] integrations/hermes/__init__.py:621
+[Nit] src/cli/hook_evidence.rs:865

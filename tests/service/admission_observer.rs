@@ -41,9 +41,18 @@ fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
 
 fn observed(detail: &str) -> HarnessObservations {
     HarnessObservations {
-        claude: HarnessStatus::NotInstalled(detail.into()),
-        codex: HarnessStatus::NotInstalled(detail.into()),
-        ..Default::default()
+        entries: ["claude", "codex"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.into(),
+                    crate::harness::adapter::DaemonObservation {
+                        status: HarnessStatus::NotInstalled(detail.into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect(),
     }
 }
 
@@ -161,7 +170,7 @@ fn failing_observation_backs_off_and_resets() {
         fx.advance(delay);
     }
     assert!(
-        fx.slot.lock().unwrap().claude == HarnessStatus::Unknown,
+        fx.slot.lock().unwrap().status("claude") == HarnessStatus::Unknown,
         "a failed pass leaves the slot untouched"
     );
     // A healthy pass resets the schedule and publishes the observation.

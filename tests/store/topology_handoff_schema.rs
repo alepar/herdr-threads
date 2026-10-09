@@ -38,23 +38,23 @@ fn objects(db: &Connection) -> Vec<(String, String, String)> {
     .collect()
 }
 #[test]
-fn registered27_fresh_and_genuine_historical_chains_reopen() {
-    for previous in [0, 1, 15, 22, 25, 26] {
+fn registered28_fresh_and_genuine_historical_chains_reopen() {
+    for previous in [0, 1, 15, 22, 25, 26, 27] {
         let db = historical(previous);
         schema::initialize(&db, || UtcMillis(0)).unwrap();
-        assert_eq!(version(&db), 27, "actual {previous}->27");
-        assert_eq!(objects(&db), objects(&historical(27)));
+        assert_eq!(version(&db), 28, "actual {previous}->28");
+        assert_eq!(objects(&db), objects(&historical(28)));
         schema::initialize(&db, || UtcMillis(1)).unwrap();
-        assert_eq!(version(&db), 27);
+        assert_eq!(version(&db), 28);
     }
 }
 #[test]
-fn registered27_audits_every_table_index_and_complete_trigger_body() {
-    let pristine = historical(27);
+fn registered28_audits_every_table_index_and_complete_trigger_body() {
+    let pristine = historical(28);
     schema::initialize(&pristine, || UtcMillis(0)).unwrap();
     for (kind, name, sql) in objects(&pristine) {
         // Missing objects must fail, including every guard and every lookup index.
-        let db = historical(27);
+        let db = historical(28);
         db.execute_batch(&format!("DROP {kind} {name}")).unwrap();
         assert_eq!(
             schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
@@ -62,7 +62,7 @@ fn registered27_audits_every_table_index_and_complete_trigger_body() {
             "missing {name}"
         );
         // Full SQL must be audited, beyond an object's name and column inventory.
-        let db = historical(27);
+        let db = historical(28);
         let replacement = if kind == "trigger" {
             format!("CREATE TRIGGER {name} BEFORE UPDATE ON bootstrap_handoffs BEGIN SELECT 1; END")
         } else if kind == "index" {
@@ -84,7 +84,7 @@ fn registered27_audits_every_table_index_and_complete_trigger_body() {
             "altered {name}"
         );
     }
-    let db = historical(27);
+    let db = historical(28);
     db.execute_batch("PRAGMA writable_schema=ON").unwrap();
     db.execute("UPDATE sqlite_schema SET sql=replace(sql,'REFERENCES host_instances(id)','REFERENCES threads(id)') WHERE name='bootstrap_handoffs'", []).unwrap();
     db.execute_batch("PRAGMA writable_schema=OFF").unwrap();
@@ -95,7 +95,7 @@ fn registered27_audits_every_table_index_and_complete_trigger_body() {
     );
     // Alter a middle statement of a multi-statement trigger. Splitting on ';'
     // or auditing only the first INSERT would miss this registry corruption.
-    let db = historical(27);
+    let db = historical(28);
     db.execute_batch("DROP TRIGGER bootstrap_attempt_keys")
         .unwrap();
     let original: String = pristine
@@ -127,7 +127,7 @@ fn evidence(db: &Connection) -> Vec<String> {
         .into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect()
 }
 #[test]
-fn registered27_preserves25_and26_history_and_rolls_back_late_ddl_failure() {
+fn registered28_preserves25_and26_history_and_rolls_back_late_ddl_failure() {
     for previous in [25, 26] {
         let db = historical(previous);
         seed(&db);
@@ -142,7 +142,11 @@ fn registered27_preserves25_and26_history_and_rolls_back_late_ddl_failure() {
             let lazy_before: String = db.query_row("SELECT json_array(preparation_id,message_id,thread_id,seat_id,state) FROM lazy_recipients", [], |r| r.get(0)).unwrap();
             let before_objects = objects(&db);
             assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
-            assert_eq!(version(&db), 26);
+            assert_eq!(
+                version(&db),
+                27,
+                "adapter27 committed before topology28 rollback"
+            );
             assert_eq!(
                 objects(&db),
                 before_objects,
@@ -155,7 +159,7 @@ fn registered27_preserves25_and26_history_and_rolls_back_late_ddl_failure() {
                 .unwrap();
         }
         schema::initialize(&db, || UtcMillis(0)).unwrap();
-        assert_eq!(version(&db), 27);
+        assert_eq!(version(&db), 28);
         assert_eq!(evidence(&db), before);
         let ordinary: String = db
             .query_row(
@@ -206,7 +210,7 @@ fn historical25_and26_audits_run_before_installing27() {
 }
 // Keep this module's identity helpers tied to the same reviewed consumer API.
 #[test]
-fn registered27_identity_lookup_is_absent_without_a_begin() {
+fn registered28_identity_lookup_is_absent_without_a_begin() {
     let db = Connection::open_in_memory().unwrap();
     schema::initialize(&db, || UtcMillis(0)).unwrap();
     assert_eq!(

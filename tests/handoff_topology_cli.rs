@@ -441,6 +441,13 @@ impl Fixture {
             })
             .unwrap();
     }
+    fn owned_path(&self) -> std::ffi::OsString {
+        let mut paths = vec![self.iso.path("")];
+        if let Some(path) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&path));
+        }
+        std::env::join_paths(paths).unwrap()
+    }
     fn command(&self) -> Command {
         self.command_in(&self.context.state_dir, &self.context.host_endpoint)
     }
@@ -458,6 +465,7 @@ impl Fixture {
             .arg(host)
             .env("CLAUDE_CONFIG_DIR", self.iso.path("claude-config"))
             .env("CODEX_HOME", self.iso.path("codex-home"))
+            .env("PATH", self.owned_path())
             .env("SHELL", self.iso.path("shell"))
             .env("HT_SMOKE_SHELL_LOG", self.iso.path("shell.log"))
             .env("HERDR_PLUGIN_STATE_DIR", self.iso.path("wrong-state"))
@@ -512,6 +520,7 @@ impl Fixture {
             .arg(&self.context.host_endpoint)
             .args(["setup", kind, "--harness-binary"])
             .arg(self.iso.path(kind))
+            .env("PATH", self.owned_path())
             .env("CLAUDE_CONFIG_DIR", self.iso.path("claude-config"))
             .env("CODEX_HOME", self.iso.path("codex-home"))
             .stdin(Stdio::null())
@@ -618,14 +627,17 @@ impl Fixture {
         );
     }
     fn assert_launch(&self, kind: &str, target: &str) {
+        self.assert_launch_argv(kind, target, FROZEN);
+    }
+    fn assert_launch_argv(&self, kind: &str, target: &str, frozen: &[&str]) {
         let starts = self.host.requests("agent.start");
         assert_eq!(starts.len(), 1);
         assert_eq!(starts[0]["params"]["kind"], kind);
         assert_eq!(starts[0]["params"]["pane_id"], target);
         let argv: Vec<String> =
             serde_json::from_value(starts[0]["params"]["args"].clone()).unwrap();
-        assert_eq!(&argv[..FROZEN.len()], FROZEN);
-        assert_eq!(argv.len(), FROZEN.len() + 1);
+        assert_eq!(&argv[..frozen.len()], frozen);
+        assert_eq!(argv.len(), frozen.len() + 1);
         let bootstrap = argv.last().unwrap();
         assert!(bootstrap.contains(&self.instance.to_string()));
         assert!(bootstrap.contains(self.context.state_dir.to_str().unwrap()));
@@ -757,6 +769,26 @@ fn explicit_pane_preserves_both_harness_configs() {
         f.setup(kind);
         let binary = f.iso.path(kind);
         let binary = binary.to_str().unwrap();
+        let (flag, options, frozen) = if kind == "claude" {
+            (
+                "--agent-arg=--model",
+                "--model 'env model' --model 'note=\"literal $HOME\"' --model repeat=true",
+                &[
+                    "--model",
+                    "env model",
+                    "--model",
+                    "note=\"literal $HOME\"",
+                    "--model",
+                    "repeat=true",
+                    "--model",
+                    "caller=\"quoted value\"",
+                    "--model",
+                    "repeat=true",
+                ][..],
+            )
+        } else {
+            ("--agent-arg=--config", OPTIONS, FROZEN)
+        };
         let out = successful(f.run(
             &[
                 "handoff",
@@ -771,17 +803,17 @@ fn explicit_pane_preserves_both_harness_configs() {
                 kind,
                 "--harness-binary",
                 binary,
-                "--agent-arg=--config",
+                flag,
                 "--agent-arg=caller=\"quoted value\"",
-                "--agent-arg=--config",
+                flag,
                 "--agent-arg=repeat=true",
                 "--",
                 BODY,
             ],
-            OPTIONS,
+            options,
         ));
         assert_eq!(out["handoff"]["outcome"], "started");
-        f.assert_launch(kind, "w4:p2");
+        f.assert_launch_argv(kind, "w4:p2", frozen);
         f.assert_work("recipient", out["handoff"]["thread"].as_str().unwrap());
         assert_eq!(f.effect_counts(), (0, 1, 1, 1));
         let replay = f.run(
@@ -1538,7 +1570,6 @@ fn final_sdd_actual_native_byte_and_line_limits_refuse_before_effects() {
         vec![format!("--config={}", "x".repeat(3900)); 9],
         vec!["--config=line\nbreak".into()],
         vec!["--config=line\rbreak".into()],
-        vec!["".into()],
         vec!["--config=single".to_owned() + &"x".repeat(4096)],
     ] {
         let f = Fixture::new();
@@ -1560,7 +1591,19 @@ fn final_sdd_actual_native_byte_and_line_limits_refuse_before_effects() {
         f.host.requests("agent.start")[0]["params"]["args"][0],
         frozen[0]
     );
+    // A captured empty tools value is legal and reaches the actual native boundary.
+    let f = Fixture::new();
+    f.setup("claude");
+    let frozen = vec!["--tools".into(), "".into()];
+    let args = final_sdd_args(&f, "claude", &frozen);
+    successful(f.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), ""));
+    let actual: Vec<String> =
+        serde_json::from_value(f.host.requests("agent.start")[0]["params"]["args"].clone())
+            .unwrap();
+    assert_eq!(&actual[..2], frozen);
+    assert_eq!(f.effect_counts(), (1, 1, 1, 1));
 }
+
 #[test]
 fn final_sdd_public_staging_loss_reports_actual_create_phase_and_retries_only_saved_work() {
     let f = Fixture::new();
