@@ -1,0 +1,15 @@
+r1 [Should-fix] integrations/claude/mod/hooks/register.js:228; src/cli/watch.rs:719
+r1 [Should-fix] src/cli/watch.rs:340
+r1 [Nit] src/service/mod_channels.rs:288
+r1 [Nit] src/service/mod_channels.rs:240
+r1 [Nit] src/cli/setup.rs:1369; src/cli/setup.rs:1401
+r1 [Nit] src/service/mod_channels.rs:193; src/daemon/settings.rs:20
+r1 [Nit] src/cli/setup.rs:1708
+r1 [Nit] scripts/test-claude-mod:13; scripts/test-claude-mod:1
+r1 [Must-fix] src/scheduler/mod.rs mod_suppressed (F1 /clear rebind-grace wake race, ht-ows)
+r1 [Must-fix] integrations/claude/mod/hooks/register.js watch argv (F3 bare binary, no state-dir/host-endpoint)
+r1 [Must-fix] src/harness/bridge.rs:1045 (F2 notices starve while channel live)
+r1 [Must-fix] src/harness/claude_mod.rs managed-settings cache filename (T7 guess)
+r1 [Must-fix] untested: live race stress in real Claude TUI (ht-j16.9)
+r1 [Must-fix] untested: mod JS tests not wired into nextest/CI
+r1 [Must-fix] untested: setup-status claude_version_supported always null
