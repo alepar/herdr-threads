@@ -54,3 +54,6 @@ baseAbsorbed: 3d10e3bb → 81dbb244, 11 conflicted files (behavioural: setup.rs 
 baseAbsorbed: 25db37f3 → 9d66d07c, 0 conflicted files (7 test-only commits)
 postLoopFix: final-review-5 F1 (stale mod queue after channel loss, breaks TRUST-POLICY A4) and F2 (unindented frame bodies, TRUST-POLICY limit mis-stated) filed as fix beads after loop exit instead of the punch list — invariant violation and a false policy statement; ht-j16.9 ran its fallback (copied profile not signed in), live run to be retried against the original spike profile
 followUps: ht-182 (mod worker supervision), ht-22y (attention marker selectors), ht-oag (unbounded mod sets)
+liveStress: ht-j16.9 live run (real Claude Code 2.1.295 TUI, 3 iterations) at c6caf381, merged as live-stress-driver: 11/14 scenarios 3/3, nothing lost, no duplicate acks; product defects D1 clear_rebind 0/3, D2 reload_mid_turn 1/3, D3 denied_tool 0/3 (docs/evidence/claude-mod-delivery/README.md)
+baseAbsorbed: 9d66d07c → 90066db1, 0 conflicted files (1 test-schedule commit)
+postLoopFix: live-stress D1–D3 filed as fix beads ht-j16.28/.29/.30 after loop exit instead of the punch list — duplicate delivery and a permanently disconnected mod on the default-on path of goal-named behaviour; live stress re-runs at the final SHA after they land
