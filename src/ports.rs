@@ -2493,7 +2493,8 @@ pub struct ModFingerprint {
     pub max_pending_ordinal: i64,
     pub lazy_pending: u64,
     pub max_lazy_rowid: i64,
-    /// Pending invitations, open warnings and notices (bounded count).
+    /// Pending invitations, and open warnings and notices that wake the
+    /// seat (`attention::wake_warnings`; bounded count).
     pub other_pending: u64,
     pub binding_generation: Option<u64>,
 }

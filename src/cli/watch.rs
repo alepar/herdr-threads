@@ -516,8 +516,9 @@ struct Partial {
 }
 
 /// Page `InboxBatchV2` for the seat until exhausted and print one line per
-/// not-yet-emitted item. Invitations and warnings collapse into one attention
-/// line per frame version.
+/// not-yet-emitted item. Invitations and warnings that wake the seat collapse
+/// into one attention line per frame version; informational warnings raise
+/// none.
 pub(crate) fn drain(
     client: &dyn LocalClient,
     clock: &dyn Clock,
@@ -546,9 +547,20 @@ pub(crate) fn drain(
         };
         for item in page.items {
             match item {
-                InboxBatchV2Item::Invitation { .. } | InboxBatchV2Item::Warning { .. } => {
+                InboxBatchV2Item::Invitation { .. }
+                | InboxBatchV2Item::Warning {
+                    informational: false,
+                    ..
+                } => {
                     saw_attention = true;
                 }
+                // An informational notice (the daemon judged it does not wake
+                // this seat) reaches the seat at its next check-in; it raises
+                // no mod attention.
+                InboxBatchV2Item::Warning {
+                    informational: true,
+                    ..
+                } => {}
                 InboxBatchV2Item::Message {
                     thread,
                     topic_data,

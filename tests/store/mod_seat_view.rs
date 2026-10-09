@@ -237,6 +237,64 @@ fn fingerprint_changes_on_each_call_site() {
     assert_eq!(view(&store).attention_version, 1);
 }
 
+/// ht-j16.34: another seat's overdue transition is an informational notice
+/// for `s` (TRUST-POLICY A7). It stays pending in the digest (delivered at the
+/// next check-in) but raises no mod attention: `other_pending` counts only
+/// warnings that wake the seat, as native wake does. The affected seat `o`
+/// counts its open condition until the clear.
+#[test]
+fn other_seat_transition_notice_is_not_mod_attention() {
+    let (store, conn, _) = fixture();
+    base(&conn);
+    conn.execute_batch(
+        "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t4','s',1,1),('t4','o',1,1);\
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-open','i','t4',1,'warn','{}',0,12,1),('w-clear','i','t4',2,'warn','{}',0,13,1);",
+    )
+    .unwrap();
+    let before = fp(&store);
+    {
+        let turn = store.writer(&budget()).unwrap();
+        turn.execute_batch(
+            "INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t4','c-o','o','w-open',12);\
+             INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s','w-open','t4',12,1),('o','w-open','t4',12,1);",
+        )
+        .unwrap();
+    }
+    let digest = |seat: &str| {
+        crate::store::attention::seat_digest(&conn, "i", &SeatId::new(seat), &|| Ok(()))
+            .unwrap()
+            .digest
+            .warnings
+            .count
+    };
+    assert_eq!(digest("s"), 1, "the notice is still delivered to s");
+    assert_eq!(fp(&store), before, "another seat's open is not attention");
+    let o = |store: &SqliteStore| {
+        store
+            .mod_seat_view(&SeatId::new("o"), &budget())
+            .unwrap()
+            .unwrap()
+            .fingerprint
+            .other_pending
+    };
+    assert_eq!(o(&store), 1, "the affected seat's own open is attention");
+    {
+        let turn = store.writer(&budget()).unwrap();
+        turn.execute_batch(
+            "UPDATE warning_conditions SET clear_warning_id='w-clear',cleared_seq=13 WHERE open_warning_id='w-open';\
+             INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s','w-clear','t4',13,1),('o','w-clear','t4',13,1);",
+        )
+        .unwrap();
+    }
+    assert_eq!(digest("s"), 2, "the clear is delivered too");
+    assert_eq!(fp(&store), before, "a clear is not attention");
+    assert_eq!(
+        o(&store),
+        0,
+        "a clear wakes nobody, the affected seat included"
+    );
+}
+
 #[test]
 fn lazy_row_changes_the_fingerprint_when_it_publishes_not_when_it_stages() {
     let (store, conn, _) = fixture();

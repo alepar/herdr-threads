@@ -1,9 +1,15 @@
 # Claude mod delivery: live stress evidence (ht-j16.9)
 
-Status: LIVE at the final code SHA. The final targeted re-run at `73a75cbf` (after the reload ledger fix) passed
-`reload_mid_turn`, `reload`, `clear_rebind` and `idle_submit` 3/3 each. The full 14-scenario re-run at `b562d1e4`
-passed 13 scenarios 3/3 and `reload_mid_turn` 2/3; that one failure was a second `delivered` ledger entry, now
-fixed. The first run, which found D1-D3, is kept below unchanged.
+Status: LIVE at the final code SHA `573841ed`: all 14 scenarios passed 3/3 (51 require-ACK messages and 3 lazy
+messages, every one acked or `displayed`; 1 native wake prompt in the run). Earlier runs are kept below: the
+targeted re-run at `73a75cbf`, the full re-run at `b562d1e4`, and the first run, which found D1-D3.
+
+## Final full run (573841ed)
+
+- Source: `super-auto/claude-mod-inbound-delivery` at `573841ed` (includes main `88f5c69f` and the ht-j16.34
+  attention narrowing). Claude Code 2.1.295. Command: `python3 tests/native/claude_mod/stress.py --iterations 3
+  --settle 60`. Wall clock 20.8 min.
+- [`summary.json`](summary.json) and [`live/`](live/) hold this run. Leak check: "no leaked test processes".
 
 ## Final targeted re-run (73a75cbf)
 

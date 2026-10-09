@@ -813,6 +813,7 @@ fn continuation_mixed_sources_preserve_invocation() {
             topic_data: "warn".into(),
             warning: MessageId::new("warning"),
             sequence: 2,
+            informational: false,
         },
         InboxBatchV2Item::Message {
             thread: ThreadId::new("thread"),

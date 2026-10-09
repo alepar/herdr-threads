@@ -1136,6 +1136,13 @@ pub enum InboxBatchV2Item {
         topic_data: String,
         warning: MessageId,
         sequence: u64,
+        /// The daemon's judgement (`attention::warning_wakes_seat`) that this
+        /// warning does not wake the reading seat: an informational notice
+        /// (another seat's overdue transition, or any clear) that waits for
+        /// the next check-in. The mod watch raises no attention for it.
+        /// Absent (false) from an older daemon: the warning raises attention.
+        #[serde(default, skip_serializing_if = "is_false")]
+        informational: bool,
     },
 }
 

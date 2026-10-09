@@ -77,6 +77,9 @@ pub struct DigestRun {
     pub digest: AttentionDigest,
     pub frontier: LogicalAttentionFrontier,
     pub work_steps: u64,
+    /// The pending-warning set behind `digest.warnings`, unnarrowed (a
+    /// caller that needs the waking subset applies `wake_warnings`).
+    pub warnings: PendingSet,
 }
 
 /// One pending item with its logical publication key.
@@ -361,6 +364,7 @@ pub fn seat_digest(
             + receipts.work_steps
             + warnings.work_steps
             + receipt_thread_steps,
+        warnings,
     })
 }
 
@@ -1031,6 +1035,30 @@ pub fn warning_wakes_seat(
     .map_err(store_error)
 }
 
+/// Narrow a seat's pending-warning set to the warnings that wake it
+/// (`warning_wakes_seat`). A saturated walk can hide an older waking notice (a
+/// service notice behind a full window of other seats' transitions).
+/// Narrowing it to nothing would turn that unknown into "no warning" and skip
+/// the conservative offer probe, so a saturated set with no waking item keeps
+/// the unnarrowed answer instead. Native wake (`wake_seat_attention`) and the
+/// mod channel's attention fingerprint (`seats::mod_seat_view`) share it.
+pub fn wake_warnings(
+    db: &Connection,
+    seat_id: &str,
+    mut warnings: PendingSet,
+) -> Result<PendingSet, ApiError> {
+    let mut wakes = Vec::with_capacity(warnings.items.len());
+    for item in &warnings.items {
+        if warning_wakes_seat(db, seat_id, &item.id)? {
+            wakes.push(item.clone());
+        }
+    }
+    if !(wakes.is_empty() && warnings.saturated) {
+        warnings.items = wakes;
+    }
+    Ok(warnings)
+}
+
 /// The wake attention of one seat, from the newest-first per-source walks
 /// and canonical judges (`effective_receipt`, `is_warning_recipient`,
 /// `warning_condition_actionable`), with warnings narrowed to those that
@@ -1049,20 +1077,7 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
         .ok_or_else(|| api_error(ErrorCode::NotFound, "seat missing"))?;
     let invitations = pending_invitations(db, seat_id, None, decision_seq)?;
     let receipts = pending_receipts(db, seat_id, None)?;
-    let mut warnings = seat_pending_warnings(db, seat_id, &|| Ok(()))?;
-    let mut wakes = Vec::with_capacity(warnings.items.len());
-    for item in &warnings.items {
-        if warning_wakes_seat(db, seat_id, &item.id)? {
-            wakes.push(item.clone());
-        }
-    }
-    // A saturated walk can hide an older waking notice (a service notice
-    // behind a full window of other seats' transitions). Narrowing it to
-    // nothing would turn that unknown into "no warning" and skip the
-    // conservative offer probe, so keep the unnarrowed answer instead.
-    if !(wakes.is_empty() && warnings.saturated) {
-        warnings.items = wakes;
-    }
+    let warnings = wake_warnings(db, seat_id, seat_pending_warnings(db, seat_id, &|| Ok(()))?)?;
     let latest_warning_seq = warnings.items.first().map(|item| item.key.0);
     Ok(WakeSeatAttention {
         attention: effective::EffectiveSeatAttention {

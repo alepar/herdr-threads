@@ -2442,3 +2442,95 @@ fn watch_admission_over_cap_refuses_busy() {
         unsafe { libc::killpg(holder.child.id() as libc::pid_t, libc::SIGTERM) };
     }
 }
+
+/// ht-j16.34: another seat's overdue open and clear transitions are
+/// informational notices for a bystander (TRUST-POLICY A7). They wake only
+/// the affected seat natively, so they must not raise mod attention either:
+/// the bystander's live watch prints no `attention` line (the mod would
+/// submit it into an idle session), while the affected seat's watch does.
+#[test]
+fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
+    const PANE_C: &str = "w1:p3";
+    const SESSION_C: &str = "SC";
+    let rig = Rig::new();
+    rig.host.set_panes(vec![
+        pane(PANE_A, "term-a"),
+        claude(PANE_B, "term-b", SESSION_B),
+        claude(PANE_C, "term-c", SESSION_C),
+    ]);
+    let c = rig.seat_resolve(PANE_C);
+    rig.session_start_hook(PANE_C, SESSION_C, "startup");
+    rig.cli(
+        Some((&rig.a, PANE_A)),
+        &["invite", &rig.thread, "--seat", &c],
+    )
+    .data("invite c");
+    rig.cli(Some((&c, PANE_C)), &["accept", &rig.thread])
+        .data("accept c");
+    let mut bystander = rig.watch(SESSION_B);
+    bystander.wait_connected();
+    let mut affected = rig.watch_with(PANE_C, SESSION_C, &[]);
+    affected.wait_connected();
+
+    let id = rig
+        .cli(
+            Some((&rig.a, PANE_A)),
+            &[
+                "send",
+                &rig.thread,
+                "--body",
+                "critical",
+                "--require-ack",
+                &rig.b,
+                "--require-ack",
+                &c,
+                "--deadline",
+                "60",
+            ],
+        )
+        .text("send with deadline");
+    bystander.wait_item(&id);
+    affected.wait_item(&id);
+    let result = rig.ack_result(SESSION_B, "context", &id);
+    assert_eq!(result["result"], "settled", "{result}");
+    bystander.assert_no_line("attention before the deadline", |l| {
+        l["kind"] == "attention"
+    });
+
+    let conditions = || -> Vec<Option<String>> {
+        let db = rig.db();
+        let mut stmt = db
+            .prepare("SELECT clear_warning_id FROM warning_conditions ORDER BY ordinal")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    // Only C misses the deadline: one open condition about C.
+    rig.advance(2 * MINUTE_MS);
+    wait_until("C's overdue condition to open", STEP, || {
+        (conditions() == [None]).then_some(())
+    });
+    affected.wait_attention_marker();
+    bystander.assert_no_line("attention for C's overdue open", |l| {
+        l["kind"] == "attention"
+    });
+
+    // C's late ACK clears it: a clear wakes nobody.
+    rig.cli(Some((&c, PANE_C)), &["ack", &id]).data("late ack");
+    wait_until("C's overdue condition to clear", STEP, || {
+        let now = conditions();
+        (now.len() == 1 && now[0].is_some()).then_some(())
+    });
+    bystander.assert_no_line("attention for C's overdue clear", |l| {
+        l["kind"] == "attention"
+    });
+    // C's own ACK may drain while its open condition is still uncleared (one
+    // more attention line); once the clear commits, its drain finds nothing
+    // that wakes it and retracts.
+    affected.wait_line("C's retraction after the clear", STEP, |l| {
+        l["kind"] == "attention_cleared"
+    });
+    assert!(bystander.running() && affected.running());
+}
