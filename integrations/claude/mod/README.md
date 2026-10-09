@@ -116,9 +116,14 @@ builds `io` from `$`. Rules (spec D5, D6):
   line stay and are retried on every new stream line, after `status connected` and every 30 s
   while connected.
 - **Reload.** Before `$.prompt.submit` the mod writes the batch (`sid`, ids, ackable ids) to `$.state`
-  `turns.submitting` and clears it when the submit resolves. A core that loads such a record for its
+  `turns.submitting` and clears it when the submit resolves. The record says `issued: false` until
+  `$.prompt.submit` has been called. If a main turn starts, a post-abort hold is set, the channel or
+  session changes or the core is disposed during that write, nothing is submitted. The items stay
+  queued (or are dropped with their run), and the record is cleared, except by a disposed core, which
+  leaves it unissued. A core that loads such a record for its
   session is busy and never re-submits or attaches those ids. A main `turn.start` whose prompt frames
-  them, or the `turn.complete` of a turn it never saw start, marks them delivered via `submit` (ledger
+  them, or the `turn.complete` of a turn it never saw start (only for an issued record; an unissued
+  one is released, ledger `predecessor_not_issued`), marks them delivered via `submit` (ledger
   reason `predecessor_submit`) and acks them. 120 s with no open turn, no turn start and an empty
   prompt box releases them for normal delivery (`predecessor_no_turn`).
 - **Persistence.** `$.store` key `delivered:<session id>` holds `{delivered, unacked,
