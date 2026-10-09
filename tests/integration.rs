@@ -53,6 +53,11 @@ mod herdr_release_smoke;
 #[cfg(feature = "test-support")]
 #[path = "integration/herdr_states.rs"]
 mod herdr_states;
+/// ht-4ne.3: bare Hermes bridge enrollment, the installed bridge driven with
+/// synthetic callbacks against an isolated Herdr session and daemon.
+#[cfg(feature = "test-support")]
+#[path = "integration/hermes_enrollment_smoke.rs"]
+mod hermes_enrollment_smoke;
 /// ht-p03.1: the isolated named Herdr test-session fixture's self-test.
 #[cfg(feature = "test-support")]
 #[path = "integration/isolated_herdr_fixture.rs"]
