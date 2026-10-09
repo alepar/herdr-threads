@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     fs,
     io::Write,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
@@ -74,10 +75,58 @@ pub fn mod_dir(state_dir: &Path) -> PathBuf {
     state_dir.join("claude-mod").join("herdr-threads")
 }
 
-/// A digest of the embedded file set (paths and bytes).
-pub fn files_fingerprint() -> String {
+/// The published path of the module that launches `watch`.
+const REGISTER_JS: &str = "hooks/register.js";
+/// The repo copy's marker line starts with this; `setup claude` replaces the
+/// whole line with [`LAUNCH_SUFFIX`] appended after the rendered JSON.
+const LAUNCH_MARKER: &str = "const LAUNCH = null // herdr-threads:launch";
+const LAUNCH_PREFIX: &str = "const LAUNCH = ";
+const LAUNCH_SUFFIX: &str = " // herdr-threads:launch (written by setup claude)";
+
+/// The mod's launch prefix from the hooks' argv: the hooks' invocation minus
+/// the trailing `hook claude`. The mod appends `watch ...` / `watch ack ...`.
+pub fn launch_prefix(hook_argv: &[String]) -> Result<Vec<String>, SetupError> {
+    match hook_argv {
+        [prefix @ .., hook, claude]
+            if hook == "hook" && claude == "claude" && !prefix.is_empty() =>
+        {
+            Ok(prefix.to_vec())
+        }
+        _ => Err(SetupError::Invalid),
+    }
+}
+
+/// The embedded bytes of `path`, with the launch line rendered into
+/// `hooks/register.js` when `launch` is given. Every other file, and the
+/// `None` case, is the embedded content as is.
+fn rendered(path: &str, content: &'static str, launch: Option<&[String]>) -> Cow<'static, str> {
+    let (REGISTER_JS, Some(prefix)) = (path, launch) else {
+        return Cow::Borrowed(content);
+    };
+    let Ok(json) = serde_json::to_string(&serde_json::json!({ "argv": prefix })) else {
+        return Cow::Borrowed(content);
+    };
+    let mut out = String::with_capacity(content.len() + json.len());
+    for segment in content.split_inclusive('\n') {
+        if segment.starts_with(LAUNCH_MARKER) {
+            out.push_str(LAUNCH_PREFIX);
+            out.push_str(&json);
+            out.push_str(LAUNCH_SUFFIX);
+            if segment.ends_with('\n') {
+                out.push('\n');
+            }
+        } else {
+            out.push_str(segment);
+        }
+    }
+    Cow::Owned(out)
+}
+
+/// A digest of the file set as installed with `launch` (paths and bytes).
+pub fn files_fingerprint(launch: Option<&[String]>) -> String {
     let mut digest = Sha256::new();
     for (path, content) in MOD_FILES {
+        let content = rendered(path, content, launch);
         digest.update(path.as_bytes());
         digest.update([0]);
         digest.update((content.len() as u64).to_le_bytes());
@@ -86,29 +135,47 @@ pub fn files_fingerprint() -> String {
     format!("{:x}", digest.finalize())
 }
 
-/// Whether every embedded file exists in `dir` with the embedded bytes.
-pub fn files_current(dir: &Path) -> bool {
-    MOD_FILES.iter().all(|(path, content)| {
-        let file = dir.join(path);
-        file.symlink_metadata()
-            .is_ok_and(|meta| meta.file_type().is_file())
-            && fs::read(&file).is_ok_and(|bytes| bytes == content.as_bytes())
-    })
+fn file_matches(file: &Path, content: &str) -> bool {
+    file.symlink_metadata()
+        .is_ok_and(|meta| meta.file_type().is_file())
+        && fs::read(file).is_ok_and(|bytes| bytes == content.as_bytes())
 }
 
-/// Write the files that differ from the embedded set, each by
+/// Whether every embedded file exists in `dir` with the bytes rendered for
+/// `launch`.
+pub fn files_current(dir: &Path, launch: Option<&[String]>) -> bool {
+    MOD_FILES
+        .iter()
+        .all(|(path, content)| file_matches(&dir.join(path), &rendered(path, content, launch)))
+}
+
+/// The launch prefix the installed `hooks/register.js` carries; `None` when
+/// the file is missing or unreadable or holds the unrendered `null` form.
+pub fn installed_launch(dir: &Path) -> Option<Vec<String>> {
+    let text = fs::read_to_string(dir.join(REGISTER_JS)).ok()?;
+    let line = text.lines().find(|line| line.starts_with(LAUNCH_PREFIX))?;
+    let json = line
+        .strip_prefix(LAUNCH_PREFIX)?
+        .strip_suffix(LAUNCH_SUFFIX)?;
+    let value: Value = serde_json::from_str(json).ok()?;
+    value
+        .get("argv")?
+        .as_array()?
+        .iter()
+        .map(|item| item.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Write the files that differ from the set rendered for `launch`, each by
 /// write-to-temp-then-rename (mode 0644, directories 0755). Returns the
 /// published paths written; an unchanged set writes nothing (a needless
 /// rewrite would reload the module in running sessions).
-pub fn write_files(dir: &Path) -> Result<Vec<&'static str>, SetupError> {
+pub fn write_files(dir: &Path, launch: Option<&[String]>) -> Result<Vec<&'static str>, SetupError> {
     let mut written = Vec::new();
     for (path, content) in MOD_FILES {
+        let content = rendered(path, content, launch);
         let file = dir.join(path);
-        let unchanged = file
-            .symlink_metadata()
-            .is_ok_and(|meta| meta.file_type().is_file())
-            && fs::read(&file).is_ok_and(|bytes| bytes == content.as_bytes());
-        if unchanged {
+        if file_matches(&file, &content) {
             continue;
         }
         let parent = file.parent().ok_or(SetupError::Invalid)?;
@@ -473,6 +540,10 @@ pub struct InstallInput<'a> {
     /// accepted into the written value.
     pub shell_dirs: &'a [String],
     pub policy: &'a ManagedPolicySources,
+    /// The hooks' invocation prefix rendered into the installed
+    /// `hooks/register.js` (see [`launch_prefix`]); `None` leaves the file
+    /// as embedded (bare `herdr-threads` from PATH).
+    pub launch: Option<&'a [String]>,
 }
 
 /// Write the mod files and append the mod directory to the key. See the
@@ -503,7 +574,7 @@ pub fn install(input: &InstallInput) -> Result<InstallOutcome, SetupError> {
     if dir_text.contains(':') {
         return Err(SetupError::Invalid);
     }
-    let files_written = write_files(&dir)?;
+    let files_written = write_files(&dir, input.launch)?;
     let current = config_bytes(input.settings)?;
     let mut value = object(&current)?;
     let existing = plugin_dirs_value(&value)?;
@@ -548,7 +619,7 @@ pub fn install(input: &InstallInput) -> Result<InstallOutcome, SetupError> {
         copied_from_shell: copied.clone(),
         before: current.clone(),
         after: written.clone(),
-        files_fingerprint: files_fingerprint(),
+        files_fingerprint: files_fingerprint(input.launch),
     };
     let manifest_bytes = serde_json::to_vec(&manifest).map_err(|_| SetupError::Invalid)?;
     if earlier.is_some() {
@@ -697,6 +768,10 @@ pub struct Inspection {
     pub settings_value: Option<String>,
     /// Setup recorded writing the key.
     pub recorded: bool,
+    /// The launch prefix the installed `hooks/register.js` carries.
+    pub installed_launch: Option<Vec<String>>,
+    /// The installed launch equals the expected one.
+    pub launch_current: bool,
 }
 
 impl Inspection {
@@ -706,18 +781,26 @@ impl Inspection {
     }
 }
 
-pub fn inspect(settings: &Path, manifest_path: &Path, state_dir: &Path) -> Inspection {
+pub fn inspect(
+    settings: &Path,
+    manifest_path: &Path,
+    state_dir: &Path,
+    expected_launch: Option<&[String]>,
+) -> Inspection {
     let dir = mod_dir(state_dir);
     let settings_value = settings_value(settings);
     let dir_text = dir.to_str().unwrap_or_default();
+    let installed_launch = installed_launch(&dir);
     Inspection {
-        files_current: files_current(&dir),
+        files_current: files_current(&dir, expected_launch),
         files_present: dir.symlink_metadata().is_ok(),
         settings_value_contains_mod_dir: settings_value
             .as_deref()
             .is_some_and(|value| split_dirs(value).iter().any(|d| d == dir_text)),
         settings_value,
         recorded: recorded(manifest_path).ok().flatten().is_some(),
+        launch_current: installed_launch.as_deref() == expected_launch,
+        installed_launch,
     }
 }
 

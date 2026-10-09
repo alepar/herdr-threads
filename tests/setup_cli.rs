@@ -2852,6 +2852,76 @@ fn setup_claude_installs_mod_and_status_reports_it() {
     );
 }
 
+/// ht-j16.20: the installed mod launches `watch` with exactly the hooks'
+/// invocation; status reports when the two disagree.
+#[test]
+fn setup_claude_hands_the_mod_the_hooks_invocation() {
+    const PREFIX: &str = "const LAUNCH = ";
+    const SUFFIX: &str = " // herdr-threads:launch (written by setup claude)";
+    let launch_line = |s: &Scratch| -> String {
+        fs::read_to_string(s.mod_dir().join("hooks/register.js"))
+            .unwrap()
+            .lines()
+            .find(|line| line.starts_with(PREFIX))
+            .unwrap()
+            .to_owned()
+    };
+    let s = claude_scratch(ORIGINAL);
+    let out = s.run(&["--json", "setup", "claude"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    let mut hooks: Vec<String> = serde_json::from_value(report["hook_argv"].clone()).unwrap();
+    assert_eq!(hooks.split_off(hooks.len() - 2), ["hook", "claude"]);
+    let line = launch_line(&s);
+    let rendered: serde_json::Value = serde_json::from_str(
+        line.strip_prefix(PREFIX)
+            .unwrap()
+            .strip_suffix(SUFFIX)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rendered["argv"], serde_json::json!(hooks));
+    assert!(Path::new(hooks[0].as_str()).is_absolute(), "{hooks:?}");
+    assert_eq!(
+        hooks[1..],
+        [
+            "--state-dir",
+            s.state.to_str().unwrap(),
+            "--host-endpoint",
+            s.host().to_str().unwrap()
+        ]
+    );
+
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert_eq!(status["mod"]["launch_current"], true, "{status}");
+    assert_eq!(status["mod"]["launch"], serde_json::json!(hooks));
+    assert!(status["mod"].get("launch_note").is_none());
+    assert_eq!(status["mod"]["installed"], true);
+
+    // The installed launch now names another invocation.
+    let register = s.mod_dir().join("hooks/register.js");
+    let edited = fs::read_to_string(&register).unwrap().replace(
+        &line,
+        &format!("{PREFIX}{{\"argv\":[\"/elsewhere/ht\"]}}{SUFFIX}"),
+    );
+    fs::write(&register, edited).unwrap();
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert_eq!(status["mod"]["launch_current"], false, "{status}");
+    assert_eq!(
+        status["mod"]["launch"],
+        serde_json::json!(["/elsewhere/ht"])
+    );
+    assert!(status["mod"]["launch_note"].is_string(), "{status}");
+    assert_eq!(status["mod"]["installed"], false);
+
+    // Setup again repairs it (upgraded), and unsetup removes it with the mod.
+    let again = json(&s.run(&["--json", "setup", "claude"]));
+    assert_eq!(again["mod"]["action"], "upgraded", "{again}");
+    assert_eq!(launch_line(&s), line);
+    assert!(s.run(&["unsetup", "claude"]).status.success());
+    assert!(!s.mod_dir().exists());
+}
+
 #[test]
 fn setup_status_channel_status_unavailable_without_daemon() {
     let s = claude_scratch(ORIGINAL);

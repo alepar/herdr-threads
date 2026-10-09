@@ -79,7 +79,11 @@ builds `io` from `$`. Rules (spec D5, D6):
 - **Startup.** At `session.start` (also after a reload) the mod reads the recorded turn state
   from `$.state['herdr-threads'].turns`; with none it starts *assumed busy* until the first main
   `turn.complete`, or 5 s with no `turn.start` and a readable prompt box. It then spawns
-  `watch` for the session id (`HERDR_THREADS_BIN` names another binary). A missing `$.store`,
+  `watch` for the session id (and later `watch ack`) with the launch line `setup claude` wrote into the
+  installed `hooks/register.js`: the hooks' own invocation (absolute executable, `--state-dir`,
+  `--host-endpoint`) as `const LAUNCH = {"argv":[...]}`. Only when that line is absent (the repo copy
+  `claude plugin test` loads, or a hand-loaded checkout) does the mod launch by name:
+  `HERDR_THREADS_BIN`, else `herdr-threads` from `PATH`. A missing `$.store`,
   `$.prompt.submit`, `$.session.append` or `$.process.spawn` leaves the mod inert (ledger
   `refused`, reason `api_missing`). The engine's validator forbids reading `$` members as
   values, so the check is by calling: the store is probed at load, the others on first use.

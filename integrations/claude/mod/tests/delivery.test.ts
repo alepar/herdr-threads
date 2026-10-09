@@ -55,6 +55,7 @@ function harness(opts: Any = {}) {
   }
   const io: Any = {
     bin: 'herdr-threads',
+    argv: opts.argv ?? null,
     apis: async () => opts.apis !== false,
     now: () => h.t,
     sessionId: async () => h.sid,
@@ -112,7 +113,11 @@ function harness(opts: Any = {}) {
     return h
   }
   h.kinds = () => h.entries.map((e: Any) => e.kind)
-  h.ackRuns = () => h.runs.filter((r: string[]) => r[1] === 'watch' && r[2] === 'ack')
+  h.ackRuns = () =>
+    h.runs.filter((r: string[]) => {
+      const at = r.indexOf('watch')
+      return at >= 0 && r[at + 1] === 'ack'
+    })
   return h
 }
 const IDLE = { open: [], assumedBusy: false, abortHoldSince: null }
@@ -125,6 +130,24 @@ test('startup spawns watch with the session id and starts assumed busy', async (
   expect(h.child().argv).toEqual(['herdr-threads', 'watch', '--harness', 'claude', '--session', 's1'])
   expect(h.core.snapshot().turns.assumedBusy).toBe(true)
   expect(h.stateWrites.length).toBe(1)
+})
+
+test('a configured launch prefix is used for watch and watch ack', async () => {
+  const prefix = ['/opt/ht', '--state-dir', '/s', '--host-endpoint', '/h.sock']
+  const h = await harness({ argv: prefix }).boot()
+  expect(h.child().argv).toEqual([...prefix, 'watch', '--harness', 'claude', '--session', 's1'])
+  h.line(msg('m1'))
+  await h.advance(1000)
+  h.core.onTurnComplete({ turnId: 'x' })
+  await flush()
+  const acks = h.ackRuns()
+  expect(acks.length).toBe(1)
+  expect(acks[0].slice(0, prefix.length + 4)).toEqual([...prefix, 'watch', 'ack', '--session', 's1'])
+  expect(acks[0].slice(prefix.length + 4, prefix.length + 6)).toEqual(['--via', expect.any(String)])
+  // without a configured launch the bare name is unchanged
+  const bare = await harness({ argv: null }).boot()
+  expect(bare.child().argv[0]).toBe('herdr-threads')
+  expect(bare.child().argv[1]).toBe('watch')
 })
 
 test('assumed busy ends at the first main turn.complete', async () => {
