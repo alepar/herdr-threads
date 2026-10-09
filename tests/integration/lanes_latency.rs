@@ -665,14 +665,16 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
     );
 }
 
-/// A deadline-lane commit that creates a warning wake (an overdue invitation
-/// writes `warning_jobs`, then `warning_recipients` and `wake_work`) is
-/// attempted by the wake lane in under 100 ms, with no tick wait for the wake
-/// lane: the commit's kick, not its 5 s safety tick, starts the pass.
+/// A deadline-lane commit that creates a warning (an overdue invitation writes
+/// `warning_jobs`, then `warning_recipients`) is judged by a wake-lane pass in
+/// under 100 ms, with no tick wait for the wake lane: the commit's kick, not
+/// its 5 s safety tick, starts the pass. The inviter owes nothing, so the pass
+/// delivers no wake: the transition reaches it as a check-in notice only.
 /// Kills: a deadline-origin commit that does not kick the wake lane (the
-/// warning would wait up to 5 s), and a wake lane that ignores the kick.
+/// warning would wait up to 5 s), a wake lane that ignores the kick, and a
+/// wake attempt for a member who owes nothing.
 #[test]
-fn deadline_commit_creating_a_warning_wake_is_attempted_within_100ms() {
+fn deadline_commit_creating_a_warning_is_judged_by_the_wake_lane_within_100ms() {
     let Some(session) = Session::new("warning_wake_within_100ms") else {
         return;
     };
@@ -691,30 +693,53 @@ fn deadline_commit_creating_a_warning_wake_is_attempted_within_100ms() {
         .as_str()
         .unwrap()
         .to_owned();
-    // The inviter has had no attention yet, so the warning is the first wake it
-    // is owed; the guest's own invitation wake is not the measured one.
+    // The inviter has had no attention yet; the unbound guest cannot be woken.
     session.ok(
         Some(&inviter),
         &["invite", &thread, "--seat", &guest, "--deadline", "1"],
     );
     session.wait_commits_quiet("wake", Duration::from_millis(1500));
+    let passes = Arc::new(Mutex::new(Vec::<Instant>::new()));
+    let recorded = Arc::clone(&passes);
+    session.probe.set_registered_idle_hook(
+        Lane::Wakes,
+        Box::new(move |_| recorded.lock().unwrap().push(Instant::now())),
+    );
     let kicks_before = session.probe.kick_log().len();
-    let committed_at = session.probe.next_commit_instant(Lane::Wakes);
-    let mut attempt = FirstCommit::watch(move || *committed_at.lock().unwrap());
+    let wake_commits = session.commits("wake");
     // The deadline passes after 1 s; the deadline lane notices at its next
     // 5 s safety tick (documented as up to 5 s late).
-    let attempted_at = attempt
-        .wait(Duration::from_secs(15))
-        .expect("the overdue invitation never produced a wake attempt");
-    let kicks = session.probe.kick_log().split_off(kicks_before);
-    let (_, _, kicked_at) = kicks
+    let give_up = Instant::now() + Duration::from_secs(15);
+    let kicked_at = loop {
+        let kicks = session.probe.kick_log().split_off(kicks_before);
+        if let Some((_, _, at)) = kicks.iter().find(|(lanes, origin, _)| {
+            lanes.contains(Lane::Wakes) && *origin == Some(Lane::Deadlines)
+        }) {
+            break *at;
+        }
+        assert!(
+            Instant::now() < give_up,
+            "no deadline-origin Wakes kick: {kicks:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    std::thread::sleep(Duration::from_secs(1));
+    let judged_at = passes
+        .lock()
+        .unwrap()
         .iter()
-        .find(|(lanes, origin, _)| lanes.contains(Lane::Wakes) && *origin == Some(Lane::Deadlines))
-        .unwrap_or_else(|| panic!("no deadline-origin Wakes kick: {kicks:?}"));
-    let latency = attempted_at.saturating_duration_since(*kicked_at);
+        .copied()
+        .find(|at| *at >= kicked_at)
+        .expect("the wake lane ignored the deadline-origin kick");
+    let latency = judged_at.duration_since(kicked_at);
     assert!(
         latency < Duration::from_millis(100),
-        "deadline commit to wake attempt took {latency:?}: {kicks:?}"
+        "deadline commit to wake pass took {latency:?}"
+    );
+    assert_eq!(
+        session.commits("wake"),
+        wake_commits,
+        "no wake is attempted for an inviter who owes nothing"
     );
     assert!(
         session

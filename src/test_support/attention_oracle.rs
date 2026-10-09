@@ -238,6 +238,10 @@ pub fn scan_effective_seat_attention(
             position.physical_warning_after = ordinal;
         }
         visited += 1;
+        // The digest rule: every recipient's transition counts. Wake further
+        // narrows transitions to the affected seat (`warning_wakes_seat`), so
+        // compare wake against this oracle only on fixtures without
+        // `warning_conditions` rows for non-affected seats.
         if let Some(warning) = effective_warning_by_id(db, &warning_id)?
             && is_warning_recipient(db, &warning_id, seat_id)?
             && warning_condition_actionable(db, &warning)?

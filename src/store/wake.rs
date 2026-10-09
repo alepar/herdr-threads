@@ -174,15 +174,17 @@ pub fn load_candidate(
         .transpose()?;
     if warning_offer.is_some() && attention.latest_warning_seq.is_some() {
         // Informational delivery is exact-page based. A newer, already
-        // covered legacy warning must not hide an older unoffered notice.
-        // One seat-leading indexed probe, then only the bounded attribution
-        // backlog if needed: independent of retained warning history.
-        let mut unoffered = super::attention::seat_has_pending_notices(db, seat.as_str())?;
+        // covered legacy warning must not hide an older unoffered notice that
+        // wakes this seat. One seat-leading bounded walk, then only the
+        // bounded attribution backlog if needed: independent of retained
+        // warning history.
+        let mut unoffered = super::attention::seat_has_pending_wake_notices(db, seat.as_str())?;
         if !unoffered {
             let backlog = super::attention::warning_backlog(db, seat.as_str(), &|| Ok(()))?;
             for warning in backlog.items {
                 if super::attention::informational_notice_pending(db, seat.as_str(), &warning.id)?
                     == Some(true)
+                    && super::attention::warning_wakes_seat(db, seat.as_str(), &warning.id)?
                 {
                     unoffered = true;
                     break;
