@@ -352,9 +352,7 @@ where
         Err(commands::ParseFailure::Usage(text)) => return Err(RunError::Usage(text)),
         Err(commands::ParseFailure::Invalid(error)) => return Err(error.into()),
     };
-    let _namespace = crate::protocol::output::CommandNamespaceGuard::enter(
-        parsed.actor == actor_route::InvocationActor::Human,
-    );
+    let _namespace = human::invocation_scope(parsed.actor);
     let retry = matches!(parsed.action, CliAction::Retry(_));
     run_parsed_in_pane(parsed, caller_pane, writer).map_err(|mut error| {
         if !retry && let RunError::Api(api) = &mut error {
@@ -459,9 +457,10 @@ fn run_parsed_in_pane<W: Write>(
         None
     };
     let _retry_namespace = original_actor.map(|original| {
-        crate::protocol::output::CommandNamespaceGuard::enter(
-            original == journal::OriginalActor::HumanOrOperator,
-        )
+        human::invocation_scope(match original {
+            journal::OriginalActor::Agent => actor_route::InvocationActor::Agent,
+            journal::OriginalActor::HumanOrOperator => actor_route::InvocationActor::Human,
+        })
     });
     let paths = InstancePaths::resolve(&context)?;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
@@ -2548,9 +2547,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     clock: &dyn Clock,
     writer: &mut W,
 ) -> Result<(), RunError> {
-    let _namespace = crate::protocol::output::CommandNamespaceGuard::enter(
-        parsed.actor == actor_route::InvocationActor::Human,
-    );
+    let _namespace = human::invocation_scope(parsed.actor);
     if let CliAction::Retry(recovery) = &parsed.action {
         retry::preflight_original_actor(
             journal.root(),
@@ -2608,9 +2605,10 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     // replays under its saved caller's namespace rather than the live binding.
     let replay = ordinary_retry_claim(&parsed, journal.root())?;
     let _retry_namespace = replay.as_ref().map(|claim| {
-        crate::protocol::output::CommandNamespaceGuard::enter(
-            claim.harness == crate::protocol::authority::Harness::Human,
-        )
+        human::invocation_scope(match claim.harness {
+            crate::protocol::authority::Harness::Human => actor_route::InvocationActor::Human,
+            crate::protocol::authority::Harness::Agent(_) => actor_route::InvocationActor::Agent,
+        })
     });
     if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
         && own_text_inbox

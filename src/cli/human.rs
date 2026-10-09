@@ -27,6 +27,17 @@ use crate::protocol::{
 use crate::view::escape::{Context, display_width, escape_for_terminal, pad_to_width};
 use std::{cell::RefCell, collections::HashMap};
 
+/// Scope ready-command spelling from the invocation or retained caller actor.
+/// The shared argv helpers restore nested scopes on Drop, including error paths;
+/// output presentation and peer labels never choose this actor.
+pub(super) fn invocation_scope(
+    actor: super::actor_route::InvocationActor,
+) -> crate::protocol::output::CommandNamespaceGuard {
+    crate::protocol::output::CommandNamespaceGuard::enter(
+        actor == super::actor_route::InvocationActor::Human,
+    )
+}
+
 const TOPIC_COLUMN: usize = 48;
 
 /// Thread topics known to the inbox renderer: `thread -> (topic, clipped)`.
@@ -129,8 +140,8 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
             ));
             if let Some(thread) = &accepted.summary_available {
                 out.push_str(&format!(
-                    "summary available: herdr-threads summary {}\n",
-                    thread.as_str()
+                    "summary available: {}\n",
+                    format_command_argv(&detail_argv(spec, &["summary", thread.as_str()]))
                 ));
             }
         }
@@ -837,3 +848,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../../tests/cli/golden_contract.rs"]
 mod golden_contract;
+
+#[cfg(test)]
+#[path = "../../tests/cli/guidance.rs"]
+mod guidance;
