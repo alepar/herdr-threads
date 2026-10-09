@@ -370,8 +370,9 @@ Delivery is not a wake. A built-in transition wakes only the affected seat of a 
 condition (the hard-deadline backstop for the obligation that seat owes); a clear, and every
 transition about another seat, waits for the member's next check-in offer. Accepted limit: an idle
 member learns of another seat's overdue or cleared obligation only when its pane next checks in. When
-more than the bounded window of unoffered notices is pending, the offer probe stays conservative and
-may still wake.
+more than the bounded window of pending warnings or unoffered notices is visible, narrowing cannot rule
+out an older waking notice (such as a service notice), so the wake keeps its unnarrowed answer and the
+offer probe stays conservative: it may still wake, never silently drop one.
 
 **A8. Passive lazy delivery bookkeeping.** Recorded `ordinary`/`lazy` delivery mode is immutable and
 independent of sender role, relay and human intent. A lazy audience is frozen by canonical preparation
