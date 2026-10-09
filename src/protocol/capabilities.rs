@@ -18,6 +18,8 @@ pub const HARNESS_STATES: &str = "harness.states";
 pub const SEAT_MANAGED_LAUNCH: &str = "seat.managed_launch";
 pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
 
+pub const THREAD_JOIN: &str = "thread.join_v1";
+
 pub const INVITATION_REJECT: &str = "invitation.reject_v1";
 
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
@@ -40,6 +42,7 @@ pub const ADVERTISED: &[&str] = &[
     SEAT_MANAGED_LAUNCH,
     INBOX_BATCH,
     INVITATION_REJECT,
+    THREAD_JOIN,
     PARTICIPANT_LOCATIONS,
     PICKER_DIRECTORY_V1,
     ATTENTION_NOTICE_DELIVERY,

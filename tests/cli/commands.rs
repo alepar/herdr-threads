@@ -1807,3 +1807,14 @@ fn human_topology_recovery_help_and_errors_use_only_canonical_route() {
     let parsed=parse_argv(["ht","human","--state-dir","human","handoff","recover","local:1","--attempt","1","--not-created"]).unwrap();assert_eq!(parsed.output.context.state_dir.as_deref(),Some("human"));
     let parsed=parse_argv(["ht","handoff","--pane","w1:p2","--thread","t1","--kind","codex","--agent-arg=recover","--","human handoff recover local:1"]).unwrap();let CliAction::Handoff(request)=parsed.action else {panic!("legacy route changed")};assert_eq!(request.body,"human handoff recover local:1");assert_eq!(request.launch.argv,vec!["recover"]);
 }
+
+#[test]
+fn public_join_parses_and_freezes_thread_selector() {
+    let mut parsed = parse_argv(["herdr-threads", "join", "shared work"]).unwrap();
+    assert_eq!(parsed.thread_selector.as_deref(), Some("shared work"));
+    crate::cli::threads::resolve_cli_threads::<crate::protocol::results::ApiError>(
+        &mut parsed, |_| Ok(ThreadId::new("tResolved")),
+    ).unwrap();
+    let CliAction::Mutation(spec) = parsed.action else { panic!("mutation expected") };
+    assert_eq!(crate::cli::threads::selector_mut(&mut CliAction::Mutation(spec)).unwrap().as_str(), "tResolved");
+}

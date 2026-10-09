@@ -2277,6 +2277,9 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
             };
+            if matches!(&mutation, MutationSpec::Join(_)) {
+                require_join_capability(client, clock)?;
+            }
             if matches!(&mutation, MutationSpec::Reject { .. }) {
                 require_rejection_capability(client, clock)?;
             }
@@ -2360,6 +2363,9 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 )
                 .map_err(bridge_run_error)?;
             } else {
+                if pending.semantic.kind() == crate::protocol::results::IntentKind::Join {
+                    require_join_capability(client, clock)?;
+                }
                 if pending.semantic.kind() == crate::protocol::results::IntentKind::Reject {
                     require_rejection_capability(client, clock)?;
                 }
@@ -2419,6 +2425,7 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
             seat,
             deadline_millis,
         },
+        MutationSpec::Join(thread) => SemanticMutation::Join { thread },
         MutationSpec::Accept(thread) => SemanticMutation::Accept { thread },
         MutationSpec::Reject {
             thread,
@@ -2514,12 +2521,35 @@ fn require_rejection_capability<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
 ) -> Result<(), RunError> {
+    require_mutation_capability(
+        client,
+        clock,
+        crate::protocol::capabilities::INVITATION_REJECT,
+        "rejecting invitations",
+    )
+}
+
+fn require_join_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    require_mutation_capability(
+        client,
+        clock,
+        crate::protocol::capabilities::THREAD_JOIN,
+        "joining threads",
+    )
+}
+
+fn require_mutation_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    capability: &str,
+    action: &str,
+) -> Result<(), RunError> {
     match client.call(Command::Capabilities, &cooperative_budget(clock)) {
         Ok(CommandResult::Capabilities(list))
-            if list
-                .capabilities
-                .iter()
-                .any(|name| name == crate::protocol::capabilities::INVITATION_REJECT) =>
+            if list.capabilities.iter().any(|name| name == capability) =>
         {
             Ok(())
         }
@@ -2532,9 +2562,9 @@ fn require_rejection_capability<C: LocalClient + ?Sized>(
         {
             Err(RunError::Api(error))
         }
-        _ => Err(unsupported(
-            "daemon lacks invitation.reject_v1; use a compatible daemon before rejecting invitations",
-        )),
+        _ => Err(unsupported(&format!(
+            "daemon lacks {capability}; use a compatible daemon before {action}"
+        ))),
     }
 }
 

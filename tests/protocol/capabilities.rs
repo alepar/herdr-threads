@@ -275,6 +275,7 @@ fn capability_constants_are_stable() {
             "seat.managed_launch",
             "inbox.batch_v1",
             "invitation.reject_v1",
+            "thread.join_v1",
             "participants.locations_v1",
             "picker.directory_v1",
             "attention.notice_delivery_v1"
@@ -298,6 +299,7 @@ fn every_advertised_capability_has_a_handler() {
             SEAT_MANAGED_LAUNCH => probe_seat_managed_launch(),
             INBOX_BATCH => probe_inbox_batch(),
             INVITATION_REJECT => probe_invitation_reject(),
+            THREAD_JOIN => probe_thread_join(),
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
             ATTENTION_NOTICE_DELIVERY => {
@@ -1096,4 +1098,34 @@ fn picker_directory_wire_keeps_old_directory_shape_and_cursor_only_contract() {
     assert!(page.validate().is_err());
     page.stop_reason = StopReason::Complete;
     assert!(page.validate().is_ok());
+}
+
+fn probe_thread_join() {
+    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let command = Command::Join(crate::protocol::commands::Join {
+        thread: crate::protocol::ids::ThreadId::new("t1"),
+        operation: crate::protocol::ids::OperationId::new("join-probe"),
+        claim: crate::protocol::authority::CallerClaim {
+            instance: "i".into(),
+            seat: crate::protocol::ids::SeatId::new("s1"),
+            binding_generation: 1,
+            role: crate::protocol::authority::CallerRole::TopLevel,
+            harness: crate::protocol::authority::Harness::Codex,
+            native_session: crate::protocol::ids::NativeSessionId::new("n"),
+            execution: crate::protocol::ids::ExecutionId::new("e"),
+            target: crate::protocol::ids::HostTargetId::new("w1:p1"),
+        },
+    });
+    assert!(command.validate().is_ok());
+    assert_eq!(
+        serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(),
+        command
+    );
+    assert_eq!(
+        handler
+            .handle(command, PeerIdentity::from_kernel(501), &budget())
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
 }

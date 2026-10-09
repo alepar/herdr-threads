@@ -504,3 +504,17 @@ fn user_intent_irc_markers_are_independent() {
         "[12:34] <w/alice/s001> Always test.\n"
     );
 }
+
+#[test]
+fn public_join_is_visible_in_human_read_and_follow() {
+    let mut joined = summary(
+        1,
+        "s001",
+        r#"{"action":"join","seat":"s001","generation":1,"observation":"cooperative_top_level"}"#,
+    );
+    joined.kind = MessageKind::Info;
+    assert_eq!(
+        render(&joined, &mut party()),
+        "[12:34] -!- w/alice/s001 joined\n"
+    );
+}

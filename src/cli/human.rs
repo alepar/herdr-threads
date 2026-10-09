@@ -143,6 +143,9 @@ pub fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String> {
             out.push_str(&format!("Sent message {}.\n", message.as_str()))
         }
         CommandResult::Acknowledged(ack) => acknowledged(ack, &mut out),
+        CommandResult::Joined(thread) => {
+            out.push_str(&format!("Joined thread {}.\n", thread.as_str()))
+        }
         CommandResult::Left(thread) => out.push_str(&format!("Left thread {}.\n", thread.as_str())),
         CommandResult::ThreadNameChanged(thread) => {
             out.push_str(&format!("Changed name of thread {}.\n", thread.as_str()))

@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-aa425b885727aee3)
+
+running 14 tests
+test protocol::capabilities::tests::capability_constants_are_stable ... ok
+test protocol::capabilities::tests::control_without_a_recorder_accepts_and_drops_evidence ... ok
+test protocol::capabilities::tests::harness_evidence_validation_bounds_every_field ... ok
+test protocol::capabilities::tests::daemon_counts_a_hook_parse_failure_report ... ok
+test protocol::capabilities::tests::this_daemon_advertises_exactly_advertised ... ok
+test protocol::capabilities::tests::harness_evidence_round_trips_on_the_wire ... ok
+test protocol::capabilities::tests::harness_states_round_trips_on_the_wire ... ok
+test protocol::capabilities::tests::capabilities_reply_round_trips_and_defaults_empty ... ok
+test protocol::capabilities::tests::picker_directory_wire_keeps_old_directory_shape_and_cursor_only_contract ... ok
+test protocol::capabilities::tests::pre_change_cli_decodes_this_daemons_hello_and_history ... ok
+test protocol::capabilities::tests::old_daemon_that_closes_reads_as_no_capabilities ... ok
+test protocol::capabilities::tests::old_daemon_that_answers_an_error_reads_as_no_capabilities ... ok
+test protocol::capabilities::tests::client_caches_capabilities_per_session ... ok
+test protocol::capabilities::tests::every_advertised_capability_has_a_handler ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 2667 filtered out; finished in 0.26s

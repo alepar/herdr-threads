@@ -20,6 +20,7 @@ The executable is `herdr-threads`. Global options select explicit state/host con
 | thread list [--joined/--invited/--all] [--search TEXT] [PAGE] | Bounded browsable directory; default joined/invited and pending obligations for current seat. |
 | thread show ID [PAGE] | Topic, age, ordinary/system/total counts, participants/status and pending counts. |
 | invite THREAD --seat SEAT [--deadline SECONDS] [--operator]; accept THREAD | Ordinary joined-seat invite or explicit zero-joined operator recovery invite; real target accepts separately. |
+| join THREAD | Explicit voluntary self-join of an active discoverable thread; pending invitations require accept/accept-required. Name or exact ID; no fabricated consent or ACK. |
 | leave THREAD; archive THREAD; reopen THREAD | Explicit membership and thread lifecycle. |
 | send THREAD --stdin [--require-ack SEAT ...] [--deadline SECONDS] | Ordinary send, optionally adding invited recipients to joined snapshot. |
 | ack MESSAGE_ID... | Atomic exact-ID batch; compact result, no echoed bodies. |

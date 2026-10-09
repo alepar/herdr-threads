@@ -1870,7 +1870,8 @@ fn actor_prerequisite_retained_agent_evidence_must_be_unique_valid_and_present()
 }
 
 #[test]
-fn actor_prerequisite_public_retained_agent_delivery_remains_inert_before_daemon_selection() {
+fn actor_prerequisite_public_retained_agent_delivery_requires_elected_daemon_without_output_or_cleanup()
+ {
     let tmp = TempRoot::new();
     let runtime = crate::daemon::paths::RuntimeContext::explicit(
         tmp.0.join("state"),
@@ -1922,11 +1923,11 @@ fn actor_prerequisite_public_retained_agent_delivery_remains_inert_before_daemon
         matches!(
             error,
             super::super::RunError::Api(ApiError {
-                code: ErrorCode::Unsupported,
+                code: ErrorCode::HostUnavailable,
                 ..
             })
         ),
-        "public retained delivery must refuse before daemon selection: {error:?}"
+        "public retained Agent delivery requires an elected daemon before output or cleanup: {error:?}"
     );
     assert!(output.is_empty());
     assert_eq!(snapshot(), before);

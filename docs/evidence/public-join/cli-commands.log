@@ -1,0 +1,67 @@
+nice: setpriority: Operation not permitted
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-aa425b885727aee3)
+
+running 60 tests
+test cli::commands::tests::body_bound_includes_json_escaping_before_submission ... ok
+test cli::commands::tests::continuation_argv_round_trips_context_filter_format_and_bounds ... ok
+test cli::commands::tests::cooperative_selection_requires_explicit_complete_context ... ok
+test cli::commands::tests::create_uses_supplied_topic_as_default_goal ... ok
+test cli::commands::tests::cursor_and_output_budget_errors_keep_typed_codes ... ok
+test cli::commands::tests::exit_status_help_names_both_exit_3_remedies ... ok
+test cli::commands::tests::cli_body_limit_is_the_store_limit_and_refuses_before_any_journaling ... ok
+test cli::commands::tests::filtered_diagnostics_continuation_parses_both_scopes ... ok
+test cli::commands::tests::doctor_debug_and_fix_are_scoped_to_doctor ... ok
+test cli::commands::tests::contract_id_and_harness_version_parse_as_local_actions ... ok
+test cli::commands::tests::exact_ack_materializes_one_typed_batch ... ok
+test cli::commands::tests::file_body_preserves_exact_utf8_and_rejects_invalid_bytes ... ok
+test cli::commands::tests::compound_and_local_page_continuations_keep_route_and_cursor ... ok
+test cli::commands::tests::contract_id_runs_without_a_daemon_and_prints_exact_documents ... ok
+test cli::commands::tests::handoff_thread_name_uses_shared_canonical_resolution ... ok
+test cli::commands::tests::handoff_parser_preserves_native_elements_and_distinct_names ... ok
+test cli::commands::tests::inline_body_preserves_unicode_and_newlines_without_echo ... ok
+test cli::commands::tests::mutation_is_not_submitted_without_durable_operation_key ... ok
+test cli::commands::tests::local_composition_error_names_skill ... ok
+test cli::commands::tests::help_names_exact_ack_separate_accept_and_optional_summary ... ok
+test cli::commands::tests::local_recovery_reference_is_not_an_ack_id ... ok
+test cli::commands::tests::operator_invite_materializes_only_operator_variant ... ok
+test cli::commands::tests::overdue_uses_global_context_and_typed_diagnostics_read_without_operation_key ... ok
+test cli::commands::tests::ordinary_seat_resolution_requires_durable_mutation_key ... ok
+test cli::commands::tests::operator_service_recovery_uses_observed_boot_and_generation ... ok
+test cli::commands::tests::overdue_rejects_invalid_cursor_and_page_bounds ... ok
+test cli::commands::tests::handoff_parser_requires_one_thread_explicit_pane_and_one_body ... ok
+test cli::commands::tests::local_command_table_uses_local_backend_without_wire_call ... ok
+test cli::commands::tests::public_join_parses_and_freezes_thread_selector ... ok
+test cli::commands::tests::identical_repeated_global_paths_are_accepted_and_conflicts_refused ... ok
+test cli::commands::tests::digest_item_form_is_refused_as_invalid_arguments_naming_the_bare_id ... ok
+test cli::commands::tests::documented_read_table_dispatches_to_stub_client ... ok
+test cli::commands::tests::bounded_collection_routes_parse_with_exact_filters ... ok
+test cli::commands::tests::recent_history_rejects_conflicting_page_options ... ok
+test cli::commands::tests::read_routes_select_typed_operations_and_explicit_context ... ok
+test cli::commands::tests::required_acceptance_names_the_displayed_episode_and_revision ... ok
+test cli::commands::tests::send_help_names_relays_user ... ok
+test cli::commands::tests::revised_directory_accept_and_body_routes_are_typed ... ok
+test cli::commands::tests::documented_mutations_dispatch_exact_typed_command_to_stub ... ok
+test cli::commands::tests::stdin_body_reads_raw_utf8_once_with_bound ... ok
+test cli::commands::tests::seat_retire_requires_operator_flag ... ok
+test cli::commands::tests::send_accepts_multi_and_repeated_require_ack_with_following_options ... ok
+test cli::commands::tests::copied_compact_and_persisted_ids_parse_as_command_inputs ... ok
+test cli::commands::tests::recent_history_enforces_shared_page_limit_before_dispatch ... ok
+test cli::commands::tests::send_rejects_duplicate_and_excess_explicit_recipients ... ok
+test cli::commands::tests::parser_rejects_operator_and_source_conflicts ... ok
+test cli::commands::tests::seat_rebind_replace_parses_to_operator_replace ... ok
+test cli::commands::tests::send_relays_user_flag_reaches_the_command_and_is_off_by_default ... ok
+test cli::commands::tests::rejection_requires_exact_invitation_and_bounded_nonblank_reason ... ok
+test cli::commands::tests::top_level_participants_aliases_thread_participants ... ok
+test cli::commands::tests::thread_names_unresolved_dispatch_refuses_before_any_backend_call ... ok
+test cli::commands::tests::thread_names_public_create_and_selectors ... ok
+test cli::commands::tests::warnings_route_defaults_to_caller_and_requires_valid_page ... ok
+test cli::commands::tests::service_help_explains_recovery_workflow_and_safety_boundary ... ok
+test cli::commands::tests::read_follow_parses_its_options_and_refuses_page_selectors ... ok
+test cli::commands::tests::top_level_follow_refuses_history_only_or_conflicting_ranges ... ok
+test cli::commands::tests::user_intent_send_cli_parses_and_dispatches ... ok
+test cli::commands::tests::thread_names_every_selector_freezes_one_literal_id ... ok
+test cli::commands::tests::thread_names_validate_bytes_controls_and_exact_spaces ... ok
+test cli::commands::tests::top_level_follow_matches_read_follow_for_exact_names_and_picker ... ok
+
+test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 2621 filtered out; finished in 0.09s

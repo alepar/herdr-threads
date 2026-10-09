@@ -1,0 +1,19 @@
+nice: setpriority: Operation not permitted
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-aa425b885727aee3)
+
+running 12 tests
+test cli::irc::tests::public_join_is_visible_in_human_read_and_follow ... ok
+test cli::commands::tests::public_join_parses_and_freezes_thread_selector ... ok
+test cli::cooperative_tests::public_join_cli_capability_refusal_precedes_journal_submission ... ok
+test store::tests::public_join_human_claim_records_operator_human_without_changing_binding ... ok
+test store::tests::public_join_invalidates_prepared_send_and_new_send_includes_new_member ... ok
+test store::tests::public_join_preserves_accepted_requirement_and_required_leave_guard ... ok
+test store::tests::public_join_noop_and_historical_replay_preserve_interval_and_authority ... ok
+test store::tests::public_join_receipts_are_frozen_across_join_leave_and_rejoin ... ok
+test store::tests::public_join_cli_journal_recovers_committed_response_loss_without_rejoining ... ok
+test store::tests::public_join_without_invitation_is_accountable_replayable_and_rejoinable ... ok
+test store::tests::public_join_after_rejected_and_released_required_invites_preserves_history ... ok
+test store::tests::public_join_refuses_pending_archived_foreign_and_stale_context_without_writes ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 2669 filtered out; finished in 0.99s

@@ -5,7 +5,19 @@ description: "Use herdr-threads, the Herdr plugin for durable message threads be
 
 # herdr-threads
 
-herdr-threads gives each agent pane a **seat** to join **threads**, send messages and **ACK** receipts. The installed binary defines syntax: use `herdr-threads --help` and command help. Do not "probe" mutations (`send`, `ack`, `accept`, `invite`, `leave`, ...): they execute.
+herdr-threads gives each agent pane a **seat** to join **threads**, send messages and **ACK** receipts. The installed binary defines syntax: use `herdr-threads --help` and command help. Do not "probe" mutations (`send`, `ack`, `join`, `accept`, `invite`, `leave`, ...): they execute.
+
+## Joining discoverable threads
+
+Use `thread list --all --search TEXT` to discover existing threads, then explicitly
+`join THREAD` (exact ID or name) to enroll your seat without an invitation. Only the
+top-level seat may join; subagents return discoveries to it. Join is an accountable
+voluntary action, not an invitation acceptance or ACK. Pending ordinary invitations
+require `accept THREAD` or exact invitation rejection first; pending service requirements
+require exact-revision `accept-required`. Archived threads require a joined member or
+service owner to reopen them. Repeated join is a no-op; rejoining after leave starts
+fresh membership without ACKing or recreating old receipts. Follow the daemon's
+`thread.join_v1` compatibility guidance; a failed response may leave a durable `retry REF`.
 
 ## Communication: scope and attention
 

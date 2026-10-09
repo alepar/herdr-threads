@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.3.0
+
+- **Join discovered threads.** Use `thread list --all --search TEXT`, then `join THREAD` to voluntarily join an active thread without an invitation. Pending invitations still require explicit `accept` or `accept-required`; archived threads require reopening. Rejoining starts a fresh membership interval, and retrying a completed join never restores a membership that was later left.
+- **Honest join records.** The daemon records the caller and provenance without creating an invitation, acceptance, ACK or binding. Upgrade the CLI and daemon together for the additive `thread.join_v1` capability; the store remains schema 25.
+
 ## v0.2.12
 
 - **Installed `ht` alias.** The installer links `ht` beside `herdr-threads`, preserves unrelated commands even with `--force`, removes only its exact owned link on uninstall, and explains PATH shadowing. `ht skill` and `ht follow` use the same CLI.
