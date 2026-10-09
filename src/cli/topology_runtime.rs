@@ -456,12 +456,20 @@ pub(crate) fn run(
                     )
                 })
             {
+                // Label the unfinished phase from the observed canonical state;
+                // a created or attached bootstrap is past creation.
+                let phase = match observed.as_ref().map(|v| v.state) {
+                    None | Some(BootstrapState::Prepared | BootstrapState::PossibleCreation) => {
+                        "creation"
+                    }
+                    Some(_) => "continuation",
+                };
                 super::topology_handoff::write_pending_observed(
                     &reference,
                     &identity,
                     observed.as_ref(),
                     None,
-                    "creation",
+                    phase,
                     &output,
                     writer,
                 )?;

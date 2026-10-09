@@ -692,6 +692,42 @@ impl Fixture {
     fn peer_binding(&self) {
         self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation FROM occupant_bindings WHERE seat_id='sender'",[Uuid::new_v4().to_string()]).unwrap();
     }
+    // Check in the recipient as a second valid cooperative top-level caller,
+    // with the same binding/context shape the fixture seeds for the sender.
+    fn check_in_recipient(&self) {
+        let execution = Uuid::new_v4();
+        self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation FROM occupant_bindings WHERE seat_id='sender'",[execution.to_string()]).unwrap();
+        let contexts = self
+            .paths
+            .instance_dir
+            .join("contexts")
+            .join(format!("{:x}", Sha256::digest(b"recipient")));
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&contexts)
+            .unwrap();
+        fs::set_permissions(&contexts, fs::Permissions::from_mode(0o700)).unwrap();
+        ContextJournal::open(
+            &contexts,
+            self.instance,
+            "recipient",
+            Duration::from_secs(1),
+        )
+        .unwrap()
+        .install_reattached(OccupantContext {
+            format_version: 1,
+            instance: self.instance,
+            seat: "recipient".into(),
+            target: "w4:p2".into(),
+            harness: Harness::Codex,
+            binding_generation: 1,
+            execution,
+            session: SessionReference::Native("peer-session".into()),
+            role: Role::TopLevel,
+        })
+        .unwrap();
+    }
     fn evidence_dir(&self, out: impl AsRef<Path>) -> PathBuf {
         out.as_ref()
             .join(self.iso.state_root().file_name().unwrap())
@@ -1754,7 +1790,7 @@ fn pending_public_postpublication_witnessed_read_failure_reports() {
 }
 
 #[test]
-fn pending_public_prepublication_and_authority_failures_are_silent() {
+fn pending_public_prepublication_failure_is_silent() {
     // Prepublication: the same witnessed read fails before any original exists.
     let f = Fixture::new();
     f.setup("codex");
@@ -1770,18 +1806,34 @@ fn pending_public_prepublication_and_authority_failures_are_silent() {
     );
     assert!(f.original_bytes().is_empty());
     assert_eq!(f.effect_counts(), (0, 0, 0, 0));
-    // Authority: a different live caller cannot obtain the original's report.
+}
+fn args_for(f: &Fixture) -> Vec<String> {
+    let binary = f.iso.path("codex");
+    f.new_thread_args("codex", binary.to_str().unwrap())
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+// A different but valid checked-in caller reaches topology runtime's original
+// caller check and is refused before any host read, report or effect.
+#[test]
+fn pending_public_retry_from_different_valid_caller_is_silent() {
     let f = Fixture::new();
     f.setup("codex");
     f.host.state.lock().unwrap().lose_after_publication = Some(("pane.get", f.journal()));
     let args = args_for(&f);
-    let out = f.run(
+    let first = f.run(
         &args.iter().map(String::as_str).collect::<Vec<_>>(),
         OPTIONS,
     );
-    assert!(!out.status.success());
+    assert!(!first.status.success());
+    assert!(!first.stdout.is_empty(), "original caller gets its report");
     let reference = f.reference();
+    let original = f.original_bytes();
+    f.check_in_recipient();
     f.host.state.lock().unwrap().lose_after_publication = Some(("pane.get", f.journal()));
+    let gets = f.host.requests("pane.get").len();
     let mut cmd = f.command();
     cmd.args([
         "--cooperative-seat",
@@ -1794,7 +1846,8 @@ fn pending_public_prepublication_and_authority_failures_are_silent() {
         "top-level",
         "retry",
         &reference,
-    ]);
+    ])
+    .env("HERDR_THREADS_CODEX_OPTS", OPTIONS);
     let out = f.capture(cmd);
     assert!(!out.status.success());
     assert!(
@@ -1802,12 +1855,21 @@ fn pending_public_prepublication_and_authority_failures_are_silent() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("live retry differs from original caller"),
+        "{stderr}"
+    );
+    assert_eq!(f.host.requests("pane.get").len(), gets, "no host read");
+    assert!(
+        f.host
+            .state
+            .lock()
+            .unwrap()
+            .lose_after_publication
+            .is_some()
+    );
     assert_eq!(f.effect_counts(), (0, 0, 0, 0));
-}
-fn args_for(f: &Fixture) -> Vec<String> {
-    let binary = f.iso.path("codex");
-    f.new_thread_args("codex", binary.to_str().unwrap())
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
+    assert_eq!(f.count("SELECT count(*) FROM bootstrap_handoffs"), 0);
+    assert_eq!(f.original_bytes(), original);
 }

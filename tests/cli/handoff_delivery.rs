@@ -1517,7 +1517,17 @@ fn failed_publication_retry_boundary(output_boundary: bool) {
         "publication must reach actual directory sync failure: {first:?}"
     );
     assert!(terminal_path(&journal, &reference).is_file());
-    assert!(first_output.is_empty());
+    // No success presentation before durability; only the non-success
+    // pending report that canonical completion was observed.
+    let first_text = String::from_utf8(first_output).unwrap();
+    assert!(
+        !first_text.contains("\"outcome\":\"staged\"") && !first_text.contains("outcome: staged"),
+        "{first_text}"
+    );
+    assert!(
+        first_text.contains("completed_terminal_unconfirmed"),
+        "{first_text}"
+    );
     assert_eq!(
         journal.snapshot_delivery_origin(&reference).unwrap(),
         original
@@ -1944,6 +1954,9 @@ struct GuardedCanonical {
     lose_reply: Mutex<Option<&'static str>>,
     fail_before: Mutex<Option<(&'static str, ErrorCode)>>,
     actions: Mutex<Vec<&'static str>>,
+    // After the actual canonical completion commits, make the journal root
+    // unwritable so only the local terminal save fails.
+    readonly_after_complete: Mutex<Option<std::path::PathBuf>>,
 }
 impl GuardedCanonical {
     fn new(root: &std::path::Path) -> Self {
@@ -1952,6 +1965,7 @@ impl GuardedCanonical {
             lose_reply: Mutex::new(None),
             fail_before: Mutex::new(None),
             actions: Mutex::new(vec![]),
+            readonly_after_complete: Mutex::new(None),
         }
     }
     fn counts(&self) -> (i64, i64, i64) {
@@ -1989,6 +2003,13 @@ impl LocalClient for GuardedCanonical {
                 ),
                 "unguarded delivery route {c:?}"
             );
+            if matches!(c, Command::Participants(_)) {
+                let mut fail = self.fail_before.lock().unwrap();
+                if fail.as_ref().is_some_and(|(p, _)| *p == "participants") {
+                    let (_, code) = fail.take().unwrap();
+                    return Err(ApiError::new(code, "injected participants read failure"));
+                }
+            }
             return self.base.fake.call(c, b);
         };
         let canonical = request.plan.payload.namespace.clone();
@@ -2034,6 +2055,12 @@ impl LocalClient for GuardedCanonical {
             .base
             .store
             .delivery_mutate(&canonical, &request, permit, b)?;
+        if phase == "complete"
+            && let Some(root) = self.readonly_after_complete.lock().unwrap().take()
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o500)).unwrap();
+        }
         let mut lose = self.lose_reply.lock().unwrap();
         if *lose == Some(phase) {
             *lose = None;
@@ -2289,14 +2316,16 @@ fn pending_delivery_writer_authority_and_corrupt_history_stay_silent() {
         assert!(guarded_retry(&journal, &reference, &plan, &client, true, &mut bytes).is_err());
         assert!(bytes.is_empty(), "authority refusal {code:?} reported");
     }
-    // Begin refusal before any canonical admission stays silent.
-    let tmp = TempRoot::new();
-    let (journal, reference, plan, client) = guarded_fixture(&tmp);
-    *client.fail_before.lock().unwrap() = Some(("begin", ErrorCode::HostUnavailable));
-    let mut bytes = vec![];
-    assert!(guarded_retry(&journal, &reference, &plan, &client, true, &mut bytes).is_err());
-    assert!(bytes.is_empty());
-    assert_eq!(client.counts(), (0, 0, 0));
+    // Genuine Begin refusals before canonical admission stay silent.
+    for code in [ErrorCode::Unauthorized, ErrorCode::InvalidRequest] {
+        let tmp = TempRoot::new();
+        let (journal, reference, plan, client) = guarded_fixture(&tmp);
+        *client.fail_before.lock().unwrap() = Some(("begin", code.clone()));
+        let mut bytes = vec![];
+        assert!(guarded_retry(&journal, &reference, &plan, &client, true, &mut bytes).is_err());
+        assert!(bytes.is_empty(), "Begin refusal {code:?} reported");
+        assert_eq!(client.counts(), (0, 0, 0));
+    }
     // Corrupt retained progress never becomes a trusted pending report.
     let tmp = TempRoot::new();
     let (journal, reference, plan, client) = guarded_fixture(&tmp);
@@ -2332,4 +2361,135 @@ fn pending_delivery_writer_authority_and_corrupt_history_stay_silent() {
     );
     assert!(bytes.is_empty());
     assert!(client.actions.lock().unwrap().is_empty());
+}
+
+// After publication, a Begin transport failure or committed reply loss is
+// indistinguishable to the client: report with unknown canonical status.
+#[test]
+fn pending_delivery_writer_begin_failure_reports_unknown_status() {
+    for (lose, json) in [(true, true), (false, true), (true, false)] {
+        let tmp = TempRoot::new();
+        let (journal, reference, plan, client) = guarded_fixture(&tmp);
+        if lose {
+            *client.lose_reply.lock().unwrap() = Some("begin");
+        } else {
+            *client.fail_before.lock().unwrap() = Some(("begin", ErrorCode::HostUnavailable));
+        }
+        let mut bytes = vec![];
+        assert!(guarded_retry(&journal, &reference, &plan, &client, json, &mut bytes).is_err());
+        if json {
+            let report = pending_frame(&bytes);
+            assert_eq!(report["phase"], "begin");
+            assert_eq!(report["outcome"], "pending");
+            assert!(report["last_observed_state"].is_null());
+            assert_eq!(report["status_unknown"], true);
+            assert_eq!(report["status_is_last_observed"], false);
+            assert_eq!(report["uncertain"], "begin");
+            for absent in ["thread", "invitation", "message"] {
+                assert!(report[absent].is_null());
+            }
+            assert_eq!(report["recovery_ref"], reference.recovery_ref());
+            let retry: Vec<String> = serde_json::from_value(report["retry_argv"].clone()).unwrap();
+            assert_eq!(
+                retry[retry.len() - 2..],
+                ["retry".to_owned(), reference.recovery_ref()]
+            );
+        } else {
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(text.contains("phase: begin"), "{text}");
+            assert!(text.contains("status_unknown: true"), "{text}");
+        }
+        assert_eq!(client.counts(), (0, 0, 0));
+        let report =
+            guarded_retry(&journal, &reference, &plan, &client, json, &mut vec![]).unwrap();
+        assert_eq!(report["outcome"], "staged");
+        assert_eq!(client.counts(), (1, 1, 1));
+    }
+}
+
+#[test]
+fn pending_delivery_writer_progress_io_failure_reports_after_begin() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempRoot::new();
+    let (journal, reference, plan, client) = guarded_fixture(&tmp);
+    *client.lose_reply.lock().unwrap() = Some("invite");
+    assert!(guarded_retry(&journal, &reference, &plan, &client, true, &mut vec![]).is_err());
+    let path = handoff::progress_path(&journal, &reference);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let mut bytes = vec![];
+    let failed = guarded_retry(&journal, &reference, &plan, &client, true, &mut bytes);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(failed.is_err());
+    let report = pending_frame(&bytes);
+    assert_eq!(report["phase"], "progress");
+    assert_eq!(report["last_observed_state"], "live");
+    assert_eq!(report["status_unknown"], false);
+    assert!(
+        report["thread"].is_null(),
+        "unreadable retained progress is unknown"
+    );
+    assert_eq!(client.counts(), (1, 1, 0));
+    let report = guarded_retry(&journal, &reference, &plan, &client, true, &mut vec![]).unwrap();
+    assert_eq!(report["outcome"], "staged");
+    assert_eq!(client.counts(), (1, 1, 1));
+}
+
+#[test]
+fn pending_delivery_writer_terminal_save_failure_after_completion_reports() {
+    use std::os::unix::fs::PermissionsExt;
+    for json in [true, false] {
+        let tmp = TempRoot::new();
+        let (journal, reference, plan, client) = guarded_fixture(&tmp);
+        *client.readonly_after_complete.lock().unwrap() = Some(journal.root().to_path_buf());
+        let mut bytes = vec![];
+        let failed = guarded_retry(&journal, &reference, &plan, &client, json, &mut bytes);
+        std::fs::set_permissions(journal.root(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(failed.is_err());
+        assert_eq!(client.fence(), "completed");
+        if json {
+            let report = pending_frame(&bytes);
+            assert_eq!(report["phase"], "terminal");
+            assert_eq!(report["outcome"], "completed_terminal_unconfirmed");
+            assert_eq!(report["completion"], "observed");
+            assert_eq!(report["last_observed_state"], "completed");
+            assert!(report["uncertain"].is_null());
+            assert!(report["thread"].is_string());
+            assert_eq!(report["message"]["kind"], "message_sent");
+        } else {
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(text.contains("phase: terminal"), "{text}");
+            assert!(
+                text.contains("outcome: completed_terminal_unconfirmed"),
+                "{text}"
+            );
+        }
+        assert!(!terminal_path(&journal, &reference).exists());
+        client.actions.lock().unwrap().clear();
+        let report =
+            guarded_retry(&journal, &reference, &plan, &client, json, &mut vec![]).unwrap();
+        assert_eq!(report["outcome"], "staged");
+        assert_eq!(client.counts(), (1, 1, 1));
+        assert!(
+            client.actions.lock().unwrap().iter().all(|a| *a == "begin"),
+            "{:?}",
+            client.actions.lock().unwrap()
+        );
+    }
+}
+
+// A retained invitation_attempted=false never labels the invitation uncertain.
+#[test]
+fn pending_delivery_writer_invite_refusal_before_attempt_is_not_uncertain() {
+    let tmp = TempRoot::new();
+    let (journal, reference, plan, client) = guarded_fixture(&tmp);
+    // The joined-recipient read fails before the keyed invitation is attempted.
+    *client.fail_before.lock().unwrap() = Some(("participants", ErrorCode::HostUnavailable));
+    let mut bytes = vec![];
+    assert!(guarded_retry(&journal, &reference, &plan, &client, true, &mut bytes).is_err());
+    let report = pending_frame(&bytes);
+    assert_eq!(report["phase"], "invite");
+    assert_eq!(report["invitation_attempted"], false);
+    assert!(report["invitation"].is_null());
+    assert!(report["uncertain"].is_null(), "{report}");
+    assert_eq!(client.counts(), (1, 0, 0));
 }

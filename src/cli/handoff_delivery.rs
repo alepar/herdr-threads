@@ -427,7 +427,28 @@ struct DeliveryObservation {
     caller_target: crate::protocol::ids::HostTargetId,
     phase: &'static str,
     staged: handoff::StagedWork,
-    last_observed: HandoffResult,
+    /// None: no canonical status was observed by this invocation (unknown).
+    last_observed: Option<HandoffResult>,
+}
+/// Begin transport failures and lost replies are indistinguishable to the
+/// client after publication; daemon refusals (authority, scope, payload,
+/// validation) are not uncertain and stay silent.
+fn begin_uncertain(error: &RunError) -> bool {
+    use crate::protocol::results::ErrorCode;
+    match error {
+        RunError::Io(_) => true,
+        RunError::Api(e) => matches!(
+            e.code,
+            ErrorCode::UnknownOutcome
+                | ErrorCode::HostUnavailable
+                | ErrorCode::DeadlineExceeded
+                | ErrorCode::Cancelled
+                | ErrorCode::DaemonBootChanged
+                | ErrorCode::ServiceBusy
+                | ErrorCode::StoreBusy
+        ),
+        _ => false,
+    }
 }
 fn execute_locked<C: LocalClient + ?Sized>(
     journal: &Journal,
@@ -467,20 +488,61 @@ fn execute_locked<C: LocalClient + ?Sized>(
         invite_key: keys.invite.clone(),
         send_key: keys.send.clone(),
     };
-    let current = handoff::keyed_fence(client, clock, &identity, keys.begin.clone(), false)?;
-    let mut progress: Progress = load_delivery_progress(journal, reference)?;
-    if current.state == HandoffState::Completed {
-        return retained_report(reference, &plan, &current, &progress)
-            .map(|report| (report, current));
-    }
-    let mut staged = progress.staged.clone();
+    // Validated original after publication: canonical status is unknown until
+    // Begin answers. Non-uncertain refusals clear this before returning.
     *observed = Some(DeliveryObservation {
         plan: (*plan).clone(),
         caller_target: claim.target.clone(),
-        phase: "recipient",
-        staged: staged.clone(),
-        last_observed: current.clone(),
+        phase: "begin",
+        staged: Default::default(),
+        last_observed: None,
     });
+    let current = match handoff::keyed_fence(client, clock, &identity, keys.begin.clone(), false) {
+        Ok(current) => current,
+        Err(error) => {
+            if !begin_uncertain(&error) {
+                *observed = None;
+            }
+            return Err(error);
+        }
+    };
+    let mut progress: Progress = match load_delivery_progress(journal, reference) {
+        Ok(progress) => progress,
+        Err(error) => {
+            // Malformed retained progress (Other) is a silent refusal; an
+            // ordinary I/O failure leaves only canonical status observed.
+            match observed {
+                Some(observed) if error.kind() != io::ErrorKind::Other => {
+                    observed.phase = "progress";
+                    observed.last_observed = Some(current.clone());
+                }
+                _ => *observed = None,
+            }
+            return Err(error.into());
+        }
+    };
+    if current.state == HandoffState::Completed {
+        return match retained_report(reference, &plan, &current, &progress) {
+            Ok(report) => {
+                if let Some(observed) = observed {
+                    observed.phase = "terminal";
+                    observed.staged = progress.staged.clone();
+                    observed.last_observed = Some(current.clone());
+                }
+                Ok((report, current))
+            }
+            Err(error) => {
+                *observed = None;
+                Err(error)
+            }
+        };
+    }
+    let mut staged = progress.staged.clone();
+    if let Some(observed) = observed.as_mut() {
+        observed.phase = "recipient";
+        observed.staged = staged.clone();
+        observed.last_observed = Some(current.clone());
+    }
     let observe = |observed: &mut Option<DeliveryObservation>,
                    phase: &'static str,
                    staged: &handoff::StagedWork| {
@@ -542,6 +604,10 @@ fn execute_locked<C: LocalClient + ?Sized>(
     observe(observed, "complete", &staged);
     let completed = handoff::keyed_fence(client, clock, &identity, keys.complete.clone(), true)?;
     retained_report(reference, &plan, &completed, &progress)?;
+    observe(observed, "terminal", &staged);
+    if let Some(observed) = observed.as_mut() {
+        observed.last_observed = Some(completed.clone());
+    }
     Ok((report, completed))
 }
 /// Private cleanup recovery evidence. Retained after cleanup; never live authority.
@@ -811,17 +877,37 @@ pub fn retry_to_writer<C: LocalClient + ?Sized, W: Write>(
                     return Err(error);
                 }
             };
-        let progress: Progress = load_delivery_progress(journal, reference)?;
-        let progress_digest = retained_digest(&progress)?;
-        let terminal = Terminal {
-            version: 1,
-            original: String::from_utf8(original).map_err(io::Error::other)?,
-            completed,
-            progress,
-            progress_digest,
-        };
-        save_terminal(journal, reference, &terminal)?;
-        terminal
+        // Canonical completion was observed; a local terminal failure is
+        // reported (malformed reloaded progress stays a silent refusal).
+        let saved = (|| -> Result<Terminal, (RunError, bool)> {
+            let progress: Progress = load_delivery_progress(journal, reference).map_err(|e| {
+                let report = e.kind() != io::ErrorKind::Other;
+                (RunError::from(e), report)
+            })?;
+            let progress_digest = retained_digest(&progress).map_err(|e| (e.into(), true))?;
+            let terminal = Terminal {
+                version: 1,
+                original: String::from_utf8(original)
+                    .map_err(|e| (io::Error::other(e).into(), true))?,
+                completed,
+                progress,
+                progress_digest,
+            };
+            save_terminal(journal, reference, &terminal).map_err(|e| (e, true))?;
+            Ok(terminal)
+        })();
+        match saved {
+            Ok(terminal) => terminal,
+            Err((error, report)) => {
+                if report
+                    && super::topology_handoff::reportable_failure(&error)
+                    && let Some(observed) = &observed
+                {
+                    write_pending(reference, observed, output, writer)?;
+                }
+                return Err(error);
+            }
+        }
     };
     let pending = Journal::decode_delivery_origin(reference, terminal.original.as_bytes())?;
     let report = retained_report(
@@ -865,25 +951,31 @@ fn write_pending<W: Write>(
     let mut inspect = prefix;
     inspect.push("pending".into());
     let completion = observed.phase == "complete";
+    let terminal = observed.phase == "terminal";
     let uncertain = match observed.phase {
+        "begin" => Some("begin"),
         "create" if staged.thread.is_none() => Some("thread"),
-        "invite" if staged.invitation.is_none() => Some("invitation"),
+        "invite" if staged.invitation.is_none() && staged.invitation_attempted => {
+            Some("invitation")
+        }
         "send" if staged.message.is_none() => Some("message"),
         "complete" => Some("completion"),
         _ => None,
     };
+    let last = observed.last_observed.as_ref();
     let mut report = serde_json::json!({
         "phase":observed.phase,"failed":true,
-        "outcome":if completion {"completion_uncertain"} else {"pending"},
+        "outcome":if completion {"completion_uncertain"} else if terminal {"completed_terminal_unconfirmed"} else {"pending"},
         "namespace":namespace,"recovery_ref":reference.recovery_ref(),
         "compound":plan.payload.keys.compound,"recipient":plan.recipient,
         "thread":staged.thread,"invitation":staged.invitation,"message":staged.message,
         "invitation_attempted":staged.invitation_attempted,"uncertain":uncertain,
-        "completion":if completion {"uncertain"} else {"not_attempted"},
-        "last_observed_state":observed.last_observed.state,"status_is_last_observed":true,
+        "completion":if completion {"uncertain"} else if terminal {"observed"} else {"not_attempted"},
+        "last_observed_state":last.map(|v| v.state),"status_is_last_observed":last.is_some(),
+        "status_unknown":last.is_none(),"staged_source":"retained_local_progress_and_this_invocation",
         "retry_argv":retry,"inspect_argv":inspect,
         "manual_launch_after_confirming_no_start_argv":null,
-        "guidance":"Fields are this invocation's last confirmed observations; null means unknown, not proof that the child was not created. Retry the exact original reference; it replays the same keyed children and never duplicates them. Delivery never launches a harness, accepts an invitation or ACKs."
+        "guidance":"thread/invitation/message combine retained local progress (a client-local hint, not canonical authority) with results returned to this invocation; null means unknown, not proof that the child was not created. last_observed_state is the last canonical status this invocation observed, not current state. Retry the exact original reference; it replays the same keyed children and never duplicates them. completed_terminal_unconfirmed means canonical completion was observed but the local terminal record was not confirmed durable; retry presents the retained result without new effects. Delivery never launches a harness, accepts an invitation or ACKs."
     });
     let bytes = if output.format == OutputFormat::Json {
         format!("{}\n", serde_json::json!({"delivery_pending":report})).into_bytes()
