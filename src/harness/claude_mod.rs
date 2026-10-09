@@ -14,11 +14,14 @@
 //!
 //! Managed policy is honored: a truthy `disableSideloadFlags` in a managed
 //! settings file makes Claude Code refuse `CLAUDE_CODE_PLUGIN_DIRS`, so the
-//! write is skipped ([`ManagedPolicy`]).
+//! write is skipped ([`ManagedPolicy`]). The documented file, the
+//! `managed-settings.d/*.json` drop-ins and the server-managed cache are all
+//! checked, and a policy setup cannot read or parse is treated as unsafe
+//! (not known to be absent), so the write is skipped too.
 use super::{
     claude::{
-        DISABLE_SIDELOAD_FLAGS_KEY, MANAGED_SETTINGS_LINUX, MANAGED_SETTINGS_MACOS,
-        MOD_MIN_VERSION, PLUGIN_DIRS_ENV, SERVER_MANAGED_SETTINGS_CACHE,
+        DISABLE_SIDELOAD_FLAGS_KEY, MANAGED_SETTINGS_DROPIN_DIR, MANAGED_SETTINGS_LINUX,
+        MANAGED_SETTINGS_MACOS, MOD_MIN_VERSION, PLUGIN_DIRS_ENV, SERVER_MANAGED_SETTINGS_CACHE,
     },
     setup::{SetupError, config_bytes, publish_manifest, write_replacement},
 };
@@ -172,11 +175,14 @@ pub fn version_supported(version: &str) -> Option<bool> {
 
 // ---------------------------------------------------------- managed policy
 
-/// The managed settings files to read. Injectable so tests point them into a
-/// temp dir.
+/// The managed settings files and drop-in directories to read. Injectable so
+/// tests point them into a temp dir.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ManagedPolicySources {
     pub files: Vec<PathBuf>,
+    /// Directories of `*.json` drop-ins (`managed-settings.d`), merged by
+    /// Claude Code in file-name order.
+    pub dropin_dirs: Vec<PathBuf>,
 }
 
 /// Test-support builds read the file list (`:`-separated) from this variable
@@ -184,44 +190,119 @@ pub struct ManagedPolicySources {
 /// inside its scratch dir. Production builds never read it.
 pub const TEST_MANAGED_SETTINGS_ENV: &str = "HERDR_THREADS_TEST_MANAGED_SETTINGS";
 
+/// Companion of [`TEST_MANAGED_SETTINGS_ENV`] for drop-in directories
+/// (`:`-separated; unset means none). Read only when the files variable is
+/// set, so no test ever reads the host's real drop-in directory.
+pub const TEST_MANAGED_SETTINGS_DIRS_ENV: &str = "HERDR_THREADS_TEST_MANAGED_SETTINGS_DIRS";
+
 impl ManagedPolicySources {
-    /// The documented managed settings file of this platform and, when the
-    /// Claude config dir is known, the cached server-managed settings. Only
-    /// these are checked: policy delivered by other means (a macOS
-    /// configuration profile, for one) is not visible to setup.
+    /// The documented managed settings file of this platform, its
+    /// `managed-settings.d` drop-in directory and, when the Claude config dir
+    /// is known, the cached server-managed settings. Only these are checked:
+    /// policy delivered by other means (a macOS configuration profile, for
+    /// one) is not visible to setup.
     pub fn platform(claude_config_dir: Option<&Path>) -> Self {
         #[cfg(any(test, feature = "test-support"))]
         if let Some(files) = std::env::var_os(TEST_MANAGED_SETTINGS_ENV) {
             return Self {
                 files: std::env::split_paths(&files).collect(),
+                dropin_dirs: std::env::var_os(TEST_MANAGED_SETTINGS_DIRS_ENV)
+                    .map(|dirs| std::env::split_paths(&dirs).collect())
+                    .unwrap_or_default(),
             };
         }
-        let documented = if cfg!(target_os = "macos") {
+        let documented = Path::new(if cfg!(target_os = "macos") {
             MANAGED_SETTINGS_MACOS
         } else {
             MANAGED_SETTINGS_LINUX
-        };
-        let mut files = vec![PathBuf::from(documented)];
+        });
+        let mut files = vec![documented.to_path_buf()];
         if let Some(dir) = claude_config_dir {
             files.push(dir.join(SERVER_MANAGED_SETTINGS_CACHE));
         }
-        Self { files }
+        let dropin_dirs = documented
+            .parent()
+            .map(|parent| vec![parent.join(MANAGED_SETTINGS_DROPIN_DIR)])
+            .unwrap_or_default();
+        Self { files, dropin_dirs }
     }
 
+    /// A policy setup cannot read is not known to be absent: a read error
+    /// other than not-found, or content that is not a JSON object, is
+    /// [`ManagedPolicy::Unverifiable`] and blocks the write like a set flag.
+    /// A set flag is reported in preference to an unreadable source.
     pub fn check(&self) -> ManagedPolicy {
+        let mut judged: Vec<(PathBuf, Judged)> = Vec::new();
         for file in &self.files {
-            let Ok(bytes) = fs::read(file) else { continue };
-            let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
-                continue;
-            };
-            if value.get(DISABLE_SIDELOAD_FLAGS_KEY).is_some_and(truthy) {
-                return ManagedPolicy::DisableSideloadFlags {
-                    source: file.clone(),
-                };
+            judged.push((file.clone(), judge_file(file)));
+        }
+        for dir in &self.dropin_dirs {
+            match dropin_files(dir) {
+                Ok(files) => {
+                    for file in files {
+                        let verdict = judge_file(&file);
+                        judged.push((file, verdict));
+                    }
+                }
+                Err(()) => judged.push((dir.clone(), Judged::Unreadable)),
             }
         }
-        ManagedPolicy::None
+        if let Some((source, _)) = judged.iter().find(|(_, v)| matches!(v, Judged::Flag)) {
+            return ManagedPolicy::DisableSideloadFlags {
+                source: source.clone(),
+            };
+        }
+        match judged.iter().find(|(_, v)| matches!(v, Judged::Unreadable)) {
+            Some((source, _)) => ManagedPolicy::Unverifiable {
+                source: source.clone(),
+            },
+            None => ManagedPolicy::None,
+        }
     }
+}
+
+enum Judged {
+    Absent,
+    Clear,
+    Flag,
+    Unreadable,
+}
+
+fn judge_file(file: &Path) -> Judged {
+    let bytes = match fs::read(file) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Judged::Absent,
+        Err(_) => return Judged::Unreadable,
+    };
+    match serde_json::from_slice::<Value>(&bytes) {
+        Ok(value) if value.is_object() => {
+            if value.get(DISABLE_SIDELOAD_FLAGS_KEY).is_some_and(truthy) {
+                Judged::Flag
+            } else {
+                Judged::Clear
+            }
+        }
+        _ => Judged::Unreadable,
+    }
+}
+
+/// The `*.json` regular files of a drop-in directory sorted by file name; a
+/// missing directory has none, any other read error is `Err`.
+fn dropin_files(dir: &Path) -> Result<Vec<PathBuf>, ()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(()),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|_| ())?.path();
+        if path.extension().is_some_and(|ext| ext == "json") && path.is_file() {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 fn truthy(value: &Value) -> bool {
@@ -241,6 +322,12 @@ pub enum ManagedPolicy {
     /// A managed settings file sets `disableSideloadFlags`: Claude Code
     /// refuses to start with `CLAUDE_CODE_PLUGIN_DIRS`.
     DisableSideloadFlags {
+        source: PathBuf,
+    },
+    /// A policy file or drop-in directory could not be read, or a policy
+    /// file is not a JSON object: setup cannot rule out
+    /// `disableSideloadFlags`, so it is treated as set.
+    Unverifiable {
         source: PathBuf,
     },
 }

@@ -12,6 +12,7 @@ use std::{
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Output},
+    time::Duration,
 };
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
@@ -2456,9 +2457,15 @@ fn versionless_setup_and_status_preserve_foreign_config_without_invoking_wrapper
         assert!(report["harness_version"]["version"].is_null());
         assert!(report["harness_version"].get("supported").is_none());
         assert_eq!(report["observed"], "unknown");
+        assert!(!log.exists(), "setup executed the wrapper");
         let status = json(&s.run(&["--json", "setup-status", name]));
         assert_eq!(status["installed"], true, "{status}");
         assert_eq!(status["harness_version"]["admission"], "contract_declared");
+        if name == "claude" {
+            // Only the mod's bounded version gate runs the Claude wrapper.
+            assert_eq!(fs::read_to_string(&log).unwrap(), "--version\n");
+            fs::remove_file(&log).unwrap();
+        }
         let alias = s.root.join("wrapper alias");
         std::os::unix::fs::symlink(&wrapper, &alias).unwrap();
         let again = s.run(&[
@@ -2814,9 +2821,12 @@ fn setup_claude_installs_mod_and_status_reports_it() {
     assert_eq!(delivery["settings_value_contains_mod_dir"], true);
     assert_eq!(delivery["managed_policy"]["state"], "none");
     assert_eq!(delivery["shell_env"], serde_json::Value::Null);
+    // The fake claude prints 2.1.284, below the mod's minimum.
+    assert_eq!(delivery["claude_version"], "2.1.284", "{status}");
+    assert_eq!(delivery["claude_version_supported"], false, "{status}");
     assert_eq!(
-        delivery["claude_version_supported"],
-        serde_json::Value::Null
+        delivery["claude_version_note"],
+        "mod unsupported, native wake fallback"
     );
     assert_eq!(delivery["daemon"]["status"], "channel status unavailable");
     assert_eq!(
@@ -3076,4 +3086,165 @@ fn setup_status_reports_shell_env_and_session_override() {
     // unsetup removes the appended path and the copied directories.
     assert_eq!(s.run(&["unsetup", "claude"]).status.code(), Some(0));
     assert_eq!(plugin_dirs(&s), Some("/a".to_owned()));
+}
+
+#[test]
+fn dropin_managed_policy_skips_the_mod_write() {
+    for (content, state) in [
+        (
+            r#"{"disableSideloadFlags": true}"#,
+            "disable_side_load_flags",
+        ),
+        ("{ not json", "unverifiable"),
+    ] {
+        let s = claude_scratch(ORIGINAL);
+        let dir = s.root.join("managed-settings.d");
+        fs::create_dir(&dir).unwrap();
+        let dropin = dir.join("50.json");
+        fs::write(&dropin, content).unwrap();
+        let vars = [(
+            herdr_threads::harness::claude_mod::TEST_MANAGED_SETTINGS_DIRS_ENV,
+            dir.as_os_str(),
+        )];
+        let out = s.run_with(&vars, &["--json", "setup", "claude"]);
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        let report = json(&out);
+        assert_eq!(
+            report["mod"]["action"], "skipped_managed_policy",
+            "{report}"
+        );
+        assert_eq!(
+            report["mod"]["managed_policy"],
+            serde_json::json!({"state": state, "source": dropin.display().to_string()})
+        );
+        assert!(
+            report["warnings"]
+                .to_string()
+                .contains("the delivery mod was not installed"),
+            "{report}"
+        );
+        assert_eq!(plugin_dirs(&s), None, "{state}");
+        assert!(!s.mod_dir().exists());
+        assert!(mod_records(&s).is_empty());
+    }
+}
+
+/// Kills: an error after the settings entry is lifted (here a damaged
+/// prompt-suggestion record) that leaves the mod removed from settings.
+#[test]
+fn later_setup_failure_restores_the_lifted_mod_entry() {
+    let s = claude_scratch(ORIGINAL);
+    assert_eq!(s.run(&["setup", "claude"]).status.code(), Some(0));
+    let dir = s.mod_dir().display().to_string();
+    assert_eq!(plugin_dirs(&s), Some(dir.clone()));
+    let records = mod_records(&s);
+    assert_eq!(records.len(), 1);
+    // Damage the prompt-suggestion record (same settings-path digest).
+    let suffix = records[0].strip_prefix("claude-mod-").unwrap();
+    fs::write(
+        s.state
+            .join("setup")
+            .join(format!("claude-prompt-suggestion-{suffix}")),
+        b"damaged",
+    )
+    .unwrap();
+    // Take the hooks (and their record) out by hand, keeping the mod entry:
+    // the installed hooks are no longer current, so the next run lifts the
+    // mod entry before rewriting them.
+    let mut settings = settings_json(&s);
+    settings.as_object_mut().unwrap().remove("hooks");
+    settings["permissions"]["allow"] = serde_json::json!(["Bash(ls:*)"]);
+    fs::write(s.settings(), serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
+    for entry in fs::read_dir(s.state.join("setup")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name.starts_with("claude-") && !name.starts_with("claude-mod-") {
+            fs::remove_file(path).unwrap();
+        }
+    }
+    // The damaged record goes back (the loop above removed it).
+    fs::write(
+        s.state
+            .join("setup")
+            .join(format!("claude-prompt-suggestion-{suffix}")),
+        b"damaged",
+    )
+    .unwrap();
+    let out = s.run(&["setup", "claude"]);
+    assert_ne!(out.status.code(), Some(0), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stderr).contains("prompt-suggestion"),
+        "failed elsewhere: {}",
+        text(&out.stderr)
+    );
+    assert_eq!(plugin_dirs(&s), Some(dir));
+    assert_eq!(mod_records(&s).len(), 1);
+}
+
+#[test]
+fn setup_status_reports_the_claude_version_gate() {
+    let version = |s: &Scratch| json(&s.run(&["--json", "setup-status", "claude"]))["mod"].clone();
+    let s = claude_scratch(ORIGINAL);
+    s.harness("claude", "2.1.295 (Claude Code)");
+    let ok = version(&s);
+    assert_eq!(ok["claude_version"], "2.1.295", "{ok}");
+    assert_eq!(ok["claude_version_supported"], true);
+    assert!(ok.get("claude_version_note").is_none());
+    assert!(ok.get("claude_version_reason").is_none());
+
+    s.harness("claude", "2.1.284 (Claude Code)");
+    let old = version(&s);
+    assert_eq!(old["claude_version"], "2.1.284", "{old}");
+    assert_eq!(old["claude_version_supported"], false);
+    assert_eq!(
+        old["claude_version_note"],
+        "mod unsupported, native wake fallback"
+    );
+
+    s.harness("claude", "something else entirely");
+    let odd = version(&s);
+    assert_eq!(odd["claude_version_supported"], serde_json::Value::Null);
+    assert_eq!(
+        odd["claude_version_reason"],
+        "unrecognised claude --version output"
+    );
+
+    let slow = s.bin.join("claude");
+    fs::write(&slow, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    // The production 3s bound, not the suite's stretched test scale.
+    let started = std::time::Instant::now();
+    let out = s
+        .command(&s.root)
+        .env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV)
+        .arg("--state-dir")
+        .arg(&s.state)
+        .arg("--host-endpoint")
+        .arg(s.host())
+        .args(["--json", "setup-status", "claude"])
+        .output()
+        .unwrap();
+    let timed_out = json(&out)["mod"].clone();
+    assert_eq!(
+        timed_out["claude_version_supported"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        timed_out["claude_version_reason"],
+        "claude --version failed or timed out"
+    );
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_secs(20), "{elapsed:?}");
+
+    fs::remove_file(&slow).unwrap();
+    let absent = version(&s);
+    assert_eq!(
+        absent["claude_version"],
+        serde_json::Value::Null,
+        "{absent}"
+    );
+    assert_eq!(absent["claude_version_supported"], serde_json::Value::Null);
+    assert_eq!(
+        absent["claude_version_reason"],
+        "no claude executable found"
+    );
 }
