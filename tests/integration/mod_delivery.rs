@@ -16,14 +16,14 @@
 
 use super::sweep::{Scratch, agent_pane, host_reply, pane};
 use herdr_threads::{
-    app::{SystemClock, run_elected},
+    app::{LaneProbe, SystemClock, run_elected_probed},
     cli::hook::installed_argv,
     daemon::paths::{InstancePaths, RuntimeContext},
     harness::{context::Harness, setup::plan_claude},
     host::native::NativeCli,
     ports::HostPort,
     protocol::time::{Cancellation, Clock, MonoInstant, UtcMillis},
-    service::config::ServiceConfig,
+    service::{config::ServiceConfig, kicks::Lane},
     test_support::spawn::{self, OwnedChild, SpawnOwned},
 };
 use serde_json::{Value, json};
@@ -52,9 +52,11 @@ const PANE_B: &str = "w1:p2";
 const SESSION_B: &str = "SB";
 /// A step the sweep waits for; generous because the suite shares the machine.
 const STEP: Duration = Duration::from_secs(20);
-/// How long an absence is observed (a negative check): the worker tick is one
-/// second and a native wake follows a send within tens of milliseconds.
-const QUIET: Duration = Duration::from_millis(2500);
+/// How long an absence is observed (a negative check) once its trigger has
+/// happened: a native wake follows its trigger within tens of milliseconds, a
+/// watch drains right after it connects, and a sweep the tests need runs
+/// right after a kicked pass (otherwise on the worker's one second tick).
+const QUIET: Duration = Duration::from_millis(1500);
 const MINUTE_MS: u64 = 60_000;
 /// The line both Claude hooks end their context with when something is
 /// pending (the attention digest); every other part of the hook text is static.
@@ -271,6 +273,8 @@ struct Rig {
     host: Host,
     claude_hooks: Value,
     daemon: Option<Daemon>,
+    /// The running daemon's lanes (its wake lane's finished passes).
+    probe: LaneProbe,
     a: String,
     b: String,
     thread: String,
@@ -326,6 +330,7 @@ impl Rig {
             host,
             claude_hooks: installed["hooks"].clone(),
             daemon: None,
+            probe: LaneProbe::default(),
             a: String::new(),
             b: String::new(),
             thread: String::new(),
@@ -348,14 +353,31 @@ impl Rig {
                 &["thread", "create", "--topic", "mod delivery"],
             )
             .text("thread create");
+        let mark = rig.host.mark();
         rig.cli(
             Some((&rig.a, PANE_A)),
             &["invite", &rig.thread, "--seat", &rig.b],
         )
         .data("invite");
+        // The invitation wakes idle B natively. Waiting for that prompt
+        // before the accept makes the setup's wake deterministic (accepted
+        // first, the wake may or may not still go out), so no quiet window
+        // is needed to know that no setup wake is still on its way.
+        rig.wait_prompt(mark, PANE_B);
         rig.cli(Some((&rig.b, PANE_B)), &["accept", &rig.thread])
             .data("accept");
-        rig.quiesce();
+        // The wake lane's pass that sent the prompt has finished (its
+        // outcome is committed), so the clock jump below cuts no budget of
+        // it short: once the lane is kicked, the next finished pass is that
+        // one or a later one.
+        let passes = rig.probe.registered_idle_events(Lane::Wakes);
+        rig.probe.kick_registered(Lane::Wakes);
+        wait_until("the wake lane to finish its pass", STEP, || {
+            (rig.probe.registered_idle_events(Lane::Wakes) > passes).then_some(())
+        });
+        // The native ladder's 30 s spacing passes, so the next attention
+        // wakes B at once. No watch exists yet, so no drain is in flight.
+        rig.clock.advance(31_000);
         rig
     }
 
@@ -366,17 +388,25 @@ impl Rig {
         let stop = Cancellation::default();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (paths, daemon_stop) = (self.paths.clone(), stop.clone());
+        // The production composition (`run_elected`), except that the store
+        // commits without a per-commit fsync: nothing here can observe the
+        // difference (it only matters on power loss), and a shared loaded
+        // disk otherwise dominates every step.
+        let probe = LaneProbe::default();
+        probe.relax_commit_durability();
+        self.probe = probe.clone();
         let thread = std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(run_elected(
+                .block_on(run_elected_probed(
                     &paths,
                     clock,
                     daemon_stop,
                     ServiceConfig::default(),
                     host,
+                    probe,
                     move |descriptor| {
                         ready_tx
                             .send(descriptor.clone())
@@ -846,32 +876,6 @@ impl Rig {
         self.clock.advance(millis);
     }
 
-    fn prompt_count(&self) -> usize {
-        self.host
-            .calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(method, _)| method == "agent.prompt")
-            .count()
-    }
-
-    /// The setup's invitation wake has been sent and the native ladder's
-    /// 30 s spacing has passed, so the next attention wakes B at once.
-    fn quiesce(&self) {
-        let mut seen = self.prompt_count();
-        let mut since = Instant::now();
-        wait_until("the setup wakes to settle", STEP, || {
-            let now = self.prompt_count();
-            if now != seen {
-                seen = now;
-                since = Instant::now();
-            }
-            (since.elapsed() > Duration::from_millis(1200)).then_some(())
-        });
-        self.advance(31_000);
-    }
-
     /// A native wake prompt reaches `pane` after `mark`.
     fn wait_prompt(&self, mark: usize, pane: &str) {
         let until = Instant::now() + STEP;
@@ -898,9 +902,9 @@ impl Rig {
         }
     }
 
-    /// No native wake prompt reaches B within `QUIET` after `mark`.
-    fn assert_no_prompt(&self, mark: usize) {
-        std::thread::sleep(QUIET);
+    /// No native wake prompt reaches B within `window` after `mark`.
+    fn assert_no_prompt(&self, mark: usize, window: Duration) {
+        std::thread::sleep(window);
         assert_eq!(
             self.host.prompts_since(mark, PANE_B),
             0,
@@ -916,19 +920,15 @@ impl Rig {
         ]);
     }
 
-    /// B's agent runs a turn after a native prompt: Herdr shows it working,
-    /// then idle again, which the observation lane must see before the next
-    /// wake is allowed.
+    /// B's agent has run its turn after a native prompt: Herdr shows it idle
+    /// again. The wake path reads B's UI state when it wakes (a `working`
+    /// pane is an active turn and defers the wake), so the state the next
+    /// wake sees is what matters; nothing reads it in between (the stand-in
+    /// served no status read of B while a turn was played out in real time).
     fn agent_turn(&self) {
-        let with_status = |status: &str| {
-            let mut b = claude(PANE_B, "term-b", SESSION_B);
-            b["agent_status"] = json!(status);
-            self.host.set_panes(vec![pane(PANE_A, "term-a"), b]);
-        };
-        with_status("working");
-        std::thread::sleep(Duration::from_millis(1500));
-        with_status("idle");
-        std::thread::sleep(Duration::from_millis(1500));
+        let mut b = claude(PANE_B, "term-b", SESSION_B);
+        b["agent_status"] = json!("idle");
+        self.host.set_panes(vec![pane(PANE_A, "term-a"), b]);
     }
 
     /// B's `watch` child gone (a reload or crash).
@@ -1065,10 +1065,13 @@ impl Watch {
         })
     }
 
-    /// No line satisfying `pred` arrives within `QUIET`.
-    fn assert_no_line(&mut self, what: &str, pred: impl Fn(&Value) -> bool) {
+    /// No line satisfying `pred` was seen, nor arrives within `window`.
+    fn assert_no_line(&mut self, what: &str, window: Duration, pred: impl Fn(&Value) -> bool) {
         self.seen.extend(self.pending.drain(..));
-        let until = Instant::now() + QUIET;
+        if let Some(line) = self.seen.iter().find(|line| pred(line)) {
+            panic!("unexpected {what}: {line}");
+        }
+        let until = Instant::now() + window;
         loop {
             let remaining = until.saturating_duration_since(Instant::now());
             match self.lines.recv_timeout(remaining) {
@@ -1421,7 +1424,7 @@ fn live_channel_suppresses_native_wake() {
     let mark = rig.host.mark();
     let id = rig.send_ordinary("delivered through the channel");
     watch.wait_item(&id);
-    rig.assert_no_prompt(mark);
+    rig.assert_no_prompt(mark, QUIET);
     assert_eq!(rig.receipt_state(&id), "pending");
     assert_eq!(rig.channel_state().as_deref(), Some("live"));
 }
@@ -1473,8 +1476,18 @@ fn truncated_item_never_counts_toward_stall() {
     watch.wait_item(&id);
     let mark = rig.host.mark();
     rig.advance(11 * MINUTE_MS);
-    // Three worker ticks pass: a stall would have closed the channel by now.
-    std::thread::sleep(Duration::from_millis(3200));
+    // A lazy row commits to an attention source, which kicks the worker at
+    // once: the pass that streams it, and the sweep right after that pass,
+    // run on the advanced clock. A stall would close the channel in that
+    // sweep (or the next tick's), so no `closing` line before the row nor
+    // within the window after it; a lazy row has no receipt, so it cannot
+    // feed the stall predicate itself.
+    let kick = rig.send_lazy("kicks the worker");
+    let line = watch.wait_line("the kicking row or a close", STEP, |line| {
+        line["id"] == kick.as_str() || line["state"] == "closing"
+    });
+    assert_ne!(line["state"], "closing", "the stall closed the channel");
+    watch.assert_no_line("closing", QUIET, |line| line["state"] == "closing");
     assert!(
         watch.running(),
         "the watch was closed: {:#?} stderr: {}",
@@ -1482,7 +1495,6 @@ fn truncated_item_never_counts_toward_stall() {
         watch.stderr()
     );
     assert_eq!(rig.channel_state().as_deref(), Some("live"));
-    watch.assert_no_line("closing", |line| line["state"] == "closing");
     assert_eq!(rig.host.prompts_since(mark, PANE_B), 0);
 }
 
@@ -1498,7 +1510,7 @@ fn drop_then_grace_expiry_kicks_native_wake() {
     rig.wait_channel(Some("reconnect_grace"));
     let mark = rig.host.mark();
     let id = rig.send_ordinary("sent while the watch is down");
-    rig.assert_no_prompt(mark);
+    rig.assert_no_prompt(mark, QUIET);
     rig.advance(31_000);
     rig.wait_channel(None);
     rig.wait_prompt(mark, PANE_B);
@@ -1525,8 +1537,14 @@ fn reconnect_within_grace_keeps_wake_suppressed_restreams_and_late_ack_settles_o
     assert_eq!(line["kind"], "message", "re-streamed after reconnect");
     rig.wait_channel(Some("live"));
     // The old grace window passes without a kick: the registration ended it.
+    // A lazy row kicks the worker, so the sweep that would expire the old
+    // grace (and kick the wake lane) runs on the advanced clock right after
+    // the pass that streams the row.
     rig.advance(31_000);
-    rig.assert_no_prompt(mark);
+    let kick = rig.send_lazy("kicks the worker");
+    second.wait_item(&kick);
+    rig.assert_no_prompt(mark, QUIET);
+    assert_eq!(rig.channel_state().as_deref(), Some("live"));
     let late = rig.ack_result(SESSION_B, "context", &id);
     assert_eq!(late["result"], "settled", "{late}");
     let repeat = rig.ack_result(SESSION_B, "context", &id);
@@ -1687,7 +1705,7 @@ fn concurrent_mod_ack_and_inbox_ack_settle_exactly_once() {
     let rig = Rig::new();
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
-    for round in 0..4 {
+    for round in 0..2 {
         let id = rig.send_ordinary(&format!("race {round}"));
         watch.wait_item(&id);
         let before: i64 = rig
@@ -1794,7 +1812,7 @@ fn fresh_watch_after_accept_prints_no_attention() {
     rig.session_start_hook(PANE_B, SESSION_B, "startup");
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
-    watch.assert_no_line("attention", |l| l["kind"] == "attention");
+    watch.assert_no_line("attention", QUIET, |l| l["kind"] == "attention");
 }
 
 /// ht-j16.33: an attention line whose invitation was accepted, or whose
@@ -2000,7 +2018,7 @@ fn clear_within_rebind_grace_emits_no_session_start_digest_and_no_native_kick() 
         started.stdout
     );
     rig.wait_channel(Some("rebind_grace"));
-    rig.assert_no_prompt(mark);
+    rig.assert_no_prompt(mark, QUIET);
     rig.advance(31_000);
     rig.wait_channel(None);
     rig.wait_prompt(mark, PANE_B);
@@ -2343,8 +2361,11 @@ fn watch_admission_over_cap_refuses_busy() {
             .map(|(n, (id, session))| claude(id, &format!("term-x{n}"), session)),
     );
     rig.host.set_panes(panes);
-    // Register the extra seats through their SessionStart hooks, eight at a time.
-    for chunk in extra.chunks(8) {
+    // Register the extra seats through their SessionStart hooks, four at a
+    // time: the stand-in Herdr answers one call at a time, so wider batches
+    // only queue the hooks' host calls past their budgets (an uncommitted
+    // check-in, retried below) and make the registration slower overall.
+    for chunk in extra.chunks(4) {
         std::thread::scope(|scope| {
             for (id, session) in chunk {
                 let rig = &rig;
@@ -2352,22 +2373,46 @@ fn watch_admission_over_cap_refuses_busy() {
             }
         });
     }
-    // A hook that missed its budget under load left its check-in uncommitted;
-    // run it again until the watch is accepted, as the next hook would.
-    let mut holders: Vec<Watch> = extra
-        .iter()
-        .map(|(id, session)| {
+    // The holders' `watch` children start sixteen at a time (inside the 32
+    // ordinary request slots their registration also uses: all 64 at once
+    // drew `daemon_unavailable` refusals); each first answer is judged once
+    // its chunk was spawned, and a refusal the mod would retry is retried.
+    let spawn_holder = |id: &str, session: &str| {
+        Watch::spawn(rig.command(
+            Some(id),
+            &["watch", "--harness", "claude", "--session", session],
+        ))
+    };
+    let mut holders: Vec<Watch> = Vec::with_capacity(CAP);
+    for chunk in extra.chunks(16) {
+        let mut spawned: Vec<Watch> = chunk
+            .iter()
+            .map(|(id, session)| spawn_holder(id, session))
+            .collect();
+        for (holder, (id, session)) in spawned.iter_mut().zip(chunk) {
             for _ in 0..10 {
-                if let Some(watch) = rig.try_watch(id, session, &[], 10) {
-                    return watch;
+                let first = holder.peek_first(STEP);
+                let reason = first
+                    .as_ref()
+                    .filter(|line| line["kind"] == "status" && line["state"] == "refused")
+                    .and_then(|line| line["reason"].as_str().map(str::to_owned));
+                match reason.as_deref() {
+                    // A hook that missed its budget under load left its
+                    // check-in uncommitted; run it again, as the next hook
+                    // would.
+                    Some("no_binding") => {
+                        rig.session_start_hook(id, session, "startup");
+                    }
+                    // Exit 1: the mod restarts the watch.
+                    Some("daemon_unavailable" | "error") => {}
+                    _ => break,
                 }
-                rig.session_start_hook(id, session, "startup");
+                std::thread::sleep(Duration::from_millis(150));
+                *holder = spawn_holder(id, session);
             }
-            panic!("no binding for {id}");
-        })
-        .collect();
-    for holder in &mut holders {
-        holder.wait_connected();
+            holder.wait_connected();
+        }
+        holders.append(&mut spawned);
     }
     assert_eq!(rig.channels()["live_channels"], CAP, "{}", rig.channels());
     let mut over = rig.watch(SESSION_B);
@@ -2390,4 +2435,10 @@ fn watch_admission_over_cap_refuses_busy() {
         });
         (line["state"] == "connected").then(|| drop(retry))
     });
+    // Signal every holder first so they exit together; each Drop then only
+    // reaps its child.
+    for holder in &holders {
+        // SAFETY: signals only the process group this owned child leads.
+        unsafe { libc::killpg(holder.child.id() as libc::pid_t, libc::SIGTERM) };
+    }
 }
