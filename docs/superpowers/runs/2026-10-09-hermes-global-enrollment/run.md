@@ -8,3 +8,4 @@ idea: ht-4ne: make Hermes enroll globally through its hooks instead of launch-on
 branch: super-auto/hermes-global-enrollment
 base: main
 spec: 2026-10-09-hermes-global-enrollment-design.md
+epic: ht-4ne
