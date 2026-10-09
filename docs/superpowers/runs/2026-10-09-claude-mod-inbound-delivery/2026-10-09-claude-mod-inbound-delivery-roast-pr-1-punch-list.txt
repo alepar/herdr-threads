@@ -1,0 +1,4 @@
+[Nit] src/service/mod_channels.rs:240
+[Nit] src/service/mod_channels.rs:193; src/daemon/settings.rs:20
+[Nit] src/cli/setup.rs:1708
+[Nit] scripts/test-claude-mod:13; scripts/test-claude-mod:1
