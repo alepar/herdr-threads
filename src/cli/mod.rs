@@ -2881,6 +2881,35 @@ fn reject_inert_retry(journal: &journal::Journal, recovery: &str) -> Result<(), 
     Ok(())
 }
 
+/// Refuse unsupported lazy delivery before publishing an intent or replaying it.
+fn require_lazy_send_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    match client.call(Command::Capabilities, &cooperative_budget(clock)) {
+        Ok(CommandResult::Capabilities(list))
+            if list
+                .capabilities
+                .iter()
+                .any(|name| name == crate::protocol::capabilities::LAZY_SEND) =>
+        {
+            Ok(())
+        }
+        Err(error)
+            if !matches!(
+                error.code,
+                crate::protocol::results::ErrorCode::Unsupported
+                    | crate::protocol::results::ErrorCode::InvalidRequest
+            ) =>
+        {
+            Err(RunError::Api(error))
+        }
+        _ => Err(unsupported(
+            "daemon lacks send.lazy_v1; upgrade the daemon before sending lazy messages",
+        )),
+    }
+}
+
 #[cfg(test)]
 mod topology_contract_retry_tests {
     use super::*;
@@ -3040,34 +3069,5 @@ mod topology_contract_retry_tests {
             }
         }
         std::fs::remove_dir_all(root).unwrap();
-    }
-}
-
-/// Refuse unsupported lazy delivery before publishing an intent or replaying it.
-fn require_lazy_send_capability<C: LocalClient + ?Sized>(
-    client: &C,
-    clock: &dyn Clock,
-) -> Result<(), RunError> {
-    match client.call(Command::Capabilities, &cooperative_budget(clock)) {
-        Ok(CommandResult::Capabilities(list))
-            if list
-                .capabilities
-                .iter()
-                .any(|name| name == crate::protocol::capabilities::LAZY_SEND) =>
-        {
-            Ok(())
-        }
-        Err(error)
-            if !matches!(
-                error.code,
-                crate::protocol::results::ErrorCode::Unsupported
-                    | crate::protocol::results::ErrorCode::InvalidRequest
-            ) =>
-        {
-            Err(RunError::Api(error))
-        }
-        _ => Err(unsupported(
-            "daemon lacks send.lazy_v1; upgrade the daemon before sending lazy messages",
-        )),
     }
 }
