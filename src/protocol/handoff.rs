@@ -130,7 +130,7 @@ impl DeliveryMutation {
                     && thread_matches(&v.thread)
             }
             DeliveryAction::Send(v) => {
-                v.delivery_mode.is_ordinary()
+                v.delivery_mode == crate::protocol::commands::DeliveryMode::Ordinary
                     && v.claim == self.claim
                     && v.operation == keys.send
                     && v.body == self.plan.payload.body
