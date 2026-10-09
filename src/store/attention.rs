@@ -352,6 +352,7 @@ pub fn seat_digest(
         receipts: receipt_class,
         warnings: class(&warnings)?,
         unavailability_open: open != 0,
+        mod_channel_live: false,
     };
     Ok(DigestRun {
         digest,

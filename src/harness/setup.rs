@@ -2038,6 +2038,7 @@ pub(crate) mod legacy {
                 })
                 .transpose()?,
             prompt_suggestions,
+            hooks_only: false,
         })
     }
     fn installer_failure(detail: impl Into<String>) -> crate::cli::RunError {
@@ -2221,12 +2222,17 @@ pub(crate) mod legacy {
     ) -> Result<crate::harness::adapter::SetupOutcome, crate::harness::adapter::SetupFailure> {
         let mut env = scoped_legacy_environment(harness, &request.scope, &request.environment)?;
         env.executable = request.executable.clone();
-        let legacy = legacy_request(
+        let mut legacy = legacy_request(
             harness,
             SetupVerb::Install,
             request.native_binary.as_deref(),
             prompt_suggestions,
         )?;
+        // Only an adapter that declares the option (Claude) can receive it.
+        legacy.hooks_only = request
+            .options
+            .get(crate::harness::claude::setup::HOOKS_ONLY_OPTION)
+            == Some(&true);
         harness_binary(&legacy, &env).map_err(adapter_failure)?;
         if let Some(leftover) = env.instance_source["state_dir_leftover"].as_str() {
             return Err(adapter_failure(invalid(format!(

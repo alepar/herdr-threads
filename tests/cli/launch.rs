@@ -287,6 +287,7 @@ impl Scratch {
                 harness,
                 harness_binary: None,
                 prompt_suggestions: Default::default(),
+                hooks_only: false,
             },
             &self.env,
         )

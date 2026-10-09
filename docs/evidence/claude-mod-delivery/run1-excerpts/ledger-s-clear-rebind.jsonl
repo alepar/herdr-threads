@@ -1,0 +1,44 @@
+{"at": 1791550979085, "ids": ["mTtnisTK5"], "kind": "received", "reason": null, "turn": null, "via": null}
+{"at": 1791550979085, "ids": ["mTtnisTK5"], "kind": "submit", "reason": null, "turn": null, "via": "submit"}
+{"at": 1791550979194, "ids": ["mTtnisTK5"], "kind": "delivered", "reason": null, "turn": "9a19960c-675c-45e4-8343-2d66fc50cb36", "via": "submit"}
+{"at": 1791550979233, "ids": ["mTtnisTK5"], "kind": "acked", "reason": "settled", "turn": "9a19960c-675c-45e4-8343-2d66fc50cb36", "via": "submit"}
+{"at": 1791550983721, "ids": [], "kind": "restart", "reason": "exit:0", "turn": null, "via": null}
+{"at": 1791550985476, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791550988474, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791550994485, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551004517, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551034580, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551064649, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551094726, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551124804, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551154953, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551185952, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551215996, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551246116, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551276171, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551293721, "ids": ["m3ysk7uuw"], "kind": "received", "reason": null, "turn": null, "via": null}
+{"at": 1791551293722, "ids": ["mRWrh8HGc"], "kind": "received", "reason": null, "turn": null, "via": null}
+{"at": 1791551293722, "ids": ["m3ysk7uuw", "mRWrh8HGc"], "kind": "submit", "reason": null, "turn": null, "via": "submit"}
+{"at": 1791551293722, "ids": ["attention:23"], "kind": "received", "reason": null, "turn": null, "via": null}
+{"at": 1791551294085, "ids": [], "kind": "restart", "reason": "exit:0", "turn": null, "via": null}
+{"at": 1791551294235, "ids": ["m3ysk7uuw", "mRWrh8HGc"], "kind": "delivered", "reason": null, "turn": "f120c86f-0a02-4d81-9916-d4649b698538", "via": "submit"}
+{"at": 1791551294252, "ids": ["m3ysk7uuw"], "kind": "refused", "reason": "ack:stale_generation", "turn": "f120c86f-0a02-4d81-9916-d4649b698538", "via": "submit"}
+{"at": 1791551294252, "ids": ["mRWrh8HGc"], "kind": "refused", "reason": "ack:stale_generation", "turn": "f120c86f-0a02-4d81-9916-d4649b698538", "via": "submit"}
+{"at": 1791551295209, "ids": [], "kind": "restart", "reason": "exit:2", "turn": "f120c86f-0a02-4d81-9916-d4649b698538", "via": null}
+{"at": 1791551298217, "ids": [], "kind": "restart", "reason": "exit:2", "turn": "f120c86f-0a02-4d81-9916-d4649b698538", "via": null}
+{"at": 1791551303996, "ids": ["attention:23"], "kind": "submit", "reason": null, "turn": null, "via": "submit"}
+{"at": 1791551304045, "ids": ["attention:23"], "kind": "delivered", "reason": null, "turn": "0db1c460-8733-4fe6-ac94-54ba2294890d", "via": "submit"}
+{"at": 1791551304223, "ids": [], "kind": "restart", "reason": "exit:2", "turn": "0db1c460-8733-4fe6-ac94-54ba2294890d", "via": null}
+{"at": 1791551314256, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551344348, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551374424, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551404487, "ids": [], "kind": "restart", "reason": "exit:2", "turn": null, "via": null}
+{"at": 1791551433035, "ids": ["mMkdEG4OJ"], "kind": "received", "reason": null, "turn": null, "via": null}
+{"at": 1791551433035, "ids": ["attention:26"], "kind": "received", "reason": null, "turn": null, "via": null}
+{"at": 1791551433035, "ids": ["mMkdEG4OJ", "attention:26"], "kind": "submit", "reason": null, "turn": null, "via": "submit"}
+{"at": 1791551433303, "ids": [], "kind": "restart", "reason": "exit:0", "turn": null, "via": null}
+{"at": 1791551433444, "ids": ["mMkdEG4OJ", "attention:26"], "kind": "delivered", "reason": null, "turn": "2efb4528-b555-4afd-85be-c4c8fdbdf501", "via": "submit"}
+{"at": 1791551433470, "ids": ["mMkdEG4OJ"], "kind": "refused", "reason": "ack:stale_generation", "turn": "2efb4528-b555-4afd-85be-c4c8fdbdf501", "via": "submit"}
+{"at": 1791551434535, "ids": [], "kind": "restart", "reason": "exit:2", "turn": "2efb4528-b555-4afd-85be-c4c8fdbdf501", "via": null}
+{"at": 1791551437544, "ids": [], "kind": "restart", "reason": "exit:2", "turn": "2efb4528-b555-4afd-85be-c4c8fdbdf501", "via": null}
+{"at": 1791551443550, "ids": [], "kind": "restart", "reason": "exit:2", "turn": "2efb4528-b555-4afd-85be-c4c8fdbdf501", "via": null}

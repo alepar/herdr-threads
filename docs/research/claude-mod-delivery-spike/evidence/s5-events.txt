@@ -1,0 +1,13 @@
+    0.00s {"kind": "session-start", "pane": "spike-s5", "session": "7113b39b-0930-40fe-a363-a9d99a054723", "version": "2.1.294"}
+    0.00s {"kind": "feed-started", "feed": "/private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/sessions/s5/feed.jsonl"}
+   11.15s {"kind": "prompt-submit-seen", "origin": {"kind": "composer"}, "text": "Run `sleep 10` in bash then say ALPHA."}
+   11.17s {"kind": "turn-start", "turn": "895cb6fc-02d5-41cd-b84c-e150d087c857", "session": "7113b39b-0930-40fe-a363-a9d99a054723"}
+   14.49s {"kind": "prompt-submit-seen", "origin": {"kind": "composer"}, "text": "Say BRAVO."}
+   15.68s {"kind": "received", "id": "q1", "mode": "submit", "busy": true}
+   24.23s {"kind": "turn-complete", "turn": "895cb6fc-02d5-41cd-b84c-e150d087c857", "aborted": false}
+   24.23s {"kind": "submit-call", "ids": ["q1"], "reason": "turn-complete", "asUser": false}
+   24.25s {"kind": "submit-resolved", "ids": ["q1"], "drop": null}
+   24.26s {"kind": "turn-start", "turn": "a642e72c-41ae-4bff-aae6-590d2a4310d8", "session": "7113b39b-0930-40fe-a363-a9d99a054723"}
+   26.32s {"kind": "turn-complete", "turn": "a642e72c-41ae-4bff-aae6-590d2a4310d8", "aborted": false}
+   54.84s {"kind": "feed-ended"}
+   54.84s {"kind": "session-end", "reason": "other"}

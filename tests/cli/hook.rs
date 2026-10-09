@@ -403,6 +403,7 @@ fn digest(invitations: &[(&str, &str)], receipts: &[(&str, &str)]) -> AttentionD
         receipts: class(receipts, receipts.len() as u64 + 3),
         warnings: class(&[], 0),
         unavailability_open: false,
+        mod_channel_live: false,
     }
 }
 fn prefix(state: &str) -> Vec<String> {
@@ -4835,6 +4836,312 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
         for depth in (0..boundary - BOUNDARY_WINDOW).step_by(SAMPLE_STRIDE) {
             assert!(case(depth), "{harness:?} depth={depth} below the boundary");
         }
+    }
+}
+
+/// Spec D7: while a mod delivery channel is live for the seat, the Claude
+/// SessionStart and PreToolUse(Bash) hooks omit the attention digest and the
+/// ready commands, against a scripted daemon that reports the flag.
+mod mod_channel_live {
+    use super::*;
+    use crate::protocol::{
+        attention::{AttentionClass, AttentionRef, AttentionToken, DIGEST_VERSION},
+        commands::{CheckInMode as WireMode, Command},
+        ids::{SeatId, ThreadId},
+        pagination::{Consistency, Page, StopReason},
+        results::{CheckInContextDisposition, CheckInResult, CommandResult},
+    };
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    fn empty<T>() -> Page<T> {
+        Page {
+            items: vec![],
+            has_more: false,
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            consistency: Consistency::BoundedLive,
+            stop_reason: StopReason::Complete,
+        }
+    }
+
+    /// A seat with one pending receipt "A@t1"; `live` is the registry's answer.
+    #[derive(Default)]
+    struct Daemon {
+        live: AtomicBool,
+        calls: Mutex<Vec<&'static str>>,
+    }
+    impl Daemon {
+        fn calls(&self) -> Vec<&'static str> {
+            std::mem::take(&mut *self.calls.lock().unwrap())
+        }
+    }
+    impl LocalClient for Daemon {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            match command {
+                Command::AttentionDigest(query) => {
+                    self.calls.lock().unwrap().push("digest");
+                    Ok(CommandResult::AttentionDigest(AttentionDigest {
+                        version: DIGEST_VERSION,
+                        seat: query.seat,
+                        token: AttentionToken {
+                            receipt: Some((11, 0)),
+                            unavailability_episode: 1,
+                            ..Default::default()
+                        },
+                        invitations: AttentionClass::default(),
+                        receipts: AttentionClass {
+                            count: 1,
+                            items: vec![AttentionRef {
+                                id: "A".into(),
+                                thread: ThreadId::new("t1"),
+                                requirement: None,
+                            }],
+                            has_more: false,
+                            count_has_more: false,
+                        },
+                        warnings: AttentionClass::default(),
+                        unavailability_open: false,
+                        mod_channel_live: self.live.load(Ordering::SeqCst),
+                    }))
+                }
+                Command::Directory(_) => Ok(CommandResult::Directory(empty())),
+                Command::CheckIn(check) => {
+                    self.calls.lock().unwrap().push("check_in");
+                    let mut claim = check.claim;
+                    if let WireMode::Lifecycle {
+                        expected_binding_generation,
+                    } = check.mode
+                    {
+                        claim.binding_generation = expected_binding_generation + 1;
+                    }
+                    Ok(CommandResult::CheckedIn(CheckInResult {
+                        context: claim.clone(),
+                        context_disposition: CheckInContextDisposition::Current,
+                        seat: claim.seat,
+                        offered_through: Some("9".into()),
+                        warning_count: 0,
+                        warning_count_has_more: false,
+                        warnings: empty(),
+                        notices: Default::default(),
+                        inbox: empty(),
+                    }))
+                }
+                other => panic!("unexpected hook call {other:?}"),
+            }
+        }
+    }
+
+    struct Window;
+    impl RetryWindow for Window {
+        fn wait(&self, _: Duration) -> bool {
+            false
+        }
+    }
+
+    struct Pane {
+        dir: PathBuf,
+        paths: InstancePaths,
+        target: HostTargetId,
+        instance: uuid::Uuid,
+        context: RuntimeContext,
+    }
+    impl Pane {
+        fn new() -> Self {
+            let dir = PathBuf::from(format!(
+                "/private/tmp/hkm-{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..10]
+            ));
+            std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+            let context =
+                RuntimeContext::explicit(dir.join("state"), dir.join("host.sock"), None).unwrap();
+            let paths = InstancePaths::resolve(&context).unwrap();
+            paths.prepare_instance_dir().unwrap();
+            Self {
+                dir,
+                paths,
+                target: HostTargetId::new("w1:p1"),
+                instance: uuid::Uuid::new_v4(),
+                context,
+            }
+        }
+        fn call<'a>(&'a self, client: &'a dyn LocalClient) -> PaneCall<'a> {
+            PaneCall {
+                context: &self.context,
+                paths: &self.paths,
+                client,
+                instance: self.instance,
+                target: &self.target,
+                deadline: Instant::now() + Duration::from_secs(5),
+                current_deadline: CurrentDeadline {
+                    at: Instant::now() + Duration::from_millis(1500),
+                    watchdog: None,
+                },
+                clock: clock(),
+                retry: Arc::new(Window),
+            }
+        }
+    }
+    impl Drop for Pane {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn start() -> LifecycleEvent {
+        let mut ev = event(CLAUDE_START);
+        ev.event_id = uuid::Uuid::new_v4().to_string();
+        ev
+    }
+    fn tool() -> LifecycleEvent {
+        let mut ev = event(CLAUDE_TOOL);
+        ev.event_id = uuid::Uuid::new_v4().to_string();
+        ev
+    }
+    fn stdout(event: &LifecycleEvent, done: &CheckedIn) -> String {
+        let bytes = encode_native_for_routing(
+            event,
+            &done.text,
+            &done.fallback,
+            done.summary.as_deref(),
+            done.actions.as_ref(),
+            done.overview.as_ref(),
+            done.recovery.as_ref(),
+            done.command_routing.as_ref(),
+        );
+        if bytes.is_empty() {
+            String::new()
+        } else {
+            additional_context(&bytes)
+        }
+    }
+    fn describe(failure: Failure) -> String {
+        match failure {
+            Failure::Quiet(d) | Failure::Unavailable(d) => d,
+            Failure::UnavailableDetail(a, b) => format!("{a}: {b}"),
+        }
+    }
+    fn seat() -> SeatId {
+        SeatId::new("seat-1")
+    }
+
+    // Kills: a SessionStart that still shows the digest line, the ready
+    // commands or seeds the attention mark while the mod delivers attention;
+    // and one that skips the lifecycle CheckIn (enrollment must still happen).
+    #[test]
+    fn claude_session_start_omits_digest_and_ready_commands_while_mod_channel_live() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        daemon.live.store(true, Ordering::SeqCst);
+        let ev = start();
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 0)
+            .map_err(describe)
+            .expect("check-in");
+        assert_eq!(daemon.calls(), vec!["digest", "check_in"]);
+        assert!(done.summary.is_none(), "{:?}", done.summary);
+        assert!(done.actions.is_none());
+        assert!(done.attention.is_none());
+        let context = stdout(&ev, &done);
+        assert!(
+            context.contains("herdr-threads"),
+            "instruction stays: {context}"
+        );
+        assert!(!context.contains("attention digest"), "{context}");
+        assert!(!context.contains("receipts=1"), "{context}");
+        assert!(!context.contains(READY_HEADER), "{context}");
+    }
+
+    // Kills: the omission being unconditional, or the flag being ignored when
+    // false: the digest line, ready commands and mark seed return.
+    #[test]
+    fn claude_session_start_digest_and_ready_commands_present_again_when_not_live() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        let ev = start();
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 0)
+            .map_err(describe)
+            .expect("check-in");
+        assert!(
+            done.summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("receipts=1 [A@t1]")),
+            "{:?}",
+            done.summary
+        );
+        assert!(done.actions.is_some());
+        assert!(done.attention.is_some());
+        let context = stdout(&ev, &done);
+        assert!(context.contains("receipts=1 [A@t1]"), "{context}");
+        assert!(context.contains(READY_HEADER), "{context}");
+    }
+
+    // Kills: a PreToolUse(Bash) that checks in or prints the digest/ready
+    // commands while live, or that advances the mark (the attention would then
+    // be swallowed once the channel is gone).
+    #[test]
+    fn claude_pre_tool_use_bash_emits_nothing_while_mod_channel_live() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        let registered = pane
+            .call(&daemon)
+            .check_in_seat(&start(), &seat(), 0)
+            .map_err(describe)
+            .expect("check-in");
+        // Commit the seeded mark the way the process boundary does.
+        registered.attention.unwrap().commit().ok();
+        daemon.calls();
+        daemon.live.store(true, Ordering::SeqCst);
+        let ev = tool();
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 1)
+            .map_err(describe)
+            .expect("check-in");
+        assert_eq!(daemon.calls(), vec!["digest"], "no CheckIn while live");
+        assert!(done.text.is_empty());
+        assert!(done.summary.is_none());
+        assert!(done.attention.is_none(), "mark stays where it was");
+        assert_eq!(stdout(&ev, &done), "", "nothing reaches the model");
+    }
+
+    // Kills: the quiet tool boundary outliving the channel: with it gone the
+    // still-pending receipt is offered again.
+    #[test]
+    fn claude_pre_tool_use_bash_offers_pending_attention_again_when_not_live() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        pane.call(&daemon)
+            .check_in_seat(&start(), &seat(), 0)
+            .map_err(describe)
+            .expect("check-in");
+        // The lifecycle mark is deliberately not committed: the first tool
+        // call after it presents what is pending.
+        daemon.calls();
+        let ev = tool();
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 1)
+            .map_err(describe)
+            .expect("check-in");
+        assert_eq!(daemon.calls(), vec!["digest", "check_in"]);
+        let context = stdout(&ev, &done);
+        assert!(context.contains("receipts=1 [A@t1]"), "{context}");
     }
 }
 

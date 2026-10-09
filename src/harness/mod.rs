@@ -13,6 +13,7 @@ mod attribution_tests;
 #[path = "../../tests/harness/canary_payloads.rs"]
 mod canary_payloads;
 pub mod claude;
+pub mod claude_mod;
 #[cfg(test)]
 #[path = "../../tests/harness/claude.rs"]
 mod claude_tests;

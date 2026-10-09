@@ -1481,6 +1481,8 @@ struct Mailbox {
     own_episodes: std::sync::Mutex<u64>,
     /// Notices become carriable independently of their immutable publication token.
     pending_notices: std::sync::Mutex<usize>,
+    /// The digest reports a live mod delivery channel for the seat (spec D7).
+    mod_live: std::sync::atomic::AtomicBool,
 }
 impl Mailbox {
     fn with(pending: &[&'static str], arriving: &[&'static str]) -> Self {
@@ -1533,6 +1535,7 @@ impl Mailbox {
             },
             warnings: AttentionClass::default(),
             unavailability_open: false,
+            mod_channel_live: self.mod_live.load(std::sync::atomic::Ordering::SeqCst),
         }
     }
     fn items(&self) -> Vec<crate::protocol::results::InboxItem> {
@@ -2727,6 +2730,41 @@ fn cached_pinned_continuations_preserve_cache(qualified: bool) {
             .count(),
         1
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+// Spec D7. Kills: a tool-boundary read that still presents (or calls CheckIn
+// for) pending receipts while a mod channel delivers them, and one that
+// advances the mark while quiet, which would swallow the attention once the
+// channel is gone.
+#[test]
+fn tool_boundary_quiet_and_mark_unchanged_while_mod_channel_live() {
+    use std::sync::atomic::Ordering;
+    let (root, j, cj, seed, event) = fixture();
+    let client = Mailbox::with(&[], &[]);
+    assert!(register(&j, &cj, &event, &seed, &client));
+    let execution = cj.current().unwrap().unwrap().execution;
+    let mark = cj.attention_mark(execution);
+    client.arrive(&["A"]);
+    client.mod_live.store(true, Ordering::SeqCst);
+    client.calls();
+    let quiet = boundary(&cj, &client, true);
+    assert!(quiet.text.is_empty());
+    assert!(quiet.summary.is_none());
+    assert!(quiet.digest.is_none());
+    assert!(quiet.mark.is_none());
+    assert_eq!(client.calls(), vec!["digest"], "no CheckIn while live");
+    assert_eq!(cj.attention_mark(execution), mark, "mark not advanced");
+    // A compaction (coalesce: false) re-presents pending attention, but a
+    // live channel owns that too.
+    let compaction = boundary(&cj, &client, false);
+    assert!(compaction.text.is_empty() && compaction.mark.is_none());
+    // Channel gone: the still-pending receipt is presented, once.
+    client.mod_live.store(false, Ordering::SeqCst);
+    let back = boundary(&cj, &client, true);
+    assert!(!back.text.is_empty(), "pending attention returns");
+    assert!(back.summary.unwrap().contains("receipts=1 [A@t1]"));
+    assert!(tool_call(&cj, &client).is_empty(), "then coalesced");
     fs::remove_dir_all(root).unwrap();
 }
 

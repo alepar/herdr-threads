@@ -15,6 +15,11 @@ hook-budget = { max-threads = 1 }
 # group: under `cargo test` they already ran beside the chain.
 integration-daemon = { max-threads = 1 }
 service-daemon = { max-threads = 1 }
+# The mod delivery sweep (ht-j16.10): each test runs an elected in-process
+# daemon with an injected clock and real `watch` children, and one of them
+# holds 64 channels. Four at a time keep it from starving the latency-asserting
+# daemon tests running beside it; its own waits are generous.
+mod-delivery = { max-threads = 4 }
 
 [profile.default]
 # A hang guard, not a budget: the longest test waits ~70 s by design.
@@ -115,6 +120,11 @@ binary(service) & test(/^(resolution|composition|operator|graph_d2)::/)
 """
 priority = 70
 test-group = "service-daemon"
+
+[[profile.default.overrides]]
+filter = "binary(integration) & test(/^mod_delivery::/)"
+priority = 60
+test-group = "mod-delivery"
 
 # CI: a JUnit report (per-test times; success output kept for the
 # skipped-Herdr summary).

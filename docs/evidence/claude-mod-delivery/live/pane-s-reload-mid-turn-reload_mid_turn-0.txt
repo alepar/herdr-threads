@@ -1,0 +1,49 @@
+
+ ▐▛███▛█   Claude Code v2.1.295
+▝▜██████▀  Opus 5.5 with medium effort · Claude Max
+ ▝▝   ▝▝   /private/tmp/ht-ms-t2fmrefm/work
+
+
+❯ Run sleep 25 with the Bash tool, then reply with the single word done.                                                                                        
+
+  Ran 2 shell commands 
+
+⏺ herdr-threads: herdr-threads: delivered 1 message(s)
+
+⏺ The 25-second wait is running in the background, and I'll reply once it finishes. A message from another agent also arrived on the "mod stress" thread, an
+  automated delivery test. It asked for no action, so I didn't do anything with it.
+
+✻ Sautéed for 9s · done 8:18 AM · 1 shell still running
+
+⏺ herdr-threads: reloaded (5 hooks: session.start, session.end, turn.start, turn.complete, tool.call)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                                                              
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                                         
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ← for agents · ↓ to manage                   

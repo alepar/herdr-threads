@@ -411,6 +411,10 @@ pub enum CliAction {
     ContractId {
         harness: Option<crate::harness::context::Harness>,
     },
+    /// Hidden `watch --harness claude --session ID`: the mod delivery child.
+    Watch(super::watch::WatchRequest),
+    /// Hidden `watch ack --session ID --via VIA IDS...`.
+    WatchAck(super::watch::WatchAckRequest),
     /// `harness-version normalize HARNESS RAW`: the canonical bare semver of a
     /// raw `--version` string; local only.
     HarnessVersionNormalize {
@@ -575,6 +579,8 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::Skill
         | CliAction::Adapters
         | CliAction::ContractId { .. }
+        | CliAction::Watch(_)
+        | CliAction::WatchAck(_)
         | CliAction::HarnessVersionNormalize { .. }
         | CliAction::InstallerIntegrations { .. }
         | CliAction::InternalJsonField { .. }
@@ -1047,6 +1053,19 @@ enum Top {
     /// section of `herdr-threads skill`).
     #[command(args_conflicts_with_subcommands = true)]
     Summary(SummaryArgs),
+    /// Mod delivery child: streams herdr-threads deliveries as JSON lines.
+    #[command(
+        hide = true,
+        args_conflicts_with_subcommands = true,
+        after_help = "Exit codes: 0 stream ended (restart with backoff), 1 other error \
+(restart with backoff), 2 refused (retry after backoff), 3 permanent (stop until \
+reload). Registration refusals no_binding, session_mismatch, held, unresolved, \
+cooldown, busy and stopping exit 2; not_claude and disabled exit 3. A Close of \
+disabled or replaced exits 3, any other Close exits 0. Local reasons no_pane, \
+env_disabled and unsupported exit 3; daemon_unavailable and error exit 1; \
+stream_ended exits 0. Spawned by the herdr-threads Claude mod."
+    )]
+    Watch(WatchArgs),
     /// Discover built-in adapters and their declared tooling metadata. Local only.
     Adapters,
     /// Print the contract id of each harness's native hook payload (the
@@ -1069,6 +1088,31 @@ enum Top {
     Internal {
         #[command(subcommand)]
         command: InternalSub,
+    },
+}
+
+#[derive(Args)]
+struct WatchArgs {
+    /// Only `claude` (the id is not `harness`, so the registry-wide harness
+    /// selector choices do not replace this narrower list).
+    #[arg(long = "harness", value_parser = ["claude"])]
+    mod_harness: Option<String>,
+    #[arg(long)]
+    session: Option<String>,
+    #[command(subcommand)]
+    command: Option<WatchSub>,
+}
+
+#[derive(Subcommand)]
+enum WatchSub {
+    /// Report items the mod delivered; one JSON line per id.
+    Ack {
+        #[arg(long)]
+        session: String,
+        #[arg(long, value_parser = ["context", "submit", "append"])]
+        via: String,
+        #[arg(required = true)]
+        ids: Vec<String>,
     },
 }
 
@@ -1517,6 +1561,11 @@ struct SetupArgs {
     /// asking or advising.
     #[arg(long)]
     keep_prompt_suggestions: bool,
+    /// setup (claude): install or keep the hooks but not the delivery mod;
+    /// removes the mod's `CLAUDE_CODE_PLUGIN_DIRS` path and files if setup
+    /// wrote them (for example under managed policy that forbids the key).
+    #[arg(long)]
+    hooks_only: bool,
 }
 
 #[derive(Args)]
@@ -1632,6 +1681,13 @@ fn setup_action(
     if args.disable_prompt_suggestions {
         options.insert("disable-prompt-suggestions".into(), true);
     }
+    if args.hooks_only
+        && (verb != super::setup::SetupVerb::Install || args.harness.as_deref() != Some("claude"))
+    {
+        return Err(invalid(
+            "--hooks-only applies to `setup claude` only (unsetup removes the mod with the hooks)",
+        ));
+    }
     if args.keep_prompt_suggestions {
         options.insert("keep-prompt-suggestions".into(), true);
     }
@@ -1685,6 +1741,7 @@ fn setup_action(
         harness,
         harness_binary: args.harness_binary,
         prompt_suggestions,
+        hooks_only: args.hooks_only,
     }))
 }
 
@@ -2854,6 +2911,31 @@ fn parse_cli_in_registry(
                 }
             })
         }
+        Top::Watch(args) => match (args.command, args.mod_harness, args.session) {
+            (Some(WatchSub::Ack { session, via, ids }), _, _) => {
+                CliAction::WatchAck(super::watch::WatchAckRequest {
+                    session,
+                    via: match via.as_str() {
+                        "context" => crate::protocol::watch::ModDeliveryVia::Context,
+                        "submit" => crate::protocol::watch::ModDeliveryVia::Submit,
+                        _ => crate::protocol::watch::ModDeliveryVia::Append,
+                    },
+                    messages: ids
+                        .into_iter()
+                        .map(|value| id(value, MessageId::parse))
+                        .collect::<Result<_, _>>()?,
+                })
+            }
+            (None, Some(_), Some(session)) => CliAction::Watch(super::watch::WatchRequest {
+                harness: crate::harness::context::Harness::Claude,
+                session,
+            }),
+            _ => {
+                return Err(invalid(
+                    "watch needs --harness claude and --session ID, or the `ack` subcommand",
+                ));
+            }
+        },
         Top::Adapters => CliAction::Adapters,
         Top::ContractId { harness } => CliAction::ContractId {
             harness: harness

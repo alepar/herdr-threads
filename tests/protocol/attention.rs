@@ -98,6 +98,7 @@ fn digest_bounds_are_explicit() {
         receipts: AttentionClass::default(),
         warnings: AttentionClass::default(),
         unavailability_open: false,
+        mod_channel_live: false,
     };
     assert_eq!(digest.validate(), Ok(()));
     assert!(!digest.is_empty());
@@ -115,4 +116,29 @@ fn digest_bounds_are_explicit() {
     digest.invitations.items.pop();
     digest.version = 2;
     assert!(digest.validate().is_err());
+}
+
+// Kills: a flag that is always serialized (breaking older decoders), one that
+// does not round-trip, or an old payload without the key failing to decode.
+#[test]
+fn mod_channel_live_absent_when_false_and_round_trips_when_true() {
+    let mut digest = AttentionDigest {
+        version: DIGEST_VERSION,
+        seat: SeatId::new("s"),
+        token: AttentionToken::default(),
+        invitations: AttentionClass::default(),
+        receipts: AttentionClass::default(),
+        warnings: AttentionClass::default(),
+        unavailability_open: false,
+        mod_channel_live: false,
+    };
+    let quiet = serde_json::to_value(&digest).unwrap();
+    assert!(quiet.get("mod_channel_live").is_none(), "{quiet}");
+    let old: AttentionDigest = serde_json::from_value(quiet).unwrap();
+    assert!(!old.mod_channel_live);
+    digest.mod_channel_live = true;
+    let live = serde_json::to_value(&digest).unwrap();
+    assert_eq!(live["mod_channel_live"], serde_json::json!(true));
+    let back: AttentionDigest = serde_json::from_value(live).unwrap();
+    assert_eq!(back, digest);
 }

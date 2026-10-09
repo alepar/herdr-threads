@@ -283,7 +283,8 @@ fn capability_constants_are_stable() {
             "attention.notice_delivery_v1",
             "messages.delivery_modes_v1",
             "send.lazy_v1",
-            "inbox.batch_v2"
+            "inbox.batch_v2",
+            "mod.watch_v1"
         ]
     );
 }
@@ -362,9 +363,59 @@ fn every_advertised_capability_has_a_handler() {
                     ErrorCode::NotFound
                 );
             }
+            MOD_WATCH => probe_mod_watch(),
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }
+}
+
+/// The daemon's domain decides a watch registration against its store: a
+/// claim for a seat the store does not know is refused `unresolved` (a
+/// service without the handler would answer `disabled`).
+fn probe_mod_watch() {
+    use crate::{
+        ports::{ModChannelSink, StorePort},
+        protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            ids::{ExecutionId, HostTargetId, NativeSessionId, SeatId},
+            watch::{WatchFrame, WatchRefusalReason, WatchRequest},
+        },
+        service::dispatch::DomainService,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+    };
+    struct NoSink;
+    impl ModChannelSink for NoSink {
+        fn push(&self, _frame: WatchFrame) -> bool {
+            false
+        }
+    }
+    let isolation = crate::test_support::isolation::TestIsolation::new("mod-watch-capability");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(isolation.path("store.db"), clock.clone()),
+            "probe-instance",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let domain = DomainService::new("probe-instance".into(), store, clock);
+    let request = WatchRequest {
+        claim: CallerClaim {
+            instance: "probe-instance".into(),
+            seat: SeatId::new("nobody"),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness: Harness::Claude,
+            native_session: NativeSessionId::new("n"),
+            execution: ExecutionId::new("e"),
+            target: HostTargetId::new("p"),
+        },
+    };
+    let refusal = domain
+        .watch_register(&request, Arc::new(NoSink), &budget())
+        .unwrap_err();
+    assert_eq!(refusal, WatchRefusalReason::Unresolved);
 }
 
 #[test]
@@ -426,7 +477,8 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "attention.notice_delivery_v1",
             "messages.delivery_modes_v1",
             "send.lazy_v1",
-            "inbox.batch_v2"
+            "inbox.batch_v2",
+            "mod.watch_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);
@@ -854,6 +906,7 @@ fn harness_states_round_trips_on_the_wire() {
             }),
             hook_parse_failures: 3,
         }],
+        mod_channels: None,
     });
     let encoded = serde_json::to_value(&result).unwrap();
     assert_eq!(encoded["kind"], "harness_states");

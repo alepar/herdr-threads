@@ -55,6 +55,7 @@ pub struct HarnessStatesProvider {
     clock: Arc<dyn Clock>,
     detected: DetectedVersions,
     parse_failures: Option<Arc<HookParseFailures>>,
+    mod_channels: Option<Arc<dyn crate::ports::ModChannels>>,
     registry: &'static crate::harness::registry::Registry,
     observations: Option<CachedHarnessObservations>,
 }
@@ -73,9 +74,18 @@ impl HarnessStatesProvider {
             clock,
             detected,
             parse_failures,
+            mod_channels: None,
             registry: crate::harness::registry::builtins(),
             observations: None,
         }
+    }
+
+    /// The registry whose channels and `mod_delivery` setting the report
+    /// carries (spec D2); without one the report omits them.
+    #[must_use]
+    pub fn with_mod_channels(mut self, channels: Arc<dyn crate::ports::ModChannels>) -> Self {
+        self.mod_channels = Some(channels);
+        self
     }
 
     pub fn with_registry(mut self, registry: &'static crate::harness::registry::Registry) -> Self {
@@ -490,7 +500,13 @@ impl HarnessStatesProvider {
                 )
             }));
         }
-        Ok(HarnessStatesReport { harnesses })
+        Ok(HarnessStatesReport {
+            harnesses,
+            mod_channels: self
+                .mod_channels
+                .as_ref()
+                .and_then(|channels| channels.status()),
+        })
     }
 }
 

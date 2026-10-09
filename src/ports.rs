@@ -2452,6 +2452,74 @@ impl PriorLadder {
     }
 }
 
+/// What the mod watch channel needs to read from the store (spec D2, D7).
+/// A narrow supertrait of [`StorePort`] so the registry can be exercised
+/// against a small fake; read-only, one read transaction per call.
+pub trait ModStoreReads: Send + Sync {
+    /// The A2 view of `seat` for a watch registration or a channel check.
+    /// `None`: no such seat in this store's instance.
+    fn mod_seat_view(
+        &self,
+        seat: &SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<ModSeatView>, ApiError>;
+    /// The oldest publication time among the seat's ordinary pending receipts
+    /// published at or before `at_or_before` whose body is at most
+    /// `body_limit` bytes (truncated items never count toward a stall).
+    fn mod_stall_oldest(
+        &self,
+        seat: &SeatId,
+        at_or_before: UtcMillis,
+        body_limit: usize,
+        budget: &CallBudget,
+    ) -> Result<Option<UtcMillis>, ApiError>;
+}
+
+/// The open binding as the mod channel decision sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModBindingView {
+    pub generation: u64,
+    pub provenance: String,
+    pub harness: String,
+    pub native_session: String,
+}
+
+/// Change detector for one seat's mod-visible state: an Attention frame is
+/// pushed when it differs from the last one seen by the registry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModFingerprint {
+    pub attention_version: u64,
+    pub pending_receipts: u64,
+    pub max_pending_ordinal: i64,
+    pub lazy_pending: u64,
+    pub max_lazy_rowid: i64,
+    /// Pending invitations, open warnings and notices (bounded count).
+    pub other_pending: u64,
+    pub binding_generation: Option<u64>,
+}
+
+impl ModFingerprint {
+    /// True when something addressed to the seat is pending.
+    pub fn has_pending(&self) -> bool {
+        self.pending_receipts > 0 || self.lazy_pending > 0 || self.other_pending > 0
+    }
+}
+
+/// One seat's A2 state for the mod channel, read in one transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModSeatView {
+    pub seat: SeatId,
+    /// `seats.state`.
+    pub state: String,
+    pub retired: bool,
+    pub continuity_resolved: bool,
+    /// An open recovery hold covers the seat's target.
+    pub held: bool,
+    pub binding: Option<ModBindingView>,
+    pub attention_version: u64,
+    pub fingerprint: ModFingerprint,
+}
+
 /// Store implementations inject a clock at construction and sample UTC inside each
 /// deciding write transaction, after validation and lock/queue waits. Mutation and due
 /// methods have no caller-provided UTC decision time.
@@ -2523,7 +2591,7 @@ pub trait BootstrapStorePort: Send + Sync {
     ) -> Result<CommandResult, ApiError>;
 }
 
-pub trait StorePort: Send + Sync {
+pub trait StorePort: ModStoreReads + Send + Sync {
     fn clock(&self) -> &dyn Clock;
     fn archival_pass(
         &self,
@@ -2640,6 +2708,18 @@ pub trait StorePort: Send + Sync {
         command: crate::protocol::commands::RecordManagedLaunch,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// Read-only (spec D6): the seat's open binding and the binding row that
+    /// immediately precedes it, for the `AckModDelivered` pre-decision. `None`
+    /// when the seat has no open binding. A hint for classification only; the
+    /// deciding transaction re-checks the claim against the canonical view (A2).
+    fn mod_ack_binding(
+        &self,
+        _instance: &str,
+        _seat: &crate::protocol::ids::SeatId,
+        _budget: &CallBudget,
+    ) -> Result<Option<ModAckBinding>, ApiError> {
+        Ok(None)
+    }
     /// Local durable validation only; implementations must not invent native proof.
     fn issue_cooperative_permit(
         &self,
@@ -3229,6 +3309,115 @@ pub struct HostCallContext {
     pub expected_epoch: Option<u64>,
 }
 
+/// Process-local id of one watch connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModChannelId(pub u64);
+
+/// A registration the transport has decided against A2 (spec D2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModChannelRegistration {
+    pub seat: SeatId,
+    pub binding_generation: u64,
+    pub native_session: NativeSessionId,
+    pub harness: Harness,
+    pub registered_at: UtcMillis,
+}
+
+/// The open binding of a seat plus its immediate predecessor (spec D6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModAckBinding {
+    pub generation: u64,
+    pub provenance: String,
+    pub harness: String,
+    pub native_session: crate::protocol::ids::NativeSessionId,
+    pub execution: crate::protocol::ids::ExecutionId,
+    pub target: crate::protocol::ids::HostTargetId,
+    /// The preceding binding row of the seat: its generation and native session.
+    pub previous: Option<(u64, crate::protocol::ids::NativeSessionId)>,
+}
+
+/// Where the registry pushes frames for one connection; `false`: it is gone.
+pub trait ModChannelSink: Send + Sync {
+    fn push(&self, frame: crate::protocol::watch::WatchFrame) -> bool;
+}
+
+/// The registry of live mod delivery channels (spec D2, D7). Every method has
+/// a no-op default; the defaults ARE the inert behaviour ([`NoModChannels`]).
+pub trait ModChannels: Send + Sync {
+    /// Register a channel: at most one per seat. A newer one for the same seat
+    /// and generation replaces the older (`Close{replaced}`); a new-generation
+    /// registration ends a rebind grace; a same-generation re-registration
+    /// within reconnect grace ends the grace (the mod re-acks). Refuses `busy`
+    /// over `MAX_WATCH_CONNECTIONS`, `cooldown` within `MOD_STALL_COOLDOWN_MS`
+    /// of a stall for that generation, `disabled` when `mod_delivery` is off.
+    fn register(
+        &self,
+        _registration: ModChannelRegistration,
+        _sink: std::sync::Arc<dyn ModChannelSink>,
+    ) -> Result<ModChannelId, crate::protocol::watch::WatchRefusalReason> {
+        Err(crate::protocol::watch::WatchRefusalReason::Disabled)
+    }
+    /// The stream ended without a Close (exit, crash, reload): keep the entry
+    /// in reconnect grace for `MOD_RECONNECT_GRACE_MS`; on expiry remove it
+    /// and kick the wake lane for the seat.
+    fn unregister(&self, _channel: ModChannelId, _now: UtcMillis) {}
+    /// Push `Close{reason}` and end the stream. `binding_changed` starts the
+    /// seat-level rebind grace (`MOD_REBIND_GRACE_MS`); `retired`,
+    /// `unresolved`, `stalled`, `disabled` and `stopping` remove at once and
+    /// kick; `stalled` also starts the cooldown.
+    fn close(
+        &self,
+        _seat: &SeatId,
+        _reason: crate::protocol::watch::WatchCloseReason,
+        _now: UtcMillis,
+    ) {
+    }
+    /// Authorization of `AckModDelivered` only (spec D6, TRUST-POLICY A5): true
+    /// from registration until the stream ends **and through reconnect
+    /// grace**, for the channel's own binding generation; during a rebind
+    /// grace true for every generation of the seat. It is not "is the mod
+    /// handling this seat": that is [`Self::seat_live`].
+    fn is_live(&self, _seat: &SeatId, _binding_generation: u64) -> bool {
+        false
+    }
+    /// "Is the mod handling this seat" (spec D7): any registry entry for the
+    /// seat whose grace has not expired, Live, ReconnectGrace and RebindGrace
+    /// alike, whatever its binding generation. Consumers: the wake candidate
+    /// path and pokes (scheduler `mod_suppressed`) and the Claude hook digest
+    /// flag (`mod_channel_live`). The default answers from `status()`.
+    fn seat_live(&self, seat: &SeatId) -> bool {
+        self.status()
+            .is_some_and(|status| status.channels.iter().any(|entry| &entry.seat == seat))
+    }
+    /// Push `Attention{version}` to the seat's channel (call sites per spec D2).
+    fn notify(&self, _seat: &SeatId, _attention_version: u64) {}
+    /// An Attention frame was pushed to the seat's channel at `now`. Counts
+    /// only for the entry of `binding_generation`, in Live or ReconnectGrace.
+    fn record_attention_push(&self, _seat: &SeatId, _binding_generation: u64, _now: UtcMillis) {}
+    /// A mod ack landed for the seat (only `settled`/`already_settled` count).
+    /// Counts only for the entry of `binding_generation` (the generation the
+    /// ack was decided against), in Live or ReconnectGrace.
+    fn record_ack(&self, _seat: &SeatId, _binding_generation: u64, _now: UtcMillis) {}
+    /// Spec D7 predicate: the channel is live; its last mod ack or
+    /// registration is older than `MOD_STALL_AFTER_MS`; and some ordinary,
+    /// non-truncated pending receipt for the seat, published at or before the
+    /// last pushed Attention, is itself older than `MOD_STALL_AFTER_MS`. A mod
+    /// hold counts; there is no heartbeat.
+    fn stalled(&self, _seat: &SeatId, _now: UtcMillis) -> bool {
+        false
+    }
+    /// Live channels and the daemon setting for setup-status. `None`: this
+    /// daemon keeps no registry.
+    fn status(&self) -> Option<crate::protocol::watch::ModChannelStatus> {
+        None
+    }
+}
+
+/// The default registry: nothing is ever live.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoModChannels;
+impl ModChannels for NoModChannels {}
+
 pub trait NotificationPort: Send + Sync {
     fn attempt_wake(
         &self,
@@ -3301,6 +3490,19 @@ pub trait LocalClient: Send + Sync {
     }
 }
 pub trait LocalService: Send + Sync {
+    /// Decide a mod watch registration against A2 and record the channel
+    /// (spec D2). Returns the channel id and the seat's attention version.
+    /// The default refuses: a service without a registry serves no channel.
+    fn watch_register(
+        &self,
+        _request: &crate::protocol::watch::WatchRequest,
+        _sink: std::sync::Arc<dyn ModChannelSink>,
+        _budget: &CallBudget,
+    ) -> Result<(ModChannelId, u64), crate::protocol::watch::WatchRefusalReason> {
+        Err(crate::protocol::watch::WatchRefusalReason::Disabled)
+    }
+    /// The watch stream ended without a Close.
+    fn watch_unregister(&self, _channel: ModChannelId, _now: UtcMillis) {}
     /// Operator recovery routes through the ordinary same-UID transport path.
     fn service_control(
         &self,

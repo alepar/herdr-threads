@@ -1,0 +1,6 @@
+{
+  "name": "ht-spike",
+  "version": "0.0.1",
+  "description": "Spike: deliver herdr-threads-style messages into a Claude Code session from a mod",
+  "author": { "name": "herdr-threads spike" }
+}

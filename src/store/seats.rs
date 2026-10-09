@@ -4556,6 +4556,140 @@ pub fn record_managed_launch(
     )
 }
 
+/// Bound of the lazy pending count in a mod fingerprint (a change detector,
+/// not a count anyone presents).
+const MOD_LAZY_COUNT_CAP: i64 = 1000;
+
+/// The seat's A2 state for the mod watch channel (spec D2), read-only. Call it
+/// inside the caller's read transaction. `None`: no such seat in `instance`.
+/// The fingerprint is built from the canonical digest (so it moves with every
+/// attention source the digest knows) and the lazy pending set.
+pub fn mod_seat_view(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+    use crate::ports::{ModBindingView, ModFingerprint, ModSeatView};
+    let row: Option<(String, Option<String>)> = db
+        .query_row(
+            "SELECT state,target_id FROM seats WHERE id=?1 AND instance_id=?2",
+            params![seat.as_str(), instance],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((state, target)) = row else {
+        return Ok(None);
+    };
+    let held = match target {
+        Some(target) => db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL)",
+                params![instance, target],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(store_error)?,
+        None => false,
+    };
+    let binding: Option<(i64, String, String, String)> = db
+        .query_row(
+            "SELECT generation,observation_provenance,harness,native_session FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+            [seat.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let binding = binding
+        .map(|(generation, provenance, harness, native_session)| {
+            Ok(ModBindingView {
+                generation: u64::try_from(generation).map_err(|_| {
+                    api_error(ErrorCode::StoreCorrupt, "negative binding generation")
+                })?,
+                provenance,
+                harness,
+                native_session,
+            })
+        })
+        .transpose()?;
+    let attention_version: i64 = db
+        .query_row(
+            "SELECT attention_version FROM wake_work WHERE seat_id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .unwrap_or(0);
+    let attention_version = u64::try_from(attention_version)
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative attention version"))?;
+    let run = super::attention::seat_digest(db, instance, seat, &|| Ok(()))?;
+    let (lazy_pending, max_lazy_rowid): (i64, i64) = db
+        .query_row(
+            // Published rows only: a staged row is invisible to the mod and
+            // its publication (manifest + message) must change the fingerprint.
+            "SELECT count(*),COALESCE(max(ordinal),0) FROM (SELECT r.ordinal FROM lazy_recipients r INDEXED BY lazy_recipients_pending_seat_ordinal JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=sm.message_id AND m.delivery_mode='lazy' WHERE r.seat_id=?1 AND r.state='pending' ORDER BY r.ordinal DESC LIMIT ?2)",
+            params![seat.as_str(), MOD_LAZY_COUNT_CAP],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(store_error)?;
+    let digest = &run.digest;
+    let fingerprint = ModFingerprint {
+        attention_version,
+        pending_receipts: digest.receipts.count,
+        max_pending_ordinal: digest
+            .token
+            .receipt
+            .map_or(0, |(seq, _)| i64::try_from(seq).unwrap_or(i64::MAX)),
+        lazy_pending: u64::try_from(lazy_pending).unwrap_or(0),
+        max_lazy_rowid,
+        other_pending: digest.invitations.count + digest.warnings.count,
+        binding_generation: binding.as_ref().map(|b| b.generation),
+    };
+    Ok(Some(ModSeatView {
+        seat: seat.clone(),
+        retired: state == "retired",
+        continuity_resolved: state == "resolved",
+        state,
+        held,
+        binding,
+        attention_version,
+        fingerprint,
+    }))
+}
+
+/// The oldest publication time among the seat's ordinary pending receipts
+/// published at or before `at_or_before` whose stored body is at most
+/// `body_limit` bytes (spec D7: a truncated item never counts toward a
+/// stall). The pending set is the digest's canonical receipt walk (catch-up
+/// held items excluded), so it is bounded like the digest.
+pub fn mod_stall_oldest(
+    db: &Connection,
+    seat: &SeatId,
+    at_or_before: UtcMillis,
+    body_limit: usize,
+) -> Result<Option<UtcMillis>, ApiError> {
+    let pending = super::attention::pending_receipts(db, seat.as_str(), None)?;
+    let mut oldest: Option<i64> = None;
+    for item in &pending.items {
+        let published: Option<i64> = db
+            .query_row(
+                "SELECT decision_at FROM messages WHERE id=?1 AND kind='ordinary' AND delivery_mode='ordinary' AND length(CAST(body AS BLOB))<=?2 AND decision_at<=?3",
+                params![
+                    item.id,
+                    i64::try_from(body_limit).unwrap_or(i64::MAX),
+                    at_or_before.0
+                ],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if let Some(at) = published {
+            oldest = Some(oldest.map_or(at, |current| current.min(at)));
+        }
+    }
+    Ok(oldest.map(UtcMillis))
+}
+
 fn present_check_in_result(
     tx: &Transaction<'_>,
     mut result: CommandResult,
@@ -4572,3 +4706,7 @@ fn present_check_in_result(
     }
     Ok(result)
 }
+
+#[cfg(test)]
+#[path = "../../tests/store/mod_seat_view.rs"]
+mod mod_seat_view_tests;

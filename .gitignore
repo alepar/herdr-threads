@@ -17,3 +17,6 @@ __pycache__/
 /bin/
 .DS_Store
 /THIRD_PARTY_LICENSES.html
+
+# claude plugin test installs dev dependencies here
+integrations/claude/mod/node_modules/

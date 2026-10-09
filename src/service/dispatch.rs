@@ -8,12 +8,16 @@ use crate::{
         ServiceConnectionAuthority, StorePort,
     },
     protocol::{
-        authority::{CallerRole, OperatorActor, PeerIdentity},
-        commands::{Command, OperatorCommand, PermitMutation},
+        authority::{
+            COOPERATIVE_TOP_LEVEL_PROVENANCE, CallerClaim, CallerRole, Harness, OperatorActor,
+            PeerIdentity,
+        },
+        commands::{AckModDelivered, Command, OperatorCommand, PermitMutation},
         output::OutputSpec,
         results::{ApiError, CommandResult, ErrorCode},
         service::{ServiceOperation, ServiceResult},
         time::{CallBudget, Clock},
+        watch::{ModAckItem, ModAckOutcome, ModAckReason, ModAckReport},
     },
     service::{fair_writer::FairWriter, workers::BoundedLane},
 };
@@ -34,6 +38,7 @@ pub struct DomainService {
     operator_owner_uid: Option<u32>,
     cooperative_runtime: Option<(u32, Arc<FairWriter>)>,
     bootstrap: Option<BootstrapRuntime>,
+    mod_channels: Arc<dyn crate::ports::ModChannels>,
 }
 
 impl DomainService {
@@ -47,7 +52,20 @@ impl DomainService {
             operator_owner_uid: None,
             cooperative_runtime: None,
             bootstrap: None,
+            mod_channels: Arc::new(crate::ports::NoModChannels),
         }
+    }
+    /// The shared registry of live mod delivery channels (spec D2).
+    pub fn with_mod_channels(mut self, channels: Arc<dyn crate::ports::ModChannels>) -> Self {
+        self.mod_channels = channels;
+        self
+    }
+    pub fn mod_channels(&self) -> &Arc<dyn crate::ports::ModChannels> {
+        &self.mod_channels
+    }
+    /// True while the registry holds a live or grace entry for the seat.
+    fn seat_has_mod_channel(&self, seat: &crate::protocol::ids::SeatId) -> bool {
+        self.mod_channels.seat_live(seat)
     }
     /// Supplied by the elected runtime, never by a request payload.
     pub fn with_operator_owner(mut self, owner_uid: u32) -> Self {
@@ -479,6 +497,95 @@ impl DomainService {
             mutation => self.store.mutate(mutation, permit, budget),
         }
     }
+    /// Spec D6 pre-decision for `watch ack`: classify the whole batch against
+    /// the seat's open binding and the live channel registry, then route the
+    /// settlement through the cooperative mutation path. The store decides per
+    /// id against the canonical view (A2); a stale client claim is never used
+    /// for a resumed generation.
+    fn ack_mod_delivered(
+        &self,
+        request: AckModDelivered,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+        read: ReadContext,
+    ) -> Result<CommandResult, ApiError> {
+        Command::AckModDelivered(request.clone())
+            .validate()
+            .map_err(|why| error(ErrorCode::InvalidRequest, why))?;
+        let seat = request.claim.seat.clone();
+        let report = |result: ModAckOutcome, reason: Option<ModAckReason>| {
+            Ok(CommandResult::ModDeliveryAcked(ModAckReport {
+                results: request
+                    .messages
+                    .iter()
+                    .map(|id| ModAckItem {
+                        id: id.clone(),
+                        result,
+                        reason,
+                    })
+                    .collect(),
+            }))
+        };
+        let binding = self.store.mod_ack_binding(&self.instance, &seat, budget)?;
+        let Some(binding) = binding.filter(|binding| {
+            binding.provenance == COOPERATIVE_TOP_LEVEL_PROVENANCE && binding.harness == "claude"
+        }) else {
+            // The check-in that opens the binding may not have committed yet.
+            return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
+        };
+        let same_session = request.claim.native_session == binding.native_session;
+        let effective = if request.claim.binding_generation == binding.generation && same_session {
+            request.clone()
+        } else if same_session
+            && binding
+                .previous
+                .as_ref()
+                .is_some_and(|(generation, session)| {
+                    *generation == request.claim.binding_generation
+                        && *session == binding.native_session
+                })
+        {
+            // Resume: the previous generation of the same native session. The
+            // decision is against the canonical current binding, never the
+            // stale client claim.
+            AckModDelivered {
+                claim: CallerClaim {
+                    instance: self.instance.clone(),
+                    seat: seat.clone(),
+                    binding_generation: binding.generation,
+                    role: CallerRole::TopLevel,
+                    harness: Harness::Claude,
+                    native_session: binding.native_session.clone(),
+                    execution: binding.execution.clone(),
+                    target: binding.target.clone(),
+                },
+                ..request.clone()
+            }
+        } else {
+            return report(ModAckOutcome::StaleGeneration, None);
+        };
+        // A channel in reconnect or rebind grace counts as live.
+        if !self.mod_channels.is_live(&seat, binding.generation) {
+            return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
+        }
+        let result = self.cooperative_mutation(
+            PermitMutation::AckModDelivered(effective),
+            peer,
+            budget,
+            read,
+            false,
+        )?;
+        if let CommandResult::ModDeliveryAcked(report) = &result
+            && report
+                .results
+                .iter()
+                .any(|item| item.result.counts_as_mod_ack())
+        {
+            self.mod_channels
+                .record_ack(&seat, binding.generation, self.clock.utc_now());
+        }
+        Ok(result)
+    }
     pub fn with_host(
         instance: String,
         store: Arc<dyn StorePort>,
@@ -510,6 +617,72 @@ impl DomainService {
 }
 
 impl LocalService for DomainService {
+    /// Spec D2: decide a mod watch registration against A2 in one read
+    /// transaction (the seat, its target's recovery hold, its open binding),
+    /// then record the channel with the binding's canonical generation. The
+    /// claim only names the seat and the native session it expects; nothing
+    /// the claim says about the generation is trusted. A store read that
+    /// fails is `busy` (retryable): the CLI retries with backoff.
+    fn watch_register(
+        &self,
+        request: &crate::protocol::watch::WatchRequest,
+        sink: Arc<dyn crate::ports::ModChannelSink>,
+        budget: &CallBudget,
+    ) -> Result<(crate::ports::ModChannelId, u64), crate::protocol::watch::WatchRefusalReason> {
+        use crate::protocol::{authority::Harness, watch::WatchRefusalReason as Refusal};
+        let claim = &request.claim;
+        if claim.harness != Harness::Claude || claim.role != CallerRole::TopLevel {
+            return Err(Refusal::NotClaude);
+        }
+        let view = self
+            .store
+            .mod_seat_view(&claim.seat, budget)
+            .map_err(|_| Refusal::Busy)?;
+        let Some(view) = view else {
+            return Err(Refusal::Unresolved);
+        };
+        if view.retired || !view.continuity_resolved {
+            return Err(Refusal::Unresolved);
+        }
+        if view.held {
+            return Err(Refusal::Held);
+        }
+        let Some(binding) = view.binding.as_ref() else {
+            return Err(Refusal::NoBinding);
+        };
+        if binding.harness != Harness::Claude.as_str() {
+            return Err(Refusal::NotClaude);
+        }
+        if binding.provenance != crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE {
+            return Err(Refusal::NoBinding);
+        }
+        if binding.native_session != claim.native_session.as_str() {
+            return Err(Refusal::SessionMismatch);
+        }
+        if claim.instance != self.instance {
+            return Err(Refusal::SessionMismatch);
+        }
+        let channel = self.mod_channels.register(
+            crate::ports::ModChannelRegistration {
+                seat: claim.seat.clone(),
+                binding_generation: binding.generation,
+                native_session: claim.native_session.clone(),
+                harness: Harness::Claude,
+                registered_at: self.clock.utc_now(),
+            },
+            sink,
+        )?;
+        Ok((channel, view.attention_version))
+    }
+
+    fn watch_unregister(
+        &self,
+        channel: crate::ports::ModChannelId,
+        now: crate::protocol::time::UtcMillis,
+    ) {
+        self.mod_channels.unregister(channel, now);
+    }
+
     fn service_control(
         &self,
         _command: Command,
@@ -606,16 +779,38 @@ impl LocalService for DomainService {
             | Command::Recipients(_)
             | Command::DeliveryInspect(_)
             | Command::PendingReceipts(_)
-            | Command::AttentionDigest(_)
-            | Command::AttentionDigestDelivery(_)
             | Command::HotThreads(_)
             | Command::Message(_)
             | Command::Diagnostics(_)
             | Command::RetirementJobs(_) => self.store.query(&command, &read, budget),
+            Command::AttentionDigest(_) | Command::AttentionDigestDelivery(_) => {
+                let seat = match &command {
+                    Command::AttentionDigest(q) | Command::AttentionDigestDelivery(q) => {
+                        q.seat.clone()
+                    }
+                    _ => unreachable!("matched above"),
+                };
+                let mut result = self.store.query(&command, &read, budget)?;
+                // Spec D7: any live or grace entry for the seat, which also
+                // covers the rebind grace of the SessionStart check-in that
+                // rotated the generation.
+                let live = self.seat_has_mod_channel(&seat);
+                match &mut result {
+                    CommandResult::AttentionDigest(digest)
+                    | CommandResult::AttentionDigestDelivery { digest, .. } => {
+                        digest.mod_channel_live = live;
+                    }
+                    _ => {}
+                }
+                Ok(result)
+            }
             Command::OperationStatus(_) => Err(error(
                 ErrorCode::Unauthorized,
                 "verified operation scope required",
             )),
+            Command::AckModDelivered(request) => {
+                self.ack_mod_delivered(request, peer, budget, read)
+            }
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
@@ -1050,3 +1245,11 @@ mod topology_contract_dispatch_tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/service/mod_ack_dispatch.rs"]
+mod mod_ack_dispatch_tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/mod_digest_flag.rs"]
+mod mod_digest_flag_tests;

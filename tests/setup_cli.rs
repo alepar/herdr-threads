@@ -12,6 +12,7 @@ use std::{
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Output},
+    time::Duration,
 };
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
@@ -123,6 +124,11 @@ impl Scratch {
             )
             .env("CLAUDE_CONFIG_DIR", &self.claude_config)
             .env("CODEX_HOME", &self.codex_home)
+            // Never the host's managed policy (ht-j16.7).
+            .env(
+                herdr_threads::harness::claude_mod::TEST_MANAGED_SETTINGS_ENV,
+                self.root.join("no-managed-settings.json"),
+            )
             .env_remove("XDG_STATE_HOME")
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("HERDR_SESSION")
@@ -133,8 +139,29 @@ impl Scratch {
         command
     }
 
+    /// [`Scratch::run`] with extra environment variables on the command.
+    fn run_with(&self, vars: &[(&str, &std::ffi::OsStr)], args: &[&str]) -> Output {
+        let mut command = self.command(&self.root);
+        for (name, value) in vars {
+            command.env(name, value);
+        }
+        command
+            .arg("--state-dir")
+            .arg(&self.state)
+            .arg("--host-endpoint")
+            .arg(self.host())
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
     fn host(&self) -> PathBuf {
         self.root.join("host.sock")
+    }
+
+    /// The delivery mod directory `setup claude` writes.
+    fn mod_dir(&self) -> PathBuf {
+        self.state.join("claude-mod").join("herdr-threads")
     }
 
     fn settings(&self) -> PathBuf {
@@ -525,12 +552,17 @@ fn edited_owned_hook_is_refused_with_status_one() {
     assert_eq!(unsetup.status.code(), Some(1), "{stderr}");
     assert!(stderr.contains("were edited or removed"), "{stderr}");
     assert!(stderr.contains("(conflict)"), "{stderr}");
-    assert_eq!(fs::read_to_string(s.settings()).unwrap(), edited);
+    // The delivery mod's own entry is reverted first and independently; the
+    // hand-edited hook is untouched (ht-j16.7).
+    let mut expected: serde_json::Value = serde_json::from_str(&edited).unwrap();
+    expected.as_object_mut().unwrap().remove("env");
+    assert_eq!(settings_json(&s), expected);
+    let after_unsetup = fs::read_to_string(s.settings()).unwrap();
 
     let resetup = s.run(&["setup", "claude"]);
     assert_eq!(resetup.status.code(), Some(1), "{}", text(&resetup.stderr));
     assert!(text(&resetup.stderr).contains("unsetup claude"));
-    assert_eq!(fs::read_to_string(s.settings()).unwrap(), edited);
+    assert_eq!(fs::read_to_string(s.settings()).unwrap(), after_unsetup);
 }
 
 /// Invalid arguments and local context exit 2 with readable text. Kills:
@@ -2763,9 +2795,15 @@ fn versionless_setup_and_status_preserve_foreign_config_without_invoking_wrapper
         assert!(report["harness_version"]["version"].is_null());
         assert!(report["harness_version"].get("supported").is_none());
         assert_eq!(report["observed"], "unknown");
+        assert!(!log.exists(), "setup executed the wrapper");
         let status = json(&s.run(&["--json", "setup-status", name]));
         assert_eq!(status["installed"], true, "{status}");
         assert_eq!(status["harness_version"]["admission"], "contract_declared");
+        if name == "claude" {
+            // Only the mod's bounded version gate runs the Claude wrapper.
+            assert_eq!(fs::read_to_string(&log).unwrap(), "--version\n");
+            fs::remove_file(&log).unwrap();
+        }
         let alias = s.root.join("wrapper alias");
         std::os::unix::fs::symlink(&wrapper, &alias).unwrap();
         let again = s.run(&[
@@ -4043,7 +4081,15 @@ fn foreground_setup_and_status_inspect_both_harnesses_without_editing_flags() {
                 value.get("disableAgentView"),
                 original.get("disableAgentView")
             );
-            assert_eq!(value.get("env"), original.get("env"));
+            // The only `env` change is the delivery mod's own key (ht-j16.7).
+            let mut env = value.get("env").cloned();
+            if let Some(serde_json::Value::Object(map)) = &mut env {
+                map.remove(PLUGIN_DIRS);
+                if map.is_empty() && original.get("env").is_none() {
+                    env = None;
+                }
+            }
+            assert_eq!(env.as_ref(), original.get("env"));
             let codex = s.run(&[verb, "codex", "--json"]);
             assert!(codex.status.success(), "{}", text(&codex.stderr));
             let codex = json(&codex);
@@ -4176,6 +4222,566 @@ fn launch_entrypoint_rejects_malformed_configured_options_before_connect() {
         );
         assert!(!s.hooks().exists(), "{harness}: launch wrote Codex hooks");
     }
+}
+
+// ------------------------------------------------------- delivery mod (ht-j16.7)
+
+const PLUGIN_DIRS: &str = "CLAUDE_CODE_PLUGIN_DIRS";
+
+fn claude_scratch(settings: &[u8]) -> Scratch {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::write(s.settings(), settings).unwrap();
+    s
+}
+
+fn plugin_dirs(s: &Scratch) -> Option<String> {
+    settings_json(s)["env"][PLUGIN_DIRS]
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn mod_records(s: &Scratch) -> Vec<String> {
+    fs::read_dir(s.state.join("setup"))
+        .map(|dir| {
+            dir.map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("claude-mod-"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Kills: a setup that skips the mod, writes a partial file set, or leaves
+/// `setup-status` blind to it; a status that claims a daemon channel count
+/// without a daemon.
+#[test]
+fn setup_claude_installs_mod_and_status_reports_it() {
+    let s = claude_scratch(ORIGINAL);
+    let out = s.run(&["--json", "setup", "claude"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    assert_eq!(report["mod"]["action"], "installed", "{report}");
+    let dir = s.mod_dir();
+    assert_eq!(report["mod"]["dir"], dir.display().to_string());
+    for file in [
+        ".claude-plugin/plugin.json",
+        "hooks/hooks.json",
+        "hooks/register.js",
+        "types/index.d.ts",
+    ] {
+        assert!(dir.join(file).is_file(), "{file}");
+    }
+    assert!(!dir.join("README.md").exists());
+    assert_eq!(plugin_dirs(&s), Some(dir.display().to_string()));
+    assert_eq!(settings_json(&s)["model"], "x");
+    assert_eq!(mod_records(&s).len(), 1);
+
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    let delivery = &status["mod"];
+    assert_eq!(delivery["installed"], true, "{status}");
+    assert_eq!(delivery["settings_value_contains_mod_dir"], true);
+    assert_eq!(delivery["managed_policy"]["state"], "none");
+    assert_eq!(delivery["shell_env"], serde_json::Value::Null);
+    // The fake claude prints 2.1.284, below the mod's minimum.
+    assert_eq!(delivery["claude_version"], "2.1.284", "{status}");
+    assert_eq!(delivery["claude_version_supported"], false, "{status}");
+    assert_eq!(
+        delivery["claude_version_note"],
+        "mod unsupported, native wake fallback"
+    );
+    assert_eq!(delivery["daemon"]["status"], "channel status unavailable");
+    assert_eq!(
+        delivery["note"],
+        "an install does not prove any session loaded the mod"
+    );
+    assert!(delivery.get("session_override").is_none());
+
+    // The text report carries one `mod:` line.
+    let text_status = text(&s.run(&["setup-status", "claude"]).stdout);
+    assert!(
+        text_status.contains("mod.installed: true\n"),
+        "{text_status}"
+    );
+    let bare = text(&s.run(&["setup"]).stdout);
+    assert!(bare.contains("claude: mod: already_installed\n"), "{bare}");
+    let bare_status = text(&s.run(&["setup-status"]).stdout);
+    assert!(
+        bare_status.contains("claude: mod: installed; ")
+            && bare_status.contains("daemon: channel status unavailable")
+            && bare_status.contains("an install does not prove any session loaded the mod"),
+        "{bare_status}"
+    );
+}
+
+/// ht-j16.20: the installed mod launches `watch` with exactly the hooks'
+/// invocation; status reports when the two disagree.
+#[test]
+fn setup_claude_hands_the_mod_the_hooks_invocation() {
+    const PREFIX: &str = "const LAUNCH = ";
+    const SUFFIX: &str = " // herdr-threads:launch (written by setup claude)";
+    let launch_line = |s: &Scratch| -> String {
+        fs::read_to_string(s.mod_dir().join("hooks/register.js"))
+            .unwrap()
+            .lines()
+            .find(|line| line.starts_with(PREFIX))
+            .unwrap()
+            .to_owned()
+    };
+    let s = claude_scratch(ORIGINAL);
+    let out = s.run(&["--json", "setup", "claude"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    let mut hooks: Vec<String> = serde_json::from_value(report["hook_argv"].clone()).unwrap();
+    assert_eq!(hooks.split_off(hooks.len() - 2), ["hook", "claude"]);
+    let line = launch_line(&s);
+    let rendered: serde_json::Value = serde_json::from_str(
+        line.strip_prefix(PREFIX)
+            .unwrap()
+            .strip_suffix(SUFFIX)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rendered["argv"], serde_json::json!(hooks));
+    assert!(Path::new(hooks[0].as_str()).is_absolute(), "{hooks:?}");
+    // The hooks name the host endpoint as the runtime context resolves it
+    // (its directory canonicalized).
+    let host = s.root.canonicalize().unwrap().join("host.sock");
+    assert_eq!(
+        hooks[1..],
+        [
+            "--state-dir",
+            s.state.to_str().unwrap(),
+            "--host-endpoint",
+            host.to_str().unwrap()
+        ]
+    );
+
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert_eq!(status["mod"]["launch_current"], true, "{status}");
+    assert_eq!(status["mod"]["launch"], serde_json::json!(hooks));
+    assert!(status["mod"].get("launch_note").is_none());
+    assert_eq!(status["mod"]["installed"], true);
+
+    // The installed launch now names another invocation.
+    let register = s.mod_dir().join("hooks/register.js");
+    let edited = fs::read_to_string(&register).unwrap().replace(
+        &line,
+        &format!("{PREFIX}{{\"argv\":[\"/elsewhere/ht\"]}}{SUFFIX}"),
+    );
+    fs::write(&register, edited).unwrap();
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert_eq!(status["mod"]["launch_current"], false, "{status}");
+    assert_eq!(
+        status["mod"]["launch"],
+        serde_json::json!(["/elsewhere/ht"])
+    );
+    assert!(status["mod"]["launch_note"].is_string(), "{status}");
+    assert_eq!(status["mod"]["installed"], false);
+
+    // Setup again repairs it (upgraded), and unsetup removes it with the mod.
+    let again = json(&s.run(&["--json", "setup", "claude"]));
+    assert_eq!(again["mod"]["action"], "upgraded", "{again}");
+    assert_eq!(launch_line(&s), line);
+    assert!(s.run(&["unsetup", "claude"]).status.success());
+    assert!(!s.mod_dir().exists());
+}
+
+#[test]
+fn setup_status_channel_status_unavailable_without_daemon() {
+    let s = claude_scratch(ORIGINAL);
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert_eq!(status["mod"]["installed"], false, "{status}");
+    assert_eq!(status["mod"]["files_present"], false);
+    assert_eq!(
+        status["mod"]["daemon"]["status"],
+        "channel status unavailable"
+    );
+    // Status never starts a daemon or writes anything.
+    assert!(!s.mod_dir().exists());
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+    assert!(
+        !s.state.join("daemon").exists() && !s.host().exists(),
+        "status created daemon state"
+    );
+}
+
+#[test]
+fn setup_claude_preserves_existing_plugin_dirs() {
+    let s = claude_scratch(br#"{"env":{"CLAUDE_CODE_PLUGIN_DIRS":"/opt/a:/opt/b","KEEP":"1"}}"#);
+    assert_eq!(s.run(&["setup", "claude"]).status.code(), Some(0));
+    assert_eq!(
+        plugin_dirs(&s),
+        Some(format!("/opt/a:/opt/b:{}", s.mod_dir().display()))
+    );
+    assert_eq!(settings_json(&s)["env"]["KEEP"], "1");
+}
+
+#[test]
+fn setup_claude_twice_is_idempotent() {
+    let s = claude_scratch(ORIGINAL);
+    assert_eq!(s.run(&["setup", "claude"]).status.code(), Some(0));
+    let settings = fs::read(s.settings()).unwrap();
+    let register = s.mod_dir().join("hooks/register.js");
+    let before = fs::metadata(&register).unwrap().modified().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    let again = json(&s.run(&["--json", "setup", "claude"]));
+    assert_eq!(again["mod"]["action"], "already_installed");
+    assert_eq!(again["mod"]["files_written"], serde_json::json!([]));
+    assert_eq!(fs::read(s.settings()).unwrap(), settings);
+    assert_eq!(fs::metadata(&register).unwrap().modified().unwrap(), before);
+    assert_eq!(mod_records(&s).len(), 1);
+
+    // Upgrade: a stale file is rewritten, the settings value is not.
+    fs::write(&register, b"// older").unwrap();
+    let upgraded = json(&s.run(&["--json", "setup", "claude"]));
+    assert_eq!(upgraded["mod"]["action"], "upgraded");
+    assert_eq!(
+        upgraded["mod"]["files_written"],
+        serde_json::json!(["hooks/register.js"])
+    );
+    assert_ne!(fs::read(&register).unwrap(), b"// older");
+    assert_eq!(fs::read(s.settings()).unwrap(), settings);
+}
+
+#[test]
+fn unsetup_claude_removes_mod_path_files_and_manifest() {
+    let s = claude_scratch(br#"{"env":{"CLAUDE_CODE_PLUGIN_DIRS":"/opt/a"}}"#);
+    assert_eq!(s.run(&["setup", "claude"]).status.code(), Some(0));
+    assert!(s.mod_dir().is_dir());
+    let removed = json(&s.run(&["--json", "unsetup", "claude"]));
+    assert_eq!(removed["mod"], "reverted", "{removed}");
+    assert_eq!(removed["action"], "removed");
+    assert_eq!(plugin_dirs(&s), Some("/opt/a".to_owned()));
+    assert!(!s.mod_dir().exists());
+    assert!(mod_records(&s).is_empty());
+
+    // Created from nothing: unsetup leaves the original bytes.
+    let s = claude_scratch(ORIGINAL);
+    assert_eq!(s.run(&["setup", "claude"]).status.code(), Some(0));
+    assert_eq!(s.run(&["unsetup", "claude"]).status.code(), Some(0));
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+    assert!(!s.mod_dir().exists());
+    assert!(mod_records(&s).is_empty());
+}
+
+#[test]
+fn setup_claude_hooks_only_removes_mod_path() {
+    let s = claude_scratch(ORIGINAL);
+    assert_eq!(s.run(&["setup", "claude"]).status.code(), Some(0));
+    assert!(plugin_dirs(&s).is_some());
+    let hooks_only = json(&s.run(&["--json", "setup", "claude", "--hooks-only"]));
+    assert_eq!(hooks_only["mod"]["action"], "removed_hooks_only");
+    assert_eq!(hooks_only["mod"]["settings_entry"], "reverted");
+    assert_eq!(plugin_dirs(&s), None);
+    assert!(settings_json(&s).get("env").is_none());
+    assert!(settings_json(&s)["hooks"]["SessionStart"].is_array());
+    assert!(!s.mod_dir().exists());
+    assert!(mod_records(&s).is_empty());
+    // The hooks stay owned: unsetup still restores the original bytes.
+    assert_eq!(s.run(&["unsetup", "claude"]).status.code(), Some(0));
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+
+    // On a fresh machine --hooks-only installs hooks and no mod.
+    let fresh = claude_scratch(ORIGINAL);
+    let report = json(&fresh.run(&["--json", "setup", "claude", "--hooks-only"]));
+    assert_eq!(report["action"], "installed");
+    assert_eq!(report["mod"]["settings_entry"], "not_recorded");
+    assert_eq!(plugin_dirs(&fresh), None);
+    assert!(!fresh.mod_dir().exists());
+
+    // Claude only, and only for setup.
+    for args in [
+        &["setup", "--hooks-only"][..],
+        &["setup", "codex", "--hooks-only"],
+        &["unsetup", "claude", "--hooks-only"],
+        &["setup-status", "claude", "--hooks-only"],
+    ] {
+        let out = fresh.run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+        assert!(text(&out.stderr).contains("--hooks-only"), "{args:?}");
+    }
+}
+
+fn managed_policy(s: &Scratch, content: &str) -> PathBuf {
+    let file = s.root.join("managed-settings.json");
+    fs::write(&file, content).unwrap();
+    file
+}
+
+#[test]
+fn setup_status_reports_managed_policy_and_offers_hooks_only() {
+    let s = claude_scratch(ORIGINAL);
+    let managed = managed_policy(&s, r#"{"disableSideloadFlags": true}"#);
+    let vars = [(
+        herdr_threads::harness::claude_mod::TEST_MANAGED_SETTINGS_ENV,
+        managed.as_os_str(),
+    )];
+
+    // A fresh install under the policy is hooks-only and says so.
+    let out = s.run_with(&vars, &["--json", "setup", "claude"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    assert_eq!(report["mod"]["action"], "skipped_managed_policy");
+    assert_eq!(
+        report["mod"]["managed_policy"],
+        serde_json::json!({"state": "disable_side_load_flags", "source": managed.display().to_string()})
+    );
+    assert!(
+        report["warnings"]
+            .to_string()
+            .contains("the delivery mod was not installed"),
+        "{report}"
+    );
+    assert_eq!(plugin_dirs(&s), None);
+    assert!(!s.mod_dir().exists());
+    assert!(mod_records(&s).is_empty());
+
+    // The policy appears after an install: status and re-runs say Claude
+    // Code will refuse to start and offer --hooks-only.
+    assert_eq!(s.run(&["setup", "claude"]).status.code(), Some(0));
+    assert!(plugin_dirs(&s).is_some());
+    let status = json(&s.run_with(&vars, &["--json", "setup-status", "claude"]));
+    assert_eq!(
+        status["mod"]["managed_policy"]["state"],
+        "disable_side_load_flags"
+    );
+    let advice = status["mod"]["advice"].as_str().unwrap();
+    assert!(
+        advice.contains("will refuse to start")
+            && advice.contains("herdr-threads setup claude --hooks-only"),
+        "{advice}"
+    );
+    let rerun = json(&s.run_with(&vars, &["--json", "setup", "claude"]));
+    assert_eq!(rerun["mod"]["action"], "skipped_managed_policy");
+    assert!(
+        rerun["warnings"]
+            .to_string()
+            .contains("setup claude --hooks-only"),
+        "{rerun}"
+    );
+    assert!(plugin_dirs(&s).is_some());
+    let text_status = text(&s.run_with(&vars, &["setup-status"]).stdout);
+    assert!(text_status.contains("blocks it"), "{text_status}");
+
+    let fixed = json(&s.run_with(&vars, &["--json", "setup", "claude", "--hooks-only"]));
+    assert_eq!(fixed["mod"]["settings_entry"], "reverted");
+    assert_eq!(plugin_dirs(&s), None);
+    assert!(!s.mod_dir().exists());
+}
+
+#[test]
+fn setup_status_reports_shell_env_and_session_override() {
+    let s = claude_scratch(br#"{"env":{"CLAUDE_CODE_PLUGIN_DIRS":"/a"}}"#);
+    let shell = std::ffi::OsString::from("/s1:/a:/s2");
+    let off = std::ffi::OsString::from("off");
+    let vars = [
+        (PLUGIN_DIRS, shell.as_os_str()),
+        (
+            herdr_threads::protocol::watch::MOD_DELIVERY_ENV,
+            off.as_os_str(),
+        ),
+    ];
+    let out = s.run_with(&vars, &["--json", "setup", "claude"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    // Non-interactive: the shell's directories are carried over, once.
+    assert_eq!(
+        plugin_dirs(&s),
+        Some(format!("/a:/s1:/s2:{}", s.mod_dir().display()))
+    );
+    assert_eq!(
+        report["mod"]["shell_env"]["copied"],
+        serde_json::json!(["/s1", "/s2"])
+    );
+    assert!(
+        report["warnings"]
+            .to_string()
+            .contains("a settings `env` value replaces it"),
+        "{report}"
+    );
+
+    let status = json(&s.run_with(&vars, &["--json", "setup-status", "claude"]));
+    assert_eq!(status["mod"]["shell_env"], "/s1:/a:/s2");
+    assert_eq!(status["mod"]["session_override"], "off");
+    // The daemon-side switch is reported by the daemon, not by this env.
+    assert_eq!(
+        status["mod"]["daemon"]["status"],
+        "channel status unavailable"
+    );
+    let plain = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert!(plain["mod"].get("session_override").is_none());
+    assert_eq!(plain["mod"]["shell_env"], serde_json::Value::Null);
+
+    // unsetup removes the appended path and the copied directories.
+    assert_eq!(s.run(&["unsetup", "claude"]).status.code(), Some(0));
+    assert_eq!(plugin_dirs(&s), Some("/a".to_owned()));
+}
+
+#[test]
+fn dropin_managed_policy_skips_the_mod_write() {
+    for (content, state) in [
+        (
+            r#"{"disableSideloadFlags": true}"#,
+            "disable_side_load_flags",
+        ),
+        ("{ not json", "unverifiable"),
+    ] {
+        let s = claude_scratch(ORIGINAL);
+        let dir = s.root.join("managed-settings.d");
+        fs::create_dir(&dir).unwrap();
+        let dropin = dir.join("50.json");
+        fs::write(&dropin, content).unwrap();
+        let vars = [(
+            herdr_threads::harness::claude_mod::TEST_MANAGED_SETTINGS_DIRS_ENV,
+            dir.as_os_str(),
+        )];
+        let out = s.run_with(&vars, &["--json", "setup", "claude"]);
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        let report = json(&out);
+        assert_eq!(
+            report["mod"]["action"], "skipped_managed_policy",
+            "{report}"
+        );
+        assert_eq!(
+            report["mod"]["managed_policy"],
+            serde_json::json!({"state": state, "source": dropin.display().to_string()})
+        );
+        assert!(
+            report["warnings"]
+                .to_string()
+                .contains("the delivery mod was not installed"),
+            "{report}"
+        );
+        assert_eq!(plugin_dirs(&s), None, "{state}");
+        assert!(!s.mod_dir().exists());
+        assert!(mod_records(&s).is_empty());
+    }
+}
+
+/// Kills: an error after the settings entry is lifted (here a damaged
+/// prompt-suggestion record) that leaves the mod removed from settings.
+#[test]
+fn later_setup_failure_restores_the_lifted_mod_entry() {
+    let s = claude_scratch(ORIGINAL);
+    assert_eq!(s.run(&["setup", "claude"]).status.code(), Some(0));
+    let dir = s.mod_dir().display().to_string();
+    assert_eq!(plugin_dirs(&s), Some(dir.clone()));
+    let records = mod_records(&s);
+    assert_eq!(records.len(), 1);
+    // Damage the prompt-suggestion record (same settings-path digest).
+    let suffix = records[0].strip_prefix("claude-mod-").unwrap();
+    fs::write(
+        s.state
+            .join("setup")
+            .join(format!("claude-prompt-suggestion-{suffix}")),
+        b"damaged",
+    )
+    .unwrap();
+    // Take the hooks (and their record) out by hand, keeping the mod entry:
+    // the installed hooks are no longer current, so the next run lifts the
+    // mod entry before rewriting them.
+    let mut settings = settings_json(&s);
+    settings.as_object_mut().unwrap().remove("hooks");
+    settings["permissions"]["allow"] = serde_json::json!(["Bash(ls:*)"]);
+    fs::write(s.settings(), serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
+    for entry in fs::read_dir(s.state.join("setup")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if name.starts_with("claude-") && !name.starts_with("claude-mod-") {
+            fs::remove_file(path).unwrap();
+        }
+    }
+    // The damaged record goes back (the loop above removed it).
+    fs::write(
+        s.state
+            .join("setup")
+            .join(format!("claude-prompt-suggestion-{suffix}")),
+        b"damaged",
+    )
+    .unwrap();
+    let out = s.run(&["setup", "claude"]);
+    assert_ne!(out.status.code(), Some(0), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stderr).contains("prompt-suggestion"),
+        "failed elsewhere: {}",
+        text(&out.stderr)
+    );
+    assert_eq!(plugin_dirs(&s), Some(dir));
+    assert_eq!(mod_records(&s).len(), 1);
+}
+
+#[test]
+fn setup_status_reports_the_claude_version_gate() {
+    let version = |s: &Scratch| json(&s.run(&["--json", "setup-status", "claude"]))["mod"].clone();
+    let s = claude_scratch(ORIGINAL);
+    s.harness("claude", "2.1.295 (Claude Code)");
+    let ok = version(&s);
+    assert_eq!(ok["claude_version"], "2.1.295", "{ok}");
+    assert_eq!(ok["claude_version_supported"], true);
+    assert!(ok.get("claude_version_note").is_none());
+    assert!(ok.get("claude_version_reason").is_none());
+
+    s.harness("claude", "2.1.284 (Claude Code)");
+    let old = version(&s);
+    assert_eq!(old["claude_version"], "2.1.284", "{old}");
+    assert_eq!(old["claude_version_supported"], false);
+    assert_eq!(
+        old["claude_version_note"],
+        "mod unsupported, native wake fallback"
+    );
+
+    s.harness("claude", "something else entirely");
+    let odd = version(&s);
+    assert_eq!(odd["claude_version_supported"], serde_json::Value::Null);
+    assert_eq!(
+        odd["claude_version_reason"],
+        "unrecognised claude --version output"
+    );
+
+    let slow = s.bin.join("claude");
+    fs::write(&slow, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    // The production 3s bound, not the suite's stretched test scale.
+    let started = std::time::Instant::now();
+    let out = s
+        .command(&s.root)
+        .env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV)
+        .arg("--state-dir")
+        .arg(&s.state)
+        .arg("--host-endpoint")
+        .arg(s.host())
+        .args(["--json", "setup-status", "claude"])
+        .output()
+        .unwrap();
+    let timed_out = json(&out)["mod"].clone();
+    assert_eq!(
+        timed_out["claude_version_supported"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        timed_out["claude_version_reason"],
+        "claude --version failed or timed out"
+    );
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_secs(20), "{elapsed:?}");
+
+    fs::remove_file(&slow).unwrap();
+    let absent = version(&s);
+    assert_eq!(
+        absent["claude_version"],
+        serde_json::Value::Null,
+        "{absent}"
+    );
+    assert_eq!(absent["claude_version_supported"], serde_json::Value::Null);
+    assert_eq!(
+        absent["claude_version_reason"],
+        "no claude executable found"
+    );
 }
 
 /// Catches malformed fresh handoff options reaching caller/daemon resolution first.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.5.0
+
+- **Claude Code mod delivery.** `setup claude` installs the bundled mod, enabled by default, to deliver ordinary messages into tool context while busy, submit them while idle, and append lazy messages to the transcript. Complete mod delivery settles receipts with `cooperative_mod_delivery`; truncated bodies still require explicit completion. A disconnected channel returns delivery to native wake after its grace period.
+- **Delivery limits.** Delivery remains cooperative and at least once across reloads and handoffs. Repeated re-registration resets the stall clock and can keep native wake suppressed; disable the mod or unsetup it to restore native wake. A denied or failed tool result can hold idle submission until the next user turn or up to 120 seconds; the heuristic depends on an unverified engine result shape. Live qualification used Claude Code 2.1.295 with a stand-in Herdr endpoint: The targeted successor run passed reload-mid-turn, reload, clear-rebind and idle-submit three of three each; the broader earlier run passed 13 of 14 scenarios three of three. The targeted run recorded one total native prompt. Long timers, real Herdr delivery, in-session `/resume` and `/branch`, subagent calls and non-default permission modes remain unqualified.
+- **Retention test observation.** The bounded retention fixture now waits for kicked pacer passes, including passes with no pruning commit; its generation bound remains unchanged.
+
 ## v0.4.0
 
 - **Focused attention warnings.** Built-in overdue warnings wake only the seat that owes the response; clears and other members' transitions arrive as informational notices at their next check-in. Receipt and ACK provenance stay unchanged. Saturated notice windows retain a conservative wake fallback.

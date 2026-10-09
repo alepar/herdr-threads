@@ -304,13 +304,13 @@ fn claude_verdict_line(states: Option<&HarnessStatesReport>) -> Option<String> {
         .or_else(|| claude.versions.first().map(|row| row.line.clone()))
 }
 
-enum Daemon {
+pub(crate) enum Daemon {
     NotRunning,
     Unreachable(String),
     Reachable(Box<Health>, Box<DaemonDetails>),
 }
-struct DaemonDetails {
-    states: Result<HarnessStatesReport, String>,
+pub(crate) struct DaemonDetails {
+    pub(crate) states: Result<HarnessStatesReport, String>,
     rich: Result<crate::protocol::results::HarnessHealthV2Report, String>,
 }
 
@@ -358,7 +358,7 @@ fn daemon_details(client: &dyn LocalClient, budget: &CallBudget) -> DaemonDetail
     DaemonDetails { states, rich }
 }
 
-fn probe_daemon(
+pub(crate) fn probe_daemon(
     paths: &InstancePaths,
     clock: &Arc<dyn Clock>,
     budget: &CallBudget,
@@ -931,7 +931,7 @@ fn doctor_environment(
     }
     environment
 }
-fn observation_budget(clock: &Arc<dyn Clock>) -> CallBudget {
+pub(crate) fn observation_budget(clock: &Arc<dyn Clock>) -> CallBudget {
     CallBudget {
         deadline: MonoInstant(clock.monotonic_now().0.saturating_add(HEALTH_BUDGET_MS)),
         cancellation: Default::default(),

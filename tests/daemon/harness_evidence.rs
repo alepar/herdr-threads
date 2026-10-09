@@ -1909,6 +1909,25 @@ mod publication_order {
         entered: mpsc::Sender<()>,
         release: Mutex<mpsc::Receiver<()>>,
     }
+    impl ModStoreReads for PausedStore {
+        fn mod_seat_view(
+            &self,
+            seat: &SeatId,
+            budget: &CallBudget,
+        ) -> Result<Option<ModSeatView>, ApiError> {
+            self.inner.mod_seat_view(seat, budget)
+        }
+        fn mod_stall_oldest(
+            &self,
+            seat: &SeatId,
+            at_or_before: UtcMillis,
+            body_limit: usize,
+            budget: &CallBudget,
+        ) -> Result<Option<UtcMillis>, ApiError> {
+            self.inner
+                .mod_stall_oldest(seat, at_or_before, body_limit, budget)
+        }
+    }
     impl StorePort for PausedStore {
         fn clock(&self) -> &dyn Clock {
             self.inner.clock()

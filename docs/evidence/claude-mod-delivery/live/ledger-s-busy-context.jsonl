@@ -1,0 +1,12 @@
+{"at": 1791558490587, "ids": ["attention:1"], "kind": "received", "reason": null, "turn": null, "via": null}
+{"at": 1791558492109, "ids": ["attention:1"], "kind": "refused", "reason": "attention_cleared", "turn": null, "via": null}
+{"at": 1791558503064, "ids": ["mY9zOmp7A"], "kind": "received", "reason": null, "turn": "f0c5064b-980d-427e-92d4-f1b61b9e5ee5", "via": null}
+{"at": 1791558510118, "ids": ["mY9zOmp7A"], "kind": "delivered", "reason": null, "turn": "f0c5064b-980d-427e-92d4-f1b61b9e5ee5", "via": "context"}
+{"at": 1791558510140, "ids": ["mY9zOmp7A"], "kind": "acked", "reason": "settled", "turn": "f0c5064b-980d-427e-92d4-f1b61b9e5ee5", "via": "context"}
+{"at": 1791558515568, "ids": ["mQAV1U4Qi"], "kind": "received", "reason": null, "turn": "f0783183-33fe-45b3-a6cd-e80b0cd99608", "via": null}
+{"at": 1791558522281, "ids": ["mQAV1U4Qi"], "kind": "delivered", "reason": null, "turn": "f0783183-33fe-45b3-a6cd-e80b0cd99608", "via": "context"}
+{"at": 1791558522322, "ids": ["mQAV1U4Qi"], "kind": "acked", "reason": "settled", "turn": "f0783183-33fe-45b3-a6cd-e80b0cd99608", "via": "context"}
+{"at": 1791558527436, "ids": ["m3NgniJJx"], "kind": "received", "reason": null, "turn": "bd300722-c7dd-4210-b78e-e9fb820757dc", "via": null}
+{"at": 1791558534337, "ids": ["m3NgniJJx"], "kind": "delivered", "reason": null, "turn": "bd300722-c7dd-4210-b78e-e9fb820757dc", "via": "context"}
+{"at": 1791558534367, "ids": ["m3NgniJJx"], "kind": "acked", "reason": "settled", "turn": "bd300722-c7dd-4210-b78e-e9fb820757dc", "via": "context"}
+{"at": 1791558538395, "ids": [], "kind": "restart", "reason": "exit:1", "turn": null, "via": null}

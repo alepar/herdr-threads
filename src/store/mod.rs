@@ -144,6 +144,7 @@ impl DerefMut for WriterTurn<'_> {
 impl Drop for WriterTurn<'_> {
     fn drop(&mut self) {
         let sealed = self.store.hooks.take_sealed();
+        let mod_sealed = self.store.hooks.take_mod_sealed();
         self.store.hooks.settle_generation();
         drop(self.guard.take());
         #[cfg(any(test, feature = "test-support"))]
@@ -152,6 +153,12 @@ impl Drop for WriterTurn<'_> {
             if let Some(pause) = pause {
                 pause();
             }
+        }
+        // The mod worker is notified for every sealed change, whichever lane
+        // committed it (a lane's own warning or catch-up write can change a
+        // seat's attention).
+        if mod_sealed {
+            self.store.kicks.notify_mod();
         }
         let origin = kicks::current_origin();
         let lanes = origin.map_or(sealed, |lane| sealed.without(lane));
@@ -1205,6 +1212,32 @@ fn wake_candidates_page(
     )
 }
 
+impl crate::ports::ModStoreReads for SqliteStore {
+    fn mod_seat_view(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        seats::mod_seat_view(&db, &self.instance, seat)
+    }
+
+    fn mod_stall_oldest(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        at_or_before: UtcMillis,
+        body_limit: usize,
+        budget: &CallBudget,
+    ) -> Result<Option<UtcMillis>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        seats::mod_stall_oldest(&db, seat, at_or_before, body_limit)
+    }
+}
+
 impl StorePort for SqliteStore {
     fn archival_pass(
         &self,
@@ -1542,6 +1575,10 @@ impl StorePort for SqliteStore {
                 let mut permit = permit;
                 receipts::ack_displayed(&self.context, &mut writer, budget, &v, &mut permit)
             }
+            PermitMutation::AckModDelivered(v) => {
+                let mut permit = permit;
+                receipts::ack_mod_delivered(&self.context, &mut writer, budget, &v, &mut permit)
+            }
             PermitMutation::Leave(v) => {
                 control::leave(&self.context, &mut writer, budget, &v, permit)
             }
@@ -1667,6 +1704,48 @@ impl StorePort for SqliteStore {
     ) -> Result<CommandResult, ApiError> {
         let mut writer = self.writer(budget)?;
         seats::record_managed_launch(&self.context, &mut writer, &self.instance, &command)
+    }
+    fn mod_ack_binding(
+        &self,
+        instance: &str,
+        seat: &crate::protocol::ids::SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModAckBinding>, ApiError> {
+        use crate::protocol::ids::{ExecutionId, HostTargetId, NativeSessionId};
+        let db = self.context.open_query(budget.clone())?;
+        let mut stmt = db
+            .prepare("SELECT b.generation,b.observation_provenance,b.harness,b.native_session,b.execution_id,b.target_id,b.ended_at IS NULL FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.seat_id=?1 AND s.instance_id=?2 ORDER BY b.ordinal DESC LIMIT 2")
+            .map_err(store_error)?;
+        let rows = stmt
+            .query_map(params![seat.as_str(), instance], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, bool>(6)?,
+                ))
+            })
+            .map_err(store_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(store_error)?;
+        let mut rows = rows.into_iter();
+        let Some(open) = rows.next().filter(|row| row.6) else {
+            return Ok(None);
+        };
+        Ok(Some(crate::ports::ModAckBinding {
+            generation: open.0 as u64,
+            provenance: open.1,
+            harness: open.2,
+            native_session: NativeSessionId::new(open.3),
+            execution: ExecutionId::new(open.4),
+            target: HostTargetId::new(open.5),
+            previous: rows
+                .next()
+                .map(|row| (row.0 as u64, NativeSessionId::new(row.3))),
+        }))
     }
     fn issue_cooperative_permit(
         &self,
@@ -2882,6 +2961,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
             schema::canonical_digest(&receipts::ack_displayed_payload(v))?,
+            None,
+        ),
+        PermitMutation::AckModDelivered(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            schema::canonical_digest(&receipts::ack_mod_delivered_payload(v))?,
             None,
         ),
         PermitMutation::CompleteInboxDelivery(v) => (

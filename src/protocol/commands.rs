@@ -95,6 +95,9 @@ pub enum Command {
     Ack(Ack),
     /// Accountable ACK claimed only after a whole inbox text page is flushed.
     AckDisplayed(Ack),
+    /// The bundled Claude mod reports items it delivered (spec D6); sent only to a
+    /// daemon advertising `mod.watch_v1`. Decided per id against A2.
+    AckModDelivered(AckModDelivered),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
     Leave(Leave),
@@ -796,6 +799,19 @@ pub struct Ack {
     pub operation: OperationId,
     pub claim: CallerClaim,
 }
+/// Mod delivery ack (spec D6): `via` names the delivery path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AckModDelivered {
+    pub via: crate::protocol::watch::ModDeliveryVia,
+    pub messages: Vec<MessageId>,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+fn has_duplicate(ids: &[MessageId]) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    !ids.iter().all(|id| seen.insert(id))
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Leave {
@@ -1002,6 +1018,7 @@ impl Command {
             Self::Reject(v) => Some(&v.claim),
             Self::SendMessage(v) => Some(&v.claim),
             Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
+            Self::AckModDelivered(v) => Some(&v.claim),
             Self::CompleteInboxDelivery(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
@@ -1129,6 +1146,13 @@ impl Command {
             {
                 Err("invalid ack batch size")
             }
+            Self::AckModDelivered(ack)
+                if ack.messages.is_empty()
+                    || ack.messages.len() > MAX_BATCH_ITEMS
+                    || has_duplicate(&ack.messages) =>
+            {
+                Err("invalid mod delivery ack batch")
+            }
             _ => Ok(()),
         }
     }
@@ -1203,6 +1227,8 @@ pub enum PermitMutation {
     SendMessage(SendMessage),
     Ack(Ack),
     AckDisplayed(Ack),
+    /// Mod delivery ack (spec D6): settles per id under the daemon's decision.
+    AckModDelivered(AckModDelivered),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
     Leave(Leave),
@@ -1236,6 +1262,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::SendMessage(v) => Ok(Self::SendMessage(v)),
             Command::Ack(v) => Ok(Self::Ack(v)),
             Command::AckDisplayed(v) => Ok(Self::AckDisplayed(v)),
+            Command::AckModDelivered(v) => Ok(Self::AckModDelivered(v)),
             Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),

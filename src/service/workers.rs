@@ -1128,6 +1128,73 @@ where
         })
 }
 
+/// The mod channel worker's safety tick: it sweeps grace, cooldown and stall
+/// state once a second (spec D7).
+const MOD_CHANNEL_TICK: Duration = Duration::from_secs(1);
+/// With no commit observed, seats with a live channel are still re-read every
+/// this many ticks (a missed notify costs at most this long).
+const MOD_CHANNEL_SAFETY_PASS_TICKS: u32 = 10;
+
+/// The mod channel worker (spec D2, D7): one std thread on its own `Pacer`
+/// (not a store lane: it commits nothing). A commit touching an attention
+/// source (`kicks::MOD_NOTIFY_TABLES`) kicks the Pacer through the registry's
+/// observer; each wake runs [`crate::service::mod_channels::ModChannelRegistry::pass`]
+/// when dirty (and every [`MOD_CHANNEL_SAFETY_PASS_TICKS`] ticks regardless),
+/// then `sweep`, which expires graces and cooldowns and closes stalled
+/// channels. A failed pass backs off on the Pacer and is logged (first
+/// failure, then every 60th). Cancellation closes every channel with
+/// `Close{stopping}` and ends the thread; the caller joins it.
+pub fn start_mod_channel_worker(
+    registry: Arc<crate::service::mod_channels::ModChannelRegistry>,
+    pacer: Arc<Pacer>,
+    clock: Arc<dyn Clock>,
+    cancellation: Cancellation,
+    log: Arc<dyn Fn(&str) + Send + Sync>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    let wake = Arc::clone(&pacer);
+    registry.set_worker_wake(Arc::new(move || wake.kick()));
+    thread::Builder::new()
+        .name("herdr-mod-channels".into())
+        .spawn(move || {
+            let mut ticks_since_pass = 0u32;
+            let mut consecutive_failures = 0u64;
+            while !cancellation.is_cancelled() {
+                let now = clock.utc_now();
+                let dirty = registry.take_dirty();
+                ticks_since_pass += 1;
+                if dirty || ticks_since_pass >= MOD_CHANNEL_SAFETY_PASS_TICKS {
+                    ticks_since_pass = 0;
+                    match registry.pass(now) {
+                        Ok(()) => {
+                            pacer.on_success();
+                            consecutive_failures = 0;
+                        }
+                        Err(_) if cancellation.is_cancelled() => break,
+                        Err(error) => {
+                            pacer.on_failure();
+                            registry.mark_dirty();
+                            if consecutive_failures.is_multiple_of(60) {
+                                log(&format!(
+                                    "mod channel pass failed: {:?}: {}",
+                                    error.code, error.detail
+                                ));
+                            }
+                            consecutive_failures += 1;
+                        }
+                    }
+                }
+                registry.sweep(clock.utc_now());
+                if pacer.wait_blocking(MOD_CHANNEL_TICK) == Wake::Cancelled {
+                    break;
+                }
+            }
+            registry.close_all(
+                crate::protocol::watch::WatchCloseReason::Stopping,
+                clock.utc_now(),
+            );
+        })
+}
+
 /// Checks the admission observer's spawn `Result`: a failed spawn is recorded
 /// on `status` so Health shows the lane degraded instead of silently absent.
 pub fn admission_handle(
@@ -1504,6 +1571,7 @@ pub fn start_wake_worker(
     status: Arc<WorkerStatus>,
     poke_capabilities: Arc<dyn crate::ports::PokeCapabilitySource>,
     reachability: Arc<HostReachability>,
+    mod_channels: Arc<dyn crate::ports::ModChannels>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("herdr-wakes".into())
@@ -1515,7 +1583,8 @@ pub fn start_wake_worker(
             let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock());
             let observed = ObservedWakePort::new(&port, &status);
             let scheduler = Scheduler::new(instance, &port, &observed, &notifier, retry, boot)
-                .with_poke_capabilities(poke_capabilities.as_ref());
+                .with_poke_capabilities(poke_capabilities.as_ref())
+                .with_mod_channels(mod_channels.as_ref());
             let safety_tick = Duration::from_millis(WAKE_SAFETY_TICK_MILLIS);
             // The first pass runs at boot, before the first wait.
             let mut next_due_at: Option<crate::protocol::time::MonoInstant> = None;

@@ -31,6 +31,7 @@ pub mod threads;
 pub mod topology_handoff;
 pub mod topology_recover;
 mod topology_runtime;
+pub mod watch;
 
 use crate::{
     app::SystemClock,
@@ -371,6 +372,19 @@ where
         writer.flush()?;
         return Ok(());
     }
+    if matches!(&parsed.action, CliAction::Watch(_) | CliAction::WatchAck(_)) {
+        // Before any context read or connection: the env switch and, for
+        // `watch`, a missing pane.
+        watch::precheck(
+            std::env::var(crate::protocol::watch::MOD_DELIVERY_ENV)
+                .ok()
+                .as_deref(),
+            caller_pane,
+            parsed.cooperative.is_some(),
+            matches!(&parsed.action, CliAction::Watch(_)),
+            writer,
+        )?;
+    }
     if let CliAction::HarnessVersionNormalize { harness, raw } = &parsed.action {
         let json = parsed.output.format == OutputFormat::Json;
         let text = crate::harness::contract::render_normalize(harness_name(*harness), raw, json)
@@ -506,6 +520,30 @@ where
                 .filter(|pane| !pane.is_empty())
                 .map(crate::protocol::ids::HostTargetId::new)
         });
+    if let CliAction::Watch(request) = parsed.action.clone() {
+        return watch::run_watch(
+            &mut parsed,
+            &request,
+            caller_pane,
+            &context,
+            &paths,
+            &connection,
+            &clock,
+            writer,
+        );
+    }
+    if let CliAction::WatchAck(request) = parsed.action.clone() {
+        return watch::run_ack(
+            &mut parsed,
+            &request,
+            caller_pane,
+            &context,
+            &paths,
+            &connection,
+            &clock,
+            writer,
+        );
+    }
     threads::resolve_cli_threads(&mut parsed, |selector| {
         let (_, client) = connection.get()?;
         let result = client
@@ -796,6 +834,9 @@ where
         | CliAction::ContractId { .. }
         | CliAction::HarnessVersionNormalize { .. } => {
             unreachable!("contract-id and harness-version are handled before context resolution")
+        }
+        CliAction::Watch(_) | CliAction::WatchAck(_) => {
+            unreachable!("watch is handled before context resolution")
         }
         CliAction::InstallerIntegrations { .. } | CliAction::InternalJsonField { .. } => {
             unreachable!("internal json-field is handled before context resolution")
@@ -1868,7 +1909,9 @@ fn caller_need(
         CliAction::CachedCheckIn(_)
         | CliAction::Summary(_)
         | CliAction::Handoff(_)
-        | CliAction::TopologyHandoff(_) => CallerNeed::Selection,
+        | CliAction::TopologyHandoff(_)
+        | CliAction::Watch(_)
+        | CliAction::WatchAck(_) => CallerNeed::Selection,
         CliAction::TopologyRecover(_) => CallerNeed::None,
         CliAction::Retry(recovery) => {
             // Retry needs the daemon; report it unavailable (exit 3, intent

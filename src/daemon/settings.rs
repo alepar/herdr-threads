@@ -17,6 +17,10 @@
 //! - `"wake_batch_delay_ms"` (default 0, zero disables): initial
 //!   ordinary attention batching, separate from retry spacing.
 //! - `"auto_archive_after_ms"` (default 3600000, zero disables): quiet-channel grace.
+//! - `"mod_delivery": "on" | "off"` (default `on`): `off` refuses mod watch
+//!   registrations (`disabled`); delivery stays on hooks plus native wake.
+//!   Read once at daemon start, so a change takes effect on the next restart,
+//!   which also ends every live channel.
 //! - `"summary"`: thread summary, catch-up and soft-deadline poke settings
 //!   (`crate::protocol::summary::SummarySettings`; every key optional,
 //!   unknown keys rejected, validated by `ServiceConfig::from_settings`).
@@ -49,6 +53,7 @@ pub struct InstanceSettings {
     pub wake_batch_delay_ms: u64,
     #[serde(rename = "auto_archive_after_ms")]
     pub archive_after_ms: u64,
+    pub mod_delivery: crate::protocol::watch::ModDeliverySetting,
     pub summary: crate::protocol::summary::SummarySettings,
 }
 
@@ -61,6 +66,7 @@ impl Default for InstanceSettings {
             minimum_wake_delay_ms: DEFAULT_MINIMUM_WAKE_DELAY_MS,
             wake_batch_delay_ms: DEFAULT_WAKE_BATCH_DELAY_MS,
             archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
+            mod_delivery: crate::protocol::watch::ModDeliverySetting::default(),
             summary: crate::protocol::summary::SummarySettings::default(),
         }
     }
@@ -175,6 +181,18 @@ mod tests {
                 .detail
                 .contains("invalid wake batch delay")
         );
+    }
+
+    #[test]
+    fn mod_delivery_defaults_on_and_parses_off() {
+        use crate::protocol::watch::ModDeliverySetting;
+        let on = load(dir_with(Some("{}")).path()).unwrap();
+        assert_eq!(on.mod_delivery, ModDeliverySetting::On);
+        let off = load(dir_with(Some(r#"{"mod_delivery":"off"}"#)).path()).unwrap();
+        assert_eq!(off.mod_delivery, ModDeliverySetting::Off);
+        let bad = dir_with(Some(r#"{"mod_delivery":"maybe"}"#));
+        let error = load(bad.path()).unwrap_err();
+        assert!(error.to_string().contains(SETTINGS_FILE), "{error}");
     }
 
     #[test]

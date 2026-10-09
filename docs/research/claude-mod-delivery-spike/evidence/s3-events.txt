@@ -1,0 +1,19 @@
+    0.00s {"kind": "session-start", "pane": "spike-s3", "session": "7ef3af10-d56d-40be-acfa-93303e41fcb0", "version": "2.1.294"}
+    0.00s {"kind": "feed-started", "feed": "/private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/sessions/s3/feed.jsonl"}
+   15.06s {"kind": "received", "id": "b1", "mode": "submit", "busy": false}
+   15.06s {"kind": "submit-call", "ids": ["b1"], "reason": "message", "asUser": false}
+   15.10s {"kind": "submit-resolved", "ids": ["b1"], "drop": null}
+   15.10s {"kind": "turn-start", "turn": "4408382b-a5a0-49c4-a55e-bed7a2d5114c", "session": "7ef3af10-d56d-40be-acfa-93303e41fcb0"}
+   17.25s {"kind": "turn-complete", "turn": "4408382b-a5a0-49c4-a55e-bed7a2d5114c", "aborted": false}
+   65.56s {"kind": "session-start", "pane": "spike-s3", "session": "7ef3af10-d56d-40be-acfa-93303e41fcb0", "version": "2.1.294"}
+   65.56s {"kind": "feed-started", "feed": "/private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/sessions/s3/feed.jsonl"}
+   69.11s {"kind": "received", "id": "h1", "mode": "none", "busy": false}
+  195.97s {"kind": "session-start", "pane": "spike-s3", "session": "7ef3af10-d56d-40be-acfa-93303e41fcb0", "version": "2.1.294"}
+  195.97s {"kind": "feed-started", "feed": "/private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/sessions/s3/feed.jsonl"}
+  202.16s {"kind": "received", "id": "h4", "mode": "submit", "busy": false}
+  202.16s {"kind": "submit-call", "ids": ["h4"], "reason": "message", "asUser": false}
+  202.17s {"kind": "submit-resolved", "ids": ["h4"], "drop": null}
+  202.18s {"kind": "turn-start", "turn": "7c148f94-f01a-4681-897a-a8d398c121b7", "session": "7ef3af10-d56d-40be-acfa-93303e41fcb0"}
+  203.68s {"kind": "turn-complete", "turn": "7c148f94-f01a-4681-897a-a8d398c121b7", "aborted": false}
+  264.78s {"kind": "feed-ended"}
+  264.78s {"kind": "session-end", "reason": "other"}

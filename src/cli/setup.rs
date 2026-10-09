@@ -158,6 +158,9 @@ pub struct SetupRequest {
     pub harness_binary: Option<String>,
     /// `setup claude` only: what to do about Claude's prompt suggestions.
     pub prompt_suggestions: PromptSuggestionPolicy,
+    /// `setup claude --hooks-only`: install or keep the hooks, and remove the
+    /// delivery mod's `CLAUDE_CODE_PLUGIN_DIRS` path and files.
+    pub hooks_only: bool,
 }
 
 /// `setup claude`: whether to set Claude's [`claude::PROMPT_SUGGESTION_SETTING`]
@@ -601,6 +604,12 @@ pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError
         }
         _ => {}
     }
+    if request.hooks_only {
+        options.insert(
+            crate::harness::claude::setup::HOOKS_ONLY_OPTION.into(),
+            true,
+        );
+    }
     execute_registered(
         registration,
         request.verb,
@@ -725,13 +734,26 @@ pub(crate) fn execute_registered_with_expected_scope(
             .map_err(adapter_run_error),
         SetupVerb::Status => match registration.status(
             &StatusRequest {
-                scope,
+                scope: scope.clone(),
                 environment: environment.clone(),
                 native_binary: native_binary.map(Path::to_path_buf),
             },
             &budget,
         ) {
-            SetupStatus::Detailed(status) => Ok(status.projection),
+            SetupStatus::Detailed(status) => {
+                let mut projection = status.projection;
+                if registration.metadata().id == Harness::Claude.as_str() {
+                    // Spec D8: only `setup-status` runs the mod's version gate
+                    // and reads the daemon's channel status.
+                    crate::harness::claude::setup::complete_setup_status(
+                        &mut projection,
+                        &scope,
+                        native_binary,
+                        environment,
+                    );
+                }
+                Ok(projection)
+            }
             SetupStatus::Failed(error) => Err(adapter_run_error(error)),
             SetupStatus::Unsupported(error) => Err(invalid(error.to_string())),
             _ => Err(invalid("adapter did not provide local setup status")),
@@ -1042,6 +1064,9 @@ pub fn render_all_text(report: &Value) -> String {
         if let Some(line) = prompt_suggestion_line(&inner["prompt_suggestions"]) {
             out.push_str(&format!("{name}: {line}\n"));
         }
+        if let Some(line) = crate::harness::claude::setup::mod_line(&inner["mod"]) {
+            out.push_str(&format!("{name}: {line}\n"));
+        }
         if let Some(status) = inner["foreground"]["status"].as_str() {
             out.push_str(&format!(
                 "{name}: foreground user settings: {status}; execution unknown\n"
@@ -1088,7 +1113,7 @@ pub fn render_all_text(report: &Value) -> String {
 // ----------------------------------------------------- executable selection
 
 /// Both stdin and stderr are terminals: setup may ask a question.
-fn interactive() -> bool {
+pub(crate) fn interactive() -> bool {
     use std::io::IsTerminal;
     io::stdin().is_terminal() && io::stderr().is_terminal()
 }
@@ -1123,7 +1148,7 @@ fn prompt_suggestion_line(value: &Value) -> Option<String> {
 
 // ------------------------------------------------------------------ render
 
-fn scalar(value: &Value) -> String {
+pub(crate) fn scalar(value: &Value) -> String {
     let text = match value {
         Value::String(text) => text.clone(),
         Value::Null => "none".into(),
@@ -1612,8 +1637,9 @@ use crate::harness::setup::legacy::first_shell_word;
 pub(crate) use crate::harness::setup::legacy::user_inspection;
 
 pub use crate::harness::claude::setup::{
-    PROMPT_SUGGESTION_EXPLANATION, allow_rule_json, claude_config_dir_from, claude_paths,
-    prompt_suggestion_manifest, prompt_suggestion_status, settle_prompt_suggestions,
+    PROMPT_SUGGESTION_EXPLANATION, allow_rule_json, ask_include_shell_dirs, claude_config_dir_from,
+    claude_paths, mod_manifest, prompt_suggestion_manifest, prompt_suggestion_status,
+    settle_prompt_suggestions,
 };
 
 #[cfg(test)]

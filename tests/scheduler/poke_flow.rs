@@ -943,6 +943,7 @@ fn frozen_wake_lane_neither_reads_nor_pokes_until_recovery() {
         Arc::new(WorkerStatus::default()),
         Arc::new(Declared(PokeCapabilities::NONE)),
         reachability.clone(),
+        Arc::new(crate::ports::NoModChannels),
     )
     .unwrap();
     let _stop = Stop(cancel, Some(worker));

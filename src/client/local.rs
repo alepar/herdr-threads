@@ -48,7 +48,9 @@ impl LocalSocketClient {
 
     /// The capabilities this daemon advertises, asked once per session (ht-p03.43).
     /// Any refusal or transport error (an older daemon cannot decode the request and
-    /// closes, or answers an error) reads as no capabilities, never as a failure.
+    /// closes, or answers an error) reads as no capabilities, never as a failure. A caller that
+    /// must tell a failed call from an answer without a capability (the `watch` probe) uses
+    /// `call_definitive(Command::Capabilities)` instead.
     pub fn capabilities(&self, budget: &CallBudget) -> Capabilities {
         self.capabilities
             .get_or_init(|| match self.call(Command::Capabilities, budget) {

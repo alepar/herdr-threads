@@ -3,11 +3,12 @@
 use crate::{
     ports::TimeBasis,
     protocol::{
-        authority::{Harness, MutationPermit, ObligationRef},
-        commands::Ack,
+        authority::{COOPERATIVE_MOD_DELIVERY_PROVENANCE, Harness, MutationPermit, ObligationRef},
+        commands::{Ack, AckModDelivered},
         ids::{MessageId, SeatId, ThreadId},
         results::{AckResult, ApiError, CommandResult, ErrorCode},
         time::UtcMillis,
+        watch::{ModAckItem, ModAckOutcome, ModAckReason, ModAckReport, WATCH_BODY_LIMIT_BYTES},
     },
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -15,7 +16,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    connection::{StoreContext, api_error, store_error},
+    connection::{DecisionInstant, StoreContext, api_error, store_error},
     effective::{self, EffectiveReceiptState},
     schema::{self, EventInput},
 };
@@ -46,6 +47,191 @@ pub fn ack_displayed(
     permit: &mut MutationPermit,
 ) -> Result<CommandResult, ApiError> {
     ack_impl(context, conn, budget, request, permit, true)
+}
+
+pub fn ack_mod_delivered_payload(request: &AckModDelivered) -> Value {
+    json!({"kind":"ack_mod_delivered","via":request.via,"messages":request.messages,"claim":request.claim})
+}
+
+/// What the deciding transaction will do with one requested id.
+enum ModAckPlan {
+    Settle,
+    Complete,
+    Done(ModAckOutcome, Option<ModAckReason>),
+}
+
+fn refuse(reason: ModAckReason) -> ModAckPlan {
+    ModAckPlan::Done(ModAckOutcome::RefusedTerminal, Some(reason))
+}
+
+/// Per-id classification against the stored rows (spec D6); never errors per id.
+fn plan_mod_ack(
+    tx: &Transaction<'_>,
+    instance: &str,
+    seat: &SeatId,
+    id: &MessageId,
+) -> Result<ModAckPlan, ApiError> {
+    let row: Option<(String, i64)> = tx
+        .query_row(
+            "SELECT kind,length(CAST(coalesce(body,'') AS BLOB)) FROM messages WHERE id=?1 AND instance_id=?2",
+            params![id.as_str(), instance],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((kind, body_len)) = row else {
+        return Ok(refuse(ModAckReason::Unknown));
+    };
+    if kind != "ordinary" {
+        return Ok(refuse(ModAckReason::NotAddressed));
+    }
+    let over_limit = body_len as usize > WATCH_BODY_LIMIT_BYTES;
+    if super::lazy_delivery::recorded_mode(tx, instance, id)?
+        == Some(crate::protocol::commands::DeliveryMode::Lazy)
+    {
+        return Ok(
+            match super::lazy_delivery::lazy_completion_state(tx, instance, seat, id)? {
+                super::lazy_delivery::LazyCompletion::NotAddressed => {
+                    refuse(ModAckReason::NotAddressed)
+                }
+                _ if over_limit => refuse(ModAckReason::Truncated),
+                super::lazy_delivery::LazyCompletion::Completed => {
+                    ModAckPlan::Done(ModAckOutcome::AlreadySettled, None)
+                }
+                super::lazy_delivery::LazyCompletion::Pending => ModAckPlan::Complete,
+            },
+        );
+    }
+    let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?;
+    Ok(match receipt.map(|receipt| receipt.state) {
+        None
+        | Some(EffectiveReceiptState::NotRequired | EffectiveReceiptState::RecipientRetired) => {
+            refuse(ModAckReason::NotAddressed)
+        }
+        Some(_) if over_limit => refuse(ModAckReason::Truncated),
+        Some(EffectiveReceiptState::Acknowledged) => {
+            ModAckPlan::Done(ModAckOutcome::AlreadySettled, None)
+        }
+        Some(EffectiveReceiptState::Pending) => ModAckPlan::Settle,
+    })
+}
+
+/// Spec D6: settle the mod-delivered ids of the seat one by one. Ordinary
+/// pending receipts settle like `ack_displayed` with the receipt's
+/// `action_provenance` set to `cooperative_mod_delivery` (the binding's
+/// `cooperative_top_level` provenance stays in the observation); lazy rows
+/// complete as displayed. Every id gets a result; a refusal leaves it pending.
+pub fn ack_mod_delivered(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    request: &AckModDelivered,
+    permit: &mut MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    if request.messages.is_empty() || request.messages.len() > 100 {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "invalid mod delivery ACK batch size",
+        ));
+    }
+    let distinct: BTreeSet<_> = request.messages.iter().collect();
+    if distinct.len() != request.messages.len() {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "duplicate message in mod delivery ACK batch",
+        ));
+    }
+    if request.claim.harness != Harness::Claude
+        || request.claim.role != crate::protocol::authority::CallerRole::TopLevel
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "mod delivery ACK requires a top-level Claude claim",
+        ));
+    }
+    let digest = schema::canonical_digest(&ack_mod_delivered_payload(request))?;
+    let cooperative = permit.cooperative_metadata();
+    let seat = request.claim.seat.clone();
+    let instance = request.claim.instance.clone();
+    let scope = format!("seat:{}", seat.as_str());
+    schema::execute_accountable_transaction(
+        context,
+        conn,
+        budget,
+        cooperative,
+        &scope,
+        request.operation.as_str(),
+        digest,
+        |tx| {
+            let active: bool = tx
+                .query_row(
+                    "SELECT state!='retired' FROM seats WHERE id=?1",
+                    [seat.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            if !active {
+                return Err(api_error(ErrorCode::Unauthorized, "seat retired"));
+            }
+            Ok(())
+        },
+        |tx, decision| {
+            let actor = super::control::decide_accountable(
+                tx,
+                decision,
+                permit,
+                &request.claim,
+                &seat,
+                &request.operation,
+                &ObligationRef::CheckIn(seat.clone()),
+                &digest,
+            )?;
+            let mut plans = Vec::with_capacity(request.messages.len());
+            for id in &request.messages {
+                plans.push(plan_mod_ack(tx, &instance, &seat, id)?);
+            }
+            let settle: Vec<MessageId> = request
+                .messages
+                .iter()
+                .zip(&plans)
+                .filter(|(_, plan)| matches!(plan, ModAckPlan::Settle))
+                .map(|(id, _)| id.clone())
+                .collect();
+            let mut observation: Value =
+                serde_json::from_str(&actor.observation(decision.utc.0))
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "ACK observation malformed"))?;
+            observation["action_provenance"] = json!(COOPERATIVE_MOD_DELIVERY_PROVENANCE);
+            observation["via"] = json!(request.via);
+            settle_pending(
+                tx,
+                decision,
+                &seat,
+                &request.operation,
+                &settle,
+                &observation.to_string(),
+                actor.binding_generation,
+                "ack_mod",
+            )?;
+            let mut results = Vec::with_capacity(plans.len());
+            for (id, plan) in request.messages.iter().zip(plans) {
+                let (result, reason) = match plan {
+                    ModAckPlan::Settle => (ModAckOutcome::Settled, None),
+                    ModAckPlan::Complete => {
+                        super::lazy_delivery::complete_addressed(tx, &instance, &seat, id)?;
+                        (ModAckOutcome::Settled, None)
+                    }
+                    ModAckPlan::Done(result, reason) => (result, reason),
+                };
+                results.push(ModAckItem {
+                    id: id.clone(),
+                    result,
+                    reason,
+                });
+            }
+            failpoint!("ack.before_commit", context.failpoint_scope());
+            Ok(CommandResult::ModDeliveryAcked(ModAckReport { results }))
+        },
+    )
 }
 
 fn ack_impl(
@@ -165,15 +351,7 @@ fn ack_impl(
             )?;
             let mut newly = Vec::new();
             let mut prior = Vec::new();
-            let mut by_thread: BTreeMap<ThreadId, Vec<MessageId>> = BTreeMap::new();
             for id in &request.messages {
-                let thread: String = tx
-                    .query_row(
-                        "SELECT thread_id FROM messages WHERE id=?1",
-                        [id.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
                 let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?
                     .ok_or_else(|| {
                         api_error(ErrorCode::StoreCorrupt, "validated receipt disappeared")
@@ -182,31 +360,6 @@ fn ack_impl(
                     prior.push(id.clone());
                 } else {
                     newly.push(id.clone());
-                    by_thread
-                        .entry(ThreadId::new(thread))
-                        .or_default()
-                        .push(id.clone());
-                }
-            }
-            // All late warnings precede settlement and its compact info event.
-            for id in &newly {
-                let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?
-                    .ok_or_else(|| {
-                        api_error(ErrorCode::StoreCorrupt, "validated receipt disappeared")
-                    })?;
-                if receipt.state == EffectiveReceiptState::Pending
-                    && effective_deadline(tx, &receipt)?
-                        .is_some_and(|deadline| deadline <= decision.utc.0)
-                {
-                    schema::record_overdue_if_pending(
-                        tx,
-                        &ObligationRef::Receipt {
-                            message: id.clone(),
-                            seat: seat.clone(),
-                        },
-                        &TimeBasis::Decision,
-                        decision.utc,
-                    )?;
                 }
             }
             let observation = if displayed {
@@ -217,73 +370,16 @@ fn ack_impl(
             } else {
                 actor.observation(decision.utc.0)
             };
-            for id in &newly {
-                let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?
-                    .ok_or_else(|| {
-                        api_error(ErrorCode::StoreCorrupt, "validated receipt disappeared")
-                    })?;
-                let manifest: bool = tx
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM send_manifests WHERE message_id=?1)",
-                        [id.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                if manifest {
-                    tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES (?1,?2,'acked',?3,?4,?2,?5,?6,?7) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',ack_actor_seat_id=excluded.ack_actor_seat_id,ack_generation=excluded.ack_generation,ack_observation=excluded.ack_observation,acked_at=excluded.acked_at WHERE receipt_state.state='pending'",
-                        params![id.as_str(),seat.as_str(),receipt.available_at,receipt.deadline_at,actor.binding_generation as i64,observation,decision.utc.0]).map_err(store_error)?;
-                } else {
-                    tx.execute("UPDATE receipts SET state='acked',ack_actor_seat_id=?1,ack_generation=?2,ack_observation=?3,acked_at=?4 WHERE message_id=?5 AND seat_id=?1 AND state='pending'",
-                        params![seat.as_str(),actor.binding_generation as i64,observation,decision.utc.0,id.as_str()]).map_err(store_error)?;
-                }
-            }
-            for thread in by_thread.keys() {
-                schema::clear_warning_conditions_for_receipts(
-                    tx,
-                    thread.as_str(),
-                    seat.as_str(),
-                    decision.utc,
-                )?;
-            }
-            for (thread, ids) in &by_thread {
-                let mut payload = json!({"event":"ack", "seat":seat, "messages":ids, "decided_at":decision.utc.0}).to_string();
-                if payload.len() > 4096 {
-                    let digest = schema::canonical_digest(ids)?;
-                    let hash: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-                    payload = json!({"event":"ack", "seat":seat, "count":ids.len(), "message_ids_sha256":hash, "decided_at":decision.utc.0}).to_string();
-                }
-                let key = format!(
-                    "ack:{}:{}:{}:{}:{}:{}",
-                    seat.as_str().len(),
-                    seat.as_str(),
-                    request.operation.as_str().len(),
-                    request.operation.as_str(),
-                    thread.as_str().len(),
-                    thread.as_str()
-                );
-                schema::append_event_once(
-                    tx,
-                    EventInput {
-                        thread,
-                        key: &key,
-                        kind: "info",
-                        payload_json: &payload,
-                        decision_at: decision.utc,
-                        source_message: None,
-                        source_invitation: None,
-                    },
-                )?;
-                let instance: String = tx
-                    .query_row(
-                        "SELECT instance_id FROM threads WHERE id=?1",
-                        [thread.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                schema::bump_filter_revision(tx, &instance, "inbox", seat.as_str())?;
-                schema::bump_filter_revision(tx, &instance, "directory", thread.as_str())?;
-                tx.execute("INSERT INTO delivery_observations(seat_id,thread_id,acked) VALUES (?1,?2,?3) ON CONFLICT(seat_id,thread_id) DO UPDATE SET acked=acked+excluded.acked", params![seat.as_str(),thread.as_str(),ids.len() as i64]).map_err(store_error)?;
-            }
+            settle_pending(
+                tx,
+                decision,
+                &seat,
+                &request.operation,
+                &newly,
+                &observation,
+                actor.binding_generation,
+                "ack",
+            )?;
             failpoint!("ack.before_commit", context.failpoint_scope());
             Ok(CommandResult::Acknowledged(AckResult {
                 acknowledged: newly,
@@ -293,6 +389,124 @@ fn ack_impl(
     )?;
     failpoint!("ack.after_commit", context.failpoint_scope());
     Ok(result)
+}
+
+/// Settles validated pending receipts of one seat: the late overdue warning
+/// first, then the receipt rows, warning-condition clearing, one compact info
+/// event per thread (key prefix `event_prefix`), filter revisions and delivery
+/// observations. Shared by `ack`, `ack_displayed` and `ack_mod_delivered`.
+// Allowed: shared settlement writes; each argument is one distinct input of the decision.
+#[allow(clippy::too_many_arguments)]
+fn settle_pending(
+    tx: &Transaction<'_>,
+    decision: DecisionInstant,
+    seat: &SeatId,
+    operation: &crate::protocol::ids::OperationId,
+    newly: &[MessageId],
+    observation: &str,
+    binding_generation: u64,
+    event_prefix: &str,
+) -> Result<(), ApiError> {
+    let mut by_thread: BTreeMap<ThreadId, Vec<MessageId>> = BTreeMap::new();
+    for id in newly {
+        let thread: String = tx
+            .query_row(
+                "SELECT thread_id FROM messages WHERE id=?1",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        by_thread
+            .entry(ThreadId::new(thread))
+            .or_default()
+            .push(id.clone());
+    }
+    // All late warnings precede settlement and its compact info event.
+    for id in newly {
+        let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?
+            .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "validated receipt disappeared"))?;
+        if receipt.state == EffectiveReceiptState::Pending
+            && effective_deadline(tx, &receipt)?.is_some_and(|deadline| deadline <= decision.utc.0)
+        {
+            schema::record_overdue_if_pending(
+                tx,
+                &ObligationRef::Receipt {
+                    message: id.clone(),
+                    seat: seat.clone(),
+                },
+                &TimeBasis::Decision,
+                decision.utc,
+            )?;
+        }
+    }
+    for id in newly {
+        let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?
+            .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "validated receipt disappeared"))?;
+        let manifest: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM send_manifests WHERE message_id=?1)",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if manifest {
+            tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES (?1,?2,'acked',?3,?4,?2,?5,?6,?7) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',ack_actor_seat_id=excluded.ack_actor_seat_id,ack_generation=excluded.ack_generation,ack_observation=excluded.ack_observation,acked_at=excluded.acked_at WHERE receipt_state.state='pending'",
+                params![id.as_str(),seat.as_str(),receipt.available_at,receipt.deadline_at,binding_generation as i64,observation,decision.utc.0]).map_err(store_error)?;
+        } else {
+            tx.execute("UPDATE receipts SET state='acked',ack_actor_seat_id=?1,ack_generation=?2,ack_observation=?3,acked_at=?4 WHERE message_id=?5 AND seat_id=?1 AND state='pending'",
+                params![seat.as_str(),binding_generation as i64,observation,decision.utc.0,id.as_str()]).map_err(store_error)?;
+        }
+    }
+    for thread in by_thread.keys() {
+        schema::clear_warning_conditions_for_receipts(
+            tx,
+            thread.as_str(),
+            seat.as_str(),
+            decision.utc,
+        )?;
+    }
+    for (thread, ids) in &by_thread {
+        let mut payload =
+            json!({"event":"ack", "seat":seat, "messages":ids, "decided_at":decision.utc.0})
+                .to_string();
+        if payload.len() > 4096 {
+            let digest = schema::canonical_digest(ids)?;
+            let hash: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+            payload = json!({"event":"ack", "seat":seat, "count":ids.len(), "message_ids_sha256":hash, "decided_at":decision.utc.0}).to_string();
+        }
+        let key = format!(
+            "{event_prefix}:{}:{}:{}:{}:{}:{}",
+            seat.as_str().len(),
+            seat.as_str(),
+            operation.as_str().len(),
+            operation.as_str(),
+            thread.as_str().len(),
+            thread.as_str()
+        );
+        schema::append_event_once(
+            tx,
+            EventInput {
+                thread,
+                key: &key,
+                kind: "info",
+                payload_json: &payload,
+                decision_at: decision.utc,
+                source_message: None,
+                source_invitation: None,
+            },
+        )?;
+        let instance: String = tx
+            .query_row(
+                "SELECT instance_id FROM threads WHERE id=?1",
+                [thread.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        schema::bump_filter_revision(tx, &instance, "inbox", seat.as_str())?;
+        schema::bump_filter_revision(tx, &instance, "directory", thread.as_str())?;
+        tx.execute("INSERT INTO delivery_observations(seat_id,thread_id,acked) VALUES (?1,?2,?3) ON CONFLICT(seat_id,thread_id) DO UPDATE SET acked=acked+excluded.acked", params![seat.as_str(),thread.as_str(),ids.len() as i64]).map_err(store_error)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -625,3 +839,7 @@ fn bump_overdue_filters(tx: &Transaction<'_>, seat: &str, thread: &str) -> Resul
 #[cfg(test)]
 #[path = "../../tests/store/receipts.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/store/mod_ack.rs"]
+mod mod_ack_tests;

@@ -1980,6 +1980,7 @@ mod pacer_lanes {
             status.clone(),
             Arc::new(herdr_threads::ports::NoPokeCapabilities),
             Arc::clone(reachability),
+            Arc::new(herdr_threads::ports::NoModChannels),
         )
         .unwrap();
         Lane {
@@ -2176,6 +2177,7 @@ mod pacer_lanes {
                 status.clone(),
                 Arc::new(herdr_threads::ports::NoPokeCapabilities),
                 Arc::new(HostReachability::default()),
+                Arc::new(herdr_threads::ports::NoModChannels),
             )
             .unwrap();
             Lane {

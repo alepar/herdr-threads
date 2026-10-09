@@ -34,6 +34,11 @@ pub const MESSAGE_DELIVERY_MODES: &str = "messages.delivery_modes_v1";
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
 pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 
+/// The Claude mod watch connection (`protocol::watch`). Defined by the ht-j16.1
+/// seam contract; its handler (`daemon::transport::watch_connection`) landed
+/// with ht-j16.2.
+pub const MOD_WATCH: &str = "mod.watch_v1";
+
 /// Everything this daemon build serves. A capability is listed only once its
 /// handler has landed (ht-p03.105): `HISTORY_FULL_BODIES` landed with
 /// ht-p03.12.8; `HOOK_PARSE_FAILURE_REPORT` landed with ht-p03.23;
@@ -60,6 +65,7 @@ pub const ADVERTISED: &[&str] = &[
     MESSAGE_DELIVERY_MODES,
     LAZY_SEND,
     INBOX_BATCH_V2,
+    MOD_WATCH,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

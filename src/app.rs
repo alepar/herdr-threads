@@ -21,10 +21,12 @@ use crate::{
         host_evidence::HostEvidenceStatus,
         host_reachability::HostReachability,
         kicks::{CommitKicks, Lane},
+        mod_channels::ModChannelRegistry,
         pacer::Pacer,
         workers::{
             WorkerStatus, admission_handle, start_admission_observer, start_deadline_worker,
-            start_observation_worker, start_retention_worker, start_wake_worker,
+            start_mod_channel_worker, start_observation_worker, start_retention_worker,
+            start_wake_worker,
         },
     },
     store::{SqliteStore, connection::StoreContext},
@@ -1250,6 +1252,7 @@ where
         std::env::var_os("HERDR_THREADS_OFFLINE").as_deref(),
     );
     let manifest_cache_dir = crate::harness::manifest::cache_dir(&paths.instance_dir);
+    let mod_delivery = instance_settings.mod_delivery;
     let database_path = paths.database_path.clone();
     let archival_paths = paths.clone();
     let factory_log_path = crate::daemon::logs::daemon_log_path(paths);
@@ -1386,6 +1389,31 @@ where
             // wake lane freezes while Herdr is unavailable and the observation
             // lane's first answered capture kicks it (ht-72q).
             let reachability = Arc::new(HostReachability::default());
+            // The one registry of live mod delivery channels (spec D2, D7),
+            // shared by the wake lane (routing), the domain service (digest
+            // flag and watch registration) and setup-status. It is the sole
+            // owner of channel liveness and of the disconnect kick of the
+            // wake lane; commits touching an attention source wake its worker.
+            let mod_registry = Arc::new(
+                ModChannelRegistry::new(
+                    Arc::clone(&factory_clock),
+                    Arc::clone(&store) as Arc<dyn crate::ports::ModStoreReads>,
+                    instance.to_string(),
+                    {
+                        let kicks = Arc::clone(&kicks);
+                        Arc::new(move || {
+                            kicks.kick(crate::service::kicks::LaneSet::EMPTY.with(Lane::Wakes))
+                        })
+                    },
+                    mod_delivery,
+                )
+                .with_log({
+                    let log = Arc::clone(&rate_limited_log);
+                    Arc::new(move |line: &str| log.write_line(line))
+                }),
+            );
+            kicks.set_mod_observer(mod_registry.observer());
+            let mod_channels: Arc<dyn crate::ports::ModChannels> = mod_registry.clone();
             let wake_pacer = register_lane(Lane::Wakes);
             reachability.attach_wake_pacer(Arc::clone(&wake_pacer));
             factory_probe.attach_reachability(&reachability);
@@ -1401,6 +1429,7 @@ where
                 Arc::clone(&factory_wake_status),
                 Arc::new(ObservedPokeCapabilities::new(Arc::clone(&harnesses))),
                 Arc::clone(&reachability),
+                Arc::clone(&mod_channels),
             )?);
             let observation_pacer = Arc::new(Pacer::new(
                 Lane::Observation.name(),
@@ -1408,6 +1437,20 @@ where
                 factory_stop.clone(),
             ));
             kicks.register(Lane::Observation, Arc::clone(&observation_pacer));
+            workers.push(start_mod_channel_worker(
+                Arc::clone(&mod_registry),
+                Arc::new(Pacer::new(
+                    "mod-channels",
+                    Arc::clone(&factory_clock),
+                    factory_stop.clone(),
+                )),
+                Arc::clone(&factory_clock),
+                factory_stop.clone(),
+                {
+                    let log = Arc::clone(&rate_limited_log);
+                    Arc::new(move |line: &str| log.write_line(line))
+                },
+            )?);
             let identity = Arc::new(
                 crate::identity::repair::OrdinaryIdentity::new(
                     instance.to_string(),
@@ -1551,7 +1594,8 @@ where
                 identity,
             )
             .with_operator_owner(crate::daemon::paths::effective_uid())
-            .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer);
+            .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer)
+            .with_mod_channels(Arc::clone(&mod_channels));
             if let Some((state_dir, host_endpoint, observer)) = &bootstrap {
                 domain = domain
                     .with_bootstrap_runtime(
@@ -1606,7 +1650,8 @@ where
                                 "cached harness observation unavailable",
                             )
                         })
-                })),
+                }))
+                .with_mod_channels(mod_channels),
             );
             let health_states = Arc::clone(&states);
             let health_log = Arc::clone(&rate_limited_log);

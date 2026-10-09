@@ -1,0 +1,8 @@
+[Should-fix] integrations/claude/mod/hooks/register.js:228; src/cli/watch.rs:719
+[Should-fix] src/cli/watch.rs:340
+[Nit] src/service/mod_channels.rs:288
+[Nit] src/service/mod_channels.rs:240
+[Nit] src/cli/setup.rs:1369; src/cli/setup.rs:1401
+[Nit] src/service/mod_channels.rs:193; src/daemon/settings.rs:20
+[Nit] src/cli/setup.rs:1708
+[Nit] scripts/test-claude-mod:13; scripts/test-claude-mod:1

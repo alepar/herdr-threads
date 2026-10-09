@@ -1,0 +1,77 @@
+[
+ {
+  "pid": 2104,
+  "session": "b826c98b-4642-4706-afe1-793b0925aed6",
+  "first_seen": 1791561262848
+ },
+ {
+  "pid": 3526,
+  "session": "b826c98b-4642-4706-afe1-793b0925aed6",
+  "first_seen": 1791561278324
+ },
+ {
+  "pid": 4948,
+  "session": "b826c98b-4642-4706-afe1-793b0925aed6",
+  "first_seen": 1791561289749
+ },
+ {
+  "pid": 8201,
+  "session": "b826c98b-4642-4706-afe1-793b0925aed6",
+  "first_seen": 1791561340250
+ },
+ {
+  "pid": 8970,
+  "session": "b826c98b-4642-4706-afe1-793b0925aed6",
+  "first_seen": 1791561345504
+ },
+ {
+  "pid": 9165,
+  "session": "84f9a6fc-1215-40e4-b99e-f098bac8c12e",
+  "first_seen": 1791561346647
+ },
+ {
+  "pid": 10134,
+  "session": "84f9a6fc-1215-40e4-b99e-f098bac8c12e",
+  "first_seen": 1791561376339
+ },
+ {
+  "pid": 10220,
+  "session": "84f9a6fc-1215-40e4-b99e-f098bac8c12e",
+  "first_seen": 1791561385470
+ },
+ {
+  "pid": 10285,
+  "session": "84f9a6fc-1215-40e4-b99e-f098bac8c12e",
+  "first_seen": 1791561397041
+ },
+ {
+  "pid": 10410,
+  "session": "3dc5cb32-d326-4756-b7c5-2b22bcc8fd26",
+  "first_seen": 1791561407461
+ },
+ {
+  "pid": 10771,
+  "session": "85388cfb-b92f-4132-bbaa-ef4d18591baf",
+  "first_seen": 1791561440766
+ },
+ {
+  "pid": 11664,
+  "session": "d4331739-7a69-4ea6-b71a-6f0c7a109560",
+  "first_seen": 1791561463130
+ },
+ {
+  "pid": 14092,
+  "session": "747fe4d1-aaf0-44db-9a98-0397cbe9e4c2",
+  "first_seen": 1791561491742
+ },
+ {
+  "pid": 14445,
+  "session": "747fe4d1-aaf0-44db-9a98-0397cbe9e4c2",
+  "first_seen": 1791561502112
+ },
+ {
+  "pid": 14522,
+  "session": "6450a23a-e32d-4302-9f44-1a87e48f44e2",
+  "first_seen": 1791561503285
+ }
+]
