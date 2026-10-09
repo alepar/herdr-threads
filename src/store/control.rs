@@ -1279,6 +1279,12 @@ fn create_thread_impl(
         crate::protocol::commands::validate_thread_name(name)
             .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
     }
+    if let Some(canonical) = canonical {
+        permit = permit.with_bootstrap_child(
+            canonical,
+            &crate::protocol::commands::PermitMutation::CreateThread(command.clone()),
+        );
+    }
     let target = command.claim.target.as_str();
     let seat = permit.seat_for_replay_scope().clone();
     let scope = format!("seat:{}", seat.as_str());

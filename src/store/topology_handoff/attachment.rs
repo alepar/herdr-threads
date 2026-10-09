@@ -159,12 +159,30 @@ pub(crate) fn guard_unscoped_child_phase(
     actor: &str,
     key: &str,
 ) -> Result<(), ApiError> {
-    let saved: Option<Vec<u8>> = db.query_row("SELECT substr(p.identity_json,1,?4) FROM bootstrap_child_keys k JOIN bootstrap_handoffs p ON p.id=k.parent_id WHERE k.instance_id=?1 AND k.actor_scope=?2 AND k.operation_key=?3 AND k.role IN ('invite','send') LIMIT 1", params![instance,actor,key,(super::MAX_IDENTITY_BYTES+1) as u32], |r|r.get(0)).optional().map_err(store_error)?;
+    let saved: Option<Vec<u8>> = db.query_row("SELECT substr(p.identity_json,1,?4) FROM bootstrap_child_keys k JOIN bootstrap_handoffs p ON p.id=k.parent_id WHERE k.instance_id=?1 AND k.actor_scope=?2 AND k.operation_key=?3 AND k.role IN ('create','invite','send') LIMIT 1", params![instance,actor,key,(super::MAX_IDENTITY_BYTES+1) as u32], |r|r.get(0)).optional().map_err(store_error)?;
     if let Some(bytes) = saved {
         let identity: BootstrapIdentity = decode(&bytes, super::MAX_IDENTITY_BYTES)?;
         current(db, &identity.payload.handoff.namespace, &identity)?.ok_or_else(corrupt)?;
         return Err(conflict(
             "registered linked phase requires daemon-selected namespace",
+        ));
+    }
+    Ok(())
+}
+
+/// Only the typed child Begin consumer interprets the shared begin registration.
+/// Parent BeginBootstrap uses that same frozen key with its separate canonical lane.
+pub(crate) fn guard_unscoped_child_begin(
+    db: &Connection,
+    command: &HandoffMutation,
+) -> Result<(), ApiError> {
+    let claim = &command.identity.claim;
+    let saved: Option<Vec<u8>> = db.query_row("SELECT substr(p.identity_json,1,?5) FROM bootstrap_child_keys k JOIN bootstrap_handoffs p ON p.id=k.parent_id WHERE k.instance_id=?1 AND k.actor_scope=?2 AND ((k.operation_key=?3 AND k.role='handoff') OR (k.operation_key=?4 AND k.role='begin')) LIMIT 1", params![claim.instance,format!("seat:{}",claim.seat.as_str()),command.identity.compound.as_str(),command.operation.as_str(),(super::MAX_IDENTITY_BYTES+1) as u32], |r|r.get(0)).optional().map_err(store_error)?;
+    if let Some(bytes) = saved {
+        let identity: BootstrapIdentity = decode(&bytes, super::MAX_IDENTITY_BYTES)?;
+        current(db, &identity.payload.handoff.namespace, &identity)?.ok_or_else(corrupt)?;
+        return Err(conflict(
+            "registered child Begin requires daemon-selected namespace",
         ));
     }
     Ok(())
@@ -179,9 +197,29 @@ pub(crate) fn validate_selected_child_phase(
     replay: bool,
 ) -> Result<(), ApiError> {
     use crate::protocol::commands::PermitMutation;
-    let (role, claim, operation, thread) = match command {
-        PermitMutation::Invite(v) => ("invite", &v.claim, &v.operation, &v.thread),
-        PermitMutation::SendMessage(v) => ("send", &v.claim, &v.operation, &v.thread),
+    let (role, claim, operation, registered_key, thread) = match command {
+        PermitMutation::BeginHandoff(v) => (
+            "handoff",
+            &v.identity.claim,
+            &v.operation,
+            &v.identity.compound,
+            None,
+        ),
+        PermitMutation::CreateThread(v) => ("create", &v.claim, &v.operation, &v.operation, None),
+        PermitMutation::Invite(v) => (
+            "invite",
+            &v.claim,
+            &v.operation,
+            &v.operation,
+            Some(&v.thread),
+        ),
+        PermitMutation::SendMessage(v) => (
+            "send",
+            &v.claim,
+            &v.operation,
+            &v.operation,
+            Some(&v.thread),
+        ),
         _ => {
             return Err(api_error(
                 ErrorCode::InvalidRequest,
@@ -197,13 +235,13 @@ pub(crate) fn validate_selected_child_phase(
     }
     let actor = format!("seat:{}", claim.seat.as_str());
     let Some((identity, status)) =
-        canonical_parent(db, canonical, &actor, operation.as_str(), role)?
+        canonical_parent(db, canonical, &actor, registered_key.as_str(), role)?
     else {
-        let registered: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM bootstrap_child_keys WHERE instance_id=?1 AND actor_scope=?2 AND operation_key=?3)", params![claim.instance,actor,operation.as_str()], |r|r.get(0)).map_err(store_error)?;
+        let registered: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM bootstrap_child_keys WHERE instance_id=?1 AND actor_scope=?2 AND operation_key IN (?3,?4))", params![claim.instance,actor,registered_key.as_str(),operation.as_str()], |r|r.get(0)).map_err(store_error)?;
         return if registered {
             Err(api_error(
                 ErrorCode::InstanceMismatch,
-                "linked selected namespace differs",
+                "linked selected namespace or phase differs",
             ))
         } else {
             Ok(())
@@ -223,15 +261,21 @@ pub(crate) fn validate_selected_child_phase(
         .attachment
         .as_ref()
         .ok_or_else(|| conflict("linked phase has no attachment"))?;
-    let child = handoff::current(db, &attachment.handoff)?
-        .ok_or_else(|| conflict("linked phase has no canonical child"))?;
-    if child.thread.as_ref() != Some(thread) {
+    let child = handoff::current(db, &attachment.handoff)?;
+    if thread.is_some() && child.as_ref().and_then(|c| c.thread.as_ref()) != thread {
         return Err(api_error(
             ErrorCode::OperationPayloadMismatch,
             "linked phase thread differs",
         ));
     }
     let exact = match command {
+        PermitMutation::BeginHandoff(v) => {
+            v.operation == identity.payload.handoff.keys.begin
+                && same(&attachment.handoff, &v.identity)?
+        }
+        PermitMutation::CreateThread(v) => {
+            matches!(&identity.payload.handoff.channel,HandoffChannel::New{name,topic,goal} if name==&v.name && topic==&v.topic && goal==&v.goal)
+        }
         PermitMutation::Invite(v) => {
             v.seat == attachment.resolved_seat && v.deadline_millis.is_none()
         }
@@ -251,17 +295,31 @@ pub(crate) fn validate_selected_child_phase(
         ));
     }
     if status.state == BootstrapState::Completed {
-        return if replay && child.state == HandoffState::Completed {
+        return if replay
+            && child
+                .as_ref()
+                .is_some_and(|c| c.state == HandoffState::Completed)
+        {
             Ok(())
         } else {
             Err(conflict("completed linked phase cannot authorize new work"))
         };
     }
-    if status.state != BootstrapState::Attached || child.state != HandoffState::Live {
+    // Begin can establish the exact attached child; later phases require it.
+    if status.state != BootstrapState::Attached
+        || child
+            .as_ref()
+            .is_some_and(|c| c.state != HandoffState::Live)
+        || (child.is_none() && !matches!(command, PermitMutation::BeginHandoff(_)))
+    {
         return Err(conflict("linked phase is not exact live attachment"));
     }
     validate_live(db, canonical, &identity)?;
-    handoff::validate_live(db, &attachment.handoff, child.thread.as_ref())?;
+    handoff::validate_live(
+        db,
+        &attachment.handoff,
+        child.as_ref().and_then(|c| c.thread.as_ref()),
+    )?;
     seats::eligible_delivery_recipient(db, &canonical.instance, &attachment.resolved_seat)
 }
 

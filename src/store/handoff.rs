@@ -506,7 +506,22 @@ fn mutate_impl(
         &scope(identity),
         command.operation.as_str(),
         digest,
-        |tx| super::seats::cooperative_instance(tx, &identity.claim.instance, &identity.claim),
+        |tx| {
+            super::seats::cooperative_instance(tx, &identity.claim.instance, &identity.claim)?;
+            if !complete {
+                if let Some(canonical) = canonical {
+                    super::topology_handoff::validate_selected_child_phase(
+                        tx,
+                        canonical,
+                        &crate::protocol::commands::PermitMutation::BeginHandoff(command.clone()),
+                        true,
+                    )?;
+                } else {
+                    super::topology_handoff::guard_unscoped_child_begin(tx, command)?;
+                }
+            }
+            Ok(())
+        },
         |_| Ok(()),
         |tx, decision| {
             super::control::decide_accountable(

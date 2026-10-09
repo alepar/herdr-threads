@@ -390,6 +390,22 @@ fn public_delivery_scoped_status_and_prepublication_admission_are_read_only() {
             .unwrap(),
         CommandResult::Handoff(_)
     ));
+    let live_status = f
+        .call(Command::HandoffDelivery(Box::new(request.clone())))
+        .unwrap();
+    f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'pure Status control')", []).unwrap();
+    assert_eq!(
+        f.call(Command::HandoffDelivery(Box::new(request.clone())))
+            .unwrap(),
+        live_status,
+        "Live Status reads identity without granting current A2 admission"
+    );
+    let mut prepare = request.clone();
+    prepare.action = DeliveryAction::Prepare(prepare.identity());
+    assert!(
+        f.call(Command::HandoffDelivery(Box::new(prepare))).is_err(),
+        "subsequent live preparation must enforce current recipient guard"
+    );
     for field in ["state", "endpoint", "spelling"] {
         let mut copied = request.clone();
         match field {

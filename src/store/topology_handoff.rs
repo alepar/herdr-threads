@@ -97,8 +97,8 @@ mod runtime;
 pub use attachment::{attach_created, attach_pending, complete_linked_pending};
 pub(crate) use attachment::{
     begin_selected_child, guard_bare_completion, guard_child_begin, guard_linked_begin,
-    guard_unscoped_child_phase, guard_unscoped_create, validate_bootstrap_resolution,
-    validate_create_command, validate_selected_child_phase,
+    guard_unscoped_child_begin, guard_unscoped_child_phase, guard_unscoped_create,
+    validate_bootstrap_resolution, validate_create_command, validate_selected_child_phase,
 };
 pub use persistence::{
     MAX_ATTACHMENT_BYTES, MAX_COMPLETED_BYTES, MAX_CREATION_BYTES, MAX_RECOVERY_BYTES,

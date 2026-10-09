@@ -497,6 +497,293 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
+// Exercise retained registered histories through actual equipped, copied and
+// unconfigured consumers; no local receipt or authority is synthesized.
+fn registered_begin_create_replay_matrix(
+    f: &Fixture,
+    identity: &herdr_threads::protocol::handoff::BootstrapIdentity,
+    attachment: &herdr_threads::protocol::handoff::BootstrapAttachment,
+    completed: bool,
+) {
+    use herdr_threads::{
+        ports::{CooperativePermitRequest, LocalService},
+        protocol::{
+            authority::ObligationRef,
+            commands::{CreateThread, PermitMutation},
+            handoff::{HandoffChannel, HandoffMutation},
+        },
+    };
+    let HandoffChannel::New { name, topic, goal } = &identity.payload.handoff.channel else {
+        panic!("owned public fixture must use frozen new channel");
+    };
+    let create = CreateThread {
+        name: name.clone(),
+        topic: topic.clone(),
+        goal: goal.clone(),
+        operation: identity.payload.handoff.keys.create.clone(),
+        claim: identity.claim.clone(),
+    };
+    let begin = HandoffMutation {
+        identity: attachment.handoff.clone(),
+        operation: identity.payload.handoff.keys.begin.clone(),
+    };
+    let commands = [
+        Command::CreateThread(create.clone()),
+        Command::BeginHandoff(begin.clone()),
+    ];
+    let positive: Vec<_> = commands
+        .iter()
+        .map(|c| f.call(c.clone()).unwrap())
+        .collect();
+    let raw = || {
+        f.db()
+            .prepare(
+                "SELECT operation_key,digest,result_json FROM operations ORDER BY operation_key",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let canonical = || {
+        [
+            "SELECT identity_json FROM bootstrap_handoffs",
+            "SELECT attachment_json FROM bootstrap_attachments",
+            "SELECT completed_json FROM bootstrap_reports",
+        ]
+        .into_iter()
+        .map(|sql| {
+            f.db()
+                .prepare(sql)
+                .unwrap()
+                .query_map([], |r| r.get::<_, Vec<u8>>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        })
+        .collect::<Vec<_>>()
+    };
+    let counts = || {
+        ["threads", "messages", "invitations"].map(|table| {
+            f.db()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .unwrap()
+        })
+    };
+    let saved = raw();
+    let saved_canonical = canonical();
+    let saved_counts = counts();
+    let native = (
+        f.creates.load(Ordering::Relaxed),
+        f.starts.load(Ordering::Relaxed),
+        f.effects.load(Ordering::Relaxed),
+    );
+    let mut accepted = Vec::new();
+    let mut wrong_root = identity.payload.handoff.namespace.clone();
+    wrong_root.state_dir = f.root.join("r1-copy-root");
+    let mut wrong_endpoint = identity.payload.handoff.namespace.clone();
+    wrong_endpoint.host_endpoint = f.root.join("r1-copy.sock");
+    let mut spelling = identity.payload.handoff.namespace.clone();
+    spelling.state_dir = PathBuf::from(format!("{}//state", f.root.display()));
+    let mut endpoint_spelling = identity.payload.handoff.namespace.clone();
+    endpoint_spelling.host_endpoint = PathBuf::from(format!("{}//h.sock", f.root.display()));
+    for (label, namespace) in [
+        ("root", wrong_root),
+        ("endpoint", wrong_endpoint),
+        ("root-spelling", spelling),
+        ("endpoint-spelling", endpoint_spelling),
+    ] {
+        let foreign = f.domain_in_namespace(namespace);
+        for (index, command) in commands.iter().enumerate() {
+            let result = foreign.handle(
+                command.clone(),
+                herdr_threads::test_support::peer_identity(unsafe { libc::geteuid() }),
+                &CallBudget {
+                    deadline: MonoInstant(f.clock.monotonic_now().0 + 5000),
+                    cancellation: Cancellation::default(),
+                },
+            );
+            if result.is_ok() {
+                accepted.push(format!(
+                    "{label}/{}={result:?}",
+                    if index == 0 { "Create" } else { "Begin" }
+                ));
+            }
+        }
+    }
+    let generic = f.unconfigured_domain();
+    let store = SqliteStore::new(
+        StoreContext::new(f.paths.database_path.clone(), f.clock.clone()),
+        f.instance.to_string(),
+        StoreSettings::default(),
+    )
+    .unwrap();
+    let budget = CallBudget {
+        deadline: MonoInstant(f.clock.monotonic_now().0 + 5000),
+        cancellation: Cancellation::default(),
+    };
+    for (index, command) in commands.iter().enumerate() {
+        let result = generic.handle(
+            command.clone(),
+            herdr_threads::test_support::peer_identity(unsafe { libc::geteuid() }),
+            &budget,
+        );
+        if result.is_ok() {
+            accepted.push(format!(
+                "generic/{}={result:?}",
+                if index == 0 { "Create" } else { "Begin" }
+            ));
+        }
+        let (mutation, digest) = if index == 0 {
+            (
+                PermitMutation::CreateThread(create.clone()),
+                herdr_threads::store::control::cooperative_payload_hash("create_thread", &create)
+                    .unwrap(),
+            )
+        } else {
+            (
+                PermitMutation::BeginHandoff(begin.clone()),
+                herdr_threads::store::control::cooperative_payload_hash("begin_handoff", &begin)
+                    .unwrap(),
+            )
+        };
+        let permit = store
+            .issue_cooperative_permit(
+                CooperativePermitRequest {
+                    claim: identity.claim.clone(),
+                    operation: if index == 0 {
+                        create.operation.clone()
+                    } else {
+                        begin.operation.clone()
+                    },
+                    obligation: ObligationRef::CheckIn(identity.claim.seat.clone()),
+                    payload_hash: digest,
+                    check_in_mode: None,
+                },
+                &budget,
+            )
+            .unwrap();
+        let result = store.mutate(mutation, permit, &budget);
+        if result.is_ok() {
+            accepted.push(format!(
+                "direct/{}={result:?}",
+                if index == 0 { "Create" } else { "Begin" }
+            ));
+        }
+    }
+    // Pure cached reads must leave every original operation/result and frozen
+    // canonical record intact even when an incorrect consumer returned it.
+    assert_eq!(raw(), saved);
+    assert_eq!(canonical(), saved_canonical);
+    assert_eq!(counts(), saved_counts);
+    assert_eq!(
+        (
+            f.creates.load(Ordering::Relaxed),
+            f.starts.load(Ordering::Relaxed),
+            f.effects.load(Ordering::Relaxed)
+        ),
+        native
+    );
+    assert!(
+        accepted.is_empty(),
+        "R1 registered history needs exact selected context (completed={completed}): {accepted:#?}"
+    );
+
+    let mut substitution = create.clone();
+    substitution.topic.push_str(" substituted");
+    assert!(f.call(Command::CreateThread(substitution)).is_err());
+    let mut substitution = begin.clone();
+    substitution.identity.recipient = herdr_threads::protocol::ids::SeatId::new("sender");
+    assert!(f.call(Command::BeginHandoff(substitution)).is_err());
+    let mut phase = create.clone();
+    phase.operation = identity.payload.handoff.keys.invite.clone();
+    assert!(f.call(Command::CreateThread(phase)).is_err());
+    let mut phase = begin.clone();
+    phase.operation = herdr_threads::protocol::ids::OperationId::new("owned-r1-unregistered-begin");
+    assert!(
+        f.call(Command::BeginHandoff(phase)).is_err(),
+        "canonical attached child requires its exact frozen Begin key"
+    );
+    for seat in [&attachment.resolved_seat, &identity.claim.seat] {
+        f.db().execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) SELECT instance_id,target_id,structural_host_boot,structural_host_epoch,'owned R1 guard' FROM seats WHERE id=?1",[seat.as_str()]).unwrap();
+        for (command, expected) in commands.iter().zip(&positive) {
+            let result = f.call(command.clone());
+            if completed {
+                assert_eq!(result.unwrap(), *expected);
+            } else {
+                assert!(
+                    result.is_err(),
+                    "live registered cached phase must check held seat: {result:?}"
+                );
+            }
+        }
+        f.db()
+            .execute(
+                "DELETE FROM recovery_holds WHERE reason='owned R1 guard'",
+                [],
+            )
+            .unwrap();
+    }
+    let thread = positive[1].clone();
+    let CommandResult::Handoff(child) = thread else {
+        panic!("actual Begin result");
+    };
+    let thread = child.thread.unwrap();
+    f.db()
+        .execute(
+            "UPDATE threads SET archived=1 WHERE id=?1",
+            [thread.as_str()],
+        )
+        .unwrap();
+    for (command, expected) in commands.iter().zip(&positive) {
+        let result = f.call(command.clone());
+        if completed {
+            assert_eq!(result.unwrap(), *expected);
+        } else {
+            assert!(
+                result.is_err(),
+                "live cached phase must check archived channel: {result:?}"
+            );
+        }
+    }
+    f.db()
+        .execute(
+            "UPDATE threads SET archived=0 WHERE id=?1",
+            [thread.as_str()],
+        )
+        .unwrap();
+    for (command, expected) in commands.iter().zip(&positive) {
+        assert_eq!(f.call(command.clone()).unwrap(), *expected);
+    }
+    if completed {
+        f.db()
+            .execute(
+                "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='sender'",
+                [],
+            )
+            .unwrap();
+        for (command, expected) in commands.iter().zip(&positive) {
+            assert_eq!(
+                f.call(command.clone()).unwrap(),
+                *expected,
+                "exact completed registered history bypasses current binding only"
+            );
+        }
+    }
+    assert_eq!(raw(), saved);
+    assert_eq!(canonical(), saved_canonical);
+    assert_eq!(counts(), saved_counts);
+}
+
 #[test]
 fn elected_public_delivery_is_staged_without_native_effect_and_completed_retry_is_historical() {
     let _serial = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
@@ -700,6 +987,7 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
                 .unwrap(),
         )
         .unwrap();
+    registered_begin_create_replay_matrix(&f, &identity, &completed.attachment, true);
     let legacy_begin = herdr_threads::protocol::handoff::HandoffMutation {
         identity: completed.attachment.handoff.clone(),
         operation: identity.payload.handoff.keys.begin.clone(),
@@ -1013,6 +1301,7 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
         relays_user: false,
         user_intent: None,
     });
+    registered_begin_create_replay_matrix(&f, &identity, &attachment, false);
     let original_invite = f.call(invite.clone()).unwrap();
     let original_send = f.call(send.clone()).unwrap();
     let raw = |key: &str| {
@@ -1051,6 +1340,32 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
         .unwrap();
     assert!(f.call(invite).is_err());
     assert!(f.call(send).is_err());
+    let herdr_threads::protocol::handoff::HandoffChannel::New { name, topic, goal } =
+        &identity.payload.handoff.channel
+    else {
+        unreachable!()
+    };
+    assert!(
+        f.call(Command::CreateThread(
+            herdr_threads::protocol::commands::CreateThread {
+                name: name.clone(),
+                topic: topic.clone(),
+                goal: goal.clone(),
+                operation: identity.payload.handoff.keys.create.clone(),
+                claim: identity.claim.clone()
+            }
+        ))
+        .is_err()
+    );
+    assert!(
+        f.call(Command::BeginHandoff(
+            herdr_threads::protocol::handoff::HandoffMutation {
+                identity: attachment.handoff.clone(),
+                operation: identity.payload.handoff.keys.begin.clone(),
+            }
+        ))
+        .is_err()
+    );
     assert_eq!(
         raw(identity.payload.handoff.keys.invite.as_str()),
         before_invite
