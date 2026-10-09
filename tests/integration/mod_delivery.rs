@@ -2493,7 +2493,7 @@ fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
     affected.wait_item(&id);
     let result = rig.ack_result(SESSION_B, "context", &id);
     assert_eq!(result["result"], "settled", "{result}");
-    bystander.assert_no_line("attention before the deadline", |l| {
+    bystander.assert_no_line("attention before the deadline", QUIET, |l| {
         l["kind"] == "attention"
     });
 
@@ -2513,7 +2513,7 @@ fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
         (conditions() == [None]).then_some(())
     });
     affected.wait_attention_marker();
-    bystander.assert_no_line("attention for C's overdue open", |l| {
+    bystander.assert_no_line("attention for C's overdue open", QUIET, |l| {
         l["kind"] == "attention"
     });
 
@@ -2523,7 +2523,7 @@ fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
         let now = conditions();
         (now.len() == 1 && now[0].is_some()).then_some(())
     });
-    bystander.assert_no_line("attention for C's overdue clear", |l| {
+    bystander.assert_no_line("attention for C's overdue clear", QUIET, |l| {
         l["kind"] == "attention"
     });
     // C's own ACK may drain while its open condition is still uncleared (one
