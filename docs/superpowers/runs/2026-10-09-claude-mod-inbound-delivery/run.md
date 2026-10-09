@@ -51,3 +51,4 @@ scope-filter: 4 in-scope · 4 punch-listed
 roastCodeExit: converged
 regressionPass-round-2: [Should-fix] src/protocol/watch.rs:86 (marker lacks instance selectors) filed with [Nit] src/protocol/watch.rs:86 (lazy-row marker) folded in — same function, same fix; deviation: final-review-3 F1 (mod frame drops author_role/relays_user/user_intent) filed in the same re-entry instead of the punch list — correctness defect on the default-on delivery path of a goal-named behaviour
 baseAbsorbed: 3d10e3bb → 81dbb244, 11 conflicted files (behavioural: setup.rs D8 port into main's Claude setup backend, claude version gate moved to setup-status only, watch --harness renamed to mod_harness)
+baseAbsorbed: 25db37f3 → 9d66d07c, 0 conflicted files (7 test-only commits)
