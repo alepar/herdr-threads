@@ -1,0 +1,39 @@
+{
+  "findings": [
+    {
+      "key": "[Blocking] src/cli/topology_runtime.rs:534",
+      "disposition": "in-scope",
+      "reason": "Blocking — always in-scope."
+    },
+    {
+      "key": "[Should-fix] src/cli/topology_handoff.rs:1423; src/cli/topology_handoff.rs:1398",
+      "disposition": "in-scope",
+      "reason": "Incorrect behavior in the goal-named proven NotSubmitted rearm and recovery-report path: the next prepared attempt becomes a usage error without the required attempt, reference and pinned continuation."
+    },
+    {
+      "key": "[Should-fix] src/cli/handoff_delivery.rs:761",
+      "disposition": "in-scope",
+      "reason": "Missing output in the goal-named durable existing-peer delivery path: partial staging and uncertain completion omit retained child observations, status and ready pinned recovery guidance required by the reporting contract."
+    },
+    {
+      "key": "[Should-fix] src/store/topology_handoff/attachment.rs:627",
+      "disposition": "in-scope",
+      "reason": "Incorrect historical replay in the goal-named frozen launch-argument and retained-report contract: current composition can reject an unchanged retained successful report after an upgrade and strand linked completion."
+    },
+    {
+      "key": "[Should-fix] src/archival_legacy.rs:712",
+      "disposition": "punch-list",
+      "reason": "Performance improvement to goal-named archival code: cumulative lookup and transaction amplification does not establish incorrect archival decisions, unbounded page work or failure of a traversal deadline named by the goal."
+    },
+    {
+      "key": "[Should-fix] src/cli/topology_handoff.rs:1678",
+      "disposition": "in-scope",
+      "reason": "Incorrect behavior in the goal-named ready guarded inspection argv: the emitted pending command fails public parsing and cannot inspect the retained work."
+    },
+    {
+      "key": "[Should-fix] tests/cli/topology_handoff.rs:3307",
+      "disposition": "in-scope",
+      "reason": "Missing test for goal-named behavior: zero-submission fixtures bypass the public writer and fail to cover the required recovery report and pinned continuation after proven no-effect rearm."
+    }
+  ]
+}

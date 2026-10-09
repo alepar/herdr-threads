@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-07-handoff-topology
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: roast-code
+phase: fix-loop
 codeMechanism: ordinary-subagents
 
 idea: lgtm, let's $super-auto this, fully autonomous, both roasts ar eon
@@ -21,6 +21,7 @@ approvals:
 
 roastDesignRound: 2
 roastCodeRound: 1
+roast-code: 2026-10-09-handoff-topology-roast-pr-1.md
 roast-design: 2026-10-07-handoff-topology-roast-design-1.md, 2026-10-07-handoff-topology-roast-design-2.md
 stepBackDesign-round-1: patch — independent exact-attempt recovery, bootstrap-only cancellation/liveness and atomic linked successful-report-backed completion; no shared redesign
 graph-pass: depth 7→7 · width 2.3→2.3 · applied 0 · parked 0
@@ -58,3 +59,19 @@ codeBuckets:
 ## Original PR/code roast round 1 started
 
 Exact source06a0abda05e1af9e88ced8a116a91251f3dc7d36/tree d38787bd857fa6d9fd3d1d67b0e31c1e53c7f16e against actual main6f1c4e6ae44ffc8d2e7ba65022e19380b2fc87db. Both exact reviewed composition parents are retained. Canonical super-roast engine/manual fan-out; fresh same-family seat-differentiated scouts and panels. Original sixteen closed leaves, design roast2, final SDD fixwave1/scopedreview1 and all counters remain unchanged. No main mutation; current source is for continued owned review, not clean or ready. C1 and I2 feed original phase5 final-review-item route; Minor M1 remains separate. User intentional Cargo target cleanup recorded, no source/evidence loss inferred.
+
+Original PR1 canonical report settled: 12/12 scouts, 17 raw→10 deduped, 9 panels+1 spot, 100% judge completion/no caps/dead seats. One Blocking recovery lock-gap plus six Should-fix entries (including overlapping reporting/test controls); pre-existing actor positive-control FYI remains separately source-reviewed Must-fix C1. Both rejected items retain exact reasons. Step-back and scope routing now proceed under original phase5, no severity reassignment/new SDD allowance.
+
+stepBackCode-round-1: patch — restore existing exclusion, pending presentation, historical launch validation, archival traversal and action-selected actor contracts; independent defects admit bounded corrections, no cheaper inside-goal redesign. Validated original nine exact keys with step-back-check exit0.
+
+scopeFilter-round-1: [Blocking] src/cli/topology_runtime.rs:534 in-scope — Blocking, always in-scope
+scopeFilter-round-1: [Should-fix] src/cli/topology_handoff.rs:1423; src/cli/topology_handoff.rs:1398 in-scope — Incorrect behavior in the goal-named proven NotSubmitted rearm and recovery-report path: the next prepared attempt becomes a usage error without the required attempt, reference and pinned continuation.
+scopeFilter-round-1: [Should-fix] src/cli/handoff_delivery.rs:761 in-scope — Missing output in the goal-named durable existing-peer delivery path: partial staging and uncertain completion omit retained child observations, status and ready pinned recovery guidance required by the reporting contract.
+scopeFilter-round-1: [Should-fix] src/store/topology_handoff/attachment.rs:627 in-scope — Incorrect historical replay in the goal-named frozen launch-argument and retained-report contract: current composition can reject an unchanged retained successful report after an upgrade and strand linked completion.
+scopeFilter-round-1: [Should-fix] src/archival_legacy.rs:712 punch-list — Performance improvement to goal-named archival code: cumulative lookup and transaction amplification does not establish incorrect archival decisions, unbounded page work or failure of a traversal deadline named by the goal.
+scopeFilter-round-1: [Should-fix] src/cli/topology_handoff.rs:1678 in-scope — Incorrect behavior in the goal-named ready guarded inspection argv: the emitted pending command fails public parsing and cannot inspect the retained work.
+scopeFilter-round-1: [Should-fix] tests/cli/topology_handoff.rs:3307 in-scope — Missing test for goal-named behavior: zero-submission fixtures bypass the public writer and fail to cover the required recovery report and pinned continuation after proven no-effect rearm.
+cluster dropped: archival-parent-association — Reuse exact parent associations within a coherent coverage traversal instead of opening and exhausting the directory independently for every retained child, and prevent lookup-only continuation pages from multiplying deciding writer turns. Preserve bounded page work, cancellation, generation invalidation, duplicate-parent conflict detection, conservative incomplete/malformed coverage vetoes and terminal dominance; cap any retained association state and veto safely on overflow. Apply the same traversal rule to every child lookup and use structural visit/transaction controls. The confirmed issue is cumulative C*M lookup work and recurring transactions, not measured starvation, a missed latency deadline or incorrect archival decisions.
+scope-filter: 6 in-scope · 1 punch-listed
+
+Ruling: Preserve the canonical scope disposition: archival C*M recurring lookup cost is real and Should-fix, but is an out-of-scope performance improvement for this goal because no incorrect archival decision, unbounded page or named traversal deadline was established. Carry exact open key to next round/report; no source redesign or severity downgrade. Cost if wrong: cumulative background work remains for separate performance work; existing bounded pages/fair writer/conservative coverage hold, no wall-clock starvation claim. Other six entries remain in-scope, C1 source-reviewed final-item routes directly under original autonomous phase5; I2 is covered by the pending-presentation cluster. No reset/additional SDD allowance.
