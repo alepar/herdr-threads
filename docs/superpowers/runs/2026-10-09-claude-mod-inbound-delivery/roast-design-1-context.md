@@ -1,0 +1,8 @@
+Target: the settled design tree for root epic ht-j16 in worktree /Users/alepar/AleCode/herdr-threads/.worktrees/super-auto-claude-mod-inbound-delivery (branch super-auto/claude-mod-inbound-delivery).
+- Root spec: docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md (D12 amendments govern where they differ).
+- Task tree (bead descriptions are the executable plan): docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/task-tree.json (bd list --label sp:ht-j16). Leaves ht-j16.1..ht-j16.7, ht-j16.10 (integration sweep), gate ht-j16.8, gated live stress ht-j16.9.
+- Normative trust model: TRUST-POLICY.md (cooperative same-user; provenance values exhaustive; A2 canonical decisions; A4 wake rules; A8 lazy).
+- Spike evidence (Claude Code 2.1.294 mods behaviour, live-tested): docs/research/claude-mod-delivery-spike/README.md and its evidence/.
+- Mods API reference (2.1.294 types written locally): see the spike's mod; official docs https://code.claude.com/docs/en/plugins/mods/*.md.
+- Codebase map: inbound wake is src/notification/dispatch.rs + src/host/native.rs; hooks src/cli/hook.rs + src/harness/claude.rs (only SessionStart and PreToolUse(Bash) installed); receipts src/store/receipts.rs (AckDisplayed, cooperative_inbox_display); lazy src/store/lazy_delivery.rs; daemon transport src/daemon/transport.rs (one-shot requests; service connection precedent); setup src/harness/setup.rs + src/cli/setup.rs.
+- User direction for this run: delivery into the model's context counts as the receipt for now; avoid experimental features; hooks + send-keys stays the fallback.
