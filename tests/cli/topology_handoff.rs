@@ -2511,6 +2511,268 @@ mod live {
         }
     }
 
+    fn downstream_format<W: std::io::Write>(
+        f: &Fixture,
+        launcher: &mut dyn super::super::super::handoff::HandoffLauncher,
+        json: bool,
+        writer: &mut W,
+    ) -> Result<BootstrapResult, RunError> {
+        super::super::super::retry::run_bootstrap_retry_to_writer(
+            &f.journal,
+            &f.peer.reference,
+            super::super::super::actor_route::InvocationActor::Agent,
+            &f.peer.identity.payload.handoff.namespace,
+            f.peer.as_ref(),
+            f.peer.as_ref(),
+            launcher,
+            &f.clock,
+            BootstrapSubmissionInputs {
+                witness: &f.witness,
+                context: &f.context,
+            },
+            &crate::protocol::output::OutputSpec {
+                format: if json {
+                    crate::protocol::output::OutputFormat::Json
+                } else {
+                    crate::protocol::output::OutputFormat::Text
+                },
+                ..Default::default()
+            },
+            writer,
+        )
+    }
+    // A successful canonical zero-submission transition is still unfinished
+    // handoff work: the actual writer must report the canonical next attempt.
+    fn assert_prepared_next_attempt_report(f: &Fixture, json: bool, bytes: &[u8]) {
+        let reference = f.peer.reference.recovery_ref();
+        let identity = &f.peer.identity;
+        if json {
+            let frame: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_else(|e| {
+                panic!(
+                    "missing useful pending report: {e}; stdout={}",
+                    String::from_utf8_lossy(bytes)
+                )
+            });
+            let report = &frame["bootstrap"];
+            assert_eq!(report["phase"], "creation");
+            assert_eq!(report["failed"], true);
+            assert_eq!(report["outcome"], "pending");
+            assert_eq!(report["attempt"], 2);
+            assert_eq!(report["state"], "prepared");
+            assert_eq!(report["status_is_last_observed"], true);
+            assert_eq!(report["recovery_ref"], reference);
+            assert_eq!(
+                report["bootstrap_compound"],
+                identity.compound.as_str(),
+                "exact original compound"
+            );
+            assert_eq!(
+                report["namespace"],
+                serde_json::to_value(&identity.payload.handoff.namespace).unwrap()
+            );
+            for absent in [
+                "creation",
+                "tab",
+                "pane",
+                "seat",
+                "child_compound",
+                "thread",
+                "invitation",
+                "message",
+                "manual_launch_after_confirming_no_start_argv",
+                "conditional_human_recovery",
+            ] {
+                assert!(
+                    report[absent].is_null(),
+                    "fabricated {absent}: {}",
+                    report[absent]
+                );
+            }
+            assert_eq!(report["possible_start"], false);
+            let retry: Vec<String> = serde_json::from_value(report["retry_argv"].clone()).unwrap();
+            assert_eq!(retry[0], "env");
+            assert_eq!(
+                retry[1],
+                format!("HERDR_PANE_ID={}", identity.claim.target.as_str())
+            );
+            assert_eq!(retry[retry.len() - 2..], ["retry".to_owned(), reference]);
+            let ns = &identity.payload.handoff.namespace;
+            assert!(retry.contains(&ns.state_dir.to_string_lossy().into_owned()));
+            assert!(retry.contains(&ns.host_endpoint.to_string_lossy().into_owned()));
+            assert!(!String::from_utf8_lossy(bytes).contains(&identity.payload.handoff.body));
+        } else {
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(text.contains("phase: creation"), "{text}");
+            assert!(text.contains("outcome: pending"), "{text}");
+            assert!(text.contains("attempt: 2"), "{text}");
+            assert!(text.contains("state: prepared"), "{text}");
+            assert!(text.contains("retry_argv: env HERDR_PANE_ID="), "{text}");
+            assert!(text.contains(&format!("retry {reference}")), "{text}");
+        }
+        assert!(bytes.len() <= 1024 * 1024);
+    }
+    fn assert_no_downstream_or_resubmission(f: &Fixture, launcher: &DownstreamLauncher) {
+        let s = f.peer.state.lock().unwrap();
+        assert_eq!(s.native_calls, 1, "reporting must not submit attempt N+1");
+        assert_eq!(launcher.starts, 0);
+        assert!(
+            !s.calls.iter().any(|c| matches!(
+                *c,
+                "resolve" | "attach" | "child_begin" | "create_child" | "linked_complete"
+            )),
+            "no downstream work after zero submission: {:?}",
+            s.calls
+        );
+        drop(s);
+        let current = f.peer.status();
+        assert_eq!(current.state, BootstrapState::Prepared);
+        assert_eq!(current.attempt.get(), 2);
+        assert!(current.creation.is_none() && current.attachment.is_none());
+    }
+    #[test]
+    fn pending_writer_fresh_not_submitted_reports_next_prepared() {
+        for json in [true, false] {
+            let f = Fixture::downstream(Fault::NotSubmitted);
+            let original = f
+                .journal
+                .snapshot_bootstrap_origin(&f.peer.reference)
+                .unwrap();
+            let mut launcher = DownstreamLauncher::default();
+            let mut bytes = vec![];
+            let error = downstream_format(&f, &mut launcher, json, &mut bytes).unwrap_err();
+            assert!(!matches!(error, RunError::Io(_)), "{error:?}");
+            assert_prepared_next_attempt_report(&f, json, &bytes);
+            assert_no_downstream_or_resubmission(&f, &launcher);
+            assert_eq!(
+                f.journal
+                    .snapshot_bootstrap_origin(&f.peer.reference)
+                    .unwrap(),
+                original
+            );
+            assert!(!terminal_path(&f.journal, &f.peer.reference).exists());
+            // A separate explicit original retry advances N+1 under its own keys.
+            downstream_format(&f, &mut launcher, json, &mut vec![]).unwrap();
+            assert_downstream_once_after_rearm(&f, &launcher);
+        }
+    }
+    fn assert_downstream_once_after_rearm(f: &Fixture, launcher: &DownstreamLauncher) {
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 2);
+        assert_eq!(launcher.starts, 1);
+        assert_eq!(f.peer.status().state, BootstrapState::Completed);
+        assert_eq!(f.peer.status().attempt.get(), 2);
+    }
+    #[test]
+    fn pending_writer_saved_not_submitted_reports_next_prepared() {
+        for json in [true, false] {
+            let f = Fixture::downstream(Fault::NotSubmittedRecordUnavailable);
+            let mut launcher = DownstreamLauncher::default();
+            assert!(downstream_format(&f, &mut launcher, json, &mut vec![]).is_err());
+            assert_eq!(f.peer.status().state, BootstrapState::PossibleCreation);
+            let request = std::fs::read(f.peer.progress()).unwrap();
+            f.peer.state.lock().unwrap().calls.clear();
+            let mut bytes = vec![];
+            let error = downstream_format(&f, &mut launcher, json, &mut bytes).unwrap_err();
+            assert!(!matches!(error, RunError::Io(_)), "{error:?}");
+            assert_prepared_next_attempt_report(&f, json, &bytes);
+            assert_no_downstream_or_resubmission(&f, &launcher);
+            assert!(
+                !f.peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .iter()
+                    .any(|c| matches!(*c, "reserve" | "check")),
+                "saved typed zero submission must not reserve again"
+            );
+            // The genuine retained request remains historical evidence only.
+            assert_eq!(std::fs::read(f.peer.progress()).unwrap(), request);
+            downstream_format(&f, &mut launcher, json, &mut vec![]).unwrap();
+            assert_downstream_once_after_rearm(&f, &launcher);
+        }
+    }
+    #[test]
+    fn pending_writer_rearm_report_write_and_flush_failure_stays_replayable() {
+        for write in [true, false] {
+            let f = Fixture::downstream(Fault::NotSubmitted);
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = FailingOutput {
+                bytes: vec![],
+                write,
+            };
+            let error = downstream(&f, &mut launcher, &mut output).unwrap_err();
+            assert!(matches!(error, RunError::Io(_)), "{error:?}");
+            if !write {
+                assert!(!output.bytes.is_empty(), "flush loss reached the writer");
+            }
+            assert_no_downstream_or_resubmission(&f, &launcher);
+            assert!(load_original(&f.journal, &f.peer.reference).is_ok());
+            assert!(!terminal_path(&f.journal, &f.peer.reference).exists());
+            downstream(&f, &mut launcher, &mut vec![]).unwrap();
+            assert_downstream_once_after_rearm(&f, &launcher);
+        }
+    }
+    #[test]
+    fn pending_writer_completion_failure_labels_last_observed_attached_as_uncertain() {
+        for json in [true, false] {
+            let f = Fixture::downstream(Fault::CompleteBefore);
+            let mut launcher = DownstreamLauncher::default();
+            let mut bytes = vec![];
+            assert!(downstream_format(&f, &mut launcher, json, &mut bytes).is_err());
+            if json {
+                let frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let report = &frame["bootstrap"];
+                assert_eq!(report["phase"], "complete");
+                assert_eq!(report["outcome"], "completion_pending");
+                assert_eq!(report["completion_uncertain"], true);
+                assert_eq!(report["state"], "attached");
+                assert_eq!(report["status_is_last_observed"], true);
+                assert!(report["thread"].is_string());
+                assert!(report["manual_launch_after_confirming_no_start_argv"].is_null());
+            } else {
+                let text = String::from_utf8(bytes).unwrap();
+                assert!(text.contains("phase: complete"), "{text}");
+                assert!(text.contains("completion_uncertain: true"), "{text}");
+            }
+            assert!(!terminal_path(&f.journal, &f.peer.reference).exists());
+            downstream(&f, &mut launcher, &mut vec![]).unwrap();
+            assert_downstream_once(&f, &launcher);
+        }
+    }
+    #[test]
+    fn pending_writer_authority_and_namespace_refusals_stay_silent() {
+        let f = Fixture::downstream(Fault::Check);
+        let mut bytes = vec![];
+        let error = downstream(&f, &mut DownstreamLauncher::default(), &mut bytes).unwrap_err();
+        assert!(bytes.is_empty(), "authority refusal reported: {error:?}");
+        assert_eq!(f.peer.state.lock().unwrap().native_calls, 0);
+        let f = Fixture::downstream(Fault::NotSubmitted);
+        let mut foreign = f.peer.identity.payload.handoff.namespace.clone();
+        foreign.state_dir = foreign.state_dir.join("copied");
+        let mut bytes = vec![];
+        let result = super::super::super::retry::run_bootstrap_retry_to_writer(
+            &f.journal,
+            &f.peer.reference,
+            super::super::super::actor_route::InvocationActor::Agent,
+            &foreign,
+            f.peer.as_ref(),
+            f.peer.as_ref(),
+            &mut DownstreamLauncher::default(),
+            &f.clock,
+            BootstrapSubmissionInputs {
+                witness: &f.witness,
+                context: &f.context,
+            },
+            &crate::protocol::output::OutputSpec::default(),
+            &mut bytes,
+        );
+        assert!(result.is_err());
+        assert!(bytes.is_empty());
+        let s = f.peer.state.lock().unwrap();
+        assert_eq!(s.native_calls, 0);
+        assert!(s.calls.is_empty(), "{:?}", s.calls);
+    }
+
     struct FailingOutput {
         bytes: Vec<u8>,
         write: bool,

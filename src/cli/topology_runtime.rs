@@ -337,80 +337,146 @@ pub(crate) fn run(
     let original = super::topology_handoff::load_original(journal, &reference)?;
     let identity = super::topology_handoff::bootstrap_identity(&original)?;
     crate::store::topology_handoff::encode_identity(&ns, &identity)?;
-    let status = match client.call(
-        Command::BootstrapStatus(Box::new(BootstrapStatus {
-            identity: identity.clone(),
-        })),
-        &super::cooperative_budget(clock.as_ref()),
-    ) {
-        Ok(CommandResult::Bootstrap(v)) => Some(*v),
-        Err(e) if e.code == ErrorCode::NotFound => None,
-        Err(e) => return Err(e.into()),
-        _ => return Err(super::invalid_request("unexpected bootstrap status")),
-    };
-    let request = {
-        let _lock = super::handoff::lock(journal, &reference)?;
-        super::topology_handoff::saved_native_request(journal, &reference, &identity)?
-    };
-    if status
-        .as_ref()
-        .is_some_and(|v| v.state == BootstrapState::Cancelled)
-    {
-        return Err(super::invalid_request("bootstrap is cancelled"));
-    }
-    let retained_witness = status
-        .as_ref()
-        .and_then(|v| v.creation.as_ref())
-        .map(|v| v.witness.clone())
-        .or_else(|| request.as_ref().map(|v| v.expected_witness.clone()));
-    if status
-        .as_ref()
-        .is_some_and(|v| v.state == BootstrapState::PossibleCreation)
-        && retained_witness.is_none()
-    {
-        super::topology_handoff::write_pending(
-            &reference,
-            &identity,
-            status.as_ref().unwrap(),
-            None,
-            "creation",
-            &output,
-            writer,
-        )?;
-        return Err(super::topology_handoff::creation_unknown(
-            &reference,
-            &identity,
-            status.as_ref().unwrap().attempt,
-        ));
-    }
-    // Historical witness is used only for a coordinator branch that cannot resubmit.
-    // Prepared attempts always capture a real fresh witnessed native read.
-    let witness = if status.as_ref().is_some_and(|v| {
-        matches!(
-            v.state,
-            BootstrapState::PossibleCreation | BootstrapState::Created | BootstrapState::Attached
-        )
-    }) {
-        retained_witness.ok_or_else(|| {
-            super::invalid_request("canonical continuation lacks retained witness")
-        })?
-    } else {
-        let context = HostCallContext {
+    // Last canonical status this invocation observed before a continuation
+    // failure; None means unknown, never inferred from publication.
+    let mut observed: Option<BootstrapResult> = None;
+    let continuation = (|| -> Result<_, RunError> {
+        let status = match client.call(
+            Command::BootstrapStatus(Box::new(BootstrapStatus {
+                identity: identity.clone(),
+            })),
+            &super::cooperative_budget(clock.as_ref()),
+        ) {
+            Ok(CommandResult::Bootstrap(v)) => Some(*v),
+            Err(e) if e.code == ErrorCode::NotFound => None,
+            Err(e) => return Err(e.into()),
+            _ => return Err(super::invalid_request("unexpected bootstrap status")),
+        };
+        observed = status.clone().filter(|v| v.compound == identity.compound);
+        let request = {
+            let _lock = super::handoff::lock(journal, &reference)?;
+            // Malformed retained progress is a refusal, never a trusted report.
+            match super::topology_handoff::saved_native_request(journal, &reference, &identity) {
+                Ok(request) => request,
+                Err(error) => return Ok(Err(error)),
+            }
+        };
+        if status
+            .as_ref()
+            .is_some_and(|v| v.state == BootstrapState::Cancelled)
+        {
+            return Ok(Err(super::invalid_request("bootstrap is cancelled")));
+        }
+        let retained_witness = status
+            .as_ref()
+            .and_then(|v| v.creation.as_ref())
+            .map(|v| v.witness.clone())
+            .or_else(|| request.as_ref().map(|v| v.expected_witness.clone()));
+        if status
+            .as_ref()
+            .is_some_and(|v| v.state == BootstrapState::PossibleCreation)
+            && retained_witness.is_none()
+        {
+            // Already-presented PossibleCreation route keeps its own report;
+            // its own output failure is never presented a second time.
+            if let Err(error) = super::topology_handoff::write_pending(
+                &reference,
+                &identity,
+                status.as_ref().unwrap(),
+                None,
+                "creation",
+                &output,
+                writer,
+            ) {
+                return Ok(Err(error));
+            }
+            return Ok(Err(super::topology_handoff::creation_unknown(
+                &reference,
+                &identity,
+                status.as_ref().unwrap().attempt,
+            )));
+        }
+        // Historical witness is used only for a coordinator branch that cannot resubmit.
+        // Prepared attempts always capture a real fresh witnessed native read.
+        let witness = if status.as_ref().is_some_and(|v| {
+            matches!(
+                v.state,
+                BootstrapState::PossibleCreation
+                    | BootstrapState::Created
+                    | BootstrapState::Attached
+            )
+        }) {
+            match retained_witness {
+                Some(witness) => witness,
+                None => {
+                    return Ok(Err(super::invalid_request(
+                        "canonical continuation lacks retained witness",
+                    )));
+                }
+            }
+        } else {
+            let context = HostCallContext {
+                budget: super::cooperative_budget(clock.as_ref()),
+                expected_boot: None,
+                expected_epoch: None,
+            };
+            host.observe_bootstrap_target(&identity.claim.target, &context)?
+                .witness()
+                .clone()
+        };
+        super::topology_handoff::preflight_progress_capacity(&identity, &witness)?;
+        let submission_context = HostCallContext {
             budget: super::cooperative_budget(clock.as_ref()),
             expected_boot: None,
             expected_epoch: None,
         };
-        host.observe_bootstrap_target(&identity.claim.target, &context)?
-            .witness()
-            .clone()
+        let env = super::setup::SetupEnv::from_process(&output)?;
+        Ok(Ok((witness, submission_context, env)))
+    })();
+    let (witness, submission_context, mut env) = match continuation {
+        Ok(Ok(prepared)) => prepared,
+        // Refusals or routes that already presented their own report.
+        Ok(Err(error)) => return Err(error),
+        Err(error) => {
+            // Admitted post-publication continuation failure before the inner
+            // writer: present only what was observed, after the unchanged actor
+            // gate. Authority refusals and the actor gate stay silent.
+            if super::topology_handoff::reportable_failure(&error)
+                && super::retry::preflight_original_actor(
+                    journal.root(),
+                    &reference.recovery_ref(),
+                    parsed.actor,
+                    &output.context,
+                )
+                .is_ok_and(|actor| actor == OriginalActor::Agent)
+                && observed.as_ref().is_none_or(|v| {
+                    !matches!(
+                        v.state,
+                        BootstrapState::Completed | BootstrapState::Cancelled
+                    )
+                })
+            {
+                // Label the unfinished phase from the observed canonical state;
+                // a created or attached bootstrap is past creation.
+                let phase = match observed.as_ref().map(|v| v.state) {
+                    None | Some(BootstrapState::Prepared | BootstrapState::PossibleCreation) => {
+                        "creation"
+                    }
+                    Some(_) => "continuation",
+                };
+                super::topology_handoff::write_pending_observed(
+                    &reference,
+                    &identity,
+                    observed.as_ref(),
+                    None,
+                    phase,
+                    &output,
+                    writer,
+                )?;
+            }
+            return Err(error);
+        }
     };
-    super::topology_handoff::preflight_progress_capacity(&identity, &witness)?;
-    let submission_context = HostCallContext {
-        budget: super::cooperative_budget(clock.as_ref()),
-        expected_boot: None,
-        expected_epoch: None,
-    };
-    let mut env = super::setup::SetupEnv::from_process(&output)?;
     env.state_dir = Some(selected.state_dir);
     env.host_endpoint = Some(selected.host_endpoint);
     let seats = super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());

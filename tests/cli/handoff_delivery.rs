@@ -1517,7 +1517,17 @@ fn failed_publication_retry_boundary(output_boundary: bool) {
         "publication must reach actual directory sync failure: {first:?}"
     );
     assert!(terminal_path(&journal, &reference).is_file());
-    assert!(first_output.is_empty());
+    // No success presentation before durability; only the non-success
+    // pending report that canonical completion was observed.
+    let first_text = String::from_utf8(first_output).unwrap();
+    assert!(
+        !first_text.contains("\"outcome\":\"staged\"") && !first_text.contains("outcome: staged"),
+        "{first_text}"
+    );
+    assert!(
+        first_text.contains("completed_terminal_unconfirmed"),
+        "{first_text}"
+    );
     assert_eq!(
         journal.snapshot_delivery_origin(&reference).unwrap(),
         original
@@ -1934,4 +1944,552 @@ fn actor_prerequisite_public_retained_agent_delivery_requires_elected_daemon_wit
     assert!(!paths.descriptor_path.exists());
     assert!(!paths.database_path.exists());
     assert!(!paths.instance_dir.join("contexts").exists());
+}
+
+// Real guarded delivery envelopes reach the canonical deciding store APIs. A
+// selected phase either fails before its call or loses only the reply after
+// the actual canonical commit; nothing fabricates a completed fence.
+struct GuardedCanonical {
+    base: CanonicalInvites,
+    lose_reply: Mutex<Option<&'static str>>,
+    fail_before: Mutex<Option<(&'static str, ErrorCode)>>,
+    actions: Mutex<Vec<&'static str>>,
+    // After the actual canonical completion commits, make the journal root
+    // unwritable so only the local terminal save fails.
+    readonly_after_complete: Mutex<Option<std::path::PathBuf>>,
+}
+impl GuardedCanonical {
+    fn new(root: &std::path::Path) -> Self {
+        Self {
+            base: CanonicalInvites::new(root),
+            lose_reply: Mutex::new(None),
+            fail_before: Mutex::new(None),
+            actions: Mutex::new(vec![]),
+            readonly_after_complete: Mutex::new(None),
+        }
+    }
+    fn counts(&self) -> (i64, i64, i64) {
+        let conn = self.base.context.open_writer().unwrap();
+        conn.query_row(
+            "SELECT (SELECT count(*) FROM threads),(SELECT count(*) FROM invitations),(SELECT count(*) FROM messages WHERE kind='ordinary')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    }
+    fn fence(&self) -> String {
+        let conn = self.base.context.open_writer().unwrap();
+        conn.query_row("SELECT state FROM channel_handoff_fences", [], |r| r.get(0))
+            .unwrap()
+    }
+}
+impl LocalClient for GuardedCanonical {
+    fn call_with_output(
+        &self,
+        c: Command,
+        _: &OutputSpec,
+        b: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(c, b)
+    }
+    fn call(&self, c: Command, b: &CallBudget) -> Result<CommandResult, ApiError> {
+        use crate::ports::{BootstrapStorePort, StorePort};
+        use crate::protocol::handoff::DeliveryAction;
+        let Command::HandoffDelivery(request) = c else {
+            assert!(
+                matches!(
+                    c,
+                    Command::SeatInspect(_) | Command::Participants(_) | Command::Capabilities
+                ),
+                "unguarded delivery route {c:?}"
+            );
+            if matches!(c, Command::Participants(_)) {
+                let mut fail = self.fail_before.lock().unwrap();
+                if fail.as_ref().is_some_and(|(p, _)| *p == "participants") {
+                    let (_, code) = fail.take().unwrap();
+                    return Err(ApiError::new(code, "injected participants read failure"));
+                }
+            }
+            return self.base.fake.call(c, b);
+        };
+        let canonical = request.plan.payload.namespace.clone();
+        let phase = match &request.action {
+            DeliveryAction::Status(_) | DeliveryAction::Prepare(_) => {
+                return self.base.store.delivery_query(&canonical, &request, b);
+            }
+            DeliveryAction::Begin(_) => "begin",
+            DeliveryAction::Create(_) => "create",
+            DeliveryAction::Invite(_) => "invite",
+            DeliveryAction::Send(_) => "send",
+            DeliveryAction::Complete(_) => "complete",
+        };
+        self.actions.lock().unwrap().push(phase);
+        {
+            let mut fail = self.fail_before.lock().unwrap();
+            if fail.as_ref().is_some_and(|(p, _)| *p == phase) {
+                let (_, code) = fail.take().unwrap();
+                return Err(ApiError::new(code, "injected failure before decision"));
+            }
+        }
+        if let DeliveryAction::Send(_) = &request.action {
+            loop {
+                match self.base.store.delivery_prepare_send_step(
+                    &canonical,
+                    &request,
+                    crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                    b,
+                )? {
+                    crate::ports::SendPreparationProgress::Committed(result) => return Ok(result),
+                    crate::ports::SendPreparationProgress::Ready { .. } => break,
+                    crate::ports::SendPreparationProgress::More { .. } => {}
+                }
+            }
+        }
+        let permit = self.base.store.issue_cooperative_permit(
+            crate::store::cooperative_permit_request(
+                &request.inner().map_err(ApiError::invalid_request)?,
+            )?,
+            b,
+        )?;
+        let result = self
+            .base
+            .store
+            .delivery_mutate(&canonical, &request, permit, b)?;
+        if phase == "complete"
+            && let Some(root) = self.readonly_after_complete.lock().unwrap().take()
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o500)).unwrap();
+        }
+        let mut lose = self.lose_reply.lock().unwrap();
+        if *lose == Some(phase) {
+            *lose = None;
+            return Err(ApiError::new(
+                ErrorCode::UnknownOutcome,
+                "canonical decision committed; reply lost",
+            ));
+        }
+        Ok(result)
+    }
+}
+fn guarded_fixture(tmp: &TempRoot) -> (Journal, IntentRef, DeliveryPlan, GuardedCanonical) {
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let mut plan = plan();
+    plan.payload.channel = HandoffChannel::New {
+        name: None,
+        topic: "review".into(),
+        goal: "review changes".into(),
+    };
+    let reference = record(&journal, plan.clone());
+    (journal, reference, plan, GuardedCanonical::new(&tmp.0))
+}
+fn guarded_retry<W: std::io::Write>(
+    journal: &Journal,
+    reference: &IntentRef,
+    plan: &DeliveryPlan,
+    client: &GuardedCanonical,
+    json: bool,
+    writer: &mut W,
+) -> Result<serde_json::Value, RunError> {
+    let original = load_original(journal, reference).unwrap();
+    let guarded = FrozenDeliveryClient::new(client, &original).unwrap();
+    retry_to_writer(
+        journal,
+        reference,
+        &plan.payload.namespace,
+        &guarded,
+        &TestClock,
+        &OutputSpec {
+            format: if json {
+                crate::protocol::output::OutputFormat::Json
+            } else {
+                crate::protocol::output::OutputFormat::Text
+            },
+            ..OutputSpec::default()
+        },
+        writer,
+    )
+}
+fn pending_frame(bytes: &[u8]) -> serde_json::Value {
+    let frame: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_else(|e| {
+        panic!(
+            "missing useful delivery pending report: {e}; stdout={}",
+            String::from_utf8_lossy(bytes)
+        )
+    });
+    let report = frame["delivery_pending"].clone();
+    assert!(report.is_object(), "{frame}");
+    report
+}
+fn assert_pending_routing(report: &serde_json::Value, reference: &IntentRef, plan: &DeliveryPlan) {
+    assert_eq!(report["failed"], true);
+    assert_eq!(report["recovery_ref"], reference.recovery_ref());
+    assert_eq!(report["compound"], plan.payload.keys.compound.as_str());
+    assert_eq!(report["recipient"], "recipient");
+    assert_eq!(
+        report["namespace"],
+        serde_json::to_value(&plan.payload.namespace).unwrap()
+    );
+    assert_eq!(report["status_is_last_observed"], true);
+    assert!(report.get("participation").is_none());
+    assert_ne!(report["outcome"], "staged");
+    let retry: Vec<String> = serde_json::from_value(report["retry_argv"].clone()).unwrap();
+    assert_eq!(retry[0], "env");
+    assert_eq!(
+        retry[1],
+        format!("HERDR_PANE_ID={}", canonical_claim().target.as_str())
+    );
+    assert_eq!(
+        retry[retry.len() - 2..],
+        ["retry".to_owned(), reference.recovery_ref()]
+    );
+    assert!(retry.contains(&"/state".to_owned()) && retry.contains(&"/host.sock".to_owned()));
+    assert!(report["manual_launch_after_confirming_no_start_argv"].is_null());
+    assert!(!report.to_string().contains("literal '$HOME' work"));
+}
+
+#[test]
+fn pending_delivery_writer_partial_commits_preserve_observations() {
+    for lost in ["create", "invite", "send"] {
+        for json in [true, false] {
+            let tmp = TempRoot::new();
+            let (journal, reference, plan, client) = guarded_fixture(&tmp);
+            *client.lose_reply.lock().unwrap() = Some(lost);
+            let mut bytes = vec![];
+            let error =
+                guarded_retry(&journal, &reference, &plan, &client, json, &mut bytes).unwrap_err();
+            assert!(
+                matches!(&error, RunError::Api(e) if e.code == ErrorCode::UnknownOutcome),
+                "original phase error retained: {error:?}"
+            );
+            let counts = client.counts();
+            assert_eq!(
+                counts,
+                (1, i64::from(lost != "create"), i64::from(lost == "send")),
+                "each selected phase actually committed"
+            );
+            if json {
+                let report = pending_frame(&bytes);
+                assert_pending_routing(&report, &reference, &plan);
+                assert_eq!(report["phase"], lost);
+                assert_eq!(report["outcome"], "pending");
+                assert_eq!(report["completion"], "not_attempted");
+                let thread: Option<String> = client
+                    .base
+                    .context
+                    .open_writer()
+                    .unwrap()
+                    .query_row("SELECT id FROM threads", [], |r| r.get(0))
+                    .ok();
+                match lost {
+                    "create" => {
+                        assert!(report["thread"].is_null(), "unreturned thread is unknown");
+                        assert_eq!(report["uncertain"], "thread");
+                    }
+                    "invite" => {
+                        assert_eq!(report["thread"], thread.clone().unwrap());
+                        assert!(report["invitation"].is_null());
+                        assert_eq!(report["invitation_attempted"], true);
+                        assert_eq!(report["uncertain"], "invitation");
+                    }
+                    _ => {
+                        assert_eq!(report["thread"], thread.clone().unwrap());
+                        assert_eq!(report["invitation"]["kind"], "invitation");
+                        assert!(report["message"].is_null());
+                        assert_eq!(report["uncertain"], "message");
+                    }
+                }
+                if lost != "send" {
+                    assert!(report["message"].is_null());
+                }
+            } else {
+                let text = String::from_utf8(bytes.clone()).unwrap();
+                assert!(text.contains(&format!("phase: {lost}")), "{text}");
+                assert!(text.contains("outcome: pending"), "{text}");
+                assert!(text.contains("retry_argv: env HERDR_PANE_ID="), "{text}");
+                assert!(!text.contains("staged_unbound") && !text.contains("outcome: staged"));
+            }
+            assert!(bytes.len() <= 1024 * 1024);
+            assert_eq!(client.fence(), "live");
+            assert!(journal.load(&reference).is_ok());
+            assert!(!terminal_path(&journal, &reference).exists());
+            let report =
+                guarded_retry(&journal, &reference, &plan, &client, json, &mut vec![]).unwrap();
+            assert_eq!(report["outcome"], "staged");
+            assert_eq!(client.counts(), (1, 1, 1), "replay reused exact children");
+            assert_eq!(client.fence(), "completed");
+        }
+    }
+}
+
+#[test]
+fn pending_delivery_writer_completion_reply_loss_is_uncertain() {
+    for (committed, json) in [(true, true), (true, false), (false, true)] {
+        let tmp = TempRoot::new();
+        let (journal, reference, plan, client) = guarded_fixture(&tmp);
+        if committed {
+            *client.lose_reply.lock().unwrap() = Some("complete");
+        } else {
+            *client.fail_before.lock().unwrap() = Some(("complete", ErrorCode::HostUnavailable));
+        }
+        let mut bytes = vec![];
+        assert!(guarded_retry(&journal, &reference, &plan, &client, json, &mut bytes).is_err());
+        if json {
+            let report = pending_frame(&bytes);
+            assert_pending_routing(&report, &reference, &plan);
+            assert_eq!(report["phase"], "complete");
+            assert_eq!(report["outcome"], "completion_uncertain");
+            assert_eq!(report["completion"], "uncertain");
+            assert_eq!(report["uncertain"], "completion");
+            assert_eq!(report["last_observed_state"], "live");
+            assert!(report["thread"].is_string());
+            assert_eq!(report["invitation"]["kind"], "invitation");
+            assert_eq!(report["message"]["kind"], "message_sent");
+        } else {
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(text.contains("phase: complete"), "{text}");
+            assert!(text.contains("outcome: completion_uncertain"), "{text}");
+        }
+        assert_eq!(client.fence(), if committed { "completed" } else { "live" });
+        assert_eq!(client.counts(), (1, 1, 1));
+        assert!(!terminal_path(&journal, &reference).exists());
+        client.actions.lock().unwrap().clear();
+        let report =
+            guarded_retry(&journal, &reference, &plan, &client, json, &mut vec![]).unwrap();
+        assert_eq!(report["outcome"], "staged");
+        assert_eq!(client.counts(), (1, 1, 1));
+        assert_eq!(client.fence(), "completed");
+        assert!(
+            client
+                .actions
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|a| matches!(*a, "begin" | "complete")),
+            "replay restaged work: {:?}",
+            client.actions.lock().unwrap()
+        );
+    }
+}
+
+#[test]
+fn pending_delivery_writer_output_failure_stays_replayable() {
+    for flush in [false, true] {
+        let tmp = TempRoot::new();
+        let (journal, reference, plan, client) = guarded_fixture(&tmp);
+        *client.lose_reply.lock().unwrap() = Some("send");
+        let progress_before = || std::fs::read(handoff::progress_path(&journal, &reference)).ok();
+        let mut writer = FailedWriter {
+            flush,
+            ..Default::default()
+        };
+        let error =
+            guarded_retry(&journal, &reference, &plan, &client, true, &mut writer).unwrap_err();
+        assert!(matches!(error, RunError::Io(_)), "{error:?}");
+        if flush {
+            assert!(!writer.bytes.is_empty(), "flush loss reached the writer");
+        }
+        let saved = progress_before();
+        assert!(saved.is_some());
+        assert!(journal.load(&reference).is_ok());
+        assert_eq!(client.fence(), "live");
+        assert!(!terminal_path(&journal, &reference).exists());
+        let report =
+            guarded_retry(&journal, &reference, &plan, &client, true, &mut vec![]).unwrap();
+        assert_eq!(report["outcome"], "staged");
+        assert_eq!(client.counts(), (1, 1, 1));
+    }
+}
+
+#[test]
+fn pending_delivery_writer_authority_and_corrupt_history_stay_silent() {
+    for code in [
+        ErrorCode::Unauthorized,
+        ErrorCode::CallerUnverified,
+        ErrorCode::InstanceMismatch,
+        ErrorCode::OperationPayloadMismatch,
+    ] {
+        let tmp = TempRoot::new();
+        let (journal, reference, plan, client) = guarded_fixture(&tmp);
+        *client.fail_before.lock().unwrap() = Some(("invite", code.clone()));
+        let mut bytes = vec![];
+        assert!(guarded_retry(&journal, &reference, &plan, &client, true, &mut bytes).is_err());
+        assert!(bytes.is_empty(), "authority refusal {code:?} reported");
+    }
+    // Genuine Begin refusals before canonical admission stay silent.
+    for code in [ErrorCode::Unauthorized, ErrorCode::InvalidRequest] {
+        let tmp = TempRoot::new();
+        let (journal, reference, plan, client) = guarded_fixture(&tmp);
+        *client.fail_before.lock().unwrap() = Some(("begin", code.clone()));
+        let mut bytes = vec![];
+        assert!(guarded_retry(&journal, &reference, &plan, &client, true, &mut bytes).is_err());
+        assert!(bytes.is_empty(), "Begin refusal {code:?} reported");
+        assert_eq!(client.counts(), (0, 0, 0));
+    }
+    // Corrupt retained progress never becomes a trusted pending report.
+    let tmp = TempRoot::new();
+    let (journal, reference, plan, client) = guarded_fixture(&tmp);
+    *client.lose_reply.lock().unwrap() = Some("invite");
+    assert!(guarded_retry(&journal, &reference, &plan, &client, true, &mut vec![]).is_err());
+    let path = handoff::progress_path(&journal, &reference);
+    let mut progress: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    progress["unexpected"] = serde_json::json!(true);
+    std::fs::write(&path, serde_json::to_vec(&progress).unwrap()).unwrap();
+    let mut bytes = vec![];
+    assert!(guarded_retry(&journal, &reference, &plan, &client, true, &mut bytes).is_err());
+    assert!(bytes.is_empty(), "{}", String::from_utf8_lossy(&bytes));
+    // Wrong current namespace refuses before any client call or output.
+    let tmp = TempRoot::new();
+    let (journal, reference, plan, client) = guarded_fixture(&tmp);
+    let original = load_original(&journal, &reference).unwrap();
+    let guarded = FrozenDeliveryClient::new(&client, &original).unwrap();
+    let mut namespace = plan.payload.namespace.clone();
+    namespace.state_dir = "/copied-instance".into();
+    let mut bytes = vec![];
+    assert!(
+        retry_to_writer(
+            &journal,
+            &reference,
+            &namespace,
+            &guarded,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut bytes
+        )
+        .is_err()
+    );
+    assert!(bytes.is_empty());
+    assert!(client.actions.lock().unwrap().is_empty());
+}
+
+// After publication, a Begin transport failure or committed reply loss is
+// indistinguishable to the client: report with unknown canonical status.
+#[test]
+fn pending_delivery_writer_begin_failure_reports_unknown_status() {
+    for (lose, json) in [(true, true), (false, true), (true, false)] {
+        let tmp = TempRoot::new();
+        let (journal, reference, plan, client) = guarded_fixture(&tmp);
+        if lose {
+            *client.lose_reply.lock().unwrap() = Some("begin");
+        } else {
+            *client.fail_before.lock().unwrap() = Some(("begin", ErrorCode::HostUnavailable));
+        }
+        let mut bytes = vec![];
+        assert!(guarded_retry(&journal, &reference, &plan, &client, json, &mut bytes).is_err());
+        if json {
+            let report = pending_frame(&bytes);
+            assert_eq!(report["phase"], "begin");
+            assert_eq!(report["outcome"], "pending");
+            assert!(report["last_observed_state"].is_null());
+            assert_eq!(report["status_unknown"], true);
+            assert_eq!(report["status_is_last_observed"], false);
+            assert_eq!(report["uncertain"], "begin");
+            for absent in ["thread", "invitation", "message"] {
+                assert!(report[absent].is_null());
+            }
+            assert_eq!(report["recovery_ref"], reference.recovery_ref());
+            let retry: Vec<String> = serde_json::from_value(report["retry_argv"].clone()).unwrap();
+            assert_eq!(
+                retry[retry.len() - 2..],
+                ["retry".to_owned(), reference.recovery_ref()]
+            );
+        } else {
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(text.contains("phase: begin"), "{text}");
+            assert!(text.contains("status_unknown: true"), "{text}");
+        }
+        assert_eq!(client.counts(), (0, 0, 0));
+        let report =
+            guarded_retry(&journal, &reference, &plan, &client, json, &mut vec![]).unwrap();
+        assert_eq!(report["outcome"], "staged");
+        assert_eq!(client.counts(), (1, 1, 1));
+    }
+}
+
+#[test]
+fn pending_delivery_writer_progress_io_failure_reports_after_begin() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempRoot::new();
+    let (journal, reference, plan, client) = guarded_fixture(&tmp);
+    *client.lose_reply.lock().unwrap() = Some("invite");
+    assert!(guarded_retry(&journal, &reference, &plan, &client, true, &mut vec![]).is_err());
+    let path = handoff::progress_path(&journal, &reference);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let mut bytes = vec![];
+    let failed = guarded_retry(&journal, &reference, &plan, &client, true, &mut bytes);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(failed.is_err());
+    let report = pending_frame(&bytes);
+    assert_eq!(report["phase"], "progress");
+    assert_eq!(report["last_observed_state"], "live");
+    assert_eq!(report["status_unknown"], false);
+    assert!(
+        report["thread"].is_null(),
+        "unreadable retained progress is unknown"
+    );
+    assert_eq!(client.counts(), (1, 1, 0));
+    let report = guarded_retry(&journal, &reference, &plan, &client, true, &mut vec![]).unwrap();
+    assert_eq!(report["outcome"], "staged");
+    assert_eq!(client.counts(), (1, 1, 1));
+}
+
+#[test]
+fn pending_delivery_writer_terminal_save_failure_after_completion_reports() {
+    use std::os::unix::fs::PermissionsExt;
+    for json in [true, false] {
+        let tmp = TempRoot::new();
+        let (journal, reference, plan, client) = guarded_fixture(&tmp);
+        *client.readonly_after_complete.lock().unwrap() = Some(journal.root().to_path_buf());
+        let mut bytes = vec![];
+        let failed = guarded_retry(&journal, &reference, &plan, &client, json, &mut bytes);
+        std::fs::set_permissions(journal.root(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(failed.is_err());
+        assert_eq!(client.fence(), "completed");
+        if json {
+            let report = pending_frame(&bytes);
+            assert_eq!(report["phase"], "terminal");
+            assert_eq!(report["outcome"], "completed_terminal_unconfirmed");
+            assert_eq!(report["completion"], "observed");
+            assert_eq!(report["last_observed_state"], "completed");
+            assert!(report["uncertain"].is_null());
+            assert!(report["thread"].is_string());
+            assert_eq!(report["message"]["kind"], "message_sent");
+        } else {
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(text.contains("phase: terminal"), "{text}");
+            assert!(
+                text.contains("outcome: completed_terminal_unconfirmed"),
+                "{text}"
+            );
+        }
+        assert!(!terminal_path(&journal, &reference).exists());
+        client.actions.lock().unwrap().clear();
+        let report =
+            guarded_retry(&journal, &reference, &plan, &client, json, &mut vec![]).unwrap();
+        assert_eq!(report["outcome"], "staged");
+        assert_eq!(client.counts(), (1, 1, 1));
+        assert!(
+            client.actions.lock().unwrap().iter().all(|a| *a == "begin"),
+            "{:?}",
+            client.actions.lock().unwrap()
+        );
+    }
+}
+
+// A retained invitation_attempted=false never labels the invitation uncertain.
+#[test]
+fn pending_delivery_writer_invite_refusal_before_attempt_is_not_uncertain() {
+    let tmp = TempRoot::new();
+    let (journal, reference, plan, client) = guarded_fixture(&tmp);
+    // The joined-recipient read fails before the keyed invitation is attempted.
+    *client.fail_before.lock().unwrap() = Some(("participants", ErrorCode::HostUnavailable));
+    let mut bytes = vec![];
+    assert!(guarded_retry(&journal, &reference, &plan, &client, true, &mut bytes).is_err());
+    let report = pending_frame(&bytes);
+    assert_eq!(report["phase"], "invite");
+    assert_eq!(report["invitation_attempted"], false);
+    assert!(report["invitation"].is_null());
+    assert!(report["uncertain"].is_null(), "{report}");
+    assert_eq!(client.counts(), (1, 0, 0));
 }
