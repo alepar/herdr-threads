@@ -1356,6 +1356,36 @@ test('a successor recognises a predecessor batch that carried an attention block
   expect(h.submits.length).toBe(1)
 })
 
+test('a predecessor submit whose turn the predecessor already recorded is not recorded delivered again', async () => {
+  const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits.length).toBe(1)
+  const stale = JSON.parse(JSON.stringify(h.stateVal.submitting))
+  expect(stale.ids).toEqual(['m1'])
+  h.core.onTurnStart({ turnId: 't9', text: h.submits[0] })
+  h.pending[0].res({}) // the predecessor records m1 delivered and acks it
+  await flush()
+  // live (b562d1e4): the successor still loaded the predecessor's submitting record
+  h.stateVal = { ...h.stateVal, submitting: stale }
+  const acksBefore = h.ackRuns().length
+  expect(acksBefore).toBe(1)
+  const delivered = () => h.entries.filter((e: Any) => e.kind === 'delivered' && (e.ids ?? []).includes('m1')).length
+  const before = delivered()
+  expect(before).toBe(1)
+  await reload(h)
+  expect(h.core.snapshot().pred).not.toBeNull()
+  h.line(msg('m1'))
+  await h.advance(1000)
+  h.core.onTurnComplete({ turnId: 't9', isAborted: false })
+  await flush()
+  expect(h.core.snapshot().pred).toBeNull()
+  await h.advance(130_000)
+  expect(h.submits.length).toBe(1)
+  expect(delivered()).toBe(before)
+  expect(h.ackRuns().length).toBe(acksBefore)
+})
+
 test('a predecessor submit that never produced a turn is delivered after 120 s idle', async () => {
   const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
   h.line(msg('m1'))

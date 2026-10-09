@@ -543,14 +543,18 @@ export function createCore(io) {
     if (pred.sid !== S.sid) return void pump()
     void why
     const gone = new Set(pred.ids)
-    for (const id of pred.ids) {
+    S.queue = S.queue.filter((q) => !gone.has(q.id))
+    // A submit that resolved just before dispose was already recorded (and its
+    // ack sent or kept in unacked) by the predecessor: record only the rest.
+    const fresh = pred.ids.filter((id) => S.rec.delivered[id] === undefined)
+    if (!fresh.length) return void pump()
+    for (const id of fresh) {
       S.rec.delivered[id] = 'submit'
       if (pred.ackable.includes(id)) S.rec.unacked[id] = 'submit'
     }
-    S.queue = S.queue.filter((q) => !gone.has(q.id))
     saveRec()
-    ledger('delivered', { ids: pred.ids, via: 'submit', reason: 'predecessor_submit' })
-    void ackIds(pred.ackable)
+    ledger('delivered', { ids: fresh, via: 'submit', reason: 'predecessor_submit' })
+    void ackIds(pred.ackable.filter((id) => fresh.includes(id)))
     void pump()
   }
 
