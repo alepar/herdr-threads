@@ -649,8 +649,14 @@ pub const MANAGED_SETTINGS_MACOS: &str =
 /// Claude Code's documented managed settings file on Linux.
 pub const MANAGED_SETTINGS_LINUX: &str = "/etc/claude-code/managed-settings.json";
 
+/// Claude Code's managed-settings drop-in directory, beside
+/// `managed-settings.json`; its `*.json` files are merged in sorted order.
+pub const MANAGED_SETTINGS_DROPIN_DIR: &str = "managed-settings.d";
+
 /// Server-delivered managed settings, cached under the Claude config dir.
-/// Best effort: the cache file name is not documented by Claude Code.
+/// Verified against the Claude Code 2.1.295 binary: the server-managed
+/// settings cache is `<config dir>/remote-settings.json`; the binary also
+/// reads `managed-settings.d/*.json` beside `managed-settings.json`.
 pub const SERVER_MANAGED_SETTINGS_CACHE: &str = "remote-settings.json";
 
 /// A conservative model of how Claude Code matches one `Bash(...)` allow rule

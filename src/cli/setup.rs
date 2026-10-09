@@ -1373,55 +1373,57 @@ fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunEr
             .map_err(|error| mod_error(error, &settings))?;
         lifted.is_some()
     };
-    let (installed, already, adopted) = match install_settings(
-        SettingsKind::ClaudeUser,
-        request.verb,
-        env,
-        &mut file,
-        &mut warnings,
-    ) {
-        Ok(installed) => installed,
-        Err(error) => {
-            if mod_lifted {
-                let _ = mod_install_step(request, env, &settings, &mut Vec::new());
-            }
-            return Err(error);
-        }
-    };
-    let allow_rule = inspect_user_settings(
-        SettingsKind::ClaudeUser,
-        &settings,
-        &manifest,
-        NativeObservation::Unknown,
-    )
-    .ok()
-    .and_then(|inspection| inspection.allow_rule);
-    let command = shared_command(&installed.owned).unwrap_or_default();
-    let prompt_suggestions =
-        prompt_suggestion_step(request.prompt_suggestions, env, &settings, &mut warnings)?;
-    let delivery_mod = mod_install_step(request, env, &settings, &mut warnings)?;
-    Ok(json!({
-        "action": if adopted { "adopted" } else if already { "already_installed" } else { "installed" },
-        "adopted": installed.adopted.then(|| installed.installation_id.clone()),
-        "harness": "claude",
-        "scope": "user",
-        "settings": settings.display().to_string(),
-        "manifest": manifest.display().to_string(),
-        "created_settings": file.created_file,
-        "instance": instance_json(env),
-        "hook_argv": env.hook_argv(Harness::Claude)?,
-        "command": command,
-        "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
-        "allow_rule": allow_rule_json(allow_rule.as_ref()),
-        "harness_version": observation_json(&Ok((observed, None))),
-        "prompt_suggestions": prompt_suggestions,
-        "mod": delivery_mod,
-        "observed": "unknown",
-        "note": "installed is not observed: run `herdr-threads doctor` for native evidence. \
-                 Claude sessions that run with another CLAUDE_CONFIG_DIR, or with \
-                 --setting-sources excluding `user`, do not load these hooks",
-        "warnings": warnings,
-    }))
+    // Everything after the lift runs in one closure: any error in it puts
+    // the mod's settings entry back (one restore path).
+    let mut mod_done = false;
+    let result = (|| -> Result<Value, RunError> {
+        let (installed, already, adopted) = install_settings(
+            SettingsKind::ClaudeUser,
+            request.verb,
+            env,
+            &mut file,
+            &mut warnings,
+        )?;
+        let allow_rule = inspect_user_settings(
+            SettingsKind::ClaudeUser,
+            &settings,
+            &manifest,
+            NativeObservation::Unknown,
+        )
+        .ok()
+        .and_then(|inspection| inspection.allow_rule);
+        let command = shared_command(&installed.owned).unwrap_or_default();
+        let prompt_suggestions =
+            prompt_suggestion_step(request.prompt_suggestions, env, &settings, &mut warnings)?;
+        let delivery_mod = mod_install_step(request, env, &settings, &mut warnings)?;
+        mod_done = true;
+        Ok(json!({
+            "action": if adopted { "adopted" } else if already { "already_installed" } else { "installed" },
+            "adopted": installed.adopted.then(|| installed.installation_id.clone()),
+            "harness": "claude",
+            "scope": "user",
+            "settings": settings.display().to_string(),
+            "manifest": manifest.display().to_string(),
+            "created_settings": file.created_file,
+            "instance": instance_json(env),
+            "hook_argv": env.hook_argv(Harness::Claude)?,
+            "command": command,
+            "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
+            "allow_rule": allow_rule_json(allow_rule.as_ref()),
+            "harness_version": observation_json(&Ok((observed, None))),
+            "prompt_suggestions": prompt_suggestions,
+            "mod": delivery_mod,
+            "observed": "unknown",
+            "note": "installed is not observed: run `herdr-threads doctor` for native evidence. \
+                     Claude sessions that run with another CLAUDE_CONFIG_DIR, or with \
+                     --setting-sources excluding `user`, do not load these hooks",
+            "warnings": warnings,
+        }))
+    })();
+    if result.is_err() && mod_lifted && !mod_done {
+        let _ = mod_install_step(request, env, &settings, &mut Vec::new());
+    }
+    result
 }
 
 /// Report form of the recorded allow rule; `null` when no manifest is recorded.
@@ -1669,6 +1671,37 @@ fn managed_policy_json(policy: &ManagedPolicy) -> Value {
             "state": "disable_side_load_flags",
             "source": source.display().to_string(),
         }),
+        ManagedPolicy::Unverifiable { source } => json!({
+            "state": "unverifiable",
+            "source": source.display().to_string(),
+        }),
+    }
+}
+
+/// The install warning / setup-status advice for a policy that blocks the
+/// write, `None` when it does not.
+fn managed_policy_advice(policy: &ManagedPolicy, written: bool) -> Option<String> {
+    match policy {
+        ManagedPolicy::None => None,
+        ManagedPolicy::DisableSideloadFlags { source } => Some(managed_policy_warning(
+            &source.display().to_string(),
+            written,
+        )),
+        ManagedPolicy::Unverifiable { source } => {
+            let mut text = format!(
+                "managed settings ({}) could not be read or parsed; setup cannot rule out {}, \
+                 so the delivery mod was not installed (hooks only; native wake is the fallback)",
+                source.display(),
+                claude::DISABLE_SIDELOAD_FLAGS_KEY
+            );
+            if written {
+                text.push_str(
+                    "; to remove the path setup wrote earlier, run \
+                     `herdr-threads setup claude --hooks-only`",
+                );
+            }
+            Some(text)
+        }
     }
 }
 
@@ -1726,11 +1759,8 @@ fn mod_install_step(
         policy: &sources,
     })
     .map_err(error)?;
-    if let ManagedPolicy::DisableSideloadFlags { source } = &outcome.policy {
-        warnings.push(managed_policy_warning(
-            &source.display().to_string(),
-            outcome.recorded,
-        ));
+    if let Some(advice) = managed_policy_advice(&outcome.policy, outcome.recorded) {
+        warnings.push(advice);
     }
     let shell_report = if shell.is_empty() {
         Value::Null
@@ -1780,10 +1810,7 @@ fn mod_status(request: &SetupRequest, env: &SetupEnv, settings: &Path) -> Value 
     };
     let inspection = claude_mod::inspect(settings, &manifest, state);
     let policy = ManagedPolicySources::platform(env.claude_config_dir.as_deref()).check();
-    let version = observe(request, env)
-        .ok()
-        .and_then(|(observed, _)| observed.version);
-    let supported = version.as_deref().and_then(claude_mod::version_supported);
+    let (version, supported, reason) = claude_version_gate(request, env);
     let mut report = json!({
         "installed": inspection.installed(),
         "dir": claude_mod::mod_dir(state).display().to_string(),
@@ -1798,6 +1825,9 @@ fn mod_status(request: &SetupRequest, env: &SetupEnv, settings: &Path) -> Value 
         "daemon": mod_daemon_status(env),
         "note": NOTE,
     });
+    if let Some(reason) = reason {
+        report["claude_version_reason"] = json!(reason);
+    }
     if supported == Some(false) {
         report["claude_version_note"] = json!("mod unsupported, native wake fallback");
     }
@@ -1807,13 +1837,49 @@ fn mod_status(request: &SetupRequest, env: &SetupEnv, settings: &Path) -> Value 
         // This process's own environment, not the daemon-side switch.
         report["session_override"] = json!("off");
     }
-    if let ManagedPolicy::DisableSideloadFlags { source } = &policy {
-        report["advice"] = json!(managed_policy_warning(
-            &source.display().to_string(),
-            inspection.settings_value_contains_mod_dir || inspection.recorded,
-        ));
+    if let Some(advice) = managed_policy_advice(
+        &policy,
+        inspection.settings_value_contains_mod_dir || inspection.recorded,
+    ) {
+        report["advice"] = json!(advice);
     }
     report
+}
+
+/// Bound on the `claude --version` run behind `setup-status`.
+const CLAUDE_VERSION_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The installed Claude's `major.minor.patch`, whether it meets the mod's
+/// minimum and, when that is unknown, why. Runs the resolved binary's
+/// `--version` under a bound; `setup claude` (install) never does.
+fn claude_version_gate(
+    request: &SetupRequest,
+    env: &SetupEnv,
+) -> (Option<String>, Option<bool>, Option<&'static str>) {
+    let Ok((observed, _)) = observe(request, env) else {
+        return (None, None, Some("no claude executable found"));
+    };
+    let Ok(stdout) = crate::harness::codex::version_output_cancellable(
+        &observed.binary,
+        CLAUDE_VERSION_TIMEOUT,
+        &crate::protocol::time::Cancellation::default(),
+    ) else {
+        return (None, None, Some("claude --version failed or timed out"));
+    };
+    let text = String::from_utf8_lossy(&stdout);
+    let first = text.lines().next().unwrap_or_default().trim();
+    let version = first
+        .split_whitespace()
+        .next()
+        .filter(|token| claude_mod::version_supported(token).is_some());
+    match version {
+        Some(version) => (
+            Some(version.to_owned()),
+            claude_mod::version_supported(version),
+            None,
+        ),
+        None => (None, None, Some("unrecognised claude --version output")),
+    }
 }
 
 const CHANNEL_STATUS_UNAVAILABLE: &str = "channel status unavailable";

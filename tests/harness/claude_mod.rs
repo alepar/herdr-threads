@@ -257,7 +257,10 @@ fn revert_leaves_a_hand_removed_dir() {
 fn managed(root: &Path, content: &str) -> ManagedPolicySources {
     let file = root.join("managed-settings.json");
     fs::write(&file, content).unwrap();
-    ManagedPolicySources { files: vec![file] }
+    ManagedPolicySources {
+        files: vec![file],
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -279,11 +282,7 @@ fn managed_disable_side_load_flags_skips_env_write() {
     assert!(!mod_dir(&f.state).exists());
 
     // A falsy flag, a missing file and an unrelated key do not block.
-    for content in [
-        r#"{"disableSideloadFlags": false}"#,
-        r#"{"other": true}"#,
-        "not json",
-    ] {
+    for content in [r#"{"disableSideloadFlags": false}"#, r#"{"other": true}"#] {
         assert_eq!(
             managed(&f.root.0, content).check(),
             ManagedPolicy::None,
@@ -292,7 +291,8 @@ fn managed_disable_side_load_flags_skips_env_write() {
     }
     assert_eq!(
         ManagedPolicySources {
-            files: vec![f.root.0.join("absent.json")]
+            files: vec![f.root.0.join("absent.json")],
+            ..Default::default()
         }
         .check(),
         ManagedPolicy::None
@@ -396,5 +396,118 @@ fn invalid_value_types_are_refused_without_writes() {
         assert_eq!(result.unwrap_err(), SetupError::Invalid);
         assert_eq!(fs::read(&f.settings).unwrap(), original);
         assert!(!f.manifest.exists());
+    }
+}
+
+/// A drop-in directory under the fixture root holding `files`.
+fn dropins(root: &Path, files: &[(&str, &str)]) -> ManagedPolicySources {
+    let dir = root.join("managed-settings.d");
+    fs::create_dir_all(&dir).unwrap();
+    for (name, content) in files {
+        fs::write(dir.join(name), content).unwrap();
+    }
+    ManagedPolicySources {
+        dropin_dirs: vec![dir],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn dropin_json_with_disable_side_load_flags_skips_env_write() {
+    let original = br#"{"model":"x"}"#;
+    let f = Fixture::new(original);
+    let policy = dropins(
+        &f.root.0,
+        &[
+            ("10-a.json", "{}"),
+            ("20-b.json", r#"{"disableSideloadFlags": true}"#),
+        ],
+    );
+    let outcome = f.install(&[], &policy);
+    assert_eq!(outcome.action, ModAction::SkippedManagedPolicy);
+    assert_eq!(
+        outcome.policy,
+        ManagedPolicy::DisableSideloadFlags {
+            source: f.root.0.join("managed-settings.d").join("20-b.json")
+        }
+    );
+    assert_eq!(fs::read(&f.settings).unwrap(), original);
+    assert!(!f.manifest.exists());
+    assert!(!mod_dir(&f.state).exists());
+}
+
+#[test]
+fn dropin_non_json_files_are_ignored() {
+    let f = Fixture::new(b"{}");
+    let policy = dropins(
+        &f.root.0,
+        &[
+            ("README.txt", r#"{"disableSideloadFlags": true}"#),
+            ("10-a.json", "{}"),
+        ],
+    );
+    assert_eq!(policy.check(), ManagedPolicy::None);
+}
+
+#[test]
+fn missing_dropin_dir_is_no_policy() {
+    let f = Fixture::new(b"{}");
+    let policy = ManagedPolicySources {
+        dropin_dirs: vec![f.root.0.join("absent.d")],
+        ..Default::default()
+    };
+    assert_eq!(policy.check(), ManagedPolicy::None);
+}
+
+#[test]
+fn unparseable_dropin_file_is_unverifiable_and_skips() {
+    let original = br#"{"model":"x"}"#;
+    let f = Fixture::new(original);
+    let policy = dropins(&f.root.0, &[("50.json", "{ not json")]);
+    let outcome = f.install(&[], &policy);
+    assert_eq!(outcome.action, ModAction::SkippedManagedPolicy);
+    assert_eq!(
+        outcome.policy,
+        ManagedPolicy::Unverifiable {
+            source: f.root.0.join("managed-settings.d").join("50.json")
+        }
+    );
+    assert_eq!(fs::read(&f.settings).unwrap(), original);
+    assert!(!mod_dir(&f.state).exists());
+}
+
+#[test]
+fn unparseable_managed_file_is_unverifiable() {
+    let f = Fixture::new(b"{}");
+    for content in ["not json", "[]", ""] {
+        assert!(
+            matches!(
+                managed(&f.root.0, content).check(),
+                ManagedPolicy::Unverifiable { .. }
+            ),
+            "{content:?}"
+        );
+    }
+    // A set flag is reported in preference to an unreadable source.
+    let mut both = dropins(&f.root.0, &[("1.json", r#"{"disableSideloadFlags": 1}"#)]);
+    both.files = managed(&f.root.0, "not json").files;
+    assert!(matches!(
+        both.check(),
+        ManagedPolicy::DisableSideloadFlags { .. }
+    ));
+}
+
+#[test]
+fn unreadable_dropin_dir_is_unverifiable() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new(b"{}");
+    let policy = dropins(&f.root.0, &[("10.json", "{}")]);
+    let dir = policy.dropin_dirs[0].clone();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = fs::read_dir(&dir).is_ok(); // root ignores the mode
+    let checked = policy.check();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    if !readable {
+        assert_eq!(checked, ManagedPolicy::Unverifiable { source: dir });
     }
 }
