@@ -34,16 +34,25 @@ export function markers(it) {
   return out
 }
 
+/** `<id> "<name>"`: the name quoted on the id's line so it cannot pass for the id or a marker; a name equal to the id is not repeated. */
+const label = (id, name) => {
+  const i = id ? oneLine(id) : ''
+  const n = name ? oneLine(name) : ''
+  if (!n || n === i) return i || 'unknown'
+  return i ? `${i} ${JSON.stringify(n)}` : JSON.stringify(n)
+}
+
 /**
- * Frames peer text as untrusted data (spec D4) with the source and intent
- * markers after the service-generated fields; never starts with '/'. Body
- * lines are indented two spaces; only header lines start at column 0.
+ * Frames peer text as untrusted data (spec D4) with the thread and sender
+ * names (quoted, after their ids) and the source and intent markers after the
+ * service-generated fields; never starts with '/'. Body lines are indented
+ * two spaces; only header lines start at column 0.
  */
 export function frame(items) {
   const blocks = items.map((it) =>
     it.kind === 'attention'
       ? `[herdr-threads] attention ${oneLine(it.id)}:\n${indent(it.body)}`
-      : `[herdr-threads] ${oneLine(it.kind)} ${oneLine(it.id)} in ${oneLine(it.thread)} from ${oneLine(it.sender)}${markers(it)}:\n${indent(it.body)}`,
+      : `[herdr-threads] ${oneLine(it.kind)} ${oneLine(it.id)} in ${label(it.thread, it.threadName)} from ${label(it.sender, it.senderName)}${markers(it)}:\n${indent(it.body)}`,
   )
   return `${HEADER}\n\n${blocks.join('\n\n')}`
 }
@@ -257,8 +266,10 @@ export function createCore(io) {
       S.queue.push({
         id: o.id,
         kind: o.kind,
-        thread: o.thread_name || o.thread || 'unknown',
-        sender: o.sender_name || o.sender || 'unknown',
+        thread: o.thread || 'unknown',
+        threadName: o.thread_name ?? null,
+        sender: o.sender ?? null,
+        senderName: o.sender_name ?? null,
         author_role: o.author_role ?? null,
         relays_user: o.relays_user === true,
         user_intent: o.user_intent ?? null,

@@ -55,7 +55,7 @@ Bodies over 8 KiB are cut at a char boundary, followed by the truncation marker,
 `truncated: true`; the mod never acks a truncated item. Pages hold at most 32 items and 64 KiB.
 All text is untrusted data; a submit never starts with `/`.
 
-**Framing.** The fixed header, then one block per item: `[herdr-threads] <kind> <id> in <thread> from <sender>[ markers]:` and the body. Thread and sender are the names when `watch` supplies them, else the ids. Markers are `[human]`, `[relays user]`, then `[query]`/`[request]`/`[rule]`, the same fixed text as every other read path. Attention blocks are `[herdr-threads] attention <id>:` and the marker.
+**Framing.** The fixed header, then one block per item: `[herdr-threads] <kind> <id> in <thread id> "<thread name>" from <sender id> "<sender name>"[ markers]:` and the body. The names are what `watch` supplies (the thread's topic; the sender seat id, or `service`), flattened to one line, quoted, and left out when absent or equal to the id. Markers are `[human]`, `[relays user]`, then `[query]`/`[request]`/`[rule]`, the same fixed text as every other read path. Attention blocks are `[herdr-threads] attention <id>:` and the marker.
 
 ## `watch ack`
 

@@ -736,7 +736,49 @@ fn lazy_rows_stream_as_lazy_without_ack_required() {
     assert!(matches!(got[2].item, WatchItem::Message(_)));
     assert!(!message_of(&got[2]).ack_required, "no ack_candidate");
     assert_eq!(message_of(&got[1]).sender, Some(SeatId::new("sender")));
-    assert_eq!(message_of(&got[1]).thread_name, None);
+    assert_eq!(message_of(&got[1]).thread_name.as_deref(), Some("topic"));
+    assert_eq!(message_of(&got[1]).sender_name.as_deref(), Some("sender"));
+    assert_eq!(message_of(&got[0]).sender_name.as_deref(), Some("service"));
+}
+
+#[test]
+fn message_lines_carry_the_thread_topic_and_sender_names() {
+    let item = |id: &str, topic: &str, sender: Option<&str>| {
+        let mut it = whole(id, "body");
+        if let InboxBatchV2Item::Message {
+            topic_data,
+            sender: s,
+            ..
+        } = &mut it
+        {
+            *topic_data = topic.into();
+            *s = sender.map(SeatId::new);
+        }
+        it
+    };
+    let long = "x".repeat(200);
+    let client = paged_client(vec![vec![
+        item("n1", "release plan\nsecond\u{2028}line", Some("alice")),
+        item("n2", &long, None),
+        item("n3", "\n\t", Some("alice")),
+    ]]);
+    let mut state = EmitState::default();
+    let (_, got) = run_drain(&client, 1, &mut state);
+    assert_eq!(got.len(), 3);
+    let text = serde_json::to_string(&got[0]).unwrap();
+    assert!(
+        text.contains(r#""thread_name":"release plan second line""#),
+        "{text}"
+    );
+    assert!(text.contains(r#""sender_name":"alice""#), "{text}");
+    let expected = format!("{}…", "x".repeat(120));
+    assert_eq!(
+        message_of(&got[1]).thread_name.as_deref(),
+        Some(expected.as_str())
+    );
+    let text = serde_json::to_string(&got[1]).unwrap();
+    assert!(text.contains(r#""sender_name":"service""#), "{text}");
+    assert_eq!(message_of(&got[2]).thread_name, None);
 }
 
 #[test]

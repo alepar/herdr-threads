@@ -419,8 +419,12 @@ pub enum WatchItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchMessage {
     pub thread: ThreadId,
+    /// The thread's topic, as the native inbox shows it, flattened to one line
+    /// and cut to 120 chars; `None` when empty.
     pub thread_name: Option<String>,
     pub sender: Option<SeatId>,
+    /// The sender as the native inbox shows it: the seat id, or `service` for
+    /// an item with no sender seat.
     pub sender_name: Option<String>,
     pub author_role: Option<AuthorRole>,
     pub relays_user: bool,

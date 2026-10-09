@@ -548,6 +548,7 @@ pub(crate) fn drain(
                 }
                 InboxBatchV2Item::Message {
                     thread,
+                    topic_data,
                     message,
                     sender,
                     author_role,
@@ -567,6 +568,7 @@ pub(crate) fn drain(
                         lazy: false,
                         ack_required: ack_candidate.is_some(),
                         thread,
+                        topic: topic_data,
                         message,
                         sender,
                         author_role,
@@ -580,6 +582,7 @@ pub(crate) fn drain(
                 )?,
                 InboxBatchV2Item::LazyMessage {
                     thread,
+                    topic_data,
                     message,
                     sender,
                     author_role,
@@ -598,6 +601,7 @@ pub(crate) fn drain(
                         lazy: true,
                         ack_required: false,
                         thread,
+                        topic: topic_data,
                         message,
                         sender,
                         author_role,
@@ -640,6 +644,7 @@ struct Chunk {
     lazy: bool,
     ack_required: bool,
     thread: crate::protocol::ids::ThreadId,
+    topic: String,
     message: MessageId,
     sender: Option<SeatId>,
     author_role: Option<crate::protocol::summary::AuthorRole>,
@@ -694,11 +699,17 @@ fn emit_chunk(
     } else {
         assembled
     };
+    let sender_name = Some(
+        chunk
+            .sender
+            .as_ref()
+            .map_or_else(|| "service".to_owned(), |seat| seat.as_str().to_owned()),
+    );
     let message = WatchMessage {
         thread: chunk.thread,
-        thread_name: None,
+        thread_name: watch_label(&chunk.topic),
         sender: chunk.sender,
-        sender_name: None,
+        sender_name,
         author_role: chunk.author_role,
         relays_user: chunk.relays_user,
         user_intent: chunk.user_intent,
@@ -715,6 +726,35 @@ fn emit_chunk(
     state.emitted.insert(id.clone());
     write_line(out, &WatchLine::new(id, item))?;
     Ok(())
+}
+
+/// Most chars of a name on a mod header line.
+const WATCH_LABEL_MAX_CHARS: usize = 120;
+
+/// A user-controlled name for one header line (spec D4): every control
+/// character and Unicode line or paragraph separator becomes a space, the
+/// ends are trimmed, and it is cut to `WATCH_LABEL_MAX_CHARS` chars plus `…`.
+/// `None` when nothing is left.
+fn watch_label(text: &str) -> Option<String> {
+    let flat: String = text
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let flat = flat.trim();
+    if flat.is_empty() {
+        return None;
+    }
+    let mut out: String = flat.chars().take(WATCH_LABEL_MAX_CHARS).collect();
+    if flat.chars().count() > WATCH_LABEL_MAX_CHARS {
+        out.push('…');
+    }
+    Some(out)
 }
 
 /// Hint only: remember that this seat was shown a cut body for `id`, so
