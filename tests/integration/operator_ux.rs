@@ -516,7 +516,6 @@ fn scratch(prefix: &str) -> (PathBuf, Scratch, PathBuf) {
     (root, guard, socket)
 }
 
-const OVERRIDE_ARGV: &str = "herdr-threads me init --operator";
 const HUMAN_OVERRIDE_ARGV: &str = "herdr-threads human me init --operator";
 
 /// TRUST-POLICY A4, client side: an agent environment marker refuses `me init`
@@ -532,7 +531,7 @@ fn me_init_refuses_with_claudecode_or_codex_marker() {
     plugin.ok(None, None, &["daemon", "ensure"]);
     for marker in [("CLAUDECODE", "1"), ("CODEX_SANDBOX", "seatbelt")] {
         let refused = plugin.refused_with_env(Some("w1:p1"), &["human", "me", "init"], &[marker]);
-        assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
+        assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
         assert!(refused.contains(marker.0), "{refused}");
     }
     // Nothing was recorded for the refused attempts.
@@ -575,7 +574,7 @@ fn me_init_refuses_where_stand_in_herdr_reports_claude_or_codex() {
     for (pane, kind) in [("w1:p1", "claude"), ("w1:p2", "codex")] {
         let refused = plugin.refused(Some(pane), &["human", "me", "init"]);
         assert!(refused.contains(kind), "{refused}");
-        assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
+        assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
     }
     // A plain shell pane is fine.
     assert_eq!(
@@ -697,7 +696,7 @@ fn flagless_command_from_human_context_with_agent_marker_refuses() {
         &["human", "thread", "create", "--topic", "x"],
         &[("CLAUDECODE", "1")],
     );
-    assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
+    assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
     assert!(refused.contains("CLAUDECODE"), "{refused}");
 }
 
