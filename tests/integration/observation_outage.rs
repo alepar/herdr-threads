@@ -308,9 +308,15 @@ fn herdr_restart_resets_backoff_to_5s_cadence() {
     for cycle in 0..2 {
         let rested = clock.monotonic_now().0;
         let (idle, commits) = (lane.pacer.idle_events(), lane.commits());
+        let evaluations = lane.pacer.evaluations();
         clock.0.store(rested + 4_999, Ordering::SeqCst);
         lane.pacer.clock_advanced();
-        std::thread::sleep(Duration::from_millis(200));
+        // The lane has re-read the advanced clock (and would have woken).
+        lane.wait(
+            "the lane to evaluate +4999 ms",
+            Duration::from_secs(30),
+            &|| lane.pacer.evaluations() > evaluations && waiting(),
+        );
         assert_eq!(
             lane.pacer.idle_events(),
             idle,

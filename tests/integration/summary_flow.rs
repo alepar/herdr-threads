@@ -1314,8 +1314,10 @@ fn lapsed_reservation_fetch_is_honoured_while_free() {
 /// `stalled`, and the held message is pushed.
 #[test]
 fn stall_lapses_and_the_warning_fires_on_the_effective_deadline() {
-    // Short real-time windows: the frozen deadline is 1 s after the send,
-    // the extension lapses `p99_cold_ms` after it. The deadline lane runs on
+    // Real-time windows: the frozen deadline is 3 s after the send (the
+    // extension exists only once B's boundary enters its catch-up row, so a
+    // shorter frozen deadline can lapse first on a loaded host), and the
+    // extension lapses `p99_cold_ms` after that entry. The deadline lane runs on
     // a 5 s safety tick or at once when a commit kicks it, so the test kicks
     // it (an unrelated send) instead of waiting for ticks: once past the
     // frozen deadline, so a pass that would wrongly warn there likely runs
@@ -1324,7 +1326,7 @@ fn stall_lapses_and_the_warning_fires_on_the_effective_deadline() {
     // and >= 3 s for the checks inside the extension.
     const STALL_SETTINGS: &str = r#"{"summary":{"chunk_bytes":1024,"display_bytes":4096,"narrative_bytes":512,"p99_cold_ms":5000,"exit_grace_ms":1000}}"#;
     const PAST_FROZEN_MS: u64 = 500;
-    let fx = Fixture::build_with(BIN, STALL_SETTINGS, 1);
+    let fx = Fixture::build_with(BIN, STALL_SETTINGS, 3);
     let side = fx
         .world
         .cli(

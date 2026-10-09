@@ -2388,6 +2388,8 @@ fn retention_keeps_tables_bounded_while_discovery_stays_flat() {
 /// all five lanes running and 3,000 expired jobs to prune: no deadline, wake, request or
 /// admission-observer commit; the wake lane makes at most one pass per 5 s
 /// window; retention drains the backlog; and its prune commits kick no lane.
+/// The short window's pass bound only catches a wake lane woken more often
+/// than every ~2.7 s (see `lane_wiring::idle_five_lanes_30s`).
 /// Kills: a retention prune whose kick wakes the wake or deadline lane (the
 /// wake lane would pass more than once per window and commit), and a backlog
 /// that makes retention hold the writer past the idle bound instead of

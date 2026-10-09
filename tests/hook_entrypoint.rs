@@ -63,13 +63,13 @@ fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Comma
 
 /// CheckIn fault modes for the counting wrapper.
 const PASS: u8 = 0;
-/// Sleep 2 s (past the 1.5 s tool budget), then forward (a hung daemon that
+/// Sleep 3 s (past the 1.5 s tool budget), then forward (a hung daemon that
 /// eventually answers). Applies to CheckIn and to the attention digest query.
 const HANG: u8 = 1;
 /// Reject with CallerUnverified without forwarding (definitive rejection).
 const REJECT: u8 = 2;
 /// How long a `HANG` daemon holds a call: past the 1.5 s tool budget.
-const HANG_FOR: Duration = Duration::from_millis(2000);
+const HANG_FOR: Duration = Duration::from_millis(3000);
 /// Drop without forwarding, answering the ambiguous `DeadlineExceeded` a call
 /// lost past its deadline yields (lost call). The hook's own budget is
 /// stretched by the test timeout scale, so sleeping past the production

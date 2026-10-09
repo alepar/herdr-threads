@@ -777,7 +777,11 @@ fn spawn_blocking_revoke_counts_as_request_origin() {
 /// window; and retention (kicked every 500 ms, since it has no commit-driven
 /// kick) prunes the superseded snapshot generations the observation lane
 /// keeps publishing, with those Retention-origin commits kicking no lane.
-/// Kills: a lane that polls on a short turn, an idle pass that commits, a
+/// Over the short window the pass bound (`elapsed/5 + 1`) only catches a
+/// lane that polls faster than ~2.7 s; slower short-turn polling is caught
+/// by `lanes_latency::idle_daemon_commits_nothing_from_deadline_wake_request_for_30s`
+/// (12 s window, under ~4 s).
+/// Kills: a lane that polls on a very short turn, an idle pass that commits, a
 /// retention prune whose kick wakes the wake or deadline lane (it would then
 /// pass more than once per window and commit), and a lane (retention for
 /// one) missing from the production worker set.

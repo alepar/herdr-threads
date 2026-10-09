@@ -316,9 +316,11 @@ impl Drop for SyntheticDaemon {
 
 /// A Hermes `pre_llm_call` that must yield context. Its envelope carries the
 /// production 1200 ms callback cap; a debug hook child on a loaded machine can
-/// overrun it and fail open with no context. The same event is then presented
+/// overrun it and fail open with no context. Only such an overrun (the empty
+/// attempt itself took at least 1 s) is retried: the same event is presented
 /// again with fresh timestamps (a canonical replay; the caller asserts the
-/// binding did not rotate), at most three more times.
+/// binding did not rotate), at most three more times. A fast empty answer is
+/// returned as is, so a callback that never yields context still fails.
 fn hermes_hook_with_context(
     daemon: &SyntheticDaemon,
     pane: &str,
@@ -328,8 +330,9 @@ fn hermes_hook_with_context(
 ) -> serde_json::Value {
     let mut output = serde_json::Value::Null;
     for _ in 0..4 {
+        let started = std::time::Instant::now();
         output = daemon.hook(pane, "hermes", &hermes_envelope(session, event, sequence));
-        if !output["context"].is_null() {
+        if !output["context"].is_null() || started.elapsed() < std::time::Duration::from_secs(1) {
             break;
         }
     }
