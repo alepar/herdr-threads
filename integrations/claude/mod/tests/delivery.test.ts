@@ -331,6 +331,81 @@ test('post-abort hold overrides the draft rule: a draft keeps the hold', async (
   expect(h.submits.length).toBe(1)
 })
 
+const REJECTED = {
+  result: 'rejected',
+  isError: true,
+  text: "The user doesn't want to proceed with this tool use. The tool use was rejected",
+}
+
+test('Esc at a permission dialog holds the idle submit like an aborted turn', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.core.onTurnStart({ turnId: 't1' })
+  h.line(msg('m1'))
+  await flush()
+  const out = await h.core.onToolCall({ tool: 'Bash' }, REJECTED)
+  expect(out).toBe(REJECTED)
+  h.core.onTurnComplete({ turnId: 't1', isAborted: false, reason: 'answer', answer: '' })
+  await flush()
+  expect(h.submits.length).toBe(0)
+  expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'post_abort')).toBe(true)
+  await h.advance(60_000)
+  expect(h.submits.length).toBe(0)
+  h.core.onTurnStart({ turnId: 't2' })
+  h.core.onTurnComplete({ turnId: 't2', isAborted: false })
+  await flush()
+  expect(h.submits.length).toBe(1)
+})
+
+test('a rejected tool call followed by an answered one in the same turn sets no hold', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.core.onTurnStart({ turnId: 't1' })
+  h.line(msg('m1'))
+  await flush()
+  await h.core.onToolCall({ tool: 'Bash' }, REJECTED)
+  await h.core.onToolCall({ tool: 'Bash' }, answered)
+  h.core.onTurnComplete({ turnId: 't1', isAborted: false, reason: 'answer' })
+  await flush()
+  expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'post_abort')).toBe(false)
+  expect(h.core.snapshot().turns.abortHoldSince).toBe(null)
+  h.line(msg('m2'))
+  await flush()
+  expect(h.submits.length).toBe(1)
+})
+
+test('a subagent rejected tool call sets no hold', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.core.onTurnStart({ turnId: 't1' })
+  h.line(msg('m1'))
+  await flush()
+  expect(await h.core.onToolCall({ tool: 'Bash', agentId: 'a1' }, REJECTED)).toBe(REJECTED)
+  h.core.onTurnComplete({ turnId: 't1', isAborted: false, reason: 'answer' })
+  await flush()
+  expect(h.core.snapshot().turns.abortHoldSince).toBe(null)
+  expect(h.submits.length).toBe(1)
+})
+
+test('a turn.complete with reason aborted holds even when isAborted is false', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.core.onTurnStart({ turnId: 't1' })
+  h.core.onTurnComplete({ turnId: 't1', isAborted: false, reason: 'aborted' })
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits.length).toBe(0)
+  expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'post_abort')).toBe(true)
+})
+
+test('the rejected flag does not leak into the next turn', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.core.onTurnStart({ turnId: 't1' })
+  await h.core.onToolCall({ tool: 'Bash' }, REJECTED)
+  h.core.onTurnStart({ turnId: 't2' })
+  h.core.onTurnComplete({ turnId: 't2', isAborted: false, reason: 'answer' })
+  expect(h.core.snapshot().turns.abortHoldSince).toBe(null)
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits.length).toBe(1)
+})
+
 test('a draft in the prompt box delays an idle submit up to 120 s, then it submits', async () => {
   const h = await harness({ state: IDLE, box: 'my draft' }).boot()
   h.line(msg('m1'))

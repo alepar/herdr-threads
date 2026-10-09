@@ -10,7 +10,7 @@ import { createCore } from '../hooks/register.js'
 type Any = any
 
 const BASE_SEED = 20261009
-const SCHEDULES = 600
+const SCHEDULES = 800
 const STEPS = 60
 const HOLD_MS = 120_000
 // Set to a failing schedule's seed to print its steps and calls when replaying.
@@ -58,7 +58,7 @@ function runSchedule(seed: number) {
     denyRate: r.pick([0, 0.3]),
   }
   // model of what the engine told the mod
-  const m: Any = { mainOpen: null as string | null, lingering: [] as string[], hold: false, holdSince: 0 }
+  const m: Any = { mainOpen: null as string | null, lingering: [] as string[], hold: false, holdSince: 0, rejected: false }
   const items = new Map<string, Any>() // streamed items by id
   const deliveredVia = new Map<string, string>() // `${sid}|${id}` -> via
   const settled = new Set<string>()
@@ -261,6 +261,7 @@ function runSchedule(seed: number) {
       const id = `t${++tn}`
       if (m.mainOpen !== null) m.lingering.push(m.mainOpen)
       m.mainOpen = id
+      m.rejected = false
       core.onTurnStart({ turnId: id })
     }],
     [9, 'turn.complete', async () => {
@@ -276,10 +277,12 @@ function runSchedule(seed: number) {
       const aborted = r.chance(0.35)
       m.lingering = m.lingering.filter((x: string) => x !== id)
       if (id === m.mainOpen) m.mainOpen = null
-      if (aborted) {
+      // a turn whose last main tool call was denied or errored is held like an abort (ht-j16.30)
+      if (aborted || m.rejected) {
         m.hold = true
         m.holdSince = world.t
       } else m.hold = false
+      m.rejected = false
       core.onTurnComplete({ turnId: id, isAborted: aborted })
     }],
     [3, 'subagent turn', async () => {
@@ -292,6 +295,7 @@ function runSchedule(seed: number) {
       const input: Any =
         kind === 'answered' ? { result: { ok: 1 }, text: 'x', context: r.chance(0.3) ? ['pre'] : undefined } : kind === 'denied' ? { deny: 'no' } : { isError: true, text: 'boom' }
       const e: Any = sub ? { tool: 'Bash', agentId: 'a1' } : { tool: 'Bash' }
+      if (!sub) m.rejected = kind !== 'answered'
       const out = await core.onToolCall(e, input)
       if (out !== input) {
         if (sub || kind !== 'answered') fail(`context attached to a ${sub ? 'subagent' : kind} result`)
@@ -379,6 +383,7 @@ function runSchedule(seed: number) {
           await flush()
         }
         totals.reloads++
+        m.rejected = false // the in-memory rejection flag does not survive a reload
         core.dispose()
         await newCore()
         return
@@ -388,6 +393,7 @@ function runSchedule(seed: number) {
       // a disposed core's promise never resolves for it
       const inflight = world.pendingSubmits.splice(0)
       totals.reloads++
+      m.rejected = false // the in-memory rejection flag does not survive a reload
       core.dispose()
       await newCore()
       for (const p of inflight) {
