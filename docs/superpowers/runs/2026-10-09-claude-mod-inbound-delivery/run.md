@@ -29,7 +29,7 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (F1 /clear wake race via per-generation is_live; F3 mod runs bare herdr-threads without state dir/endpoint; F2 notices starve while channel live; T7 managed-settings cache filename guessed) — code-final-review-1.md
+  review: not ready (fix beads .17-.22 unmerged after integration-blocked stop; N1 truncation marker) — code-final-review-2.md
   sweep: SWEEP DEFERRED (caller-owned)
   slowness:
   worktreesKept:
