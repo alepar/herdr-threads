@@ -75,6 +75,18 @@ binary(integration) & test(/^sweep_remaining::(wake_snapshot_partial_projection_
 threads-required = "num-test-threads"
 priority = 100
 
+# Tests asserting real-time bounds of 10-250 ms (cancellation within 20 ms,
+# manifest return within 10 ms, prompt Ctrl-C, ...): beside the suite they
+# missed their bounds on a loaded machine (e.g. 39.8 ms for a 20 ms
+# cancellation). They run alone at the front (about 3 s together); every
+# bound is unchanged.
+[[profile.default.overrides]]
+filter = """
+test(/::(composer_settle_returns_unknown_when_cancelled|ctrl_c_during_a_call_returns_promptly|nick_cache_render_path_takes_no_context_lock|unreachable_manifest_url_does_not_delay_recording|cancelled_serve_loop_returns_without_polling|elected_health_request_expiry_stops_locked_retirement_read|elected_health_transport_disconnect_cancels_locked_retirement_read|waiting_client_returns_on_cancel|ensure_manifest_returns_within_10ms_with_a_blocked_fetch|ensure_manifest_returns_within_10ms_with_an_unreachable_url|exact_runtime_refresh_ignores_legacy_release_rows_and_remains_async_bounded|cancel_before_wait_returns_immediately|cancel_during_blocking_wait_wakes_it|cancellation_stops_the_blocked_lane_within_20ms|register_then_direct_kick_reaches_the_pacer|cancellation_stops_a_blocked_lane_within_20ms|cancellation_stops_lane_in_backoff_within_20ms|cancel_wakes_and_stops|cancellation_stops_blocked_lane_within_20ms)$/)
+"""
+threads-required = "num-test-threads"
+priority = 100
+
 [[profile.default.overrides]]
 filter = "binary(hook_entrypoint)"
 priority = 80
