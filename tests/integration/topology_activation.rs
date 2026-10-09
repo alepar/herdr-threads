@@ -1261,7 +1261,9 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
     );
 
     let recovery = frame["handoff"]["recovery_ref"].as_str().unwrap();
-    let reads = f.pane_reads.load(Ordering::Relaxed);
+    // The daemon keeps polling the started agent's pane, so a read count
+    // races it; refusing pane reads proves the replay needs none.
+    f.refuse_owned_pane_reads();
     let retry = f.cli(&["retry", recovery], false);
     assert!(
         retry.status.success(),
@@ -1272,7 +1274,6 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
         serde_json::from_slice::<Value>(&retry.stdout).unwrap(),
         frame
     );
-    assert_eq!(f.pane_reads.load(Ordering::Relaxed), reads);
     assert_eq!(f.creates.load(Ordering::Relaxed), 1);
     assert_eq!(f.starts.load(Ordering::Relaxed), 1);
     let preserved: (Vec<u8>, String) = f.db().query_row("SELECT digest,result_json FROM operations WHERE actor_scope='seat:sender' AND operation_key=?1", [identity.payload.handoff.keys.begin.as_str()], |r|Ok((r.get(0)?,r.get(1)?))).unwrap();

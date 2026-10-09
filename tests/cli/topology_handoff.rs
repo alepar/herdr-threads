@@ -1756,13 +1756,17 @@ mod live {
         let before = f.peer.status();
         let mut source = composition_source(&f);
         let calls = std::cell::Cell::new(0);
-        let error = source
-            .scan(|| {
+        // A page may end on its 10 ms budget before the sixth check; keep
+        // scanning so the cancellation still lands inside the bundle.
+        let error = loop {
+            match source.scan(|| {
                 calls.set(calls.get() + 1);
                 calls.get() >= 6
-            })
-            .err()
-            .expect("cancel during consumed bundle");
+            }) {
+                Err(error) => break error,
+                Ok(page) => assert!(page.pending, "cancel during consumed bundle"),
+            }
+        };
         assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
         assert_eq!(f.peer.status(), before);
     }
