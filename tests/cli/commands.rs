@@ -1891,6 +1891,28 @@ fn ordinary_catalog_escalates_self_granting_commands() {
     assert!(catalog.families.iter().any(|f| f.prefix == ["doctor"]));
 }
 
+/// Kills an allowed `doctor` prefix that still runs a repair: options may not separate
+/// `doctor` from `fix`, so the escalating `doctor fix` prompt rules always match.
+#[test]
+fn doctor_fix_words_stay_adjacent() {
+    for argv in [
+        vec!["ht", "doctor", "--debug", "fix"],
+        vec!["ht", "doctor", "--json", "fix"],
+        vec!["ht", "doctor", "--harness", "claude", "fix"],
+        vec!["ht", "doctor", "--state-dir", "/private/s", "fix"],
+    ] {
+        let error = parse_argv(argv.clone()).unwrap_err();
+        assert!(error.detail.contains("doctor fix"), "{argv:?}: {}", error.detail);
+    }
+    for argv in [
+        vec!["ht", "doctor", "fix", "--debug"],
+        vec!["ht", "--json", "doctor", "fix", "--harness", "claude"],
+        vec!["ht", "doctor", "--debug"],
+    ] {
+        assert!(parse_argv(argv.clone()).is_ok(), "{argv:?}");
+    }
+}
+
 #[test]
 fn actor_route_pinned_globals_follow_human() {
     use crate::cli::actor_route::InvocationActor;

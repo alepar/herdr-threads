@@ -1997,6 +1997,17 @@ where
             "human namespace cannot be mixed with cooperative agent selectors",
         )));
     }
+    // Native permission rules match exact leading words, and `doctor` is ordinary while
+    // `doctor fix` must prompt: options may not separate the two words.
+    if matches!(parsed.action, CliAction::Doctor { fix: true, .. })
+        && command
+            .and_then(|i| retained.get(i + 1))
+            .is_none_or(|next| next != "fix")
+    {
+        return Err(ParseFailure::Invalid(invalid(
+            "write `doctor fix` together and put its options after it, e.g. `herdr-threads doctor fix --harness claude`",
+        )));
+    }
     let requires_human = matches!(
         &parsed.action,
         CliAction::MeInit { .. }
