@@ -79,8 +79,19 @@ opt-level = 3
 [profile.dev.package.libsqlite3-sys]
 opt-level = 3
 
+# Optimized test builds (below) make an edit far costlier than at -O0:
+# derived impls are #[inline], so each gets a copy in every codegen unit that
+# uses it, a line-shifting edit invalidates every unit holding a copy, and
+# rustc's default crate-local ThinLTO then re-optimizes nearly every unit.
+# Turning ThinLTO off (a whole-profile setting) and smaller units for our
+# crate cut CPU per edit 3-7x, run time unchanged (docs/dev/build-speed.md,
+# item 7).
+[profile.test]
+lto = "off"
+
 # Keep exhaustive serialization/page-fit tests practical in the CI pool.
 # Fixtures and assertions are unchanged; release builds already optimize.
 # Limit this to our test artifacts so ordinary incremental builds stay fast.
 [profile.test.package.herdr-threads]
 opt-level = 1
+codegen-units = 256

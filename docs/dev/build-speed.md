@@ -13,6 +13,7 @@ Budgets (AGENTS.md "Speed budgets"): an incremental build and the per-change lin
 | `cargo build` (edit) | 3.3-3.5 s | 3.0 s |
 | Cold build (all targets) | 33.1 s wall, 126 s CPU, 2.0 GB | 29-31 s wall, ~104 s CPU, 1.6 GB |
 | Test binaries | 10 | 5 |
+| `cargo test --lib --no-run` (edit to `handoff.rs`), test `opt-level = 1` (item 7) | 54-150 s wall, ~400 s CPU | 28-64 s wall, 66-76 s CPU |
 
 Edit-and-rebuild wall time was already well under budget and is now mostly rustc's front end over
 the one crate. The changes cut duplicated work, CPU and disk (a busy machine with several
@@ -250,3 +251,86 @@ a tenth of the 1-minute budget, and the split would roughly halve only the leaf-
 Revisit when an edit-and-rebuild passes ~20 s or the crate roughly doubles. If it is done, the cheap
 first step is a core crate (protocol + ports + the cycle-breakers): it removes the cycles, and
 everything else can follow one crate at a time.
+
+### 7. Test profile: no crate-local ThinLTO, 256 codegen units for our crate
+
+`[profile.test.package.herdr-threads] opt-level = 1` (added for test run time) made an edit
+cost a near-full LLVM rebuild of the library. After a one-file edit to `src/protocol/handoff.rs`,
+`cargo test --locked --all-features --lib --no-run` took 54-150 s wall and ~400 s CPU (all runs
+in the tables below plus 66-90 s in earlier runs); the same edit at `opt-level = 0` took 17-19 s
+(one loaded run 52 s) and 40-51 s CPU. Two mechanisms, each measured by counting the
+regenerated objects in the incremental session directory:
+
+- **`#[inline]` local copies.** Optimized, rustc gives every `#[inline]` function a private copy
+  in each codegen unit that uses it (at -O0 there is one shared copy). Derived `Clone` and
+  `PartialEq` impls are `#[inline]`: 192 functions from `handoff.rs` had copies in 2-21 units
+  (44 of them in 13 or more; `-Z print-mono-items`). A comment line at the top of `handoff.rs`
+  (shifting every span below it, no code change) re-generated 36 of 64 units; the same line at
+  the end of the file, 0. Debug info is not the carrier: with `debug = false` the same edit still
+  re-generated 35.
+- **Crate-local ThinLTO.** Optimized with more than one codegen unit, rustc runs ThinLTO across
+  the crate's units unless `lto = "off"`. In incremental mode a unit's post-LTO object is redone
+  when anything it imports changed, so 36 re-generated units became 64 of 64 re-optimized, and a
+  top-of-file comment in `store/queries.rs` (10 units) became 62. `-Z time-passes`: 44 s of a
+  62 s rebuild was `LLVM_thinlto`.
+
+Gate transition (`handoff.rs` with Task 21's `RecoverBootstrap::decision_operation` body swapped,
+in both directions), same machine and edit, rustc flags checked in `cargo -v` output:
+
+| Test profile | Regenerated | → current body, wall s | CPU s | Runs, load |
+|---|---|---|---|---|
+| as before (thin-local LTO, 64 units) | 64 / 64 | 54-90 | ~400 | 6, 15-36 |
+| thin-local LTO, 256 units | 254 / 256 | 50 | 352 | 1, ~14 |
+| `lto = "off"`, 64 units | 41 / 64 | 45 57 67 | 180-188 | 3, 13-31 |
+| **`lto = "off"`, 256 units** | 68 / 256 | 32-64 | 67-76 | 7, 15-36 |
+
+ThinLTO off is the larger lever. 256 units (rustc's own default for incremental builds) cut CPU
+by another 2.6x, and smaller units shorten the single-threaded tail, which matters on a shared
+machine: interleaved
+with `lto = "off"` at 64 units, the current-body edit took 48.5/35.5/39.9 s against 67.2/57.1/44.9 s.
+
+Interleaved A/B of the exact gate command, one target dir per side, four pairs (A is the
+previous profile; load average from other worktrees 13-45 on 12 cores):
+
+| Edit | Before, wall / CPU s | After, wall / CPU s |
+|---|---|---|
+| → historical body | 53.6/399 89.7/415 86.3/415 150.1/424 | 28.1/66 28.7/66 35.2/70 37.0/68 |
+| → current body | 53.6/393 72.6/401 87.8/409 89.9/402 | 32.1/70 64.3/76 54.5/74 55.0/74 |
+
+The build-speed method above (a comment at the top of `store/queries.rs`, `cargo test
+--all-features --no-run`, every test target), interleaved at load 35-103:
+
+| Edit | Before, wall / CPU s | After, wall / CPU s |
+|---|---|---|
+| add comment | 110.0/490 89.9/492 88.2/459 | 18.3/64 23.1/68 44.0/74 |
+| remove comment | 94.2/473 74.8/470 195.2/511 | 33.9/73 18.6/63 59.1/77 |
+
+The same profile on a later base (Task 22, an edit to `src/host/transport.rs`, interleaved, three
+rounds each way): `--lib --no-run` 14-44 s / 45-52 s CPU against 55-178 s / 414-473 s, and
+`--test integration --no-run` 8-37 s / 12-16 s against 26-63 s / 152-168 s.
+
+A comment line at the top of `handoff.rs` is the worst edit measured: 69.9 s / 162 s CPU adding
+it and 49.1 s / 154 s removing it (load 24-32), against 92.8-93.9 s / 424-430 s before.
+
+CPU per edit is down 2.7x (top-of-`handoff.rs` comment), ~5.7x (gate edit) and 6-8x, ~7x on average (`queries.rs` comment). Wall time
+now follows the serial part of a rebuild: the front end, building LLVM IR on rustc's main thread,
+writing the incremental dep graph (1-23 s, depending on load) and the largest unit. That is
+`serde_json::de`'s "volatile" unit (10.5 MB of object code: every `serde_json` deserializer
+instantiation in the crate), which any edit to a type deriving `Deserialize` re-generates and
+which one LLVM thread optimizes. No profile setting splits it. **The budget is met at light load
+but not always under heavy load:** the gate edit took 64.3 s once at load ~26-29, and the
+top-of-`handoff.rs` comment 69.9 s at load ~27-32. A nearly full disk inflates wall time further
+(a no-op rebuild took 26 s at 9 GB free).
+
+Run time: the page-fit and page-cursor unit tests (`cargo test --lib store::page --
+--test-threads=1`, the tests `opt-level = 1` was added for) took 11.5/11.4/11.9 s before and
+11.5/11.6/12.0 s after, interleaved; at `opt-level = 0` they take 20.6-22.8 s. One full nextest
+run each, back to back: 468 s after and 503 s before (both over the 5-minute suite budget on
+this loaded machine, whichever profile). Both had failures the profile does not cause: two
+`archival_legacy` tests in each (all 32 pass alone, three times, either profile), and before
+also three timing-sensitive tests (`lanes_latency`, `summary_flow`, `topology_activation`).
+
+`lto` is a whole-profile setting (it cannot be set per package), so `lto = "off"` also covers
+dependencies in the test profile: they are -O0 except `sha2` and `libsqlite3-sys` (whose C is not
+LTO'd by rustc). `cargo build` (dev), release builds and clippy are unaffected. The dev profile
+keeps 64 units (item 5), which suits -O0.
