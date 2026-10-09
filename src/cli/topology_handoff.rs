@@ -1742,7 +1742,7 @@ pub(crate) fn write_pending_observed<W: std::io::Write>(
     retry.extend(prefix.clone());
     retry.extend(["retry".into(), reference.recovery_ref()]);
     let mut inspect = prefix.clone();
-    inspect.push("pending".into());
+    inspect.push("pending-ops".into());
     let unknown_creation = current.is_some_and(|current| {
         current.state == BootstrapState::PossibleCreation && current.creation.is_none()
     });

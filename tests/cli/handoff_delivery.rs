@@ -2493,3 +2493,80 @@ fn pending_delivery_writer_invite_refusal_before_attempt_is_not_uncertain() {
     assert!(report["uncertain"].is_null(), "{report}");
     assert_eq!(client.counts(), (1, 0, 0));
 }
+
+// The delivery pending inspection continuation must be the public read-only
+// pending-ops command under the exact original pinned routing, accepted by
+// the same public parser the binary uses, in JSON argv and in text.
+fn assert_delivery_inspect_is_public_pending_ops(plan: &DeliveryPlan, json: bool, bytes: &[u8]) {
+    let ns = &plan.payload.namespace;
+    let state = ns.state_dir.to_string_lossy().into_owned();
+    let host = ns.host_endpoint.to_string_lossy().into_owned();
+    let expected: Vec<String> = vec![
+        crate::cli::hook::CLI_ARGV0.into(),
+        "--state-dir".into(),
+        state.clone(),
+        "--host-endpoint".into(),
+        host.clone(),
+        "pending-ops".into(),
+    ];
+    let argv: Vec<String> = if json {
+        serde_json::from_value(pending_frame(bytes)["inspect_argv"].clone()).unwrap()
+    } else {
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let line = text
+            .lines()
+            .find_map(|l| l.strip_prefix("inspect_argv: "))
+            .unwrap_or_else(|| panic!("no inspect_argv line: {text}"));
+        shlex::split(line).unwrap_or_else(|| panic!("unquotable: {line}"))
+    };
+    let parsed = crate::cli::commands::parse_argv(&argv)
+        .unwrap_or_else(|e| panic!("public parser refused inspect_argv {argv:?}: {e:?}"));
+    assert!(
+        matches!(
+            parsed.action,
+            crate::cli::commands::CliAction::PendingOps(_)
+        ),
+        "inspect_argv is not the read-only pending-ops action: {argv:?}"
+    );
+    assert_eq!(
+        parsed.actor,
+        crate::cli::actor_route::InvocationActor::Agent
+    );
+    assert_eq!(
+        parsed.output.context.state_dir.as_deref(),
+        Some(state.as_str())
+    );
+    assert_eq!(parsed.output.context.host.as_deref(), Some(host.as_str()));
+    assert_eq!(argv, expected);
+}
+
+#[test]
+fn pending_delivery_writer_inspect_argv_parses_as_public_pending_ops() {
+    for json in [true, false] {
+        for case in ["begin", "create", "invite", "send", "complete", "terminal"] {
+            let tmp = TempRoot::new();
+            let (journal, reference, plan, client) = guarded_fixture(&tmp);
+            if case == "terminal" {
+                *client.readonly_after_complete.lock().unwrap() =
+                    Some(journal.root().to_path_buf());
+            } else {
+                *client.lose_reply.lock().unwrap() = Some(case);
+            }
+            let mut bytes = vec![];
+            let failed = guarded_retry(&journal, &reference, &plan, &client, json, &mut bytes);
+            if case == "terminal" {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(journal.root(), std::fs::Permissions::from_mode(0o700))
+                    .unwrap();
+            }
+            assert!(failed.is_err(), "{case}");
+            assert!(
+                String::from_utf8_lossy(&bytes).contains(&format!("phase: {case}"))
+                    || (json && pending_frame(&bytes)["phase"] == case),
+                "{case}: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+            assert_delivery_inspect_is_public_pending_ops(&plan, json, &bytes);
+        }
+    }
+}

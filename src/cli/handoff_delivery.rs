@@ -949,7 +949,7 @@ fn write_pending<W: Write>(
     retry.extend(prefix.clone());
     retry.extend(["retry".into(), reference.recovery_ref()]);
     let mut inspect = prefix;
-    inspect.push("pending".into());
+    inspect.push("pending-ops".into());
     let completion = observed.phase == "complete";
     let terminal = observed.phase == "terminal";
     let uncertain = match observed.phase {
