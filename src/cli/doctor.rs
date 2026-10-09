@@ -293,7 +293,7 @@ fn claude_verdict_line(states: Option<&HarnessStatesReport>) -> Option<String> {
         .or_else(|| claude.versions.first().map(|row| row.line.clone()))
 }
 
-enum Daemon {
+pub(crate) enum Daemon {
     NotRunning,
     Unreachable(String),
     /// Health, and the daemon's version verdicts or why there are none.
@@ -327,7 +327,7 @@ fn harness_states(
     }
 }
 
-fn probe_daemon(paths: &InstancePaths) -> Result<Daemon, String> {
+pub(crate) fn probe_daemon(paths: &InstancePaths) -> Result<Daemon, String> {
     let instance = match read_existing_namespace(paths) {
         Ok(Some(instance)) => instance,
         Ok(None) => return Ok(Daemon::NotRunning),
@@ -1458,6 +1458,7 @@ pub(crate) fn run<W: Write>(parsed: &ParsedCli, writer: &mut W) -> Result<(), Ru
                                     harness,
                                     harness_binary: None,
                                     prompt_suggestions: super::setup::PromptSuggestionPolicy::Keep,
+                                    hooks_only: false,
                                 },
                                 env,
                             )

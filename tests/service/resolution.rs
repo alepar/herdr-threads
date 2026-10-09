@@ -2829,6 +2829,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
             harness: ContextHarness::Claude,
             harness_binary: None,
             prompt_suggestions: Default::default(),
+            hooks_only: false,
         },
         &env,
     )
