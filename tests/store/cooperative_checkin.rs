@@ -2277,7 +2277,7 @@ fn builtin_warning_dedup_recipients_and_successor_have_independent_frontiers() {
 // Kills a migration that updates only the new-event trigger: already recorded
 // canonical built-in events must gain delivery rows without deleting history.
 #[test]
-fn builtin_warning_dedup_upgrade_backfills_existing_attributed_transitions() {
+fn builtin_warning_dedup_migration_backfills_existing_attributed_transitions() {
     let (store, mut conn, clock, _) = fixture_with_context();
     seed_warning_dedup_thread(&conn);
     let first = check_in(&store, lifecycle(claim(), "dedup-initial")).unwrap();
@@ -2287,10 +2287,19 @@ fn builtin_warning_dedup_upgrade_backfills_existing_attributed_transitions() {
         "DROP TRIGGER digest_transition_warning_projected;
         DELETE FROM digest_programmatic_warnings;
         INSERT OR IGNORE INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id) SELECT 'job',ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id FROM warning_jobs;
-        INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT wr.seat_id,d.warning_id,d.thread_id,d.source,d.source_ordinal FROM digest_open_warnings d JOIN warning_recipients wr ON wr.warning_id=d.warning_id;
-        PRAGMA user_version=24;",
+        INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT wr.seat_id,d.warning_id,d.thread_id,d.source,d.source_ordinal FROM digest_open_warnings d JOIN warning_recipients wr ON wr.warning_id=d.warning_id;",
     )
     .unwrap();
+    // Replay the exact warning backfill on prepared current-schema data. A
+    // version-24 label would misrepresent the retained later tables/columns.
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    tx.execute_batch(include_str!(
+        "../../migrations/0025_warning_notice_delivery.sql"
+    ))
+    .unwrap();
+    tx.commit().unwrap();
     schema::initialize(&conn, || UtcMillis(100)).unwrap();
     assert_eq!(
         conn.query_row(
@@ -2300,7 +2309,7 @@ fn builtin_warning_dedup_upgrade_backfills_existing_attributed_transitions() {
         )
         .unwrap(),
         0,
-        "upgrade removes backfilled canonical transitions from legacy pending walks"
+        "migration removes backfilled canonical transitions from legacy pending walks"
     );
     let upgraded = check_in(&store, current(&first.context, "dedup-upgraded")).unwrap();
     assert_eq!(
