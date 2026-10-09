@@ -478,6 +478,70 @@ impl Rig {
         command
     }
 
+    /// The argv `setup claude` writes into `LAUNCH`.
+    fn launch(&self) -> Vec<String> {
+        [
+            BIN,
+            "--state-dir",
+            self.state.to_str().unwrap(),
+            "--host-endpoint",
+            self.socket.to_str().unwrap(),
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    /// The mod's `watch` child as the setup-written launch runs it, in the
+    /// session-shell environment (see [`Rig::raw_command`]), for B.
+    fn raw_watch(&self, session: &str) -> Watch {
+        let mut argv = self.launch();
+        argv.extend(["watch", "--harness", "claude", "--session", session].map(String::from));
+        for _ in 0..80 {
+            let mut watch = Watch::spawn(self.raw_command(PANE_B, &argv));
+            let first = watch.peek_first(STEP);
+            let retry = first
+                .as_ref()
+                .is_some_and(|line| line["kind"] == "status" && line["reason"] == "no_binding");
+            if !retry {
+                return watch;
+            }
+            drop(watch);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        panic!("the SessionStart check-in never committed for {PANE_B}");
+    }
+
+    /// The truncation marker's steps as printed, each parsed into an argv.
+    fn marker_steps(&self, body: &str) -> Vec<Vec<String>> {
+        let instruction = body.rsplit("…truncated; run ").next().unwrap();
+        instruction
+            .split(", then ")
+            .map(|step| {
+                let argv = shlex::split(step).unwrap_or_else(|| panic!("unparsable step {step}"));
+                assert_eq!(argv[0], "herdr-threads", "{step}");
+                argv
+            })
+            .collect()
+    }
+
+    /// Runs one marker step verbatim in the session-shell environment; only
+    /// the program name is swapped for the test binary (the raw PATH has no
+    /// `herdr-threads`).
+    fn run_marker_step(&self, argv: &[String]) -> Out {
+        let mut run = argv.to_vec();
+        run[0] = BIN.to_owned();
+        collect(
+            self.raw_command(PANE_B, &run)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn_owned()
+                .unwrap()
+                .wait_with_output()
+                .unwrap(),
+        )
+    }
+
     /// `caller`: (seat, pane) as the cooperative stand-in flags.
     fn cli(&self, caller: Option<(&str, &str)>, args: &[&str]) -> Out {
         let mut all: Vec<&str> = Vec::new();
@@ -1242,24 +1306,29 @@ fn lazy_row_appended_then_completed() {
 /// `truncated: true`; the mod must not ack it, and when it does the ack is a
 /// terminal refusal decided by the daemon from the stored length (the local
 /// hint file is not needed); the receipt settles when the agent follows the
-/// marker's own instruction (`body`, which is read-only, then `ack`).
+/// marker's own instruction (`body`, which is read-only, then `ack`). The
+/// watch runs as the setup-written launch in the session-shell environment
+/// and the agent runs the marker exactly as printed.
 #[test]
 fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
     let rig = Rig::new();
-    let mut watch = rig.watch(SESSION_B);
+    let mut watch = rig.raw_watch(SESSION_B);
     watch.wait_connected();
     let id = rig.send_ordinary(&"t".repeat(9000));
     let line = watch.wait_item(&id);
     assert_eq!(line["truncated"], true, "{line}");
     assert_eq!(line["body_len"], 9000);
-    let marker = format!("…truncated; run herdr-threads body {id}, then herdr-threads ack {id}");
     let body = line["body"].as_str().unwrap();
-    assert!(body.ends_with(&marker), "{body}");
-    assert_eq!(
-        body.len(),
-        8 * 1024 + marker.len(),
-        "cut at the 8 KiB limit"
+    assert!(
+        body[8 * 1024..].starts_with("…truncated; run "),
+        "cut at the 8 KiB limit: {body}"
     );
+    assert!(
+        body.contains(&format!("--state-dir {}", rig.state.display())),
+        "{body}"
+    );
+    assert!(body.contains(&format!(" body {id}")), "{body}");
+    assert!(body.contains(&format!(" ack {id}")), "{body}");
     let result = rig.ack_result(SESSION_B, "context", &id);
     assert_eq!(result["result"], "refused_terminal", "{result}");
     assert_eq!(result["reason"], "truncated");
@@ -1278,27 +1347,68 @@ fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
     assert_eq!(result["result"], "refused_terminal", "{result}");
     assert_eq!(result["reason"], "truncated");
     assert_eq!(rig.receipt_state(&id), "pending");
+    // Negative control: the bare command does not reach this instance.
+    let bare = collect(
+        rig.raw_command(PANE_B, &[BIN.to_owned(), "body".to_owned(), id.clone()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn_owned()
+            .unwrap()
+            .wait_with_output()
+            .unwrap(),
+    );
+    assert_ne!(bare.code, 0, "bare body: {}{}", bare.stdout, bare.stderr);
     // Follow the marker as streamed: `body` (read-only), then `ack`.
-    let instruction = body.rsplit("…truncated; run ").next().unwrap();
-    let steps: Vec<&str> = instruction.split(", then ").collect();
-    assert_eq!(steps.len(), 2, "{instruction}");
-    for (n, step) in steps.iter().enumerate() {
-        let command = step
-            .strip_prefix("herdr-threads ")
-            .unwrap_or_else(|| panic!("{step}"));
-        let args: Vec<&str> = command.split_whitespace().collect();
-        let data = rig.cli(Some((&rig.b, PANE_B)), &args).data(step);
-        if n == 0 {
-            assert!(
-                serde_json::to_string(&data)
-                    .unwrap()
-                    .contains(&"t".repeat(9000)),
-                "body returns the full text"
-            );
-            assert_eq!(rig.receipt_state(&id), "pending", "body is read-only");
-        }
-    }
+    let steps = rig.marker_steps(body);
+    assert_eq!(steps.len(), 2, "{body}");
+    let argv = &steps[0];
+    let out = rig.run_marker_step(argv);
+    assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.matches('t').count() >= 9000,
+        "body returns the rest of the text: {argv:?}: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert_eq!(rig.receipt_state(&id), "pending", "body is read-only");
+    let argv = &steps[1];
+    let out = rig.run_marker_step(argv);
+    assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
     assert_eq!(rig.receipt_state(&id), "acked");
+}
+
+/// Spec D4: a lazy row has no receipt, so a cut lazy row's marker names only
+/// the read-only `body`.
+#[test]
+fn truncated_lazy_row_marker_names_only_body() {
+    let rig = Rig::new();
+    let mut watch = rig.raw_watch(SESSION_B);
+    watch.wait_connected();
+    let id = rig.send_lazy(&"l".repeat(9000));
+    let line = watch.wait_item(&id);
+    assert_eq!(line["kind"], "lazy", "{line}");
+    assert_eq!(line["truncated"], true, "{line}");
+    assert_eq!(line["body_len"], 9000);
+    let body = line["body"].as_str().unwrap();
+    assert!(
+        body.contains(&format!("--state-dir {}", rig.state.display())),
+        "{body}"
+    );
+    assert!(body.contains(&format!(" body {id}")), "{body}");
+    assert!(!body.contains(" ack "), "{body}");
+    let steps = rig.marker_steps(body);
+    assert_eq!(steps.len(), 1, "{body}");
+    let argv = &steps[0];
+    let out = rig.run_marker_step(argv);
+    assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
+    assert!(
+        out.stdout.matches('l').count() >= 9000,
+        "{argv:?}: {}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert_eq!(rig.lazy_state(&id), "pending", "reading completes nothing");
 }
 
 /// Spec D7: while a channel is live no native wake prompt is sent for the

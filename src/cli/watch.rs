@@ -26,7 +26,7 @@ use crate::{
             WATCH_EXIT_ERROR, WATCH_EXIT_STREAM_ENDED, WATCH_PAGE_MAX_BYTES, WATCH_PAGE_MAX_ITEMS,
             WatchAttention, WatchFrame, WatchItem, WatchLine, WatchMessage, WatchOutcome,
             WatchReply, WatchRequest as WireWatch, WatchStatus, WatchStatusReason,
-            WatchStatusState, WatchWireRequest, truncation_marker,
+            WatchStatusState, WatchWireRequest, truncation_marker_for,
         },
         wire::{PROTOCOL_VERSION, WireResponse},
     },
@@ -69,6 +69,9 @@ pub(crate) struct EmitState {
     next_status: u64,
     emitted: HashSet<String>,
     hint_path: Option<PathBuf>,
+    /// Invocation the truncation marker's commands start with
+    /// (`hook::cli_prefix`); empty means bare `herdr-threads`.
+    command_prefix: Vec<String>,
 }
 
 impl EmitState {
@@ -77,6 +80,11 @@ impl EmitState {
             hint_path,
             ..Self::default()
         }
+    }
+
+    fn with_command_prefix(mut self, prefix: Vec<String>) -> Self {
+        self.command_prefix = prefix;
+        self
     }
 }
 
@@ -365,13 +373,20 @@ fn probe_mod_watch(client: &dyn LocalClient, budget: &CallBudget) -> Probe {
     }
 }
 
+/// Test entry: the bare marker prefix.
+#[cfg(test)]
+fn run_session(session: WatchSession<'_>, out: &mut dyn Write, alive: impl FnMut() -> bool) -> i32 {
+    run_session_marked(session, Vec::new(), out, alive)
+}
+
 /// Capability check, registration, then the stream loop. Returns the exit code.
-fn run_session(
+fn run_session_marked(
     session: WatchSession<'_>,
+    command_prefix: Vec<String>,
     out: &mut dyn Write,
     mut alive: impl FnMut() -> bool,
 ) -> i32 {
-    let mut state = EmitState::new(session.hint_path.clone());
+    let mut state = EmitState::new(session.hint_path.clone()).with_command_prefix(command_prefix);
     match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
         Probe::Supported => {}
         Probe::Unsupported => return refuse(&mut state, out, WatchStatusReason::Unsupported),
@@ -671,7 +686,11 @@ fn emit_chunk(
             cut -= 1;
         }
         record_truncated(state, &id);
-        format!("{}{}", &assembled[..cut], truncation_marker(&chunk.message))
+        format!(
+            "{}{}",
+            &assembled[..cut],
+            truncation_marker_for(&state.command_prefix, &chunk.message, chunk.lazy)
+        )
     } else {
         assembled
     };
@@ -950,7 +969,14 @@ where
         }
     };
     let start_ppid = system_ppid();
-    let code = run_session(
+    // What a bare `herdr-threads` in the session's shell (this process's
+    // environment, as for the hooks) would reach decides the marker's selectors.
+    let command_prefix = super::hook::cli_prefix(&super::hook::pane_selectors(
+        Some(&context.state_dir),
+        Some(&context.host_endpoint),
+        &super::hook::pane_inputs(),
+    ));
+    let code = run_session_marked(
         WatchSession {
             client,
             clock: clock.as_ref(),
@@ -959,6 +985,7 @@ where
             claim,
             hint_path: Some(hint_path(paths, &seat)),
         },
+        command_prefix,
         writer,
         || parent_alive(start_ppid, system_ppid),
     );
@@ -1006,6 +1033,9 @@ where
         writer,
     ))
 }
+
+#[cfg(test)]
+use crate::protocol::watch::truncation_marker;
 
 #[cfg(test)]
 #[path = "../../tests/cli/watch.rs"]
