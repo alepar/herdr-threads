@@ -10,3 +10,5 @@
 - [2026-10-07 design-roast/2] Workflow unavailable; reused canonical engine replay with fresh late-round/regression scout fan-out and GPT role mapping — rung: manual fan-out.
 - [code] Mechanism ordinary-subagents: caller spawn_agent/wait_agent scheduler, one task chain at a time; no Workflow throughput/early-unblock claim. Permission no-op owned add/rebase/merge/remove/branch-delete probes and tracker/build/test help exits0; probe removed. Merge check compiles default and all features, local macOS architecture only; main CI owns other platform builds. Tests include inline src and external tests pathspecs.
 - [code] Actual reviewed main4f7cad2d absorbed cleanly at0e50277c before first task cut; frozen8106/8265/design519 remain unchanged. Worker source tests/clippy/default/fmt/leak gates retained; final integrated full suite externally main-owned by explicit user instruction.
+
+- [PR1] Canonical super-roast manual fan-out, fresh same-family gpt-6-astra scouts and gpt-6.1-sol method-differentiated panels; no cross-family independence claim. Source06a vs main6f1, original caps preserved.

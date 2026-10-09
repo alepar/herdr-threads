@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-07-handoff-topology
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: code
+phase: roast-code
 codeMechanism: ordinary-subagents
 
 idea: lgtm, let's $super-auto this, fully autonomous, both roasts ar eon
@@ -20,6 +20,7 @@ approvals:
 - top-split · auto · ht-qhz.1 LEAF, ht-qhz.2 PROMOTE, ht-qhz.3 LEAF, ht-qhz.4 PROMOTE, ht-qhz.5 PROMOTE, ht-qhz.6 LEAF, ht-qhz.7 LEAF, ht-qhz.8 LEAF, ht-qhz.9 LEAF, ht-qhz.19 LEAF, ht-qhz.20 LEAF
 
 roastDesignRound: 2
+roastCodeRound: 1
 roast-design: 2026-10-07-handoff-topology-roast-design-1.md, 2026-10-07-handoff-topology-roast-design-2.md
 stepBackDesign-round-1: patch — independent exact-attempt recovery, bootstrap-only cancellation/liveness and atomic linked successful-report-backed completion; no shared redesign
 graph-pass: depth 7→7 · width 2.3→2.3 · applied 0 · parked 0
@@ -48,8 +49,12 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (I2 typed tab-creation non-submission missing pending report; actual-main compatibility composition pending)
+  review: not ready (actual-main composition06a settled NEEDS FIXES; I2 missing pending report and C1 duplicate actor gate remain Must-fix; original PR roast1 now running; matched actual-main pressure awaits final recovery source)
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: historical overages retained; final changed-source builds/lint under60s; soft archival bundle limits remain explicit
   worktreesKept: all owned source/evidence worktrees — user requires retention until DONE+MERGED
   processSweep: stopped 0 · survived 0 — fixtures already physically reaped; latest UUID-scoped inventory0ownedlive
+
+## Original PR/code roast round 1 started
+
+Exact source06a0abda05e1af9e88ced8a116a91251f3dc7d36/tree d38787bd857fa6d9fd3d1d67b0e31c1e53c7f16e against actual main6f1c4e6ae44ffc8d2e7ba65022e19380b2fc87db. Both exact reviewed composition parents are retained. Canonical super-roast engine/manual fan-out; fresh same-family seat-differentiated scouts and panels. Original sixteen closed leaves, design roast2, final SDD fixwave1/scopedreview1 and all counters remain unchanged. No main mutation; current source is for continued owned review, not clean or ready. C1 and I2 feed original phase5 final-review-item route; Minor M1 remains separate. User intentional Cargo target cleanup recorded, no source/evidence loss inferred.
