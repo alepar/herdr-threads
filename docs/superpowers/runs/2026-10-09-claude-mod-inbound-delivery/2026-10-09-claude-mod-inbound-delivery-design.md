@@ -366,3 +366,14 @@ Amend TRUST-POLICY.md in the bead that introduces the constants:
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+- **2026-10-09 — divergences found while implementing (super-auto run, fix loop rounds 1–2):**
+  - *Notify call sites.* D2's per-call-site `ModChannels::notify` became a table-commit observer: the registry worker compares each live seat's attention fingerprint after commits and pushes `attention` itself. `ModChannels::notify` and `record_attention_push` remain on the trait for tests only.
+  - *`mod_delivery` is boot-only.* The setting is read when the daemon starts; there is no runtime kill switch (`set_mod_delivery` has no production caller). Changing it takes a daemon restart, which ends every live channel anyway.
+  - *`replaced` exits 3.* A Close with reason `replaced` (a newer channel for the seat took over) stops the old `watch` with exit 3, which the D3 table did not list; the replaced mod instance must not reconnect and fight the new one.
+  - *Liveness is per seat.* Wake candidates, pokes and the hook digest all ask one per-seat question (any registry entry whose grace has not expired, of any generation). The first cut asked per generation on the wake path, which reopened the /clear turn-boundary race D7 closes (ht-ows); fixed by ht-j16.17.
+  - *Mod launch argv.* The mod originally ran bare `herdr-threads` from PATH. `setup claude` now writes the hooks' exact invocation (absolute executable, `--state-dir`, `--host-endpoint`) into the installed mod (ht-j16.20); the truncation marker renders the same selectors (ht-j16.24).
+  - *Truncated bodies.* `body` is read-only, so the marker names `body` then `ack` for ordinary items and a body-only form for lazy rows (ht-j16.23, ht-j16.24).
+  - *Notices while live.* Notices are not attention items; while a channel is live the tool-boundary check-in still offers pending notices (without ready commands) (ht-j16.21).
+  - *Managed policy.* Verified against Claude Code 2.1.295 that server-managed settings are cached at `<config dir>/remote-settings.json`; setup also reads `managed-settings.d/*.json` and treats an unreadable source as unsafe (ht-j16.22).
+  - *Accepted windows.* After a daemon restart the wake lane's first pass can run before the mod re-registers, so one item may be delivered both natively and by the mod (at-least-once, as D5 allows). A mod whose `watch` keeps reconnecting resets the stall clock on each registration, so a mod that reconnects but never delivers can hold native wake off until it stops reconnecting.

@@ -18,8 +18,9 @@
 //!   ordinary attention batching, separate from retry spacing.
 //! - `"auto_archive_after_ms"` (default 3600000, zero disables): quiet-channel grace.
 //! - `"mod_delivery": "on" | "off"` (default `on`): `off` refuses mod watch
-//!   registrations and closes live channels (`Close{disabled}`); delivery stays
-//!   on hooks plus native wake. Read by ht-j16.2.
+//!   registrations (`disabled`); delivery stays on hooks plus native wake.
+//!   Read once at daemon start, so a change takes effect on the next restart,
+//!   which also ends every live channel.
 //! - `"summary"`: thread summary, catch-up and soft-deadline poke settings
 //!   (`crate::protocol::summary::SummarySettings`; every key optional,
 //!   unknown keys rejected, validated by `ServiceConfig::from_settings`).
