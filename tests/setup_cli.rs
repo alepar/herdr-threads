@@ -3412,10 +3412,23 @@ fn public_hermes_setup_writes_enrollment_bridge_and_status_flags_stale_generatio
         );
         out
     };
+    // Text-form needles of the stale-bridge hint (hermes.rs `asset_projection`).
+    let stale_needles = [
+        "stale_bridge",
+        "older herdr-threads generation",
+        "to refresh the bridge",
+    ];
     let fresh = json(&status(true));
     assert_eq!(fresh["installed"], true, "{fresh}");
     assert_eq!(fresh["bridge_current"], true, "{fresh}");
     assert!(fresh.get("stale_bridge").is_none(), "{fresh}");
+    let fresh_text = text(&status(false).stdout);
+    for needle in stale_needles {
+        assert!(
+            !fresh_text.contains(needle),
+            "current bridge shows {needle}: {fresh_text}"
+        );
+    }
 
     // An older generation: the installed bridge and its manifest record differ
     // from the bridge this build ships.
@@ -3440,6 +3453,10 @@ fn public_hermes_setup_writes_enrollment_bridge_and_status_flags_stale_generatio
         rendered.contains("setup hermes --profile work"),
         "{rendered}"
     );
+    assert!(
+        stale_needles.iter().any(|needle| rendered.contains(needle)),
+        "the text form renders none of the stale needles: {rendered}"
+    );
 
     // Re-running setup refreshes the bridge.
     let out = task51_command(&f, "setup", true).output().unwrap();
@@ -3453,6 +3470,13 @@ fn public_hermes_setup_writes_enrollment_bridge_and_status_flags_stale_generatio
     let current = json(&status(true));
     assert_eq!(current["bridge_current"], true, "{current}");
     assert!(current.get("stale_bridge").is_none(), "{current}");
+    let current_text = text(&status(false).stdout);
+    for needle in stale_needles {
+        assert!(
+            !current_text.contains(needle),
+            "refreshed bridge shows {needle}: {current_text}"
+        );
+    }
 }
 
 #[test]

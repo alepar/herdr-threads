@@ -220,6 +220,38 @@ impl Sweep {
             .unwrap()
     }
 
+    /// An operator command (`human ...`): `human` precedes the global flags.
+    fn operator(&self, args: &[&str]) -> Value {
+        let mut command = self.isolation.command(BIN);
+        command
+            .arg("human")
+            .arg("--json")
+            .arg("--state-dir")
+            .arg(&self.state)
+            .arg("--host-endpoint")
+            .arg(&self.endpoint)
+            .args(args)
+            .env("CLAUDE_CONFIG_DIR", self.isolation.path("home/claude"))
+            .env("CODEX_HOME", self.isolation.path("home/codex"))
+            .env("HERMES_HOME", self.isolation.path("home/hermes"));
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap_or(Value::Null)
+    }
+
+    fn seat_state(&self, seat: &str) -> String {
+        self.db()
+            .query_row("SELECT state FROM seats WHERE id=?1", [seat], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+
     fn accountable_snapshot(&self) -> Vec<Vec<String>> {
         let db = self.db();
         [
@@ -367,6 +399,54 @@ fn hermes_bare_cli_main_flow_enrolls_checks_in_keeps_seat_on_new_and_excludes_ch
     // Hermes' seat is untouched by the other adapters.
     assert_eq!(sweep.open_bindings("hermes", &seat), 1);
     assert_eq!(sweep.open_session(&seat), "sweep-s2");
+}
+
+/// TRUST-POLICY "Operator retire" (spec D10): retiring the seat of a running
+/// bare Hermes leaves the pane Unowned; the next top-level CLI turn re-enrolls a
+/// fresh seat through the ordinary resolver (never the retired one) and gets context.
+#[test]
+fn hermes_operator_retire_then_next_cli_turn_re_enrolls_a_fresh_seat() {
+    let mut sweep = Sweep::new();
+    sweep.ensure_daemon();
+    let (pane, terminal) = ("w1:p1", "sweep-term-1");
+
+    let start = sweep.envelope("cli_start", "retire-s1", "start-r1");
+    assert!(sweep.hook(pane, "hermes", &start).is_null());
+    let seats = sweep.resolved_seats(pane, terminal);
+    assert_eq!(seats.len(), 1, "{seats:?}");
+    let old = seats[0].clone();
+    let first = sweep.hermes_turn(pane, "top_turn_cli", "retire-s1", "turn-r1");
+    assert!(first["context"].is_string(), "no context: {first}");
+    assert_eq!(sweep.open_bindings("hermes", &old), 1);
+
+    sweep.operator(&["seat", "retire", &old, "--operator"]);
+    assert_eq!(sweep.seat_state(&old), "retired");
+    assert!(
+        sweep.resolved_seats(pane, terminal).is_empty(),
+        "pane still owned"
+    );
+
+    let next = sweep.hermes_turn(pane, "top_turn_cli", "retire-s1", "turn-r2");
+    assert!(
+        next["context"].is_string(),
+        "no context after retire: {next}"
+    );
+    let seats = sweep.resolved_seats(pane, terminal);
+    assert_eq!(seats.len(), 1, "exactly one fresh seat: {seats:?}");
+    let fresh = seats[0].clone();
+    assert_ne!(fresh, old, "re-enrolled the retired seat");
+    assert_eq!(sweep.total_seats(), 2, "one new seat, nothing else");
+    assert_eq!(sweep.open_bindings("hermes", &fresh), 1);
+    assert_eq!(sweep.open_session(&fresh), "retire-s1");
+    assert_eq!(
+        sweep.seat_state(&old),
+        "retired",
+        "the retired seat came back"
+    );
+    assert!(
+        !next["lifecycle_ack"].is_null(),
+        "the turn did not check in: {next}"
+    );
 }
 
 /// Every registered adapter declares its enrollment rule, and the hook has no

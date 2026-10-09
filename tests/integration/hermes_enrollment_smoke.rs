@@ -72,6 +72,9 @@ impl Driven {
 impl Smoke {
     /// An isolated Herdr, state dir, synthetic Hermes tree and the installed
     /// bridge. `ensure_daemon` starts the isolated daemon before any hook.
+    /// `None` (after `IsolatedHerdr` prints `skipped: no herdr: <case>`) when
+    /// herdr is absent and `HT_SKIP_HERDR_TESTS=1`; panics naming `herdr`
+    /// otherwise. Pass the test's own name as `case`.
     fn new(case: &'static str, ensure_daemon: bool) -> Option<Self> {
         let herdr = IsolatedHerdr::new(case)?;
         let root = herdr.root().to_path_buf();
@@ -499,7 +502,7 @@ fn assert_seated_turn(driven: &Driven, step: usize, mode: &str) {
 
 #[test]
 fn smoke_installs_the_enrollment_bridge() {
-    let Some(smoke) = Smoke::new("hermes_smoke_install", true) else {
+    let Some(smoke) = Smoke::new("smoke_installs_the_enrollment_bridge", true) else {
         return;
     };
     let installed = fs::read_to_string(&smoke.bridge).unwrap();
@@ -579,7 +582,8 @@ fn legacy_envelope(callback: &str, session: &str, event: &str) -> Value {
 
 #[test]
 fn hermes_bare_enrollment_configurations_with_daemon_up() {
-    let Some(mut smoke) = Smoke::new("hermes_smoke_daemon_up", true) else {
+    let Some(mut smoke) = Smoke::new("hermes_bare_enrollment_configurations_with_daemon_up", true)
+    else {
         return;
     };
 
@@ -778,7 +782,8 @@ fn hermes_bare_enrollment_configurations_with_daemon_up() {
 #[test]
 fn hermes_bare_enrollment_cold_daemon_configurations() {
     // No `daemon ensure` in setup: the hooks themselves must bring the daemon up.
-    let Some(mut smoke) = Smoke::new("hermes_smoke_cold_daemon", false) else {
+    let Some(mut smoke) = Smoke::new("hermes_bare_enrollment_cold_daemon_configurations", false)
+    else {
         return;
     };
     assert!(!smoke.daemon_up(), "setup started the daemon");
@@ -832,4 +837,55 @@ fn hermes_bare_enrollment_cold_daemon_configurations() {
     smoke.seat(&pane);
     assert_eq!(smoke.open_bindings(&pane), 1);
     assert_eq!(smoke.all_bindings(&pane), 1);
+}
+
+fn no_herdr_path() -> &'static str {
+    let path = "/usr/bin:/bin";
+    assert!(
+        !path.split(':').any(|d| Path::new(d).join("herdr").exists()),
+        "herdr unexpectedly present in {path}"
+    );
+    path
+}
+
+/// The smoke follows the repo's isolated-Herdr skip policy: without herdr it
+/// prints `skipped: no herdr: <test name>` under HT_SKIP_HERDR_TESTS=1 and fails
+/// naming the binary otherwise, never a silent pass.
+#[test]
+fn smoke_skip_without_herdr_is_reported_by_test_name() {
+    let path = no_herdr_path();
+    let exe = std::env::current_exe().unwrap();
+    let run = |skip: bool| {
+        let mut cmd = herdr_threads::test_support::spawn::command(&exe);
+        cmd.args([
+            "--exact",
+            "hermes_enrollment_smoke::smoke_installs_the_enrollment_bridge",
+            "--nocapture",
+        ])
+        .env("PATH", path)
+        .env_remove("HT_SKIP_HERDR_TESTS");
+        if skip {
+            cmd.env("HT_SKIP_HERDR_TESTS", "1");
+        }
+        cmd.output().unwrap()
+    };
+    let out = run(true);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("skipped: no herdr: smoke_installs_the_enrollment_bridge"),
+        "{text}"
+    );
+    let out = run(false);
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!out.status.success(), "passed without herdr: {all}");
+    assert!(all.contains("'herdr'"), "{all}");
 }
