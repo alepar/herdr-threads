@@ -1,6 +1,6 @@
 // Seeded randomized stress for the herdr-threads Claude mod (spec D10). Each
 // schedule interleaves turn events, tool calls, prompt-box text, stream items,
-// submit/append/ack outcomes, child exits, reloads and session changes against
+// submit/append/ack outcomes, slow state writes, child exits, reloads and session changes against
 // createCore with fakes, and checks the delivery invariants as calls happen.
 // The runner gives a test no environment, so the base seed is the constant
 // below; a failure reports seed, schedule and step so it can be replayed.
@@ -41,6 +41,7 @@ const totals = { submits: 0, contexts: 0, appends: 0, acks: 0, drops: 0, holdBlo
 
 function runSchedule(seed: number) {
   const r = prng(seed)
+  const rs = prng(seed ^ 0x5bd1e995) // slow state writes draw here so r's draws stay as they were
   const world: Any = {
     t: 1_000_000,
     sid: 's0',
@@ -53,6 +54,8 @@ function runSchedule(seed: number) {
     ackChecks: [] as Any[],
     pendingReads: [] as Array<() => void>,
     slowReads: r.chance(0.5),
+    slowState: rs.chance(0.5),
+    pendingStates: [] as Array<() => void>,
     manualSubmit: r.chance(0.4),
     dropRate: r.pick([0, 0.2, 0.5]),
     denyRate: r.pick([0, 0.3]),
@@ -179,7 +182,11 @@ function runSchedule(seed: number) {
     },
     state: {
       get: async () => world.stateVal,
-      set: async (v: Any) => void (world.stateVal = JSON.parse(JSON.stringify(v))),
+      set: async (v: Any) => {
+        const copy = JSON.parse(JSON.stringify(v))
+        if (world.slowState && rs.chance(0.4)) await new Promise<void>((res) => world.pendingStates.push(res))
+        world.stateVal = copy
+      },
     },
     ledger: (e: Any) => {
       if (seed === TRACE_SEED) console.log('  ledger', e.kind, e.ids.join(','), e.via ?? '', e.reason ?? '')
@@ -220,6 +227,7 @@ function runSchedule(seed: number) {
     while (!done) {
       await flush()
       for (const release of world.pendingReads.splice(0)) release()
+      for (const release of world.pendingStates.splice(0)) release()
     }
     await tick
   }
@@ -377,14 +385,17 @@ function runSchedule(seed: number) {
       // A reload with a submit in flight no longer delivers twice: half the reloads settle every
       // in-flight submit first, the rest leave them unresolved and the successor holds the ids.
       if (r.chance(0.5)) {
-        for (let i = 0; i < 20 && (world.pendingSubmits.length || world.pendingReads.length); i++) {
+        for (let i = 0; i < 20 && (world.pendingSubmits.length || world.pendingReads.length || world.pendingStates.length); i++) {
           for (const release of world.pendingReads.splice(0)) release()
+          for (const release of world.pendingStates.splice(0)) release()
           settleAll()
           await flush()
         }
         totals.reloads++
         m.rejected = false // the in-memory rejection flag does not survive a reload
         core.dispose()
+        for (const release of world.pendingStates.splice(0)) release()
+        await flush()
         await newCore()
         return
       }
@@ -395,6 +406,9 @@ function runSchedule(seed: number) {
       totals.reloads++
       m.rejected = false // the in-memory rejection flag does not survive a reload
       core.dispose()
+      // a dispose during the pre-submit write: the write lands afterwards
+      for (const release of world.pendingStates.splice(0)) release()
+      await flush()
       await newCore()
       for (const p of inflight) {
         // the disposed core's late resolution reaches nobody: it must change no delivery
@@ -435,9 +449,12 @@ function runSchedule(seed: number) {
       try {
         if (seed === TRACE_SEED) console.log('STEP', i, step[1])
         const slow = world.pendingReads.splice(0)
+        // copied, not taken: a step that waits on a write (advance) must still be able to release it
+        const slowStates = world.pendingStates.slice()
         await step[2]()
         // a read of the prompt box that began earlier completes only after this event
         for (const release of slow) release()
+        for (const release of slowStates) release()
         await flush()
         for (const c of world.ackChecks.splice(0)) {
           if (!(okVia as Any)[c.via]?.has(c.k)) fail(`${c.id} acked via ${c.via} though its delivered predicate never held`)
@@ -454,6 +471,7 @@ function runSchedule(seed: number) {
       }
     }
     for (const release of world.pendingReads.splice(0)) release()
+    for (const release of world.pendingStates.splice(0)) release()
     settleAll()
     await advance(31_000)
     await flush()

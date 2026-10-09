@@ -412,18 +412,37 @@ export function createCore(io) {
       S.submitInflight = true
       const bids = batch.map((i) => i.id)
       ledger('submit', { ids: bids, via: 'submit' })
-      // Written before the submit so a successor after a reload can hold these ids (spec D5, ht-j16.29).
-      S.turns.submitting = { sid: S.sid, ids: bids, ackable: batch.filter((i) => i.ackable).map((i) => i.id), at: io.now(), turnId: null }
+      // Written before the submit so a successor after a reload can hold these ids (spec D5, ht-j16.29);
+      // `issued` turns true only once $.prompt.submit has been called (ht-j16.31).
+      const rec = { sid: S.sid, ids: bids, ackable: batch.filter((i) => i.ackable).map((i) => i.id), at: io.now(), turnId: null, issued: false }
+      S.turns.submitting = rec
       persistTurns()
       await S.stateChain
-      // disposed or session changed during the write: submit nothing, leave the record for a successor
-      if (S.disposed || gen !== S.gen) return
+      // Every gate the write may have changed is checked again (final review 7). A bail submits nothing.
+      if (S.disposed || gen !== S.gen || !S.live || batch.some((it) => it.run !== S.run) || busy() || S.turns.abortHoldSince != null) {
+        S.submitInflight = false
+        for (const it of batch) it.inflight = false
+        // A disposed core writes nothing more: its record stays unissued, so a successor never settles it by rule (b).
+        if (S.disposed) return
+        if (S.turns.submitting === rec) {
+          S.turns.submitting = null
+          persistTurns()
+        }
+        // a session change already reset the old session's queue (onSessionEnd)
+        if (gen !== S.gen) return
+        const kept = discardStale(batch, 'pre_submit')
+        if (kept.length && (busy() || S.turns.abortHoldSince != null)) held(busy() ? 'busy' : 'post_abort', kept.map((i) => i.id))
+        return
+      }
       let p
       try {
         p = Promise.resolve(io.submit(frame(batch)))
       } catch (err) {
         p = Promise.reject(err)
       }
+      // Issued now: a successor may settle these ids from the turn open at its load (rule b).
+      rec.issued = true
+      persistTurns()
       void p
         .then(
           (r) => r || {},
@@ -521,11 +540,11 @@ export function createCore(io) {
   }
 
   /** The predecessor's submit produced no turn: its ids are delivered normally when streamed. */
-  function releasePred() {
+  function releasePred(reason = 'predecessor_no_turn') {
     const pred = S.pred
     if (!pred) return
     S.pred = null
-    ledger('refused', { ids: pred.ids, reason: 'predecessor_no_turn' })
+    ledger('refused', { ids: pred.ids, reason })
     void pump()
   }
 
@@ -560,7 +579,7 @@ export function createCore(io) {
     const hasPrior = prior && typeof prior === 'object' && prior.sid && Array.isArray(prior.ids) && prior.ids.length > 0
     await loadSession()
     if (hasPrior) {
-      if (prior.sid === S.sid) S.pred = { ...prior, ackable: Array.isArray(prior.ackable) ? prior.ackable : [], since: io.now(), sawStart: false }
+      if (prior.sid === S.sid) S.pred = { ...prior, ackable: Array.isArray(prior.ackable) ? prior.ackable : [], issued: prior.issued !== false, since: io.now(), sawStart: false }
       // the record now belongs to this core as S.pred
       persistTurns()
     }
@@ -622,7 +641,11 @@ export function createCore(io) {
 
   function onTurnComplete(e) {
     if (S.inert || !e || e.agentId) return
-    if (S.pred && (!S.pred.sawStart || S.pred.turnId === e.turnId)) settlePred('turn_complete')
+    if (S.pred && (!S.pred.sawStart || S.pred.turnId === e.turnId)) {
+      // rule (b) claims a delivery only for a submit that was issued (ht-j16.31)
+      if (S.pred.issued) settlePred('turn_complete')
+      else releasePred('predecessor_not_issued')
+    }
     const i = S.turns.open.indexOf(e.turnId)
     if (i >= 0) S.turns.open = S.turns.open.slice(i + 1)
     S.turns.assumedBusy = false
@@ -744,7 +767,7 @@ export function createCore(io) {
       queue: S.queue.map((q) => q.id),
       rec: JSON.parse(JSON.stringify(S.rec)),
       sid: S.sid,
-      pred: S.pred ? { ids: S.pred.ids.slice(), sawStart: S.pred.sawStart } : null,
+      pred: S.pred ? { ids: S.pred.ids.slice(), sawStart: S.pred.sawStart, issued: S.pred.issued } : null,
       inert: S.inert,
       live: S.live,
       stopped: S.stopped,

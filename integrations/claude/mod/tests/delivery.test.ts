@@ -1344,3 +1344,129 @@ test('a resolved submit clears the record, and a drop does too', async () => {
   await flush()
   expect(h.stateVal.submitting).toBe(null)
 })
+
+// ---- the pre-submit state write (ht-j16.31) ----
+
+// $.state writes park until the test releases them, in call order (the core's io object is h.io)
+const slowState = (h: Any) => {
+  const parked: Array<() => void> = []
+  const set = h.io.state.set
+  h.io.state.set = (v: Any) => new Promise<void>((res) => parked.push(() => void set(v).then(res)))
+  return {
+    parked,
+    release: async () => {
+      while (parked.length) {
+        for (const go of parked.splice(0)) go()
+        await flush()
+      }
+    },
+    restore: () => void (h.io.state.set = set),
+  }
+}
+
+test('a turn.start during the pre-submit state write: nothing is submitted until that turn completes', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  const w = slowState(h)
+  h.line(msg('m1'))
+  await flush()
+  expect(w.parked.length).toBe(1) // the submitting record is being written
+  h.core.onTurnStart({ turnId: 'u1', text: 'user typed this' })
+  await w.release()
+  expect(h.submits.length).toBe(0)
+  expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'busy')).toBe(true)
+  expect(h.stateVal.submitting).toBe(null)
+  expect(h.stateVal.open).toEqual(['u1'])
+  w.restore()
+  h.core.onTurnComplete({ turnId: 'u1', isAborted: false })
+  await flush()
+  expect(h.submits.length).toBe(1)
+  expect(h.submits[0]).toContain('message m1 in ')
+})
+
+test('an aborted turn.complete during the pre-submit state write holds the submit', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  const w = slowState(h)
+  h.line(msg('m1'))
+  await flush()
+  expect(w.parked.length).toBe(1)
+  h.core.onTurnStart({ turnId: 'u1' })
+  h.core.onTurnComplete({ turnId: 'u1', isAborted: true })
+  await w.release()
+  expect(h.submits.length).toBe(0)
+  expect(h.entries.some((e: Any) => e.kind === 'held' && e.reason === 'post_abort')).toBe(true)
+  expect(h.stateVal.submitting).toBe(null)
+  w.restore()
+  h.core.onTurnStart({ turnId: 'u2' })
+  h.core.onTurnComplete({ turnId: 'u2', isAborted: false })
+  await flush()
+  expect(h.submits.length).toBe(1)
+  expect(h.submits[0]).toContain('message m1 in ')
+})
+
+test('a channel loss during the pre-submit state write submits nothing', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  const w = slowState(h)
+  h.line(msg('m1'))
+  await flush()
+  expect(w.parked.length).toBe(1)
+  h.line(status('closing', 'stalled', 0))
+  await w.release()
+  expect(h.submits.length).toBe(0)
+  expect(h.stateVal.submitting).toBe(null)
+  expect(h.core.snapshot().queue.some((q: Any) => q.id === 'm1')).toBe(false)
+})
+
+test('a dispose during the pre-submit state write: the successor never settles the unissued id by rule (b)', async () => {
+  const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  const w = slowState(h)
+  h.line(msg('m1'))
+  await flush()
+  h.core.onTurnStart({ turnId: 'tUser', text: 'user typed this' }) // the user's turn opens during the write
+  h.core.dispose()
+  await w.release() // both writes land: open ['tUser'] and the unissued record
+  w.restore()
+  expect(h.submits.length).toBe(0)
+  expect(h.stateVal.open).toEqual(['tUser'])
+  expect(h.stateVal.submitting.ids).toEqual(['m1'])
+  expect(h.stateVal.submitting.issued).toBe(false)
+  h.core = createCore(h.io)
+  await h.core.onLoad()
+  await flush()
+  await h.connect()
+  expect(h.core.snapshot().pred).toEqual({ ids: ['m1'], sawStart: false, issued: false })
+  h.line(msg('m1')) // the daemon re-streams the unacked id
+  await h.advance(1000)
+  expect(h.submits.length).toBe(0) // the loaded turn is open
+  h.core.onTurnComplete({ turnId: 'tUser', isAborted: false })
+  await flush()
+  expect(h.entries.some((e: Any) => e.kind === 'delivered' && e.reason === 'predecessor_submit')).toBe(false)
+  expect(h.entries.some((e: Any) => e.kind === 'refused' && e.reason === 'predecessor_not_issued')).toBe(true)
+  expect(h.ackRuns().length).toBe(0)
+  expect(h.submits.length).toBe(1) // delivered later, by the successor itself
+  expect(h.submits[0]).toContain('message m1 in ')
+  h.pending[0].res({})
+  await flush()
+  expect(h.ackRuns().length).toBe(1)
+  expect(h.ackRuns()[0].slice(5)).toEqual(['--via', 'submit', 'm1'])
+})
+
+test('the record is marked issued only once the submit is called', async () => {
+  const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  h.line(msg('m1'))
+  await flush()
+  expect(h.stateWrites.filter((s: Any) => s.submitting).map((s: Any) => s.submitting.issued)).toEqual([false, true])
+  expect(h.submits.length).toBe(1)
+})
+
+test('a submitting record from before this fix still settles by rule (b)', async () => {
+  const h = await harness({
+    state: { open: ['tS'], assumedBusy: false, abortHoldSince: null, submitting: { sid: 's1', ids: ['m1'], ackable: ['m1'], at: 1, turnId: null } },
+  }).boot()
+  h.line(msg('m1'))
+  await flush()
+  h.core.onTurnComplete({ turnId: 'tS', isAborted: false })
+  await flush()
+  expect(h.submits.length).toBe(0)
+  expect(h.ackRuns().length).toBe(1)
+  expect(h.ackRuns()[0].slice(5)).toEqual(['--via', 'submit', 'm1'])
+})

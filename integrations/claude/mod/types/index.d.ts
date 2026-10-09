@@ -9,9 +9,11 @@ export type HerdrThreadsTurns = {
   /**
    * The batch this instance is submitting, written before `$.prompt.submit` and cleared when it
    * resolves; a successor after a reload holds these ids until their turn starts or completes (spec D5,
-   * ht-j16.29).
+   * ht-j16.29). `issued` is false until `$.prompt.submit` was called; a successor settles an unissued
+   * record only on a `turn.start` that frames its ids, never from the completion of the turn open at
+   * its load (ht-j16.31).
    */
-  submitting?: { sid: string; ids: string[]; ackable: string[]; at: number; turnId: string | null } | null
+  submitting?: { sid: string; ids: string[]; ackable: string[]; at: number; turnId: string | null; issued?: boolean } | null
 }
 declare module 'claude-code' {
   interface PluginState {
