@@ -129,6 +129,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                         topic_data,
                         warning,
                         sequence,
+                        ..
                     } => InboxBatchItem::Warning {
                         thread: thread.clone(),
                         topic_data: topic_data.clone(),

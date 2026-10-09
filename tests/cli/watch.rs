@@ -260,6 +260,7 @@ fn warning() -> InboxBatchV2Item {
         topic_data: "topic".into(),
         warning: MessageId::new("w1"),
         sequence: 2,
+        informational: false,
     }
 }
 
@@ -833,6 +834,32 @@ fn a_drain_that_finds_nothing_pending_retracts_the_last_attention_line() {
     assert!(got.is_empty(), "{got:?}");
     let (_, got) = run_drain(&paged_client(vec![vec![]]), 7, &mut state);
     assert_eq!(ids(&got), ["attention_cleared:7"]);
+}
+
+/// ht-j16.34: a warning the daemon marks informational (another seat's
+/// overdue transition, or a clear) raises no attention line; one that wakes
+/// the seat still does, and an informational one alone retracts it.
+#[test]
+fn informational_warnings_raise_no_attention_line() {
+    let notice = || InboxBatchV2Item::Warning {
+        thread: ThreadId::new("t1"),
+        topic_data: "topic".into(),
+        warning: MessageId::new("w-notice"),
+        sequence: 3,
+        informational: true,
+    };
+    let ids = |got: &[WatchLine]| got.iter().map(|l| l.id.clone()).collect::<Vec<_>>();
+    let mut state = EmitState::default();
+    let (_, got) = run_drain(&paged_client(vec![vec![notice()]]), 4, &mut state);
+    assert!(got.is_empty(), "{got:?}");
+    let (_, got) = run_drain(
+        &paged_client(vec![vec![notice(), warning()]]),
+        5,
+        &mut state,
+    );
+    assert_eq!(ids(&got), ["attention:5"]);
+    let (_, got) = run_drain(&paged_client(vec![vec![notice()]]), 6, &mut state);
+    assert_eq!(ids(&got), ["attention_cleared:6"]);
 }
 
 #[test]
