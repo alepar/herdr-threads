@@ -192,6 +192,10 @@ A message streamed but never acked stays pending and is re-streamed on reconnect
 
 A channel counts as stalled when it is live, its last mod ack (or its registration, if it has none) is more than 10 minutes old, and some ordinary pending receipt for the seat was published at or before the last pushed `Attention` frame and is itself more than 10 minutes old. The registry (D2) owns this state. For example, the mod is holding after an interrupt and the user has walked away. The daemon then lets the native wake ladder run for that seat, with the existing composer guards, while keeping the channel. Any later mod ack clears the stall.
 
+**Handoff.** An item the mod delivered but whose ack did not land before the channel dropped stays pending. The mod keeps delivered-but-unacked ids in `$.store` and re-acks them after re-registering, instead of delivering them again. If it never re-registers, the agent may see the item again through `inbox` or the native wake. That is at-least-once across a handoff, and never lost (an accepted limit).
+
+**Operator switch.** `HERDR_THREADS_MOD_DELIVERY=off` makes `watch` exit 3 without registering, so delivery stays on hooks plus wake. `setup-status` reports it.
+
 **Considered:**
 - Hard suppression with no stall bound: one stuck mod would silence a seat forever.
 - A per-message hand-off timer: needless complexity.
