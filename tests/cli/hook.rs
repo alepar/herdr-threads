@@ -6598,6 +6598,9 @@ mod registered_resume {
             Ok(())
         }
         fn run(&self, r: &'static Registration, i: &HookInput) -> HookOutcome {
+            self.run_env(r, i, &herdr())
+        }
+        fn run_env(&self, r: &'static Registration, i: &HookInput, env: &HookEnv) -> HookOutcome {
             let mut a = args(&self.root);
             a.harness = OccupantHarness::Agent(builtins().agent(r.metadata().id).unwrap()).into();
             a.event = i.registered_event.clone();
@@ -6606,7 +6609,7 @@ mod registered_resume {
                 &a,
                 &claude(),
                 &i.bytes,
-                &herdr(),
+                env,
                 // The fixture service is a spawned child; on a loaded machine
                 // it can miss the 5 s production lifecycle budget and the
                 // hook (correctly) reports UnknownOutcome. These tests assert
@@ -6962,8 +6965,8 @@ mod registered_resume {
     }
     /// A registry entry and normalized Startup cannot enroll Hermes. A mutant
     /// based on context_event mode reaches the forbidden actual ResolveSeat.
-    /// New-bridge witnessed shapes decode but the Hermes policy is still
-    /// Lifecycle, so they cannot enroll either (ht-4ne.1).
+    /// A null witness (older bridge) cannot enroll Hermes; witnessed CLI shapes
+    /// are covered by the `startup_enrollment_hermes_*` tests below.
     #[test]
     fn startup_enrollment_hermes_qualified_unowned_never_resolves() {
         let r = builtins()
@@ -7001,49 +7004,6 @@ mod registered_resume {
             assert!(f.saved().is_none());
             assert!(f.service.requests().is_empty());
             assert!(outcome.attention.is_none());
-            assert_no_enrollment_intents(&f);
-        }
-        for callback in ["on_session_start", "pre_llm_call"] {
-            let f = Fixture::new(false);
-            write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
-            let mut i = hermes_input(callback, "unowned-native-session", "turn", 1, "top");
-            let mut p: serde_json::Value = serde_json::from_slice(&i.bytes).unwrap();
-            if callback == "on_session_start" {
-                p["turn_id"] = serde_json::Value::Null;
-                p["shape"]["turn_id"] = serde_json::json!({"presence":"missing","type":"absent"});
-                p["role_association"] = serde_json::json!({
-                    "role": "top", "provenance": "cli_session_start",
-                    "session_id": "unowned-native-session", "turn_id": null,
-                    "enrollment_witness": "cli_platform"});
-            } else {
-                p["role_association"]["enrollment_witness"] = "cli_platform".into();
-            }
-            assert_eq!(p["platform"], "cli");
-            i.bytes = serde_json::to_vec(&p).unwrap();
-            let handle = r
-                .admit(
-                    &hook_admission_request(r, callback_install_observation(r), &i),
-                    &budget(Instant::now() + LIFECYCLE_BUDGET, clock().as_ref()),
-                )
-                .unwrap();
-            let d = r.decode(&handle, &i).unwrap();
-            assert_eq!(
-                d.metadata.enrollment_witness,
-                Some(EnrollmentWitness::CliPlatform)
-            );
-            let outcome = f.run(r, &i);
-            assert_eq!(
-                enrollment_counts(&f),
-                (0, 0),
-                "witnessed {callback}: diagnostic={:?}",
-                outcome.diagnostic
-            );
-            assert!(f.saved().is_none());
-            assert!(f.service.requests().is_empty());
-            assert!(outcome.attention.is_none());
-            if callback == "on_session_start" {
-                assert!(outcome.stdout.is_empty());
-            }
             assert_no_enrollment_intents(&f);
         }
     }
@@ -7915,6 +7875,438 @@ mod registered_resume {
                     .iter()
                     .any(|c| matches!(c, Command::CheckIn(_) | Command::AttentionDigest(_)))
             );
+        }
+    }
+    // ---- Hermes global enrollment (ht-4ne.4) ----
+    fn hermes_cli_start(session: &str, sequence: u64) -> HookInput {
+        let mut i = hermes_input("on_session_start", session, "turn", sequence, "unknown");
+        let mut p: serde_json::Value = serde_json::from_slice(&i.bytes).unwrap();
+        p["turn_id"] = serde_json::Value::Null;
+        p["shape"]["turn_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+        p["role_association"] = serde_json::json!({
+            "role": "top", "provenance": "cli_session_start",
+            "session_id": session, "turn_id": null,
+            "enrollment_witness": "cli_platform"});
+        assert_eq!(p["platform"], "cli");
+        i.bytes = serde_json::to_vec(&p).unwrap();
+        i
+    }
+    fn hermes_cli_turn(session: &str, turn: &str, sequence: u64) -> HookInput {
+        let mut i = hermes_input("pre_llm_call", session, turn, sequence, "top");
+        let mut p: serde_json::Value = serde_json::from_slice(&i.bytes).unwrap();
+        p["role_association"]["enrollment_witness"] = "cli_platform".into();
+        i.bytes = serde_json::to_vec(&p).unwrap();
+        i
+    }
+    fn patch(i: &HookInput, edit: impl FnOnce(&mut serde_json::Value)) -> HookInput {
+        let mut p: serde_json::Value = serde_json::from_slice(&i.bytes).unwrap();
+        edit(&mut p);
+        HookInput {
+            bytes: serde_json::to_vec(&p).unwrap(),
+            registered_event: i.registered_event.clone(),
+        }
+    }
+    fn lifecycle_check_ins(f: &Fixture) -> usize {
+        f.service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| {
+                matches!(c, Command::CheckIn(c)
+                    if matches!(c.mode, crate::protocol::commands::CheckInMode::Lifecycle { .. }))
+            })
+            .count()
+    }
+    fn continuity_commands(f: &Fixture) -> usize {
+        f.service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| matches!(c, Command::ContinuityCheckIn(_)))
+            .count()
+    }
+    fn unowned_fixture() -> Fixture {
+        let f = Fixture::new(false);
+        write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+        f
+    }
+    fn hermes_harness() -> OccupantHarness {
+        OccupantHarness::Agent(builtins().agent("hermes").unwrap())
+    }
+    fn claude_registration() -> &'static Registration {
+        builtins()
+            .by_id(builtins().agent("claude").unwrap())
+            .unwrap()
+    }
+    fn claude_session_start(event_id: &str) -> HookInput {
+        HookInput {
+            bytes: serde_json::to_vec(&serde_json::json!({
+                "hook_event_name": "SessionStart", "source": "startup",
+                "session_id": "claude-s", "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp",
+                "event_id": event_id
+            }))
+            .unwrap(),
+            registered_event: Some("SessionStart".into()),
+        }
+    }
+    fn turn_output(outcome: &HookOutcome, mode: &str, input: &HookInput) -> serde_json::Value {
+        let output = task52_output(outcome, mode, input);
+        assert!(output["context"].is_string());
+        output
+    }
+    #[test]
+    fn startup_enrollment_hermes_cli_start_enrolls_and_first_turn_checks_in() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        let start = hermes_cli_start("cli-a", 1);
+        let outcome = f.run(r, &start);
+        assert_eq!(enrollment_counts(&f), (1, 0));
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(outcome.diagnostic, None);
+        assert!(outcome.attention.is_none());
+        assert!(f.saved().is_none());
+        assert_no_enrollment_intents(&f);
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let outcome = f.run(r, &turn);
+        let output = turn_output(&outcome, "startup", &turn);
+        assert_eq!(enrollment_counts(&f), (1, 1), "no second ResolveSeat");
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.seat, "registered-seat");
+        assert_eq!(saved.harness, hermes_harness().into());
+        // Parity with a turn on a launch-created (pre-seeded) seat.
+        let launched = Fixture::new(true);
+        // Fresh envelope: the first one's 1.2 s callback deadline is spent.
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let outcome = launched.run(r, &turn);
+        let expected = turn_output(&outcome, "startup", &turn);
+        let keys = |v: &serde_json::Value| -> Vec<String> {
+            v.as_object().unwrap().keys().cloned().collect()
+        };
+        assert_eq!(keys(&output), keys(&expected));
+        assert_eq!(
+            output["lifecycle_ack"]["mode"],
+            expected["lifecycle_ack"]["mode"]
+        );
+        assert_eq!(
+            output["context"].as_str().unwrap().lines().next(),
+            expected["context"].as_str().unwrap().lines().next()
+        );
+    }
+    #[test]
+    fn startup_enrollment_hermes_new_reuses_seat_and_clears() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        turn_output(&f.run(r, &turn), "startup", &turn);
+        assert_eq!(enrollment_counts(&f), (1, 1));
+        let reset = hermes_input("on_session_reset", "cli-b", "reset", 3, "unknown");
+        assert!(f.run(r, &reset).stdout.is_empty());
+        let outcome = f.run(r, &hermes_cli_start("cli-b", 4));
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(outcome.diagnostic, None);
+        assert_eq!(enrollment_counts(&f), (2, 1), "guarded reuse, no CheckIn");
+        let turn = hermes_cli_turn("cli-b", "t2", 5);
+        turn_output(&f.run(r, &turn), "clear", &turn);
+        assert_eq!(enrollment_counts(&f), (2, 2));
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.seat, "registered-seat");
+        assert_eq!(saved.session, SessionReference::Native("cli-b".into()));
+    }
+    #[test]
+    fn startup_enrollment_hermes_unowned_turn_fallback_enrolls_and_checks_in() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        let turn = hermes_cli_turn("cli-a", "t1", 1);
+        let outcome = f.run(r, &turn);
+        turn_output(&outcome, "startup", &turn);
+        assert_eq!(enrollment_counts(&f), (1, 1));
+        assert_eq!(f.saved().unwrap().harness, hermes_harness().into());
+    }
+    #[test]
+    fn startup_enrollment_hermes_steady_turns_make_no_resolver_call() {
+        let r = task52_registration();
+        let f = Fixture::new(true);
+        let first = hermes_cli_turn("cli-a", "t1", 1);
+        turn_output(&f.run(r, &first), "startup", &first);
+        let second = hermes_cli_turn("cli-a", "t2", 2);
+        turn_output(&f.run(r, &second), "current", &second);
+        assert_eq!(enrollment_counts(&f).0, 0);
+        assert_eq!(lifecycle_check_ins(&f), 1);
+    }
+    #[test]
+    fn startup_enrollment_hermes_refusals_never_resolve() {
+        let r = task52_registration();
+        let start = hermes_cli_start("cli-a", 1);
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let no_association = |p: &mut serde_json::Value| {
+            p["role_association"] = serde_json::Value::Null;
+        };
+        let cases: Vec<(&str, HookInput)> = vec![
+            (
+                "subagent platform start",
+                patch(&start, |p| {
+                    no_association(p);
+                    p["platform"] = "subagent".into();
+                }),
+            ),
+            (
+                "empty platform start",
+                patch(&start, |p| {
+                    no_association(p);
+                    p["platform"] = "".into();
+                }),
+            ),
+            (
+                "null platform start",
+                patch(&start, |p| {
+                    no_association(p);
+                    p["platform"] = serde_json::Value::Null;
+                    p["shape"]["platform"] =
+                        serde_json::json!({"presence":"missing","type":"absent"});
+                }),
+            ),
+            (
+                "parented turn",
+                hermes_input("pre_llm_call", "cli-a", "t1", 3, "child"),
+            ),
+            (
+                "post_tool_call",
+                patch(
+                    &hermes_input("pre_llm_call", "cli-a", "t1", 4, "top"),
+                    |p| {
+                        p["callback"] = "post_tool_call".into();
+                        p["role_association"]["provenance"] = "qualified_pre_llm_cache".into();
+                    },
+                ),
+            ),
+            (
+                "reset",
+                hermes_input("on_session_reset", "cli-b", "reset", 5, "unknown"),
+            ),
+            (
+                "null witness on empty platform turn",
+                patch(&turn, |p| {
+                    p["platform"] = "".into();
+                    p["role_association"]["enrollment_witness"] = serde_json::Value::Null;
+                }),
+            ),
+        ];
+        for (name, input) in cases {
+            let f = unowned_fixture();
+            let outcome = f.run(r, &input);
+            assert_eq!(
+                enrollment_counts(&f),
+                (0, 0),
+                "{name}: diagnostic={:?}; commands={:?}",
+                outcome.diagnostic,
+                f.service.seen.lock().unwrap()
+            );
+            assert!(f.saved().is_none(), "{name}");
+            assert_no_enrollment_intents(&f);
+        }
+    }
+    #[test]
+    fn startup_enrollment_hermes_restore_hold_refuses_start_and_fallback() {
+        let r = task52_registration();
+        // No enrollment-unowned control: the fixture reports the pane's seat
+        // Unresolved, which is a held mapping.
+        let f = Fixture::new(false);
+        let outcome = f.run(r, &hermes_cli_start("cli-a", 1));
+        assert!(outcome.stdout.is_empty());
+        let detail = outcome.diagnostic.expect("held pane is reported");
+        assert!(detail.to_lowercase().contains("unresolved"), "{detail}");
+        assert_eq!(enrollment_counts(&f), (0, 0));
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let outcome = f.run(r, &turn);
+        assert!(outcome.diagnostic.is_some());
+        assert_eq!(enrollment_counts(&f), (0, 0));
+        assert_eq!(lifecycle_check_ins(&f), 0);
+        assert!(f.saved().is_none());
+        assert_no_enrollment_intents(&f);
+    }
+    #[test]
+    fn startup_enrollment_hermes_null_witness_on_launched_seat_checks_in() {
+        let r = task52_registration();
+        let f = Fixture::new(true);
+        let legacy = hermes_input("pre_llm_call", "legacy-a", "t1", 1, "top");
+        let outcome = f.run(r, &legacy);
+        turn_output(&outcome, "startup", &legacy);
+        assert_eq!(enrollment_counts(&f), (0, 1));
+    }
+    #[test]
+    fn startup_enrollment_hermes_resume_shapes() {
+        let r = task52_registration();
+        // Seated pane: a session never started in this run checks in as Startup.
+        let f = Fixture::new(true);
+        let turn = hermes_cli_turn("resumed-session", "t1", 1);
+        turn_output(&f.run(r, &turn), "startup", &turn);
+        assert_eq!(lifecycle_check_ins(&f), 1);
+        assert_eq!(enrollment_counts(&f).0, 0);
+        assert_eq!(continuity_commands(&f), 0);
+        assert_eq!(f.saved().unwrap().seat, "registered-seat");
+        // Unseated pane: enrolls only through the fallback.
+        let f = unowned_fixture();
+        let turn = hermes_cli_turn("resumed-session", "t1", 1);
+        turn_output(&f.run(r, &turn), "startup", &turn);
+        assert_eq!(enrollment_counts(&f), (1, 1));
+        assert_eq!(continuity_commands(&f), 0);
+    }
+    #[test]
+    fn startup_enrollment_hermes_side_agent_reuses_seat() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let a1 = hermes_cli_turn("cli-a", "t1", 2);
+        turn_output(&f.run(r, &a1), "startup", &a1);
+        assert_eq!(enrollment_counts(&f), (1, 1));
+        // A /background side agent: platform cli, own session, no parent.
+        let outcome = f.run(r, &hermes_cli_start("cli-side", 3));
+        assert_eq!(outcome.diagnostic, None);
+        assert_eq!(enrollment_counts(&f), (2, 1), "resolver reuse, no CheckIn");
+        let side = hermes_cli_turn("cli-side", "t2", 4);
+        turn_output(&f.run(r, &side), "startup", &side);
+        assert_eq!(lifecycle_check_ins(&f), 2);
+        assert_eq!(
+            f.saved().unwrap().session,
+            SessionReference::Native("cli-side".into())
+        );
+        // The pre-existing ping-pong: the foreground session checks in again.
+        let a2 = hermes_cli_turn("cli-a", "t3", 5);
+        turn_output(&f.run(r, &a2), "startup", &a2);
+        assert_eq!(lifecycle_check_ins(&f), 3);
+        assert_eq!(f.saved().unwrap().seat, "registered-seat");
+        assert_eq!(enrollment_counts(&f).0, 2);
+    }
+    #[test]
+    fn startup_enrollment_hermes_cross_harness_reuse_both_orders() {
+        let r = task52_registration();
+        let c = claude_registration();
+        let f = unowned_fixture();
+        let claude_start = claude_session_start("claude-start-1");
+        let outcome = f.run(c, &claude_start);
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+        let claude_harness: OccupantHarness =
+            OccupantHarness::Agent(builtins().agent("claude").unwrap());
+        assert_eq!(f.saved().unwrap().harness, claude_harness.into());
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let outcome = f.run(r, &turn);
+        turn_output(&outcome, "startup", &turn);
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.harness, hermes_harness().into());
+        assert_eq!(saved.seat, "registered-seat");
+        let outcome = f.run(c, &claude_session_start("claude-start-2"));
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.harness, claude_harness.into());
+        assert_eq!(saved.seat, "registered-seat");
+    }
+    #[test]
+    fn startup_enrollment_hermes_exit_then_restart_or_claude_keeps_seat() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let a = hermes_cli_turn("cli-a", "t1", 2);
+        turn_output(&f.run(r, &a), "startup", &a);
+        // Hermes exits; a new bare Hermes starts in the same pane (no reset).
+        f.run(r, &hermes_cli_start("cli-b", 3));
+        let b = hermes_cli_turn("cli-b", "t1", 4);
+        turn_output(&f.run(r, &b), "startup", &b);
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.seat, "registered-seat");
+        assert_eq!(saved.session, SessionReference::Native("cli-b".into()));
+        // Then Claude starts in the same pane.
+        let outcome = f.run(claude_registration(), &claude_session_start("claude-start"));
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.seat, "registered-seat");
+        assert_eq!(
+            saved.harness,
+            OccupantHarness::Agent(builtins().agent("claude").unwrap()).into()
+        );
+        // No binding ends outside a lifecycle check-in.
+        assert!(f.service.seen.lock().unwrap().iter().all(|c| matches!(
+            c,
+            Command::Seats(_)
+                | Command::SeatInspect(_)
+                | Command::ResolveSeat(_)
+                | Command::CheckIn(_)
+                | Command::AttentionDigest(_)
+                | Command::Directory(_)
+                | Command::HotThreads(_)
+        )));
+    }
+    #[test]
+    fn startup_enrollment_hermes_outside_herdr_is_silent() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        let outside = HookEnv {
+            herdr_env: false,
+            pane: None,
+        };
+        for input in [
+            hermes_cli_start("cli-a", 1),
+            hermes_cli_turn("cli-a", "t1", 2),
+        ] {
+            let outcome = f.run_env(r, &input, &outside);
+            assert!(outcome.stdout.is_empty());
+            assert!(f.service.seen.lock().unwrap().is_empty());
+        }
+    }
+    #[test]
+    fn startup_enrollment_hermes_concurrent_start_and_first_turn_one_seat() {
+        let r = task52_registration();
+        for round in 0..5u64 {
+            let f = unowned_fixture();
+            let start = hermes_cli_start("cli-a", 1 + round * 10);
+            let turn = hermes_cli_turn("cli-a", "t1", 2 + round * 10);
+            let (started, turned) = std::thread::scope(|scope| {
+                let a = scope.spawn(|| f.run(r, &start));
+                let b = scope.spawn(|| {
+                    let began = Instant::now();
+                    let mut outcome = f.run(r, &turn);
+                    // A debug hook on a loaded machine can overrun the 1.2 s
+                    // callback cap and fail open with no output. Only such an
+                    // overrun is retried: the same event with fresh timestamps
+                    // is a canonical replay (same operation key).
+                    if outcome.stdout.is_empty() && began.elapsed() >= Duration::from_secs(1) {
+                        outcome = f.run(r, &hermes_cli_turn("cli-a", "t1", 2 + round * 10));
+                    }
+                    outcome
+                });
+                (a.join().unwrap(), b.join().unwrap())
+            });
+            assert!(started.stdout.is_empty());
+            let output: serde_json::Value = serde_json::from_slice(&turned.stdout)
+                .unwrap_or_else(|_| panic!("round {round}: turn output {turned:?}"));
+            assert!(output["context"].is_string(), "round {round}");
+            *f.service.seen.lock().unwrap() =
+                read_fixture_json(&f.root.join("transcript.json"), 1024 * 1024).unwrap();
+            // One lifecycle check-in operation (a replay repeats its key).
+            let operations: std::collections::BTreeSet<String> = f
+                .service
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|c| match c {
+                    Command::CheckIn(c)
+                        if matches!(
+                            c.mode,
+                            crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                        ) =>
+                    {
+                        Some(format!("{:?}", c.operation))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(operations.len(), 1, "round {round}: {operations:?}");
+            assert_eq!(f.saved().unwrap().seat, "registered-seat");
+            assert!(enrollment_counts(&f).0 >= 1);
         }
     }
 }

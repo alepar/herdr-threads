@@ -703,6 +703,9 @@ impl HarnessAdapter for HermesAdapter {
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         super::context::QualifiedTurnPolicy::StartupAttach
     }
+    fn enrollment_policy(&self) -> EnrollmentPolicy {
+        EnrollmentPolicy::WitnessedStartAndUnownedTurn
+    }
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation {
         match observe_executable(env, budget) {
             Ok(Some(binary)) => InstallObservation::ExecutableAvailable { binary },
@@ -762,12 +765,20 @@ impl HarnessAdapter for HermesAdapter {
         if state.bytes != input.bytes || e != state.envelope {
             return Err(DecodeFailure::RegistrationMismatch);
         }
-        // on_session_start stays an observer with an unknown role until the
-        // Hermes policy flips (ht-4ne.4); only the turn callbacks carry a role.
+        // The turn callbacks carry a role; on_session_start carries one only
+        // with the bridge's `cli_session_start` association (strict parse
+        // guarantees role top, witness cli_platform and platform cli), which
+        // enrolls the pane. Any other on_session_start is an unknown observer.
+        let cli_start = e.callback == "on_session_start"
+            && e.role_association
+                .as_ref()
+                .is_some_and(|a| a.provenance == "cli_session_start");
         let role = match e
             .role_association
             .as_ref()
-            .filter(|_| matches!(e.callback.as_str(), "pre_llm_call" | "post_tool_call"))
+            .filter(|_| {
+                cli_start || matches!(e.callback.as_str(), "pre_llm_call" | "post_tool_call")
+            })
             .map(|a| a.role.as_str())
         {
             Some("top") => EventRole::TopLevel,
@@ -792,6 +803,8 @@ impl HarnessAdapter for HermesAdapter {
                 event_key: e.event_id.clone(),
                 ordering: e.observation_order.generic(),
             })
+        } else if cli_start {
+            EventIntent::Enroll
         } else {
             EventIntent::Observer
         };
@@ -1322,6 +1335,13 @@ mod adapter_tests {
         r.decode(&h, input).unwrap()
     }
     #[test]
+    fn hermes_policy_is_witnessed_start_and_unowned_turn() {
+        assert_eq!(
+            registration().enrollment_policy(),
+            EnrollmentPolicy::WitnessedStartAndUnownedTurn
+        );
+    }
+    #[test]
     fn hermes_enrollment_envelope_d2a_rows_round_trip_and_refusals() {
         use EnrollmentPolicy::{Lifecycle, WitnessedStartAndUnownedTurn as Witnessed};
         let cli = Some(EnrollmentWitness::CliPlatform);
@@ -1329,12 +1349,13 @@ mod adapter_tests {
         let input = start_envelope(Some("cli"), cli_start_association());
         assert!(parse(&input).is_ok(), "row 1 parses");
         let e = admit_decode(&input);
-        assert!(matches!(e.intent, EventIntent::Observer));
-        assert_eq!(e.role, EventRole::Unknown);
+        assert!(matches!(e.intent, EventIntent::Enroll));
+        assert_eq!(e.role, EventRole::TopLevel);
         assert!(matches!(e.delivery, DeliveryEligibility::ObserverOnly));
         assert_eq!(e.metadata.enrollment_witness, cli);
         assert!(!e.can_check_in());
-        assert_eq!(e.enrollment(Witnessed), None);
+        assert_eq!(e.enrollment(Witnessed), Some(EnrollmentKind::SessionStart));
+        assert_eq!(e.enrollment(Lifecycle), None);
         // Rows 2 and 3: non-cli platform and old bridge start have a null association.
         for platform in [Some(""), Some("cli")] {
             let input = start_envelope(platform, serde_json::Value::Null);

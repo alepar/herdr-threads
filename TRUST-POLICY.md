@@ -86,6 +86,11 @@ only through ordinary guards; a resume without a usable native session cannot al
 Resolution and check-in retain their separate durable operation journals: concurrent/replayed startup
 and response loss cannot split a pane's role; an uncertain resolution remains explicitly retryable.
 A historical resolution result is revalidated against the current pane mapping before check-in.
+A Hermes CLI top-level `on_session_start` (platform `cli`, the bridge's `cli_session_start`
+association) enrolls through the same resolver without a check-in or context offer; a qualified
+top-level CLI `pre_llm_call` enrolls the same way only when the pane has no nonretired seat
+(`Unowned`), then checks in in the same callback. Both meet the same guards; a held or unresolved
+pane is refused.
 Enrollment itself grants no receipt authority; check-in retains `cooperative_top_level` provenance.
 Subagent callbacks, `PreToolUse` and Current/compact checks never allocate; the exact installed event
 registration must match the native payload before service or journal access.
@@ -184,7 +189,9 @@ model open work, and summary closure never changes receipt state or installs glo
 
 **A4. Binding-kind transitions.**
 - *Human to agent*: a hooked agent's lifecycle check-in replaces a human binding. Allowed.
-- *Agent to agent, same seat*: a lifecycle check-in (startup, `/clear`, resume) replaces the binding. Allowed.
+- *Agent to agent, same seat*: a lifecycle check-in (startup, `/clear`, resume) replaces the binding. Allowed. A lifecycle check-in by a different agent harness on the same seat retires the pane's
+  client-local context of the previous harness before checking in (a hint, A2; the daemon decides the
+  check-in against the canonical view).
   A `managed_launch` binding is replaced this way, and only this way: a Current (tool-boundary) check-in never
   adopts or registers it, and C1 continuity never matches it. A lifecycle check-in prepared one seat
   generation before the launch was recorded (the launched agent checking in while `launch` reports it) is
@@ -487,11 +494,20 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   remains silent. No wrapper or global configuration change is made by enrollment. The actual
   pane environment must come from the user's foreground harness configuration; enrollment
   cannot infer a different attaching TUI pane or turn a shared-server environment into proof.
-- **Hermes enrolls only through `launch`.** Startup enrollment stays Claude/Codex only. A Hermes
-  session started outside `launch --kind hermes` gets no seat and no context: the bridge's hooks
-  find no resolved seat for the pane, and Herdr does not recognize the bare process as an agent
-  without the guarded launch process hint. Delegated Hermes children are answered locally with the
-  subagent restriction and never reach the daemon.
+- **Hermes enrolls through its CLI hooks.** The witness is Hermes's native `platform == "cli"`
+  (cooperative, A1): delegated children run with platform `subagent` and are answered locally, and an
+  empty or missing platform never enrolls. The start callback enrolls without a check-in (Hermes ignores
+  its return value); the first qualified turn checks in. An older installed bridge (no
+  `enrollment_witness`) keeps launch-only behavior until `setup hermes --profile NAME` is re-run. There
+  is no C1 resume continuity: a resumed session checks in as `Startup` in a seated pane, enrolls through
+  the Unowned-turn fallback in an unseated one, and meets the restore hold after a Herdr restart. Wake: a
+  bare macOS Hermes is not process-detected by Herdr, so its seat is not woken while idle; `launch --kind
+  hermes` stays the way to get a wakeable Hermes. CLI side agents (`/background`: platform `cli`, own
+  session, no parent, no native side-agent flag) are indistinguishable from the foreground session: they
+  enroll no new seat, but their turns check in and replace the binding, as on a launch-created seat
+  (follow-on ht-e73). Operator retire: retiring the seat of a running bare Hermes leaves the pane
+  `Unowned`, so its next CLI turn re-enrolls a fresh seat through the ordinary resolver, never the retired
+  one.
 - **Foreground harness execution is user managed.** Hooks and tools must inherit the TUI
   pane's `HERDR_PANE_ID`. A shared harness server started in another pane can instead supply
   its own pane environment; herdr-threads does not recover the attaching TUI pane from
@@ -667,6 +683,18 @@ acks a truncated item; its receipt settles only through the agent's explicit `ac
 `body`, which is read-only, then `ack`) or a text `inbox` that displays it in full. Rejected: reusing `cooperative_inbox_display` (a different
 action); an explicit agent ACK after mod delivery (keeps the tool-call overhead the goal removes); delivering
 only the marker.
+
+### Hermes global enrollment through its hooks (2026-10-09, ht-4ne)
+
+Decision: enrollment splits from check-in. A witnessed Hermes CLI `on_session_start` enrolls the pane
+(ordinary guarded resolver, daemon ensured, no check-in, empty output); the first qualified turn checks in.
+The witness is the platform (`cli`) and the adapter declares an `EnrollmentPolicy`; a qualified CLI turn in
+an `Unowned` pane enrolls as a fallback on the existing turn path (a dropped start callback or a cold daemon
+recovers on a later turn). No new provenance value: the check-in stays `cooperative_top_level`. Rejected:
+`pre_llm_call`-only enrollment; `on_session_start`-only enrollment; Herdr `pane.agent_session` as trigger or
+witness; treating an empty platform as top-level; waiting for the agy generic witness; a full lifecycle
+check-in at `on_session_start`; an `if harness == hermes` branch in `hook.rs`; a bridge-side foreground lock
+for side agents.
 
 ### Residual trust-edge findings (bucket B5)
 
