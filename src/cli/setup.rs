@@ -90,7 +90,10 @@ Scope (user level, like Herdr's own agent hooks):
           selected home's plugins/herdr-threads. Enable manually with the printed
           `hermes --profile NAME plugins enable herdr-threads` command and retain
           native consent. Installed, configured enabled and native activation are
-          separate. Unsetup preserves foreign/modified assets and native YAML/enable
+          separate. A bare Hermes CLI session in a Herdr pane then joins through these
+          hooks. After upgrading, run setup again so the installed bridge is current;
+          setup-status reports each profile's enablement and whether its bridge is
+          current. Unsetup preserves foreign/modified assets and native YAML/enable
           selection, reporting residue and manual disable guidance.
 
 Foreground agents (user-managed, read-only inspection): setup and setup-status report user
