@@ -68,7 +68,8 @@ impl Scene {
         // count against the send-to-wake budget.
         let attempted_at = s.probe.next_commit_instant(Lane::Wakes);
         let sent_after = Instant::now();
-        self.0.send(recipient, body, &[]);
+        let sent = self.0.send(recipient, body, &[]);
+        let message = sent.as_str().expect("sent message ID");
         let until = Instant::now() + Duration::from_secs(3);
         while attempted_at.lock().unwrap().is_none() && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(1));
@@ -96,7 +97,12 @@ impl Scene {
                     && *origin == Some(Lane::Deadlines)),
             "the deadline lane's materialization kicks the wake lane: {kicks:?}"
         );
-        attempted.saturating_duration_since(*committed_at)
+        let latency = attempted.saturating_duration_since(*committed_at);
+        // Settle this round's attention so its wake retry cannot occupy the
+        // single wake lane during a later round's measurement.
+        let (caller, _) = &self.0.recipients[recipient];
+        s.ok(Some(caller), &["ack", message]);
+        latency
     }
 }
 

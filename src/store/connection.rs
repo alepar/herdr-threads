@@ -37,6 +37,10 @@ pub struct StoreContext {
     /// Test hook: fails store access on lane-owned threads (see `set_lane_fault`).
     #[cfg(any(test, feature = "test-support"))]
     lane_fault: std::sync::Mutex<Option<LaneFault>>,
+    /// Test hook: writers commit with `synchronous=NORMAL` (see
+    /// `relax_commit_durability`).
+    #[cfg(any(test, feature = "test-support"))]
+    relaxed_durability: AtomicBool,
     #[cfg(test)]
     setup_busy_signal: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
     #[cfg(test)]
@@ -60,6 +64,8 @@ impl StoreContext {
             binding_evidence_lacking: std::sync::Mutex::new(Vec::new()),
             #[cfg(any(test, feature = "test-support"))]
             lane_fault: std::sync::Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            relaxed_durability: AtomicBool::new(false),
             #[cfg(test)]
             setup_busy_signal: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -73,6 +79,13 @@ impl StoreContext {
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_lane_fault(&self, fault: Option<LaneFault>) {
         *self.lane_fault.lock().unwrap() = fault;
+    }
+
+    /// Test hook for latency fixtures: writers opened afterwards commit with
+    /// `synchronous=NORMAL` (no fsync per WAL commit) instead of `FULL`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn relax_commit_durability(&self) {
+        self.relaxed_durability.store(true, Ordering::SeqCst);
     }
 
     /// Fails with the installed fault's error for the calling thread's lane
@@ -141,7 +154,15 @@ impl StoreContext {
         let journal_mode = "WAL";
         conn.pragma_update(None, "journal_mode", journal_mode)
             .map_err(store_error)?;
-        conn.pragma_update(None, "synchronous", "FULL")
+        #[cfg(any(test, feature = "test-support"))]
+        let synchronous = if self.relaxed_durability.load(Ordering::SeqCst) {
+            "NORMAL"
+        } else {
+            "FULL"
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let synchronous = "FULL";
+        conn.pragma_update(None, "synchronous", synchronous)
             .map_err(store_error)?;
         let (backfilled, still_lacking) = schema::guard_binding_evidence(&conn)?;
         let report = crate::ports::BindingEvidenceStartup {

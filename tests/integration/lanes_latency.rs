@@ -72,6 +72,9 @@ impl Session {
         let host: Arc<dyn HostPort> =
             Arc::new(NativeCli::new(herdr.socket_path(), Arc::clone(&clock)));
         let probe = LaneProbe::default();
+        // Lane budgets measure the commit chain, not fsync on a disk the
+        // rest of the suite shares (production commits stay FULL).
+        probe.relax_commit_durability();
         let stop = Cancellation::default();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let (daemon_stop, daemon_probe) = (stop.clone(), probe.clone());

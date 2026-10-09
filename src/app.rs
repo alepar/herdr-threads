@@ -566,9 +566,10 @@ pub(crate) fn start_retention_lane(
 }
 
 /// Test-only view of one elected daemon's lanes: the store's per-origin commit
-/// counts and flushed kick log, and each registered lane Pacer. It observes
-/// only; it adds no behaviour to the daemon. In ordinary builds it is an empty
-/// type and every method on it is a no-op.
+/// counts and flushed kick log, and each registered lane Pacer. It observes;
+/// it changes the daemon only through its explicit test knobs (injected lane
+/// faults, `relax_commit_durability`). In ordinary builds it is an empty type
+/// and every method on it is a no-op.
 #[derive(Clone, Default)]
 pub struct LaneProbe {
     #[cfg(any(test, feature = "test-support"))]
@@ -618,6 +619,8 @@ struct ProbeState {
     lane_log_path: Option<std::path::PathBuf>,
     /// The host reachability the observation lane feeds the wake lane.
     reachability: Option<Arc<HostReachability>>,
+    /// The store commits without fsync (see [`LaneProbe::relax_commit_durability`]).
+    relaxed_durability: bool,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -804,6 +807,18 @@ impl LaneProbe {
     pub fn log_lane_errors_to(&self, path: std::path::PathBuf) {
         self.state().lane_log_path = Some(path);
     }
+    /// Latency fixtures: the daemon's store commits with `synchronous=NORMAL`,
+    /// so a commit-to-wake budget measures the lane chain rather than fsync
+    /// time on a disk shared with the rest of the test suite. Production
+    /// always commits with `FULL`. Call before the daemon starts.
+    pub fn relax_commit_durability(&self) {
+        self.state().relaxed_durability = true;
+    }
+    fn configure_store(&self, context: &StoreContext) {
+        if self.state().relaxed_durability {
+            context.relax_commit_durability();
+        }
+    }
     fn lane_log(&self, clock: Arc<dyn Clock>) -> crate::daemon::logs::RateLimitedLaneLog {
         use crate::daemon::logs::RateLimitedLaneLog;
         let Some(path) = self.state().lane_log_path.clone() else {
@@ -841,6 +856,7 @@ impl LaneProbe {
 
 #[cfg(not(any(test, feature = "test-support")))]
 impl LaneProbe {
+    fn configure_store(&self, _: &StoreContext) {}
     fn attach_store(&self, _: &Arc<SqliteStore>) {}
     fn attach_registry(&self, _: &Arc<CommitKicks>, _: Vec<Arc<WorkerStatus>>) {}
     fn attach_pacer(&self, _: Lane, _: &Arc<Pacer>) {}
@@ -962,6 +978,7 @@ where
         shutdown,
         move |instance, boot, cancellation| {
             let context = StoreContext::new(database_path, Arc::clone(&factory_clock));
+            factory_probe.configure_store(&context);
             // One registry per elected daemon: the store's commit hooks kick
             // through it and every lane registers its Pacer here at start.
             let kicks = Arc::new(CommitKicks::default());
