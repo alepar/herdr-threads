@@ -955,11 +955,11 @@ pub(crate) fn creation_unknown(
 // bytes only conservatively fence launch; canonical completion owns the report.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ChildProgress {
+pub(crate) struct ChildProgress {
     version: u32,
-    identity: crate::protocol::handoff::BootstrapIdentity,
-    attachment: crate::protocol::handoff::BootstrapAttachment,
-    progress: super::handoff::Progress,
+    pub(crate) identity: crate::protocol::handoff::BootstrapIdentity,
+    pub(crate) attachment: crate::protocol::handoff::BootstrapAttachment,
+    pub(crate) progress: super::handoff::Progress,
 }
 fn child_progress_path(
     journal: &super::journal::Journal,
@@ -973,14 +973,12 @@ fn child_progress_path(
 // Canonical identity + attachment + genuine raw launch report and bounded staged
 // metadata fit the child ceiling. Terminal includes the full canonical envelope
 // plus original JSON escaped once as a String (at most twice its compact bytes).
-const MAX_LINKED_LOCAL_BYTES: usize = 2 * 1024 * 1024;
-const MAX_BOOTSTRAP_TERMINAL_BYTES: usize = crate::store::topology_handoff::MAX_COMPLETED_BYTES
-    + 2 * super::journal::MAX_BOOTSTRAP_ORIGIN_BYTES
-    + 4096;
-fn read_linked_local<T: serde::de::DeserializeOwned + serde::Serialize>(
-    path: &std::path::Path,
-    limit: usize,
-) -> Result<Option<T>, RunError> {
+pub(crate) const MAX_LINKED_LOCAL_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_BOOTSTRAP_TERMINAL_BYTES: usize =
+    crate::store::topology_handoff::MAX_COMPLETED_BYTES
+        + 2 * super::journal::MAX_BOOTSTRAP_ORIGIN_BYTES
+        + 4096;
+fn read_linked_bytes(path: &std::path::Path, limit: usize) -> Result<Option<Vec<u8>>, RunError> {
     use std::{io::Read, os::unix::fs::OpenOptionsExt};
     let file = match std::fs::OpenOptions::new()
         .read(true)
@@ -1003,16 +1001,28 @@ fn read_linked_local<T: serde::de::DeserializeOwned + serde::Serialize>(
             "oversized bootstrap retained record",
         ));
     }
-    let value: T = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
-    if serde_json::from_slice::<serde_json::Value>(&bytes).map_err(std::io::Error::other)?
+    Ok(Some(bytes))
+}
+fn decode_linked<T: serde::de::DeserializeOwned + serde::Serialize>(
+    bytes: &[u8],
+    limit: usize,
+) -> Result<T, RunError> {
+    if bytes.len() > limit {
+        return Err(super::invalid_request(
+            "oversized bootstrap retained record",
+        ));
+    }
+    let value: T = serde_json::from_slice(bytes).map_err(std::io::Error::other)?;
+    if serde_json::from_slice::<serde_json::Value>(bytes).map_err(std::io::Error::other)?
         != serde_json::to_value(&value).map_err(std::io::Error::other)?
     {
         return Err(super::invalid_request(
             "unexpected bootstrap retained fields",
         ));
     }
-    Ok(Some(value))
+    Ok(value)
 }
+
 fn same_record<T: serde::Serialize>(a: &T, b: &T) -> Result<bool, RunError> {
     Ok(serde_json::to_value(a).map_err(std::io::Error::other)?
         == serde_json::to_value(b).map_err(std::io::Error::other)?)
@@ -1023,16 +1033,26 @@ fn load_child_progress(
     identity: &crate::protocol::handoff::BootstrapIdentity,
     attachment: &crate::protocol::handoff::BootstrapAttachment,
 ) -> Result<super::handoff::Progress, RunError> {
-    let Some(saved): Option<ChildProgress> = read_linked_local(
+    let Some(bytes) = read_linked_bytes(
         &child_progress_path(journal, reference),
         MAX_LINKED_LOCAL_BYTES,
     )?
     else {
         return Ok(Default::default());
     };
+    let saved = decode_child_progress(&bytes)?;
+    if !same_record(&saved.identity, identity)? || !same_record(&saved.attachment, attachment)? {
+        return Err(super::invalid_request(
+            "bootstrap child progress identity or state differs",
+        ));
+    }
+    Ok(saved.progress)
+}
+/// Pure owning-module decoder; local evidence never proves canonical attachment.
+pub(crate) fn decode_child_progress(bytes: &[u8]) -> Result<ChildProgress, RunError> {
+    let saved: ChildProgress = decode_linked(bytes, MAX_LINKED_LOCAL_BYTES)?;
+    attached_handoff_plan(&saved.identity, &saved.attachment)?;
     if saved.version != 1
-        || !same_record(&saved.identity, identity)?
-        || !same_record(&saved.attachment, attachment)?
         || (saved.progress.possible_start
             && (saved.progress.thread.is_none()
                 || saved.progress.invitation.is_none()
@@ -1042,7 +1062,7 @@ fn load_child_progress(
             .progress
             .thread
             .as_ref()
-            .zip(attachment.handoff.thread.as_ref())
+            .zip(saved.attachment.handoff.thread.as_ref())
             .is_some_and(|(a, b)| a != b)
         || saved.progress.invitation.as_ref().is_some_and(|v| {
             !matches!(
@@ -1061,7 +1081,7 @@ fn load_child_progress(
             "bootstrap child progress identity or state differs",
         ));
     }
-    Ok(saved.progress)
+    Ok(saved)
 }
 pub(crate) fn bootstrap_identity(
     pending: &super::journal::PendingIntent,
@@ -1124,10 +1144,10 @@ fn validate_completed(
 }
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BootstrapTerminal {
+pub(crate) struct BootstrapTerminal {
     version: u32,
-    original: String,
-    completed: crate::protocol::handoff::CompletedBootstrapResult,
+    pub(crate) original: String,
+    pub(crate) completed: crate::protocol::handoff::CompletedBootstrapResult,
 }
 fn terminal_path(
     journal: &super::journal::Journal,
@@ -1143,21 +1163,14 @@ fn read_terminal(
     journal: &super::journal::Journal,
     reference: &super::journal::IntentRef,
 ) -> Result<Option<BootstrapTerminal>, RunError> {
-    let Some(saved): Option<BootstrapTerminal> = read_linked_local(
+    let Some(bytes) = read_linked_bytes(
         &terminal_path(journal, reference),
         MAX_BOOTSTRAP_TERMINAL_BYTES,
     )?
     else {
         return Ok(None);
     };
-    if saved.version != 1 {
-        return Err(super::invalid_request(
-            "unsupported bootstrap terminal record",
-        ));
-    }
-    let pending =
-        super::journal::Journal::decode_bootstrap_origin(reference, saved.original.as_bytes())?;
-    validate_completed(&bootstrap_identity(&pending)?, &saved.completed)?;
+    let saved = decode_bootstrap_terminal(reference, &bytes)?;
     match journal.snapshot_bootstrap_origin(reference) {
         Ok(original) if original != saved.original.as_bytes() => {
             return Err(super::invalid_request(
@@ -1169,6 +1182,22 @@ fn read_terminal(
         Err(e) => return Err(e.into()),
     }
     Ok(Some(saved))
+}
+/// Pure retained terminal decoder shared by pinned archival reads and producer paths.
+pub(crate) fn decode_bootstrap_terminal(
+    reference: &super::journal::IntentRef,
+    bytes: &[u8],
+) -> Result<BootstrapTerminal, RunError> {
+    let saved: BootstrapTerminal = decode_linked(bytes, MAX_BOOTSTRAP_TERMINAL_BYTES)?;
+    if saved.version != 1 {
+        return Err(super::invalid_request(
+            "unsupported bootstrap terminal record",
+        ));
+    }
+    let pending =
+        super::journal::Journal::decode_bootstrap_origin(reference, saved.original.as_bytes())?;
+    validate_completed(&bootstrap_identity(&pending)?, &saved.completed)?;
+    Ok(saved)
 }
 /// Bounded read-only original evidence for the shared classifier. Retained
 /// terminal bytes only select the exact origin; they authorize no live effect.

@@ -2,10 +2,19 @@
 //! Published journal records are immutable and renamed into this directory. Every
 //! scan restarts on a directory generation change; no allocator or journal API is used.
 use crate::{
-    cli::journal::{IntentHeader, IntentScope, SemanticMutation},
+    cli::{
+        journal::{
+            IntentHeader, IntentRef, IntentScope, Journal, MAX_BOOTSTRAP_ORIGIN_BYTES,
+            SemanticMutation,
+        },
+        topology_handoff,
+    },
     daemon::paths::InstancePaths,
     protocol::{
-        handoff::{BootstrapIdentity, HandoffIdentity, HandoffNamespace},
+        handoff::{
+            BootstrapAttachment, BootstrapIdentity, CompletedBootstrapResult, HandoffIdentity,
+            HandoffNamespace,
+        },
         ids::ThreadId,
         output::ContinuationContext,
         results::IntentKind,
@@ -55,6 +64,8 @@ pub enum Hint {
     Bootstrap {
         identity: Box<BootstrapIdentity>,
         source: HintSource,
+        retained_child: Option<Box<(BootstrapAttachment, Option<ThreadId>)>>,
+        retained_completion: Option<Box<CompletedBootstrapResult>>,
     },
 }
 impl Hint {
@@ -86,6 +97,8 @@ fn stamp(meta: &Metadata) -> String {
 struct Directory {
     file: File,
     entries: *mut libc::DIR,
+    #[cfg(test)]
+    reads: std::cell::Cell<[usize; 3]>,
 }
 // Directory and its cursor have a single owner; no concurrent readdir access.
 unsafe impl Send for Directory {}
@@ -115,7 +128,12 @@ impl Directory {
             unsafe { libc::close(duplicate) };
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { file, entries })
+        Ok(Self {
+            file,
+            entries,
+            #[cfg(test)]
+            reads: std::cell::Cell::new([0; 3]),
+        })
     }
     fn next(&mut self) -> io::Result<Option<OsString>> {
         #[cfg(target_os = "macos")]
@@ -160,9 +178,27 @@ impl Directory {
         {
             return Err(io::Error::other("unsafe or oversized legacy record"));
         }
-        let mut bytes = Vec::new();
-        (&mut file).take(cap as u64 + 1).read_to_end(&mut bytes)?;
-        if bytes.len() > cap || stamp(&before) != stamp(&file.metadata()?) {
+        // Allocate only the metadata length plus one growth sentinel. A growing
+        // file is rejected; read_to_end must not geometrically expand capacity.
+        let mut bytes = vec![0; before.len() as usize + 1];
+        let mut used = 0;
+        while used < bytes.len() {
+            let read = file.read(&mut bytes[used..])?;
+            if read == 0 {
+                break;
+            }
+            used += read;
+        }
+        bytes.truncate(used);
+        #[cfg(test)]
+        {
+            let mut counts = self.reads.get();
+            counts[0] += 1;
+            counts[1] += bytes.len();
+            counts[2] += bytes.capacity();
+            self.reads.set(counts);
+        }
+        if bytes.len() > before.len() as usize || stamp(&before) != stamp(&file.metadata()?) {
             return Err(io::Error::other("legacy record changed"));
         }
         Ok(Some(bytes))
@@ -202,6 +238,256 @@ fn namespace(context: &ContinuationContext) -> io::Result<(PathBuf, PathBuf)> {
         .ok_or_else(|| io::Error::other("unknown legacy endpoint name"))?;
     Ok((directory(Path::new(state))?, directory(parent)?.join(name)))
 }
+struct ChildLookup {
+    operation: crate::protocol::ids::OperationId,
+    directory: Directory,
+    reference: Option<IntentRef>,
+    parent_name: Option<OsString>,
+}
+fn check_cancelled(cancelled: &dyn Fn() -> bool) -> io::Result<()> {
+    if cancelled() {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "legacy scan cancelled",
+        ))
+    } else {
+        Ok(())
+    }
+}
+fn intent_name(reference: &IntentRef) -> OsString {
+    format!(
+        "{:020}-{}.intent",
+        reference.ordinal,
+        reference.operation.as_str()
+    )
+    .into()
+}
+fn bootstrap_name(reference: &IntentRef) -> OsString {
+    format!(
+        "bootstrap-{:020}-{}.terminal",
+        reference.ordinal,
+        reference.operation.as_str()
+    )
+    .into()
+}
+fn bootstrap_parent_reference(text: &str) -> io::Result<IntentRef> {
+    let terminal = text.starts_with("bootstrap-");
+    let stem = if terminal {
+        text.strip_prefix("bootstrap-")
+            .and_then(|v| v.strip_suffix(".terminal"))
+    } else {
+        text.strip_suffix(".intent")
+    }
+    .ok_or_else(|| io::Error::other("invalid bootstrap parent filename"))?;
+    let (ordinal, operation) = stem
+        .split_once('-')
+        .ok_or_else(|| io::Error::other("invalid bootstrap parent filename"))?;
+    let reference = IntentRef {
+        ordinal: ordinal.parse().map_err(io::Error::other)?,
+        operation: crate::protocol::ids::OperationId::parse(operation.to_owned())
+            .map_err(io::Error::other)?,
+    };
+    if reference.ordinal == 0
+        || uuid::Uuid::parse_str(reference.operation.as_str()).is_err()
+        || text
+            != if terminal {
+                bootstrap_name(&reference)
+            } else {
+                intent_name(&reference)
+            }
+            .to_string_lossy()
+    {
+        return Err(io::Error::other("noncanonical bootstrap parent filename"));
+    }
+    Ok(reference)
+}
+struct BundleBudget<'a> {
+    cancelled: &'a dyn Fn() -> bool,
+    deadline: Instant,
+    elapsed: bool,
+}
+impl BundleBudget<'_> {
+    fn check(&mut self) -> io::Result<()> {
+        check_cancelled(self.cancelled)?;
+        self.elapsed |= Instant::now() >= self.deadline;
+        Ok(())
+    }
+}
+fn bundle_read(
+    dir: &Directory,
+    name: &std::ffi::OsStr,
+    cap: usize,
+    bytes: &mut usize,
+    budget: &mut BundleBudget<'_>,
+) -> io::Result<Option<Vec<u8>>> {
+    budget.check()?;
+    // Elapsed cooperative time stops the next entry, never truncates this bundle.
+    let data = dir.read(name, cap)?;
+    if let Some(data) = &data {
+        *bytes += data.len();
+    }
+    budget.check()?;
+    Ok(data)
+}
+#[allow(clippy::too_many_arguments)]
+fn bootstrap_hint(
+    dir: &Directory,
+    reference: &IntentRef,
+    original: Option<Vec<u8>>,
+    terminal: Option<topology_handoff::BootstrapTerminal>,
+    bytes: &mut usize,
+    budget: &mut BundleBudget<'_>,
+    instance: &str,
+    context: &ContinuationContext,
+    database_path: &Path,
+    veto: Arc<AtomicBool>,
+) -> io::Result<Hint> {
+    let terminal = match terminal {
+        Some(terminal) => Some(terminal),
+        None => bundle_read(
+            dir,
+            &bootstrap_name(reference),
+            topology_handoff::MAX_BOOTSTRAP_TERMINAL_BYTES,
+            bytes,
+            budget,
+        )?
+        .map(|data| {
+            topology_handoff::decode_bootstrap_terminal(reference, &data)
+                .map_err(|e| io::Error::other(format!("{e:?}")))
+        })
+        .transpose()?,
+    };
+    let original = match original {
+        Some(original) => Some(original),
+        None => bundle_read(
+            dir,
+            &intent_name(reference),
+            MAX_BOOTSTRAP_ORIGIN_BYTES,
+            bytes,
+            budget,
+        )?,
+    };
+    if original
+        .as_ref()
+        .zip(terminal.as_ref())
+        .is_some_and(|(original, terminal)| original.as_slice() != terminal.original.as_bytes())
+    {
+        return Err(io::Error::other(
+            "bootstrap surviving original contradiction",
+        ));
+    }
+    let origin = original
+        .as_deref()
+        .or_else(|| {
+            terminal
+                .as_ref()
+                .map(|terminal| terminal.original.as_bytes())
+        })
+        .ok_or_else(|| io::Error::other("bootstrap origin missing"))?;
+    let pending = Journal::decode_bootstrap_origin(reference, origin)?;
+    let SemanticMutation::Frozen { claim, mutation } = pending.semantic else {
+        return Err(io::Error::other("bootstrap not frozen"));
+    };
+    let SemanticMutation::HandoffBootstrap(plan) = *mutation else {
+        return Err(io::Error::other("bootstrap original shape"));
+    };
+    let identity = BootstrapIdentity {
+        compound: plan.payload.handoff.keys.compound.clone(),
+        scope: pending.header.scope,
+        claim,
+        digest: pending.header.semantic_digest,
+        payload: plan.payload,
+    };
+    identity.validate().map_err(io::Error::other)?;
+    let selected = namespace(context)?;
+    let runtime = crate::daemon::paths::RuntimeContext::explicit(
+        selected.0.clone(),
+        selected.1.clone(),
+        None,
+    )?;
+    if identity.claim.instance != instance
+        || namespace(&crate::archival_legacy::context(
+            &identity.payload.handoff.namespace,
+        ))? != selected
+        || InstancePaths::resolve_read_only(&runtime)?.database_path != database_path
+    {
+        return Err(io::Error::other("bootstrap selected namespace mismatch"));
+    }
+    let progress = bundle_read(
+        dir,
+        &OsString::from(format!("handoff-{}.progress", reference.operation.as_str())),
+        128 * 1024,
+        bytes,
+        budget,
+    )?
+    .map(|progress| validate_bootstrap_progress(&progress, &identity))
+    .transpose()?;
+    let child = bundle_read(
+        dir,
+        &OsString::from(format!(
+            "bootstrap-child-{}.progress",
+            reference.operation.as_str()
+        )),
+        topology_handoff::MAX_LINKED_LOCAL_BYTES,
+        bytes,
+        budget,
+    )?
+    .map(|data| {
+        topology_handoff::decode_child_progress(&data)
+            .map_err(|e| io::Error::other(format!("{e:?}")))
+    })
+    .transpose()?;
+    if let Some(child) = &child {
+        if serde_json::to_value(&child.identity)? != serde_json::to_value(&identity)? {
+            return Err(io::Error::other("bootstrap child original mismatch"));
+        }
+        if let Some(terminal) = &terminal
+            && (serde_json::to_value(&child.attachment)?
+                != serde_json::to_value(&terminal.completed.attachment)?
+                || child.progress.thread.as_ref() != Some(&terminal.completed.retained.thread)
+                || child.progress.launch.as_ref() != Some(&terminal.completed.retained.report))
+        {
+            return Err(io::Error::other("bootstrap terminal child contradiction"));
+        }
+    }
+    if let Some(progress) = &progress {
+        let attachment = terminal
+            .as_ref()
+            .map(|terminal| &terminal.completed.attachment)
+            .or_else(|| child.as_ref().map(|child| &child.attachment));
+        if let Some(attachment) = attachment {
+            let matching_creation = match &progress.creation {
+                None => true,
+                Some(created) => {
+                    serde_json::to_value(created)? == serde_json::to_value(&attachment.created)?
+                }
+            };
+            if progress.attempt != attachment.attempt
+                || progress.not_submitted
+                || !matching_creation
+            {
+                return Err(io::Error::other(
+                    "bootstrap surviving submission contradiction",
+                ));
+            }
+        }
+    }
+    budget.check()?;
+    Ok(Hint::Bootstrap {
+        identity: Box::new(identity),
+        source: HintSource {
+            namespace: HandoffNamespace {
+                instance: instance.into(),
+                state_dir: selected.0,
+                host_endpoint: selected.1,
+            },
+            database_path: database_path.into(),
+            veto,
+        },
+        retained_child: child.map(|child| Box::new((child.attachment, child.progress.thread))),
+        retained_completion: terminal.map(|terminal| Box::new(terminal.completed)),
+    })
+}
 pub struct Source {
     root: PathBuf,
     instance: String,
@@ -212,6 +498,9 @@ pub struct Source {
     veto: bool,
     deciding_veto: Arc<AtomicBool>,
     has_hints: bool,
+    child_lookup: Option<ChildLookup>,
+    #[cfg(test)]
+    pub(crate) last_reads: [usize; 3],
 }
 impl Source {
     pub fn new(paths: &InstancePaths, instance: String, context: ContinuationContext) -> Self {
@@ -225,6 +514,9 @@ impl Source {
             veto: false,
             deciding_veto: Arc::new(AtomicBool::new(false)),
             has_hints: false,
+            child_lookup: None,
+            #[cfg(test)]
+            last_reads: [0; 3],
         }
     }
     fn generation(&self) -> io::Result<String> {
@@ -255,9 +547,14 @@ impl Source {
         coverage.filter(|stamp| !self.deciding_veto.load(Ordering::Acquire) && self.validate(stamp))
     }
     pub fn scan(&mut self, cancelled: impl Fn() -> bool) -> io::Result<Scan> {
+        #[cfg(test)]
+        {
+            self.last_reads = [0; 3];
+        }
         let result = self.scan_page(&cancelled);
         if result.is_err() {
             self.directory = None;
+            self.child_lookup = None;
             self.generation = None;
             self.veto = true;
             self.deciding_veto.store(true, Ordering::Release);
@@ -274,6 +571,7 @@ impl Source {
         let generation = self.generation()?;
         if self.generation.as_ref() != Some(&generation) {
             self.directory = None;
+            self.child_lookup = None;
             self.generation = Some(generation.clone());
             self.veto = false;
             self.deciding_veto = Arc::new(AtomicBool::new(false));
@@ -296,27 +594,103 @@ impl Source {
             self.deciding_veto = Arc::new(AtomicBool::new(false));
             self.has_hints = false;
         }
+        let deadline = Instant::now() + Duration::from_millis(10);
+        let deferred = if let Some(lookup) = self.child_lookup.as_mut() {
+            if stamp(&lookup.directory.file.metadata()?) != generation {
+                return Err(io::Error::other("legacy child lookup directory replaced"));
+            }
+            let mut finished = false;
+            for _ in 0..ENTRIES_PER_PAGE {
+                check_cancelled(cancelled)?;
+                if Instant::now() >= deadline {
+                    break;
+                }
+                let Some(name) = lookup.directory.next()? else {
+                    finished = true;
+                    break;
+                };
+                let Some(text) = name.to_str() else {
+                    continue;
+                };
+                let matched = text.ends_with(&format!("-{}.intent", lookup.operation.as_str()))
+                    || text.ends_with(&format!("-{}.terminal", lookup.operation.as_str()))
+                        && text.starts_with("bootstrap-");
+                if !matched {
+                    continue;
+                }
+                let reference = bootstrap_parent_reference(text)?;
+                if lookup
+                    .reference
+                    .as_ref()
+                    .is_some_and(|previous| previous != &reference)
+                {
+                    return Err(io::Error::other("ambiguous bootstrap child parent"));
+                }
+                lookup.reference = Some(reference);
+                lookup.parent_name = Some(name);
+            }
+            if !self.validate(&generation) {
+                return Err(io::Error::other("legacy source generation changed"));
+            }
+            if !finished {
+                return Ok(Scan {
+                    pending: true,
+                    hints: if self.has_hints {
+                        vec![Hint::Coverage {
+                            veto: self.deciding_veto.clone(),
+                        }]
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
+                });
+            }
+            let lookup = self.child_lookup.take().unwrap();
+            match lookup.parent_name {
+                Some(name) => Some(name),
+                None => {
+                    self.veto = true;
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let dir = self.directory.as_mut().unwrap();
+        #[cfg(test)]
+        dir.reads.set([0; 3]);
         if stamp(&dir.file.metadata()?) != generation {
             return Err(io::Error::other("legacy directory replaced"));
         }
-        let deadline = Instant::now() + Duration::from_millis(10);
         let mut result = Scan {
             pending: true,
             ..Scan::default()
         };
         let mut bytes = 0;
-        for _ in 0..ENTRIES_PER_PAGE {
+        let mut bundle_budget = BundleBudget {
+            cancelled,
+            deadline,
+            elapsed: false,
+        };
+        let associated = deferred.is_some();
+        let mut deferred = deferred;
+        for _ in 0..if associated { 1 } else { ENTRIES_PER_PAGE } {
             if cancelled() {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "legacy scan cancelled",
                 ));
             }
-            if Instant::now() >= deadline || bytes >= PAGE_BYTES {
+            if ((Instant::now() >= deadline || bundle_budget.elapsed) && deferred.is_none())
+                || bytes >= PAGE_BYTES
+            {
                 break;
             }
-            let Some(name) = dir.next()? else {
+            let Some(name) = (if let Some(name) = deferred.take() {
+                Some(name)
+            } else {
+                dir.next()?
+            }) else {
                 result.pending = false;
                 break;
             };
@@ -327,13 +701,61 @@ impl Source {
             if harmless(text) {
                 continue;
             }
-            if !text.ends_with(".intent") && !text.starts_with("delivery-") {
+            if text.starts_with("bootstrap-child-") {
+                let operation = text
+                    .strip_prefix("bootstrap-child-")
+                    .and_then(|v| v.strip_suffix(".progress"))
+                    .filter(|v| uuid::Uuid::parse_str(v).is_ok())
+                    .ok_or_else(|| io::Error::other("invalid bootstrap child filename"));
+                match operation {
+                    Ok(operation) => {
+                        self.child_lookup = Some(ChildLookup {
+                            operation: crate::protocol::ids::OperationId::new(operation),
+                            directory: Directory::open(&self.root)?,
+                            reference: None,
+                            parent_name: None,
+                        })
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+                    Err(_) => self.veto = true,
+                }
+                break;
+            }
+            if !text.ends_with(".intent")
+                && !text.starts_with("delivery-")
+                && !text.starts_with("bootstrap-")
+            {
                 self.veto = true;
                 continue;
             }
             // Reading the complete capped record is bounded; even a perfectly valid
             // noncompound is a coverage veto. Never trust its discriminator alone.
             let parsed = (|| {
+                if text.starts_with("bootstrap-") {
+                    let reference = bootstrap_parent_reference(text)?;
+                    let data = bundle_read(
+                        dir,
+                        &name,
+                        topology_handoff::MAX_BOOTSTRAP_TERMINAL_BYTES,
+                        &mut bytes,
+                        &mut bundle_budget,
+                    )?
+                    .ok_or_else(|| io::Error::other("bootstrap terminal vanished"))?;
+                    let terminal = topology_handoff::decode_bootstrap_terminal(&reference, &data)
+                        .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                    return bootstrap_hint(
+                        dir,
+                        &reference,
+                        None,
+                        Some(terminal),
+                        &mut bytes,
+                        &mut bundle_budget,
+                        &self.instance,
+                        &self.context,
+                        &self.database_path,
+                        self.deciding_veto.clone(),
+                    );
+                }
                 let terminal_reference = terminal_reference(text)?;
                 let (data, terminal) = if let Some(reference) = &terminal_reference {
                     let data = dir
@@ -344,7 +766,7 @@ impl Source {
                     (terminal.original.as_bytes().to_vec(), Some(terminal))
                 } else {
                     let data = dir
-                        .read(&name, RECORD_CAP)?
+                        .read(&name, MAX_BOOTSTRAP_ORIGIN_BYTES)?
                         .ok_or_else(|| io::Error::other("legacy intent vanished"))?;
                     bytes += data.len();
                     (data, None)
@@ -352,9 +774,28 @@ impl Source {
                 let split = data
                     .iter()
                     .position(|b| *b == b'\n')
-                    .filter(|n| *n <= HEADER_CAP)
                     .ok_or_else(|| io::Error::other("legacy header cap"))?;
                 let header: IntentHeader = serde_json::from_slice(&data[..split])?;
+                if header.kind == IntentKind::HandoffBootstrap {
+                    if text != intent_name(&header.reference).to_string_lossy() {
+                        return Err(io::Error::other("bootstrap filename mismatch"));
+                    }
+                    return bootstrap_hint(
+                        dir,
+                        &header.reference,
+                        Some(data),
+                        None,
+                        &mut bytes,
+                        &mut bundle_budget,
+                        &self.instance,
+                        &self.context,
+                        &self.database_path,
+                        self.deciding_veto.clone(),
+                    );
+                }
+                if data.len() > RECORD_CAP || split > HEADER_CAP {
+                    return Err(io::Error::other("legacy record or header cap"));
+                }
                 if !matches!(
                     header.kind,
                     IntentKind::Handoff
@@ -515,23 +956,6 @@ impl Source {
                             retained_completion: terminal.map(|t| t.completed),
                         })
                     }
-                    SemanticMutation::HandoffBootstrap(plan) => {
-                        let identity = BootstrapIdentity {
-                            compound: plan.payload.handoff.keys.compound.clone(),
-                            scope: header.scope,
-                            claim,
-                            digest: header.semantic_digest,
-                            payload: plan.payload,
-                        };
-                        identity.validate().map_err(io::Error::other)?;
-                        if let Some(bytes) = &progress {
-                            validate_bootstrap_progress(bytes, &identity)?;
-                        }
-                        Ok(Hint::Bootstrap {
-                            identity: Box::new(identity),
-                            source,
-                        })
-                    }
                     _ => Err(io::Error::other("legacy compound shape")),
                 }
             })();
@@ -540,9 +964,15 @@ impl Source {
                     self.has_hints = true;
                     result.hints.push(hint);
                 }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
                 Err(_) => self.veto = true,
             }
         }
+        #[cfg(test)]
+        {
+            self.last_reads = dir.reads.get();
+        }
+        check_cancelled(cancelled)?;
         if !self.validate(&generation) {
             return Err(io::Error::other("legacy source generation changed"));
         }
@@ -571,6 +1001,7 @@ fn harmless(name: &str) -> bool {
         || name.starts_with(".handoff-")
         || name.starts_with(".display-")
         || name.starts_with(".delivery-terminal-")
+        || name.starts_with(".bootstrap-terminal-")
         || ((name.starts_with("handoff-") || name.starts_with("display-"))
             && (name.ends_with(".progress") || name.ends_with(".lock")))
 }
@@ -728,21 +1159,11 @@ fn read_terminal(
     Ok(terminal)
 }
 
-// Read-only layout of the owner-frozen Task9 producer. This is not a writer or
-// a state transition: every uncertain/version/identity/phase mismatch vetoes.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-struct BootstrapProgress {
-    version: u32,
-    identity: BootstrapIdentity,
-    attempt: crate::protocol::handoff::BootstrapAttempt,
-    possible_creation: bool,
-    request: Option<crate::ports::CreateTabRequest>,
-    creation: Option<crate::ports::CreatedTab>,
-    not_submitted: bool,
-}
-fn validate_bootstrap_progress(bytes: &[u8], identity: &BootstrapIdentity) -> io::Result<()> {
-    let progress: BootstrapProgress = strict(bytes)?;
+fn validate_bootstrap_progress(
+    bytes: &[u8],
+    identity: &BootstrapIdentity,
+) -> io::Result<topology_handoff::BootstrapProgress> {
+    let progress: topology_handoff::BootstrapProgress = strict(bytes)?;
     progress.identity.validate().map_err(io::Error::other)?;
     if progress.version != 1
         || serde_json::to_vec(&progress.identity)? != serde_json::to_vec(identity)?
@@ -751,6 +1172,7 @@ fn validate_bootstrap_progress(bytes: &[u8], identity: &BootstrapIdentity) -> io
                 || progress.creation.is_some()
                 || progress.not_submitted))
         || (progress.not_submitted && progress.creation.is_some())
+        || (progress.not_submitted && progress.request.is_none())
     {
         return Err(io::Error::other(
             "legacy bootstrap progress identity or phase mismatch",
@@ -772,7 +1194,7 @@ fn validate_bootstrap_progress(bytes: &[u8], identity: &BootstrapIdentity) -> io
         if created.workspace != identity.payload.workspace
             || created.witness.endpoint.as_os_str()
                 != identity.payload.handoff.namespace.host_endpoint.as_os_str()
-            || progress.request.as_ref().is_none_or(|request| {
+            || progress.request.as_ref().is_some_and(|request| {
                 request.correlation != created.correlation
                     || request.expected_witness != created.witness
             })
@@ -780,5 +1202,5 @@ fn validate_bootstrap_progress(bytes: &[u8], identity: &BootstrapIdentity) -> io
             return Err(io::Error::other("legacy bootstrap evidence mismatch"));
         }
     }
-    Ok(())
+    Ok(progress)
 }
