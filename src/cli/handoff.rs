@@ -23,8 +23,11 @@ use std::{
     os::unix::fs::OpenOptionsExt,
 };
 
-pub const HANDOFF_HELP: &str =
-    "Choose exactly one of --new-thread or --thread ID_OR_NAME, and an explicit --pane.
+pub const HANDOFF_HELP: &str = "Choose exactly one channel: --new-thread or --thread ID_OR_NAME.
+Choose one target mode: explicit --pane PANE for legacy launch; --new-tab LABEL
+--kind claude|codex for a guarded new-tab launch; or --existing with exactly one
+of --seat SEAT | --pane PANE for guarded delivery. New modes require an original
+top-level Agent; existing delivery stages work without a launch.
 New threads join the sender; existing threads require a joined sender. --thread-name,
 --topic and --goal apply only to new threads. Topic defaults to Handoff to DISPLAY;
 goal defaults to topic. --name names the native agent, not the channel.

@@ -1,5 +1,5 @@
-//! Attempt-qualified administrative assertions; public execution remains inert.
-pub const RECOVERY_HELP: &str = "Administrative recovery: ht human [GLOBALS] handoff recover REF --attempt N with exactly one --created-pane EXACT_PANE, --not-created, or --cancel --reason TEXT. Noncreation asserts inspected noncreation and quiescence; cancellation asserts quiescence. Reason must be nonblank and at most 4096 UTF-8 bytes. Recovery never launches or delivers downstream work. Public execution requires integrated canonical guards.";
+//! Attempt-qualified administrative assertions through guarded canonical execution.
+pub const RECOVERY_HELP: &str = "Administrative recovery: ht human [GLOBALS] handoff recover REF --attempt N with exactly one --created-pane EXACT_PANE, --not-created, or --cancel --reason TEXT. Noncreation asserts inspected noncreation and quiescence; cancellation asserts quiescence. Reason must be nonblank and at most 4096 UTF-8 bytes. Recovery never launches or delivers downstream work. Execution requires the guarded daemon capability. Created-pane inspection retains genuine native scope and witness; noncreation and cancellation remain explicit quiescence assertions.";
 use crate::protocol::{
     handoff::BootstrapAttempt,
     ids::{HostTargetId, LocalRecoveryRef},
@@ -130,7 +130,7 @@ pub fn prepare(
     namespace: &HandoffNamespace,
 ) -> Result<RecoveryPlan, RunError> {
     let (original_ref, identity) = original(journal, request.reference.as_str())?;
-    if &identity.payload.handoff.namespace != namespace {
+    if crate::store::topology_handoff::encode_identity(namespace, &identity).is_err() {
         return Err(super::invalid_request(
             "recovery namespace differs from original bootstrap",
         ));
@@ -180,7 +180,7 @@ fn validate_original(
     let (reference, identity) = original(journal, &plan.original_ref.recovery_ref())?;
     if reference != plan.original_ref
         || identity != plan.request.identity
-        || &identity.payload.handoff.namespace != namespace
+        || crate::store::topology_handoff::encode_identity(namespace, &identity).is_err()
     {
         return Err(super::invalid_request(
             "recovery original identity or namespace mismatch",
@@ -216,8 +216,7 @@ pub fn publish(
     )?)
 }
 
-/// Internal guarded-canonical consumer only. Public routes remain inert until
-/// production actor/namespace/fresh observation guards are wired in task19.
+/// Guarded canonical consumer used by the equipped public runtime.
 /// Hold the original normal operation lock for the entire deciding call.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn retry_to_writer<C: crate::ports::LocalClient + ?Sized, W: Write>(

@@ -1,4 +1,4 @@
-//! Internal existing-peer delivery. Public dispatch remains inert until activation.
+//! Existing-peer delivery with an explicit frozen-origin production envelope.
 //! Seat reads select and conservatively refuse; they cannot authorize a live
 //! effect. Activation must supply daemon-selected namespace and deciding current
 //! recipient guards in addition to the legacy caller/membership fences.
@@ -23,7 +23,7 @@ use crate::{
         },
         ids::{OperationId, SeatId},
         pagination::PageRequest,
-        results::{CommandResult, ContinuityStatus, SeatInspection},
+        results::{ApiError, CommandResult, ContinuityStatus, SeatInspection},
         time::Clock,
     },
 };
@@ -180,6 +180,118 @@ pub fn prepare<C: LocalClient + ?Sized>(
     plan.validate()?;
     Ok(plan)
 }
+/// Production effect wrapper keeps the original immutable origin on every phase.
+pub(crate) struct FrozenDeliveryClient<'a, C: LocalClient + ?Sized> {
+    client: &'a C,
+    envelope: crate::protocol::handoff::DeliveryMutation,
+}
+impl<'a, C: LocalClient + ?Sized> FrozenDeliveryClient<'a, C> {
+    pub(crate) fn new(client: &'a C, pending: &PendingIntent) -> Result<Self, RunError> {
+        let plan = delivery_plan(pending)?.clone();
+        let claim = pending
+            .semantic
+            .frozen_claim()
+            .ok_or_else(|| super::invalid_request("delivery needs frozen caller"))?
+            .clone();
+        Self::from_plan(
+            client,
+            pending.header.scope.clone(),
+            claim,
+            pending.header.semantic_digest.clone(),
+            plan,
+        )
+    }
+    pub(crate) fn from_plan(
+        client: &'a C,
+        scope: IntentScope,
+        claim: CallerClaim,
+        digest: String,
+        plan: DeliveryPlan,
+    ) -> Result<Self, RunError> {
+        let keys = plan.payload.keys.clone();
+        let identity = HandoffIdentity {
+            compound: keys.compound.clone(),
+            digest: digest.clone(),
+            claim: claim.clone(),
+            thread: plan.payload.channel.thread().cloned(),
+            recipient: plan.recipient.clone(),
+            create_key: keys.create.clone(),
+            invite_key: keys.invite.clone(),
+            send_key: keys.send.clone(),
+        };
+        let envelope = crate::protocol::handoff::DeliveryMutation {
+            scope,
+            claim,
+            digest,
+            plan,
+            action: crate::protocol::handoff::DeliveryAction::Begin(
+                crate::protocol::handoff::HandoffMutation {
+                    identity,
+                    operation: keys.begin.clone(),
+                },
+            ),
+        };
+        envelope.validate().map_err(super::invalid_request)?;
+        Ok(Self { client, envelope })
+    }
+    pub(crate) fn query(
+        &self,
+        prepare: bool,
+        clock: &dyn Clock,
+    ) -> Result<CommandResult, RunError> {
+        let mut envelope = self.envelope.clone();
+        envelope.action = if prepare {
+            crate::protocol::handoff::DeliveryAction::Prepare(envelope.identity())
+        } else {
+            crate::protocol::handoff::DeliveryAction::Status(envelope.identity())
+        };
+        Ok(self.client.call(
+            Command::HandoffDelivery(Box::new(envelope)),
+            &super::cooperative_budget(clock),
+        )?)
+    }
+    fn wrap(&self, command: Command) -> Result<Command, ApiError> {
+        use crate::protocol::handoff::DeliveryAction;
+        let action = match command {
+            Command::BeginHandoff(v) => DeliveryAction::Begin(v),
+            Command::CreateThread(v) => DeliveryAction::Create(v),
+            Command::Invite(v) => DeliveryAction::Invite(v),
+            Command::SendMessage(v) => DeliveryAction::Send(v),
+            Command::CompleteHandoff(v) => DeliveryAction::Complete(v),
+            read @ (Command::Capabilities | Command::SeatInspect(_) | Command::Participants(_)) => {
+                return Ok(read);
+            }
+            _ => {
+                return Err(ApiError::invalid_request(
+                    "delivery executor attempted unrelated command",
+                ));
+            }
+        };
+        let mut envelope = self.envelope.clone();
+        envelope.action = action;
+        envelope.validate().map_err(ApiError::invalid_request)?;
+        Ok(Command::HandoffDelivery(Box::new(envelope)))
+    }
+}
+impl<C: LocalClient + ?Sized> LocalClient for FrozenDeliveryClient<'_, C> {
+    fn call(
+        &self,
+        command: Command,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.client.call(self.wrap(command)?, budget)
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        output: &OutputSpec,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.client
+            .call_with_output(self.wrap(command)?, output, budget)
+    }
+}
+
 /// Publish the full frozen semantic before Begin or any staged-work effect.
 pub fn publish(
     journal: &Journal,
@@ -607,7 +719,10 @@ pub fn retry_to_writer<C: LocalClient + ?Sized, W: Write>(
     };
     let plan = delivery_plan(&pending)?;
     namespace.validate().map_err(super::invalid_request)?;
-    if namespace != &plan.payload.namespace {
+    if namespace.instance != plan.payload.namespace.instance
+        || namespace.state_dir.as_os_str() != plan.payload.namespace.state_dir.as_os_str()
+        || namespace.host_endpoint.as_os_str() != plan.payload.namespace.host_endpoint.as_os_str()
+    {
         return Err(super::invalid_request(
             "delivery current namespace mismatch",
         ));

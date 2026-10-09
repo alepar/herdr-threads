@@ -1,10 +1,10 @@
 //! Ordinary structural seat resolution; native authority remains separate.
 use crate::{
     ports::{
-        ContinuityRequest, ContinuityTargetGuard, HostCallContext, HostInvalidationReason,
-        HostObservation, HostObservationAdmission, HostPort, OperatorRequest, OperatorTargetGuard,
-        OrdinaryResolutionAttempt, OrdinaryResolutionGuard, OrdinaryResolutionOutcome,
-        ResolvedTargetCheck, StorePort,
+        BootstrapAttachmentGuard, BootstrapObserver, ContinuityRequest, ContinuityTargetGuard,
+        HostCallContext, HostInvalidationReason, HostObservation, HostObservationAdmission,
+        HostPort, OperatorRequest, OperatorTargetGuard, OrdinaryResolutionAttempt,
+        OrdinaryResolutionGuard, OrdinaryResolutionOutcome, ResolvedTargetCheck, StorePort,
     },
     protocol::{
         authority::OperatorActor,
@@ -31,8 +31,8 @@ pub const SUPERSEDED_READ_ATTEMPTS: u32 = 3;
 const CAPTURE_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What an explicit current-target read produced.
-enum Observed {
-    Read(Box<(HostObservationAdmission, HostObservation)>),
+enum Observed<R> {
+    Read(Box<(HostObservationAdmission, R)>),
     /// The published snapshot is missing or behind the host's boot or epoch:
     /// only the observation lane's capture can move it. Carries the refusal
     /// the caller gets if waiting for that capture does not help.
@@ -40,8 +40,8 @@ enum Observed {
 }
 
 /// One explicit current-target read attempt.
-enum ReadAttempt {
-    Published(Box<(HostObservationAdmission, HostObservation)>),
+enum ReadAttempt<R> {
+    Published(Box<(HostObservationAdmission, R)>),
     /// Another decision moved the admission's fences; nothing was written.
     Superseded(HostObservationAdmission),
     /// Refused because no snapshot is published or the host's boot or epoch
@@ -390,11 +390,52 @@ impl OrdinaryIdentity {
         })
     }
 
+    /// A required native scoped read goes through the ordinary canonical lane.
+    /// The same response is published before its deciding transaction; the
+    /// callback receives no allocation or caller authority from this guard.
+    pub fn with_bootstrap_observation<T>(
+        &self,
+        observer: &dyn BootstrapObserver,
+        request: &ResolveSeat,
+        budget: &CallBudget,
+        decide: impl FnOnce(BootstrapAttachmentGuard) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
+        self.with_read(
+            &request.target,
+            budget,
+            |target, context| observer.observe_bootstrap_target(target, context),
+            |pane| pane.observation(),
+            |admission, pane| {
+                let guard = BootstrapAttachmentGuard::try_new(request, pane, &admission)
+                    .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))?;
+                let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
+                decide(guard)
+            },
+        )
+    }
+
     fn with_observation<T>(
         &self,
         target: &HostTargetId,
         budget: &CallBudget,
         decide: impl FnOnce(HostObservationAdmission, HostObservation) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
+        self.with_read(
+            target,
+            budget,
+            |target, context| self.host.observe_current_target(target, context),
+            |observation| observation,
+            decide,
+        )
+    }
+
+    fn with_read<T, R>(
+        &self,
+        target: &HostTargetId,
+        budget: &CallBudget,
+        read: impl Fn(&HostTargetId, &HostCallContext) -> Result<R, ApiError>,
+        observation_of: impl Fn(&R) -> &HostObservation,
+        decide: impl FnOnce(HostObservationAdmission, R) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
         let mut decide = Some(decide);
         let mut waited = false;
@@ -408,7 +449,7 @@ impl OrdinaryIdentity {
                     )
                 })?;
                 let ticket = lane.begin_observation()?;
-                let result = match self.observe(target, budget) {
+                let result = match self.observe(target, budget, &read, &observation_of) {
                     Ok(Observed::Read(read)) => {
                         let (admission, observation) = *read;
                         let decide = decide.take().expect("one deciding read per request");
@@ -493,11 +534,17 @@ impl OrdinaryIdentity {
     /// runs out. A host invalidation, boot or epoch change since the previous
     /// attempt is not ordinary contention: the request is refused as before,
     /// without another read.
-    fn observe(&self, target: &HostTargetId, budget: &CallBudget) -> Result<Observed, ApiError> {
+    fn observe<R>(
+        &self,
+        target: &HostTargetId,
+        budget: &CallBudget,
+        read: &impl Fn(&HostTargetId, &HostCallContext) -> Result<R, ApiError>,
+        observation_of: &impl Fn(&R) -> &HostObservation,
+    ) -> Result<Observed<R>, ApiError> {
         let mut previous = None;
         let mut attempt = 1;
         loop {
-            match self.observe_once(target, budget, previous.as_ref())? {
+            match self.observe_once(target, budget, previous.as_ref(), read, observation_of)? {
                 ReadAttempt::Published(read) => return Ok(Observed::Read(read)),
                 ReadAttempt::NeedsCapture(refusal) => return Ok(Observed::NeedsCapture(refusal)),
                 ReadAttempt::Superseded(admission)
@@ -519,12 +566,14 @@ impl OrdinaryIdentity {
 
     /// The store issues an ordering ticket before I/O. Publication validates
     /// the same durable baseline/fences afterward and never releases a hold.
-    fn observe_once(
+    fn observe_once<R>(
         &self,
         target: &HostTargetId,
         budget: &CallBudget,
         previous: Option<&HostObservationAdmission>,
-    ) -> Result<ReadAttempt, ApiError> {
+        read: &impl Fn(&HostTargetId, &HostCallContext) -> Result<R, ApiError>,
+        observation_of: &impl Fn(&R) -> &HostObservation,
+    ) -> Result<ReadAttempt<R>, ApiError> {
         let admission = {
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
             self.store.begin_host_observation(&self.instance, budget)?
@@ -541,7 +590,7 @@ impl OrdinaryIdentity {
             expected_boot: admission.expected_boot.clone(),
             expected_epoch: Some(admission.expected_epoch),
         };
-        let observation = match self.host.observe_current_target(target, &context) {
+        let response = match read(target, &context) {
             Ok(observation) => observation,
             // The server answered that this target does not exist. That is
             // not host unavailability and must not unresolve other seats;
@@ -566,6 +615,7 @@ impl OrdinaryIdentity {
                 "current-target preparation exhausted its budget",
             ));
         }
+        let observation = observation_of(&response);
         if observation.target != *target || observation.verified_structural_proof().is_none() {
             self.invalidate(&admission, HostInvalidationReason::CoherenceLost)?;
             return Err(error(
@@ -576,7 +626,7 @@ impl OrdinaryIdentity {
         let publication = (|| {
             let _turn = self.writer.enter_foreground(budget, self.clock.as_ref())?;
             self.store
-                .publish_current_target_observation(&admission, &observation, budget)
+                .publish_current_target_observation(&admission, observation, budget)
         })();
         let published = match publication {
             Ok(published) => published,
@@ -598,7 +648,7 @@ impl OrdinaryIdentity {
                 ReadAttempt::Superseded(admission)
             });
         }
-        Ok(ReadAttempt::Published(Box::new((admission, observation))))
+        Ok(ReadAttempt::Published(Box::new((admission, response))))
     }
 
     /// Budget for compensating a failed/partial/unpublished target read.

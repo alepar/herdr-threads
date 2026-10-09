@@ -106,6 +106,49 @@ pub enum PromptOutcome {
     Rejected(ApiError),
 }
 
+impl ports::BootstrapObserver for NativeCli {
+    fn observe_bootstrap_target(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<ports::BootstrapPaneObservation, ApiError> {
+        self.check_context(context)?;
+        let epoch = self.epoch();
+        let started = self.clock.monotonic_now();
+        let (pane, witness) = self.pane_witnessed(target.as_str(), &context.budget)?;
+        self.check_epoch(epoch)?;
+        let witness = witness.ok_or_else(|| {
+            error(
+                ErrorCode::StaleHostObservation,
+                "bootstrap pane lacks a qualified transport witness",
+            )
+        })?;
+        let incarnation = ServerIncarnation::from_witness(&witness)?;
+        self.check_boot(context, Some(&incarnation))?;
+        let workspace = HostTargetId::parse(pane.workspace_id.clone()).map_err(|_| {
+            error(
+                ErrorCode::StaleHostObservation,
+                "invalid same-response workspace",
+            )
+        })?;
+        let tab = HostTargetId::parse(pane.tab_id.clone())
+            .map_err(|_| error(ErrorCode::StaleHostObservation, "invalid same-response tab"))?;
+        let ui = status_ui(&pane);
+        let mut observation = self.observation(
+            pane,
+            epoch,
+            started,
+            Some(&incarnation),
+            ObservationProvenance::FreshCurrentTarget,
+            EvidenceKind::NativeCurrentTarget,
+            self.next_sequence(),
+        );
+        observation.ui = ui;
+        ports::BootstrapPaneObservation::try_new(observation, workspace, tab, witness)
+            .map_err(|detail| error(ErrorCode::StaleHostObservation, detail))
+    }
+}
+
 impl ports::CreateTabPort for NativeCli {
     fn create_tab(
         &self,
@@ -4121,4 +4164,5 @@ mod tests {
             "advisory failure must not invalidate continuity"
         );
     }
+    include!("../../tests/host/bootstrap_recovery.rs");
 }

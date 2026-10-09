@@ -29,6 +29,7 @@ pub mod summary;
 pub mod threads;
 pub mod topology_handoff;
 pub mod topology_recover;
+mod topology_runtime;
 
 use crate::{
     app::SystemClock,
@@ -349,14 +350,6 @@ where
         Err(commands::ParseFailure::Usage(text)) => return Err(RunError::Usage(text)),
         Err(commands::ParseFailure::Invalid(error)) => return Err(error.into()),
     };
-    if matches!(
-        parsed.action,
-        CliAction::TopologyHandoff(_) | CliAction::TopologyRecover(_)
-    ) {
-        return Err(unsupported(
-            "bootstrap, delivery and recovery execution require canonical guards and original actor classification",
-        ));
-    }
     let _presentation = output::PresentationGuard::enter(parsed.presentation, &parsed.output);
     if let CliAction::Skill = &parsed.action {
         writer.write_all(skill::SKILL_MD.as_bytes())?;
@@ -418,11 +411,8 @@ where
         deadline: MonoInstant(clock.monotonic_now().0.saturating_add(5_000)),
         cancellation: Cancellation::default(),
     };
-    if let CliAction::Retry(recovery) = &parsed.action {
-        let root = paths.instance_dir.join("intents");
-        if root.is_dir() {
-            reject_inert_retry(&journal::Journal::open(root)?, recovery.as_str())?;
-        }
+    if topology_runtime::run_operator(&parsed, &context, &paths, &clock, writer)? {
+        return Ok(());
     }
     let host =
         crate::host::native::NativeCli::new(context.host_endpoint.clone(), Arc::clone(&clock));
@@ -440,6 +430,17 @@ where
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
             host: Some(context.host_endpoint.to_string_lossy().into_owned()),
         };
+        if topology_runtime::try_completed(
+            parsed,
+            &journal,
+            instance,
+            &context,
+            &client,
+            clock.as_ref(),
+            writer,
+        )? {
+            return Ok(true);
+        }
         handoff::try_completed_retry(
             parsed,
             &journal,
@@ -1262,10 +1263,11 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         }
     }
     let compound = match &parsed.action {
-        CliAction::Handoff(_) => true,
+        CliAction::Handoff(_) | CliAction::TopologyHandoff(_) => true,
         CliAction::Retry(recovery) => {
-            let reference = journal.resolve_recovery_ref(recovery.as_str())?;
-            handoff::is_handoff(&journal.load(&reference)?.semantic)
+            let original = retry::load_original_for_actor(&journal, recovery.as_str())?;
+            handoff::is_handoff(&original.semantic)
+                || topology_runtime::is_compound(&original.semantic)
         }
         _ => false,
     };
@@ -1277,7 +1279,18 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
             .as_ref()
             .ok_or_else(|| caller_not_located("handoff requires lifecycle check-in"))?;
         let claim = crate::harness::bridge::caller_claim(saved).map_err(context_run_error)?;
-        return handoff::run(parsed, claim, &journal, paths, writer);
+        let topology = match &parsed.action {
+            CliAction::TopologyHandoff(_) => true,
+            CliAction::Retry(recovery) => topology_runtime::is_compound(
+                &retry::load_original_for_actor(&journal, recovery.as_str())?.semantic,
+            ),
+            _ => false,
+        };
+        return if topology {
+            topology_runtime::run(parsed, claim, &journal, paths, writer)
+        } else {
+            handoff::run(parsed, claim, &journal, paths, writer)
+        };
     }
     let initial = if (current.is_none() || fresh_lifecycle) && lifecycle {
         let execution = uuid::Uuid::new_v4();
@@ -1586,9 +1599,10 @@ fn caller_need(
             // kept) before inspecting the local journal.
             published_endpoint(paths)?;
             let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
-            let reference = journal.resolve_recovery_ref(recovery.as_str())?;
             if matches!(
-                journal.load(&reference)?.header.scope,
+                retry::load_original_for_actor(&journal, recovery.as_str())?
+                    .header
+                    .scope,
                 IntentScope::Cooperative { .. }
             ) {
                 CallerNeed::Selection
@@ -2541,7 +2555,7 @@ mod topology_contract_retry_tests {
     use crate::protocol::handoff::topology_contract_tests as fixture;
     use crate::protocol::results::ErrorCode;
     #[test]
-    fn topology_contract_new_retry_is_inert_before_presentation_or_effects() {
+    fn topology_contract_retry_refuses_unavailable_or_unconfigured_runtime_before_presentation() {
         let root = std::env::temp_dir().join(format!("topology-retry-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let paths = InstancePaths::resolve(
@@ -2625,14 +2639,14 @@ mod topology_contract_retry_tests {
                         matches!(
                             error,
                             RunError::Api(ApiError {
-                                code: ErrorCode::Unsupported,
+                                code: ErrorCode::HostUnavailable,
                                 ..
                             })
                         )
                     } else {
                         matches!(error, RunError::Io(ref error) if error.to_string().contains("handoff needs frozen caller"))
                     },
-                    "must refuse before daemon or host connection: {error:?}"
+                    "must refuse before presentation or host work: {error:?}"
                 );
                 assert!(output.is_empty());
                 use std::os::unix::fs::DirBuilderExt;

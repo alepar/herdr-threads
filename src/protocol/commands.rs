@@ -98,6 +98,7 @@ pub enum Command {
     OperatorOrphanInvite(OperatorOrphanInvite),
     OperatorRetire(OperatorRetire),
     OperatorReplace(OperatorReplace),
+    HandoffDelivery(Box<crate::protocol::handoff::DeliveryMutation>),
     BeginBootstrap(Box<crate::protocol::handoff::BeginBootstrap>),
     ReserveBootstrapAttempt(Box<crate::protocol::handoff::ReserveBootstrapAttempt>),
     RecordBootstrapCreated(Box<crate::protocol::handoff::RecordBootstrapCreated>),
@@ -763,6 +764,7 @@ pub const MAX_BATCH_ITEMS: usize = 100;
 impl Command {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
+            Self::HandoffDelivery(v) => return v.validate(),
             Self::BeginBootstrap(v) => {
                 v.identity.validate()?;
                 if v.operation != v.identity.payload.handoff.keys.begin {
@@ -1010,6 +1012,14 @@ impl TryFrom<Command> for OperatorCommand {
 /// cannot be passed to the permit-consuming store path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermitMutation {
+    BeginBootstrap(Box<crate::protocol::handoff::BeginBootstrap>),
+    ReserveBootstrapAttempt(Box<crate::protocol::handoff::ReserveBootstrapAttempt>),
+    RecordBootstrapCreated(Box<crate::protocol::handoff::RecordBootstrapCreated>),
+    RecordBootstrapNotSubmitted(Box<crate::protocol::handoff::RecordBootstrapNotSubmitted>),
+    AttachBootstrapHandoff(Box<crate::protocol::handoff::AttachBootstrapHandoff>),
+    CompleteLinkedBootstrap(Box<crate::protocol::handoff::CompleteLinkedBootstrap>),
+    CheckBootstrapSubmission(Box<crate::protocol::handoff::CheckBootstrapSubmission>),
+    ResolveBootstrapSeat(Box<crate::protocol::handoff::ResolveBootstrapSeat>),
     CheckIn(CheckIn),
     BeginHandoff(crate::protocol::handoff::HandoffMutation),
     CompleteHandoff(crate::protocol::handoff::HandoffMutation),
@@ -1031,6 +1041,15 @@ impl TryFrom<Command> for PermitMutation {
     type Error = Command;
     fn try_from(command: Command) -> Result<Self, Self::Error> {
         match command {
+            Command::BeginBootstrap(v) => Ok(Self::BeginBootstrap(v)),
+            Command::ReserveBootstrapAttempt(v) => Ok(Self::ReserveBootstrapAttempt(v)),
+            Command::RecordBootstrapCreated(v) => Ok(Self::RecordBootstrapCreated(v)),
+            Command::RecordBootstrapNotSubmitted(v) => Ok(Self::RecordBootstrapNotSubmitted(v)),
+            Command::AttachBootstrapHandoff(v) => Ok(Self::AttachBootstrapHandoff(v)),
+            Command::CompleteLinkedBootstrap(v) => Ok(Self::CompleteLinkedBootstrap(v)),
+            Command::CheckBootstrapSubmission(v) => Ok(Self::CheckBootstrapSubmission(v)),
+            Command::ResolveBootstrapSeat(v) => Ok(Self::ResolveBootstrapSeat(v)),
+
             Command::CheckIn(v) => Ok(Self::CheckIn(v)),
             Command::BeginHandoff(v) => Ok(Self::BeginHandoff(v)),
             Command::CompleteHandoff(v) => Ok(Self::CompleteHandoff(v)),

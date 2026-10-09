@@ -3750,6 +3750,7 @@ pub(crate) fn execute_accountable_transaction(
     cooperative: (
         crate::protocol::authority::CallerClaim,
         crate::protocol::time::CallBudget,
+        Option<crate::protocol::authority::HandoffRequirement>,
     ),
     actor_scope: &str,
     operation_key: &str,
@@ -3757,7 +3758,7 @@ pub(crate) fn execute_accountable_transaction(
     validate: impl FnOnce(&Transaction<'_>) -> Result<(), ApiError>,
     apply: impl FnOnce(&Transaction<'_>, DecisionInstant) -> Result<CommandResult, ApiError>,
 ) -> Result<CommandResult, ApiError> {
-    let (claim, issuance) = cooperative;
+    let (claim, issuance, delivery) = cooperative;
     execute_budgeted_idempotent_transaction_with_constraints(
         context,
         conn,
@@ -3766,7 +3767,20 @@ pub(crate) fn execute_accountable_transaction(
         actor_scope,
         operation_key,
         digest,
-        |tx| super::seats::cooperative_instance(tx, &claim.instance, &claim),
+        |tx| {
+            super::seats::cooperative_instance(tx, &claim.instance, &claim)?;
+            if let Some(delivery) = &delivery {
+                super::handoff::validate_handoff_requirement(tx, delivery, true)?;
+            } else {
+                super::topology_handoff::guard_unscoped_child_phase(
+                    tx,
+                    &claim.instance,
+                    actor_scope,
+                    operation_key,
+                )?;
+            }
+            Ok(())
+        },
         validate,
         apply,
         |_, result| Ok(result),

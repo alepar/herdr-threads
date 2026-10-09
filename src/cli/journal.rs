@@ -66,13 +66,7 @@ pub fn classify_original_actor(
         return Err(invalid("intent authority scope mismatch"));
     }
     if let Some(claim) = semantic.frozen_claim() {
-        return Ok(
-            if claim.harness == crate::protocol::authority::Harness::Human {
-                OriginalActor::HumanOrOperator
-            } else {
-                OriginalActor::Agent
-            },
-        );
+        return classify_original_claim(scope, claim);
     }
     match (scope, semantic) {
         (IntentScope::Operator { .. }, semantic) if semantic.is_operator() => {
@@ -91,6 +85,24 @@ pub fn classify_original_actor(
         }
         _ => Err(invalid("unsupported original intent actor")),
     }
+}
+
+/// Scope-checked frozen caller origin, also used before fresh preparation reads.
+pub(crate) fn classify_original_claim(
+    scope: &IntentScope,
+    claim: &CallerClaim,
+) -> io::Result<OriginalActor> {
+    if !matches!(scope, IntentScope::Cooperative { instance, seat } if instance == &claim.instance && seat == &claim.seat)
+    {
+        return Err(invalid("intent authority scope mismatch"));
+    }
+    Ok(
+        if claim.harness == crate::protocol::authority::Harness::Human {
+            OriginalActor::HumanOrOperator
+        } else {
+            OriginalActor::Agent
+        },
+    )
 }
 
 /// Native evidence is refreshed; cooperative claims are frozen as durable payload.

@@ -1279,6 +1279,12 @@ fn create_thread_impl(
         crate::protocol::commands::validate_thread_name(name)
             .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
     }
+    if let Some(canonical) = canonical {
+        permit = permit.with_bootstrap_child(
+            canonical,
+            &crate::protocol::commands::PermitMutation::CreateThread(command.clone()),
+        );
+    }
     let target = command.claim.target.as_str();
     let seat = permit.seat_for_replay_scope().clone();
     let scope = format!("seat:{}", seat.as_str());
@@ -1769,6 +1775,16 @@ pub(crate) fn decide_accountable(
             ErrorCode::CallerUnverified,
             "cooperative actor seat mismatch",
         ));
+    }
+    if let Some(delivery) = permit.handoff_requirement() {
+        super::handoff::validate_handoff_requirement(tx, delivery, false)?;
+    } else {
+        super::topology_handoff::guard_unscoped_child_phase(
+            tx,
+            &claim.instance,
+            &format!("seat:{}", claim.seat.as_str()),
+            operation.as_str(),
+        )?;
     }
     let mapping = super::seats::decide_cooperative(
         tx,

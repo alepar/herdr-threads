@@ -1,5 +1,5 @@
 use herdr_threads::{
-    app::{SystemClock, run_elected},
+    app::{SystemClock, run_elected_guarded},
     cli,
     daemon::paths::{InstancePaths, RuntimeContext},
     protocol::time::{Cancellation, Clock},
@@ -37,11 +37,13 @@ fn detached_child(args: &[OsString]) -> io::Result<()> {
         context.host_endpoint.clone(),
         Arc::clone(&clock),
     ));
-    runtime.block_on(run_elected(
+    runtime.block_on(run_elected_guarded(
         &paths,
+        &context,
         clock,
         Cancellation::default(),
         config,
+        host.clone(),
         host,
         |_| Ok(()),
     ))?;
