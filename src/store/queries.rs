@@ -425,6 +425,7 @@ pub fn query_operation_status(
             })?;
             let id = match result {
                 CommandResult::ThreadCreated(v)
+                | CommandResult::Joined(v)
                 | CommandResult::Left(v)
                 | CommandResult::TopicChanged(v)
                 | CommandResult::ThreadNameChanged(v)

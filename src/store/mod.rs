@@ -1497,6 +1497,9 @@ impl StorePort for SqliteStore {
                 permit,
                 self.settings.invitation_default_ms,
             ),
+            PermitMutation::Join(v) => {
+                control::join(&self.context, &mut writer, budget, &v, permit)
+            }
             PermitMutation::Accept(v) => {
                 let result = control::accept(&self.context, &mut writer, budget, &v, permit)?;
                 Ok(self.with_join_hint(result, &v.thread, budget))
@@ -2691,6 +2694,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::Control(v.thread.clone()),
             control::cooperative_payload_hash("invite", v)?,
+            None,
+        ),
+        PermitMutation::Join(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::Control(v.thread.clone()),
+            control::cooperative_payload_hash("join", v)?,
             None,
         ),
         PermitMutation::Accept(v) => (

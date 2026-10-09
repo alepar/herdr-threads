@@ -1675,3 +1675,14 @@ fn handoff_thread_name_uses_shared_canonical_resolution() {
     assert!(parsed.thread_selector.is_none());
     assert!(matches!(parsed.action,CliAction::Handoff(request) if request.thread.as_ref().unwrap().as_str()=="tFrozen"));
 }
+
+#[test]
+fn public_join_parses_and_freezes_thread_selector() {
+    let mut parsed = parse_argv(["herdr-threads", "join", "shared work"]).unwrap();
+    assert_eq!(parsed.thread_selector.as_deref(), Some("shared work"));
+    crate::cli::threads::resolve_cli_threads::<crate::protocol::results::ApiError>(
+        &mut parsed, |_| Ok(ThreadId::new("tResolved")),
+    ).unwrap();
+    let CliAction::Mutation(spec) = parsed.action else { panic!("mutation expected") };
+    assert_eq!(crate::cli::threads::selector_mut(&mut CliAction::Mutation(spec)).unwrap().as_str(), "tResolved");
+}

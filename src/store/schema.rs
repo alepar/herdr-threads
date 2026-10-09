@@ -2759,6 +2759,16 @@ pub fn append_event_once_with_decision_seq(
     append_event_once_at_seq(tx, input, Some(decision_seq), None)
 }
 
+/// Attribute a membership transition at the same canonical frontier as its interval.
+pub fn append_attributed_event_once_with_decision_seq(
+    tx: &Transaction<'_>,
+    input: EventInput<'_>,
+    decision_seq: u64,
+    author: EventAuthor,
+) -> Result<(MessageId, bool), ApiError> {
+    append_event_once_at_seq(tx, input, Some(decision_seq), Some(author))
+}
+
 fn append_event_once_at_seq(
     tx: &Connection,
     input: EventInput<'_>,

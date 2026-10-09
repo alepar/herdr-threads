@@ -501,7 +501,12 @@ fn is_join_or_leave(summary: &MessageSummary) -> bool {
     serde_json::from_str::<Value>(&summary.preview_data)
         .ok()
         .and_then(|event| field(&event, "action").map(str::to_owned))
-        .is_some_and(|action| matches!(action.as_str(), "accept" | "accept_required" | "leave"))
+        .is_some_and(|action| {
+            matches!(
+                action.as_str(),
+                "join" | "accept" | "accept_required" | "leave"
+            )
+        })
 }
 
 /// The `-!-` text of a system event.
@@ -561,7 +566,7 @@ fn system_text(summary: &MessageSummary, lookup: &mut dyn Lookup) -> String {
             "operator_orphan_invite" => {
                 format!("operator invited {}", seat_nick(&event, "seat", lookup))
             }
-            "accept" | "accept_required" => {
+            "join" | "accept" | "accept_required" => {
                 format!("{} joined", seat_nick(&event, "seat", lookup))
             }
             "leave" => format!("{} left", seat_nick(&event, "seat", lookup)),

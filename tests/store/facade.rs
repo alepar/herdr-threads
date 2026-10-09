@@ -1720,8 +1720,9 @@ fn default_directory_and_inbox_resolve_only_the_trusted_selected_seat() {
 /// A store with `chunk_bytes` 1000, a thread by s1 holding `bodies` ordinary
 /// 300-byte messages, and a pending invitation for s2: (store, db path,
 /// accept request, invitation, thread).
-fn join_hint_fixture(
+fn join_hint_fixture_inner(
     bodies: usize,
+    with_invitation: bool,
 ) -> (
     SqliteStore,
     std::path::PathBuf,
@@ -1769,10 +1770,15 @@ fn join_hint_fixture(
         operation: OperationId::new("invite"),
         claim: fixture_claim("s1", "s1"),
     };
-    let CommandResult::Invitation(invitation) =
-        permitted(&store, PermitMutation::Invite(invite.clone())).unwrap()
-    else {
-        panic!()
+    let invitation = if with_invitation {
+        let CommandResult::Invitation(invitation) =
+            permitted(&store, PermitMutation::Invite(invite)).unwrap()
+        else {
+            panic!()
+        };
+        invitation
+    } else {
+        crate::protocol::ids::InvitationId::new("unused")
     };
     // Raw ordinary messages after the thread's events; the chunker sees them
     // through the published head.
@@ -1794,6 +1800,17 @@ fn join_hint_fixture(
         claim: fixture_claim("s2", "s2"),
     };
     (store, path, accept, invitation)
+}
+
+fn join_hint_fixture(
+    bodies: usize,
+) -> (
+    SqliteStore,
+    std::path::PathBuf,
+    Accept,
+    crate::protocol::ids::InvitationId,
+) {
+    join_hint_fixture_inner(bodies, true)
 }
 
 fn join_hint_accept(
@@ -1835,4 +1852,726 @@ fn accept_hints_summary_only_once_the_thread_holds_a_full_chunk() {
     for p in [path, path2] {
         let _ = std::fs::remove_file(p);
     }
+}
+
+// Catches a missing public join route, fabricated acceptance, duplicate intervals,
+// stale replay reopening membership, and invitation-episode collisions on rejoin.
+#[test]
+fn public_join_without_invitation_is_accountable_replayable_and_rejoinable() {
+    let (store, path, accept, _) = join_hint_fixture_inner(0, false);
+    let join: crate::protocol::commands::Command = serde_json::from_value(serde_json::json!({
+        "kind": "join", "args": {"thread": accept.thread, "operation": "self-join", "claim": accept.claim}
+    })).unwrap();
+    let mutation = PermitMutation::try_from(join).unwrap();
+    let first = permitted(&store, mutation.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::json!({"kind":"joined","data":accept.thread})
+    );
+    assert_eq!(permitted(&store, mutation.clone()).unwrap(), first);
+    let db = store.context.open_writer().unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM invitations", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM membership_intervals WHERE seat_id='s2'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    let event: String = db
+        .query_row(
+            "SELECT event_json FROM messages WHERE json_extract(event_json,'$.action')='join'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+    assert_eq!(event["seat"], "s2");
+    assert_eq!(event["observation"], "cooperative_top_level");
+    assert_eq!(event["generation"], 1);
+    let (author, seat): (String, String) = db.query_row("SELECT author_kind,actor_seat_id FROM messages WHERE json_extract(event_json,'$.action')='join'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!((author.as_str(), seat.as_str()), ("native", "s2"));
+    drop(db);
+    permitted(
+        &store,
+        PermitMutation::Leave(crate::protocol::commands::Leave {
+            thread: accept.thread.clone(),
+            operation: OperationId::new("leave"),
+            claim: accept.claim.clone(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(permitted(&store, mutation).unwrap(), first);
+    let db = store.context.open_writer().unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT state FROM memberships WHERE seat_id='s2'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "left"
+    );
+    drop(db);
+    let join: Command = serde_json::from_value(serde_json::json!({
+        "kind": "join", "args": {"thread": accept.thread, "operation": "rejoin", "claim": accept.claim}
+    })).unwrap();
+    permitted(&store, PermitMutation::try_from(join).unwrap()).unwrap();
+    let db = store.context.open_writer().unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM membership_intervals WHERE seat_id='s2'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+fn public_join_command(accept: &Accept, operation: &str) -> crate::protocol::commands::Join {
+    crate::protocol::commands::Join {
+        thread: accept.thread.clone(),
+        claim: accept.claim.clone(),
+        operation: OperationId::new(operation),
+    }
+}
+
+// Catches join bypassing required consent or ordinary invitation attention,
+// cross-instance mutation, archived enrollment, and stale occupant authority.
+#[test]
+fn public_join_refuses_pending_archived_foreign_and_stale_context_without_writes() {
+    for case in [
+        "pending", "required", "archived", "foreign", "missing", "stale", "retired", "held",
+        "subagent",
+    ] {
+        let (store, path, accept, invitation) =
+            join_hint_fixture_inner(0, matches!(case, "pending" | "required"));
+        let mut join = public_join_command(&accept, "join-refused");
+        let db = store.context.open_writer().unwrap();
+        let expected = match case {
+            "pending" => ErrorCode::Conflict,
+            "required" => {
+                db.execute(
+                    "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','i',0)",
+                    [],
+                )
+                .unwrap();
+                db.execute("UPDATE threads SET managed_owner_author_id='owner'", [])
+                    .unwrap();
+                db.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) SELECT 'requirement',thread_id,seat_id,'owner',id,'pending',created_decision_seq,created_at FROM invitations WHERE id=?1", [invitation.as_str()]).unwrap();
+                ErrorCode::MembershipRequired
+            }
+            "archived" => {
+                db.execute("UPDATE threads SET archived=1", []).unwrap();
+                ErrorCode::Conflict
+            }
+            "foreign" => {
+                db.execute(
+                    "INSERT INTO host_instances(id,created_at) VALUES ('other',0)",
+                    [],
+                )
+                .unwrap();
+                db.execute("UPDATE threads SET instance_id='other'", [])
+                    .unwrap();
+                ErrorCode::NotFound
+            }
+            "missing" => {
+                join.thread = ThreadId::new("does-not-exist");
+                ErrorCode::NotFound
+            }
+            "stale" => {
+                join.claim.binding_generation = 2;
+                ErrorCode::CallerUnverified
+            }
+            "retired" => {
+                db.execute(
+                    "UPDATE seats SET state='retired',retired_at=100 WHERE id='s2'",
+                    [],
+                )
+                .unwrap();
+                ErrorCode::CallerUnverified
+            }
+            "held" => {
+                db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','s2','b',1,'restored')", []).unwrap();
+                ErrorCode::CallerUnverified
+            }
+            "subagent" => {
+                join.claim.role = crate::protocol::authority::CallerRole::Subagent;
+                assert!(Command::Join(join.clone()).validate().is_err());
+                ErrorCode::CallerUnverified
+            }
+            _ => unreachable!(),
+        };
+        let count: i64 = db
+            .query_row("SELECT count(*) FROM operations", [], |r| r.get(0))
+            .unwrap();
+        drop(db);
+        assert_eq!(
+            permitted(&store, PermitMutation::Join(join))
+                .unwrap_err()
+                .code,
+            expected,
+            "{case}"
+        );
+        let db = store.context.open_writer().unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM operations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            count,
+            "{case}"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM membership_intervals WHERE seat_id='s2'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "{case}"
+        );
+        if matches!(case, "pending" | "required") {
+            assert_eq!(
+                db.query_row("SELECT state FROM invitations", [], |r| r
+                    .get::<_, String>(0))
+                    .unwrap(),
+                "pending"
+            );
+        }
+        drop(db);
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+// Catches new operation IDs duplicating an already-open interval and replay
+// needing an obsolete binding or an unarchived thread after daemon restart.
+#[test]
+fn public_join_noop_and_historical_replay_preserve_interval_and_authority() {
+    let (store, path, accept, _) = join_hint_fixture_inner(0, false);
+    let join = public_join_command(&accept, "join");
+    let first = permitted(&store, PermitMutation::Join(join.clone())).unwrap();
+    let next = public_join_command(&accept, "join-again");
+    assert_eq!(
+        permitted(&store, PermitMutation::Join(next)).unwrap(),
+        first
+    );
+    let db = store.context.open_writer().unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM membership_intervals WHERE seat_id='s2'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM messages WHERE json_extract(event_json,'$.action')='join'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    db.execute("UPDATE threads SET archived=1", []).unwrap();
+    db.execute(
+        "UPDATE occupant_bindings SET ended_at=200 WHERE seat_id='s2'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    drop(store);
+    let store = SqliteStore::new(
+        connection::StoreContext::new(path.clone(), Arc::new(FixedClock)),
+        "i",
+        StoreSettings::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        permitted(&store, PermitMutation::Join(join.clone())).unwrap(),
+        first
+    );
+    let mut changed = join;
+    changed.thread = ThreadId::new("different");
+    assert_eq!(
+        permitted(&store, PermitMutation::Join(changed))
+            .unwrap_err()
+            .code,
+        ErrorCode::OperationPayloadMismatch
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+// Catches self-join rewriting terminal invitation evidence or reusing its episode.
+#[test]
+fn public_join_after_rejected_and_released_required_invites_preserves_history() {
+    for case in ["rejected", "released-required"] {
+        let (store, path, accept, invitation) = join_hint_fixture(0);
+        if case == "rejected" {
+            permitted(
+                &store,
+                PermitMutation::Reject(crate::protocol::commands::Reject {
+                    thread: accept.thread.clone(),
+                    invitation: invitation.clone(),
+                    reason: "No invitation needed".into(),
+                    operation: OperationId::new("reject"),
+                    claim: accept.claim.clone(),
+                }),
+            )
+            .unwrap();
+        } else {
+            let db = store.context.open_writer().unwrap();
+            db.execute(
+                "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','i',0)",
+                [],
+            )
+            .unwrap();
+            db.execute("UPDATE threads SET managed_owner_author_id='owner'", [])
+                .unwrap();
+            db.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) SELECT 'requirement',thread_id,seat_id,'owner',id,'pending',created_decision_seq,created_at FROM invitations WHERE id=?1", [invitation.as_str()]).unwrap();
+            db.execute("UPDATE requirement_episodes SET state='released',revision=revision+1,released_at=100", []).unwrap();
+            db.execute("INSERT INTO invitation_cancellations(invitation_id,requirement_id,cancelled_at) VALUES (?1,'requirement',100)", [invitation.as_str()]).unwrap();
+        }
+        permitted(
+            &store,
+            PermitMutation::Join(public_join_command(&accept, "join")),
+        )
+        .unwrap();
+        let db = store.context.open_writer().unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT state FROM memberships WHERE seat_id='s2'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "joined"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT episode FROM memberships WHERE seat_id='s2'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM invitations WHERE accepted_at IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        if case == "rejected" {
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM invitation_rejections", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        } else {
+            assert_eq!(
+                db.query_row("SELECT state FROM requirement_episodes", [], |r| r
+                    .get::<_, String>(0))
+                    .unwrap(),
+                "released"
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM invitation_cancellations", [], |r| r
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+                1
+            );
+        }
+        drop(db);
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn public_join_send(
+    store: &SqliteStore,
+    accept: &Accept,
+    operation: &str,
+) -> crate::protocol::ids::MessageId {
+    let send = SendMessage {
+        thread: accept.thread.clone(),
+        body: operation.into(),
+        invited_recipients: vec![],
+        deadline_millis: None,
+        operation: OperationId::new(operation),
+        claim: fixture_claim("s1", "s1"),
+        relays_user: false,
+        user_intent: None,
+    };
+    for _ in 0..16 {
+        if matches!(
+            StorePort::prepare_send_step(
+                store,
+                &send,
+                DurableWorkAdmission::new(16).unwrap(),
+                &budget()
+            )
+            .unwrap(),
+            SendPreparationProgress::Ready { .. }
+        ) {
+            let CommandResult::MessageSent(message) =
+                permitted(store, PermitMutation::SendMessage(send)).unwrap()
+            else {
+                panic!()
+            };
+            return message;
+        }
+    }
+    panic!("send did not prepare within bounded fixture budget")
+}
+
+// Catches receipt backfill on join, dropped historical obligations on leave,
+// and duplicate/missing recipients after rejoin.
+#[test]
+fn public_join_receipts_are_frozen_across_join_leave_and_rejoin() {
+    let (store, path, accept, _) = join_hint_fixture_inner(0, false);
+    let before = public_join_send(&store, &accept, "before");
+    permitted(
+        &store,
+        PermitMutation::Join(public_join_command(&accept, "join")),
+    )
+    .unwrap();
+    let during = public_join_send(&store, &accept, "during");
+    permitted(
+        &store,
+        PermitMutation::Leave(crate::protocol::commands::Leave {
+            thread: accept.thread.clone(),
+            operation: OperationId::new("leave"),
+            claim: accept.claim.clone(),
+        }),
+    )
+    .unwrap();
+    let left = public_join_send(&store, &accept, "left");
+    permitted(
+        &store,
+        PermitMutation::Join(public_join_command(&accept, "rejoin")),
+    )
+    .unwrap();
+    let after = public_join_send(&store, &accept, "after");
+    let read = ReadContext {
+        instance: "i".into(),
+        output: OutputSpec::default(),
+        operation_scope: None,
+    };
+    for (message, expected) in [(before, 0), (during, 1), (left, 0), (after, 1)] {
+        let CommandResult::Recipients(page) = StorePort::query(
+            &store,
+            &Command::Recipients(crate::protocol::commands::RecipientsQuery {
+                message,
+                page: PageRequest::default(),
+            }),
+            &read,
+            &budget(),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(page.items.len(), expected);
+        for recipient in page.items {
+            assert_eq!(recipient.seat.as_str(), "s2");
+            assert_eq!(
+                recipient.status,
+                crate::protocol::results::ReceiptStatus::Pending
+            );
+            assert!(recipient.ack_provenance.is_none());
+        }
+    }
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+// Catches lost claims/operation keys, uncertain-response cleanup, and Join not
+// recognized as a completed local intent when its canonical result is replayed.
+#[test]
+fn public_join_cli_journal_recovers_committed_response_loss_without_rejoining() {
+    use crate::cli::{
+        journal::{IntentScope, Journal, SemanticMutation},
+        retry,
+    };
+    let (store, path, accept, _) = join_hint_fixture_inner(0, false);
+    let temp = std::env::temp_dir().join(format!("public-join-journal-{}", uuid::Uuid::new_v4()));
+    let journal = Journal::open(&temp).unwrap();
+    let scope = IntentScope::Cooperative {
+        instance: "i".into(),
+        seat: accept.claim.seat.clone(),
+    };
+    let reference = journal
+        .record(
+            scope.clone(),
+            SemanticMutation::freeze(
+                SemanticMutation::Join {
+                    thread: accept.thread.clone(),
+                },
+                accept.claim.clone(),
+            )
+            .unwrap(),
+            100,
+        )
+        .unwrap();
+    let mut output = Vec::new();
+    let first = retry::run_retry_api_to_writer(
+        &journal,
+        &reference,
+        &scope,
+        || panic!("frozen claim"),
+        |command| {
+            permitted(&store, PermitMutation::try_from(command).unwrap()).unwrap();
+            Err(crate::protocol::results::ApiError::new(
+                ErrorCode::UnknownOutcome,
+                "response lost after commit",
+            ))
+        },
+        &OutputSpec::default(),
+        &mut output,
+    );
+    assert!(first.is_err());
+    assert!(output.is_empty());
+    assert!(journal.load(&reference).is_ok());
+    drop(journal);
+    permitted(
+        &store,
+        PermitMutation::Leave(crate::protocol::commands::Leave {
+            thread: accept.thread.clone(),
+            operation: OperationId::new("leave"),
+            claim: accept.claim.clone(),
+        }),
+    )
+    .unwrap();
+    let journal = Journal::open(&temp).unwrap();
+    retry::run_retry_api_to_writer(
+        &journal,
+        &reference,
+        &scope,
+        || panic!("frozen claim"),
+        |command| {
+            let Command::Join(join) = &command else {
+                panic!("join required")
+            };
+            assert_eq!(join.claim, accept.claim);
+            assert_eq!(join.operation, reference.operation);
+            permitted(&store, PermitMutation::try_from(command).unwrap())
+        },
+        &OutputSpec::default(),
+        &mut output,
+    )
+    .unwrap();
+    assert!(!output.is_empty());
+    assert!(journal.load(&reference).is_err());
+    let db = store.context.open_writer().unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT state FROM memberships WHERE seat_id='s2'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "left"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM membership_intervals WHERE seat_id='s2'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+// Catches join inventing requirement consent/release after exact acceptance.
+#[test]
+fn public_join_preserves_accepted_requirement_and_required_leave_guard() {
+    let (store, path, accept, invitation) = join_hint_fixture(0);
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('owner','i',0)",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE threads SET managed_owner_author_id='owner'", [])
+        .unwrap();
+    db.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) SELECT 'requirement',thread_id,seat_id,'owner',id,'pending',created_decision_seq,created_at FROM invitations WHERE id=?1", [invitation.as_str()]).unwrap();
+    drop(db);
+    permitted(
+        &store,
+        PermitMutation::AcceptRequired(crate::protocol::commands::AcceptRequired {
+            thread: accept.thread.clone(),
+            invitation,
+            requirement: crate::protocol::ids::RequirementId::new("requirement"),
+            expected_revision: 1,
+            operation: OperationId::new("accept-required"),
+            claim: accept.claim.clone(),
+        }),
+    )
+    .unwrap();
+    permitted(
+        &store,
+        PermitMutation::Join(public_join_command(&accept, "join")),
+    )
+    .unwrap();
+    assert_eq!(
+        permitted(
+            &store,
+            PermitMutation::Leave(crate::protocol::commands::Leave {
+                thread: accept.thread.clone(),
+                operation: OperationId::new("leave"),
+                claim: accept.claim,
+            })
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::MembershipRequired
+    );
+    let db = store.context.open_writer().unwrap();
+    let requirement: (String, i64, String) = db
+        .query_row(
+            "SELECT state,revision,accepted_observation FROM requirement_episodes",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(requirement.0, "accepted");
+    assert_eq!(requirement.1, 2);
+    let observation: serde_json::Value = serde_json::from_str(&requirement.2).unwrap();
+    assert_eq!(observation["provenance"], "cooperative_top_level");
+    assert_eq!(observation["binding_generation"], 1);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM membership_intervals WHERE seat_id='s2'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM messages WHERE json_extract(event_json,'$.action')='join'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+// Catches recording a person's self-join as an agent, or giving join binding authority.
+#[test]
+fn public_join_human_claim_records_operator_human_without_changing_binding() {
+    let (store, path, mut accept, _) = join_hint_fixture_inner(0, false);
+    let db = store.context.open_writer().unwrap();
+    db.execute("UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='s2'", []).unwrap();
+    drop(db);
+    accept.claim.harness = Harness::Human;
+    permitted(
+        &store,
+        PermitMutation::Join(public_join_command(&accept, "join")),
+    )
+    .unwrap();
+    let db = store.context.open_writer().unwrap();
+    let event:(String,String,String) = db.query_row("SELECT actor_seat_id,author_role,json_extract(event_json,'$.observation') FROM messages WHERE json_extract(event_json,'$.action')='join'", [], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(
+        event,
+        ("s2".into(), "human".into(), "operator_human".into())
+    );
+    assert_eq!(db.query_row("SELECT count(*) FROM occupant_bindings WHERE seat_id='s2' AND generation=1 AND ended_at IS NULL", [], |r|r.get::<_,i64>(0)).unwrap(),1);
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+// Catches join failing to invalidate a sealed recipient snapshot at publication.
+#[test]
+fn public_join_invalidates_prepared_send_and_new_send_includes_new_member() {
+    let (store, path, accept, _) = join_hint_fixture_inner(0, false);
+    let send = SendMessage {
+        thread: accept.thread.clone(),
+        body: "prepared".into(),
+        invited_recipients: vec![],
+        deadline_millis: None,
+        operation: OperationId::new("prepared"),
+        claim: fixture_claim("s1", "s1"),
+        relays_user: false,
+        user_intent: None,
+    };
+    for _ in 0..16 {
+        if matches!(
+            StorePort::prepare_send_step(
+                &store,
+                &send,
+                DurableWorkAdmission::new(16).unwrap(),
+                &budget()
+            )
+            .unwrap(),
+            SendPreparationProgress::Ready { .. }
+        ) {
+            break;
+        }
+    }
+    permitted(
+        &store,
+        PermitMutation::Join(public_join_command(&accept, "join")),
+    )
+    .unwrap();
+    assert_eq!(
+        permitted(&store, PermitMutation::SendMessage(send))
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    let message = public_join_send(&store, &accept, "fresh-after-join");
+    let read = ReadContext {
+        instance: "i".into(),
+        output: OutputSpec::default(),
+        operation_scope: None,
+    };
+    let CommandResult::Recipients(page) = StorePort::query(
+        &store,
+        &Command::Recipients(crate::protocol::commands::RecipientsQuery {
+            message,
+            page: PageRequest::default(),
+        }),
+        &read,
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].seat.as_str(), "s2");
+    drop(store);
+    let _ = std::fs::remove_file(path);
 }

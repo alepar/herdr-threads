@@ -1,0 +1,3 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.12 (/Users/alepar/AleCode/herdr-threads/.worktrees/public-join)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.45s

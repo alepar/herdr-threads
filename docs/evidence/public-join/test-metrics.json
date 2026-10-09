@@ -1,0 +1,72 @@
+[
+  {
+    "name": "join",
+    "command": [
+      "nice",
+      "cargo",
+      "test",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "public_join"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.108
+  },
+  {
+    "name": "control",
+    "command": [
+      "nice",
+      "cargo",
+      "test",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "store::control::tests::"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.146
+  },
+  {
+    "name": "cli-commands",
+    "command": [
+      "nice",
+      "cargo",
+      "test",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "cli::commands::tests::"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 0.161
+  },
+  {
+    "name": "irc",
+    "command": [
+      "nice",
+      "cargo",
+      "test",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "cli::irc::tests::"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 0.082
+  },
+  {
+    "name": "cooperative",
+    "command": [
+      "nice",
+      "cargo",
+      "test",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "cli::cooperative_tests::"
+    ],
+    "exit": 101,
+    "elapsed_seconds": 1.611
+  }
+]

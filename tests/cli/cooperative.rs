@@ -2626,3 +2626,146 @@ mod scoped_runtime {
         assert!(runtime.calls.lock().unwrap().is_empty());
     }
 }
+
+// Catches new/retried join being dispatched to an incompatible daemon, or a
+// fresh refused invocation creating an intent before capability discovery.
+#[test]
+fn public_join_cli_capability_refusal_precedes_journal_submission() {
+    use crate::harness::context::{
+        ContextJournal, Harness as ContextHarness, OccupantContext, Role, SessionReference,
+    };
+    use crate::protocol::{
+        output::OutputSpec,
+        results::{ApiError, CapabilityList, ErrorCode},
+        time::CallBudget,
+    };
+    struct Client {
+        available: bool,
+    }
+    impl crate::ports::LocalClient for Client {
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            assert_eq!(command, Command::Capabilities, "must not submit join");
+            if self.available {
+                Ok(CommandResult::Capabilities(CapabilityList {
+                    capabilities: vec![],
+                }))
+            } else {
+                Err(ApiError::new(ErrorCode::HostUnavailable, "unavailable"))
+            }
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("public-join-cli-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let instance = uuid::Uuid::from_u128(1);
+    let contexts = ContextJournal::open(
+        &root,
+        instance,
+        "seat-test",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    let execution = uuid::Uuid::from_u128(2);
+    contexts
+        .install_reattached(OccupantContext {
+            format_version: 1,
+            instance,
+            seat: "seat-test".into(),
+            target: "w1:p1".into(),
+            harness: ContextHarness::Codex,
+            binding_generation: 1,
+            execution,
+            session: SessionReference::PluginContext(execution),
+            role: Role::TopLevel,
+        })
+        .unwrap();
+    let intents = root.join("intents");
+    let journal = Journal::open(&intents).unwrap();
+    let parsed = crate::cli::commands::parse_argv(["herdr-threads", "join", "thread"]).unwrap();
+    let before: Vec<_> = std::fs::read_dir(&intents)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    for available in [true, false] {
+        let mut output = Vec::new();
+        let error = crate::cli::run_cooperative(
+            parsed.clone(),
+            &journal,
+            &contexts,
+            None,
+            Role::TopLevel,
+            &Client { available },
+            &crate::app::SystemClock::new(),
+            &mut output,
+        )
+        .unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains(if available {
+                "thread.join_v1"
+            } else {
+                "unavailable"
+            }),
+            "{text}"
+        );
+        assert!(output.is_empty());
+        let after: Vec<_> = std::fs::read_dir(&intents)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(after, before);
+    }
+    let claim =
+        crate::harness::bridge::caller_claim(&contexts.current().unwrap().unwrap()).unwrap();
+    let scope = IntentScope::Cooperative {
+        instance: instance.to_string(),
+        seat: SeatId::new("seat-test"),
+    };
+    let reference = journal
+        .record(
+            scope,
+            SemanticMutation::freeze(
+                SemanticMutation::Join {
+                    thread: ThreadId::new("thread"),
+                },
+                claim,
+            )
+            .unwrap(),
+            0,
+        )
+        .unwrap();
+    let recovery = reference.recovery_ref();
+    let parsed = crate::cli::commands::parse_argv(["herdr-threads", "retry", &recovery]).unwrap();
+    let error = crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        None,
+        Role::TopLevel,
+        &Client { available: true },
+        &crate::app::SystemClock::new(),
+        &mut Vec::new(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("thread.join_v1"));
+    assert!(
+        journal.load(&reference).is_ok(),
+        "incompatible retry must retain its intent"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

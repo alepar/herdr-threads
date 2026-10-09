@@ -292,6 +292,20 @@ Declared subagents cannot reject. Required invitations remain service-owner cont
 ask that owner to release the requirement and reread its current state before attempting rejection.
 Reinvitation creates a fresh episode; replay of an old rejection cannot reject that new invitation.
 
+**Voluntary self-join.** An explicit `join THREAD` enrolls the caller's seat in an active
+thread of its instance under the ordinary A2 deciding transaction and its existing
+`cooperative_top_level` or `operator_human` claim. The immutable native-authored join
+info event retains actor seat, binding generation, observation provenance and decision
+time; the membership interval starts at that event's canonical decision sequence.
+It creates no invitation, invitation acceptance, receipt ACK or binding. A pending
+ordinary invitation requires explicit acceptance or rejection first; a pending required
+invitation requires exact-revision `accept-required`. Join cannot accept, release or alter
+a service requirement. An already joined seat is a settled no-op. Leaving and joining
+again creates a fresh interval without changing historical recipient snapshots or
+obligations. Replay returns its original result even after leaving, archival or a binding
+change; it never recreates membership. Archived threads require a member or service
+owner to reopen them before a new join. Discovery and names confer no additional authority.
+
 **A5a. Human seats do not owe ACKs.** The daemon classifies a recipient from its canonical open
 binding when staging a send. A human binding gets the message through thread membership but no
 receipt expectation, even when the sender requested an ACK; an unbound or agent bound recipient

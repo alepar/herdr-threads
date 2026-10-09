@@ -348,7 +348,8 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
             // An invite for a seat that already joined is a settled no-op
             // (ht-4is.3.12): no invitation episode, the intent completes.
             CommandResult::Invitation(_) | CommandResult::AlreadyJoined(_)
-        ) | (SemanticMutation::Accept { .. }, CommandResult::Accepted(_))
+        ) | (SemanticMutation::Join { .. }, CommandResult::Joined(_))
+            | (SemanticMutation::Accept { .. }, CommandResult::Accepted(_))
             | (
                 SemanticMutation::AcceptRequired { .. },
                 CommandResult::RequiredAccepted(_)

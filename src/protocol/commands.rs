@@ -81,6 +81,7 @@ pub enum Command {
     CompleteHandoff(crate::protocol::handoff::HandoffMutation),
     CreateThread(CreateThread),
     Invite(Invite),
+    Join(Join),
     Accept(Accept),
     AcceptRequired(AcceptRequired),
     Reject(Reject),
@@ -548,6 +549,13 @@ pub struct Invite {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Join {
+    pub thread: ThreadId,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Accept {
     pub thread: ThreadId,
     pub operation: OperationId,
@@ -760,6 +768,7 @@ impl Command {
             Self::BeginHandoff(v) | Self::CompleteHandoff(v) => Some(&v.identity.claim),
             Self::CreateThread(v) => Some(&v.claim),
             Self::Invite(v) => Some(&v.claim),
+            Self::Join(v) => Some(&v.claim),
             Self::Accept(v) => Some(&v.claim),
             Self::AcceptRequired(v) => Some(&v.claim),
             Self::Reject(v) => Some(&v.claim),
@@ -932,6 +941,7 @@ pub enum PermitMutation {
     CompleteHandoff(crate::protocol::handoff::HandoffMutation),
     CreateThread(CreateThread),
     Invite(Invite),
+    Join(Join),
     Accept(Accept),
     AcceptRequired(AcceptRequired),
     Reject(Reject),
@@ -953,6 +963,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::CompleteHandoff(v) => Ok(Self::CompleteHandoff(v)),
             Command::CreateThread(v) => Ok(Self::CreateThread(v)),
             Command::Invite(v) => Ok(Self::Invite(v)),
+            Command::Join(v) => Ok(Self::Join(v)),
             Command::Accept(v) => Ok(Self::Accept(v)),
             Command::AcceptRequired(v) => Ok(Self::AcceptRequired(v)),
             Command::Reject(v) => Ok(Self::Reject(v)),

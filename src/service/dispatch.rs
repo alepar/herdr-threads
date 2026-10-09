@@ -261,6 +261,7 @@ impl LocalService for DomainService {
             | Command::CheckIn(_)
             | Command::CreateThread(_)
             | Command::Invite(_)
+            | Command::Join(_)
             | Command::Accept(_)
             | Command::AcceptRequired(_)
             | Command::Reject(_)

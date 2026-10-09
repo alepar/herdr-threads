@@ -1,0 +1,28 @@
+Join an active thread without an invitation (THREAD is a name or ID). Pending invitations require accept or accept-required instead
+
+Usage: herdr-threads join [OPTIONS] <THREAD>
+
+Arguments:
+  <THREAD>
+
+Options:
+      --state-dir <STATE_DIR>
+          Select the local herdr-threads state directory. May repeat with an identical value; conflicting values are refused
+      --host-endpoint <HOST_ENDPOINT>
+          Select the local Herdr host socket path. May repeat with an identical value; conflicting values are refused
+      --json
+          Emit a structured JSON result on stdout
+      --human
+          Human-readable tables and transcripts (the default on a terminal)
+      --machine
+          The stable `key: value` text form for scripts and models (the default when stdout is not a terminal)
+      --cooperative-seat <COOPERATIVE_SEAT>
+          Explicit seat ID for a cooperative agent call; requires all four --cooperative-* options
+      --cooperative-target <COOPERATIVE_TARGET>
+          Exact live pane ID or scoped name bound to the cooperative seat
+      --cooperative-harness <COOPERATIVE_HARNESS>
+          Agent harness making the cooperative call [possible values: codex, claude]
+      --cooperative-role <COOPERATIVE_ROLE>
+          Agent role for the cooperative call [possible values: top-level, subagent]
+  -h, --help
+          Print help
