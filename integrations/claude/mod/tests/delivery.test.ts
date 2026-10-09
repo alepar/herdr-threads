@@ -1336,6 +1336,26 @@ test('a successor sees the submitted turn start: the ids are delivered at that t
   expect(h.submits[1]).not.toContain('message m1 in ')
 })
 
+test('a successor recognises a predecessor batch that carried an attention block, and never submits it again', async () => {
+  const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  h.line(attention(5))
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits.length).toBe(1)
+  expect(h.submits[0]).toContain('[herdr-threads] attention attention:5:')
+  await reload(h)
+  h.line(msg('m1'))
+  await h.advance(1000)
+  h.core.onTurnStart({ turnId: 't9', text: h.submits[0] })
+  await flush()
+  expect(h.core.snapshot().pred).toBeNull()
+  expect(h.ackRuns().length).toBe(1)
+  h.core.onTurnComplete({ turnId: 't9', isAborted: false })
+  await flush()
+  await h.advance(130_000)
+  expect(h.submits.length).toBe(1)
+})
+
 test('a predecessor submit that never produced a turn is delivered after 120 s idle', async () => {
   const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
   h.line(msg('m1'))

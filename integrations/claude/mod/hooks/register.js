@@ -526,9 +526,12 @@ export function createCore(io) {
 
   // ---- predecessor submit (reload mid-submit, ht-j16.29) -----------------
 
-  /** Ids of the mod frames in a prompt: only the mod's own header lines start at column 0. */
+  /** Ids of the mod frames in a prompt, attention blocks included: only the mod's own header lines start at column 0. */
   function framedIds(text) {
-    return Array.from(String(text ?? '').matchAll(/^\[herdr-threads\] (?:message|lazy) (\S+) in /gm), (m) => m[1])
+    return Array.from(
+      String(text ?? '').matchAll(/^\[herdr-threads\] (?:(?:message|lazy) (\S+) in |attention (\S+):$)/gm),
+      (m) => m[1] ?? m[2],
+    )
   }
 
   /** The predecessor's submit produced a turn that carried its ids: mark them delivered via submit and ack. */
