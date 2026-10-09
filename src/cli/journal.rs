@@ -755,6 +755,20 @@ pub struct PendingIntent {
     pub semantic: SemanticMutation,
     pub operation: OperationId,
 }
+impl PendingIntent {
+    /// Ordinary replay can select its frozen caller without adopting the live binding.
+    /// Lifecycle and compound intents retain their separate replay algorithms.
+    pub(crate) fn ordinary_replay_claim(&self) -> Option<&CallerClaim> {
+        match &self.semantic {
+            SemanticMutation::Frozen { claim, mutation }
+                if !matches!(mutation.as_ref(), SemanticMutation::Handoff(_)) =>
+            {
+                Some(claim)
+            }
+            _ => None,
+        }
+    }
+}
 pub type PendingPage = Page<LocalIntent>;
 // Compact published semantic and header each fit the canonical identity envelope;
 // fixed reference/digest/header fields have 4096 bytes of additional headroom.

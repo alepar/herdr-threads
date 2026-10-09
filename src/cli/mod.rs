@@ -1487,6 +1487,44 @@ fn inbox_topics<C: LocalClient + ?Sized>(
     }
 }
 
+/// Read-only frozen routing; this is a replay selector, never a current claim.
+fn ordinary_retry_claim(
+    parsed: &commands::ParsedCli,
+    root: &std::path::Path,
+) -> Result<Option<crate::protocol::authority::CallerClaim>, RunError> {
+    let CliAction::Retry(recovery) = &parsed.action else {
+        return Ok(None);
+    };
+    Ok(retry::preflight_ordinary_claim(
+        root,
+        recovery.as_str(),
+        parsed.actor,
+        &parsed.output.context,
+    )?)
+}
+
+fn replay_selection(
+    selection: &CooperativeSelection,
+    claim: &crate::protocol::authority::CallerClaim,
+) -> Result<CooperativeSelection, RunError> {
+    use crate::protocol::authority::CallerRole;
+    if selection.seat != claim.seat
+        || selection.target != claim.target
+        || selection.role != crate::harness::context::Role::TopLevel
+        || claim.role != CallerRole::TopLevel
+    {
+        return Err(mapping_error(
+            "retry belongs to a different caller location or role",
+        ));
+    }
+    Ok(CooperativeSelection {
+        seat: claim.seat.clone(),
+        target: claim.target.clone(),
+        role: selection.role,
+        harness: claim.harness.into(),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     parsed: commands::ParsedCli,
@@ -1501,16 +1539,20 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         harness::context::{OccupantContext, SessionReference},
         protocol::{commands::SeatInspectQuery, pagination::PageRequest, results::CommandResult},
     };
-    if let CliAction::Retry(recovery) = &parsed.action {
-        retry::preflight_original_actor(
-            paths.instance_dir.join("intents"),
-            recovery.as_str(),
-            parsed.actor,
-            &parsed.output.context,
-        )?;
+    let replay = ordinary_retry_claim(&parsed, &paths.instance_dir.join("intents"))?;
+    let historical;
+    let selection = if let Some(claim) = &replay {
+        if claim.instance != instance.to_string() {
+            return Err(unsupported("retry belongs to a different instance or seat"));
+        }
+        historical = replay_selection(selection, claim)?;
+        &historical
     } else {
-        validate_actor_harness(parsed.actor, selection.harness)?;
-    }
+        if !matches!(&parsed.action, CliAction::Retry(_)) {
+            validate_actor_harness(parsed.actor, selection.harness)?;
+        }
+        selection
+    };
     if matches!(&parsed.action, CliAction::Summary(_)) {
         return summary::run(parsed, selection, paths, instance, client, clock, writer);
     }
@@ -1585,7 +1627,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         if context.instance != instance
             || context.seat != selection.seat.as_str()
             || context.target != selection.target.as_str()
-            || context.harness != selection.harness
+            || (replay.is_none() && context.harness != selection.harness)
         {
             return Err(mapping_error(
                 "local context differs from current service mapping",
@@ -2096,10 +2138,13 @@ where
     C: LocalClient,
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
 {
-    if let Some(selection) = &parsed.cooperative
-        && !matches!(&parsed.action, CliAction::Retry(_))
-    {
-        validate_actor_harness(parsed.actor, selection.harness)?;
+    let replay = ordinary_retry_claim(parsed, &paths.instance_dir.join("intents"))?;
+    if let Some(selection) = &parsed.cooperative {
+        if let Some(claim) = &replay {
+            parsed.cooperative = Some(replay_selection(selection, claim)?);
+        } else if !matches!(&parsed.action, CliAction::Retry(_)) {
+            validate_actor_harness(parsed.actor, selection.harness)?;
+        }
     }
     match caller_need(parsed, paths)? {
         CallerNeed::None => Ok(parsed.cooperative.clone()),
@@ -2290,6 +2335,7 @@ where
     C: LocalClient,
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
 {
+    let replay = ordinary_retry_claim(parsed, &paths.instance_dir.join("intents"))?;
     let pane = caller_pane.filter(|pane| !pane.is_empty()).ok_or_else(|| {
         caller_not_located(&format!("this command acts as a seat: {CALLER_HELP}"))
     })?;
@@ -2315,6 +2361,26 @@ where
                 ))
             })?,
     };
+    if let Some(claim) = replay {
+        if context.instance != instance
+            || context.seat != seat.as_str()
+            || context.target != pane.as_str()
+            || claim.instance != instance.to_string()
+        {
+            return Err(mapping_error(
+                "local context differs from current service mapping",
+            ));
+        }
+        return replay_selection(
+            &CooperativeSelection {
+                seat,
+                target: pane,
+                harness: context.harness,
+                role: context.role,
+            },
+            &claim,
+        );
+    }
     if !matches!(&parsed.action, CliAction::Retry(_)) {
         validate_actor_harness(parsed.actor, context.harness)?;
     }
@@ -2538,14 +2604,14 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         && matches!(&parsed.action, CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
         && parsed.output.format == OutputFormat::Text
         && parsed.presentation != output::Presentation::Machine;
-    if let CliAction::Retry(recovery) = &parsed.action {
-        retry::preflight_original_actor(
-            journal.root(),
-            recovery.as_str(),
-            parsed.actor,
-            &parsed.output.context,
-        )?;
-    }
+    // Preflights the original actor for every retry; an ordinary frozen intent
+    // replays under its saved caller's namespace rather than the live binding.
+    let replay = ordinary_retry_claim(&parsed, journal.root())?;
+    let _retry_namespace = replay.as_ref().map(|claim| {
+        crate::protocol::output::CommandNamespaceGuard::enter(
+            claim.harness == crate::protocol::authority::Harness::Human,
+        )
+    });
     if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
         && own_text_inbox
         && role == Role::TopLevel
@@ -2696,6 +2762,14 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             };
             if pending.header.scope != scope {
                 return Err(unsupported("retry belongs to a different instance or seat"));
+            }
+            if let Some(claim) = &replay
+                && (claim.target.as_str() != seed.target
+                    || claim.role != crate::protocol::authority::CallerRole::TopLevel)
+            {
+                return Err(mapping_error(
+                    "retry belongs to a different caller location or role",
+                ));
             }
             if let SemanticMutation::CooperativeCheckIn {
                 claim,
