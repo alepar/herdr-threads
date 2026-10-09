@@ -31,3 +31,25 @@ Same original ht-qhz run/session, eight of sixteen leaves complete; prior design
 Main authorizes unchanged six-CLI actor extraction from immutable f0d/tree073a; initiald01 exactsource and retained-origin/directcontext/inert controls are frozen, actual storage composition and fresh independent source review remain required. No full lazy/source ancestry/permission backend import. Existing.7 archival and.4.2 coordinator continue on isolated511a bases; bounded archival coverage and preallocation boundary reviews retain actual source limitations.
 
 The approved narrow preallocation amendment is recorded in 2026-10-08-handoff-preallocation-boundary-design.md. Initial scoped design Important lifecycle ambiguity and Minor footprint omission are addressed in FIX1 before source expansion. These are scoped amendment reviews, not replacement root roasts. Public modes/capability remain inert until19 actual guarded producer/consumer composition is independently reviewed.
+
+## Current code-phase return and changed-base continuation
+
+All16original leaves are closed; rootht-qhz remains open. Exact a442/db905 final SDD fix integrated only into owned roota1d09f5ea268b37d70ec8d8c7f001a189aee5bf9, same checked tree, for continued work. Final review is WITH_FIXES: I1closed, I2remaining typed tab creationNotSubmitted skips pending report. Final SDD wave1of1/scopedreview1of1 spent; PR/code roast0 has not started. Pointers: ../../../../.superpowers/sdd/ht-qhz-plan/final-SDD-fix-review.md and final-SDD-fix-integration.json in the same workspace.
+
+Ruling: carry the concrete remaining I2 as a Must-fix final-review item into the original mandatory PR/code-roast fix loop under super-auto Final-review items, with no extra SDD wave or review — original design requires useful durable recovery output and source proves the gap — cost if wrong: extra bounded PR fix/review effort; this branch stays not ready until resolved.
+
+Ruling: audit and reconcile actual main08cea7091202d7c47e992612d2de1a82f8474ea0 before the original PR roast, using the same original composition owner and existing isolated worktree — main now contains landed lazy/native/guide changes, SQL26 remains byteexactfc0d7cbe, and old-base review would miss compatibility — cost if wrong: composition rework, no main mutation or release. Audit is read-only before a persisted minimum footprint; no adapter dependency, new root/run or completed-task reset.
+
+User verification/ownership override remains: focused worker checks, main final exact combined suite/CI; worker never runs a fullsuite or claims five-minute suite qualification. Main owns actual merge/release/local installation/tab closure; source worktrees/evidence remain until independently verifiedDONE+MERGED.
+
+codeBuckets:
+  completed: ht-qhz.1, ht-qhz.19, ht-qhz.2.1, ht-qhz.2.2, ht-qhz.2.3, ht-qhz.20, ht-qhz.3, ht-qhz.4.1, ht-qhz.4.2, ht-qhz.4.3, ht-qhz.5.1, ht-qhz.5.2, ht-qhz.6, ht-qhz.7, ht-qhz.8, ht-qhz.9
+  escalated:
+  pendingRetry:
+  parked:
+  stalled: false
+  review: not ready (I2 typed tab-creation non-submission missing pending report; actual-main compatibility composition pending)
+  sweep: SWEEP DEFERRED (caller-owned)
+  slowness: historical overages retained; final changed-source builds/lint under60s; soft archival bundle limits remain explicit
+  worktreesKept: all owned source/evidence worktrees — user requires retention until DONE+MERGED
+  processSweep: stopped 0 · survived 0 — fixtures already physically reaped; latest UUID-scoped inventory0ownedlive
