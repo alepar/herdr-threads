@@ -19,6 +19,7 @@ parked:
 - 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md · escalation · "$.session.id() inside session.end may return the ending session's id; restart path must re-read later"
 - coverage-round-2 · degraded-verdict · "coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage — design roast reviews the settled tree"
 - 2026-10-09 background commit security review · escalation · "mod frame relay/intent markers can be spoofed by peer-controlled body, thread or sender text (a fake marked header line); raw-body escaping was rejected twice under the cooperative model (design roast 1, PR roast 1); follow-up: delimit or escape peer text inside the frame now that markers carry meaning; recorded as a TRUST-POLICY accepted limit"
+- 2026-10-09-claude-mod-inbound-delivery-roast-pr-post-cap-audit.md · escalation · "D3 heuristic (register.js:67): whether Claude Code 2.1.295 reports an ordinary failed Bash call or a permissions.deny rule as isError/deny on the mod tool.call result is unverified; if so, a turn ending that way holds idle submits up to 120 s. Documented accepted heuristic in the spec; refute and ground seats REJECT at FYI. Check: live scenario running `false` via an allowed Bash rule, then answering, with a peer message mid-turn"
 roastDesignRound: 2
 roast-design: 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md, 2026-10-09-claude-mod-inbound-delivery-roast-design-2.md
 stepBackDesign-round-1: patch — 11 findings fixable in place; four clusters (D12 override layer folded into D2–D8, delivered predicate per path, install env/managed-policy checks, ack per-id result taxonomy) plus reload turn-state
@@ -30,13 +31,13 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready — code-final-review-8.md; its must-fixes resolved after it: finding 1 fixed at dc5b2f6c, live stress re-run at b562d1e4 (13/14 3/3, reload_mid_turn 2/3 ledger-only), sweep passed @ 11b01cd5
-  sweep: 11b01cd5 · 4029/4029 passed, 43 skipped (matches nextest list) · test time 214 s, wall 359 s incl. build · leak check clean · clippy, fmt, check-default-features clean
+  review: not ready (code-final-review-8.md; its two must-fixes were resolved after it, unreviewed by a further final review: finding 1 fixed at dc5b2f6c, live stress re-run at b562d1e4 13/14 3/3 with reload_mid_turn 2/3 ledger-only; post-cap audit clean)
+  sweep: 11b01cd5 — 4029 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (test time 214 s, wall 359 s incl. build; leak check clean; matches nextest list) @ 11b01cd5
   slowness: round 1 (fix re-entry): merge queue peaked at 5 — serial merge lane bottleneck
   worktreesKept:
   processSweep: stopped 0 · survived 0
 roastCodeRound: 2
-roast-code: 2026-10-09-claude-mod-inbound-delivery-roast-pr-1.md, 2026-10-09-claude-mod-inbound-delivery-roast-pr-2.md
+roast-code: 2026-10-09-claude-mod-inbound-delivery-roast-pr-1.md, 2026-10-09-claude-mod-inbound-delivery-roast-pr-2.md, 2026-10-09-claude-mod-inbound-delivery-roast-pr-post-cap-audit.md
 stepBackCode-round-1: patch — Round 1, no recurrence yet; findings mostly independent, one registry-liveness cluster (per-generation liveness query + stale-snapshot closes) and one mod-test-enforcement cluster swept by rule
 scopeFilter-round-1: [Should-fix] integrations/claude/mod/hooks/register.js:228; src/cli/watch.rs:719 in-scope — Backlogs over 100 unacked ids are rejected whole on every retry and never settle, so the goal's 'each fully delivered message settles its receipt' fails.
 scopeFilter-round-1: [Should-fix] src/cli/watch.rs:340 in-scope — A transient Capabilities failure makes the mod stop watching for the whole session, so mod delivery in the goal-named path is wrongly and permanently disabled.
@@ -61,3 +62,4 @@ postLoopFix: final-review-7 Must-fix 1+2 (ht-j16.29 regressions: submit inside a
 postLoopFix: final-review-8 finding 1 (predecessor batch with an attention block submitted twice; confirmed repro) fixed directly at dc5b2f6c with a delivery test, outside the coordinator; its stress-model and accepted-limit minors go to the punch list
 liveStress: re-run at b562d1e4 (final code SHA): 13/14 scenarios 3/3; reload_mid_turn 2/3 — one extra predecessor_submit ledger entry after a submit resolved just before dispose, one submit and one presentation; leak check clean
 sweepFix: none needed
+friction: 6 events
