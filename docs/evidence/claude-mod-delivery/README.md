@@ -9,7 +9,7 @@ fixed. The first run, which found D1-D3, is kept below unchanged.
 
 - Command: `python3 tests/native/claude_mod/stress.py --iterations 3 --settle 60 --scenarios
   reload_mid_turn,reload,clear_rebind,idle_submit`, Claude Code 2.1.295, 4.8 min. Results and files:
-  [`final-subset/`](final-subset/) (`summary.json` and `live/`). Every message acked, 0 native prompts, no
+  [`final-subset/`](final-subset/) (`summary.json` and `live/`). Every message acked, 1 total native prompt (per `native_prompts_total` in the summary), no
   duplicate ledger entries. Leak check: "no leaked test processes".
 - `73a75cbf` changes only the mod: a successor no longer records ids its session record already holds as
   delivered. The other 10 scenarios were not re-run; their code paths are unchanged since `b562d1e4` except for
