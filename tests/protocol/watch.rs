@@ -57,6 +57,22 @@ fn watch_line_message_round_trips_with_schema_kind_and_truncated() {
 }
 
 #[test]
+fn watch_line_attention_cleared_round_trips() {
+    let line = WatchLine::new(
+        "attention_cleared:7",
+        WatchItem::AttentionCleared(WatchAttentionCleared {
+            attention_version: 7,
+        }),
+    );
+    let value = serde_json::to_value(&line).unwrap();
+    assert_eq!(value["kind"], "attention_cleared");
+    assert_eq!(value["attention_version"], 7);
+    assert_eq!(value["schema"], 1);
+    assert_eq!(value["id"], "attention_cleared:7");
+    round_trip(&line);
+}
+
+#[test]
 fn watch_line_lazy_attention_status_kinds() {
     let lazy = WatchLine::new("m2", WatchItem::Lazy(message()));
     assert_eq!(serde_json::to_value(&lazy).unwrap()["kind"], "lazy");

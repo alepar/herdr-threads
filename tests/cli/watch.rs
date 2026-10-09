@@ -810,6 +810,42 @@ fn invitations_and_warnings_collapse_into_one_attention_line_per_version() {
 }
 
 #[test]
+fn a_drain_that_finds_nothing_pending_retracts_the_last_attention_line() {
+    let mut state = EmitState::default();
+    let ids = |got: &[WatchLine]| got.iter().map(|l| l.id.clone()).collect::<Vec<_>>();
+    let (_, got) = run_drain(&paged_client(vec![vec![invitation()]]), 5, &mut state);
+    assert_eq!(ids(&got), ["attention:5"]);
+    let (_, got) = run_drain(&paged_client(vec![vec![whole("m1", "hi")]]), 6, &mut state);
+    assert_eq!(ids(&got), ["m1", "attention_cleared:6"]);
+    assert_eq!(
+        got[1].item,
+        WatchItem::AttentionCleared(crate::protocol::watch::WatchAttentionCleared {
+            attention_version: 6
+        })
+    );
+    // Already retracted: nothing more.
+    let (_, got) = run_drain(&paged_client(vec![vec![]]), 6, &mut state);
+    assert!(got.is_empty(), "{got:?}");
+    // Attention comes back at a version already seen: printed again.
+    let (_, got) = run_drain(&paged_client(vec![vec![warning()]]), 6, &mut state);
+    assert_eq!(ids(&got), ["attention:6"]);
+    let (_, got) = run_drain(&paged_client(vec![vec![warning()]]), 6, &mut state);
+    assert!(got.is_empty(), "{got:?}");
+    let (_, got) = run_drain(&paged_client(vec![vec![]]), 7, &mut state);
+    assert_eq!(ids(&got), ["attention_cleared:7"]);
+}
+
+#[test]
+fn a_run_without_attention_never_retracts() {
+    let mut state = EmitState::default();
+    let (_, first) = run_drain(&paged_client(vec![vec![whole("m9", "x")]]), 1, &mut state);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].id, "m9");
+    let (_, second) = run_drain(&paged_client(vec![vec![]]), 2, &mut state);
+    assert!(second.is_empty(), "{second:?}");
+}
+
+#[test]
 fn drain_surfaces_daemon_errors_and_closed_stdout() {
     let failing = FakeClient::new(|_| Err(ApiError::host_unavailable("down")));
     let mut state = EmitState::default();

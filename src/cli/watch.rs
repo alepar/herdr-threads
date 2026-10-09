@@ -24,8 +24,8 @@ use crate::{
         watch::{
             ModAckItem, ModAckOutcome, ModAckReason, ModDeliveryVia, WATCH_BODY_LIMIT_BYTES,
             WATCH_EXIT_ERROR, WATCH_EXIT_STREAM_ENDED, WATCH_PAGE_MAX_BYTES, WATCH_PAGE_MAX_ITEMS,
-            WatchAttention, WatchFrame, WatchItem, WatchLine, WatchMessage, WatchOutcome,
-            WatchReply, WatchRequest as WireWatch, WatchStatus, WatchStatusReason,
+            WatchAttention, WatchAttentionCleared, WatchFrame, WatchItem, WatchLine, WatchMessage,
+            WatchOutcome, WatchReply, WatchRequest as WireWatch, WatchStatus, WatchStatusReason,
             WatchStatusState, WatchWireRequest, truncation_marker_for,
         },
         wire::{PROTOCOL_VERSION, WireResponse},
@@ -68,6 +68,9 @@ pub struct WatchAckRequest {
 pub(crate) struct EmitState {
     next_status: u64,
     emitted: HashSet<String>,
+    /// An attention line was printed (or would have been, at an already
+    /// printed version) and not yet retracted.
+    attention_shown: bool,
     hint_path: Option<PathBuf>,
     /// Invocation the truncation marker's commands start with
     /// (`hook::cli_prefix`); empty means bare `herdr-threads`.
@@ -632,6 +635,22 @@ pub(crate) fn drain(
                             ),
                         )?;
                     }
+                    state.attention_shown = true;
+                } else if state.attention_shown {
+                    // Everything the last attention line pointed at was settled
+                    // elsewhere (an accepted invitation, notices a check-in
+                    // offered): retract it (ht-j16.33).
+                    write_line(
+                        out,
+                        &WatchLine::new(
+                            format!("attention_cleared:{frame_version}"),
+                            WatchItem::AttentionCleared(WatchAttentionCleared {
+                                attention_version: frame_version,
+                            }),
+                        ),
+                    )?;
+                    state.attention_shown = false;
+                    state.emitted.retain(|id| !id.starts_with("attention:"));
                 }
                 return Ok(());
             }

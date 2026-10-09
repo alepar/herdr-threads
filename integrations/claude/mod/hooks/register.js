@@ -234,6 +234,18 @@ export function createCore(io) {
       }
       return
     }
+    if (o.kind === 'attention_cleared') {
+      // The watch found nothing pending that an earlier attention line pointed at (ht-j16.33): an unsent
+      // attention item is stale. One already in a submit or attached as context is not recalled.
+      const gone = S.queue.filter((q) => q.kind === 'attention' && !q.inflight).map((q) => q.id)
+      S.queue = S.queue.filter((q) => q.kind !== 'attention' || q.inflight)
+      S.runAttention = new Set()
+      if (gone.length) {
+        S.lastHeld = ''
+        ledger('refused', { ids: gone, reason: 'attention_cleared' })
+      }
+      return
+    }
     if (o.kind !== 'message' && o.kind !== 'lazy' && o.kind !== 'attention') return
     ledger('received', { ids: [o.id] })
     if (o.kind === 'attention') {

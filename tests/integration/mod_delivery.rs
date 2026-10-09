@@ -1786,6 +1786,148 @@ fn attention_marker_line_for_invitation() {
     assert!(line["id"].as_str().unwrap().starts_with("attention:"));
 }
 
+/// ht-j16.33 step 1: a session that starts after B accepted the invitation
+/// sees no attention at connect.
+#[test]
+fn fresh_watch_after_accept_prints_no_attention() {
+    let rig = Rig::new();
+    rig.session_start_hook(PANE_B, SESSION_B, "startup");
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    watch.assert_no_line("attention", |l| l["kind"] == "attention");
+}
+
+/// ht-j16.33: an attention line whose invitation was accepted, or whose
+/// notices a check-in offered, is retracted with `attention_cleared`.
+#[test]
+fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
+    use herdr_threads::{
+        client::service::{PersistentServiceClient, ServiceIntentJournal},
+        daemon::ownership::{read_descriptor, read_existing_namespace},
+        protocol::{
+            ids::{OperationId, SeatId, ThreadId},
+            service::{
+                EnsureManagedThread, InvitationConstraint, NotificationSeverity, ServiceInvite,
+                ServiceNotify, ServiceOperation,
+            },
+            time::CallBudget,
+        },
+    };
+
+    let rig = Rig::new();
+    // (a) an invitation, then B accepts it.
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let other = rig
+        .cli(
+            Some((&rig.a, PANE_A)),
+            &["thread", "create", "--topic", "second thread"],
+        )
+        .text("thread create");
+    rig.cli(
+        Some((&rig.a, PANE_A)),
+        &["invite", &other, "--seat", &rig.b],
+    )
+    .data("invite");
+    watch.wait_attention_marker();
+    rig.cli(Some((&rig.b, PANE_B)), &["accept", &other])
+        .data("accept");
+    let cleared = watch.wait_line("the retraction", STEP, |l| l["kind"] == "attention_cleared");
+    assert!(
+        cleared["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("attention_cleared:"),
+        "{cleared}"
+    );
+    assert!(cleared["attention_version"].as_u64().is_some(), "{cleared}");
+
+    // (b) a notice published with no live channel, a connect that shows it,
+    // then a check-in that offers (settles) it.
+    // The killed child leaves the channel in reconnect grace; the next watch
+    // replaces it.
+    rig.kill(&mut watch);
+    let instance = read_existing_namespace(&rig.paths)
+        .unwrap()
+        .expect("instance");
+    let descriptor = read_descriptor(&rig.paths, instance).unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let client = PersistentServiceClient::new(
+        descriptor.endpoint.clone(),
+        Arc::clone(&clock),
+        descriptor.instance_uuid,
+        Some(descriptor.boot_id),
+        ServiceIntentJournal::open(rig.root.join("intents")).unwrap(),
+    );
+    let budget = || CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 10_000),
+        cancellation: Cancellation::default(),
+    };
+    let managed = ThreadId::new("thread-notice-stale");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            client.register(&budget()).await.unwrap();
+            client
+                .submit(
+                    ServiceOperation::EnsureThread(EnsureManagedThread {
+                        thread: managed.clone(),
+                        topic: "notice stale".into(),
+                        goal: "coordination".into(),
+                        operation: OperationId::new("ensure"),
+                    }),
+                    &budget(),
+                )
+                .await
+                .unwrap();
+            client
+                .submit(
+                    ServiceOperation::Invite(ServiceInvite {
+                        thread: managed.clone(),
+                        seat: SeatId::new(rig.b.clone()),
+                        constraint: InvitationConstraint::Ordinary,
+                        deadline_millis: Some(300_000),
+                        operation: OperationId::new("invite"),
+                    }),
+                    &budget(),
+                )
+                .await
+                .unwrap();
+            rig.cli(Some((&rig.b, PANE_B)), &["accept", managed.as_str()])
+                .data("accept");
+            client
+                .submit(
+                    ServiceOperation::Notify(ServiceNotify {
+                        thread: managed.clone(),
+                        severity: NotificationSeverity::Warn,
+                        event_json: json!({"kind": "integration", "detail": "stale notice"}),
+                        operation: OperationId::new("notify"),
+                    }),
+                    &budget(),
+                )
+                .await
+                .unwrap();
+        });
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    watch.wait_attention_marker();
+    // The check-in offers the pending notice and settles it.
+    let shown = wait_until("the notice in the PreToolUse hook", STEP, || {
+        let out = rig.hook(PANE_B, &pre_tool_use(SESSION_B));
+        out.stdout.contains("offered notices").then_some(out)
+    });
+    assert!(
+        shown.stdout.contains("thread-notice-stale"),
+        "{:?}",
+        shown.stdout
+    );
+    watch.wait_line("the retraction", STEP, |l| l["kind"] == "attention_cleared");
+    assert_eq!(rig.channel_state().as_deref(), Some("live"));
+    assert!(watch.running(), "the watch child died");
+}
+
 /// Snapshot of every file below `dir` (the seat's local context hints).
 fn snapshot(dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
     fn walk(dir: &std::path::Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {

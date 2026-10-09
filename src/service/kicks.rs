@@ -236,6 +236,8 @@ pub const MOD_NOTIFY_TABLES: &[&str] = &[
     "warning_jobs",
     "warning_conditions",
     "digest_programmatic_warnings",
+    // A check-in that offered notices settles them (ht-j16.33).
+    "digest_notice_offer",
     "catch_up",
     "occupant_bindings",
     "seats",
