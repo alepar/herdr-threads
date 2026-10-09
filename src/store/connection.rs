@@ -65,7 +65,8 @@ pub struct DecisionInstant {
 
 /// Test-support builds only: a process started with this set to `1` (every
 /// child tagged by `test_support::spawn`, so test-spawned CLIs and daemons)
-/// commits with `synchronous=NORMAL`. Hundreds of test daemons each fsyncing
+/// commits with `synchronous=NORMAL`, as do the library's own unit tests
+/// (see `require_commit_durability`). Hundreds of test daemons each fsyncing
 /// every WAL commit made the suite disk-bound on a loaded machine; a test
 /// cannot observe the difference, which only matters on power loss.
 /// Production builds never compile it and always commit with `FULL`.
@@ -84,7 +85,8 @@ impl StoreContext {
             lane_fault: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
             relaxed_durability: AtomicBool::new(
-                std::env::var_os(TEST_RELAXED_DURABILITY_ENV).is_some_and(|v| v == "1"),
+                cfg!(test)
+                    || std::env::var_os(TEST_RELAXED_DURABILITY_ENV).is_some_and(|v| v == "1"),
             ),
             #[cfg(test)]
             setup_busy_signal: std::sync::Mutex::new(None),
@@ -106,6 +108,14 @@ impl StoreContext {
     #[cfg(any(test, feature = "test-support"))]
     pub fn relax_commit_durability(&self) {
         self.relaxed_durability.store(true, Ordering::SeqCst);
+    }
+
+    /// Unit-test builds relax every store by default (each in-process store
+    /// test's fsyncs made the library suite disk-bound under load); a test
+    /// that asserts the production `FULL` setting opts back in here.
+    #[cfg(test)]
+    pub(crate) fn require_commit_durability(&self) {
+        self.relaxed_durability.store(false, Ordering::SeqCst);
     }
 
     /// Fails with the installed fault's error for the calling thread's lane

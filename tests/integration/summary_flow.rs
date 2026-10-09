@@ -75,7 +75,7 @@ fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
     let until = Instant::now() + timeout;
     while !done() {
         assert!(Instant::now() < until, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -144,6 +144,10 @@ impl World {
         let ensured = world.cli(None, None, &["daemon", "ensure"]);
         ensured.data("daemon ensure");
         world
+    }
+    fn resolve(&self, pane: &str) -> String {
+        self.cli(None, None, &["seat", "resolve", "--pane", pane])
+            .text("seat resolve")
     }
     fn path(&self) -> String {
         format!("{}:/usr/bin:/bin", self.root.join("bin").display())
@@ -515,6 +519,17 @@ const PANE_C: &str = "w1:p3";
 const PANE_D: &str = "w1:p4";
 const SESSION_B: &str = "SB";
 
+/// How far [`Fixture::build_stage`] goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    /// Seat A only, with its SessionStart hook.
+    SeatA,
+    /// A, B and C, with T created and B and C joined; no messages.
+    Joined,
+    /// The full fixture: T's twelve messages.
+    Sent,
+}
+
 impl Fixture {
     /// Daemon + stand-in Herdr + three cooperative seats: A (sender), B (the
     /// summarizer, registered through its SessionStart hook so the tool
@@ -539,6 +554,17 @@ impl Fixture {
     /// The fixture with its own settings and require-ACK deadline, for a
     /// test whose real-time windows those two values set.
     fn build_with(binary: &str, settings: &str, ack_deadline_seconds: u64) -> Self {
+        Self::build_stage(binary, settings, ack_deadline_seconds, Stage::Sent)
+    }
+    /// Only as much of the fixture as a case that ignores T's history uses:
+    /// every CLI round trip is a debug-binary process and, for a write, a
+    /// daemon commit, so the twelve sends dominate the setup.
+    fn build_until(stage: Stage) -> Self {
+        Self::build_stage(BIN, SETTINGS, ACK_DEADLINE_SECONDS, stage)
+    }
+    /// Every CLI call stays serial: concurrent CLI writes in one instance
+    /// contend on its intent journal's allocator lock (a 1 s bound).
+    fn build_stage(binary: &str, settings: &str, ack_deadline_seconds: u64, stage: Stage) -> Self {
         let world = World::start_with_settings(
             vec![
                 claude(PANE_A, "term-a", "SA"),
@@ -549,16 +575,29 @@ impl Fixture {
             binary,
             settings,
         );
-        let resolve = |pane: &str| {
-            world
-                .cli(None, None, &["seat", "resolve", "--pane", pane])
-                .text("seat resolve")
-        };
-        let (a, b, c) = (resolve(PANE_A), resolve(PANE_B), resolve(PANE_C));
-        for (pane, session) in [(PANE_A, "SA"), (PANE_B, SESSION_B)] {
+        let started = |pane: &str, session: &str| {
             let started = world.hook("claude", pane, &session_start("claude", session, "startup"));
             assert_eq!(started.code, 0, "{}", started.stderr);
+        };
+        if stage == Stage::SeatA {
+            let a = world.resolve(PANE_A);
+            started(PANE_A, "SA");
+            return Self {
+                world,
+                a,
+                b: String::new(),
+                c: String::new(),
+                thread: String::new(),
+                ack: String::new(),
+            };
         }
+        let (a, b, c) = (
+            world.resolve(PANE_A),
+            world.resolve(PANE_B),
+            world.resolve(PANE_C),
+        );
+        started(PANE_A, "SA");
+        started(PANE_B, SESSION_B);
         let caller_c = Caller {
             seat: &c,
             pane: PANE_C,
@@ -590,19 +629,21 @@ impl Fixture {
                 .data("accept");
         }
         let mut ack = String::new();
-        for index in 0..12 {
-            let text = body(index);
-            let mut args = vec!["send", thread.as_str(), "--body", text.as_str()];
-            let deadline = ack_deadline_seconds.to_string();
-            if index == 3 {
-                args.push("--relays-user");
-            }
-            if index == 11 {
-                args.extend(["--require-ack", b.as_str(), "--deadline", deadline.as_str()]);
-            }
-            let sent = world.cli_send(author, &args).text("send");
-            if index == 11 {
-                ack = sent;
+        if stage == Stage::Sent {
+            for index in 0..12 {
+                let text = body(index);
+                let mut args = vec!["send", thread.as_str(), "--body", text.as_str()];
+                let deadline = ack_deadline_seconds.to_string();
+                if index == 3 {
+                    args.push("--relays-user");
+                }
+                if index == 11 {
+                    args.extend(["--require-ack", b.as_str(), "--deadline", deadline.as_str()]);
+                }
+                let sent = world.cli_send(author, &args).text("send");
+                if index == 11 {
+                    ack = sent;
+                }
             }
         }
         Self {
@@ -832,7 +873,8 @@ fn shapes(tickets: &[Ticket]) -> Vec<(u64, u64)> {
 // ---- cases ----
 
 /// Case 1: Work enters catch-up at the frontier and extends the effective
-/// deadline of B's receipts; the sender sees the deferral.
+/// deadline of B's receipts; the sender sees the deferral. Then Case 2:
+/// re-polling returns the same tickets.
 #[test]
 fn work_enters_catch_up_and_extends_the_deadline() {
     let fx = Fixture::build();
@@ -909,25 +951,21 @@ fn work_enters_catch_up_and_extends_the_deadline() {
         "{mine}"
     );
     assert_eq!(mine["deadline"].as_u64(), Some(deadline), "{mine}");
-}
 
-/// Case 2: re-polling returns the same tickets, and the frontier does not
-/// follow the head while the row is active.
-#[test]
-fn repoll_returns_the_same_tickets() {
-    let fx = Fixture::build();
-    let first = fx.summary(fx.caller_b());
+    // Case 2 (on the same fixture: it only reads what Case 1 left): re-polling
+    // returns the same tickets, and the frontier does not follow the head
+    // while the row is active.
     fx.send_as_a("a message above the frontier", &[]);
     let again = fx.summary(fx.caller_b());
-    assert_eq!(again, first, "same job ids, lease tokens, frontier");
+    assert_eq!(again, work, "same job ids, lease tokens, frontier");
     assert_eq!(again["data"]["frontier"], HEAD);
     let third = fx.summary(fx.caller_b());
-    assert_eq!(third["data"]["jobs"], first["data"]["jobs"]);
+    assert_eq!(third["data"]["jobs"], work["data"]["jobs"]);
 }
 
 /// Case 3: during catch-up an ordinary message above F is held (B's digest
 /// does not offer it, history shows it, its receipt stays pending) while a
-/// `--relays-user` message bypasses the hold.
+/// `--relays-user` message bypasses the hold. Then Case 9 ends that row.
 #[test]
 fn hold_and_bypass() {
     let fx = Fixture::build();
@@ -975,6 +1013,7 @@ fn hold_and_bypass() {
         !offered.contains(&held),
         "the ordinary one is still held: {offered}"
     );
+    binding_change_supersedes_and_releases(&fx, &held);
 }
 
 /// What a completed catch-up leaves behind, for the cases that look at it.
@@ -1011,7 +1050,7 @@ impl Fixture {
 /// Case 4: every job through the worker (one rejected into the fallback),
 /// then Ready: cover plus a raw tail ending exactly at F, the fold's ledger
 /// closed three ways, the fallback block final and marked, and B's row ended
-/// `ready` with the exit grace.
+/// `ready` with the exit grace. Then Case 6 on the same stored blocks.
 #[test]
 fn workers_to_ready_with_fallback_and_fold() {
     let fx = Fixture::build();
@@ -1108,6 +1147,7 @@ fn workers_to_ready_with_fallback_and_fold() {
         extension >= before + EXIT_GRACE_MS && extension <= after + EXIT_GRACE_MS,
         "extension_until is now + exit_grace: {row:?} (ready call {before}..={after})"
     );
+    second_seat_reuses_blocks(&fx, &done);
 }
 
 /// Case 5: the held message is pushed once the row ends: B's tool-boundary
@@ -1152,10 +1192,9 @@ fn held_items_are_pushed_after_ready() {
 }
 
 /// Case 6: a second seat gets Ready immediately, from the stored blocks.
-#[test]
-fn second_seat_reuses_blocks() {
-    let fx = Fixture::build();
-    let done = fx.complete_catch_up();
+/// Runs on Case 4's completed catch-up (C's Ready reads, it never ends or
+/// changes B's row).
+fn second_seat_reuses_blocks(fx: &Fixture, done: &Completed) {
     let ready = fx.summary(fx.caller_c());
     assert_eq!(ready["status"], "ready", "{ready}");
     let data = &ready["data"];
@@ -1442,14 +1481,9 @@ fn stall_lapses_and_the_warning_fires_on_the_effective_deadline() {
 }
 
 /// Case 9: a new binding ends the row `superseded`; the successor does not
-/// inherit the hold, so what was held is offered.
-#[test]
-fn binding_change_supersedes_and_releases() {
-    let fx = Fixture::build();
-    assert!(fx.boundary_b().contains(&fx.ack));
-    assert_eq!(fx.summary(fx.caller_b())["status"], "work");
-    let held = fx.send_as_a("an ordinary request", &["--require-ack", &fx.b]);
-    assert!(!fx.boundary_b().contains(&held));
+/// inherit the hold, so what was held is offered. Runs on Case 3's active
+/// row, with `held` still held from B's digest.
+fn binding_change_supersedes_and_releases(fx: &Fixture, held: &str) {
     let before = fx.world.wake_attention(&fx.b);
     // A `clear` in B's pane is a new execution of the seat: the hook's
     // lifecycle check-in registers it and ends B's row.
@@ -1469,7 +1503,7 @@ fn binding_change_supersedes_and_releases() {
     // successor's next boundary is where the release arrives.
     let successor = fx.boundary_b();
     assert!(
-        successor.contains(&held),
+        successor.contains(held),
         "the successor is offered what the predecessor had held: {successor}"
     );
     assert!(
@@ -1492,7 +1526,8 @@ fn binding_change_supersedes_and_releases() {
 /// an evidenced recovery event.
 #[test]
 fn codex_compact_recovery_names_the_hot_thread() {
-    let fx = Fixture::build();
+    // T's history plays no part: the pending invitation alone makes it hot.
+    let fx = Fixture::build_until(Stage::Joined);
     let d = fx
         .world
         .cli(None, None, &["seat", "resolve", "--pane", PANE_D])
@@ -1576,7 +1611,8 @@ fn programmatic_rows_map_to_service() {
     };
     use std::sync::Arc;
 
-    let fx = Fixture::build();
+    // Only A takes part; T and its history are not used.
+    let fx = Fixture::build_until(Stage::SeatA);
     let context =
         RuntimeContext::explicit(fx.world.state.clone(), fx.world.host.clone(), None).unwrap();
     let paths = InstancePaths::resolve(&context).unwrap();
@@ -1719,12 +1755,11 @@ impl Fixture {
             pane(PANE_C, "term-c"),
             pane(PANE_D, "term-d"),
         ]);
-        let resolve = |pane: &str| {
-            world
-                .cli(None, None, &["seat", "resolve", "--pane", pane])
-                .text("seat resolve")
-        };
-        let (a, b, c) = (resolve(PANE_A), resolve(PANE_B), resolve(PANE_C));
+        let (a, b, c) = (
+            world.resolve(PANE_A),
+            world.resolve(PANE_B),
+            world.resolve(PANE_C),
+        );
         for (pane, session) in [(PANE_A, "SA"), (PANE_B, SESSION_B)] {
             let started = world.hook("claude", pane, &session_start("claude", session, "startup"));
             assert_eq!(started.code, 0, "{}", started.stderr);
@@ -2730,11 +2765,14 @@ fn assert_reader(proxy: &useful_page_proxy::Proxy, mark: usize, v1: bool) {
 /// Retained history fixture. The opt-in binary override is used only for
 /// version-bound reproductions against a separately owned older daemon.
 fn inbox_history_fixture(history_count: i64) -> Fixture {
+    inbox_history_fixture_at(history_count, Stage::Sent)
+}
+fn inbox_history_fixture_at(history_count: i64, stage: Stage) -> Fixture {
     let binary = std::env::var("HT_INBOX_FIXTURE_BINARY").unwrap_or_else(|_| BIN.to_owned());
     // A long require-ACK deadline: these tests never wait on it, and the
     // fixture's 3 s one can lapse on a loaded host before B settles it,
     // leaving an overdue warning in the inbox.
-    let fx = Fixture::build_with(&binary, SETTINGS, 300);
+    let fx = Fixture::build_stage(&binary, SETTINGS, 300, stage);
     // Settle original mail through the real API, including sparse receipts.
     let original = fx
         .world
@@ -2822,7 +2860,7 @@ fn add_pending_physical(fx: &Fixture, sent: &str) -> rusqlite::Connection {
     db
 }
 
-// The three physical-history tests below share one fixture between the v1
+// The physical-history cases below share one fixture between the v1
 // and v2 readers: the proxy mode only picks the reader, and the history is
 // never changed by reading it. Mail a pass ACKs stays behind as settled
 // history for the next pass.
@@ -2832,6 +2870,9 @@ fn inbox_first_useful_page_skips_historical_work() {
     // 120 settled rows: more than one source page (`CANDIDATE_LIMIT` = 100).
     let fx = inbox_history_fixture(120);
     let proxy = useful_page_proxy(&fx);
+    // Historical only (no pending mail yet): the display reaches empty. It
+    // reads without ACKing anything, so the history below is unchanged.
+    inbox_first_useful_page_historical_only_reaches_empty(&fx, &proxy);
     for v1 in [true, false] {
         let mark = select_reader(&proxy, v1);
         let sent = if v1 {
@@ -2908,12 +2949,14 @@ fn inbox_first_useful_page_skips_historical_work() {
     }
 }
 
-#[test]
-fn inbox_first_useful_page_historical_only_reaches_empty() {
-    let fx = inbox_history_fixture(120);
-    let proxy = useful_page_proxy(&fx);
+/// Runs first on `inbox_first_useful_page_skips_historical_work`'s fixture,
+/// before it adds any pending mail.
+fn inbox_first_useful_page_historical_only_reaches_empty(
+    fx: &Fixture,
+    proxy: &useful_page_proxy::Proxy,
+) {
     for v1 in [true, false] {
-        let mark = select_reader(&proxy, v1);
+        let mark = select_reader(proxy, v1);
         let out = fx
             .world
             .exec_in_pane(None, Some(PANE_B), None, &["inbox"], false);
@@ -2937,7 +2980,7 @@ fn inbox_first_useful_page_historical_only_reaches_empty() {
                 .unwrap(),
             120
         );
-        assert_reader(&proxy, mark, v1);
+        assert_reader(proxy, mark, v1);
     }
 }
 
@@ -2946,7 +2989,7 @@ fn inbox_first_useful_page_scan_cap_preserves_pending_and_exact_continuation() {
     // More settled rows than one display selection reads
     // (`INBOX_DISPLAY_PAGE_READ_LIMIT` = 8 source pages of `CANDIDATE_LIMIT`
     // = 100): the first invocation must stop on a continuation.
-    let fx = inbox_history_fixture(1200);
+    let fx = inbox_history_fixture(900);
     let proxy = useful_page_proxy(&fx);
     for v1 in [true, false] {
         let mark = select_reader(&proxy, v1);
@@ -3013,12 +3056,14 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
     // mode only hides the v2 inbox capability (ordinary sends do not depend
     // on it), so the v1 pass reads the same sparse history, plus the v2
     // pass's settled useful mail.
-    let fx = inbox_history_fixture(0);
+    // T's twelve fixture messages are not needed: the settled history below
+    // fills the first source page by itself.
+    let fx = inbox_history_fixture_at(0, Stage::Joined);
     let proxy = useful_page_proxy(&fx);
     // Just past one source page (`CANDIDATE_LIMIT` = 100 candidates) of
-    // settled history ahead of the useful mail: the fixture's 12 settled
-    // sends plus these, ACKed in one batch (at most `MAX_BATCH_ITEMS` = 100
-    // IDs). The display-page assertion below proves the page is filled.
+    // settled history ahead of the useful mail, ACKed in one batch (at most
+    // `MAX_BATCH_ITEMS` = 100 IDs). The display-page assertion below proves
+    // the page is filled (94 of these leave a single page).
     const SPARSE_SETTLED: usize = 100;
     let settled: Vec<String> = (0..SPARSE_SETTLED)
         .map(|_| {
@@ -3152,7 +3197,7 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
             db.query_row("SELECT count(*) FROM send_manifests", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            12 + SPARSE_SETTLED as i64 + pass as i64 + 1
+            SPARSE_SETTLED as i64 + pass as i64 + 1
         );
         assert_reader(&proxy, mark, v1);
     }
