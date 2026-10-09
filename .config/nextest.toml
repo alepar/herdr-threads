@@ -54,6 +54,18 @@ filter = "binary(integration) & test(=sweep_remaining::send_commit_wake_under_10
 threads-required = "num-test-threads"
 priority = 100
 
+# The in-process producer-ordering controls assert that the first canonical
+# reservation lands under 100 ms after the send's publication commit. Beside
+# the suite's process-heavy tests one missed it (143 ms, partial=true; Main
+# local 25db37f3 run). They run alone too, at the front with the send chain;
+# each takes well under 3 s. The 100 ms bound is unchanged.
+[[profile.default.overrides]]
+filter = """
+binary(integration) & test(/^sweep_remaining::(wake_snapshot_partial_projection_refusal_selects_later_retry|retention_observer_waits_for_correlated_materialization_kick|logical_reservation_before_projection_is_not_a_completed_target_proof|wake_snapshot_preserves_logical_frontier_before_physical_projection)$/)
+"""
+threads-required = "num-test-threads"
+priority = 100
+
 [[profile.default.overrides]]
 filter = "binary(hook_entrypoint)"
 priority = 80
