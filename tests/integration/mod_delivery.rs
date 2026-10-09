@@ -1241,7 +1241,8 @@ fn lazy_row_appended_then_completed() {
 /// Spec D4: a body over 8 KiB streams as its first 8 KiB plus the marker with
 /// `truncated: true`; the mod must not ack it, and when it does the ack is a
 /// terminal refusal decided by the daemon from the stored length (the local
-/// hint file is not needed); the receipt settles only through a real ACK.
+/// hint file is not needed); the receipt settles when the agent follows the
+/// marker's own instruction (`body`, which is read-only, then `ack`).
 #[test]
 fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
     let rig = Rig::new();
@@ -1251,7 +1252,7 @@ fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
     let line = watch.wait_item(&id);
     assert_eq!(line["truncated"], true, "{line}");
     assert_eq!(line["body_len"], 9000);
-    let marker = format!("…truncated; run herdr-threads body {id}");
+    let marker = format!("…truncated; run herdr-threads body {id}, then herdr-threads ack {id}");
     let body = line["body"].as_str().unwrap();
     assert!(body.ends_with(&marker), "{body}");
     assert_eq!(
@@ -1277,7 +1278,26 @@ fn truncated_body_streamed_with_marker_and_ack_refused_terminal() {
     assert_eq!(result["result"], "refused_terminal", "{result}");
     assert_eq!(result["reason"], "truncated");
     assert_eq!(rig.receipt_state(&id), "pending");
-    rig.cli(Some((&rig.b, PANE_B)), &["ack", &id]).data("ack");
+    // Follow the marker as streamed: `body` (read-only), then `ack`.
+    let instruction = body.rsplit("…truncated; run ").next().unwrap();
+    let steps: Vec<&str> = instruction.split(", then ").collect();
+    assert_eq!(steps.len(), 2, "{instruction}");
+    for (n, step) in steps.iter().enumerate() {
+        let command = step
+            .strip_prefix("herdr-threads ")
+            .unwrap_or_else(|| panic!("{step}"));
+        let args: Vec<&str> = command.split_whitespace().collect();
+        let data = rig.cli(Some((&rig.b, PANE_B)), &args).data(step);
+        if n == 0 {
+            assert!(
+                serde_json::to_string(&data)
+                    .unwrap()
+                    .contains(&"t".repeat(9000)),
+                "body returns the full text"
+            );
+            assert_eq!(rig.receipt_state(&id), "pending", "body is read-only");
+        }
+    }
     assert_eq!(rig.receipt_state(&id), "acked");
 }
 

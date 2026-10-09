@@ -30,7 +30,10 @@
 //! [`WATCH_PAGE_MAX_BYTES`] bytes. A body longer than
 //! [`WATCH_BODY_LIMIT_BYTES`] is cut at a char boundary and followed by
 //! [`truncation_marker`], with `truncated: true`. A truncated item is never
-//! acked by the mod; it settles only through `body`, `inbox` or `ack`.
+//! acked by the mod. Its receipt settles when the agent follows the marker
+//! (`body` to read the rest, which is read-only, then `ack`) or when a text
+//! `inbox` displays it in full. A truncated `lazy` row has no receipt; it
+//! stays pending until a text `inbox` shows it, and nothing reminds about it.
 //!
 //! The mod frames all message text as untrusted data and never starts a
 //! submit with `/`.
@@ -77,9 +80,12 @@ pub const WATCH_EXIT_RETRY: i32 = 2;
 /// Exit code: permanent, stop until reload.
 pub const WATCH_EXIT_STOP: i32 = 3;
 
-/// The marker appended to a cut body.
+/// The marker appended to a cut body: read the rest with `body`, then settle
+/// the receipt with `ack` (`body` is read-only and the mod never acks a
+/// truncated item).
 pub fn truncation_marker(id: &MessageId) -> String {
-    format!("…truncated; run herdr-threads body {}", id.as_str())
+    let id = id.as_str();
+    format!("…truncated; run herdr-threads body {id}, then herdr-threads ack {id}")
 }
 
 /// Daemon setting `mod_delivery` (`src/daemon/settings.rs` re-uses it).

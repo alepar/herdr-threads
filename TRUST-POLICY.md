@@ -556,8 +556,9 @@ lost-prompt recovery as unsupported on Codex 0.159.3 and later.
 
 The 2026-10 direction forbids blanket read or delivery auto-ACK. In this run the user approved an exception for
 the bundled Claude mod: "we already judged delivery is the receipt". Precedent: `cooperative_inbox_display`. The
-claim is "the full body entered the model's context through the mod", not proof of reading; truncated items
-settle only through `body`, `inbox` or `ack`. Rejected: reusing `cooperative_inbox_display` (a different
+claim is "the full body entered the model's context through the mod", not proof of reading; the mod never
+acks a truncated item; its receipt settles only through the agent's explicit `ack` (the truncation marker names
+`body`, which is read-only, then `ack`) or a text `inbox` that displays it in full. Rejected: reusing `cooperative_inbox_display` (a different
 action); an explicit agent ACK after mod delivery (keeps the tool-call overhead the goal removes); delivering
 only the marker.
 
