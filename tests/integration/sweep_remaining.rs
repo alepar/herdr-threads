@@ -795,8 +795,8 @@ fn fenced_first_send_measurement(
         return None;
     }
     // Anchor on the publication commit: the foreground commit that schedules
-    // send_attention on Deadlines. A send also writes the sender's archival
-    // sample in an earlier foreground commit (an Archival-only kick); timing
+    // send_attention on Deadlines. Hidden send preparation also updates archival
+    // fencing in an earlier foreground commit (an Archival-only kick); timing
     // from that one would add request processing between the two commits
     // (2-5 ms alone, 139 ms seen under suite load) to commit-to-wake.
     let (_, _, anchor) = kicks
@@ -982,8 +982,8 @@ fn first_final_negative_controls(
         .find(|(lanes, origin, _)| origin.is_none() && lanes.contains(Lane::Deadlines))
         .unwrap()
         .2;
-    // An earlier foreground commit that kicks no Deadlines (the sender's
-    // archival sample write) is not the send's commit: it moves no endpoint.
+    // An earlier foreground send-preparation commit that only updates archival
+    // fencing is not the publication commit: it moves no endpoint.
     let mut early_foreground = vec![(
         herdr_threads::service::kicks::LaneSet::EMPTY.with(Lane::Archival),
         None,
