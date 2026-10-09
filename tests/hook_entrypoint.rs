@@ -4409,6 +4409,7 @@ mod continuity {
         daemon: Option<std::thread::JoinHandle<std::io::Result<bool>>>,
         claude: String,
         codex: String,
+        hermes: String,
         /// The elected daemon's diagnostics sink dup2()s the process-wide fd
         /// 1/2, so these fixtures run one at a time like every hook test
         /// (ht-p03.26). Last field: released after the daemon is stopped.
@@ -4421,6 +4422,21 @@ mod continuity {
             panes: &[(&str, Agent)],
             seed: impl FnOnce(&rusqlite::Connection, &str),
         ) -> Self {
+            Self::start_with(panes, seed, false)
+        }
+
+        /// [`Fixture::start`] for Hermes: `{"harness_manifest":"off"}` is written
+        /// to the instance's settings (mode 0600) before the daemon spawns, so
+        /// Hermes callback admission does not depend on the embedded manifest.
+        pub fn start_hermes(panes: &[(&str, Agent)]) -> Self {
+            Self::start_with(panes, |_, _| {}, true)
+        }
+
+        fn start_with(
+            panes: &[(&str, Agent)],
+            seed: impl FnOnce(&rusqlite::Connection, &str),
+            manifest_off: bool,
+        ) -> Self {
             let serial = serialized();
             let root = private_root();
             let state = root.join("state");
@@ -4430,6 +4446,15 @@ mod continuity {
             let owner = OwnerLock::acquire(&paths).unwrap();
             let instance = owner.instance_uuid();
             drop(owner);
+            if manifest_off {
+                use std::os::unix::fs::PermissionsExt;
+                paths.prepare_instance_dir().unwrap();
+                let settings = paths
+                    .instance_dir
+                    .join(herdr_threads::daemon::settings::SETTINGS_FILE);
+                fs::write(&settings, br#"{"harness_manifest":"off"}"#).unwrap();
+                fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
+            }
             let setup =
                 StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
             let db = setup.open_writer().unwrap();
@@ -4462,6 +4487,18 @@ mod continuity {
             let codex_argv =
                 installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Codex);
             let codex = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
+            let hermes_argv = installed_argv(
+                BIN,
+                Some(state.to_str().unwrap()),
+                None,
+                herdr_threads::harness::registry::OccupantHarness::Agent(
+                    herdr_threads::harness::registry::builtins()
+                        .agent("hermes")
+                        .unwrap(),
+                )
+                .into(),
+            );
+            let hermes = herdr_threads::harness::setup::shell_command(&hermes_argv).unwrap();
             let mut fixture = Self {
                 root,
                 host,
@@ -4476,6 +4513,7 @@ mod continuity {
                 daemon: None,
                 claude,
                 codex,
+                hermes,
                 _serial: serial,
             };
             fixture.spawn(); // leak-guard: fixture method, starts an in-process daemon thread (no child process)
@@ -4583,10 +4621,10 @@ mod continuity {
         }
 
         pub fn hook(&self, harness: &str, pane: &str, stdin: &[u8]) -> Hook {
-            let command = if harness == "codex" {
-                &self.codex
-            } else {
-                &self.claude
+            let command = match harness {
+                "codex" => &self.codex,
+                "hermes" => &self.hermes,
+                _ => &self.claude,
             };
             run_hook(command, pane, &self.host, stdin)
         }
@@ -4844,6 +4882,185 @@ mod continuity {
             }
             assert_eq!(fx.intents(), 0);
         }
+    }
+
+    // ---- Hermes global enrollment (ht-4ne.4) ----
+
+    /// A Hermes envelope from the shared fixture with fresh timestamps.
+    fn hermes_envelope(session: &str, callback: &str, sequence: u64) -> serde_json::Value {
+        let mut payload: serde_json::Value =
+            serde_json::from_slice(include_bytes!("fixtures/hermes/envelopes.json")).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let event = format!("{callback}-{sequence}");
+        payload["callback"] = callback.into();
+        payload["session_id"] = session.into();
+        payload["event_id"] = event.clone().into();
+        payload["turn_id"] = event.clone().into();
+        payload["role_association"]["session_id"] = session.into();
+        payload["role_association"]["turn_id"] = event.into();
+        payload["role_association"]["enrollment_witness"] = "cli_platform".into();
+        payload["started_at"] = now.into();
+        payload["deadline_at"] = (now + 1200).into();
+        payload["observation_order"]["observed_at_millis"] = now.into();
+        payload["observation_order"]["sequence"] = sequence.into();
+        assert_eq!(payload["platform"], "cli");
+        if callback == "on_session_start" {
+            payload["turn_id"] = serde_json::Value::Null;
+            payload["shape"]["turn_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+            payload["parent_session_id"] = serde_json::Value::Null;
+            payload["shape"]["parent_session_id"] =
+                serde_json::json!({"presence":"missing","type":"absent"});
+            payload["role_association"] = serde_json::json!({
+                "role": "top", "provenance": "cli_session_start",
+                "session_id": session, "turn_id": null,
+                "enrollment_witness": "cli_platform"});
+        }
+        payload
+    }
+    fn hermes_start(session: &str, sequence: u64) -> Vec<u8> {
+        serde_json::to_vec(&hermes_envelope(session, "on_session_start", sequence)).unwrap()
+    }
+    /// A CLI turn that must yield context. The envelope carries the production
+    /// 1200 ms callback cap; a debug hook child on a loaded machine can overrun
+    /// it and fail open with no context. Only such an overrun (the empty
+    /// attempt itself took at least 1 s) is retried with a fresh envelope for
+    /// the same event (a canonical replay).
+    fn hermes_turn_with_context(
+        fx: &Fixture,
+        pane: &str,
+        session: &str,
+        sequence: u64,
+    ) -> serde_json::Value {
+        let mut output = serde_json::Value::Null;
+        for _ in 0..4 {
+            let started = Instant::now();
+            let hook = fx.hook(
+                "hermes",
+                pane,
+                &serde_json::to_vec(&hermes_envelope(session, "pre_llm_call", sequence)).unwrap(),
+            );
+            assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+            output = if hook.stdout.is_empty() {
+                serde_json::Value::Null
+            } else {
+                hook.context()
+            };
+            if !output["context"].is_null() || started.elapsed() < Duration::from_secs(1) {
+                break;
+            }
+        }
+        output
+    }
+    const ORDINARY_ALLOCATIONS: &str =
+        "SELECT count(*) FROM allocation_decisions WHERE kind='ordinary'";
+
+    #[test]
+    fn hermes_cli_start_allocates_then_reuses_the_canonical_seat() {
+        let fx = Fixture::start_hermes(&[(PANE, Agent::NoSession)]);
+        fx.wait_reconciled();
+        for sequence in [1, 2] {
+            let start = fx.hook("hermes", PANE, &hermes_start("hermes-s", sequence));
+            assert_eq!(start.code, Some(0), "{}", start.stderr);
+            assert!(start.stdout.is_empty(), "{:?}", start.stdout);
+            assert_eq!(fx.count("SELECT count(*) FROM seats"), 1);
+            assert_eq!(fx.count(ORDINARY_ALLOCATIONS), 1);
+            assert_eq!(
+                fx.count("SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL"),
+                0,
+                "enrollment alone opens no binding"
+            );
+            assert_eq!(fx.intents(), 0);
+        }
+        let output = hermes_turn_with_context(&fx, PANE, "hermes-s", 3);
+        assert!(output["context"].is_string(), "{output}");
+        assert_eq!(output["lifecycle_ack"]["mode"], "startup");
+        assert_eq!(fx.count("SELECT count(*) FROM seats"), 1);
+        assert_eq!(fx.count(ORDINARY_ALLOCATIONS), 1);
+        assert_eq!(
+            fx.count("SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL AND observation_provenance='cooperative_top_level' AND harness='hermes'"),
+            1
+        );
+        assert_eq!(fx.intents(), 0);
+    }
+
+    #[test]
+    fn hermes_cli_concurrent_callbacks_keep_one_seat_per_pane() {
+        let fx = Fixture::start_hermes(&[(PANE, Agent::NoSession), ("w1:p2", Agent::NoSession)]);
+        fx.wait_reconciled();
+        let results = std::thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for n in 0..5u64 {
+                let command = fx.hermes.clone();
+                let host = fx.host.clone();
+                let pane = if n < 4 { "w1:p2" } else { PANE };
+                workers.push(scope.spawn(move || {
+                    run_hook(&command, pane, &host, &hermes_start("concurrent", 1 + n))
+                }));
+            }
+            workers
+                .into_iter()
+                .map(|w| w.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        for result in results {
+            assert_eq!(result.code, Some(0), "{}", result.stderr);
+            assert!(result.stdout.is_empty());
+        }
+        // A final callback per pane reuses whatever the race left.
+        for (pane, sequence) in [("w1:p2", 10), (PANE, 11)] {
+            let hook = fx.hook("hermes", pane, &hermes_start("concurrent", sequence));
+            assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+        }
+        assert_eq!(fx.count("SELECT count(*) FROM seats"), 2);
+        assert_eq!(fx.count(ORDINARY_ALLOCATIONS), 2);
+        // A racing start may leave an uncertain intent for explicit replay;
+        // settle each under its exact key and frozen payload.
+        use herdr_threads::cli::journal::Journal;
+        let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+        let pending = journal
+            .page(&herdr_threads::protocol::pagination::PageRequest {
+                cursor: None,
+                limit: 50,
+                max_bytes: herdr_threads::protocol::pagination::MAX_PAGE_BYTES,
+            })
+            .unwrap();
+        for item in pending.items {
+            let reference = journal
+                .resolve_recovery_ref(item.recovery_ref.as_str())
+                .unwrap();
+            let intent = journal.load(&reference).unwrap();
+            let command = intent
+                .semantic
+                .to_command(reference.operation.clone(), None)
+                .unwrap();
+            if let Err(error) = fx.call(command) {
+                assert!(
+                    matches!(
+                        error.code,
+                        ErrorCode::CallerUnverified | ErrorCode::Conflict
+                    ),
+                    "{error:?}"
+                );
+            }
+            journal.complete(&reference).unwrap();
+        }
+        assert_eq!(fx.intents(), 0);
+        assert_eq!(fx.count("SELECT count(*) FROM seats"), 2);
+    }
+
+    #[test]
+    fn hermes_cli_start_outside_herdr_is_silent() {
+        let fx = Fixture::start_hermes(&[(PANE, Agent::NoSession)]);
+        fx.wait_reconciled();
+        let outside = run_hook_outside_pane(&fx.hermes, &fx.host, &hermes_start("outside", 1));
+        assert_eq!(outside.code, Some(0), "{}", outside.stderr);
+        assert!(outside.stdout.is_empty());
+        assert_eq!(fx.count("SELECT count(*) FROM seats"), 0);
+        assert_eq!(fx.count("SELECT count(*) FROM allocation_decisions"), 0);
+        assert_eq!(fx.intents(), 0);
     }
 
     #[test]

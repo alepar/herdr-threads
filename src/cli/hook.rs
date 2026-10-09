@@ -1436,24 +1436,37 @@ fn bridge_failure(error: bridge::BridgeError) -> Failure {
     }
 }
 
-/// Composition over the existing daemon/client/bridge APIs. Returns bridge text.
-#[allow(clippy::too_many_arguments)]
-fn check_in(
+/// How a qualified event may enroll the pane before it checks in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Enroll {
+    /// Never resolve a seat; the pane must already be resolved.
+    No,
+    /// Native lifecycle evidence: always run the ordinary resolver.
+    Lifecycle,
+    /// A witnessed turn: run the resolver only when the pane has no seat.
+    IfUnowned,
+}
+
+/// One hook invocation's checked connection to the daemon for one pane.
+struct Connected {
+    context: RuntimeContext,
+    paths: InstancePaths,
+    instance: uuid::Uuid,
+    target: HostTargetId,
+    client: LocalSocketClient,
+}
+
+/// The shared prefix of every pane-bound hook call: Herdr environment and pane
+/// check, runtime context and paths, the top-level `ensure_running` (bounded by
+/// the remaining deadline) when `ensure_executable` is given, then namespace,
+/// descriptor, protocol check and client.
+fn connect_pane(
     args: &HookArgs,
-    event: &LifecycleEvent,
-    turn: Option<&crate::harness::context::QualifiedTurn>,
-    enroll: bool,
     env: &HookEnv,
     deadline: Instant,
-    current_deadline: CurrentDeadline,
-    clock: Arc<dyn Clock>,
+    clock: &Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
-) -> Result<CheckedIn, Failure> {
-    if let Some(order) = turn.and_then(|turn| turn.ordering.as_ref()) {
-        order
-            .validate_deadline(clock.utc_now().0)
-            .map_err(|e| Failure::Quiet(format!("observation: {e:?}")))?;
-    }
+) -> Result<Connected, Failure> {
     if !env.herdr_env {
         return Err(Failure::Quiet("not running inside a Herdr pane".into()));
     }
@@ -1468,8 +1481,7 @@ fn check_in(
             .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
     let paths = InstancePaths::resolve(&context)
         .map_err(|e| Failure::Unavailable(format!("state paths: {:?}", e.kind())))?;
-    let lifecycle = event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
-    if let (true, Role::TopLevel, Some(executable)) = (lifecycle, event.role, ensure_executable) {
+    if let Some(executable) = ensure_executable {
         // Startup may ensure the daemon (design: 5 s startup budget). The result
         // is advisory: a reachable degraded daemon still serves CheckIn.
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1480,7 +1492,7 @@ fn check_in(
             let _ = runtime.block_on(async {
                 tokio::time::timeout(
                     remaining,
-                    ensure_running(&context, executable, Arc::clone(&clock)),
+                    ensure_running(&context, executable, Arc::clone(clock)),
                 )
                 .await
             });
@@ -1497,10 +1509,95 @@ fn check_in(
         .map_err(|error| api_failure("daemon protocol", &error))?;
     let client = LocalSocketClient::new(
         descriptor.endpoint,
-        Arc::clone(&clock),
+        Arc::clone(clock),
         instance,
         Some(descriptor.boot_id),
     );
+    Ok(Connected {
+        context,
+        paths,
+        instance,
+        target,
+        client,
+    })
+}
+
+/// Enroll the pane for a witnessed Hermes CLI session start: the ordinary
+/// guarded resolver (reuses a resolved seat, allocates only for a genuinely new
+/// pane), no check-in, no context, no continuity attempt. A held or unresolved
+/// pane is refused, never bypassed.
+fn enroll_pane(
+    args: &HookArgs,
+    env: &HookEnv,
+    deadline: Instant,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> Result<SeatId, Failure> {
+    let Connected {
+        paths,
+        instance,
+        target,
+        client,
+        ..
+    } = connect_pane(args, env, deadline, &clock, ensure_executable)?;
+    if let PaneSeat::HeldOrUnresolved(detail) =
+        find_seat(&client, &target, deadline, clock.as_ref())?
+    {
+        return Err(Failure::Unavailable(detail));
+    }
+    let journal = super::journal::Journal::open(paths.instance_dir.join("intents"))
+        .map_err(|_| Failure::Unavailable("seat enrollment journal unavailable".into()))?;
+    let resolved = super::launch::resolve_seat(
+        &client,
+        &journal,
+        instance,
+        &target,
+        clock.as_ref(),
+        &budget(deadline, clock.as_ref()),
+    )
+    .map_err(|e| api_failure("seat enrollment", &e))?;
+    // Operation replay is historical, never current mapping authority.
+    match find_seat(&client, &target, deadline, clock.as_ref())? {
+        PaneSeat::Resolved(current, _) if current == resolved => Ok(current),
+        _ => Err(Failure::Unavailable(
+            "enrolled seat mapping changed; retry".into(),
+        )),
+    }
+}
+
+/// Composition over the existing daemon/client/bridge APIs. Returns bridge text.
+#[allow(clippy::too_many_arguments)]
+fn check_in(
+    args: &HookArgs,
+    event: &LifecycleEvent,
+    turn: Option<&crate::harness::context::QualifiedTurn>,
+    enroll: Enroll,
+    env: &HookEnv,
+    deadline: Instant,
+    current_deadline: CurrentDeadline,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> Result<CheckedIn, Failure> {
+    if let Some(order) = turn.and_then(|turn| turn.ordering.as_ref()) {
+        order
+            .validate_deadline(clock.utc_now().0)
+            .map_err(|e| Failure::Quiet(format!("observation: {e:?}")))?;
+    }
+    let lifecycle = event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
+    let ensure = (lifecycle && event.role == Role::TopLevel)
+        .then_some(ensure_executable)
+        .flatten();
+    let Connected {
+        context,
+        paths,
+        instance,
+        target,
+        client,
+    } = connect_pane(args, env, deadline, &clock, ensure)?;
+    let pane = env
+        .pane
+        .as_ref()
+        .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
     let stamp = |mut done: CheckedIn| {
         done.command_routing = CommandRouting::from_context(
             &instance.to_string(),
@@ -1559,7 +1656,7 @@ fn check_in(
             Reattach::Done(done) => return Ok(stamp(*done)),
             Reattach::InstallFailed(detail) => return Err(install_failed(&detail)),
             Reattach::Declined
-                if enroll
+                if enroll != Enroll::No
                     && event.kind != EventKind::Resume
                     && matches!(absent, PaneSeat::Unowned) =>
             {
@@ -1568,7 +1665,7 @@ fn check_in(
                 None
             }
             Reattach::Refused(ErrorCode::NotFound)
-                if enroll && matches!(absent, PaneSeat::Unowned) =>
+                if enroll != Enroll::No && matches!(absent, PaneSeat::Unowned) =>
             {
                 None
             }
@@ -1577,7 +1674,12 @@ fn check_in(
             }
         },
     };
-    let (seat, generation) = if enroll {
+    // A lifecycle event always runs the ordinary resolver; a witnessed turn only
+    // when the pane had no seat (a Resolved pane takes `existing`, so steady
+    // turns make no resolver call).
+    let (seat, generation) = if enroll == Enroll::Lifecycle
+        || (enroll == Enroll::IfUnowned && existing.is_none())
+    {
         let journal = call
             .journal()
             .ok_or_else(|| Failure::Unavailable("seat enrollment journal unavailable".into()))?;
@@ -2371,13 +2473,15 @@ fn lifecycle_check_in(
             return Err(Failure::Unavailable(
                 "local context differs from current service mapping".into(),
             ));
-        } else if saved.harness == crate::harness::context::Harness::Human
+        } else if saved.harness != event.harness
             && event.harness != crate::harness::context::Harness::Human
         {
-            // An agent started in a pane a person had claimed with `me init`:
-            // its lifecycle CheckIn replaces that human occupant (a new
-            // binding generation), never continues it under the human's
-            // context.
+            // An agent started in a pane a person had claimed with `me init`, or
+            // a different agent harness reuses the pane: its lifecycle CheckIn
+            // replaces that occupant (a new binding generation), never
+            // continues it under the previous harness's context. The context
+            // journal is a client-local hint (A2); the daemon decides the
+            // check-in against the canonical view.
             let retired = contexts
                 .retire_current(&saved)
                 .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
@@ -2821,7 +2925,7 @@ fn run_admitted_hook_since(
     }
     let lifecycle = matches!(
         decoded.intent,
-        EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_)
+        EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_) | EventIntent::Enroll
     );
     let bound = crate::protocol::time::external_bound(event_budget(registration, lifecycle, None));
     let deadline = deadline.min(Instant::now() + bound);
@@ -2858,6 +2962,27 @@ fn run_admitted_hook_since(
         || matches!(decoded.delivery, DeliveryEligibility::Ineligible)
     {
         return HookOutcome::default();
+    }
+    // Whether this event may enroll is the adapter's declared policy, not a
+    // hard-coded intent. A qualified turn's normalized Startup/Clear is context
+    // preparation, not native lifecycle enrollment evidence.
+    let enrollment = decoded.enrollment(registration.enrollment_policy());
+    if enrollment == Some(EnrollmentKind::SessionStart) {
+        // Enroll only: no check-in, no context, empty output (the host ignores
+        // a start callback's return value).
+        let diagnostic = enroll_pane(args, env, deadline, clock, ensure_executable)
+            .err()
+            .map(|failure| match failure {
+                Failure::Quiet(detail) | Failure::Unavailable(detail) => detail,
+                Failure::UnavailableDetail(reason, detail) => {
+                    format!("{reason}: {}", detail.escape_debug())
+                }
+            });
+        return HookOutcome {
+            stdout: Vec::new(),
+            diagnostic,
+            attention: None,
+        };
     }
     if !decoded.can_check_in() || !matches!(decoded.delivery, DeliveryEligibility::Context) {
         if matches!(decoded.role, EventRole::Subagent)
@@ -2903,15 +3028,11 @@ fn run_admitted_hook_since(
         EventIntent::QualifiedTurn(turn) => Some(turn),
         _ => None,
     };
-    // Whether this event may enroll is the adapter's declared policy, not a
-    // hard-coded intent. A qualified turn's normalized Startup/Clear is context
-    // preparation, not native lifecycle enrollment evidence. Only today's
-    // lifecycle enrollment is acted on here; SessionStart / UnownedTurn are
-    // decoded but not honored yet (ht-4ne.4).
-    let enroll = matches!(
-        decoded.enrollment(registration.enrollment_policy()),
-        Some(EnrollmentKind::Lifecycle)
-    );
+    let enroll = match enrollment {
+        Some(EnrollmentKind::Lifecycle) => Enroll::Lifecycle,
+        Some(EnrollmentKind::UnownedTurn) => Enroll::IfUnowned,
+        _ => Enroll::No,
+    };
     match check_in(
         args,
         &event,
@@ -3246,7 +3367,7 @@ pub fn run_process_with(
                 };
                 let lifecycle = matches!(
                     event.intent,
-                    EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_)
+                    EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_) | EventIntent::Enroll
                 );
                 let event_bound = crate::protocol::time::external_bound(event_budget(
                     registration,

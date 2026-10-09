@@ -1305,12 +1305,16 @@ mod tests {
         event.intent = EventIntent::Enroll;
         assert!(!event.can_check_in());
         assert!(event.context_event().is_none());
-        // No builtin overrides the default yet.
-        for registration in super::super::registry::builtins().registrations() {
-            assert_eq!(
-                registration.enrollment_policy(),
+        // Only Hermes overrides the default.
+        let builtins = super::super::registry::builtins();
+        let hermes = builtins.by_id(builtins.agent("hermes").unwrap()).unwrap();
+        for registration in builtins.registrations() {
+            let expected = if std::ptr::eq(registration, hermes) {
+                EnrollmentPolicy::WitnessedStartAndUnownedTurn
+            } else {
                 EnrollmentPolicy::Lifecycle
-            );
+            };
+            assert_eq!(registration.enrollment_policy(), expected);
         }
     }
     #[test]
