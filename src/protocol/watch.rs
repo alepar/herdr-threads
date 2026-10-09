@@ -21,7 +21,11 @@
 //! | `message` | [`WatchMessage`] | the message id |
 //! | `lazy` | [`WatchMessage`] (`ack_required: false`) | the message id |
 //! | `attention` | `attention_version`, `text` | `attention:<version>` |
+//! | `attention_cleared` | `attention_version` | `attention_cleared:<version>` |
 //! | `status` | `state`, `reason`, `exit` | `status:<n>` (per-process counter from 0) |
+//!
+//! After an `attention` line, a drain that finds no invitation or warning
+//! prints `attention_cleared`.
 //!
 //! Every line carries `schema` (1, [`WATCH_LINE_SCHEMA`]), `id`, `kind`, and
 //! for message and lazy lines `truncated`. Consumers ignore unknown keys.
@@ -409,6 +413,7 @@ pub enum WatchItem {
     Message(WatchMessage),
     Lazy(WatchMessage),
     Attention(WatchAttention),
+    AttentionCleared(WatchAttentionCleared),
     Status(WatchStatus),
 }
 
@@ -440,6 +445,13 @@ pub struct WatchMessage {
 pub struct WatchAttention {
     pub attention_version: u64,
     pub text: String,
+}
+
+/// Nothing an earlier `attention` line of this run pointed at is still
+/// pending (ht-j16.33): the mod drops attention items it has not sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchAttentionCleared {
+    pub attention_version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

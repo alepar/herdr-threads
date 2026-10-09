@@ -532,6 +532,73 @@ test('attention is delivered like a message, never acked, once per version and o
   expect(h.ackRuns().length).toBe(0)
 })
 
+const cleared = (v: number) => ({ schema: 1, id: `attention_cleared:${v}`, kind: 'attention_cleared', attention_version: v })
+
+test('the session-start sequence: an attention item retracted while assumed busy is never submitted', async () => {
+  const h = await harness({}).boot()
+  h.line(attention(1))
+  await flush()
+  h.line(cleared(2))
+  await flush()
+  await h.advance(6000)
+  expect(h.submits.length).toBe(0)
+  const refused = h.entries.filter((e: Any) => e.kind === 'refused')
+  expect(refused.map((e: Any) => e.ids)).toEqual([['attention:1']])
+  expect(refused[0].reason).toBe('attention_cleared')
+})
+
+test('a retraction keeps queued messages', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(attention(1))
+  h.line(msg('m1'))
+  h.line(cleared(2))
+  h.core.onTurnComplete({ turnId: 't1' })
+  await flush()
+  expect(h.submits.length).toBe(1)
+  expect(h.submits[0]).toContain('message m1 in ')
+  expect(h.submits[0]).not.toContain('attention marker 1')
+})
+
+test('after a retraction the same attention version is delivered again', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.line(attention(1))
+  await flush()
+  expect(h.submits.length).toBe(1)
+  h.line(cleared(2))
+  await flush()
+  h.line(attention(1))
+  await flush()
+  expect(h.submits.length).toBe(2)
+})
+
+test('a retraction does not recall an attention item in flight', async () => {
+  const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  h.line(attention(1))
+  await flush()
+  expect(h.pending.length).toBe(1)
+  h.line(cleared(2))
+  await flush()
+  h.pending[0].res({})
+  await flush()
+  const delivered = h.entries.filter((e: Any) => e.kind === 'delivered')
+  expect(delivered.map((e: Any) => e.ids)).toEqual([['attention:1']])
+  expect(h.entries.some((e: Any) => e.reason === 'attention_cleared')).toBe(false)
+})
+
+test('a retraction from an ended run is ignored', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(attention(1))
+  h.exit(0)
+  await h.advance(1000)
+  expect(h.spawns.length).toBe(2)
+  await h.connect()
+  h.line(attention(1))
+  h.spawns[0].cb.line(cleared(2))
+  await flush()
+  const r = await h.core.onToolCall({ tool: 'Bash' }, answered)
+  expect(r.context[0]).toContain('attention marker 1')
+})
+
 test('truncated items are delivered but never acked', async () => {
   const h = await harness({ state: IDLE }).boot()
   h.line(msg('m1', { truncated: true, body: 'cut…truncated; run herdr-threads body m1' }))

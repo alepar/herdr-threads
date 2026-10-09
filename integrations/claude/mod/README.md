@@ -49,6 +49,7 @@ One object per line, `schema: 1`; consumers ignore unknown keys.
 | `message` | message id | ordinary receipt, `ack_required: true` |
 | `lazy` | message id | `ack_required: false` |
 | `attention` | `attention:<version>` | never acked; re-sent once per version and after each (re)start |
+| `attention_cleared` | `attention_cleared:<version>` | after an attention line, nothing it pointed at is still pending; the mod drops unsent attention items |
 | `status` | `status:<n>` | `state` connected, refused or closing; optional `reason`, `exit` |
 
 Bodies over 8 KiB are cut at a char boundary, followed by the truncation marker, with
@@ -96,6 +97,9 @@ builds `io` from `$`. Rules (spec D5, D6):
   leaves them queued). While idle they go out as one batched `$.prompt.submit`, never awaited
   in a hook, never while a main turn is open (re-checked right before the call). `lazy` rows
   go to `$.session.append` at once. Each context or append delivery logs one dim `$.ui.log` line.
+- **Attention freshness.** A queued attention item is dropped (ledger `refused`, `attention_cleared`) when
+  `watch` reports that nothing it pointed at is still pending: an accepted invitation, or notices a check-in
+  offered. One already submitted or attached is not recalled.
 - **Idle-submit gates.** (1) After a main turn that was interrupted (an aborted `turn.complete`, `reason` `aborted`, or a
   turn whose last main `tool.call` ended in a deny or an error, which is how Esc at a permission
   dialog shows) submits are held until a later
