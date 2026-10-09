@@ -55,10 +55,11 @@ threads-required = "num-test-threads"
 priority = 100
 
 # The same 100 ms commit-to-wake chain for a single send (194.8 ms beside the
-# suite's start-up burst in Main's 90066db1 run) and under/after 6,000 settled
-# jobs (333 ms beside the suite): alone too, budgets unchanged.
+# suite's start-up burst in Main's 90066db1 run), the deadline-commit warning
+# wake chain, and a send under/after 6,000 settled jobs (333 ms beside the
+# suite): alone too, budgets unchanged.
 [[profile.default.overrides]]
-filter = "binary(integration) & test(/^(lanes_latency::send_is_attempted_within_100ms_without_a_tick_wait|sweep_remaining::send_stays_under_100ms_with_and_after_settled_history)$/)"
+filter = "binary(integration) & test(/^(lanes_latency::(send_is_attempted_within_100ms_without_a_tick_wait|deadline_commit_creating_a_warning_wake_is_attempted_within_100ms)|sweep_remaining::send_stays_under_100ms_with_and_after_settled_history)$/)"
 threads-required = "num-test-threads"
 priority = 100
 
