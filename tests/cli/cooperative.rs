@@ -69,6 +69,15 @@ fn selected_service_mapping_rejects_wrong_target_and_repair_hold() {
 
 #[test]
 fn selected_first_lifecycle_uses_service_generation_and_persists_context() {
+    selected_first_lifecycle_fixture(false);
+}
+
+#[test]
+fn actor_boundary_explicit_agent_selection_survives() {
+    selected_first_lifecycle_fixture(true);
+}
+
+fn selected_first_lifecycle_fixture(replace_human: bool) {
     use crate::cli::commands::CooperativeSelection;
     use crate::harness::context::{Harness as ContextHarness, Role};
     use crate::protocol::{
@@ -178,6 +187,23 @@ fn selected_first_lifecycle_uses_service_generation_and_persists_context() {
         calls: Default::default(),
         generation: std::sync::atomic::AtomicU64::new(1),
     };
+    let contexts = crate::cli::seat_contexts(&paths, instance, &selection.seat).unwrap();
+    if replace_human {
+        let execution = uuid::Uuid::new_v4();
+        contexts
+            .install_reattached(crate::harness::context::OccupantContext {
+                format_version: 1,
+                instance,
+                seat: selection.seat.as_str().into(),
+                target: selection.target.as_str().into(),
+                harness: ContextHarness::Human,
+                binding_generation: 1,
+                execution,
+                session: crate::harness::context::SessionReference::PluginContext(execution),
+                role: Role::TopLevel,
+            })
+            .unwrap();
+    }
     let parsed = crate::cli::commands::parse_argv([
         "herdr-threads",
         "check-in",
@@ -196,6 +222,10 @@ fn selected_first_lifecycle_uses_service_generation_and_persists_context() {
         &mut output,
     )
     .unwrap();
+    assert_eq!(
+        contexts.current().unwrap().unwrap().harness,
+        ContextHarness::Codex
+    );
     assert!(!output.is_empty());
     assert_eq!(client.calls.lock().unwrap().len(), 2);
     let ack = crate::cli::commands::parse_argv(["herdr-threads", "ack", "message"]).unwrap();
@@ -1053,7 +1083,21 @@ fn cooperative_reader_enforces_selected_page_budget_before_writing() {
 }
 
 #[test]
-fn inbox_display_ack_waits_for_complete_write_and_flush() {
+fn actor_boundary_human_own_inbox_never_display_acks() {
+    inbox_empty_work_flush_before_ack(false, false);
+}
+
+#[test]
+fn inbox_v2_empty_work_flush_before_ack() {
+    inbox_empty_work_flush_before_ack(true, false);
+}
+
+#[test]
+fn inbox_v2_empty_work_flush_before_lazy_completion() {
+    inbox_empty_work_flush_before_ack(true, true);
+}
+
+fn inbox_empty_work_flush_before_ack(v2: bool, lazy: bool) {
     use crate::harness::context::{
         ContextJournal, Harness as ContextHarness, OccupantContext, Role, SessionReference,
     };
@@ -1069,6 +1113,8 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
         calls: Mutex<Vec<Command>>,
         supports_batch: std::sync::atomic::AtomicBool,
         capability_unavailable: std::sync::atomic::AtomicBool,
+        v2: bool,
+        lazy: bool,
     }
     impl crate::ports::LocalClient for Client {
         fn call_with_output(
@@ -1102,15 +1148,62 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
                             .supports_batch
                             .load(std::sync::atomic::Ordering::SeqCst)
                         {
-                            vec![crate::protocol::capabilities::INBOX_BATCH.into()]
+                            vec![if self.v2 {
+                                crate::protocol::capabilities::INBOX_BATCH_V2.into()
+                            } else {
+                                crate::protocol::capabilities::INBOX_BATCH.into()
+                            }]
                         } else {
                             vec![]
                         },
                     },
                 )),
-                Command::InboxBatch(query) => {
+                Command::Inbox(_) => Ok(CommandResult::Inbox(Page {
+                    items: vec![],
+                    next_cursor: None,
+                    next_argv: None,
+                    high_water_ordinal: 1,
+                    scope_revision: None,
+                    has_more: false,
+                    stop_reason: StopReason::Complete,
+                    consistency: Consistency::BoundedLive,
+                })),
+                Command::InboxBatch(query) | Command::InboxBatchV2(query) => {
+                    let result = |page| {
+                        if self.v2 {
+                            let mut json = serde_json::to_value(page).unwrap();
+                            if self.lazy {
+                                for item in json["items"].as_array_mut().unwrap() {
+                                    item["kind"] = "lazy_message".into();
+                                    item.as_object_mut().unwrap().remove("ack_candidate");
+                                }
+                            }
+                            CommandResult::InboxBatchV2(serde_json::from_value(json).unwrap())
+                        } else {
+                            CommandResult::InboxBatch(page)
+                        }
+                    };
                     assert_eq!(query.seat.as_ref().map(SeatId::as_str), Some("seat-test"));
-                    Ok(CommandResult::InboxBatch(Page {
+                    if query.page.cursor.as_deref() != Some("empty-two") {
+                        return Ok(result(Page {
+                            items: vec![],
+                            next_cursor: Some(
+                                if query.page.cursor.is_none() {
+                                    "empty-one"
+                                } else {
+                                    "empty-two"
+                                }
+                                .into(),
+                            ),
+                            next_argv: Some(vec!["hidden-continuation".into()]),
+                            high_water_ordinal: 1,
+                            scope_revision: None,
+                            has_more: true,
+                            stop_reason: StopReason::Work,
+                            consistency: Consistency::BoundedLive,
+                        }));
+                    }
+                    Ok(result(Page {
                         items: vec![InboxBatchItem::Message {
                             thread: ThreadId::new("thread-original"),
                             message: MessageId::new("message-original"),
@@ -1136,7 +1229,16 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
                         consistency: Consistency::BoundedLive,
                     }))
                 }
+                Command::CompleteInboxDelivery(completion) => {
+                    assert!(self.lazy);
+                    assert_eq!(
+                        completion.messages,
+                        vec![MessageId::new("message-original")]
+                    );
+                    Ok(CommandResult::InboxDeliveryCompleted(completion.messages))
+                }
                 Command::AckDisplayed(ack) => {
+                    assert!(!self.lazy);
                     assert_eq!(ack.messages, vec![MessageId::new("message-original")]);
                     Ok(CommandResult::Acknowledged(AckResult {
                         acknowledged: ack.messages,
@@ -1207,6 +1309,8 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
         calls: Mutex::new(Vec::new()),
         supports_batch: std::sync::atomic::AtomicBool::new(false),
         capability_unavailable: std::sync::atomic::AtomicBool::new(false),
+        v2,
+        lazy,
     };
     let mut writer = Vec::new();
     assert!(
@@ -1270,10 +1374,18 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
         assert!(outcome.is_err());
         assert_eq!(
             client.calls.lock().unwrap().len(),
-            2,
+            4,
             "no ACK after output failure: {outcome:?}"
         );
         assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+        assert!(
+            !std::fs::read_dir(root.join("intents")).unwrap().any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("display-")),
+            "no progress proof before full write and flush"
+        );
     }
     client.calls.lock().unwrap().clear();
     let mut writer = Writer {
@@ -1292,12 +1404,16 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
         &mut writer,
     )
     .unwrap();
-    assert_eq!(client.calls.lock().unwrap().len(), 3);
+    assert_eq!(client.calls.lock().unwrap().len(), 5);
     assert!(
         String::from_utf8(writer.bytes)
             .unwrap()
             .contains("message-original")
     );
+    if lazy {
+        std::fs::remove_dir_all(root).unwrap();
+        return;
+    }
     contexts
         .install_reattached(OccupantContext {
             format_version: 1,
@@ -1314,7 +1430,7 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
     client.calls.lock().unwrap().clear();
     let mut human_output = Vec::new();
     crate::cli::run_cooperative(
-        crate::cli::commands::parse_argv(["herdr-threads", "inbox"]).unwrap(),
+        crate::cli::commands::parse_argv(["herdr-threads", "human", "inbox"]).unwrap(),
         &journal,
         &contexts,
         None,
@@ -1331,9 +1447,71 @@ fn inbox_display_ack_waits_for_complete_write_and_flush() {
     );
     assert_eq!(
         client.calls.lock().unwrap().len(),
-        2,
+        4,
         "human text inbox is content read-only"
     );
+    let before_context = serde_json::to_vec(&contexts.current().unwrap()).unwrap();
+    let before_intents: Vec<_> = std::fs::read_dir(root.join("intents"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    for args in [
+        vec!["ht", "check-in"],
+        vec!["ht", "inbox"],
+        vec!["ht", "inbox", "--human"],
+    ] {
+        client.calls.lock().unwrap().clear();
+        let mut output = Vec::new();
+        let error = crate::cli::run_cooperative(
+            crate::cli::commands::parse_argv(args).unwrap(),
+            &journal,
+            &contexts,
+            None,
+            Role::TopLevel,
+            &client,
+            &crate::app::SystemClock::new(),
+            &mut output,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, crate::cli::RunError::Api(ref e) if e.code == crate::protocol::results::ErrorCode::InvalidRequest),
+            "{error:?}"
+        );
+        assert!(client.calls.lock().unwrap().is_empty());
+        assert!(output.is_empty());
+        assert_eq!(
+            serde_json::to_vec(&contexts.current().unwrap()).unwrap(),
+            before_context
+        );
+        let after_intents: Vec<_> = std::fs::read_dir(root.join("intents"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(after_intents, before_intents);
+    }
+    for flag in ["--human", "--machine", "--json"] {
+        client.calls.lock().unwrap().clear();
+        crate::cli::run_cooperative(
+            crate::cli::commands::parse_argv(["ht", "human", "inbox", flag]).unwrap(),
+            &journal,
+            &contexts,
+            None,
+            Role::TopLevel,
+            &client,
+            &crate::app::SystemClock::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let calls = client.calls.lock().unwrap();
+        assert!(!calls.is_empty());
+        assert!(calls.iter().all(|call| matches!(
+            call,
+            Command::Capabilities
+                | Command::InboxBatch(_)
+                | Command::InboxBatchV2(_)
+                | Command::Inbox(_)
+        )));
+    }
     std::fs::remove_dir_all(root).unwrap();
 }
 /// Kills the review N1 mutation of the `run_cooperative` `Retry` arm
@@ -2122,6 +2300,9 @@ mod scoped_runtime {
             }
         }
         fn install_context(&self, target: &str) {
+            self.install_context_harness(target, crate::harness::context::Harness::Codex);
+        }
+        fn install_context_harness(&self, target: &str, harness: crate::harness::context::Harness) {
             let execution = uuid::Uuid::new_v4();
             crate::cli::seat_contexts(
                 &self.paths,
@@ -2134,7 +2315,7 @@ mod scoped_runtime {
                 instance: self._lock.instance_uuid(),
                 seat: "recipient".into(),
                 target: target.into(),
-                harness: crate::harness::context::Harness::Codex,
+                harness,
                 binding_generation: 1,
                 execution,
                 session: crate::harness::context::SessionReference::PluginContext(execution),
@@ -2156,13 +2337,21 @@ mod scoped_runtime {
         ) -> Result<(), crate::cli::RunError> {
             let state = self.root.join("state");
             let host = self.root.join("host.sock");
-            let mut argv = vec![
-                "ht".to_owned(),
+            let (human, args) = if args.first() == Some(&"human") {
+                (true, &args[1..])
+            } else {
+                (false, args)
+            };
+            let mut argv = vec!["ht".to_owned()];
+            if human {
+                argv.push("human".into());
+            }
+            argv.extend([
                 "--state-dir".into(),
                 state.to_str().unwrap().into(),
                 "--host-endpoint".into(),
                 host.to_str().unwrap().into(),
-            ];
+            ]);
             if json {
                 argv.push("--json".into());
             }
@@ -2170,6 +2359,44 @@ mod scoped_runtime {
             crate::cli::run_in_pane(argv, Some(caller), &mut Vec::new())
         }
     }
+    #[test]
+    fn actor_boundary_root_human_refuses_before_retirement() {
+        let runtime = Runtime::new(snapshot());
+        runtime.install_context_harness("w1:p2", crate::harness::context::Harness::Human);
+        let contexts = crate::cli::seat_contexts(
+            &runtime.paths,
+            runtime._lock.instance_uuid(),
+            &SeatId::new("recipient"),
+        )
+        .unwrap();
+        let before = serde_json::to_vec(&contexts.current().unwrap()).unwrap();
+        let error = runtime
+            .run_mode_in_pane(
+                &["check-in", "--lifecycle-event", "human-root"],
+                false,
+                "w1:p2",
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::cli::RunError::Api(ref e) if e.code == crate::protocol::results::ErrorCode::InvalidRequest && e.detail.contains("herdr-threads human")),
+            "{error:?}"
+        );
+        assert_eq!(
+            serde_json::to_vec(&contexts.current().unwrap()).unwrap(),
+            before
+        );
+        assert!(!runtime.paths.instance_dir.join("intents").exists());
+        assert!(
+            runtime
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|call| matches!(call, Command::Seats(_)))
+        );
+        assert!(runtime.host_calls.lock().unwrap().is_empty());
+    }
+
     impl Drop for Runtime {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::SeqCst);
@@ -2193,6 +2420,7 @@ mod scoped_runtime {
         let runtime = Runtime::new(snapshot());
         runtime
             .run(&[
+                "human",
                 "invite",
                 "t123",
                 "--tab",
@@ -2277,6 +2505,7 @@ mod scoped_runtime {
                 "pane" => {
                     host["panes"][1]["label"] = json!("w1:p999");
                     vec![
+                        "human",
                         "seat",
                         "rebind",
                         "s123",
@@ -2290,6 +2519,7 @@ mod scoped_runtime {
                 "agent" => {
                     host["agents"] = json!([{"pane_id":"w1:p2","name":"w1:p999"}]);
                     vec![
+                        "human",
                         "invite",
                         "t123",
                         "--tab",
@@ -2353,6 +2583,7 @@ mod scoped_runtime {
         }
         runtime
             .run(&[
+                "human",
                 "invite",
                 "review",
                 "--tab",
@@ -2460,9 +2691,19 @@ mod scoped_runtime {
             let has_thread = args.contains(&"--thread") || args.contains(&"--active");
             assert_eq!(
                 calls.len(),
-                if has_thread { 2 } else { 1 },
+                if has_thread || args[0] == "inbox" {
+                    2
+                } else {
+                    1
+                },
                 "{args:?}: {calls:?}"
             );
+            if args[0] == "inbox" {
+                assert!(matches!(calls.first(), Some(Command::Capabilities)));
+                assert!(
+                    matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient")) && q.page.cursor.is_none() && q.page.limit == 20)
+                );
+            }
             if has_thread {
                 assert!(
                     matches!(calls.first(),Some(Command::ResolveThread(q)) if q.selector=="t123")
@@ -2584,11 +2825,18 @@ mod scoped_runtime {
                 "--cooperative-role",
                 "top-level",
             ];
+            let inbox = args[0] == "inbox";
             selected.extend(args);
             runtime.run(&selected).unwrap();
             assert!(runtime.host_calls.lock().unwrap().is_empty());
             let calls = runtime.calls.lock().unwrap();
-            assert_eq!(calls.len(), 2, "{calls:?}");
+            assert_eq!(calls.len(), if inbox { 3 } else { 2 }, "{calls:?}");
+            if inbox {
+                assert!(matches!(calls.get(1), Some(Command::Capabilities)));
+                assert!(
+                    matches!(calls.last(), Some(Command::Inbox(q)) if q.seat == Some(SeatId::new("recipient")) && q.page.cursor.is_none() && q.page.limit == 20)
+                );
+            }
             assert!(matches!(calls.first(), Some(Command::SeatInspect(_))));
             assert!(
                 !calls
@@ -2625,6 +2873,543 @@ mod scoped_runtime {
         );
         assert!(runtime.calls.lock().unwrap().is_empty());
     }
+}
+
+#[test]
+fn actor_boundary_root_human_refuses_before_journal() {
+    actor_boundary_selected(false);
+}
+
+#[test]
+fn actor_boundary_human_explicit_agent_mismatch() {
+    actor_boundary_selected(true);
+}
+
+fn actor_boundary_selected(human_route: bool) {
+    use crate::cli::commands::CooperativeSelection;
+    use crate::harness::context::{Harness, Role};
+    struct NoCalls(std::sync::atomic::AtomicUsize);
+    impl crate::ports::LocalClient for NoCalls {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.call(command, budget)
+        }
+        fn call(
+            &self,
+            _: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::protocol::results::ApiError::not_found(
+                "boundary fixture",
+            ))
+        }
+    }
+    let root = std::env::temp_dir().join(format!("actor-boundary-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let runtime = crate::daemon::paths::RuntimeContext::explicit(
+        root.join("state"),
+        root.join("host.sock"),
+        None,
+    )
+    .unwrap();
+    let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    let argv = if human_route {
+        vec!["ht", "human", "check-in"]
+    } else {
+        vec!["ht", "check-in"]
+    };
+    let parsed = crate::cli::commands::parse_argv(argv).unwrap();
+    let selection = CooperativeSelection {
+        seat: SeatId::new("seat"),
+        target: HostTargetId::new("w1:p1"),
+        harness: if human_route {
+            Harness::Codex
+        } else {
+            Harness::Human
+        },
+        role: Role::TopLevel,
+    };
+    let client = NoCalls(std::sync::atomic::AtomicUsize::new(0));
+    let mut output = Vec::new();
+    let error = crate::cli::run_selected(
+        parsed,
+        &selection,
+        &paths,
+        uuid::Uuid::from_u128(1),
+        &client,
+        &crate::app::SystemClock::new(),
+        &mut output,
+    )
+    .unwrap_err();
+    assert_eq!(
+        client.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "actor refusal must precede service proof and mutation calls"
+    );
+    assert!(
+        matches!(error, crate::cli::RunError::Api(ref e) if e.code == crate::protocol::results::ErrorCode::InvalidRequest),
+        "{error:?}"
+    );
+    assert!(!paths.instance_dir.join("intents").exists());
+    assert!(!paths.instance_dir.join("contexts").exists());
+    assert!(output.is_empty());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+// Kills: selected retry reaching SeatInspect or cleanup before original-actor
+// preflight. A misleading current selection cannot turn a saved Human into Agent.
+#[test]
+fn lazy_selected_human_retry_root_refuses_before_client() {
+    use crate::{
+        cli::commands::CooperativeSelection,
+        daemon::paths::{InstancePaths, RuntimeContext},
+        harness::context::{Harness as ContextHarness, Role},
+    };
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(".tmp/ht-big.5.2")
+        .join(format!("lazy-selected-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let runtime = RuntimeContext::explicit(root.join("state"), root.join("host"), None).unwrap();
+    let paths = InstancePaths::resolve_read_only(&runtime).unwrap();
+    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let mut saved = claim();
+    saved.harness = Harness::Human;
+    let reference = journal
+        .record(
+            IntentScope::Cooperative {
+                instance: saved.instance.clone(),
+                seat: saved.seat.clone(),
+            },
+            SemanticMutation::freeze(
+                SemanticMutation::CompleteInboxDelivery {
+                    messages: vec![MessageId::new("lazy")],
+                },
+                saved.clone(),
+            )
+            .unwrap(),
+            1,
+        )
+        .unwrap();
+    struct NoClient;
+    impl crate::ports::LocalClient for NoClient {
+        fn call(
+            &self,
+            c: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            panic!("must refuse before client {c:?}")
+        }
+        fn call_with_output(
+            &self,
+            c: Command,
+            _: &crate::protocol::output::OutputSpec,
+            b: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.call(c, b)
+        }
+    }
+    let selection = CooperativeSelection {
+        seat: saved.seat,
+        target: saved.target,
+        harness: ContextHarness::Codex,
+        role: Role::TopLevel,
+    };
+    let parsed = crate::cli::commands::parse_argv([
+        "ht".to_owned(),
+        "retry".into(),
+        reference.recovery_ref(),
+    ])
+    .unwrap();
+    let mut output = vec![];
+    let error = crate::cli::run_selected(
+        parsed,
+        &selection,
+        &paths,
+        uuid::Uuid::from_u128(1),
+        &NoClient,
+        &crate::app::SystemClock::new(),
+        &mut output,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("person/operator retry requires immediate human namespace")
+    );
+    assert!(output.is_empty());
+    assert!(journal.load(&reference).is_ok());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn inbox_empty_work_selection_preserves_bounds_and_continuations() {
+    use crate::protocol::{
+        commands::InboxQuery,
+        output::OutputSpec,
+        pagination::{Consistency, Page, PageRequest, StopReason},
+        results::{ApiError, InboxBatchItem},
+        time::{CallBudget, Clock, MonoInstant, UtcMillis},
+    };
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    };
+    struct Time(AtomicU64);
+    impl Clock for Time {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(self.0.load(Ordering::SeqCst))
+        }
+    }
+    struct Client<'a> {
+        clock: &'a Time,
+        step: u64,
+        pages: Mutex<std::collections::VecDeque<CommandResult>>,
+        requests: Mutex<Vec<InboxQuery>>,
+        v2: bool,
+    }
+    impl crate::ports::LocalClient for Client<'_> {
+        fn call(&self, _: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            panic!("selection must only read inbox pages")
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            let query = match command {
+                Command::InboxBatch(query) if !self.v2 => query,
+                Command::InboxBatchV2(query) if self.v2 => query,
+                _ => panic!("selection changed protocol or attempted mutation"),
+            };
+            assert_eq!(
+                budget.deadline,
+                MonoInstant(5000),
+                "all reads share one deadline"
+            );
+            assert_eq!(query.seat.as_ref().map(SeatId::as_str), Some("seat"));
+            assert_eq!((query.page.limit, query.page.max_bytes), (1, 1024));
+            self.requests.lock().unwrap().push(query.clone());
+            self.clock.0.fetch_add(self.step, Ordering::SeqCst);
+            if query.page.cursor.as_deref() == Some("read-error") {
+                return Err(ApiError::new(
+                    crate::protocol::results::ErrorCode::HostUnavailable,
+                    "selected read failed",
+                ));
+            }
+            Ok(self
+                .pages
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected extra read"))
+        }
+    }
+    let work = |cursor: &str| Page {
+        items: vec![],
+        next_cursor: Some(cursor.into()),
+        next_argv: Some(vec!["exact-route".into(), cursor.into()]),
+        high_water_ordinal: 123,
+        scope_revision: None,
+        has_more: true,
+        stop_reason: StopReason::Work,
+        consistency: Consistency::BoundedLive,
+    };
+    let mut partial = work("partial");
+    partial.stop_reason = StopReason::Bytes;
+    partial.items.push(InboxBatchItem::Message {
+        thread: ThreadId::new("thread"),
+        topic_data: "topic".into(),
+        message: MessageId::new("message"),
+        sequence: 1,
+        sender: None,
+        author_role: None,
+        relays_user: false,
+        user_intent: None,
+        author_role_backfilled: false,
+        body: "first chunk".into(),
+        body_start: 0,
+        body_end: 11,
+        body_len: 100,
+        ack_candidate: None,
+    });
+    let mut useful_work = partial.clone();
+    useful_work.stop_reason = StopReason::Work;
+    let mut warning = work("warning-next");
+    warning.items.push(InboxBatchItem::Warning {
+        thread: ThreadId::new("thread"),
+        topic_data: "topic".into(),
+        warning: MessageId::new("warning"),
+        sequence: 1,
+    });
+    let mut malformed = work("missing");
+    malformed.next_cursor = None;
+    let mut complete = work("unused");
+    complete.has_more = false;
+    complete.next_cursor = None;
+    complete.next_argv = None;
+    complete.stop_reason = StopReason::Complete;
+    let mut rows = work("rows");
+    rows.stop_reason = StopReason::Rows;
+    let mut bytes = work("bytes");
+    bytes.stop_reason = StopReason::Bytes;
+    // Each expected selected page and count is independent of the helper.
+    for version in 0..3 {
+        for (pages, step, count, expected, error) in [
+            (
+                vec![work("one"), complete.clone()],
+                0,
+                2,
+                complete.clone(),
+                false,
+            ),
+            (
+                vec![work("one"), partial.clone()],
+                0,
+                2,
+                partial.clone(),
+                false,
+            ),
+            (
+                vec![work("one"), useful_work.clone()],
+                0,
+                2,
+                useful_work.clone(),
+                false,
+            ),
+            (
+                vec![warning.clone(), complete.clone()],
+                0,
+                1,
+                warning.clone(),
+                false,
+            ),
+            (vec![malformed.clone()], 0, 1, malformed.clone(), true),
+            (vec![rows.clone()], 0, 1, rows.clone(), false),
+            (
+                vec![work("read-error"), rows.clone()],
+                0,
+                2,
+                rows.clone(),
+                true,
+            ),
+            (vec![bytes.clone()], 0, 1, bytes.clone(), false),
+            (
+                (1..=9).map(|n| work(&n.to_string())).collect(),
+                0,
+                8,
+                work("8"),
+                false,
+            ),
+            (
+                vec![work("one"), work("two"), work("three")],
+                2000,
+                3,
+                work("three"),
+                false,
+            ),
+            (vec![work("one"), work("one")], 0, 2, work("one"), true),
+            (vec![malformed.clone()], 5000, 1, malformed.clone(), false),
+            (
+                (1..8)
+                    .map(|n| work(&n.to_string()))
+                    .chain([malformed.clone()])
+                    .collect(),
+                0,
+                8,
+                malformed.clone(),
+                false,
+            ),
+        ] {
+            let first_cursor = pages[0].next_cursor.clone();
+            let convert = |page: Page<InboxBatchItem>| {
+                if version == 0 {
+                    return CommandResult::InboxBatch(page);
+                }
+                let mut json = serde_json::to_value(page).unwrap();
+                if version == 2 {
+                    for item in json["items"].as_array_mut().unwrap() {
+                        if item["kind"] == "message" {
+                            item["kind"] = "lazy_message".into();
+                            item.as_object_mut().unwrap().remove("ack_candidate");
+                        }
+                    }
+                }
+                CommandResult::InboxBatchV2(serde_json::from_value(json).unwrap())
+            };
+            let expected = convert(expected);
+            let time = Time(AtomicU64::new(0));
+            let client = Client {
+                clock: &time,
+                step,
+                pages: Mutex::new(pages.into_iter().map(convert).collect()),
+                v2: version != 0,
+                requests: Mutex::new(vec![]),
+            };
+            let request = InboxQuery {
+                seat: Some(SeatId::new("seat")),
+                page: PageRequest {
+                    cursor: None,
+                    limit: 1,
+                    max_bytes: 1024,
+                },
+            };
+            let result = super::select_display_inbox_page(
+                if version == 0 {
+                    Command::InboxBatch(request)
+                } else {
+                    Command::InboxBatchV2(request)
+                },
+                &OutputSpec::default(),
+                &client,
+                &time,
+            );
+            assert_eq!(client.requests.lock().unwrap().len(), count);
+            if error {
+                assert!(
+                    matches!(result, Err(super::RunError::Api(ref e)) if matches!(e.code, crate::protocol::results::ErrorCode::StoreCorrupt | crate::protocol::results::ErrorCode::HostUnavailable))
+                );
+            } else {
+                let (selected_command, actual) = result.unwrap();
+                assert_eq!(actual, expected);
+                let requests = client.requests.lock().unwrap();
+                assert_eq!(
+                    selected_command.page().unwrap(),
+                    &requests.last().unwrap().page
+                );
+                if requests.len() > 1 {
+                    assert_eq!(requests[1].page.cursor, first_cursor);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn inbox_drained_page_refit_retains_selected_cursor_and_body_offset() {
+    use crate::protocol::{
+        commands::InboxQuery,
+        output::OutputSpec,
+        pagination::{Consistency, Page, PageRequest, StopReason},
+        results::{ApiError, InboxBatchV2Item},
+        time::CallBudget,
+    };
+    use std::sync::Mutex;
+    struct Client(Mutex<Vec<InboxQuery>>);
+    impl crate::ports::LocalClient for Client {
+        fn call(&self, _: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            panic!("selection/refit must not mutate")
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            _: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            let Command::InboxBatchV2(query) = command else {
+                panic!("must remain v2")
+            };
+            let first = self.0.lock().unwrap().is_empty();
+            self.0.lock().unwrap().push(query.clone());
+            if first {
+                return Ok(CommandResult::InboxBatchV2(Page {
+                    items: vec![],
+                    next_cursor: Some("frozen-selected-body".into()),
+                    next_argv: Some(vec!["initial-route".into()]),
+                    high_water_ordinal: 123,
+                    scope_revision: None,
+                    has_more: true,
+                    stop_reason: StopReason::Work,
+                    consistency: Consistency::BoundedLive,
+                }));
+            }
+            assert_eq!(
+                query.page.cursor.as_deref(),
+                Some("frozen-selected-body"),
+                "byte refit must not replay drained history"
+            );
+            let len = if query.page.max_bytes == 1024 {
+                900
+            } else {
+                20
+            };
+            Ok(CommandResult::InboxBatchV2(Page {
+                items: vec![InboxBatchV2Item::LazyMessage {
+                    thread: ThreadId::new("thread"),
+                    topic_data: "topic".into(),
+                    message: MessageId::new("lazy"),
+                    sequence: 1,
+                    sender: None,
+                    author_role: None,
+                    relays_user: false,
+                    user_intent: None,
+                    author_role_backfilled: false,
+                    body: "x".repeat(len),
+                    body_start: 7,
+                    body_end: 7 + len as u64,
+                    body_len: 2000,
+                }],
+                next_cursor: Some("frozen-next-body".into()),
+                // Final CLI routing can make a wire-selected body exceed its bound.
+                next_argv: Some(vec![
+                    "herdr-threads".into(),
+                    "--state-dir".into(),
+                    "r".repeat(250),
+                    "inbox".into(),
+                ]),
+                high_water_ordinal: 123,
+                scope_revision: None,
+                has_more: true,
+                stop_reason: StopReason::Bytes,
+                consistency: Consistency::BoundedLive,
+            }))
+        }
+    }
+    let client = Client(Mutex::new(vec![]));
+    let command = Command::InboxBatchV2(InboxQuery {
+        seat: Some(SeatId::new("seat")),
+        page: PageRequest {
+            cursor: None,
+            limit: 1,
+            max_bytes: 1024,
+        },
+    });
+    let clock = crate::app::SystemClock::new();
+    let spec = OutputSpec::default();
+    let (selected, page) =
+        super::select_display_inbox_page(command, &spec, &client, &clock).unwrap();
+    let result = super::fit_inbox_read(selected, page, &spec, &client, &|| {
+        super::cooperative_budget(&clock)
+    })
+    .unwrap();
+    assert_eq!(
+        client.0.lock().unwrap().len(),
+        3,
+        "two selection reads then one body refit"
+    );
+    assert!(super::output::emitted_bytes(&result, &spec).unwrap().len() <= 1024);
+    let CommandResult::InboxBatchV2(page) = result else {
+        panic!("wrong protocol")
+    };
+    assert_eq!(page.high_water_ordinal, 123);
+    assert_eq!(page.next_cursor.as_deref(), Some("frozen-next-body"));
+    assert!(matches!(
+        &page.items[0],
+        InboxBatchV2Item::LazyMessage {
+            body_start: 7,
+            body_end: 27,
+            body_len: 2000,
+            ..
+        }
+    ));
 }
 
 // Catches new/retried join being dispatched to an incompatible daemon, or a

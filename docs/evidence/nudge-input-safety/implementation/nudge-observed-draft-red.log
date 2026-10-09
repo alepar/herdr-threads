@@ -1,0 +1,22 @@
+   Compiling herdr-threads v0.2.12 (/Users/alepar/AleCode/herdr-threads/.worktrees/nudge-input-safety)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.79s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-aa425b885727aee3)
+
+running 1 test
+test host::native::tests::nudge_safety_intervening_observed_draft_resets_empty_window ... FAILED
+
+failures:
+
+---- host::native::tests::nudge_safety_intervening_observed_draft_resets_empty_window stdout ----
+
+thread 'host::native::tests::nudge_safety_intervening_observed_draft_resets_empty_window' (9514990) panicked at src/host/native.rs:3009:13:
+an observed draft restarts the minute
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    host::native::tests::nudge_safety_intervening_observed_draft_resets_empty_window
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2660 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

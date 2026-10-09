@@ -23,8 +23,18 @@ mod contracts;
 mod handoff_fences;
 #[path = "host_adapter.rs"]
 mod host_adapter;
+#[path = "cli/inbox_continuation_context.rs"]
+mod inbox_continuation_context;
 #[path = "installer_integrations.rs"]
 mod installer_integrations;
+#[path = "protocol/lazy_delivery.rs"]
+mod lazy_delivery;
+#[path = "cli/lazy_recovery_context.rs"]
+mod lazy_recovery_context;
+#[path = "store/lazy_schema.rs"]
+mod lazy_schema;
+#[path = "cli/lazy_send.rs"]
+mod lazy_send;
 #[path = "lifecycle_ux.rs"]
 mod lifecycle_ux;
 #[path = "local_endpoint.rs"]
@@ -62,3 +72,35 @@ fn every_top_level_test_file_is_built() {
         "tests/ files built by no target (add a [[test]] entry or a suite in tests/combined.rs): {unbuilt:?}"
     );
 }
+
+#[path = "store/lazy_publication.rs"]
+mod lazy_publication;
+
+#[path = "store/lazy_metadata.rs"]
+mod lazy_metadata;
+
+#[path = "store/lazy_inbox.rs"]
+mod lazy_inbox;
+#[path = "protocol/lazy_inbox_v2.rs"]
+mod lazy_inbox_v2;
+
+#[path = "cli/lazy_markers.rs"]
+mod lazy_markers;
+
+#[path = "cli/lazy_display.rs"]
+mod lazy_display;
+
+#[path = "cli/lazy_settlement.rs"]
+mod lazy_settlement;
+
+#[path = "integration/lazy_attention.rs"]
+mod lazy_attention;
+
+#[path = "integration/lazy_config_smoke.rs"]
+mod lazy_config_smoke;
+
+#[path = "integration/lazy_sweep.rs"]
+mod lazy_sweep;
+
+#[path = "cli/readme_commands.rs"]
+mod readme_commands;

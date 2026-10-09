@@ -1,0 +1,46 @@
+{
+  "groups": [
+    {
+      "ids": [
+        1
+      ],
+      "suggestedSeverity": "Blocking",
+      "rank": 1
+    },
+    {
+      "ids": [
+        3
+      ],
+      "suggestedSeverity": "Blocking",
+      "rank": 2
+    },
+    {
+      "ids": [
+        4
+      ],
+      "suggestedSeverity": "Should-fix",
+      "rank": 3
+    },
+    {
+      "ids": [
+        0
+      ],
+      "suggestedSeverity": "Should-fix",
+      "rank": 4
+    },
+    {
+      "ids": [
+        5
+      ],
+      "suggestedSeverity": "Should-fix",
+      "rank": 5
+    },
+    {
+      "ids": [
+        2
+      ],
+      "suggestedSeverity": "Should-fix",
+      "rank": 6
+    }
+  ]
+}

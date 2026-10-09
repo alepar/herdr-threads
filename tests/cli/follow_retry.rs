@@ -391,3 +391,351 @@ fn a_pause_ends_at_once_on_interrupt() {
     assert!(started.elapsed() < Duration::from_millis(500));
     assert!(pause(Duration::from_millis(5), &Cancellation::default()));
 }
+
+struct CompletedRetryFixture {
+    dir: std::path::PathBuf,
+    journal: crate::cli::journal::Journal,
+    reference: crate::cli::journal::IntentRef,
+    claim: crate::protocol::authority::CallerClaim,
+    context: crate::protocol::output::ContinuationContext,
+}
+impl CompletedRetryFixture {
+    fn new(harness: crate::protocol::authority::Harness) -> Self {
+        use crate::{
+            cli::{
+                handoff::{HandoffPlan, HandoffRequest},
+                journal::{IntentScope, Journal, SemanticMutation},
+                launch::LaunchRequest,
+            },
+            protocol::{
+                authority::{CallerClaim, CallerRole},
+                ids::*,
+            },
+        };
+        let dir = std::env::temp_dir().join(format!("ht-completed-retry-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let state = dir.join("state");
+        let host = dir.join("host.sock");
+        let runtime =
+            crate::daemon::paths::RuntimeContext::explicit(state.clone(), host.clone(), None)
+                .unwrap();
+        let paths = crate::daemon::paths::InstancePaths::resolve_read_only(&runtime).unwrap();
+        let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+        let context = crate::protocol::output::ContinuationContext {
+            state_dir: Some(runtime.state_dir.to_string_lossy().into_owned()),
+            host: Some(runtime.host_endpoint.to_string_lossy().into_owned()),
+        };
+        let claim = CallerClaim {
+            instance: "00000000-0000-0000-0000-0000000000b1".into(),
+            seat: SeatId::new("sender"),
+            target: HostTargetId::new("w1:p1"),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness,
+            native_session: NativeSessionId::new("original-session"),
+            execution: ExecutionId::new("original-execution"),
+        };
+        let plan = HandoffPlan {
+            request: HandoffRequest {
+                thread: Some(ThreadId::new("t1")),
+                thread_name: None,
+                topic: None,
+                goal: None,
+                body: "frozen body".into(),
+                launch: LaunchRequest {
+                    target: HostTargetId::new("w1:p2"),
+                    harness: crate::harness::context::Harness::Codex,
+                    harness_binary: None,
+                    argv: vec![],
+                    name: None,
+                    pane_label: None,
+                },
+            },
+            context: context.clone(),
+            recipient: SeatId::new("recipient"),
+            create_key: OperationId::new("original-create"),
+            invite_key: OperationId::new("original-invite"),
+            send_key: OperationId::new("original-send"),
+        };
+        let reference = journal
+            .record(
+                IntentScope::Cooperative {
+                    instance: claim.instance.clone(),
+                    seat: claim.seat.clone(),
+                },
+                SemanticMutation::freeze(SemanticMutation::Handoff(Box::new(plan)), claim.clone())
+                    .unwrap(),
+                1,
+            )
+            .unwrap();
+        std::fs::write(
+            journal
+                .root()
+                .join(format!("handoff-{}.progress", reference.operation.as_str())),
+            br#"{"thread":"t1","launch":{"outcome":"started"},"possible_start":false}"#,
+        )
+        .unwrap();
+        std::fs::remove_file(journal.root().join("allocator.lock")).unwrap();
+        Self {
+            dir,
+            journal,
+            reference,
+            claim,
+            context,
+        }
+    }
+    fn argv(&self, human: bool) -> Vec<String> {
+        let mut argv = vec!["ht".into()];
+        if human {
+            argv.push("human".into());
+        }
+        argv.extend([
+            "--state-dir".into(),
+            self.context.state_dir.clone().unwrap(),
+            "--host-endpoint".into(),
+            self.context.host.clone().unwrap(),
+            "retry".into(),
+            self.reference.recovery_ref(),
+        ]);
+        argv
+    }
+    fn snapshot(&self) -> std::collections::BTreeMap<String, Vec<u8>> {
+        std::fs::read_dir(self.journal.root())
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    std::fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect()
+    }
+}
+impl Drop for CompletedRetryFixture {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.dir).unwrap();
+    }
+}
+
+struct CompletedRetryClient {
+    identity: crate::protocol::handoff::HandoffIdentity,
+    calls: std::sync::atomic::AtomicUsize,
+}
+impl CompletedRetryClient {
+    fn new(fixture: &CompletedRetryFixture) -> Self {
+        use crate::cli::journal::SemanticMutation;
+        let pending = fixture.journal.load(&fixture.reference).unwrap();
+        let SemanticMutation::Frozen { claim, mutation } = pending.semantic else {
+            panic!("expected frozen")
+        };
+        let SemanticMutation::Handoff(plan) = *mutation else {
+            panic!("expected handoff")
+        };
+        Self {
+            identity: crate::protocol::handoff::HandoffIdentity {
+                compound: fixture.reference.operation.clone(),
+                digest: pending.header.semantic_digest,
+                claim,
+                thread: plan.request.thread,
+                recipient: plan.recipient,
+                create_key: plan.create_key,
+                invite_key: plan.invite_key,
+                send_key: plan.send_key,
+            },
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+impl crate::ports::LocalClient for CompletedRetryClient {
+    fn call(
+        &self,
+        command: crate::protocol::commands::Command,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::protocol::results::CommandResult, ApiError> {
+        let crate::protocol::commands::Command::BeginHandoff(query) = command else {
+            panic!("terminal replay must not inspect a live binding or mutate: {command:?}")
+        };
+        assert_eq!(
+            query.identity, self.identity,
+            "replay must send the exact original claim, digest and operation keys"
+        );
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(crate::protocol::results::CommandResult::Handoff(
+            crate::protocol::handoff::HandoffResult {
+                compound: query.identity.compound,
+                thread: Some(ThreadId::new("t1")),
+                state: crate::protocol::handoff::HandoffState::Completed,
+            },
+        ))
+    }
+    fn call_with_output(
+        &self,
+        command: crate::protocol::commands::Command,
+        _: &crate::protocol::output::OutputSpec,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::protocol::results::CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+}
+
+#[test]
+fn completed_human_retry_root_refuses_without_output_or_cleanup() {
+    let fixture = CompletedRetryFixture::new(crate::protocol::authority::Harness::Human);
+    let before = fixture.snapshot();
+    let mut output = Vec::new();
+    let result = crate::cli::run_in_pane(fixture.argv(false), Some("w1:p1"), &mut output);
+    assert!(
+        format!("{result:?}").contains("person/operator retry requires immediate human namespace; use herdr-threads human --state-dir"),
+        "{result:?}"
+    );
+    assert!(output.is_empty());
+    assert_eq!(
+        fixture.snapshot(),
+        before,
+        "refusal must retain intent, progress, allocator and format bytes without adding locks"
+    );
+    assert_eq!(
+        crate::cli::retry::preflight_original_actor(
+            fixture.journal.root(),
+            &fixture.reference.recovery_ref(),
+            crate::cli::actor_route::InvocationActor::Human,
+            &crate::protocol::output::ContinuationContext::default()
+        )
+        .unwrap(),
+        crate::cli::journal::OriginalActor::HumanOrOperator
+    );
+    assert_eq!(fixture.snapshot(), before);
+    let client = CompletedRetryClient::new(&fixture);
+    let parsed = crate::cli::commands::parse_argv(fixture.argv(true)).unwrap();
+    assert!(
+        crate::cli::handoff::try_completed_retry(
+            &parsed,
+            &fixture.journal,
+            &fixture.claim.instance,
+            Some("w1:p1"),
+            &fixture.context,
+            &client,
+            &SystemClock::new(),
+            &mut output
+        )
+        .unwrap()
+    );
+    assert!(!output.is_empty());
+    assert!(fixture.journal.load(&fixture.reference).is_err());
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn completed_agent_retry_survives_live_human_binding() {
+    use crate::harness::context::{Harness, OccupantContext, Role, SessionReference};
+    let fixture = CompletedRetryFixture::new(crate::protocol::authority::Harness::Codex);
+    let runtime = crate::daemon::paths::RuntimeContext::explicit(
+        fixture.context.state_dir.as_ref().unwrap().into(),
+        fixture.context.host.as_ref().unwrap().into(),
+        None,
+    )
+    .unwrap();
+    let paths = crate::daemon::paths::InstancePaths::resolve_read_only(&runtime).unwrap();
+    let instance = uuid::Uuid::parse_str(&fixture.claim.instance).unwrap();
+    let live = crate::cli::seat_contexts(&paths, instance, &fixture.claim.seat).unwrap();
+    live.install_reattached(OccupantContext {
+        format_version: 1,
+        instance,
+        seat: fixture.claim.seat.as_str().into(),
+        target: "w1:p1".into(),
+        harness: Harness::Human,
+        binding_generation: 2,
+        execution: uuid::Uuid::new_v4(),
+        session: SessionReference::PluginContext(uuid::Uuid::new_v4()),
+        role: Role::TopLevel,
+    })
+    .unwrap();
+    assert_eq!(live.current().unwrap().unwrap().harness, Harness::Human);
+    let before = fixture.snapshot();
+    assert_eq!(
+        crate::cli::retry::preflight_original_actor(
+            fixture.journal.root(),
+            &fixture.reference.recovery_ref(),
+            crate::cli::actor_route::InvocationActor::Agent,
+            &crate::protocol::output::ContinuationContext::default()
+        )
+        .unwrap(),
+        crate::cli::journal::OriginalActor::Agent
+    );
+    assert_eq!(fixture.snapshot(), before);
+    let client = CompletedRetryClient::new(&fixture);
+    let parsed = crate::cli::commands::parse_argv(fixture.argv(false)).unwrap();
+    struct FailedFlush;
+    impl io::Write for FailedFlush {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("injected output failure"))
+        }
+    }
+    assert!(
+        crate::cli::handoff::try_completed_retry(
+            &parsed,
+            &fixture.journal,
+            &fixture.claim.instance,
+            Some("w1:p1"),
+            &fixture.context,
+            &client,
+            &SystemClock::new(),
+            &mut FailedFlush
+        )
+        .is_err()
+    );
+    let after = fixture.snapshot();
+    for (name, bytes) in &before {
+        assert_eq!(
+            after.get(name),
+            Some(bytes),
+            "output failure must preserve {name}"
+        );
+    }
+    let mut output = Vec::new();
+    assert!(
+        crate::cli::handoff::try_completed_retry(
+            &parsed,
+            &fixture.journal,
+            &fixture.claim.instance,
+            Some("w1:p1"),
+            &fixture.context,
+            &client,
+            &SystemClock::new(),
+            &mut output
+        )
+        .unwrap()
+    );
+    assert!(!output.is_empty());
+    assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    assert!(fixture.journal.load(&fixture.reference).is_err());
+    assert_eq!(live.current().unwrap().unwrap().harness, Harness::Human);
+}
+
+#[test]
+fn completed_human_retry_malformed_record_retained_without_output() {
+    let fixture = CompletedRetryFixture::new(crate::protocol::authority::Harness::Human);
+    let intent = fixture.journal.root().join(format!(
+        "{:020}-{}.intent",
+        fixture.reference.ordinal,
+        fixture.reference.operation.as_str()
+    ));
+    let bytes = std::fs::read_to_string(&intent).unwrap();
+    std::fs::write(&intent, bytes.replace("frozen body", "corrupted body")).unwrap();
+    let before = fixture.snapshot();
+    for human in [false, true] {
+        let mut output = Vec::new();
+        let result = crate::cli::run_in_pane(fixture.argv(human), Some("w1:p1"), &mut output);
+        assert!(
+            format!("{result:?}").contains("intent semantic mismatch"),
+            "{result:?}"
+        );
+        assert!(output.is_empty());
+        assert_eq!(fixture.snapshot(), before);
+    }
+}

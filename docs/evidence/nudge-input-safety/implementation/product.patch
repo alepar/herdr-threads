@@ -1,0 +1,1188 @@
+diff --git a/TRUST-POLICY.md b/TRUST-POLICY.md
+index e168821b..7ae7cebd 100644
+--- a/TRUST-POLICY.md
++++ b/TRUST-POLICY.md
+@@ -200,8 +200,8 @@ model open work, and summary closure never changes receipt state or installs glo
+   `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
+   submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound
+   harness. It is decided from a fresh observation immediately before the prompt, only when the pane is not
+-  focused and the agent is idle, or in an active turn or with typed input only where the harness recipe
+-  declares `poke_during_turn` or `composer_stash` from captured evidence
++  focused and the composer is empty; an active turn is eligible only where the harness recipe
++  declares `poke_during_turn` from captured evidence
+   (`docs/evidence/poke-spike/findings.md`). Existing exact-version recipe declarations remain
+   historical captured qualification, not operational admission. Ordinary daemon observation resolves
+   executables without probing runtime metadata; absent current-runtime qualification declares neither
+@@ -222,33 +222,30 @@ model open work, and summary closure never changes receipt state or installs glo
+     unknown and skipped. Claude Code draws a prompt suggestion in the composer after a turn, and the
+     detection text cannot tell it from typed input; until its styling is captured, any Claude composer text
+     other than a captured empty marker is not known empty and is never stashed. An unreadable composer, a failed read or any other status is
+-    unknown and skipped. The same reader classifies the pane and drives the stash, so they cannot disagree.
+-    Ordinary wakes are unchanged: composer content never refuses an ordinary wake or advances its retry
+-    step. An ordinary wake goes out over typed input or a prompt suggestion as it did before the composer
+-    reader existed (it merges with a draft; see Accepted limits); an active turn or an approval or question
+-    refuses it, as Herdr's idle/done recheck always did. Only a poke is skipped when the composer cannot be
+-    classified or stashed with confidence, and the skip is for that poke only.
+-  - *Composer stash.* Where a recipe declares `composer_stash`, a poke into a pane with typed, unsent input
+-    first reads and clears that input, then submits the poke, then retypes the saved text without submitting
+-    it. A failure before the poke aborts it with nothing submitted; a failed retype is recorded as a
+-    diagnostic and the saved text is kept in the daemon log for the operator, never discarded. The stash is
+-    refused (the poke skipped) when the composer holds an image or pasted-text placeholder, which does not
+-    survive a retype, when a composer row's display width (Unicode width, East Asian ambiguous characters counted
+-    wide) lies within 12 columns of the pane width (a soft wrap cannot be told from a newline), when a row
+-    holds a character whose rendered width cannot be determined (a control character, an emoji variation
+-    selector or joiner), when a composer row ends in whitespace, when the pane width is unknown and the
+-    harness shows no rule from which to infer it, or when the harness is Claude and the composer holds any
+-    text (not known empty, above).
+-    The stash clears with a bounded `ctrl+u` loop and proceeds only when a second read shows the composer
+-    empty; if that never happens the poke is aborted and the typed text, which may already be partly cleared,
+-    is kept in the daemon log.
++    unknown and skipped. The same reader classifies observations and final native delivery admission.
++    Ordinary native wakes also require an empty composer, checked after their final
++    identity/status recheck. A nonempty or unreadable composer refuses delivery before input is sent;
++    pending attention and receipt obligations remain intact and the prior retry ladder is restored.
++    Unfocused empty panes may wake immediately. Focused panes require a minute of observed empty
++    composer samples, measured with the daemon's monotonic clock. Qualification is process-local,
++    bound to seat/target/terminal/harness/server identity, bounded to 1024 windows, and restarts after
++    a failed final admission, a successful send, clock reversal, or a sample gap over one minute.
++    Intervening composer reads that fail or observe nonempty/unreadable input reset qualification.
++    Soft-deadline-only pokes retain their stricter unconditional focused-pane skip; the one-minute
++    focused rule applies to ordinary wakes. Status/focus checks and screen reads are an approximation,
++    not keystroke telemetry.
++  - *Drafts are deferred.* Attention never stashes, clears, retypes or submits a known draft, including
++    soft-deadline pokes even if an old recipe declares composer stash. Existing adapter stash helpers
++    are retained but the notification dispatcher never invokes them. A parked draft or unreadable
++    screen can defer attention indefinitely. Claude suggestions may also defer delivery unless
++    disabled through the existing user-approved setup option; this change never edits configuration.
++  - *Verification is read-only.* A held marker yields an unsubmitted diagnostic/uncertain delivery;
++    verification never sends an additional Enter, which could submit newly typed user text.
+   - *During a turn.* Where a recipe declares `poke_during_turn`, the poke is submitted with `agent prompt`,
+     which queues it into the running turn at the next tool boundary (steering, not a separate user turn). The
+     adapter's recheck allows a working agent for that call only.
+-  - *Post-send verification.* The wake path's one-shot post-send check (read the composer, press the
+-    submit key once if the prompt is still held) is skipped for a poke queued into a running turn and for a
+-    poke whose stashed draft was retyped: there the composer legitimately holds text, and a submit key
+-    would send the person's draft.
++  - *Post-send verification.* The read-only check is skipped for a poke queued into a running turn,
++    whose prompt does not occupy the idle composer. It never changes the composer or sends keys.
+   - *Declarations.* Claude 2.1.287 declares both (spike evidence). No Codex recipe declares either: the
+     spike tested Codex 0.160.0 (mock provider), which no recipe covers, so Codex seats are poked only when
+     idle with an empty composer. Claude's `composer_stash` declaration currently never stashes, because no
+@@ -391,8 +388,8 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
+   receipt capability. Historical captured declarations (Claude 2.1.287's richer behavior; every Codex
+   version declares neither rich poke capability) remain evidence for their exact captures, never a grant
+   to an unidentified current runtime. A working agent or typed draft is skipped without separate safe
+-  qualification; the hard-deadline warning remains the backstop. Where `composer_stash` is qualified,
+-  an image or pasted-text placeholder, uncertain display width or unknown pane width still skips it.
++  turn-time qualification; typed drafts always defer attention. The hard-deadline warning remains
++  durable pending attention, subject to the same native composer admission when waking.
+ - **Unavailable-runtime diagnostics are bounded advisory history.** Failures use only the existing
+   harness/session/contract producer scope, never an invented version/build key or account authority.
+   The first event/field stays sticky across later successful inputs. Storage keeps at most 256 rows per
+@@ -411,15 +408,17 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
+   writes the setting only on an interactive yes or `--disable-prompt-suggestions`, never silently, and
+   `unsetup` reverts what it set (ht-6jt). A project or managed setting, or the session's
+   `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION`, can turn them back on; the poke then skips as above.
+-- **Ordinary wakes merge with a draft.** An ordinary wake into an idle agent pane that holds a typed, unsent
+-  draft submits the wake text merged with the draft (`agent prompt` merges, poke spike Q5), as before the
+-  composer reader existed; only soft-deadline pokes stash and restore a draft.
++- **Native attention uses sampled composer/focus guards.** Check-to-send focus or input races are
++  accepted: a user may type or change focus after the final read. Empty samples do not establish an
++  absence of keystrokes, cursor moves, or type/delete activity between samples. Focus is Herdr's pane
++  selection, not every attached client's physical attention. Restart/outage gaps can delay focused
++  wakes; nonempty/unreadable composers can defer indefinitely. No atomic host/client buffer claim is made.
+ - **Composer reads see the screen, not the buffer.** Herdr's detection read shows composer rows without
+-  trailing whitespace, so whitespace typed at the end of a draft row is invisible: a stashed draft is retyped
+-  without it, and a draft of only spaces reads as empty and is poked over. A draft typed to match a captured
++  trailing whitespace, so whitespace typed at the end of a draft row is invisible, and a draft of only
++  spaces can read as empty and be nudged over. A draft typed to match a captured
+   Claude placeholder exactly reads as empty the same way. A Claude placeholder that was never captured reads
+-  as unknown, so that pane is not poked (only the hard-deadline warning reaches it) until the placeholder is
+-  captured and listed.
++  as unknown, so native attention remains deferred until the placeholder is captured and listed or
++  the composer becomes recognizably empty; hard-deadline warnings remain pending.
+ - **Conservative archival liveness.** Repeated composer-aware idle observations use a 60-second cadence
+   with a maximum 120-second gap and fresh evidence window. Boot changes, outages, clock discontinuities
+   and missed observations restart qualification. Partial/malformed/inaccessible legacy journal coverage
+diff --git a/src/host/native.rs b/src/host/native.rs
+index f5a44e24..3b1776c3 100644
+--- a/src/host/native.rs
++++ b/src/host/native.rs
+@@ -18,9 +18,10 @@ use crate::protocol::{
+     time::{CallBudget, Clock},
+ };
+ use std::{
++    collections::HashMap,
+     path::PathBuf,
+     sync::{
+-        Arc,
++        Arc, Mutex,
+         atomic::{AtomicU64, Ordering},
+     },
+     time::{Duration, Instant},
+@@ -61,12 +62,22 @@ const COMPOSER_SETTLE_MILLIS: u64 = 250;
+ /// the pane; a submitted one is pushed above the empty composer box.
+ const COMPOSER_TAIL_LINES: usize = 4;
+ 
++const FOCUSED_EMPTY_MILLIS: u64 = 60_000;
++const MAX_EMPTY_WINDOWS: usize = 1_024;
++
++struct EmptyComposerWindow {
++    target: SafeWakeTarget,
++    since: u64,
++    last: u64,
++}
++
+ pub struct NativeCli {
+     socket: PathBuf,
+     clock: Arc<dyn Clock>,
+     epoch: AtomicU64,
+     /// Observation order within one (boot, epoch). Never reused by this adapter.
+     sequence: AtomicU64,
++    empty_windows: Mutex<HashMap<SeatId, EmptyComposerWindow>>,
+ }
+ 
+ /// Server-process incarnation bound to the actual response connections of one
+@@ -443,6 +454,7 @@ impl NativeCli {
+             clock,
+             epoch: AtomicU64::new(1),
+             sequence: AtomicU64::new(1),
++            empty_windows: Mutex::new(HashMap::new()),
+         }
+     }
+ 
+@@ -943,10 +955,9 @@ impl HostPort for NativeCli {
+     /// native execution, so the target is structural (a fresh current-target
+     /// read of the same terminal in the same verified server incarnation, no
+     /// positive evidence of an empty shell, active turn or blocked UI). Typed
+-    /// composer input never refuses an ordinary wake (TRUST-POLICY A4): it
+-    /// merges with the draft, as before the composer reader existed. Whether
+-    /// the occupant is a recognized idle harness is rechecked
+-    /// by `submit_prompt` immediately before submission.
++    /// composer is classified by `submit_prompt` immediately before delivery.
++    /// A nonempty/unreadable composer refuses delivery; focused empty panes
++    /// must qualify through a minute of process-local observations.
+     fn safe_wake_target(
+         &self,
+         seat: &SeatId,
+@@ -1268,6 +1279,49 @@ fn cooperative_wake_ready(
+ }
+ 
+ impl NativeCli {
++    /// Empty samples are process-local, bounded, and tied to the same target.
++    /// Missing samples for over a minute restart qualification. These are
++    /// screen observations, not a claim that no keyboard activity occurred.
++    fn focused_empty_ready(
++        &self,
++        target: &SafeWakeTarget,
++        focused: bool,
++        previous: Option<EmptyComposerWindow>,
++    ) -> bool {
++        if !focused {
++            return true;
++        }
++        let now = self.clock.monotonic_now().0;
++        let mut identity = target.clone();
++        // This counter orders reads, not the identity of the composer.
++        identity.observation_sequence = 0;
++        let since = previous
++            .filter(|window| {
++                window.target == identity
++                    && now >= window.last
++                    && now - window.last <= FOCUSED_EMPTY_MILLIS
++            })
++            .map_or(now, |window| window.since);
++        if now.saturating_sub(since) >= FOCUSED_EMPTY_MILLIS {
++            return true;
++        }
++        let Ok(mut windows) = self.empty_windows.lock() else {
++            return false;
++        };
++        windows.retain(|_, window| now >= window.last && now - window.last <= FOCUSED_EMPTY_MILLIS);
++        if windows.len() < MAX_EMPTY_WINDOWS {
++            windows.insert(
++                target.seat.clone(),
++                EmptyComposerWindow {
++                    target: identity,
++                    since,
++                    last: now,
++                },
++            );
++        }
++        false
++    }
++
+     fn submit_prompt_mode(
+         &self,
+         target: &SafeWakeTarget,
+@@ -1275,6 +1329,18 @@ impl NativeCli {
+         context: &HostCallContext,
+         during_turn: bool,
+     ) -> Result<ports::PromptOutcome, ApiError> {
++        // Taking the sample first makes every failed identity/status/read reset
++        // the window. Only a successful focused-empty sample below retains it.
++        let previous = self
++            .empty_windows
++            .lock()
++            .map_err(|_| {
++                error(
++                    ErrorCode::TargetUnsafe,
++                    "composer observation lock unavailable",
++                )
++            })?
++            .remove(&target.seat);
+         let refuse = |detail: &str| {
+             error(
+                 ErrorCode::TargetUnsafe,
+@@ -1339,6 +1405,25 @@ impl NativeCli {
+         if let Err(detail) = cooperative_wake_ready(&agent, target, during_turn) {
+             return Err(refuse(&detail));
+         }
++        let harness = target
++            .bound_harness
++            .as_deref()
++            .and_then(bound_harness)
++            .ok_or_else(|| refuse("no bound harness for composer read"))?;
++        let focused = agent
++            .get("focused")
++            .and_then(serde_json::Value::as_bool)
++            .ok_or_else(|| refuse("unreadable pane focus"))?;
++        if self.read_composer(&target.target, harness, context)? != ComposerRead::Empty {
++            return Err(refuse("composer is nonempty or unreadable"));
++        }
++        self.check_epoch(target.epoch)?;
++        self.check_context(context)?;
++        if !self.focused_empty_ready(target, focused, previous) {
++            return Err(refuse(
++                "focused composer has not been observed empty for one minute",
++            ));
++        }
+         if budget.cancellation.is_cancelled() {
+             return Err(error(ErrorCode::Cancelled, "wake prompt cancelled"));
+         }
+@@ -1424,8 +1509,8 @@ impl NativeCli {
+     /// One fresh witnessed read. Only `composer_ui` (a soft-deadline poke)
+     /// spends the composer read that classifies the UI; an ordinary wake never
+     /// does, so a composer read that Herdr cannot answer cannot change a wake
+-    /// decision or slow it, and it decides on `agent_status` and structure
+-    /// alone as before the composer reader existed (TRUST-POLICY A4).
++    /// structural selection. Ordinary delivery still requires its own final
++    /// composer read in `submit_prompt_mode`.
+     fn observe_target(
+         &self,
+         target: &HostTargetId,
+@@ -1449,6 +1534,8 @@ impl NativeCli {
+         } else {
+             status_ui(&pane)
+         };
++        let reset_empty = !matches!(pane.status.as_str(), "idle" | "done")
++            || (composer_ui && ui != HostUiState::Idle);
+         let sequence = self.next_sequence();
+         let mut observation = self.observation(
+             pane,
+@@ -1460,6 +1547,9 @@ impl NativeCli {
+             sequence,
+         );
+         observation.ui = ui;
++        if reset_empty || !observation.focused {
++            self.reset_empty_windows(target);
++        }
+         Ok(observation)
+     }
+ 
+@@ -1488,6 +1578,25 @@ impl NativeCli {
+         target: &HostTargetId,
+         harness: Harness,
+         context: &HostCallContext,
++    ) -> Result<ComposerRead, ApiError> {
++        let result = self.read_composer_text(target, harness, context);
++        if !matches!(result, Ok(ComposerRead::Empty)) {
++            self.reset_empty_windows(target);
++        }
++        result
++    }
++
++    fn reset_empty_windows(&self, target: &HostTargetId) {
++        if let Ok(mut windows) = self.empty_windows.lock() {
++            windows.retain(|_, window| &window.target.target != target);
++        }
++    }
++
++    fn read_composer_text(
++        &self,
++        target: &HostTargetId,
++        harness: Harness,
++        context: &HostCallContext,
+     ) -> Result<ComposerRead, ApiError> {
+         let limit = composer_limit(self, context)?;
+         let started = Instant::now();
+@@ -2759,6 +2868,211 @@ mod tests {
+         (result, methods)
+     }
+ 
++    /// Catches an ordinary native wake bypassing the composer and submitting a draft.
++    #[cfg(target_os = "macos")]
++    #[test]
++    fn nudge_safety_refuses_nonempty_or_unreadable_composer() {
++        for text in [
++            claude_screen(&["unfinished user draft"]),
++            "unknown layout".into(),
++        ] {
++            // Answer either read or prompt so the pre-fix test fails on behavior,
++            // rather than panicking inside its transport fixture.
++            let screen: Exchange = Box::new(move |stream, request| {
++                answer(
++                    stream,
++                    &request,
++                    json!({"type":"pane_read","read":{
++                    "pane_id":"w4:p1","source":"detection","text":text}}),
++                );
++            });
++            let (result, methods) = cooperative_wake(vec![
++                recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
++                screen,
++            ]);
++            assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
++            assert_eq!(
++                *methods.lock().unwrap(),
++                ["pane.get", "agent.get", "agent.read"]
++            );
++        }
++    }
++
++    #[cfg(target_os = "macos")]
++    #[test]
++    fn nudge_safety_focused_empty_composer_starts_waiting_without_prompt() {
++        let mut agent = wake_agent("idle", Some("claude"), "term_1");
++        agent["focused"] = json!(true);
++        let screen: Exchange = Box::new(|stream, request| {
++            answer(
++                stream,
++                &request,
++                json!({"type":"pane_read","read":{
++                "pane_id":"w4:p1","source":"detection","text":claude_screen(&[""])}}),
++            );
++        });
++        let (result, methods) = cooperative_wake(vec![recheck_exchange(agent), screen]);
++        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
++        assert_eq!(
++            *methods.lock().unwrap(),
++            ["pane.get", "agent.get", "agent.read"]
++        );
++    }
++
++    struct NudgeClock(AtomicU64);
++    impl Clock for NudgeClock {
++        fn utc_now(&self) -> UtcMillis {
++            UtcMillis(self.0.load(Ordering::SeqCst).try_into().unwrap())
++        }
++        fn monotonic_now(&self) -> MonoInstant {
++            MonoInstant(self.0.load(Ordering::SeqCst))
++        }
++    }
++
++    /// Catches premature admission, stale-window reuse and identity leakage.
++    #[test]
++    fn nudge_safety_empty_window_boundaries_and_resets() {
++        let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
++        let cli = NativeCli::new(PathBuf::from("/unused-nudge-test"), clock.clone());
++        let target = composer_target();
++        let sample = |at: u64, target: &SafeWakeTarget, focused: bool| {
++            clock.0.store(at, Ordering::SeqCst);
++            let prior = cli.empty_windows.lock().unwrap().remove(&target.seat);
++            cli.focused_empty_ready(target, focused, prior)
++        };
++        assert!(!sample(0, &target, true));
++        assert!(!sample(59_999, &target, true));
++        assert!(sample(60_000, &target, true));
++        assert!(
++            !sample(60_001, &target, true),
++            "successful wake resets the wait"
++        );
++        assert!(
++            !sample(120_002, &target, true),
++            "missing samples restart the wait"
++        );
++        assert!(
++            !sample(120_001, &target, true),
++            "clock reversal restarts the wait"
++        );
++        let mut moved = target.clone();
++        moved.terminal = TerminalId::new("replacement");
++        assert!(
++            !sample(180_001, &moved, true),
++            "replacement cannot inherit idle time"
++        );
++        assert!(
++            sample(180_002, &moved, false),
++            "unfocused empty pane wakes immediately"
++        );
++        assert!(!sample(180_003, &moved, true), "refocus starts a new wait");
++    }
++
++    #[cfg(target_os = "macos")]
++    #[test]
++    fn nudge_safety_focused_empty_wakes_after_one_minute() {
++        let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
++        let mut focused = wake_agent("idle", Some("claude"), "term_1");
++        focused["focused"] = json!(true);
++        let mut exchanges = vec![pane_exchange()];
++        for _ in 0..3 {
++            exchanges.push(recheck_exchange(focused.clone()));
++            exchanges.push(detection_exchange(claude_screen(&[""])));
++        }
++        exchanges.push(prompt_exchange("wake marker"));
++        let (socket, mut cli, worker) = serve_sequence(exchanges);
++        cli.clock = clock.clone();
++        let observation = cli
++            .observe_current_target(&HostTargetId::new("w4:p1"), &pane_agent_context())
++            .unwrap();
++        let mut target = cli
++            .safe_wake_target(&SeatId::new("seat_1"), &observation)
++            .unwrap();
++        target.bound_harness = Some("claude".into());
++        for at in [0, 59_999, 60_000] {
++            clock.0.store(at, Ordering::SeqCst);
++            let mut context = wake_context(&observation);
++            context.budget.deadline = MonoInstant(at + 10_000);
++            let result = cli.submit_prompt(&target, "wake marker", &context);
++            if at < 60_000 {
++                assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
++            } else {
++                assert_eq!(result.unwrap(), ports::PromptOutcome::Submitted);
++            }
++        }
++        worker.join().unwrap();
++        fs::remove_file(socket).unwrap();
++    }
++
++    #[test]
++    fn nudge_safety_intervening_observed_draft_resets_empty_window() {
++        for screen in [claude_screen(&["draft"]), "unreadable".into()] {
++            let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
++            let (socket, mut cli, worker) =
++                serve_sequence(vec![pane_exchange_with("idle"), detection_exchange(screen)]);
++            cli.clock = clock.clone();
++            let target = composer_target();
++            assert!(!cli.focused_empty_ready(&target, true, None));
++            clock.0.store(30_000, Ordering::SeqCst);
++            let observation = cli
++                .observe_current_target_for_poke(
++                    &target.target,
++                    &HostCallContext {
++                        budget: CallBudget {
++                            deadline: MonoInstant(40_000),
++                            cancellation: Cancellation::default(),
++                        },
++                        expected_boot: None,
++                        expected_epoch: None,
++                    },
++                )
++                .unwrap();
++            assert_ne!(observation.ui, HostUiState::Idle);
++            clock.0.store(60_000, Ordering::SeqCst);
++            let previous = cli.empty_windows.lock().unwrap().remove(&target.seat);
++            assert!(
++                !cli.focused_empty_ready(&target, true, previous),
++                "an observed draft restarts the minute"
++            );
++            worker.join().unwrap();
++            fs::remove_file(socket).unwrap();
++        }
++    }
++
++    #[test]
++    fn nudge_safety_status_only_idle_read_preserves_empty_window() {
++        let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
++        let pane: Exchange = Box::new(|stream, request| {
++            answer(
++                stream,
++                &request,
++                json!({"type":"pane_info","pane":{
++                "pane_id":"w4:p1","terminal_id":"term_1","workspace_id":"w4","tab_id":"w4:t1",
++                "focused":true,"agent":"claude","agent_status":"idle","revision":2}}),
++            );
++        });
++        let (socket, mut cli, worker) = serve_sequence(vec![pane]);
++        cli.clock = clock.clone();
++        let target = composer_target();
++        assert!(!cli.focused_empty_ready(&target, true, None));
++        let observation = cli
++            .observe_current_target(&target.target, &pane_agent_context())
++            .unwrap();
++        assert_eq!(
++            observation.ui,
++            HostUiState::Unknown,
++            "plain read has no composer evidence"
++        );
++        clock.0.store(60_000, Ordering::SeqCst);
++        let previous = cli.empty_windows.lock().unwrap().remove(&target.seat);
++        assert!(
++            cli.focused_empty_ready(&target, true, previous),
++            "status-only idle read cannot erase valid samples"
++        );
++        worker.join().unwrap();
++        fs::remove_file(socket).unwrap();
++    }
++
+     /// Idle and done agents of a recognized harness are prompted only after
+     /// a fresh recheck, and `Submitted` is transport submission only.
+     #[cfg(target_os = "macos")]
+@@ -2785,6 +3099,11 @@ mod tests {
+             let (result, methods) = cooperative_wake_with(
+                 vec![
+                     recheck_exchange(wake_agent(status, Some(kind), "term_1")),
++                    detection_exchange(if kind == "claude" {
++                        claude_screen(&[""])
++                    } else {
++                        CODEX_EMPTY.into()
++                    }),
+                     prompt,
+                 ],
+                 None,
+@@ -2797,7 +3116,7 @@ mod tests {
+             );
+             assert_eq!(
+                 *methods.lock().unwrap(),
+-                ["pane.get", "agent.get", "agent.prompt"],
++                ["pane.get", "agent.get", "agent.read", "agent.prompt"],
+                 "the recheck immediately precedes the prompt"
+             );
+         }
+@@ -2884,6 +3203,11 @@ mod tests {
+             let (result, methods) = cooperative_wake_with(
+                 vec![
+                     recheck_exchange(wake_agent("idle", Some(kind), "term_1")),
++                    detection_exchange(if kind == "claude" {
++                        claude_screen(&[""])
++                    } else {
++                        CODEX_EMPTY.into()
++                    }),
+                     prompt,
+                 ],
+                 None,
+@@ -2892,7 +3216,7 @@ mod tests {
+             assert_eq!(result.unwrap(), ports::PromptOutcome::Submitted, "{kind}");
+             assert_eq!(
+                 *methods.lock().unwrap(),
+-                ["pane.get", "agent.get", "agent.prompt"],
++                ["pane.get", "agent.get", "agent.read", "agent.prompt"],
+                 "{kind}"
+             );
+         }
+@@ -2973,6 +3297,7 @@ mod tests {
+         });
+         let (result, _) = cooperative_wake(vec![
+             recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
++            detection_exchange(claude_screen(&[""])),
+             blocked,
+         ]);
+         assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+@@ -2983,10 +3308,11 @@ mod tests {
+         });
+         let (result, methods) = cooperative_wake(vec![
+             recheck_exchange(wake_agent("done", Some("claude"), "term_1")),
++            detection_exchange(claude_screen(&[""])),
+             lost,
+         ]);
+         assert_eq!(result.unwrap(), ports::PromptOutcome::OutcomeUnknown);
+-        assert_eq!(methods.lock().unwrap().len(), 3, "never replayed");
++        assert_eq!(methods.lock().unwrap().len(), 4, "never replayed");
+ 
+         let other_terminal: Exchange = Box::new(|stream: &mut UnixStream, request: Value| {
+             answer(
+@@ -2997,6 +3323,7 @@ mod tests {
+         });
+         let (result, _) = cooperative_wake(vec![
+             recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
++            detection_exchange(claude_screen(&[""])),
+             other_terminal,
+         ]);
+         assert_eq!(result.unwrap(), ports::PromptOutcome::OutcomeUnknown);
+@@ -3181,12 +3508,13 @@ mod tests {
+         });
+         let (result, methods) = cooperative_wake(vec![
+             recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
++            detection_exchange(claude_screen(&[""])),
+             weird,
+         ]);
+         assert_eq!(result.unwrap(), ports::PromptOutcome::OutcomeUnknown);
+         assert_eq!(
+             *methods.lock().unwrap(),
+-            ["pane.get", "agent.get", "agent.prompt"],
++            ["pane.get", "agent.get", "agent.read", "agent.prompt"],
+             "never replayed"
+         );
+     }
+@@ -3417,6 +3745,7 @@ mod tests {
+                 clear_exchange(),
+                 detection_exchange(CLAUDE_EMPTY),
+                 recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
++                detection_exchange(CLAUDE_EMPTY),
+                 prompt_exchange("poke text"),
+                 retype_exchange("hello world one", true),
+             ],
+@@ -3441,6 +3770,7 @@ mod tests {
+                 "pane.send_keys",
+                 "agent.read",
+                 "agent.get",
++                "agent.read",
+                 "agent.prompt",
+                 "pane.send_text",
+             ],
+@@ -3607,7 +3937,12 @@ mod tests {
+     fn active_turn_poke_uses_the_declared_primitive() {
+         let working = || recheck_exchange(wake_agent("working", Some("claude"), "term_1"));
+         let ((ordinary, during_turn), methods) = poke_session(
+-            vec![working(), working(), prompt_exchange("poke text")],
++            vec![
++                working(),
++                working(),
++                detection_exchange(CLAUDE_EMPTY),
++                prompt_exchange("poke text"),
++            ],
+             |cli, target, context| {
+                 (
+                     cli.submit_prompt(target, "poke text", context),
+@@ -3621,7 +3956,13 @@ mod tests {
+         assert_eq!(during_turn.unwrap(), ports::PromptOutcome::Submitted);
+         assert_eq!(
+             methods,
+-            ["pane.get", "agent.get", "agent.get", "agent.prompt"],
++            [
++                "pane.get",
++                "agent.get",
++                "agent.get",
++                "agent.read",
++                "agent.prompt"
++            ],
+             "the ordinary wake sent no prompt"
+         );
+     }
+diff --git a/src/notification/dispatch.rs b/src/notification/dispatch.rs
+index 21f0cea7..fddf6990 100644
+--- a/src/notification/dispatch.rs
++++ b/src/notification/dispatch.rs
+@@ -11,9 +11,9 @@ use crate::{
+         DurableRetry, MARKER, PokeDecision, RetryConfig, RetryError, RetryGuard, poke_eligibility,
+     },
+     ports::{
+-        AgentComposerState, ComposerStash, EvidenceKind, ExecutionEvidence, HostCallContext,
+-        HostPort, HostUiState, IncarnationEvidence, NotificationPort, ObservationProvenance,
+-        PokeAttempt, PokeCapabilitySource, PokeMode, PokePlan, PromptOutcome, RefusalCause,
++        AgentComposerState, EvidenceKind, ExecutionEvidence, HostCallContext, HostPort,
++        HostUiState, IncarnationEvidence, NotificationPort, ObservationProvenance, PokeAttempt,
++        PokeCapabilitySource, PokeMode, PokePlan, PromptOutcome, RefusalCause,
+         ReservedWakeAuthority, StructuralOccupancy, WakeOutcome, WakeReservation, WakeTargetBasis,
+     },
+     protocol::{
+@@ -64,11 +64,8 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche
+         }
+     }
+ 
+-    /// Wave 28: read the composer after a send; a prompt still held there gets
+-    /// exactly one submit-key retry and is then reported, never looped. A
+-    /// failed read or key send leaves the prompt unchecked (`NotChecked`).
+-    /// The result reaches daemon.log (rate limited) through
+-    /// `ObservedWakePort::observe_drive`.
++    /// Advisory read-only verification. A held marker is reported without
++    /// pressing Enter: the composer may also contain newly typed user input.
+     fn verify_submission(
+         &self,
+         target: &crate::ports::SafeWakeTarget,
+@@ -92,15 +89,7 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche
+         }
+         match self.host.pane_agent_state(target, &verify_context) {
+             Ok(AgentComposerState::Submitted) => SubmissionVerification::Verified,
+-            Ok(AgentComposerState::HoldingPrompt) => {
+-                if self.host.send_submit_key(target, &verify_context).is_err() {
+-                    return SubmissionVerification::NotChecked;
+-                }
+-                match self.host.pane_agent_state(target, &verify_context) {
+-                    Ok(AgentComposerState::HoldingPrompt) => SubmissionVerification::Unsubmitted,
+-                    _ => SubmissionVerification::Retried,
+-                }
+-            }
++            Ok(AgentComposerState::HoldingPrompt) => SubmissionVerification::Unsubmitted,
+             _ => SubmissionVerification::NotChecked,
+         }
+     }
+@@ -236,6 +225,9 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
+         if !identity_ok {
+             return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+         }
++        if observation.ui == HostUiState::HumanInput {
++            return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
++        }
+         let selected = if poke.is_some() {
+             self.host.safe_poke_target(&reservation.seat, &observation)
+         } else {
+@@ -304,11 +296,10 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
+             });
+             poke_eligibility(&observation, bound_native_agent, recognized, caps)
+         });
+-        // A wake that carries a poke never stashes: over typed input it sends the
+-        // plain marker, as any ordinary wake does, and the receipts stay unpoked for
+-        // their own PokeOnly attempt.
++        // Attention never stashes a draft. Nonempty input was refused above;
++        // an ineligible coalesced poke leaves receipts unpoked.
+         let using_poke = match (&decision, poke_only) {
+-            (Some(PokeDecision::Submit), _) | (Some(PokeDecision::Stash), true) => true,
++            (Some(PokeDecision::Submit), _) => true,
+             (_, true) => return outcome(WakeOutcome::Unsafe),
+             _ => false,
+         };
+@@ -337,16 +328,6 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
+             (Some(request), true) => request.plan.text.as_str(),
+             _ => MARKER,
+         };
+-        let mut saved = None;
+-        if poke_only && decision == Some(PokeDecision::Stash) {
+-            match self.host.stash_composer(&target, &prompt_context)? {
+-                ComposerStash::Saved(typed) => saved = Some(typed),
+-                // Nothing was stashed: skip before any prompt.
+-                ComposerStash::Unsupported | ComposerStash::Failed(_) => {
+-                    return outcome(WakeOutcome::Unsafe);
+-                }
+-            }
+-        }
+         // A poke accepted for a running turn queues into it; the host's
+         // recheck then allows `working` for this call only.
+         let during_turn = using_poke && observation.ui == HostUiState::ActiveTurn;
+@@ -356,27 +337,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
+         } else {
+             self.host.submit_prompt(&target, text, &prompt_context)
+         };
+-        let mut diagnostic = None;
+-        let restored = saved.is_some();
+-        if let Some(typed) = saved {
+-            // Put the person's typed text back whether or not the prompt was
+-            // accepted; a failed restore must not lose it silently.
+-            if let Err(error) = self.host.restore_composer(&target, &typed, &prompt_context) {
+-                let detail = format!(
+-                    "composer restore failed ({}); typed text was {typed:?}",
+-                    error.detail
+-                );
+-                eprintln!("herdr-threads: warning: {detail}");
+-                diagnostic = Some(detail);
+-            }
+-        }
+-        match submitted? {
+-            // Post-send verification (Wave 28) reads the composer and may
+-            // press the submit key once. It is skipped when the composer
+-            // legitimately holds text after the send: a prompt queued into a
+-            // running turn, or a person's typed text restored after a stash
+-            // (a submit key there would send the person's draft).
+-            PromptOutcome::Submitted if during_turn || restored => Ok(PokeAttempt {
++        let diagnostic = None;
++        let submitted = match submitted {
++            Ok(submitted) => submitted,
++            Err(err) => return refuse_error(err),
++        };
++        match submitted {
++            // A turn-time poke is queued; otherwise verification only reads.
++            PromptOutcome::Submitted if during_turn => Ok(PokeAttempt {
+                 outcome: WakeOutcome::Submitted,
+                 poked: using_poke,
+                 diagnostic,
+diff --git a/src/ports.rs b/src/ports.rs
+index cce62d6a..000549e4 100644
+--- a/src/ports.rs
++++ b/src/ports.rs
+@@ -1905,8 +1905,8 @@ impl WakeReservation {
+     /// target, boot, epoch, generation, terminal and verified server
+     /// incarnation, from a fresh current-target read with no positive
+     /// evidence of an empty shell, an active turn or blocked UI. Typed
+-    /// composer input (`HumanInput`) never refuses an ordinary wake
+-    /// (TRUST-POLICY A4), as before the composer reader existed.
++    /// composer input is refused by the dispatcher; the native adapter also
++    /// checks the composer immediately before delivery (TRUST-POLICY A4).
+     /// A verified execution is never downgraded to this path.
+     pub fn matches_cooperative_identity(&self, observation: &HostObservation) -> bool {
+         self.matches_cooperative_structure(observation)
+@@ -2169,8 +2169,7 @@ pub enum WakeOutcome {
+     /// The prompt was delivered and verified submitted.
+     Submitted,
+     /// The prompt may or may not have been delivered. Also the outcome of a
+-    /// prompt delivered to the pane but still unsent after the single
+-    /// submit-key retry (ht-p03.41): it keeps the advanced ladder step, is
++    /// prompt delivered to the pane but still observed in its composer: it keeps the advanced ladder step, is
+     /// never re-sent in a loop, and stores this same last_outcome string.
+     OutcomeUnknown,
+     Unsafe,
+@@ -2880,7 +2879,8 @@ pub trait HostPort: Send + Sync {
+         context: &HostCallContext,
+     ) -> Result<AgentComposerState, ApiError>;
+     /// Send exactly one submit key (Enter) to the wake target's composer. Used
+-    /// once per wake drive when the prompt was left unsent (Wave 28).
++    /// retained for explicit adapter clients; attention verification never
++    /// invokes it because new user input may have entered the composer.
+     fn send_submit_key(
+         &self,
+         target: &SafeWakeTarget,
+diff --git a/src/scheduler/mod.rs b/src/scheduler/mod.rs
+index b4f50c9e..cb4599c3 100644
+--- a/src/scheduler/mod.rs
++++ b/src/scheduler/mod.rs
+@@ -163,7 +163,7 @@ pub struct WakeDriveOutcome {
+ }
+ 
+ /// Whether a sent wake prompt was seen submitted (the dispatcher performs the
+-/// check and the single submit-key retry).
++/// read-only check; it never presses Enter).
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+ pub enum SubmissionVerification {
+     #[default]
+@@ -184,8 +184,8 @@ impl SubmissionVerification {
+     }
+ }
+ 
+-/// The decision as code (ht-p03.41): a prompt still unsent after the single
+-/// submit-key retry was delivered to the pane, so it maps to OutcomeUnknown
++/// A prompt observed still held in the composer was delivered to the pane,
++/// so it maps to OutcomeUnknown without pressing Enter
+ /// (keeps the advanced ladder step, never re-sent in a loop); the existing
+ /// OutcomeUnknown last_outcome string is stored. 'unsubmitted' lives only in
+ /// WakeDriveOutcome::verification and the daemon.log line.
+diff --git a/tests/integration/latency.rs b/tests/integration/latency.rs
+index 3c322a6a..8dfca538 100644
+--- a/tests/integration/latency.rs
++++ b/tests/integration/latency.rs
+@@ -1,7 +1,7 @@
+ //! ht-4is.6.7: read-only requests stay fast under a multi-agent party with a
+ //! slow Herdr host. Five stand-in seats check in, send required-ACK messages
+ //! and ACK them concurrently through the installed executable while every
+-//! host call (`ping`, `session.snapshot`, `pane.get`, `agent.get`,
++//! host call (`ping`, `session.snapshot`, `pane.get`, `agent.get`, `agent.read`,
+ //! `agent.prompt`) is slow, up to 1.5 s, and due wakes are prompted. History
+ //! and Health latency is measured end to end (including process start); a
+ //! follower running far longer than one request budget must keep printing
+@@ -135,6 +135,18 @@ impl SlowHost {
+                                 json!({"id":id,"error":{"code":"agent_not_found","message":"no agent"}})
+                             }
+                         },
++                        "agent.read" => match find("target") {
++                            Some(pane) => {
++                                let text = include_str!(
++                                    "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
++                                );
++                                json!({"id":id,"result":{"type":"pane_read","read":{
++                                    "pane_id":pane["pane_id"],"source":"detection","text":text}}})
++                            }
++                            None => {
++                                json!({"id":id,"error":{"code":"agent_not_found","message":"no agent"}})
++                            }
++                        },
+                         _ => {
+                             json!({"id":id,"error":{"code":"agent_not_found","message":"no agent in pane"}})
+                         }
+diff --git a/tests/integration/sweep.rs b/tests/integration/sweep.rs
+index 022e26aa..736188c0 100644
+--- a/tests/integration/sweep.rs
++++ b/tests/integration/sweep.rs
+@@ -86,6 +86,7 @@ pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
+                 Some(pane) if pane["agent"].is_string() => {
+                     let mut agent = json!({"agent":pane["agent"],
+                             "agent_status":pane["agent_status"],
++                            "focused":pane["focused"],
+                             "pane_id":pane["pane_id"],
+                             "terminal_id":pane["terminal_id"]});
+                     if let Some(session) = pane.get("agent_session") {
+@@ -98,6 +99,25 @@ pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
+                 }
+             }
+         }
++        "agent.read" => match panes
++            .iter()
++            .find(|pane| pane["pane_id"] == request["params"]["target"])
++        {
++            Some(pane) if pane["agent"].is_string() => {
++                let text = match pane["agent"].as_str() {
++                    Some("claude") => include_str!(
++                        "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
++                    ),
++                    Some("codex") => include_str!(
++                        "../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt"
++                    ),
++                    _ => "unrecognized composer",
++                };
++                json!({"id":id,"result":{"type":"pane_read","read":{
++                    "pane_id":pane["pane_id"],"source":"detection","text":text}}})
++            }
++            _ => json!({"id":id,"error":{"code":"agent_not_found","message":"no agent in pane"}}),
++        },
+         _ => {
+             json!({"id":id,"error":{"code":"agent_not_found","message":"no agent in pane"}})
+         }
+diff --git a/tests/scheduler/dispatch.rs b/tests/scheduler/dispatch.rs
+index 03e91063..ab3a406f 100644
+--- a/tests/scheduler/dispatch.rs
++++ b/tests/scheduler/dispatch.rs
+@@ -3469,6 +3469,9 @@ impl FakeHerdr {
+                         continue;
+                     }
+                     "agent.get" => serde_json::json!({"type":"agent_info","agent":agent}),
++                    "agent.read" => serde_json::json!({"type":"pane_read","read":{
++                        "pane_id":"w4:p1","source":request["params"]["source"],
++                        "text":"────────────────────\n❯\n────────────────────\n"}}),
+                     "agent.prompt" => {
+                         shared_prompts.lock().unwrap().push(
+                             request["params"]["text"]
+@@ -3601,7 +3604,7 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
+             assert_eq!(prompts, [crate::notification::policy::MARKER], "{status}");
+             assert_eq!(
+                 methods,
+-                ["pane.get", "agent.get", "agent.prompt"],
++                ["pane.get", "agent.get", "agent.read", "agent.prompt"],
+                 "{status}"
+             );
+             assert_eq!(outcome.as_deref(), Some("submitted"), "{status}");
+@@ -3610,9 +3613,9 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
+             assert_eq!(methods, ["pane.get", "agent.get"], "{status}");
+             assert_eq!(outcome.as_deref(), Some("unsafe"), "{status}");
+         }
+-        assert!(
+-            covered,
+-            "{status}: the one attempt covers the warning (coalesced)"
++        assert_eq!(
++            covered, expect_prompt,
++            "refused attention remains pending: {status}"
+         );
+         // Prompt success is transport only: the receipt stays pending.
+         let receipt: String = db
+@@ -3790,20 +3793,20 @@ fn drive_scripted_wake(
+ }
+ 
+ #[test]
+-fn unsent_prompt_gets_exactly_one_submit_key_retry_then_verified() {
++fn nudge_safety_held_prompt_is_reported_without_extra_enter() {
+     use crate::ports::AgentComposerState::{HoldingPrompt, Submitted};
+     let (verification, keys, prompts, _, _) = drive_scripted_wake(vec![HoldingPrompt, Submitted]);
+     assert_eq!(
+         verification,
+         vec![(
+             SeatId::new("seat"),
+-            crate::scheduler::SubmissionVerification::Retried
++            crate::scheduler::SubmissionVerification::Unsubmitted
+         )]
+     );
+-    assert_eq!((keys, prompts), (1, 1));
+     assert_eq!(
+-        crate::scheduler::outcome_for_verification(verification[0].1),
+-        WakeOutcome::Submitted
++        (keys, prompts),
++        (0, 1),
++        "verification must not submit a new user draft"
+     );
+ }
+ 
+@@ -3822,7 +3825,7 @@ fn already_submitted_prompt_gets_no_retry() {
+ }
+ 
+ #[test]
+-fn still_unsent_after_retry_is_reported_not_looped() {
++fn held_prompt_is_reported_not_retried() {
+     use crate::ports::AgentComposerState::HoldingPrompt;
+     let (verification, keys, prompts, reserves, second_attempts) =
+         drive_scripted_wake(vec![HoldingPrompt, HoldingPrompt]);
+@@ -3834,7 +3837,7 @@ fn still_unsent_after_retry_is_reported_not_looped() {
+         )]
+     );
+     // One retry only; the second drive pass neither reserves nor re-sends.
+-    assert_eq!((keys, prompts, reserves, second_attempts), (1, 1, 1, 0));
++    assert_eq!((keys, prompts, reserves, second_attempts), (0, 1, 1, 0));
+     assert_eq!(
+         crate::scheduler::outcome_for_verification(verification[0].1),
+         WakeOutcome::OutcomeUnknown
+@@ -3842,7 +3845,7 @@ fn still_unsent_after_retry_is_reported_not_looped() {
+ }
+ 
+ #[test]
+-fn unsent_after_retry_completes_the_attempt_as_outcome_unknown() {
++fn held_prompt_completes_the_attempt_as_outcome_unknown() {
+     let clock = FakeClock(AtomicU64::new(0));
+     let host = FakeNativeHost {
+         observation: fresh_observation(),
+@@ -3873,7 +3876,7 @@ fn unsent_after_retry_completes_the_attempt_as_outcome_unknown() {
+         dispatch.attempt_wake(test_reservation(), &context).unwrap(),
+         WakeOutcome::OutcomeUnknown
+     );
+-    assert_eq!(host.submit_keys.load(Ordering::SeqCst), 1);
++    assert_eq!(host.submit_keys.load(Ordering::SeqCst), 0);
+     assert_eq!(
+         dispatch.take_verification(&SeatId::new("seat")),
+         Some(crate::scheduler::SubmissionVerification::Unsubmitted)
+@@ -4256,7 +4259,7 @@ fn refused_warning_wake_is_retried_not_offered() {
+ }
+ 
+ #[test]
+-fn submit_prompt_error_keeps_todays_mapping() {
++fn pre_submit_prompt_error_restores_ladder_and_backs_off() {
+     // Kills: routing a submit_prompt error through the refusal path (the send
+     // may have happened, so the ladder must stay advanced and the refusal
+     // backoff untouched).
+@@ -4347,16 +4350,16 @@ fn submit_prompt_error_keeps_todays_mapping() {
+     let row = refusal_row(&context);
+     assert_eq!(
+         (row.0, row.1, row.2, row.4),
+-        (None, 2, 120_000, Some("unavailable".into())),
+-        "the existing Unavailable mapping, ladder advanced"
++        (None, 1, 60_000, Some("unavailable".into())),
++        "pre-submit failure preserves prior ladder"
+     );
+     assert_eq!(
+         failing.completions.lock().unwrap()[0].1,
+-        WakeOutcome::Unavailable
++        WakeOutcome::Refused(RefusalCause::Unavailable)
+     );
+     {
+         let state = scheduler.wakes.state.lock().unwrap();
+-        assert_eq!(refusal_attempts(&state), 0);
++        assert_eq!(refusal_attempts(&state), 1);
+     }
+     drop(scheduler);
+     drop(store);
+@@ -5693,7 +5696,7 @@ fn failed_submission_leaves_soft_poked_at_unset() {
+ }
+ 
+ #[test]
+-fn human_input_with_stash_capability_uses_inert_hook_and_skips() {
++fn human_input_with_stash_capability_skips_without_hook() {
+     let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+     let store = PokeStore::new(clock, one_seat_due());
+     // The default HostPort hook reports Unsupported: the poke is skipped.
+@@ -5704,7 +5707,7 @@ fn human_input_with_stash_capability_uses_inert_hook_and_skips() {
+     with_scheduler(&store, &host, &STASH, |scheduler| {
+         scheduler.drive_pokes(&poke_budget()).unwrap();
+     });
+-    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 1);
++    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
+     assert!(host.inner.prompts().is_empty());
+     assert!(store.marked.lock().unwrap().is_empty());
+ 
+@@ -5748,7 +5751,7 @@ fn poke_plan_for_tests() -> PokePlan {
+ }
+ 
+ #[test]
+-fn dispatcher_matrix_decides_submit_stash_or_skip() {
++fn nudge_safety_pokes_never_stash_user_input() {
+     let clock = FakeClock(AtomicU64::new(0));
+     let check = FakeReservationCheck {
+         current: true,
+@@ -5789,7 +5792,7 @@ fn dispatcher_matrix_decides_submit_stash_or_skip() {
+                         (_, true) => (false, false),
+                         (HostUiState::Idle, _) => (true, false),
+                         (HostUiState::ActiveTurn, _) => (supported(during_turn), false),
+-                        (HostUiState::HumanInput, _) => (supported(stash), supported(stash)),
++                        (HostUiState::HumanInput, _) => (false, false),
+                         _ => (false, false),
+                     };
+                     let label =
+@@ -5828,7 +5831,7 @@ fn dispatcher_matrix_decides_submit_stash_or_skip() {
+ }
+ 
+ #[test]
+-fn stash_restore_failure_is_kept_as_a_diagnostic_with_the_typed_text() {
++fn nonempty_composer_skips_before_stash_or_restore() {
+     let clock = FakeClock(AtomicU64::new(0));
+     let check = FakeReservationCheck {
+         current: true,
+@@ -5849,11 +5852,12 @@ fn stash_restore_failure_is_kept_as_a_diagnostic_with_the_typed_text() {
+             &dispatch_context(),
+         )
+         .unwrap();
+-    // The prompt was accepted; the failed restore does not undo it.
+-    assert_eq!(attempt.outcome, WakeOutcome::Submitted);
+-    assert!(attempt.poked);
+-    let diagnostic = attempt.diagnostic.expect("restore failure kept");
+-    assert!(diagnostic.contains("half-typed words"), "{diagnostic}");
++    assert_eq!(attempt.outcome, WakeOutcome::Unsafe);
++    assert!(!attempt.poked);
++    assert!(attempt.diagnostic.is_none());
++    assert!(host.inner.prompts().is_empty());
++    assert!(host.restored.lock().unwrap().is_empty());
++    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
+     // A failed stash skips before any prompt.
+     let host = StashingHost::new(
+         PokeHost::new(HostUiState::HumanInput, false),
+@@ -6470,7 +6474,7 @@ fn cooperative_reservation() -> WakeReservation {
+ /// Kills: composer content refusing an ordinary wake, and a skipped poke
+ /// that is not confined to the poke.
+ #[test]
+-fn typed_draft_skips_the_poke_but_not_the_ordinary_wake() {
++fn typed_draft_defers_poke_and_ordinary_wake() {
+     let clock = FakeClock(AtomicU64::new(0));
+     let check = FakeReservationCheck {
+         current: true,
+@@ -6487,12 +6491,9 @@ fn typed_draft_skips_the_poke_but_not_the_ordinary_wake() {
+         dispatcher
+             .attempt_wake(cooperative_reservation(), &dispatch_context())
+             .unwrap(),
+-        WakeOutcome::Submitted
+-    );
+-    assert_eq!(
+-        *host.prompts.lock().unwrap(),
+-        [crate::notification::policy::MARKER]
++        WakeOutcome::Refused(RefusalCause::Unsafe)
+     );
++    assert!(host.prompts.lock().unwrap().is_empty());
+     assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
+ 
+     // The poke over the same draft: its stash is refused, nothing is sent.
+@@ -6510,7 +6511,7 @@ fn typed_draft_skips_the_poke_but_not_the_ordinary_wake() {
+     assert_eq!(attempt.outcome, WakeOutcome::Unsafe);
+     assert!(!attempt.poked);
+     assert!(host.prompts.lock().unwrap().is_empty());
+-    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 1);
++    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
+ 
+     // Without a declared stash the hook is not consulted: still skipped.
+     let host = stash_failed();
+@@ -6532,7 +6533,7 @@ fn typed_draft_skips_the_poke_but_not_the_ordinary_wake() {
+ /// Kills: a wake that carries a poke typing the poke text into a draft by way
+ /// of a stash.
+ #[test]
+-fn with_wake_over_typed_input_sends_the_plain_marker_without_stash() {
++fn with_wake_over_typed_input_refuses_without_stash() {
+     let clock = FakeClock(AtomicU64::new(0));
+     let check = FakeReservationCheck {
+         current: true,
+@@ -6549,12 +6550,9 @@ fn with_wake_over_typed_input_sends_the_plain_marker_without_stash() {
+             &dispatch_context(),
+         )
+         .unwrap();
+-    assert_eq!(attempt.outcome, WakeOutcome::Submitted);
++    assert_eq!(attempt.outcome, WakeOutcome::Refused(RefusalCause::Unsafe));
+     assert!(!attempt.poked);
+-    assert_eq!(
+-        *host.prompts.lock().unwrap(),
+-        [crate::notification::policy::MARKER]
+-    );
++    assert!(host.prompts.lock().unwrap().is_empty());
+     assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
+     assert!(host.restored.lock().unwrap().is_empty());
+ }
+diff --git a/tests/scheduler/wake_outcome_seam.rs b/tests/scheduler/wake_outcome_seam.rs
+index 38c9d08c..2c3ac136 100644
+--- a/tests/scheduler/wake_outcome_seam.rs
++++ b/tests/scheduler/wake_outcome_seam.rs
+@@ -296,7 +296,7 @@ fn sent_and_verified_advances_one_step() {
+ }
+ 
+ #[test]
+-fn unsubmitted_after_retry_reports_unsubmitted_and_advances_exactly_one_step() {
++fn held_prompt_reports_unsubmitted_and_advances_exactly_one_step() {
+     let seam = Seam::new(vec![
+         AgentComposerState::HoldingPrompt,
+         AgentComposerState::HoldingPrompt,
+@@ -318,8 +318,8 @@ fn unsubmitted_after_retry_reports_unsubmitted_and_advances_exactly_one_step() {
+         assert_eq!(seam.host.prompts.load(Ordering::SeqCst), 1);
+         assert_eq!(
+             seam.host.submit_keys.load(Ordering::SeqCst),
+-            1,
+-            "single submit-key retry"
++            0,
++            "verification never submits a user draft"
+         );
+ 
+         // Within the ladder delay nothing is sent again.

@@ -50,6 +50,46 @@ pub enum IntentScope {
     },
 }
 
+/// Actor of the validated durable payload, independent of today's binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginalActor {
+    Agent,
+    HumanOrOperator,
+}
+
+pub fn classify_original_actor(
+    scope: &IntentScope,
+    semantic: &SemanticMutation,
+) -> io::Result<OriginalActor> {
+    semantic.validate()?;
+    if !scope_matches(scope, semantic) {
+        return Err(invalid("intent authority scope mismatch"));
+    }
+    if let Some(claim) = semantic.frozen_claim() {
+        return Ok(
+            if claim.harness == crate::protocol::authority::Harness::Human {
+                OriginalActor::HumanOrOperator
+            } else {
+                OriginalActor::Agent
+            },
+        );
+    }
+    match (scope, semantic) {
+        (IntentScope::Operator { .. }, semantic) if semantic.is_operator() => {
+            Ok(OriginalActor::HumanOrOperator)
+        }
+        (IntentScope::Native { .. }, SemanticMutation::Handoff(_)) => {
+            Err(invalid("handoff needs frozen caller"))
+        }
+        (IntentScope::Native { .. }, _)
+        | (IntentScope::Continuity { .. }, SemanticMutation::ContinuityCheckIn { .. })
+        | (IntentScope::ServiceAllocation { .. }, SemanticMutation::ResolveSeat { .. }) => {
+            Ok(OriginalActor::Agent)
+        }
+        _ => Err(invalid("unsupported original intent actor")),
+    }
+}
+
 /// Native evidence is refreshed; cooperative claims are frozen as durable payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -112,6 +152,8 @@ pub enum SemanticMutation {
         expected_revision: u64,
     },
     SendMessage {
+        #[serde(default, skip_serializing_if = "DeliveryMode::is_ordinary")]
+        delivery_mode: DeliveryMode,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user_intent: Option<crate::protocol::summary::UserIntent>,
         thread: ThreadId,
@@ -125,6 +167,9 @@ pub enum SemanticMutation {
         messages: Vec<MessageId>,
     },
     AckDisplayed {
+        messages: Vec<MessageId>,
+    },
+    CompleteInboxDelivery {
         messages: Vec<MessageId>,
     },
     Leave {
@@ -186,6 +231,16 @@ impl SemanticMutation {
         };
         frozen.validate()?;
         Ok(frozen)
+    }
+    pub fn is_lazy_send(&self) -> bool {
+        match self {
+            Self::Frozen { mutation, .. } => mutation.is_lazy_send(),
+            Self::SendMessage {
+                delivery_mode: DeliveryMode::Lazy,
+                ..
+            } => true,
+            _ => false,
+        }
     }
     pub fn frozen_claim(&self) -> Option<&CallerClaim> {
         match self {
@@ -298,11 +353,21 @@ impl SemanticMutation {
                 expected_revision: 0,
                 ..
             } => Err(invalid("required acceptance revision must be positive")),
-            Self::Ack { messages } | Self::AckDisplayed { messages }
+            Self::Ack { messages }
+            | Self::AckDisplayed { messages }
+            | Self::CompleteInboxDelivery { messages }
                 if messages.is_empty() || messages.len() > MAX_BATCH_ITEMS =>
             {
                 Err(invalid("invalid ack batch size"))
             }
+            Self::SendMessage {
+                delivery_mode: DeliveryMode::Lazy,
+                invited_recipients,
+                deadline_millis,
+                ..
+            } if !invited_recipients.is_empty() || deadline_millis.is_some() => Err(invalid(
+                "lazy send cannot have explicit recipients or a deadline",
+            )),
             Self::SendMessage {
                 invited_recipients, ..
             } if invited_recipients.len() > MAX_BATCH_ITEMS => {
@@ -337,6 +402,7 @@ impl SemanticMutation {
             Self::AcceptRequired { .. } => IntentKind::Accept,
             Self::SendMessage { .. } => IntentKind::SendMessage,
             Self::Ack { .. } | Self::AckDisplayed { .. } => IntentKind::Ack,
+            Self::CompleteInboxDelivery { .. } => IntentKind::CompleteInboxDelivery,
             Self::Leave { .. } => IntentKind::Leave,
             Self::SetTopic { .. } => IntentKind::SetTopic,
             Self::SetThreadName { .. } => IntentKind::SetThreadName,
@@ -477,6 +543,7 @@ impl SemanticMutation {
                 claim: native()?,
             }),
             Self::SendMessage {
+                delivery_mode,
                 thread,
                 body,
                 invited_recipients,
@@ -484,6 +551,7 @@ impl SemanticMutation {
                 relays_user,
                 user_intent,
             } => Command::SendMessage(SendMessage {
+                delivery_mode: *delivery_mode,
                 thread: thread.clone(),
                 body: body.clone(),
                 invited_recipients: invited_recipients.clone(),
@@ -503,6 +571,13 @@ impl SemanticMutation {
                 operation,
                 claim: native()?,
             }),
+            Self::CompleteInboxDelivery { messages } => {
+                Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                    messages: messages.clone(),
+                    operation,
+                    claim: native()?,
+                })
+            }
             Self::Leave { thread } => Command::Leave(Leave {
                 thread: thread.clone(),
                 operation,
@@ -611,7 +686,110 @@ struct DisplayedProgress {
     body_len: u64,
     flushed_through: u64,
 }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LazyDisplayedProgress {
+    claim: CallerClaim,
+    message: MessageId,
+    body_len: u64,
+    flushed_through: u64,
+}
 impl Journal {
+    fn lazy_display_path(&self, claim: &CallerClaim, message: &MessageId) -> io::Result<PathBuf> {
+        let mut digest = Sha256::new();
+        digest.update(serde_json::to_vec(&(claim, message))?);
+        Ok(self
+            .root
+            .join(format!("display-lazy-{:x}.progress", digest.finalize())))
+    }
+    /// Cooperative display hint only; no receipt or canonical delivery mutation.
+    /// Full caller identity isolates progress across every occupant transition.
+    pub fn record_lazy_displayed_chunk(
+        &self,
+        claim: &CallerClaim,
+        message: &MessageId,
+        start: u64,
+        end: u64,
+        body_len: u64,
+    ) -> io::Result<bool> {
+        if start > end || end > body_len || (start == end && body_len != 0) {
+            return Err(invalid("invalid lazy inbox body span"));
+        }
+        let _lock = self.lock()?;
+        let path = self.lazy_display_path(claim, message)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        let prior: Option<LazyDisplayedProgress> = match options.open(&path) {
+            Ok(file) => {
+                let meta = file.metadata()?;
+                if !meta.is_file() || meta.len() > 16384 {
+                    return Err(invalid("unsafe lazy display progress"));
+                }
+                #[cfg(unix)]
+                if meta.permissions().mode() & 0o077 != 0 {
+                    return Err(invalid("lazy display progress is not private"));
+                }
+                let mut bytes = Vec::new();
+                file.take(16385).read_to_end(&mut bytes)?;
+                Some(
+                    serde_json::from_slice(&bytes)
+                        .map_err(|_| invalid("lazy display progress corrupt"))?,
+                )
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        if prior.as_ref().is_some_and(|p| {
+            p.claim != *claim
+                || p.message != *message
+                || p.body_len != body_len
+                || p.flushed_through > body_len
+        }) {
+            return Err(invalid("lazy display progress identity changed"));
+        }
+        let flushed = match &prior {
+            _ if start == 0 => prior.as_ref().map_or(end, |p| p.flushed_through.max(end)),
+            Some(p) if p.flushed_through == start => end,
+            Some(p) if p.flushed_through >= end => p.flushed_through,
+            _ => return Ok(false),
+        };
+        let progress = LazyDisplayedProgress {
+            claim: claim.clone(),
+            message: message.clone(),
+            body_len,
+            flushed_through: flushed,
+        };
+        let temp = self
+            .root
+            .join(format!(".display-lazy-{}.tmp", Uuid::new_v4()));
+        let result = (|| {
+            let mut file = private_new(&temp)?;
+            serde_json::to_writer(&mut file, &progress)?;
+            file.sync_all()?;
+            fs::rename(&temp, &path)?;
+            File::open(&self.root)?.sync_all()
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        result?;
+        Ok(flushed == body_len)
+    }
+    /// Clear only the frozen occupant's successfully settled lazy body proof.
+    pub fn clear_lazy_displayed_chunk(
+        &self,
+        claim: &CallerClaim,
+        message: &MessageId,
+    ) -> io::Result<()> {
+        let _lock = self.lock()?;
+        match fs::remove_file(self.lazy_display_path(claim, message)?) {
+            Ok(()) => File::open(&self.root)?.sync_all(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
     pub(crate) fn root(&self) -> &Path {
         &self.root
     }
@@ -669,6 +847,27 @@ impl Journal {
         }
         Ok(journal)
     }
+    /// Validate an existing journal without allocating, locking or publishing metadata.
+    pub fn read_only(root: impl AsRef<Path>) -> io::Result<Self> {
+        let root = root.as_ref();
+        let metadata = root.symlink_metadata()?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(invalid("unsafe intent directory"));
+        }
+        #[cfg(unix)]
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(invalid("intent directory is not private"));
+        }
+        let journal = Self {
+            root: root.canonicalize()?,
+        };
+        if fs::read_to_string(journal.root.join("journal-format"))? != "1\n" {
+            return Err(invalid("intent journal format corrupt"));
+        }
+        journal.counter()?;
+        Ok(journal)
+    }
+
     fn lock(&self) -> io::Result<File> {
         let file = private_open(&self.root.join("allocator.lock"))?;
         let start = std::time::Instant::now();
@@ -1039,7 +1238,19 @@ impl Journal {
         file.write_all(b"\n")?;
         file.sync_all()?;
         fs::rename(path, self.path(&reference))?;
-        File::open(&self.root)?.sync_all()?;
+        // The entry is already visible. A failed durability barrier must not
+        // hide the operation's exact recovery reference from the caller.
+        File::open(&self.root)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "published intent durability uncertain: {error}; recovery_ref={}",
+                        reference.recovery_ref()
+                    ),
+                )
+            })?;
         Ok(reference)
     }
     pub fn load(&self, reference: &IntentRef) -> io::Result<PendingIntent> {
@@ -1315,6 +1526,7 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
                     request,
                     SemanticMutation::ResolveSeat { .. }
                         | SemanticMutation::ContinuityCheckIn { .. }
+                        | SemanticMutation::CompleteInboxDelivery { .. }
                 )
         }
         (IntentScope::Operator { .. }, request) => request.is_operator(),

@@ -1,7 +1,7 @@
-//! `herdr-threads me init`: a person's own seat identity for their pane.
+//! `herdr-threads human me init`: a person's own seat identity for their pane.
 //!
 //! A person typing in a Herdr shell pane is a first-class occupant, not an
-//! agent and not the administrative `--operator` repair actor. `me init`
+//! agent and not the administrative `--operator` repair actor. `human me init`
 //! resolves the invoking pane (`HERDR_PANE_ID`) to its seat by ordinary
 //! resolution and runs the ordinary cooperative lifecycle CheckIn with
 //! harness `human`, role top-level and a tagged plugin-context session. The
@@ -35,13 +35,13 @@ use crate::{
 };
 use std::{io::Write, sync::Arc};
 
-pub const ME_INIT_HELP: &str = "Run it in your own shell pane, then use thread create, invite, send, \
+pub const ME_INIT_HELP: &str = "Run it in your own shell pane, then use `ht human` for thread create, invite, send, \
 read, ack and accept there with no --cooperative-* flags. Your actions are recorded as \
 operator_human, never as an agent. Messages remain readable, but a human seat owes no ACK and \
-gets no overdue-ACK warning, even when a sender uses --require-ack. Re-run `me init` after a daemon restart to \
+gets no overdue-ACK warning, even when a sender uses --require-ack. Re-run `human me init` after a daemon restart to \
 mark yourself available again. It is refused where agent markers (CLAUDECODE, CODEX_SANDBOX, \
 CODEX_SANDBOX_NETWORK_DISABLED) or a Claude or Codex agent reported by Herdr are present, and over \
-a seat bound to an agent; `me init --operator` overrides that as the local account (later \
+a seat bound to an agent; `human me init --operator` overrides that as the local account (later \
 commands in this pane then run as you).";
 
 fn budget(clock: &dyn Clock, millis: u64) -> CallBudget {
@@ -91,16 +91,16 @@ fn resolve_seat(
 
 fn agent_seat_refusal(seat: &SeatId, pane: &HostTargetId, harness: Harness) -> RunError {
     invalid_request(&format!(
-        "seat {seat} on pane {pane} belongs to a {harness:?} agent; `me init` never takes over an \
+        "seat {seat} on pane {pane} belongs to a {harness:?} agent; `human me init` never takes over an \
          agent's seat. Run it in your own shell pane, give this pane a fresh seat with \
-         `herdr-threads seat resolve --pane {pane} --new-seat --operator`, or override as the \
-         local account: `herdr-threads me init --operator`",
+         `herdr-threads human seat resolve --pane {pane} --new-seat --operator`, or override as the \
+         local account: `herdr-threads human me init --operator`",
         seat = seat.as_str(),
         pane = pane.as_str(),
     ))
 }
 
-/// The CheckIn `me init` sends: replay an interrupted human lifecycle event,
+/// The CheckIn `human me init` sends: replay an interrupted human lifecycle event,
 /// continue a current human context at the service's generation, or start a
 /// fresh lifecycle (first run, or after the service moved the seat on).
 fn check_in_spec(
@@ -173,15 +173,20 @@ pub(crate) fn run_me_init<W: Write>(
     clock: &Arc<dyn Clock>,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    if parsed.actor != super::actor_route::InvocationActor::Human {
+        return Err(invalid_request(
+            "person initialization requires `ht human me init` before routing flags",
+        ));
+    }
     if parsed.cooperative.is_some() {
         return Err(invalid_request(
-            "`me init` records the invoking pane as your own seat; --cooperative-* caller \
+            "`human me init` records the invoking pane as your own seat; --cooperative-* caller \
              selection does not apply",
         ));
     }
     let pane = caller_pane.filter(|pane| !pane.is_empty()).ok_or_else(|| {
         invalid_request(
-            "`me init` runs inside your own Herdr pane: HERDR_PANE_ID is not set in this shell",
+            "`human me init` runs inside your own Herdr pane: HERDR_PANE_ID is not set in this shell",
         )
     })?;
     let pane = parse_pane(pane)?;
@@ -246,7 +251,7 @@ pub(crate) fn run_me_init<W: Write>(
     .map_err(|error| match error {
         RunError::Api(api) if api.code == ErrorCode::Unauthorized => {
             // A deterministic refusal: the frozen event is never replayed, so
-            // a later `me init --operator` (or a re-run after the agent
+            // a later `human me init --operator` (or a re-run after the agent
             // leaves) starts a fresh lifecycle.
             if let Err(error) = discard_pending_human_event(&journal, &contexts) {
                 return error;

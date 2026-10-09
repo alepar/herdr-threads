@@ -1,0 +1,8 @@
+# Raw forensic logs and unified patch context retain their exact captured bytes.
+# Product source and policy keep the repository's normal whitespace checks.
+implementation/*.log -whitespace
+implementation/*.patch -whitespace
+active-turn/*.log -whitespace
+active-turn/*.patch -whitespace
+composition/*.log -whitespace
+composition/*.patch -whitespace

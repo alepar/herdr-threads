@@ -200,8 +200,8 @@ model open work, and summary closure never changes receipt state or installs glo
   `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
   submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound
   harness. It is decided from a fresh observation immediately before the prompt, only when the pane is not
-  focused and the agent is idle, or in an active turn or with typed input only where the harness recipe
-  declares `poke_during_turn` or `composer_stash` from captured evidence
+  focused, the composer is empty, and the agent is idle/done. Working agents are deferred even
+  where a historical recipe declares `poke_during_turn` from captured evidence
   (`docs/evidence/poke-spike/findings.md`). Existing exact-version recipe declarations remain
   historical captured qualification, not operational admission. Ordinary daemon observation resolves
   executables without probing runtime metadata; absent current-runtime qualification declares neither
@@ -222,33 +222,31 @@ model open work, and summary closure never changes receipt state or installs glo
     unknown and skipped. Claude Code draws a prompt suggestion in the composer after a turn, and the
     detection text cannot tell it from typed input; until its styling is captured, any Claude composer text
     other than a captured empty marker is not known empty and is never stashed. An unreadable composer, a failed read or any other status is
-    unknown and skipped. The same reader classifies the pane and drives the stash, so they cannot disagree.
-    Ordinary wakes are unchanged: composer content never refuses an ordinary wake or advances its retry
-    step. An ordinary wake goes out over typed input or a prompt suggestion as it did before the composer
-    reader existed (it merges with a draft; see Accepted limits); an active turn or an approval or question
-    refuses it, as Herdr's idle/done recheck always did. Only a poke is skipped when the composer cannot be
-    classified or stashed with confidence, and the skip is for that poke only.
-  - *Composer stash.* Where a recipe declares `composer_stash`, a poke into a pane with typed, unsent input
-    first reads and clears that input, then submits the poke, then retypes the saved text without submitting
-    it. A failure before the poke aborts it with nothing submitted; a failed retype is recorded as a
-    diagnostic and the saved text is kept in the daemon log for the operator, never discarded. The stash is
-    refused (the poke skipped) when the composer holds an image or pasted-text placeholder, which does not
-    survive a retype, when a composer row's display width (Unicode width, East Asian ambiguous characters counted
-    wide) lies within 12 columns of the pane width (a soft wrap cannot be told from a newline), when a row
-    holds a character whose rendered width cannot be determined (a control character, an emoji variation
-    selector or joiner), when a composer row ends in whitespace, when the pane width is unknown and the
-    harness shows no rule from which to infer it, or when the harness is Claude and the composer holds any
-    text (not known empty, above).
-    The stash clears with a bounded `ctrl+u` loop and proceeds only when a second read shows the composer
-    empty; if that never happens the poke is aborted and the typed text, which may already be partly cleared,
-    is kept in the daemon log.
-  - *During a turn.* Where a recipe declares `poke_during_turn`, the poke is submitted with `agent prompt`,
-    which queues it into the running turn at the next tool boundary (steering, not a separate user turn). The
-    adapter's recheck allows a working agent for that call only.
-  - *Post-send verification.* The wake path's one-shot post-send check (read the composer, press the
-    submit key once if the prompt is still held) is skipped for a poke queued into a running turn and for a
-    poke whose stashed draft was retyped: there the composer legitimately holds text, and a submit key
-    would send the person's draft.
+    unknown and skipped. The same reader classifies observations and final native delivery admission.
+    Ordinary native wakes also require an empty composer, checked after their final
+    identity/status recheck. A nonempty or unreadable composer refuses delivery before input is sent;
+    pending attention and receipt obligations remain intact and the prior retry ladder is restored.
+    Unfocused empty panes may wake immediately. Focused panes require a minute of observed empty
+    composer samples, measured with the daemon's monotonic clock. Qualification is process-local,
+    bound to seat/target/terminal/harness/server identity, bounded to 1024 windows, and restarts after
+    a failed final admission, a successful send, clock reversal, or a sample gap over one minute.
+    Intervening composer reads that fail or observe nonempty/unreadable input reset qualification.
+    Soft-deadline-only pokes retain their stricter unconditional focused-pane skip; the one-minute
+    focused rule applies to ordinary wakes. Status/focus checks and screen reads are an approximation,
+    not keystroke telemetry.
+  - *Drafts are deferred.* Attention never stashes, clears, retypes or submits a known draft, including
+    soft-deadline pokes even if an old recipe declares composer stash. Existing adapter stash helpers
+    are retained but the notification dispatcher never invokes them. A parked draft or unreadable
+    screen can defer attention indefinitely. Claude suggestions may also defer delivery unless
+    disabled through the existing user-approved setup option; this change never edits configuration.
+  - *Verification is read-only.* A held marker yields an unsubmitted diagnostic/uncertain delivery;
+    verification never sends an additional Enter, which could submit newly typed user text.
+  - *During a turn.* Unsolicited attention never queues into a reported active turn. The dispatcher
+    refuses ActiveTurn and both native prompt entry points require idle/done, regardless of an old
+    turn-time capability declaration. Pending obligations wait for a later eligible observation.
+    Composer emptiness never establishes idle status. These host status observations are sampled
+    screen/lifecycle inference, not independent proof of physical turn completion.
+  - *Post-send verification.* The read-only check never changes the composer or sends keys.
   - *Declarations.* Claude 2.1.287 declares both (spike evidence). No Codex recipe declares either: the
     spike tested Codex 0.160.0 (mock provider), which no recipe covers, so Codex seats are poked only when
     idle with an empty composer. Claude's `composer_stash` declaration currently never stashes, because no
@@ -365,6 +363,24 @@ can present the retained result again. Delivery is neither invitation acceptance
 agreement, adoption or task completion. Logical publication tokens stay unchanged by projection;
 an advertised read-only delivery hint lets hooks drain newly attributed and remaining notice pages.
 
+**A8. Passive lazy delivery bookkeeping.** Recorded `ordinary`/`lazy` delivery mode is immutable and
+independent of sender role, relay and human intent. A lazy audience is frozen by canonical preparation
+and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
+Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
+Unpublished rows are invisible and may be discarded in bounded cleanup; published progress is retained.
+Lazy delivery creates no receipt, deadline, ACK evidence, attention, wake, poke or automatic adoption.
+
+Only the caller's default text inbox may claim completion after complete contiguous body output has
+been written and flushed. The completion handler validates the current top-level or human canonical
+caller (A2) and exact published addressed message IDs in its deciding transaction; declared subagents
+cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
+read-only. Local display journals are cooperative hints, never authority. Completion is idempotent
+presentation bookkeeping: it records no ACK actor, receipt provenance, timeline ACK, agreement,
+instruction adoption, task completion or proof of model consumption. Partial output and changed
+bindings cannot manufacture complete display. Frozen completion retries preserve their original full
+caller claim, harness and intent scope through submission and local cleanup. These same-user cooperative
+limits are deliberate; no adversarial execution verification is added.
+
 ## Accepted limits
 
 These are decisions, not bugs. Each is safe to rely on only as stated.
@@ -414,9 +430,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   runtime metadata. Unknown metadata inherits no optional compact, composer, turn-time poke or native
   receipt capability. Historical captured declarations (Claude 2.1.287's richer behavior; every Codex
   version declares neither rich poke capability) remain evidence for their exact captures, never a grant
-  to an unidentified current runtime. A working agent or typed draft is skipped without separate safe
-  qualification; the hard-deadline warning remains the backstop. Where `composer_stash` is qualified,
-  an image or pasted-text placeholder, uncertain display width or unknown pane width still skips it.
+  to an unidentified current runtime. Working agents and typed drafts always defer native attention,
+  including with historical turn-time qualification. The hard-deadline warning remains
+  durable pending attention, subject to the same native composer admission when waking.
 - **Unavailable-runtime diagnostics are bounded advisory history.** Failures use only the existing
   harness/session/contract producer scope, never an invented version/build key or account authority.
   The first event/field stays sticky across later successful inputs. Storage keeps at most 256 rows per
@@ -435,15 +451,17 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   writes the setting only on an interactive yes or `--disable-prompt-suggestions`, never silently, and
   `unsetup` reverts what it set (ht-6jt). A project or managed setting, or the session's
   `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION`, can turn them back on; the poke then skips as above.
-- **Ordinary wakes merge with a draft.** An ordinary wake into an idle agent pane that holds a typed, unsent
-  draft submits the wake text merged with the draft (`agent prompt` merges, poke spike Q5), as before the
-  composer reader existed; only soft-deadline pokes stash and restore a draft.
+- **Native attention uses sampled composer/focus guards.** Check-to-send focus or input races are
+  accepted: a user may type or change focus after the final read. Empty samples do not establish an
+  absence of keystrokes, cursor moves, or type/delete activity between samples. Focus is Herdr's pane
+  selection, not every attached client's physical attention. Restart/outage gaps can delay focused
+  wakes; nonempty/unreadable composers can defer indefinitely. No atomic host/client buffer claim is made.
 - **Composer reads see the screen, not the buffer.** Herdr's detection read shows composer rows without
-  trailing whitespace, so whitespace typed at the end of a draft row is invisible: a stashed draft is retyped
-  without it, and a draft of only spaces reads as empty and is poked over. A draft typed to match a captured
+  trailing whitespace, so whitespace typed at the end of a draft row is invisible, and a draft of only
+  spaces can read as empty and be nudged over. A draft typed to match a captured
   Claude placeholder exactly reads as empty the same way. A Claude placeholder that was never captured reads
-  as unknown, so that pane is not poked (only the hard-deadline warning reaches it) until the placeholder is
-  captured and listed.
+  as unknown, so native attention remains deferred until the placeholder is captured and listed or
+  the composer becomes recognizably empty; hard-deadline warnings remain pending.
 - **Conservative archival liveness.** Repeated composer-aware idle observations use a 60-second cadence
   with a maximum 120-second gap and fresh evidence window. Boot changes, outages, clock discontinuities
   and missed observations restart qualification. Partial/malformed/inaccessible legacy journal coverage

@@ -603,10 +603,75 @@ impl LaneFaults {
     }
 }
 
+/// Exclusive registration for a test-only producer commit observer. Dropping
+/// it unregisters the callback and waits for an in-flight callback to finish.
+/// Drop outside the observer: the observer must never reenter the writer,
+/// register observers, or drop its own guard.
+#[cfg(any(test, feature = "test-support"))]
+pub struct LaneCommitObserverGuard {
+    registry: std::sync::Weak<Mutex<CommitObservers>>,
+    lane: Lane,
+    entry: Arc<CommitObserver>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for LaneCommitObserverGuard {
+    fn drop(&mut self) {
+        // Synchronize before unregistering: a dispatcher that already cloned
+        // the entry must see inactive before it can invoke the callback.
+        self.entry
+            .execution
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active = false;
+        if let Some(registry) = self.registry.upgrade() {
+            let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
+            if registry.entries[self.lane as usize]
+                .as_ref()
+                .is_some_and(|entry| Arc::ptr_eq(entry, &self.entry))
+            {
+                registry.entries[self.lane as usize] = None;
+            }
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+struct CommitObservers {
+    entries: [Option<Arc<CommitObserver>>; Lane::COUNT],
+}
+
+#[cfg(any(test, feature = "test-support"))]
+struct CommitObserver {
+    execution: Mutex<CommitObserverExecution>,
+    /// Legacy watchers own only their returned slot. Once captured or dropped,
+    /// that slot must not prevent a subsequent registration.
+    one_shot: Option<std::sync::Weak<Mutex<Option<Instant>>>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+struct CommitObserverExecution {
+    active: bool,
+    seen: u64,
+    callback: Box<dyn Fn(Instant) + Send + Sync>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl CommitObserver {
+    fn legacy_finished(&self) -> bool {
+        self.one_shot.as_ref().is_some_and(|slot| {
+            slot.upgrade()
+                .is_none_or(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).is_some())
+        })
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct ProbeState {
     store: Option<Arc<SqliteStore>>,
+    commit_observers: Arc<Mutex<CommitObservers>>,
     pacers: Vec<(Lane, Arc<Pacer>)>,
     kicks: Arc<Mutex<Vec<KickRecord>>>,
     /// The daemon's commit-kick registry and its lane statuses (in
@@ -630,6 +695,20 @@ impl LaneProbe {
     }
     fn attach_store(&self, store: &Arc<SqliteStore>) {
         let mut state = self.state();
+        assert!(
+            state
+                .commit_observers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entries
+                .iter()
+                .all(|entry| entry.as_ref().is_none_or(|entry| entry.legacy_finished())),
+            "cannot reattach a store while commit observers are active"
+        );
+        // Each store gets its own registry. An old store's weak dispatcher
+        // can never reach registrations made after this attachment.
+        let observers = Arc::new(Mutex::new(CommitObservers::default()));
+        state.commit_observers = Arc::clone(&observers);
         let log = Arc::clone(&state.kicks);
         store.set_kick_sink(Box::new(move |lanes, origin| {
             log.lock()
@@ -638,6 +717,43 @@ impl LaneProbe {
         }));
         let faults = Arc::clone(&state.faults);
         store.set_lane_fault(Some(Arc::new(move |origin| faults.fire(origin?))));
+        let weak_observers = Arc::downgrade(&observers);
+        let weak_store = Arc::downgrade(store);
+        // Install one dispatcher for this probe/store. Registrations never
+        // replace the store's pause hook or another origin's observer.
+        store.set_kick_pause(Box::new(move || {
+            let at = Instant::now();
+            let Some(lane) = crate::service::kicks::current_origin() else {
+                return;
+            };
+            let (Some(store), Some(observers)) = (weak_store.upgrade(), weak_observers.upgrade())
+            else {
+                return;
+            };
+            let count = store.commit_counts().get(lane.name()).copied().unwrap_or(0);
+            let entry =
+                observers.lock().unwrap_or_else(|e| e.into_inner()).entries[lane as usize].clone();
+            let Some(entry) = entry else { return };
+            {
+                let mut execution = entry.execution.lock().unwrap_or_else(|e| e.into_inner());
+                if !execution.active || count <= execution.seen {
+                    return;
+                }
+                execution.seen = count;
+                (execution.callback)(at);
+                if entry.one_shot.is_none() {
+                    return;
+                }
+                execution.active = false;
+            }
+            let mut observers = observers.lock().unwrap_or_else(|e| e.into_inner());
+            if observers.entries[lane as usize]
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &entry))
+            {
+                observers.entries[lane as usize] = None;
+            }
+        }));
         state.store = Some(Arc::clone(store));
     }
     fn attach_registry(&self, kicks: &Arc<CommitKicks>, statuses: Vec<Arc<WorkerStatus>>) {
@@ -680,27 +796,79 @@ impl LaneProbe {
             .map(|store| store.commit_counts())
             .unwrap_or_default()
     }
+    /// Observe changed commits from one lane on its producer after writer
+    /// release, before the kick log and host handling. `at` precedes the
+    /// callback's bounded read-only work; it is not an exact SQLite timestamp.
+    /// The daemon has one producer per lane. No-op and other-origin turns are
+    /// ignored. An occupied lane returns AlreadyExists without replacement.
+    /// The callback must not reenter the writer/register/drop its own guard.
+    pub fn observe_lane_commits(
+        &self,
+        lane: Lane,
+        callback: Box<dyn Fn(Instant) + Send + Sync>,
+    ) -> io::Result<LaneCommitObserverGuard> {
+        let (registry, entry) = self.register_commit_observer(lane, callback, None)?;
+        Ok(LaneCommitObserverGuard {
+            registry: Arc::downgrade(&registry),
+            lane,
+            entry,
+        })
+    }
+
+    fn register_commit_observer(
+        &self,
+        lane: Lane,
+        callback: Box<dyn Fn(Instant) + Send + Sync>,
+        one_shot: Option<std::sync::Weak<Mutex<Option<Instant>>>>,
+    ) -> io::Result<(Arc<Mutex<CommitObservers>>, Arc<CommitObserver>)> {
+        let state = self.state();
+        let store = state.store.as_ref().expect("attached store");
+        let registry = Arc::clone(&state.commit_observers);
+        let baseline = store.commit_counts().get(lane.name()).copied().unwrap_or(0);
+        let mut observers = registry.lock().unwrap_or_else(|e| e.into_inner());
+        if observers.entries[lane as usize]
+            .as_ref()
+            .is_some_and(|entry| !entry.legacy_finished())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "lane commit observer already registered",
+            ));
+        }
+        let entry = Arc::new(CommitObserver {
+            execution: Mutex::new(CommitObserverExecution {
+                active: true,
+                seen: baseline,
+                callback,
+            }),
+            one_shot,
+        });
+        observers.entries[lane as usize] = Some(Arc::clone(&entry));
+        drop(observers);
+        drop(state);
+        Ok((registry, entry))
+    }
+
     /// Observe the next row-changing commit from `lane` on its writer thread,
     /// after guard release. Observer scheduling must not alter this instant.
-    /// Replaces the test-only writer pause callback; never reenters the writer.
+    /// Shares exclusive per-origin ownership with observe_lane_commits; an
+    /// active conflict panics without replacing the existing observer. A
+    /// captured or dropped result slot releases this one-shot registration.
     pub fn next_commit_instant(&self, lane: Lane) -> Arc<Mutex<Option<Instant>>> {
-        let store = self.state().store.clone().expect("attached store");
-        let baseline = store.commit_counts().get(lane.name()).copied().unwrap_or(0);
-        let weak_store = Arc::downgrade(&store);
         let instant = Arc::new(Mutex::new(None));
-        let observed = Arc::clone(&instant);
-        store.set_kick_pause(Box::new(move || {
-            let at = Instant::now();
-            if crate::service::kicks::current_origin() == Some(lane)
-                && let Some(store) = weak_store.upgrade()
-                && store.commit_counts().get(lane.name()).copied().unwrap_or(0) > baseline
-            {
-                observed
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .get_or_insert(at);
-            }
-        }));
+        let observed = Arc::downgrade(&instant);
+        self.register_commit_observer(
+            lane,
+            Box::new(move |at| {
+                if let Some(slot) = observed.upgrade() {
+                    slot.lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .get_or_insert(at);
+                }
+            }),
+            Some(Arc::downgrade(&instant)),
+        )
+        .expect("exclusive lane commit observer");
         instant
     }
     /// Every flushed kick so far, oldest first.
@@ -1483,3 +1651,7 @@ mod poke_capability_source_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/lane_commit_observer.rs"]
+mod lane_commit_observer_tests;

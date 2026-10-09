@@ -14,6 +14,8 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCli {
+    pub actor: super::actor_route::InvocationActor,
+    pub permissions: PermissionCliInputs,
     pub output: OutputSpec,
     /// Terminal presentation of text output; never sent to the daemon.
     pub presentation: crate::cli::output::Presentation,
@@ -27,6 +29,328 @@ pub struct ParsedCli {
     /// Raw thread selector, consumed once before any daemon dispatch or journal.
     pub thread_selector: Option<String>,
     pub require_ack_panes: Vec<super::panes::PaneSelector>,
+}
+
+/// Literal positive command prefixes. Trailing arguments remain subject to semantic parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrdinaryFamily {
+    pub prefix: &'static [&'static str],
+    /// These flags change the action to Human and are refused on the root route.
+    pub human_options: &'static [&'static str],
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoutingToken {
+    Literal(&'static str),
+    StateDirectory,
+    HostEndpoint,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputPosition {
+    BeforeFamily,
+    AfterArguments,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct OrdinaryCatalog {
+    pub families: &'static [OrdinaryFamily],
+    /// Leading pinned routing forms; consumers bind slots to validated exact values.
+    pub routing_forms: &'static [&'static [RoutingToken]],
+    pub output_flags: &'static [&'static str],
+    pub output_positions: &'static [OutputPosition],
+    pub omissions: &'static [(&'static [&'static str], &'static str)],
+}
+pub fn ordinary_catalog() -> OrdinaryCatalog {
+    OrdinaryCatalog {
+        families: &[
+            OrdinaryFamily {
+                prefix: &["--version"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["--help"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["doctor", "fix"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["summary", "job"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["summary", "submit"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["thread", "create"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["thread", "topic"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["thread", "name"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["thread", "rename"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["thread", "list"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["thread", "show"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["thread", "participants"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["participants"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["invite"],
+                human_options: &["--operator"],
+            },
+            OrdinaryFamily {
+                prefix: &["accept"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["reject"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["accept-required"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["leave"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["send"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["ack"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["archive"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["reopen"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["inbox"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["warnings"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["check-in"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["cached-check-in"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["pending-receipts"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["read"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["follow"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["body"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["search"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["seat", "list"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["seat", "inspect"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["seat", "resolve"],
+                human_options: &["--operator", "--new-seat"],
+            },
+            OrdinaryFamily {
+                prefix: &["delivery", "recipients"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["delivery", "inspect"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["overdue"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["diagnostics"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["daemon", "health"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["daemon", "ensure"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["daemon", "stop"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["service", "inspect"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["doctor"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["setup"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["unsetup"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["setup-status"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["pending-ops"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["retry"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["view"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["launch"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["handoff"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["skill"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["--skill"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["summary"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["contract-id"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["harness-version", "normalize"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["internal", "json-field"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
+                prefix: &["internal", "installer-integrations"],
+                human_options: &[],
+            },
+        ],
+        routing_forms: &[
+            &[],
+            &[
+                RoutingToken::Literal("--state-dir"),
+                RoutingToken::StateDirectory,
+            ],
+            &[
+                RoutingToken::Literal("--host-endpoint"),
+                RoutingToken::HostEndpoint,
+            ],
+            &[
+                RoutingToken::Literal("--state-dir"),
+                RoutingToken::StateDirectory,
+                RoutingToken::Literal("--host-endpoint"),
+                RoutingToken::HostEndpoint,
+            ],
+            &[
+                RoutingToken::Literal("--host-endpoint"),
+                RoutingToken::HostEndpoint,
+                RoutingToken::Literal("--state-dir"),
+                RoutingToken::StateDirectory,
+            ],
+        ],
+        output_flags: &["--human", "--machine", "--json"],
+        output_positions: &[OutputPosition::BeforeFamily, OutputPosition::AfterArguments],
+        omissions: &[(
+            &["seat", "retirements"],
+            "operator cleanup inventory omitted from native ordinary coverage",
+        )],
+    }
+}
+
+/// Syntactic inputs only; neither executable ownership nor consent attestation.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Args)]
+pub struct PermissionCliInputs {
+    #[arg(long)]
+    pub permissions: bool,
+    #[arg(long, conflicts_with = "without_permissions")]
+    pub with_permissions: bool,
+    #[arg(long)]
+    pub without_permissions: bool,
+    #[arg(long, value_parser = permission_path)]
+    pub permission_installed_binary: Option<String>,
+    #[arg(long, requires = "permission_installed_binary", value_parser = permission_path)]
+    pub permission_link_path: Option<String>,
+    #[arg(long, requires = "permission_installed_binary", value_parser = permission_path)]
+    pub permission_alias_path: Option<String>,
+}
+fn permission_path(value: &str) -> Result<String, String> {
+    if value.is_empty()
+        || value.len() > 4096
+        || value.chars().any(char::is_control)
+        || !std::path::Path::new(value).is_absolute()
+    {
+        return Err("permission inventory must be a nonempty absolute path without controls, at most 4096 UTF-8 bytes".into());
+    }
+    Ok(value.to_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,6 +613,7 @@ pub enum MutationSpec {
     },
     Leave(ThreadId),
     Send {
+        delivery_mode: DeliveryMode,
         thread: ThreadId,
         body: String,
         require_ack: Vec<SeatId>,
@@ -427,6 +752,7 @@ impl MutationSpec {
                 claim: claim.unwrap(),
             }),
             Self::Send {
+                delivery_mode,
                 thread,
                 body,
                 require_ack,
@@ -434,6 +760,7 @@ impl MutationSpec {
                 relays_user,
                 user_intent,
             } => WireCommand::SendMessage(SendMessage {
+                delivery_mode,
                 thread,
                 body,
                 invited_recipients: require_ack,
@@ -504,7 +831,7 @@ impl MutationSpec {
     name = "herdr-threads",
     version,
     after_help = format!("Examples:\n  herdr-threads inbox\n  herdr-threads read THREAD\n  herdr-threads send THREAD --body 'Hello'\n  herdr-threads ack MESSAGE\n\n{}\n\n{}", exit_status_help(), super::skill::AI_HELP_FOOTER),
-    about = "Read threads and explicitly ACK exact message IDs. Accept invitations separately. Optional cheap subagents can summarize recent or full history without ACK authority."
+    about = "Person/operator commands require immediate `human`: ht human [GLOBALS] COMMAND. --human only selects output. Read threads and explicitly ACK exact message IDs. Accept invitations separately. Optional cheap subagents can summarize recent or full history without ACK authority."
 )]
 struct Cli {
     /// Select the local herdr-threads state directory. May repeat with an
@@ -639,7 +966,7 @@ enum Top {
     },
     /// Inspect or disconnect the live service connection for recovery.
     #[command(
-        after_help = "Recovery workflow:\n  herdr-threads service inspect\n  herdr-threads service disconnect --expected-boot BOOT --expected-generation GENERATION\n\nUse the boot and generation returned by inspect. Disconnect revokes that exact connection; it does not stop the daemon."
+        after_help = "Recovery workflow:\n  herdr-threads service inspect\n  herdr-threads human service disconnect --expected-boot BOOT --expected-generation GENERATION\n\nUse the boot and generation returned by inspect. Disconnect revokes that exact connection; it does not stop the daemon."
     )]
     Service {
         #[command(subcommand)]
@@ -774,6 +1101,8 @@ enum InternalSub {
         /// Explicitly confirm installation of every missing integration (installer --setup).
         #[arg(long)]
         confirm_missing: bool,
+        #[command(flatten)]
+        permissions: PermissionCliInputs,
     },
     /// Read JSON on stdin and print the value at a dotted path (exit 1 when absent).
     JsonField { path: String },
@@ -1025,7 +1354,13 @@ struct SendArgs {
     /// Deduplicates with --require-ack seats without changing the sender.
     #[arg(long = "require-ack-pane", action = ArgAction::Append)]
     require_ack_pane: Vec<String>,
-    /// ACK deadline in positive seconds.
+    /// Passive delivery at the next explicit inbox check (the default); no wake or ACK obligation.
+    #[arg(long, conflicts_with = "nudge")]
+    lazy: bool,
+    /// Enable ordinary attention and wake behavior; explicit ACK recipients imply this mode.
+    #[arg(long)]
+    nudge: bool,
+    /// ACK deadline in positive seconds; requires --nudge or explicit ACK recipients.
     #[arg(long)]
     deadline: Option<u64>,
     #[arg(
@@ -1141,6 +1476,8 @@ struct SearchArgs {
 }
 #[derive(Args)]
 struct SetupArgs {
+    #[command(flatten)]
+    permissions: PermissionCliInputs,
     /// Harness whose hooks to manage. Omitted: every harness (setup: each
     /// one found on PATH; unsetup and setup-status: both).
     #[arg(value_parser = ["claude", "codex"])]
@@ -1397,7 +1734,14 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    let cli = Cli::try_parse_from(argv).map_err(|error| {
+    use super::actor_route::{InvocationActor, command_index, guidance, split_actor_os_argv};
+    let original: Vec<std::ffi::OsString> = argv.into_iter().map(Into::into).collect();
+    let (actor, retained) = split_actor_os_argv(original.clone());
+    let command = command_index(&retained);
+    if actor == InvocationActor::Agent && command.is_some_and(|i| retained[i] == "human") {
+        return Err(ParseFailure::Invalid(invalid(guidance(&original, command))));
+    }
+    let mut cli = Cli::try_parse_from(retained.clone()).map_err(|error| {
         use clap::error::ErrorKind;
         match error.kind() {
             ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
@@ -1406,10 +1750,90 @@ where
             ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
                 ParseFailure::Usage(error.render().to_string())
             }
-            _ => ParseFailure::Invalid(invalid(error.render().to_string())),
+            _ => {
+                let legacy = command.is_some_and(|i| {
+                    let first = retained[i].to_str();
+                    let second = retained.get(i + 1).and_then(|s| s.to_str());
+                    matches!((first, second), (Some("me"), Some("init")) | (Some("seat"), Some("rebind" | "retire")) | (Some("service"), Some("disconnect")))
+                });
+                let text = error.render().to_string();
+                let text = if actor == InvocationActor::Agent && legacy {
+                    format!("{text}\nPerson/operator actions require immediate human namespace; supplied arguments remain invalid. Supply the required flags listed above, including --operator for operator repair")
+                } else if text.contains("--cooperative-harness") {
+                    format!("{text}\nHuman is an invocation namespace, not an agent harness; use immediate human without cooperative agent selectors")
+                } else { text };
+                ParseFailure::Invalid(invalid(text))
+            },
         }
     })?;
-    Ok(parse_cli(cli)?)
+    // Clap propagates globals from the deepest subcommand and can drop earlier
+    // Append values. Preserve recognized leading routing values for conflict checks.
+    let mut index = 1;
+    while index < command.unwrap_or(retained.len()) {
+        let Some(token) = retained[index].to_str() else {
+            break;
+        };
+        let (flag, inline) = token
+            .split_once('=')
+            .map_or((token, None), |(f, v)| (f, Some(v)));
+        if matches!(flag, "--state-dir" | "--host-endpoint") {
+            let value = inline.or_else(|| retained.get(index + 1).and_then(|v| v.to_str()));
+            if let Some(value) = value {
+                if flag == "--state-dir" {
+                    cli.state_dir.push(value.to_owned());
+                } else {
+                    cli.host_endpoint.push(value.to_owned());
+                }
+            }
+        }
+        index += if inline.is_none()
+            && matches!(
+                flag,
+                "--state-dir"
+                    | "--host-endpoint"
+                    | "--cooperative-seat"
+                    | "--cooperative-target"
+                    | "--cooperative-harness"
+                    | "--cooperative-role"
+            ) {
+            2
+        } else {
+            1
+        };
+    }
+    let mut parsed = parse_cli(cli).map_err(|error| {
+        if actor == InvocationActor::Agent && error.detail == "operator required" {
+            invalid(format!(
+                "{}; use the human namespace and supply --operator",
+                error.detail
+            ))
+        } else {
+            error
+        }
+    })?;
+    if actor == InvocationActor::Human && parsed.cooperative.is_some() {
+        return Err(ParseFailure::Invalid(invalid(
+            "human namespace cannot be mixed with cooperative agent selectors",
+        )));
+    }
+    let requires_human = matches!(
+        &parsed.action,
+        CliAction::MeInit { .. }
+            | CliAction::Mutation(
+                MutationSpec::FreshSeat(_)
+                    | MutationSpec::Rebind { .. }
+                    | MutationSpec::Replace { .. }
+                    | MutationSpec::Retire(_)
+                    | MutationSpec::Invite { operator: true, .. }
+                    | MutationSpec::CheckInLifecycle { operator: true, .. }
+            )
+            | CliAction::Wire(WireCommand::ServiceDisconnect(_))
+    );
+    if actor == InvocationActor::Agent && requires_human {
+        return Err(ParseFailure::Invalid(invalid(guidance(&original, None))));
+    }
+    parsed.actor = actor;
+    Ok(parsed)
 }
 
 /// P7 (native Claude demo 3): a global path flag may repeat only with one
@@ -1449,6 +1873,21 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
             },
         }),
         command => command,
+    };
+    let permissions = match &cli.command {
+        Top::Setup(args) => args.permissions.clone(),
+        Top::Unsetup(args) | Top::SetupStatus(args) => {
+            if args.permissions.with_permissions || args.permissions.without_permissions {
+                return Err(invalid(
+                    "permission consent flags are only valid for setup or installer-integrations",
+                ));
+            }
+            args.permissions.clone()
+        }
+        Top::Internal {
+            command: InternalSub::InstallerIntegrations { permissions, .. },
+        } => permissions.clone(),
+        _ => PermissionCliInputs::default(),
     };
     let cooperative_selector =
         cli.cooperative_target
@@ -1565,6 +2004,17 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
             selector.is_explicit().then(|| selector.clone())
         }
         Top::Send(args) => {
+            let explicit_ack = !args.require_ack.is_empty() || !args.require_ack_pane.is_empty();
+            if args.lazy && (explicit_ack || args.deadline.is_some()) {
+                return Err(invalid(
+                    "--lazy cannot be combined with explicit ACK recipients or a deadline",
+                ));
+            }
+            if args.deadline.is_some() && !args.nudge && !explicit_ack {
+                return Err(invalid(
+                    "lazy sends cannot have a deadline; use --nudge or explicit ACK recipients",
+                ));
+            }
             if args.selector.pane.is_some() {
                 return Err(invalid("send uses --require-ack-pane PANE"));
             }
@@ -1750,6 +2200,14 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
         }
         Top::Leave { thread } => CliAction::Mutation(MutationSpec::Leave(thread_id(thread)?)),
         Top::Send(args) => {
+            let delivery_mode = if args.nudge
+                || !args.require_ack.is_empty()
+                || !args.require_ack_pane.is_empty()
+            {
+                DeliveryMode::Ordinary
+            } else {
+                DeliveryMode::Lazy
+            };
             if args.require_ack.len() > MAX_BATCH_ITEMS {
                 return Err(invalid("too many explicit recipients"));
             }
@@ -1771,6 +2229,7 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
             let relays_user = args.relays_user;
             let body = crate::cli::input::read_body(args.body, args.file, args.stdin)?;
             CliAction::Mutation(MutationSpec::Send {
+                delivery_mode,
                 thread,
                 body,
                 require_ack: recipients,
@@ -2153,7 +2612,10 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
             raw,
         },
         Top::Internal {
-            command: InternalSub::InstallerIntegrations { confirm_missing },
+            command:
+                InternalSub::InstallerIntegrations {
+                    confirm_missing, ..
+                },
         } => CliAction::InstallerIntegrations { confirm_missing },
         Top::Internal {
             command: InternalSub::JsonField { path },
@@ -2183,9 +2645,26 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
         }
     };
     if let CliAction::Wire(command) = &action {
-        command.validate().map_err(validation_error)?;
+        // Inbox is a client-side placeholder until capability discovery. A v2
+        // continuation must retain that action for own-text settlement, while
+        // legacy wire commands continue to reject the distinct cursor namespace.
+        if let WireCommand::Inbox(query) = command
+            && query
+                .page
+                .cursor
+                .as_deref()
+                .is_some_and(|raw| raw.starts_with(crate::protocol::pagination::INBOX_V2_PREFIX))
+        {
+            WireCommand::InboxBatchV2(query.clone())
+                .validate()
+                .map_err(validation_error)?;
+        } else {
+            command.validate().map_err(validation_error)?;
+        }
     }
     Ok(ParsedCli {
+        actor: super::actor_route::InvocationActor::Agent,
+        permissions,
         output,
         presentation: if cli.human {
             crate::cli::output::Presentation::Human

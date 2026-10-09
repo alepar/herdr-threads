@@ -61,7 +61,8 @@ const V22: &str = include_str!("../../migrations/0022_user_message_intent.sql");
 const V23: &str = include_str!("../../migrations/0023_channel_archival.sql");
 const V24: &str = include_str!("../../migrations/0024_harness_contract_diagnostics.sql");
 const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sql");
-pub(crate) const LATEST_VERSION: i64 = 25;
+const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
+pub(crate) const LATEST_VERSION: i64 = 26;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -160,6 +161,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V23))
                 .and_then(|_| conn.execute_batch(V24))
                 .and_then(|_| conn.execute_batch(V25))
+                .and_then(|_| conn.execute_batch(V26))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -400,7 +402,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=25 => verify_existing(conn),
+        18..=26 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -507,7 +509,71 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_existing_v25(conn)
+    verify_existing_v25(conn)?;
+    if (1..=25).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V26)
+            .and_then(|_| conn.pragma_update(None, "user_version", 26));
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(store_error(error));
+            }
+        }
+    }
+    verify_existing_v26(conn)
+}
+
+fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
+    // Compare every lazy object, including trigger bodies with embedded semicolons.
+    let ddl = V26
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for statement in ddl
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|s| s.starts_with("CREATE "))
+    {
+        let sql = statement.trim_end_matches(';');
+        let words = sql.split_whitespace().collect::<Vec<_>>();
+        let kind = words[1].to_ascii_lowercase();
+        let name = words[2];
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(str::trim) != Some(sql) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered lazy delivery {kind} {name}"),
+            ));
+        }
+    }
+    for table in ["messages", "send_preparations"] {
+        let valid: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name='delivery_mode' AND type='TEXT' AND \"notnull\"=1 AND dflt_value=\"'ordinary'\")", [table], |r| r.get(0)).map_err(store_error)?;
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if !valid || !sql.contains("delivery_mode TEXT NOT NULL DEFAULT 'ordinary' CHECK(delivery_mode IN ('ordinary','lazy'))") {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "invalid recorded delivery mode",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn verify_existing_v25(conn: &Connection) -> Result<(), ApiError> {

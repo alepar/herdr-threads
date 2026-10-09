@@ -63,6 +63,12 @@ fn run_in_pane(
     cwd: Option<&Path>,
 ) -> Output {
     let mut command = scrubbed_command(BIN);
+    let args = if args.first() == Some(&"human") {
+        command.arg("human");
+        &args[1..]
+    } else {
+        args
+    };
     command
         .arg("--state-dir")
         .arg(state)
@@ -819,8 +825,8 @@ fn assert_daemon_unavailable(label: &str, output: &Output) {
 /// every CLI path that reads the descriptor reports the documented exit-3
 /// daemon-unavailable result instead of a raw Io NotFound with exit 1.
 /// Kills: reverting any one of the cooperative-selection, `seat resolve` or
-/// `retry` descriptor reads in `cli::run` to a bare `read_descriptor(...)?`
-/// (each site is exercised separately below), and dropping the NotFound
+/// valid-intent `retry` descriptor reads in `cli::run` to a bare
+/// `read_descriptor(...)?` (each site is exercised separately below), and dropping the NotFound
 /// mapping from the shared published-endpoint reader.
 #[test]
 fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
@@ -833,14 +839,123 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
     };
     let ensure = run(&state, &host, &["daemon", "ensure"], None);
     assert_eq!(ensure.status.code(), Some(0), "{}", text(&ensure.stderr));
-    let stop = run(&state, &host, &["daemon", "stop"], None);
-    assert_eq!(stop.status.code(), Some(0), "{}", text(&stop.stderr));
     let instance_dir = fs::read_dir(state.join("instances"))
         .unwrap()
         .next()
         .unwrap()
         .unwrap()
         .path();
+    // Missing local state is rejected before any descriptor read, even while
+    // the daemon is live. Seed genuine intents to reach the retry read below.
+    let missing = run(&state, &host, &["retry", "local:1"], None);
+    assert_eq!(missing.status.code(), Some(1), "{}", text(&missing.stderr));
+    assert!(!text(&missing.stderr).contains("(host_unavailable)"));
+    assert!(missing.stdout.is_empty());
+    use herdr_threads::{
+        cli::{
+            handoff::{HandoffPlan, HandoffRequest},
+            journal::{IntentScope, Journal, SemanticMutation},
+            launch::LaunchRequest,
+        },
+        protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            ids::*,
+        },
+    };
+    let instance = fs::read_to_string(instance_dir.join("namespace")).unwrap();
+    let journal = Journal::open(instance_dir.join("intents")).unwrap();
+    let ordinary = journal
+        .record(
+            IntentScope::ServiceAllocation {
+                instance: instance.clone(),
+                target: HostTargetId::new("w1:p1"),
+            },
+            SemanticMutation::ResolveSeat {
+                target: HostTargetId::new("w1:p1"),
+            },
+            0,
+        )
+        .unwrap();
+    let claim = CallerClaim {
+        instance: instance.clone(),
+        seat: SeatId::new("s"),
+        binding_generation: 1,
+        role: CallerRole::TopLevel,
+        harness: Harness::Human,
+        native_session: NativeSessionId::new("human"),
+        execution: ExecutionId::new("execution"),
+        target: HostTargetId::new("w1:p1"),
+    };
+    let scope = IntentScope::Cooperative {
+        instance: instance.clone(),
+        seat: claim.seat.clone(),
+    };
+    let human = journal
+        .record(
+            scope.clone(),
+            SemanticMutation::freeze(
+                SemanticMutation::CompleteInboxDelivery {
+                    messages: vec![MessageId::new("m")],
+                },
+                claim.clone(),
+            )
+            .unwrap(),
+            0,
+        )
+        .unwrap();
+    let mut agent = claim;
+    agent.harness = Harness::Claude;
+    let terminal = journal
+        .record(
+            scope,
+            SemanticMutation::freeze(
+                SemanticMutation::Handoff(Box::new(HandoffPlan {
+                    request: HandoffRequest {
+                        thread: Some(ThreadId::new("t")),
+                        thread_name: None,
+                        topic: None,
+                        goal: None,
+                        body: "retained terminal work".into(),
+                        launch: LaunchRequest {
+                            target: HostTargetId::new("w1:p2"),
+                            harness: herdr_threads::harness::context::Harness::Claude,
+                            harness_binary: None,
+                            argv: vec![],
+                            name: None,
+                            pane_label: None,
+                        },
+                    },
+                    context: herdr_threads::protocol::output::ContinuationContext {
+                        state_dir: Some(state.to_string_lossy().into_owned()),
+                        host: Some(host.to_string_lossy().into_owned()),
+                    },
+                    recipient: SeatId::new("recipient"),
+                    create_key: OperationId::new("create"),
+                    invite_key: OperationId::new("invite"),
+                    send_key: OperationId::new("send"),
+                })),
+                agent,
+            )
+            .unwrap(),
+            0,
+        )
+        .unwrap();
+    let progress = instance_dir
+        .join("intents")
+        .join(format!("handoff-{}.progress", terminal.operation.as_str()));
+    let completed_progress = br#"{"thread":"t","invitation":null,"message":null,"possible_start":true,"launch":{"outcome":"started"}}"#;
+    fs::write(&progress, completed_progress).unwrap();
+    // Capture real journal paths without depending on their private filename format.
+    let before: Vec<_> = fs::read_dir(instance_dir.join("intents"))
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            (path.clone(), fs::read(path).unwrap())
+        })
+        .collect();
+    let stop = run(&state, &host, &["daemon", "stop"], None);
+    assert_eq!(stop.status.code(), Some(0), "{}", text(&stop.stderr));
+
     assert!(
         instance_dir.join("namespace").exists(),
         "stop keeps the namespace, so only the descriptor read can fail"
@@ -865,8 +980,36 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
     assert_daemon_unavailable("cooperative check-in", &cooperative);
     let resolve = run(&state, &host, &["seat", "resolve", "--pane", "w1:p1"], None);
     assert_daemon_unavailable("seat resolve", &resolve);
-    let retry = run(&state, &host, &["retry", "local:1"], None);
-    assert_daemon_unavailable("retry", &retry);
+    let retry = run(&state, &host, &["retry", &ordinary.recovery_ref()], None);
+    assert_daemon_unavailable("retry of valid ordinary intent", &retry);
+    // Even a locally completed handoff needs the canonical daemon fence before
+    // cleanup; an outage cannot authorize a launch or erase retained progress.
+    let retry = run(&state, &host, &["retry", &terminal.recovery_ref()], None);
+    assert_daemon_unavailable("terminal retry offline", &retry);
+    // The original Human payload is protected before connection, regardless
+    // of today's occupant or the availability of the daemon.
+    let refused = run(&state, &host, &["retry", &human.recovery_ref()], None);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        text(&refused.stderr).contains("person/operator retry requires immediate human namespace")
+    );
+    assert!(refused.stdout.is_empty());
+    let allowed = run(
+        &state,
+        &host,
+        &["human", "retry", &human.recovery_ref()],
+        None,
+    );
+    assert_daemon_unavailable("Human retry offline", &allowed);
+    for (path, bytes) in before {
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            bytes,
+            "retry modified {}",
+            path.display()
+        );
+    }
+    assert_eq!(fs::read(progress).unwrap(), completed_progress);
     for args in [
         &["daemon", "health"][..],
         &["daemon", "stop"][..],

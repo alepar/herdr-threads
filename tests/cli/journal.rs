@@ -32,6 +32,7 @@ fn claim() -> CallerClaim {
 }
 fn send() -> SemanticMutation {
     SemanticMutation::SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("thread-1"),
         body: "body secret\n".into(),
         invited_recipients: vec![],
@@ -841,6 +842,7 @@ fn invalid_semantic_batch_does_not_reserve_ordinal_or_publish_intent() {
             .record(
                 scope(),
                 SemanticMutation::SendMessage {
+                    delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                     thread: ThreadId::new("thread-1"),
                     body: "hello".into(),
                     invited_recipients: (0..101)
@@ -1307,6 +1309,7 @@ fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
             user_intent,
             ..
         } => SemanticMutation::SendMessage {
+            delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread,
             body,
             invited_recipients,
@@ -1533,6 +1536,7 @@ fn user_intent_send_retry_preserves_recorded_claim() {
             "t1",
             "--body",
             "user input",
+            "--nudge",
             "--relays-user",
             "--user-intent",
             spelling,
@@ -1578,4 +1582,385 @@ fn user_intent_send_retry_preserves_recorded_claim() {
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+#[test]
+fn retry_preflight_read_only_absent_journal() {
+    let dir = temp();
+    assert_eq!(
+        Journal::read_only(dir.join("intents"))
+            .err()
+            .unwrap()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    assert!(!dir.exists());
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = dir.join("state");
+    let host = dir.join("host.sock");
+    let mut output = Vec::new();
+    let result = crate::cli::run_in_pane(
+        [
+            "ht".to_owned(),
+            "--state-dir".into(),
+            state.to_string_lossy().into_owned(),
+            "--host-endpoint".into(),
+            host.to_string_lossy().into_owned(),
+            "retry".into(),
+            "local:1".into(),
+        ],
+        None,
+        &mut output,
+    );
+    assert!(result.is_err());
+    assert!(output.is_empty());
+    assert!(
+        !state.exists(),
+        "missing retry must not create instance or journal state"
+    );
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn retry_preflight_retained_human_root_refuses_before_connect() {
+    let dir = std::env::temp_dir().join(format!("ht-retry-' space-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = dir.join("state");
+    let host = dir.join("host.sock");
+    let context =
+        crate::daemon::paths::RuntimeContext::explicit(state.clone(), host.clone(), None).unwrap();
+    let paths = crate::daemon::paths::InstancePaths::resolve_read_only(&context).unwrap();
+    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let mut human = claim();
+    human.harness = Harness::Human;
+    let frozen = SemanticMutation::freeze(send(), human.clone()).unwrap();
+    let reference = journal
+        .record(
+            IntentScope::Cooperative {
+                instance: human.instance,
+                seat: human.seat,
+            },
+            frozen,
+            1,
+        )
+        .unwrap();
+    let before = std::fs::read(journal.path(&reference)).unwrap();
+    std::fs::remove_file(journal.root().join("allocator.lock")).unwrap();
+    let mut output = Vec::new();
+    let result = crate::cli::run_in_pane(
+        [
+            "ht".to_owned(),
+            "--state-dir".into(),
+            state.to_string_lossy().into_owned(),
+            "--host-endpoint".into(),
+            host.to_string_lossy().into_owned(),
+            "retry".into(),
+            reference.recovery_ref(),
+        ],
+        None,
+        &mut output,
+    );
+    assert!(
+        format!("{result:?}").contains("person/operator retry requires immediate human namespace; use herdr-threads human --state-dir"),
+        "{result:?}"
+    );
+    let detail = result.as_ref().unwrap_err().to_string();
+    let replacement = detail.split_once("; use ").unwrap().1;
+    let replacement = shlex::split(replacement).unwrap();
+    assert_eq!(replacement[1], "human");
+    let parsed = crate::cli::commands::parse_argv(replacement).unwrap();
+    assert_eq!(
+        parsed.actor,
+        crate::cli::actor_route::InvocationActor::Human
+    );
+    assert_eq!(
+        parsed.output.context.state_dir.as_deref(),
+        Some(context.state_dir.to_str().unwrap())
+    );
+    assert_eq!(
+        parsed.output.context.host.as_deref(),
+        Some(context.host_endpoint.to_str().unwrap())
+    );
+    assert!(output.is_empty());
+    assert_eq!(std::fs::read(journal.path(&reference)).unwrap(), before);
+    assert!(!journal.root().join("allocator.lock").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn original_actor_frozen_agent_and_human() {
+    for harness in [Harness::Codex, Harness::Claude, Harness::Human] {
+        let mut original = claim();
+        original.harness = harness;
+        let scope = IntentScope::Cooperative {
+            instance: original.instance.clone(),
+            seat: original.seat.clone(),
+        };
+        let semantic = SemanticMutation::freeze(send(), original).unwrap();
+        let bytes = serde_json::to_vec(&semantic).unwrap();
+        let expected = if harness == Harness::Human {
+            OriginalActor::HumanOrOperator
+        } else {
+            OriginalActor::Agent
+        };
+        assert_eq!(
+            classify_original_actor(&scope, &semantic).unwrap(),
+            expected
+        );
+        let legacy: SemanticMutation = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(classify_original_actor(&scope, &legacy).unwrap(), expected);
+        assert_eq!(serde_json::to_vec(&legacy).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn original_actor_operator_and_native_lifecycle() {
+    let target = HostTargetId::new("pane");
+    let operator = IntentScope::Operator {
+        instance: "i".into(),
+        local_user_uid: 7,
+    };
+    let mutations = [
+        SemanticMutation::OperatorRebind {
+            seat: SeatId::new("s"),
+            target: target.clone(),
+        },
+        SemanticMutation::OperatorFreshSeat {
+            target: target.clone(),
+        },
+        SemanticMutation::OperatorRetire {
+            seat: SeatId::new("s"),
+        },
+        SemanticMutation::OperatorReplace {
+            seat: SeatId::new("s"),
+            target: target.clone(),
+            replace: SeatId::new("other"),
+        },
+        SemanticMutation::OperatorOrphanInvite {
+            thread: ThreadId::new("t"),
+            seat: SeatId::new("s"),
+            deadline_millis: None,
+        },
+    ];
+    for semantic in mutations {
+        assert_eq!(
+            classify_original_actor(&operator, &semantic).unwrap(),
+            OriginalActor::HumanOrOperator
+        );
+    }
+    assert_eq!(
+        classify_original_actor(&scope(), &SemanticMutation::CheckIn).unwrap(),
+        OriginalActor::Agent
+    );
+    assert_eq!(
+        classify_original_actor(
+            &IntentScope::ServiceAllocation {
+                instance: "i".into(),
+                target: target.clone()
+            },
+            &SemanticMutation::ResolveSeat {
+                target: target.clone()
+            }
+        )
+        .unwrap(),
+        OriginalActor::Agent
+    );
+    for harness in [Harness::Claude, Harness::Codex] {
+        let continuity = SemanticMutation::ContinuityCheckIn {
+            target: target.clone(),
+            harness,
+            native_session: NativeSessionId::new("session"),
+            source: "resume".into(),
+            event_id: "event".into(),
+            execution: ExecutionId::new("exec"),
+        };
+        assert_eq!(
+            classify_original_actor(
+                &IntentScope::Continuity {
+                    instance: "i".into(),
+                    target: target.clone()
+                },
+                &continuity
+            )
+            .unwrap(),
+            OriginalActor::Agent
+        );
+    }
+    for operator in [false, true] {
+        let mut human = claim();
+        human.harness = Harness::Human;
+        let cooperative = IntentScope::Cooperative {
+            instance: human.instance.clone(),
+            seat: human.seat.clone(),
+        };
+        let lifecycle = SemanticMutation::CooperativeCheckIn {
+            claim: human,
+            mode: CheckInMode::Lifecycle {
+                expected_binding_generation: 0,
+            },
+            event_id: "event".into(),
+            operator,
+        };
+        assert_eq!(
+            classify_original_actor(&cooperative, &lifecycle).unwrap(),
+            OriginalActor::HumanOrOperator
+        );
+    }
+}
+
+#[test]
+fn original_actor_rejects_scope_claim_contradictions() {
+    let original = claim();
+    let frozen = SemanticMutation::freeze(send(), original.clone()).unwrap();
+    assert!(classify_original_actor(&scope(), &frozen).is_err());
+    let wrong_seat = IntentScope::Cooperative {
+        instance: original.instance.clone(),
+        seat: SeatId::new("other"),
+    };
+    assert!(classify_original_actor(&wrong_seat, &frozen).is_err());
+    let wrong_instance = IntentScope::Cooperative {
+        instance: "other".into(),
+        seat: original.seat.clone(),
+    };
+    assert!(classify_original_actor(&wrong_instance, &frozen).is_err());
+    let operator = IntentScope::Operator {
+        instance: "i".into(),
+        local_user_uid: 1,
+    };
+    assert!(classify_original_actor(&operator, &send()).is_err());
+    let mut child = original.clone();
+    child.role = crate::protocol::authority::CallerRole::Subagent;
+    let scope = IntentScope::Cooperative {
+        instance: original.instance,
+        seat: original.seat,
+    };
+    let malformed = SemanticMutation::Frozen {
+        claim: child,
+        mutation: Box::new(send()),
+    };
+    assert!(classify_original_actor(&scope, &malformed).is_err());
+    let continuity = SemanticMutation::ContinuityCheckIn {
+        target: HostTargetId::new("pane"),
+        harness: Harness::Human,
+        native_session: NativeSessionId::new("session"),
+        source: "resume".into(),
+        event_id: "event".into(),
+        execution: ExecutionId::new("exec"),
+    };
+    assert!(
+        classify_original_actor(
+            &IntentScope::Continuity {
+                instance: "i".into(),
+                target: HostTargetId::new("pane")
+            },
+            &continuity
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn retry_preflight_read_only_existing_journal_preserves_metadata() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let reference = journal
+        .record(scope(), SemanticMutation::CheckIn, 1)
+        .unwrap();
+    std::fs::remove_file(dir.join("allocator.lock")).unwrap();
+    let before = std::fs::read(journal.path(&reference)).unwrap();
+    let marker = std::fs::read(dir.join("journal-format")).unwrap();
+    let ordinal = std::fs::read(dir.join("next-ordinal")).unwrap();
+    assert_eq!(
+        crate::cli::retry::preflight_original_actor(
+            &dir,
+            &reference.recovery_ref(),
+            crate::cli::actor_route::InvocationActor::Agent,
+            &crate::protocol::output::ContinuationContext::default()
+        )
+        .unwrap(),
+        OriginalActor::Agent
+    );
+    assert_eq!(std::fs::read(journal.path(&reference)).unwrap(), before);
+    assert_eq!(std::fs::read(dir.join("journal-format")).unwrap(), marker);
+    assert_eq!(std::fs::read(dir.join("next-ordinal")).unwrap(), ordinal);
+    assert!(!dir.join("allocator.lock").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn retry_preflight_legacy_operator_preserves_replay_keys() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    // SAFETY: querying the current effective UID has no side effects.
+    let uid = unsafe { libc::geteuid() };
+    let authority = IntentScope::Operator {
+        instance: "i".into(),
+        local_user_uid: uid,
+    };
+    let reference = journal
+        .record(
+            authority.clone(),
+            SemanticMutation::OperatorFreshSeat {
+                target: HostTargetId::new("pane"),
+            },
+            1,
+        )
+        .unwrap();
+    let before = std::fs::read(journal.path(&reference)).unwrap();
+    std::fs::remove_file(dir.join("allocator.lock")).unwrap();
+    let root = crate::cli::actor_route::InvocationActor::Agent;
+    let human = crate::cli::actor_route::InvocationActor::Human;
+    let refused = crate::cli::retry::preflight_original_actor(
+        &dir,
+        &reference.recovery_ref(),
+        root,
+        &crate::protocol::output::ContinuationContext::default(),
+    )
+    .unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+    assert!(!dir.join("allocator.lock").exists());
+    assert_eq!(std::fs::read(journal.path(&reference)).unwrap(), before);
+    assert_eq!(
+        crate::cli::retry::preflight_original_actor(
+            &dir,
+            &reference.recovery_ref(),
+            human,
+            &crate::protocol::output::ContinuationContext::default()
+        )
+        .unwrap(),
+        OriginalActor::HumanOrOperator
+    );
+    let command = Command::OperatorFreshSeat(crate::protocol::commands::OperatorFreshSeat {
+        target: HostTargetId::new("pane"),
+        operation: reference.operation.clone(),
+    });
+    let replay = run_retry(
+        &journal,
+        &reference,
+        &authority,
+        || panic!("operator retry must not synthesize a caller"),
+        |actual| {
+            assert_eq!(actual, command);
+            Ok(CommandResult::OperatorFreshSeat(SeatId::new("new-seat")))
+        },
+        |_| Err(io::Error::other("injected output failure")),
+    );
+    assert!(replay.is_err());
+    assert_eq!(std::fs::read(journal.path(&reference)).unwrap(), before);
+    run_retry(
+        &journal,
+        &reference,
+        &authority,
+        || panic!("operator retry must not synthesize a caller"),
+        |actual| {
+            assert_eq!(actual, command);
+            Ok(CommandResult::OperatorFreshSeat(SeatId::new("new-seat")))
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+    assert!(!journal.path(&reference).exists());
+    std::fs::remove_dir_all(dir).unwrap();
 }

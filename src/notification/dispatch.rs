@@ -11,9 +11,9 @@ use crate::{
         DurableRetry, MARKER, PokeDecision, RetryConfig, RetryError, RetryGuard, poke_eligibility,
     },
     ports::{
-        AgentComposerState, ComposerStash, EvidenceKind, ExecutionEvidence, HostCallContext,
-        HostPort, HostUiState, IncarnationEvidence, NotificationPort, ObservationProvenance,
-        PokeAttempt, PokeCapabilitySource, PokeMode, PokePlan, PromptOutcome, RefusalCause,
+        AgentComposerState, EvidenceKind, ExecutionEvidence, HostCallContext, HostPort,
+        HostUiState, IncarnationEvidence, NotificationPort, ObservationProvenance, PokeAttempt,
+        PokeCapabilitySource, PokeMode, PokePlan, PromptOutcome, RefusalCause,
         ReservedWakeAuthority, StructuralOccupancy, WakeOutcome, WakeReservation, WakeTargetBasis,
     },
     protocol::{
@@ -64,11 +64,8 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche
         }
     }
 
-    /// Wave 28: read the composer after a send; a prompt still held there gets
-    /// exactly one submit-key retry and is then reported, never looped. A
-    /// failed read or key send leaves the prompt unchecked (`NotChecked`).
-    /// The result reaches daemon.log (rate limited) through
-    /// `ObservedWakePort::observe_drive`.
+    /// Advisory read-only verification. A held marker is reported without
+    /// pressing Enter: the composer may also contain newly typed user input.
     fn verify_submission(
         &self,
         target: &crate::ports::SafeWakeTarget,
@@ -92,15 +89,7 @@ impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatche
         }
         match self.host.pane_agent_state(target, &verify_context) {
             Ok(AgentComposerState::Submitted) => SubmissionVerification::Verified,
-            Ok(AgentComposerState::HoldingPrompt) => {
-                if self.host.send_submit_key(target, &verify_context).is_err() {
-                    return SubmissionVerification::NotChecked;
-                }
-                match self.host.pane_agent_state(target, &verify_context) {
-                    Ok(AgentComposerState::HoldingPrompt) => SubmissionVerification::Unsubmitted,
-                    _ => SubmissionVerification::Retried,
-                }
-            }
+            Ok(AgentComposerState::HoldingPrompt) => SubmissionVerification::Unsubmitted,
             _ => SubmissionVerification::NotChecked,
         }
     }
@@ -236,6 +225,12 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         if !identity_ok {
             return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
         }
+        if matches!(
+            observation.ui,
+            HostUiState::HumanInput | HostUiState::ActiveTurn
+        ) {
+            return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+        }
         let selected = if poke.is_some() {
             self.host.safe_poke_target(&reservation.seat, &observation)
         } else {
@@ -304,11 +299,10 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             });
             poke_eligibility(&observation, bound_native_agent, recognized, caps)
         });
-        // A wake that carries a poke never stashes: over typed input it sends the
-        // plain marker, as any ordinary wake does, and the receipts stay unpoked for
-        // their own PokeOnly attempt.
+        // Attention never stashes a draft. Nonempty input was refused above;
+        // an ineligible coalesced poke leaves receipts unpoked.
         let using_poke = match (&decision, poke_only) {
-            (Some(PokeDecision::Submit), _) | (Some(PokeDecision::Stash), true) => true,
+            (Some(PokeDecision::Submit), _) => true,
             (_, true) => return outcome(WakeOutcome::Unsafe),
             _ => false,
         };
@@ -337,50 +331,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             (Some(request), true) => request.plan.text.as_str(),
             _ => MARKER,
         };
-        let mut saved = None;
-        if poke_only && decision == Some(PokeDecision::Stash) {
-            match self.host.stash_composer(&target, &prompt_context)? {
-                ComposerStash::Saved(typed) => saved = Some(typed),
-                // Nothing was stashed: skip before any prompt.
-                ComposerStash::Unsupported | ComposerStash::Failed(_) => {
-                    return outcome(WakeOutcome::Unsafe);
-                }
-            }
-        }
-        // A poke accepted for a running turn queues into it; the host's
-        // recheck then allows `working` for this call only.
-        let during_turn = using_poke && observation.ui == HostUiState::ActiveTurn;
-        let submitted = if during_turn {
-            self.host
-                .submit_prompt_during_turn(&target, text, &prompt_context)
-        } else {
-            self.host.submit_prompt(&target, text, &prompt_context)
+        // Unsolicited attention never queues into an active turn.
+        let submitted = self.host.submit_prompt(&target, text, &prompt_context);
+        let diagnostic = None;
+        let submitted = match submitted {
+            Ok(submitted) => submitted,
+            Err(err) => return refuse_error(err),
         };
-        let mut diagnostic = None;
-        let restored = saved.is_some();
-        if let Some(typed) = saved {
-            // Put the person's typed text back whether or not the prompt was
-            // accepted; a failed restore must not lose it silently.
-            if let Err(error) = self.host.restore_composer(&target, &typed, &prompt_context) {
-                let detail = format!(
-                    "composer restore failed ({}); typed text was {typed:?}",
-                    error.detail
-                );
-                eprintln!("herdr-threads: warning: {detail}");
-                diagnostic = Some(detail);
-            }
-        }
-        match submitted? {
-            // Post-send verification (Wave 28) reads the composer and may
-            // press the submit key once. It is skipped when the composer
-            // legitimately holds text after the send: a prompt queued into a
-            // running turn, or a person's typed text restored after a stash
-            // (a submit key there would send the person's draft).
-            PromptOutcome::Submitted if during_turn || restored => Ok(PokeAttempt {
-                outcome: WakeOutcome::Submitted,
-                poked: using_poke,
-                diagnostic,
-            }),
+        match submitted {
             PromptOutcome::Submitted => {
                 let verification = self.verify_submission(&target, context);
                 if let Ok(mut verifications) = self.verifications.lock() {

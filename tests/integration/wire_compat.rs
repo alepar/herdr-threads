@@ -277,10 +277,12 @@ impl Drop for Plugin {
 /// clipped in a history preview (longer than the 256-character snippet) but
 /// small enough for a `Message` fetch to return whole.
 struct World {
-    _scratch: Scratch,
-    _host: FakeHost,
+    // Declaration order is teardown order: stop the daemon before losing its
+    // endpoint/descriptor or private host, then remove its scratch directory.
     plugin: Plugin,
     thread: String,
+    _host: FakeHost,
+    _scratch: Scratch,
 }
 impl World {
     fn new() -> Self {
@@ -328,7 +330,9 @@ impl World {
         plugin.ok(Some(hatter), &["accept", &thread]);
         plugin.ok(
             Some(alice),
-            &["send", &thread, "--body", "a short opening line"],
+            // This fixture compares ordinary legacy/current renderer bytes;
+            // explicitly retain attention delivery after native send became lazy.
+            &["send", &thread, "--body", "a short opening line", "--nudge"],
         );
         for (agent, word) in [(hatter, "tea"), (alice, "jam"), (hatter, "bat")] {
             let long = format!(
@@ -336,7 +340,7 @@ impl World {
                 format!("{word} and more {word}. ").repeat(30)
             );
             assert!(long.chars().count() > 256 && long.len() < 4000);
-            plugin.ok(Some(agent), &["send", &thread, "--body", &long]);
+            plugin.ok(Some(agent), &["send", &thread, "--body", &long, "--nudge"]);
         }
         Self {
             _scratch: scratch,
@@ -648,4 +652,31 @@ fn hook_parse_failure_under_optimistic_sends_no_report_to_an_old_daemon() {
     let (output, _) = run_hook();
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
     assert_eq!(proxy.count("hook_parse_failure"), 1, "{:?}", proxy.seen());
+}
+
+/// Fixture teardown must stop its detached daemon while routing files exist;
+/// deleting state first strands the owner until this test process exits.
+#[test]
+fn fixture_drop_stops_daemon_before_removing_state() {
+    let world = World::new();
+    let paths = world.plugin.paths();
+    let instance = read_existing_namespace(&paths).unwrap().unwrap();
+    let pid = read_descriptor(&paths, instance).unwrap().pid as libc::pid_t;
+    let root = world.plugin.root.clone();
+    drop(world);
+    assert!(!root.exists(), "owned fixture scratch root removed");
+    let end = Instant::now() + Duration::from_secs(2);
+    loop {
+        // Probe only; never signal an unrelated/reused PID.
+        if unsafe { libc::kill(pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "fixture daemon {pid} survived after its state directory was removed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }

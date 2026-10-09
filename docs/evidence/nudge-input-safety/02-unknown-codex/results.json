@@ -1,0 +1,8 @@
+{
+  "binary": {
+    "path": "/Users/alepar/AleCode/herdr-threads/target/coordinator/herdr-093/bin/herdr",
+    "version": "herdr 0.9.3",
+    "sha256": "5173a3e0ae42d5d1ab7ebfa5d5e6329f7c3d23f8e1a3677c7ce3231da2884157",
+    "pinned": false
+  }
+}

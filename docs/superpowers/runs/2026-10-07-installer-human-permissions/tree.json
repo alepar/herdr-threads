@@ -1,0 +1,1262 @@
+[
+  {
+    "id": "ht-uwd.12",
+    "title": "Integration sweep: native ordinary grants and explicit human routing",
+    "description": "Verify integrated ordinary permission install/setup/status/unsetup and human namespace main flows using scope-bounded isolated focused fixtures; implement small missing seam coverage and file blockers for larger gaps.\nowns: terminal focused integration join and required final source checks.\nconsumes: all leaves (integration sweep).\nAcceptance: ordinary bare/ht/owned absolute/pinned communication allowed; human/operator/person withheld; --human formatting supported; lifecycle/consent/migration/refusal/retry invariants hold. Run focused fixture tests and common cargo fmt, nice cargo clippy --locked --all-targets --all-features -- -D warnings, nice scripts/check-default-features, diff checks and fresh UUID-scoped leak check; no full suite, native model, real config or shared Herdr. Coordinator owns integrated full suite/landing. Files: tests/permissions_smoke.rs, tests/installer_integrations.rs as needed; docs/superpowers/runs/2026-10-07-installer-human-permissions validation evidence.\nblocked-by ht-uwd.11: consumes all leaves (integration sweep)\nblocked-by ht-uwd.8.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.8.1: consumes all leaves (integration sweep)\nblocked-by ht-uwd.7.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.7.1: consumes all leaves (integration sweep)\nblocked-by ht-uwd.5.3.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.5.3.1: consumes all leaves (integration sweep)\nblocked-by ht-uwd.5.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.5.1: consumes all leaves (integration sweep)\nblocked-by ht-uwd.3.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.3.1: consumes all leaves (integration sweep)\nblocked-by ht-uwd.10: consumes all leaves (integration sweep)\nblocked-by ht-uwd.9: consumes all leaves (integration sweep)\nblocked-by ht-uwd.6: consumes all leaves (integration sweep)\nblocked-by ht-uwd.4: consumes all leaves (integration sweep)\nblocked-by ht-uwd.2: consumes all leaves (integration sweep)\nblocked-by ht-uwd.1: consumes all leaves (integration sweep)",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T06:02:24Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:02:24Z",
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:32Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.3.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.7.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:28Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.10",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:33Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.5.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:29Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.9",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:34Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.6",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:34Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T06:02:24Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:37Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.5.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:30Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:36Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.11",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:24Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.8.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:25Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.7.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:27Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.5.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.5.3.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:28Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.8.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:26Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.12",
+        "depends_on_id": "ht-uwd.4",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:02:35Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 17,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.11",
+    "title": "Cross-record frozen retry and pre-effect refusal regressions",
+    "description": "Add cross-record integration regressions that execute real retry/caller preflight against retained synthetic journal/context records, beyond classifier unit tests.\nowns: frozen-origin and pre-effect integration regression fixtures.\nconsumes: frozen retry origin classifier and preflight; runtime actor boundary.\nAcceptance: causal RED/GREEN Human/operator root refusal before handoff completed output/cleanup/context retirement; human replay frozen bytes/scope/claim/digest/keys unchanged; completed agent retry after Human live binding remains root-valid; malformed/Native contradiction explicit; no effect on denied state.\nFiles: tests/cli/follow_retry.rs, tests/cli/journal.rs, tests/cli/cooperative.rs; stateless combined modules, test-support owned children only.\nblocked-by ht-uwd.2: consumes frozen retry origin classifier and preflight\nblocked-by ht-uwd.3.1: consumes runtime actor boundary\nAcceptance consumes original classifier (needs: ht-uwd.2).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:59:40Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:00:40Z",
+    "metadata": {
+      "files_touched": [
+        "tests/cli/cooperative.rs",
+        "tests/cli/follow_retry.rs",
+        "tests/cli/journal.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.11",
+        "depends_on_id": "ht-uwd.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:00:30Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.11",
+        "depends_on_id": "ht-uwd.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T06:00:27Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.11",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:59:40Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.8.2",
+    "title": "Pass owned installer paths and consent through shell gateway",
+    "description": "Exercise actual shell gateway to Rust consumer with isolated ownership/refusal/consent regressions, then implement owned path transport and truthful summaries. Forward installed_binary/link_path/alias_path and pinned state/socket to actual installer-integrations consumer; update missing permission consent and truthful summaries/exit/next steps; preserve foreign/force/PATH protections and uninstall ownership.\nowns: shell inventory gateway and permission consent wording.\nconsumes: installer inventory validation/transport consumer.\nAcceptance: fake-host shell fixture actual gateway arguments plus Rust consumer round trip; fresh/update/uninstall/declined/no-setup/noninteractive/custom-prefix/foreign/symlink cases; no real config.\nFiles: scripts/install.sh, tests/release/install_test.sh.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.7: consumes component lifecycle and consent\nblocked-by ht-uwd.8.1: consumes installer inventory validation/transport consumer\nAcceptance consumes declared producer artifact (needs: ht-uwd.7).\nRound1 settled refinement: Gateway regression: historical exact bare broad proof narrows even if ht/absolute expansion consent declines; no new matching scope added, truthful missing desired coverage. Retired/pre_existing/edited ownership cases distinct.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:56:01Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:18:25Z",
+    "metadata": {
+      "files_touched": [
+        "scripts/install.sh",
+        "tests/release/install_test.sh"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.8.2",
+        "depends_on_id": "ht-uwd.8.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:56:03Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.8.2",
+        "depends_on_id": "ht-uwd.7",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:56:02Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.8.2",
+        "depends_on_id": "ht-uwd.8",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:56:01Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-uwd.8"
+  },
+  {
+    "id": "ht-uwd.8.1",
+    "title": "Validate installer executable inventory at Rust setup consumer",
+    "description": "Consume parser-reserved raw paths/routing and validate exact owned canonical/link/alias forms; reject foreign or mismatched ownership and ambiguous controls; direct setup allows only safe bare names + verified current canonical binary unless explicit owned inputs validated.\nowns: installer inventory validation/transport consumer.\nconsumes: PermissionInputs and permission component lifecycle.\nAcceptance: actual Rust internal installer invocation positive owned inputs and foreign/relative/control/symlink mismatch/race negatives, spaces/metachars represented or diagnostic.\nFiles: src/cli/installer.rs input consumer, src/cli/setup.rs SetupEnv inputs; commands parser owned by ht-uwd.1.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nblocked-by ht-uwd.7: consumes component lifecycle and consent\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:55:58Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:56:31Z",
+    "metadata": {
+      "files_touched": [
+        "src/cli/installer.rs",
+        "src/cli/setup.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.8.1",
+        "depends_on_id": "ht-uwd.8",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:55:58Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.8.1",
+        "depends_on_id": "ht-uwd.4",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:55:59Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.8.1",
+        "depends_on_id": "ht-uwd.7",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:55:59Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-uwd.8"
+  },
+  {
+    "id": "ht-uwd.7.2",
+    "title": "Installer component reconciliation and explicit permission consent",
+    "description": "Add causal isolated missing/declined/noninteractive/hooks-owned consent fixtures at actual reconciliation entry point. Reconcile permissions separately from hooks/skill; require specific missing permission consent, retain ownership-only updates and truthful per-component state/exit. Reinspect exact state after consent and serialize JSON mutation plans.\nowns: independent permission consent/reconciliation.\nconsumes: explicit permission lifecycle API.\nAcceptance: missing/declined/noninteractive/hooks-owned cases; consent says ordinary reads AND writes, human/operator withheld; mixed hook/permission status and changed-during-consent refusal; Rust consumer witness.\nFiles: src/cli/installer.rs reconciliation, tests/installer_integrations.rs.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nblocked-by ht-uwd.7.1: consumes explicit permission lifecycle API\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4\nRound1 settled refinement: Missing/expansion consent distinct from exact historical-owned bounded update. Declined expanded grants never suppress safe existing narrowing; no hook-only/foreign/pre_existing additions. Status incomplete for missing desired spellings. Consent before lock, exact state refresh under guard.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:54:55Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:18:26Z",
+    "metadata": {
+      "files_touched": [
+        "src/cli/installer.rs",
+        "tests/installer_integrations.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.7.2",
+        "depends_on_id": "ht-uwd.7",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:54:55Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.7.2",
+        "depends_on_id": "ht-uwd.4",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:54:56Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.7.2",
+        "depends_on_id": "ht-uwd.7.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:54:56Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-uwd.7"
+  },
+  {
+    "id": "ht-uwd.7.1",
+    "title": "Explicit permission setup status unsetup and requested doctor fix",
+    "description": "Wire backend component into explicit request/response/status/remove, with active isolated roots and independent component result.\nowns: explicit permission lifecycle API.\nconsumes: Claude permission backend; Codex permission backend; component API.\nAcceptance: actual Rust consumer install/status/remove round trip, absent backend/config and owned-state diagnostics, requested doctor only, stronger/foreign state preserved.\nFiles: src/cli/setup.rs lifecycle and src/cli/doctor.rs component dispatch; setup CLI declaration slots reserved by ht-uwd.1.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.5: consumes Claude permission backend and historical hook transfer\nblocked-by ht-uwd.6: consumes Codex permission backend\nAcceptance consumes declared producer artifact (needs: ht-uwd.5).\nRound1 settled refinement: Inspection treats ExactHistoricalOwned as existing state for bounded narrowing; new desired spellings still explicit grant consent. Shared write guard used through component publications/recovery.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:54:52Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:14:15Z",
+    "metadata": {
+      "files_touched": [
+        "src/cli/doctor.rs",
+        "src/cli/setup.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.7.1",
+        "depends_on_id": "ht-uwd.5",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:54:53Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.7.1",
+        "depends_on_id": "ht-uwd.6",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:54:54Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.7.1",
+        "depends_on_id": "ht-uwd.7",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:54:52Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-uwd.7"
+  },
+  {
+    "id": "ht-uwd.5.3.2",
+    "title": "Independent Claude install status remove with shared JSON safety",
+    "description": "Wire backend lifecycle to exact transfer engine and current ownership manifest, refreshed settings plans and representability diagnostic; status separates hooks/native permissions/external broad rule warning.\nowns: independent Claude lifecycle.\nconsumes: prepared ownership transfer engine.\nAcceptance: fresh/update/unsetup plus migration/partial/edited/foreign/symlink/race matrix; unrelated hooks/deny/ask survive and removed broad never returns.\nFiles: src/harness/permissions/claude.rs lifecycle, tests/installer_integrations.rs.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nblocked-by ht-uwd.5.3.1: consumes prepared ownership transfer engine\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4\nRound1 settled refinement: Inspect logical exact historical ownership before deciding missing consent; old bare grant cannot expand to ht/absolute without consent. Retired export-only proof permits safe exact removal/narrowing but no direct general new grants. Limited coverage status honest; OwnedConfigWriteGuard participating lifecycle.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:53:46Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:18:27Z",
+    "metadata": {
+      "files_touched": [
+        "src/harness/permissions/claude.rs",
+        "tests/installer_integrations.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.5.3.2",
+        "depends_on_id": "ht-uwd.4",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:53:46Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.5.3.2",
+        "depends_on_id": "ht-uwd.5.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:53:47Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.5.3.2",
+        "depends_on_id": "ht-uwd.5.3",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:53:46Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-uwd.5.3"
+  },
+  {
+    "id": "ht-uwd.5.3.1",
+    "title": "Durable exact Claude ownership transfer engine",
+    "description": "Implement validated prepared record, exact stage derivation and idempotent resume/publication state machine from historical source to independent destination.\nowns: prepared ownership transfer engine.\nconsumes: Claude rule renderer and legacy hook evidence.\nAcceptance: interrupt each boundary then resume/retry/remove, at least one durable removal proof always, no two contradictory owners, unchanged foreign/preexisting bytes; corrupt/edited/race states refuse.\nFiles: src/harness/permissions/claude_transfer.rs, src/harness/setup.rs transfer proof adapter only; focused transfer fixtures.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.5.1: consumes Claude rule renderer and representability contract\nblocked-by ht-uwd.5.2: consumes independent hook completeness and legacy ownership evidence\nAcceptance consumes declared producer artifact (needs: ht-uwd.5.1).\nRound1 settled refinement: Implement bounded ExactHistoricalOwned narrowing/transfer even when expansion consent declines; compare native rule scope, never ht/absolute/direct general grant from bare/export-only proof. Cooperating publication guard spans prepared/settings/destination/source publications. Process-termination recovery only, existing sync_all(file)+rename+sync_all(parent). New-process interruption witnesses every stage, proof/foreign/no-broad-restore/lock-release assertions.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:53:43Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:14:14Z",
+    "metadata": {
+      "files_touched": [
+        "src/harness/permissions/claude_transfer.rs",
+        "src/harness/setup.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.5.3.1",
+        "depends_on_id": "ht-uwd.5.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:53:44Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.5.3.1",
+        "depends_on_id": "ht-uwd.5.3",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:53:43Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.5.3.1",
+        "depends_on_id": "ht-uwd.5.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:53:45Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-uwd.5.3"
+  },
+  {
+    "id": "ht-uwd.5.3",
+    "title": "Crash-safe Claude permission ownership transfer and lifecycle",
+    "description": "Implement independent install/inspect/remove and durable prepared source/destination transfer from exact historical broad/retired entries, never two live owners or lost removal evidence.\nowns: Claude lifecycle and transfer state machine.\nconsumes: Claude rule renderer and representability contract; independent hook completeness and legacy ownership evidence.\nAcceptance: interrupt every publication boundary then resume/remove; no broad restore; malformed/edited/foreign/partial/symlink/race cases safe; shared JSON fresh-base preservation and stronger policy intact.\nFiles: src/harness/permissions/claude.rs lifecycle, src/harness/setup.rs transfer adapter only, tests/installer_integrations.rs.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nblocked-by ht-uwd.5.1: consumes Claude rule renderer and representability contract\nblocked-by ht-uwd.5.2: consumes independent hook completeness and legacy ownership evidence\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4",
+    "design": "Spec: docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--claude-permission-migration--transfer-design.md; fresh review both children LEAF, COMPLETE.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:52:41Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:18:28Z",
+    "metadata": {
+      "sp_depth": 2,
+      "sp_order": 1,
+      "files_touched": [
+        "src/harness/permissions/claude.rs",
+        "src/harness/setup.rs",
+        "tests/installer_integrations.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.5.3",
+        "depends_on_id": "ht-uwd.5.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:52:43Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.5.3",
+        "depends_on_id": "ht-uwd.5.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:52:42Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.5.3",
+        "depends_on_id": "ht-uwd.5",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:52:41Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.5.3",
+        "depends_on_id": "ht-uwd.4",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:52:41Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 3,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-uwd.5"
+  },
+  {
+    "id": "ht-uwd.5.2",
+    "title": "Decouple hook completeness and writes from new permissions",
+    "description": "Remove broad automatic permission grant/requirement from new Claude hooks install/status while preserving historical OwnedPermission fingerprint/pre_existing/superseded/resume proof.\nowns: independent hook completeness and legacy ownership evidence.\nconsumes: separate permission manifest schema.\nAcceptance: hook-only update cannot add broad or missing permission; hooks status independent; historical removal refuses edited proof and preserves foreign/pre-existing rules.\nFiles: src/harness/setup.rs hook install/inspect/remove internals, setup unit tests.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4\nRound1 settled refinement: Exact historical-owned proof is existing permission state; hook-only operations remain permission-inert. Cooperating hook writes consume shared OwnedConfigWriteGuard and reject conflicting transfer states. No new grants solely from hook ownership.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:52:39Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:14:13Z",
+    "metadata": {
+      "files_touched": [
+        "src/harness/setup.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.5.2",
+        "depends_on_id": "ht-uwd.4",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:52:40Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.5.2",
+        "depends_on_id": "ht-uwd.5",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:52:39Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-uwd.5"
+  },
+  {
+    "id": "ht-uwd.5.1",
+    "title": "Claude positive ordinary permission renderer",
+    "description": "Generate positive ordinary-family and exact supported pinned/output rule forms, never arbitrary middle wildcard covering human.\nowns: Claude rule renderer and representability contract.\nconsumes: ordinary command catalog; PermissionInputs.\nAcceptance: ordinary reads/writes and --human formatting covered; immediate human/legacy operator excluded by grammar plus ask forms; literal-metachar/space/quote/body/compound fixture scope explicit. No native model evidence.\nFiles: src/harness/permissions/claude.rs, src/harness/claude.rs matcher fixtures.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.4: consumes boundary contract\nAcceptance consumes declared producer artifact (needs: ht-uwd.4).\nboundary contract: ht-uwd.4",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:52:37Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:56:34Z",
+    "metadata": {
+      "files_touched": [
+        "src/harness/claude.rs",
+        "src/harness/permissions/claude.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.5.1",
+        "depends_on_id": "ht-uwd.5",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:52:37Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.5.1",
+        "depends_on_id": "ht-uwd.4",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:52:38Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 4,
+    "comment_count": 0,
+    "parent": "ht-uwd.5"
+  },
+  {
+    "id": "ht-uwd.3.2",
+    "title": "Human check-in and person communication preserve provenance",
+    "description": "Wire human me init/check-in and human communication through existing Human claims and operator semantics, preserve agent-to-human A4 guard unless existing operator UID decision permits.\nowns: human lifecycle/communication route integration.\nconsumes: runtime actor boundary.\nAcceptance: RED/GREEN Human init/communication/operator repair, no fabricated agent binding, legacy root refuses before effects, canonical stale/hold guards still decide.\nFiles: src/cli/me.rs, tests/cli/human.rs; commands grammar owned by ht-uwd.1.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.1: consumes InvocationActor route and ordinary command catalog\nblocked-by ht-uwd.3.1: consumes runtime actor boundary\nAcceptance consumes declared producer artifact (needs: ht-uwd.1).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:51:20Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:56:35Z",
+    "metadata": {
+      "files_touched": [
+        "src/cli/me.rs",
+        "tests/cli/human.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.3.2",
+        "depends_on_id": "ht-uwd.3",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:51:20Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.3.2",
+        "depends_on_id": "ht-uwd.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:51:21Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.3.2",
+        "depends_on_id": "ht-uwd.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:51:20Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-uwd.3"
+  },
+  {
+    "id": "ht-uwd.3.1",
+    "title": "Guard accountable caller selection before local effects",
+    "description": "Own route validation in derive_caller/derive_selection/run_selected/run_cooperative/run_operator and own-inbox handling.\nowns: runtime actor boundary.\nconsumes: InvocationActor route.\nAcceptance: root inferred Human refuses before context retirement, intent mkdir or daemon mutation; explicit agent selector remains lawful; human agent-selector mismatch refuses; Human own inbox never creates display ACK.\nFiles: src/cli/mod.rs caller/dispatch sections, tests/cli/cooperative.rs, tests/cli/human.rs.\nFiles and acceptance are scope bounded; use isolated fixtures, test-support spawn and no live model.\nblocked-by ht-uwd.1: consumes InvocationActor route and ordinary command catalog\nAcceptance consumes declared producer artifact (needs: ht-uwd.1).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:51:18Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:18:29Z",
+    "metadata": {
+      "files_touched": [
+        "src/cli/mod.rs",
+        "tests/cli/cooperative.rs",
+        "tests/cli/human.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.3.1",
+        "depends_on_id": "ht-uwd.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:51:19Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.3.1",
+        "depends_on_id": "ht-uwd.3",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:51:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 4,
+    "comment_count": 0,
+    "parent": "ht-uwd.3"
+  },
+  {
+    "id": "ht-uwd.10",
+    "title": "Configuration smoke: Claude/Codex, bare/ht/absolute/pinned, root/human",
+    "description": "Run early isolated parse_argv and Claude/Codex renderer decisions for each bare/ht/canonical/link/alias/pinned, root/human, output/quoted-body/compound configuration. Run parse_argv fixtures for root/human, legacy/operator/inferred-Human refusal and --human formatting. Early verification is not terminal readiness only.\nowns: cross-configuration focused smoke fixtures.\nconsumes: Claude rule renderer and representability contract; Codex permission backend; namespace grammar; minimal runtime actor boundary.\nAcceptance: named command/fixture per configuration, actual nonzero tests, model-free evidence labels, relevant RED/GREEN.\nFiles: tests/permissions_smoke.rs (combined module), tests/combined.rs registration; test-support required if spawning.\nblocked-by ht-uwd.3.1: consumes runtime actor boundary\nblocked-by ht-uwd.5.1: consumes Claude rule renderer and representability contract\nblocked-by ht-uwd.6: consumes Codex owned execpolicy backend\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.3.1).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:49:07Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:59:28Z",
+    "metadata": {
+      "files_touched": [
+        "tests/combined.rs",
+        "tests/permissions_smoke.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.10",
+        "depends_on_id": "ht-uwd.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:59:31Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.10",
+        "depends_on_id": "ht-uwd.6",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:09Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.10",
+        "depends_on_id": "ht-uwd.5.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:59:33Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.10",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:49:07Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 3,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.9",
+    "title": "Human command guidance and immutable continuation rendering",
+    "description": "Update owned guidance, generated pending/retry/ready/continuation commands and TRUST-POLICY spelling/native limits. Human output ready argv preserves immediate human; no new strict OutputSpec/ContinuationContext wire field, digest rewrite, or blind replacement of peer/body text. Supply exact shared SKILL/handoff help wording to w4:pD0 via parent and consume only coordinated source.\nowns: lawful namespace suggestions and documentation.\nconsumes: InvocationActor route; frozen retry origin classifier; runtime actor boundary.\nAcceptance: valid legacy wire fixtures and generated human/agent continuation argv; precise suggestions and no peer/body rewriting.\nFiles: src/cli/output.rs, src/cli/journal.rs rendering, src/cli/me.rs help, TRUST-POLICY.md, docs/install.md; shared integrations/skill/SKILL.md and handoff help owner-coordinated.\nblocked-by ht-uwd.2: consumes Immutable original actor classification and retry preflight\nblocked-by ht-uwd.3: consumes Runtime honest actor routing and human lifecycle\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.2).\nOutputSpec/ContinuationContext deny_unknown_fields compatibility and frozen wire digest are immutable: build local namespace argv without serialized schema changes or blind text replacement.\nOutputSpec/ContinuationContext deny_unknown_fields compatibility and frozen wire digest are immutable: build local namespace argv without serialized schema changes or blind text replacement.\nRound1 settled refinement: Known structured argv producers must add human before daemon page fitting for new person/operator suggestions using existing action/caller semantics, no serialized actor field. Local legacy rendering clones only known argv fields and checks final encoding against original max-bytes; refuse via existing required-minimum budget error if framing cannot fit, unchanged cursor/rows/persisted frozen response. Never blind peer/body replacement. Own src/protocol/output.rs budget-compatible helpers and concrete suggestion producer wiring needed; no wire schema/digest change.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:49:04Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:18:30Z",
+    "metadata": {
+      "files_touched": [
+        "TRUST-POLICY.md",
+        "docs/install.md",
+        "src/cli/journal.rs",
+        "src/cli/me.rs",
+        "src/cli/output.rs",
+        "src/protocol/output.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.9",
+        "depends_on_id": "ht-uwd.2",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:05Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.9",
+        "depends_on_id": "ht-uwd.3",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:05Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.9",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:49:04Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.8",
+    "title": "Installer validated owned paths and permission gateway",
+    "description": "Pass canonical installed binary, owned herdr-threads link and ht alias plus pinned routing into component reconciliation. Reuse exact alias/foreign/force/PATH protection; update consent/exit/next steps for independent permissions, no unrelated PATH grant.\nowns: installer executable inventory transport.\nconsumes: independent component lifecycle and consent.\nAcceptance: actual installer shell fixture gateway plus Rust consumer, bare/absolute/custom-prefix paths and foreign/declined/update/uninstall preservation; installed path set verified.\nFiles: scripts/install.sh, tests/release/install_test.sh, src/cli/installer.rs input plumbing.\nblocked-by ht-uwd.7: consumes Independent setup lifecycle and permission consent\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.7).",
+    "design": "Spec: docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--installer-permission-gateway-design.md; fresh review both children LEAF, COMPLETE.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:49:02Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:56:53Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 4,
+      "files_touched": [
+        "scripts/install.sh",
+        "src/cli/installer.rs",
+        "tests/release/install_test.sh"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.8",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:49:02Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.8",
+        "depends_on_id": "ht-uwd.7",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:03Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.7",
+    "title": "Independent setup lifecycle and permission consent",
+    "description": "Wire permissions beside hooks/skill for explicit setup/status/unsetup, installer-integrations reconciliation and requested doctor fix. Explicit permission consent names ordinary reads/writes and human/operator exclusion; hooks ownership alone never grants. Sequential shared-settings plans re-read exact inspected state after consent.\nowns: component lifecycle and consent.\nconsumes: Claude permission backend; Codex permission backend; permission component API.\nAcceptance: real Rust synthetic component path install/status/remove + absent/declined/noninteractive consent and mixed hook status, no clobber; isolated roots only.\nFiles: src/cli/setup.rs, src/cli/installer.rs, src/cli/doctor.rs, tests/installer_integrations.rs.\nblocked-by ht-uwd.5: consumes Claude narrow permissions and durable legacy ownership migration\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.5).\nGraph pass: Codex backend dependency is carried by lifecycle leaf ht-uwd.7.1; reconciliation leaf ht-uwd.7.2 consumes its lifecycle API, not a separate direct backend wait.",
+    "design": "Spec: docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--setup-permission-lifecycle-design.md; fresh review both children LEAF, COMPLETE.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:48:59Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:24:05Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 3,
+      "files_touched": [
+        "src/cli/doctor.rs",
+        "src/cli/installer.rs",
+        "src/cli/setup.rs",
+        "tests/installer_integrations.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.7",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:48:59Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.7",
+        "depends_on_id": "ht-uwd.5",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:49:00Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.6",
+    "title": "Codex owned execpolicy backend",
+    "description": "Generate exact executable union allow plus matching immediate human prompt, install/status/remove owned rules file under active CODEX_HOME/rules. Retain stronger policy and separate existing codex_config network/socket/writable-root allowances.\nowns: Codex permission backend.\nconsumes: PermissionInputs, PermissionPlan/Inspection and component manifest schema.\nAcceptance: isolated literal/union checker contract, precedence, paths, quoted/compound evidence scope, edited/foreign/partial/symlink/race removal refusal; no shell prefixes or modes.\nFiles: src/harness/permissions/codex.rs, tests/permissions_codex.rs (combined module).\nblocked-by ht-uwd.4: consumes boundary contract\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.4).\nboundary contract: ht-uwd.4\nRound1 settled refinement: Consume shared OwnedConfigWriteGuard for owned rules/manifest mutation; exact Starlark literal escaping including spaces/metachars/apostrophe. Generic interrupted fresh/update/remove honestly refuses partial state, no universal recovery claim.\nconsumes: OwnedConfigWriteGuard (boundary contract ht-uwd.4).",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:48:57Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:14:15Z",
+    "metadata": {
+      "files_touched": [
+        "src/harness/permissions/codex.rs",
+        "tests/permissions_codex.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.6",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:48:57Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.6",
+        "depends_on_id": "ht-uwd.4",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:48:58Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.5",
+    "title": "Claude narrow permissions and durable legacy ownership migration",
+    "description": "Implement independent Claude positive-family renderer plus exact lifecycle, decouple hook auto-grant/completeness, durable transfer from historical owned broad/retired rules. Design transfer interruption and shared settings conflict behavior before code.\nowns: Claude permission backend and historical hook transfer.\nconsumes: PermissionInputs, PermissionPlan/Inspection and component manifest schema; ordinary command catalog.\nAcceptance: historical/pre-existing/edited/partial/symlink/race fixtures; no broad restore or foreign adoption; preserve unrelated/deny/ask, native limits disclosed.\nFiles: src/harness/setup.rs, src/harness/claude.rs, src/harness/permissions/claude.rs, tests/installer_integrations.rs.\nblocked-by ht-uwd.4: consumes boundary contract\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.4).\nboundary contract: ht-uwd.4",
+    "design": "Spec: docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--claude-permission-migration-design.md; renderer/decoupling LEAF, transfer promoted and fully designed.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:48:56Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:18:32Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 2,
+      "files_touched": [
+        "src/harness/claude.rs",
+        "src/harness/permissions/claude.rs",
+        "src/harness/setup.rs",
+        "tests/installer_integrations.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.5",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:48:56Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.5",
+        "depends_on_id": "ht-uwd.4",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:48:56Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.4",
+    "title": "Seam contract: owned permission component and validated executable inputs",
+    "description": "Deliver compilable inert-by-default permission module/API: bounded validated executable spellings and routing, inspect/plan/install/remove backend types, separate manifest/status/consent fields, module wiring. Only boundary code and its acceptance; no backend implementation/migration/polish.\nowns: PermissionInputs, PermissionPlan/Inspection and component manifest schema.\nconsumes: ordinary command catalog.\nAcceptance: compile, no silent grant, validated union rejects foreign/control/relative paths; stubs wired to consumer boundaries.\nFiles: src/harness/permissions.rs or permissions/mod.rs, src/harness/mod.rs, src/cli/setup.rs boundary declarations, src/cli/installer.rs boundary declarations.\nblocked-by ht-uwd.1: consumes Namespace grammar and ordinary command catalog\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.1).\nRound1 settled refinement: Owns additional minimal boundary: PermissionInspection states Missing/ExactHistoricalOwned/CurrentOwned/Conflict/Foreign and OwnedConfigWriteGuard signature/RAII primitive keyed by verified config identity. No grant expansion from executable ownership. Inert setup declarations; backend writers consume guard. Existing std File::try_lock/Drop unlock, bounded busy conflict; stable owned inode no unlink, symlink/foreign refusal. No general locking framework.\nowns: OwnedConfigWriteGuard and PermissionInspection ownership states.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:48:54Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:18:32Z",
+    "metadata": {
+      "files_touched": [
+        "src/cli/installer.rs",
+        "src/cli/setup.rs",
+        "src/harness/mod.rs",
+        "src/harness/permissions.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.4",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:48:54Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.4",
+        "depends_on_id": "ht-uwd.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:48:54Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 9,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.3",
+    "title": "Runtime honest actor routing and human lifecycle",
+    "description": "Propagate route through caller/selection/cooperative/operator paths and me init; root accountable actions refuse inferred Human before intent/context retirement/effects; Human route lawful communication/lifecycle with existing A2/A3/A4, own inbox no display ACK. Native hooks unchanged.\nowns: runtime actor boundary.\nconsumes: InvocationActor route.\nAcceptance: synthetic/private fixture RED/GREEN inferred Human root refusal, explicit agent selection, person communication/check-in/operator repair and no pre-refusal effects.\nFiles: src/cli/mod.rs dispatch/caller paths, src/cli/me.rs, tests/cli/human.rs, tests/cli/cooperative.rs.\nblocked-by ht-uwd.1: consumes Namespace grammar and ordinary command catalog\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.1).",
+    "design": "Spec: docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--runtime-actor-routing-design.md; fresh promotion review COMPLETE, both children LEAF.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:48:52Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:18:33Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 1,
+      "files_touched": [
+        "src/cli/me.rs",
+        "src/cli/mod.rs",
+        "tests/cli/cooperative.rs",
+        "tests/cli/human.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.3",
+        "depends_on_id": "ht-uwd.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:48:52Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.3",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:48:52Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.2",
+    "title": "Immutable original actor classification and retry preflight",
+    "description": "Classify validated original SemanticMutation/frozen CallerClaim/IntentScope, including Native lifecycle and contradictions, before completed handoff shortcut output/cleanup. Existing agent completed replay after binding change remains root-valid; retained human/operator only human retry. Read absent journal without mkdir; no schema/claim/scope/digest/key rewrite.\nowns: frozen retry origin classifier and preflight.\nconsumes: InvocationActor route.\nAcceptance: RED/GREEN legacy person/operator, completed agent/person, Native and malformed; byte-identical replay invariance.\nFiles: src/cli/journal.rs, src/cli/retry.rs, src/cli/mod.rs preflight only, tests/cli/journal.rs, tests/cli/follow_retry.rs; coordinate handoff.rs owner through parent.\nblocked-by ht-uwd.1: consumes Namespace grammar and ordinary command catalog\nAcceptance deliverables above consume required predecessors (needs: ht-uwd.1).\nRound1 settled refinement: Before original actor classification use InstancePaths::resolve_read_only and read-only validated journal loader; do not create allocator.lock/runtime dir/marker/ordinal metadata merely on refusal. Scope authority unchanged.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:48:50Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:14:13Z",
+    "metadata": {
+      "files_touched": [
+        "src/cli/journal.rs",
+        "src/cli/mod.rs",
+        "src/cli/retry.rs",
+        "tests/cli/follow_retry.rs",
+        "tests/cli/journal.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.2",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:48:50Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-uwd.2",
+        "depends_on_id": "ht-uwd.1",
+        "type": "blocks",
+        "created_at": "2026-10-08T05:48:51Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 3,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd.1",
+    "title": "Namespace grammar and ordinary command catalog",
+    "description": "Implement immediate raw argv[1] human route separate from output; reject legacy person/operator aliases/globals with correct replacement. Own commands.rs and new actor_route.rs (human.rs is output rendering). Export positive ordinary-family catalog for renderers, supported pinned/output spellings.\nowns: InvocationActor route and ordinary command catalog.\n\nAcceptance: meaningful parse RED/GREEN bare/ht/absolute, pinned globals, output --human, body data, all legacy operator/person aliases.\nFiles: src/cli/commands.rs, src/cli/actor_route.rs, tests/cli/commands.rs.\nNamespace owner reserves setup/internal installer parser args up front and owns only actor_route module declaration in src/cli/mod.rs. Preserve generic OsString/non-UTF8 parse behavior without lossy identity. Root ServiceDisconnect is Human administrative; launch and read-only discovery remain ordinary.\nFiles: src/cli/mod.rs module declaration only.\nNamespace owner reserves setup/internal installer parser args up front and owns only actor_route module declaration in src/cli/mod.rs. Preserve generic OsString/non-UTF8 parse behavior without lossy identity. Root ServiceDisconnect is Human administrative; launch and read-only discovery remain ordinary. Files: src/cli/mod.rs module declaration only.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:48:49Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T06:18:34Z",
+    "metadata": {
+      "files_touched": [
+        "src/cli/actor_route.rs",
+        "src/cli/commands.rs",
+        "src/cli/mod.rs",
+        "tests/cli/commands.rs"
+      ]
+    },
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-uwd.1",
+        "depends_on_id": "ht-uwd",
+        "type": "parent-child",
+        "created_at": "2026-10-08T05:48:49Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 6,
+    "comment_count": 0,
+    "parent": "ht-uwd"
+  },
+  {
+    "id": "ht-uwd",
+    "title": "Installer permissions and explicit human namespace",
+    "description": "Observable goal: owned native Claude/Codex ordinary read/write grants with immediate human/operator exclusion, honest actor routing and immutable retry. Authoritative design: docs/superpowers/runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions-design.md. Merge-ready scope only; no real config/shared server/native model/full suite/release. Root belongs solely to this run.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-08T05:47:54Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-08T05:47:54Z",
+    "labels": [
+      "sp:ht-uwd"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]
