@@ -29,6 +29,8 @@ use crate::{
     store::{SqliteStore, StoreSettings, connection::StoreContext},
 };
 // Child module so the contract tests reuse this file's private fixtures.
+#[path = "mod_routing.rs"]
+mod mod_routing;
 #[path = "wake_outcome_contract.rs"]
 mod wake_outcome_contract;
 #[path = "wake_outcome_seam.rs"]
@@ -1751,6 +1753,7 @@ fn sqlite_actual_wake_worker_retries_completion_and_yields_to_foreground() {
         status.clone(),
         Arc::new(crate::ports::NoPokeCapabilities),
         Arc::new(crate::service::host_reachability::HostReachability::default()),
+        Arc::new(crate::ports::NoModChannels),
     )
     .unwrap();
     let cleanup = WakeWorkerCleanup {

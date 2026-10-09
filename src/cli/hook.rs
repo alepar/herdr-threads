@@ -2173,25 +2173,37 @@ fn lifecycle_check_in(
         .as_ref()
         .and_then(|presented| presented.notices.summary());
     let overview = carried.and_then(|presented| presented.overview);
-    let summary =
-        bridge::join_summaries(seeded.as_ref().map(|(_, digest)| digest.summary()), notices);
-    let actions = next_actions(&prefix, seeded.as_ref().map(|(_, digest)| digest));
-    let attention = seeded.map(|(execution, digest)| {
-        let token = owned
-            .attention_mark(execution)
-            .map_or(digest.token, |mark| mark.join(&digest.token));
-        AttentionCommit {
-            contexts: owned,
-            execution,
-            token,
-        }
-    });
+    // Spec D7: while a mod channel is live for the seat the mod delivers
+    // attention, so the digest line, the ready commands and the mark seed are
+    // omitted; the offered notices still show. The lifecycle CheckIn itself
+    // has already run (enrollment and rotation are unaffected).
+    let mod_live = seeded
+        .as_ref()
+        .is_some_and(|(_, digest)| digest.mod_channel_live);
+    let (summary, actions, attention) = if mod_live {
+        (bridge::join_summaries(None, notices), None, None)
+    } else {
+        let summary =
+            bridge::join_summaries(seeded.as_ref().map(|(_, digest)| digest.summary()), notices);
+        let actions = next_actions(&prefix, seeded.as_ref().map(|(_, digest)| digest));
+        let attention = seeded.map(|(execution, digest)| {
+            let token = owned
+                .attention_mark(execution)
+                .map_or(digest.token, |mark| mark.join(&digest.token));
+            AttentionCommit {
+                contexts: owned,
+                execution,
+                token,
+            }
+        });
+        (summary, Some(actions), attention)
+    };
     Ok(CheckedIn {
         command_routing: None,
         text,
         fallback,
         summary,
-        actions: Some(actions),
+        actions,
         overview,
         recovery: None,
         attention,

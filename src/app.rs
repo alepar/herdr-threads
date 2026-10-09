@@ -1235,6 +1235,11 @@ where
             // wake lane freezes while Herdr is unavailable and the observation
             // lane's first answered capture kicks it (ht-72q).
             let reachability = Arc::new(HostReachability::default());
+            // The one registry of live mod delivery channels, shared by the
+            // wake lane (routing) and the domain service (digest flag).
+            // Inert here; ht-j16.2 replaces it with the real registry.
+            let mod_channels: Arc<dyn crate::ports::ModChannels> =
+                Arc::new(crate::ports::NoModChannels);
             let wake_pacer = register_lane(Lane::Wakes);
             reachability.attach_wake_pacer(Arc::clone(&wake_pacer));
             factory_probe.attach_reachability(&reachability);
@@ -1250,6 +1255,7 @@ where
                 Arc::clone(&factory_wake_status),
                 Arc::new(ObservedPokeCapabilities::new(Arc::clone(&harnesses))),
                 Arc::clone(&reachability),
+                Arc::clone(&mod_channels),
             )?);
             let observation_pacer = Arc::new(Pacer::new(
                 Lane::Observation.name(),
@@ -1401,8 +1407,7 @@ where
             )
             .with_operator_owner(crate::daemon::paths::effective_uid())
             .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer)
-            // Inert registry; ht-j16.2 replaces it with the shared one.
-            .with_mod_channels(Arc::new(crate::ports::NoModChannels));
+            .with_mod_channels(Arc::clone(&mod_channels));
             let stop = StopController::new(instance, boot, cancellation);
             let provider = elected_health_provider(
                 instance,

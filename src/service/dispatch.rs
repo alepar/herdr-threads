@@ -54,6 +54,12 @@ impl DomainService {
     pub fn mod_channels(&self) -> &Arc<dyn crate::ports::ModChannels> {
         &self.mod_channels
     }
+    /// True while the registry holds a live or grace entry for the seat.
+    fn seat_has_mod_channel(&self, seat: &crate::protocol::ids::SeatId) -> bool {
+        self.mod_channels
+            .status()
+            .is_some_and(|status| status.channels.iter().any(|c| &c.seat == seat))
+    }
     /// Supplied by the elected runtime, never by a request payload.
     pub fn with_operator_owner(mut self, owner_uid: u32) -> Self {
         self.operator_owner_uid = Some(owner_uid);
@@ -350,12 +356,31 @@ impl LocalService for DomainService {
             | Command::Recipients(_)
             | Command::DeliveryInspect(_)
             | Command::PendingReceipts(_)
-            | Command::AttentionDigest(_)
-            | Command::AttentionDigestDelivery(_)
             | Command::HotThreads(_)
             | Command::Message(_)
             | Command::Diagnostics(_)
             | Command::RetirementJobs(_) => self.store.query(&command, &read, budget),
+            Command::AttentionDigest(_) | Command::AttentionDigestDelivery(_) => {
+                let seat = match &command {
+                    Command::AttentionDigest(q) | Command::AttentionDigestDelivery(q) => {
+                        q.seat.clone()
+                    }
+                    _ => unreachable!("matched above"),
+                };
+                let mut result = self.store.query(&command, &read, budget)?;
+                // Spec D7: any live or grace entry for the seat, which also
+                // covers the rebind grace of the SessionStart check-in that
+                // rotated the generation.
+                let live = self.seat_has_mod_channel(&seat);
+                match &mut result {
+                    CommandResult::AttentionDigest(digest)
+                    | CommandResult::AttentionDigestDelivery { digest, .. } => {
+                        digest.mod_channel_live = live;
+                    }
+                    _ => {}
+                }
+                Ok(result)
+            }
             Command::OperationStatus(_) => Err(error(
                 ErrorCode::Unauthorized,
                 "verified operation scope required",
@@ -744,3 +769,7 @@ mod cooperative_tests;
 #[cfg(test)]
 #[path = "../../tests/service/mod_ack_dispatch.rs"]
 mod mod_ack_dispatch_tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/mod_digest_flag.rs"]
+mod mod_digest_flag_tests;

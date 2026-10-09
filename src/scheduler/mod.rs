@@ -13,16 +13,16 @@ use crate::{
         policy::{AttentionSnapshot, DurableRetry, RetryConfig, poke_text},
     },
     ports::{
-        HostCallContext, NoPokeCapabilities, NotificationPort, PokeAttempt, PokeCapabilitySource,
-        PokeDue, PokeMode, PokePlan, PokeReceipt, PokeReservation, PriorLadder, WakeCandidate,
-        WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest,
-        WakeReservation,
+        HostCallContext, ModChannels, NoModChannels, NoPokeCapabilities, NotificationPort,
+        PokeAttempt, PokeCapabilitySource, PokeDue, PokeMode, PokePlan, PokeReceipt,
+        PokeReservation, PriorLadder, WakeCandidate, WakeOutcome, WakeRecoveryCandidate,
+        WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
     },
     protocol::{
         ids::{SeatId, ThreadId, WakeAttemptId},
         pagination::{Page, PageRequest},
         results::{ApiError, ErrorCode},
-        time::{CallBudget, Cancellation, Clock, MonoInstant},
+        time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
     },
 };
 
@@ -241,6 +241,13 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
         }
     }
 
+    /// Supplies the registry of live mod delivery channels (spec D7): a seat
+    /// with a live, non-stalled channel gets no native wake or poke.
+    pub fn with_mod_channels(mut self, channels: &'a dyn ModChannels) -> Self {
+        self.wakes.mod_channels = channels;
+        self
+    }
+
     /// Supplies the harness recipes' poke capability evidence.
     pub fn with_poke_capabilities(mut self, caps: &'a dyn PokeCapabilitySource) -> Self {
         self.wakes.caps = caps;
@@ -275,9 +282,14 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
                 .lock()
                 .map_err(|_| error(ErrorCode::StoreCorrupt, "wake state lock poisoned"))?;
             let now = self.wakes.store.clock().monotonic_now();
+            let utc = self.wakes.store.clock().utc_now();
             candidates
                 .into_iter()
-                .filter(|due| !due.receipts.is_empty() && poke_admissible(&state, &due.seat, now))
+                .filter(|due| {
+                    !due.receipts.is_empty()
+                        && !mod_suppressed(self.wakes.mod_channels, &due.seat, None, utc)
+                        && poke_admissible(&state, &due.seat, now)
+                })
                 .take(usize::from(POKE_SEAT_LIMIT))
                 .collect()
         };
@@ -584,6 +596,28 @@ pub struct WakeRunner<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> {
     state: Mutex<WakeRunnerState>,
     /// Evidence-backed poke capabilities per harness (default: none declared).
     caps: &'a dyn PokeCapabilitySource,
+    /// Live mod delivery channels (spec D7); default: none.
+    mod_channels: &'a dyn ModChannels,
+}
+
+static NO_MOD_CHANNELS: NoModChannels = NoModChannels;
+
+/// Spec D7: a live mod channel (grace included) replaces native wake and poke
+/// for its seat; a stalled one does not (ht-j16.2 then hands it over).
+/// `generation: None` asks whether any channel exists for the seat.
+fn mod_suppressed(
+    channels: &dyn ModChannels,
+    seat: &SeatId,
+    generation: Option<u64>,
+    now: UtcMillis,
+) -> bool {
+    let live = match generation {
+        Some(generation) => channels.is_live(seat, generation),
+        None => channels
+            .status()
+            .is_some_and(|status| status.channels.iter().any(|entry| &entry.seat == seat)),
+    };
+    live && !channels.stalled(seat, now)
 }
 
 #[derive(Clone)]
@@ -638,6 +672,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             store,
             notifier,
             caps: &NoPokeCapabilities,
+            mod_channels: &NO_MOD_CHANNELS,
             state: Mutex::new(WakeRunnerState {
                 dispatch: DispatchState::new(config, boot_mono, daemon_boot),
                 pending: VecDeque::new(),
@@ -669,6 +704,17 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             if let Ok(mut state) = self.state.lock() {
                 state.dispatch.clear_refusal(&candidate.seat);
             }
+            return Ok(None);
+        }
+        // Spec D7: the mod channel delivers this seat's attention. Nothing is
+        // reserved, refused or recorded: the ladder is untouched, and the
+        // channel's removal kicks the wake lane so the candidate is re-derived.
+        if mod_suppressed(
+            self.mod_channels,
+            &candidate.seat,
+            candidate.binding_generation,
+            self.store.clock().utc_now(),
+        ) {
             return Ok(None);
         }
         let seat = candidate.seat.clone();
@@ -897,7 +943,9 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             .state
             .lock()
             .map_err(|_| error(ErrorCode::StoreCorrupt, "wake state lock poisoned"))?;
-        if !poke_admissible(&state, &seat, self.store.clock().monotonic_now()) {
+        if mod_suppressed(self.mod_channels, &seat, None, self.store.clock().utc_now())
+            || !poke_admissible(&state, &seat, self.store.clock().monotonic_now())
+        {
             return Ok(None);
         }
         let Some(reserved) = self.store.reserve_poke(due, budget)? else {

@@ -1039,6 +1039,12 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     };
     let mut mark = None;
     if let Ok(digest) = &digest {
+        // Spec D7: a live mod channel delivers attention itself. Stay quiet
+        // and leave the mark alone, so what is pending is presented once the
+        // channel is gone.
+        if digest.mod_channel_live {
+            return Ok(ToolBoundary::default());
+        }
         let advanced = match &last {
             Some(last) => digest.token.advanced_beyond(last) || notices_pending,
             // No mark (first call, or a compaction): present what is pending.
