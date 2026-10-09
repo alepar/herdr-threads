@@ -115,6 +115,18 @@ fn wait_until<T>(what: &str, timeout: Duration, mut probe: impl FnMut() -> Optio
 
 type Calls = Arc<Mutex<Vec<(String, Value)>>>;
 
+/// Serving threads and, while each still serves, a handle on its connection.
+/// A thread removes its own handle when it finishes (so the connection closes
+/// exactly as before); drop shuts the ones still serving (a pending read
+/// returns at once) and joins every thread.
+#[derive(Default)]
+struct ServingState {
+    next: u64,
+    open: std::collections::HashMap<u64, std::os::unix::net::UnixStream>,
+    threads: Vec<JoinHandle<()>>,
+}
+type Serving = Arc<Mutex<ServingState>>;
+
 /// The private Herdr endpoint: serves the scripted (mutable) panes like the
 /// sweep's, answers `agent.prompt` as delivered, and records every call.
 /// Each connection is answered on its own thread as soon as it is accepted
@@ -124,6 +136,7 @@ struct Host {
     stop: Arc<AtomicBool>,
     socket: PathBuf,
     worker: Option<JoinHandle<()>>,
+    serving: Serving,
     panes: Arc<Mutex<Vec<Value>>>,
     calls: Calls,
 }
@@ -133,21 +146,39 @@ impl Host {
         let stop = Arc::new(AtomicBool::new(false));
         let panes = Arc::new(Mutex::new(panes));
         let calls: Calls = Arc::default();
-        let (stopped, scripted, log) = (stop.clone(), panes.clone(), calls.clone());
+        let serving: Serving = Arc::default();
+        let (stopped, scripted, log, live) =
+            (stop.clone(), panes.clone(), calls.clone(), serving.clone());
         let worker = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if stopped.load(Ordering::SeqCst) {
                     return;
                 }
-                let Ok(stream) = stream else { continue };
-                let (scripted, log) = (scripted.clone(), log.clone());
-                std::thread::spawn(move || Self::serve(stream, &scripted, &log));
+                let Ok(stream) = stream else {
+                    // Do not spin on a persistent accept error.
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                let Ok(handle) = stream.try_clone() else {
+                    continue;
+                };
+                let (scripted, log, mine) = (scripted.clone(), log.clone(), live.clone());
+                let mut state = live.lock().unwrap();
+                let id = state.next;
+                state.next += 1;
+                state.open.insert(id, handle);
+                state.threads.retain(|thread| !thread.is_finished());
+                state.threads.push(std::thread::spawn(move || {
+                    Self::serve(stream, &scripted, &log);
+                    mine.lock().unwrap().open.remove(&id);
+                }));
             }
         });
         Self {
             stop,
             socket: socket.to_owned(),
             worker: Some(worker),
+            serving,
             panes,
             calls,
         }
@@ -220,6 +251,18 @@ impl Drop for Host {
         let _ = std::os::unix::net::UnixStream::connect(&self.socket);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
+        }
+        // No serving thread outlives the host: shut each connection (a read
+        // still waiting returns at once) and join its thread.
+        let threads = {
+            let mut state = self.serving.lock().unwrap();
+            for stream in state.open.values() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+            std::mem::take(&mut state.threads)
+        };
+        for thread in threads {
+            let _ = thread.join();
         }
     }
 }
@@ -2560,4 +2603,49 @@ fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
         l["kind"] == "attention_cleared"
     });
     assert!(bystander.running() && affected.running());
+}
+
+/// The stand-in host joins every serving thread on drop: a connection whose
+/// request never arrives (its thread blocked in the read, with a 10 s read
+/// timeout) is shut and joined at once, and the client sees the close.
+#[test]
+fn stand_in_host_drop_joins_a_blocked_serving_thread() {
+    let root = Scratch(std::env::temp_dir().join(format!(
+        "md-host-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    )));
+    fs::create_dir_all(&root.0).unwrap();
+    let socket = root.0.join("h.sock");
+    let host = Host::start(&socket, vec![]);
+    let mut silent = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    // Before the host closes it: macOS refuses the option once the peer hung up.
+    silent
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    wait_until(
+        "the silent connection to be served",
+        Duration::from_secs(5),
+        || (host.serving.lock().unwrap().open.len() == 1).then_some(()),
+    );
+    let serving = host.serving.clone();
+    let started = Instant::now();
+    drop(host);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "drop waited {:?} for a blocked serving thread",
+        started.elapsed()
+    );
+    // Only this handle remains: the accept worker and every serving thread
+    // (each holds a clone) have been joined.
+    assert_eq!(
+        Arc::strong_count(&serving),
+        1,
+        "a serving thread was not joined"
+    );
+    let mut rest = String::new();
+    assert_eq!(
+        std::io::Read::read_to_string(&mut silent, &mut rest).unwrap(),
+        0,
+        "the client sees the shut connection"
+    );
 }
