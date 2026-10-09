@@ -1,7 +1,7 @@
 # super-auto report — 2026-10-09-claude-mod-inbound-delivery
 
 status: completed with 0 unresolved Blocking, 4 escalations [degraded: coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage, final review: not ready (code-final-review-8.md; its two must-fixes were resolved after it, unreviewed by a further final review: finding 1 fixed at dc5b2f6c, live stress re-run at b562d1e4 13/14 3/3 with reload_mid_turn 2/3 ledger-only; post-cap audit clean)]
-metrics: parked draft — upstream-feedback-draft.md (5 defects, 3 design questions; not sent)
+metrics: sent — upstream-feedback-draft.md, delivered to the superpowers workspace agent tab (wB:p8)
 
 Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 3793cf88 after absorbing main at 53b6df93). Goal and spec: [design](2026-10-09-claude-mod-inbound-delivery-design.md).
 

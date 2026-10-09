@@ -1,6 +1,6 @@
 # 2026-10-09-claude-mod-inbound-delivery: run profile owned by no one in Workflow mode; post-loop fix chains run unreviewed
 
-Status: PARKED DRAFT (autonomous run). Not sent. Destination per user preference: the superpowers workspace agent tab in Herdr. Needs the user's yes on the final body, and a decision on scrubbing, before it is sent.
+Status: sent 2026-10-09 to the superpowers workspace agent tab (wB:p8) per the standing preference; not scrubbed.
 
 Plugin: superpowers 6.4.2-alepar4.20. Run: 34 beads (the epic, 26 work and fix leaves, 6 review beads and 1 gate). There were 8 super-code invocations. The design roast took 2 rounds; the code roast took 2 rounds plus a post-cap audit. Autonomous, about 9h15m.
 

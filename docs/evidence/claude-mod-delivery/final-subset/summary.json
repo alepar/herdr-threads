@@ -1,0 +1,317 @@
+{
+ "claude_version": "2.1.295",
+ "finished": "2026-10-09T08:59:04-0700",
+ "herdr": "stand-in endpoint (fake panes w1:p1 sender, w1:p2 claude)",
+ "iterations": 3,
+ "minutes": 4.8,
+ "mode": "live",
+ "native_prompts_total": 1,
+ "profile": "signed-in profile in place (CLAUDE_CONFIG_DIR), real HOME",
+ "scenarios": {
+  "clear_rebind": {
+   "fail": 0,
+   "iterations": [
+    {
+     "ids": [
+      "mcx07312E",
+      "m9q5XcCmr"
+     ],
+     "iteration": 0,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [],
+     "paths": {
+      "m9q5XcCmr": [
+       "submit"
+      ],
+      "mcx07312E": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "m9q5XcCmr": "acked",
+      "mcx07312E": "acked"
+     },
+     "seconds": 21.8,
+     "settled": true
+    },
+    {
+     "ids": [
+      "mWWcjDqT2",
+      "moTzNRMgd"
+     ],
+     "iteration": 1,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [],
+     "paths": {
+      "mWWcjDqT2": [
+       "submit"
+      ],
+      "moTzNRMgd": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "mWWcjDqT2": "acked",
+      "moTzNRMgd": "acked"
+     },
+     "seconds": 30.1,
+     "settled": true
+    },
+    {
+     "ids": [
+      "mOtwZyJHF",
+      "mLTPvqvTe"
+     ],
+     "iteration": 2,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [],
+     "paths": {
+      "mLTPvqvTe": [
+       "submit"
+      ],
+      "mOtwZyJHF": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "mLTPvqvTe": "acked",
+      "mOtwZyJHF": "acked"
+     },
+     "seconds": 16.1,
+     "settled": true
+    }
+   ],
+   "pass": 3
+  },
+  "idle_submit": {
+   "fail": 0,
+   "iterations": [
+    {
+     "ids": [
+      "mIQmON9ox"
+     ],
+     "iteration": 0,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [],
+     "paths": {
+      "mIQmON9ox": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "mIQmON9ox": "acked"
+     },
+     "seconds": 5.2,
+     "settled": true
+    },
+    {
+     "ids": [
+      "mWyyaBmXl"
+     ],
+     "iteration": 1,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [],
+     "paths": {
+      "mWyyaBmXl": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "mWyyaBmXl": "acked"
+     },
+     "seconds": 4.3,
+     "settled": true
+    },
+    {
+     "ids": [
+      "ma71k8lvU"
+     ],
+     "iteration": 2,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [],
+     "paths": {
+      "ma71k8lvU": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "ma71k8lvU": "acked"
+     },
+     "seconds": 4.3,
+     "settled": true
+    }
+   ],
+   "pass": 3
+  },
+  "reload": {
+   "fail": 0,
+   "iterations": [
+    {
+     "ids": [
+      "mCDEz8rw9",
+      "mh3Eu3ZJv"
+     ],
+     "iteration": 0,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [],
+     "paths": {
+      "mCDEz8rw9": [
+       "submit"
+      ],
+      "mh3Eu3ZJv": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "mCDEz8rw9": "acked",
+      "mh3Eu3ZJv": "acked"
+     },
+     "seconds": 10.7,
+     "settled": true
+    },
+    {
+     "ids": [
+      "mCvrEYfwt",
+      "mpRDlDUMv"
+     ],
+     "iteration": 1,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [],
+     "paths": {
+      "mCvrEYfwt": [
+       "submit"
+      ],
+      "mpRDlDUMv": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "mCvrEYfwt": "acked",
+      "mpRDlDUMv": "acked"
+     },
+     "seconds": 10.9,
+     "settled": true
+    },
+    {
+     "ids": [
+      "mwkFzQ8BS",
+      "miUWgSzLY"
+     ],
+     "iteration": 2,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [],
+     "paths": {
+      "miUWgSzLY": [
+       "submit"
+      ],
+      "mwkFzQ8BS": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "miUWgSzLY": "acked",
+      "mwkFzQ8BS": "acked"
+     },
+     "seconds": 10.9,
+     "settled": true
+    }
+   ],
+   "pass": 3
+  },
+  "reload_mid_turn": {
+   "fail": 0,
+   "iterations": [
+    {
+     "ids": [
+      "m5fs376Dh"
+     ],
+     "iteration": 0,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [
+      "reload_mid_turn 0: module saved at 1791561272441, new watch child at 1791561278324, turn ended at 1791561277657 (applied at the turn boundary)"
+     ],
+     "paths": {
+      "m5fs376Dh": [
+       "context"
+      ]
+     },
+     "receipts": {
+      "m5fs376Dh": "acked"
+     },
+     "seconds": 12.9,
+     "settled": true
+    },
+    {
+     "ids": [
+      "m5iotYt28"
+     ],
+     "iteration": 1,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [
+      "reload_mid_turn 1: module saved at 1791561286824, new watch child at 1791561289749, turn ended at 1791561289202 (applied at the turn boundary)"
+     ],
+     "paths": {
+      "m5iotYt28": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "m5iotYt28": "acked"
+     },
+     "seconds": 15.1,
+     "settled": true
+    },
+    {
+     "ids": [
+      "mbQtGm0Mj"
+     ],
+     "iteration": 2,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [
+      "reload_mid_turn 2: module saved at 1791561337197, new watch child at 1791561340250, turn ended at 1791561339770 (applied at the turn boundary)"
+     ],
+     "paths": {
+      "mbQtGm0Mj": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "mbQtGm0Mj": "acked"
+     },
+     "seconds": 46.9,
+     "settled": true
+    }
+   ],
+   "pass": 3
+  }
+ },
+ "seed": null,
+ "sent": 18,
+ "sent_lazy": 0,
+ "sha": "73a75cbf99c45fd3ad1848da6768f6d1958e11fa",
+ "status": "LIVE"
+}

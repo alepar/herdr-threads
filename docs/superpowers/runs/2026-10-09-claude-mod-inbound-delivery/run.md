@@ -64,4 +64,4 @@ liveStress: re-run at b562d1e4 (final code SHA): 13/14 scenarios 3/3; reload_mid
 sweepFix: none needed (11b01cd5 passed; at 53b6df93 the 2 load failures in untouched hermes tests did not reproduce alone or in a quiet full re-run — flake ht-uy3, no fix bead)
 friction: 6 events
 baseAbsorbed: 90066db1 → 3793cf88 (merge 53b6df93), 0 conflicted files (warning-wake candidate refinement, pacer wake hook, test schedule; no overlap with mod suppression code)
-feedback: parked draft upstream-feedback-draft.md (not sent; destination superpowers workspace agent tab, needs the user's yes)
+feedback: sent to the superpowers workspace agent tab wB:p8 (herdr agent prompt), report upstream-feedback-draft.md

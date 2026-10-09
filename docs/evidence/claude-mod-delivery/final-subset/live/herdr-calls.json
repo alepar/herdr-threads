@@ -1,0 +1,10 @@
+[
+ {
+  "at": 1791561262395,
+  "method": "agent.prompt",
+  "params": {
+   "target": "w1:p2",
+   "text": "herdr-threads: attention pending; run herdr-threads inbox"
+  }
+ }
+]

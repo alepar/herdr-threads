@@ -1,10 +1,21 @@
 # Claude mod delivery: live stress evidence (ht-j16.9)
 
-Status: LIVE at the final code SHA. The re-run after the D1-D3 fixes passed 13 of 14 scenarios in every
-iteration. `reload_mid_turn` passed 2/3: its one failure is a second `delivered` ledger entry with one submit and
-one presentation (details below). The first run, which found D1-D3, is kept below unchanged.
+Status: LIVE at the final code SHA. The final targeted re-run at `73a75cbf` (after the reload ledger fix) passed
+`reload_mid_turn`, `reload`, `clear_rebind` and `idle_submit` 3/3 each. The full 14-scenario re-run at `b562d1e4`
+passed 13 scenarios 3/3 and `reload_mid_turn` 2/3; that one failure was a second `delivered` ledger entry, now
+fixed. The first run, which found D1-D3, is kept below unchanged.
 
-## Re-run at the final code SHA (after ht-j16.28-.33 and dc5b2f6c)
+## Final targeted re-run (73a75cbf)
+
+- Command: `python3 tests/native/claude_mod/stress.py --iterations 3 --settle 60 --scenarios
+  reload_mid_turn,reload,clear_rebind,idle_submit`, Claude Code 2.1.295, 4.8 min. Results and files:
+  [`final-subset/`](final-subset/) (`summary.json` and `live/`). Every message acked, 0 native prompts, no
+  duplicate ledger entries. Leak check: "no leaked test processes".
+- `73a75cbf` changes only the mod: a successor no longer records ids its session record already holds as
+  delivered. The other 10 scenarios were not re-run; their code paths are unchanged since `b562d1e4` except for
+  that function.
+
+## Full re-run (b562d1e4, after ht-j16.28-.33 and dc5b2f6c)
 
 - Source SHA: `b562d1e4757534323ee500b40e864e2274e145b1` (`super-auto/claude-mod-inbound-delivery`), Claude Code
   2.1.295, same driver and profile setup as below. Command:
