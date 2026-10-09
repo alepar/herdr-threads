@@ -1,6 +1,6 @@
 # super-auto report — 2026-10-09-claude-mod-inbound-delivery
 
-status: completed with 0 unresolved Blocking, 4 escalations [degraded: coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage, final review: not ready (code-final-review-8.md; its two must-fixes were resolved after it, unreviewed by a further final review: finding 1 fixed at dc5b2f6c, live stress re-run at b562d1e4 13/14 3/3 with reload_mid_turn 2/3 ledger-only; post-cap audit clean)]
+status: completed with 0 unresolved Blocking, 4 escalations [degraded: coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage]
 metrics: sent — upstream-feedback-draft.md, delivered to the superpowers workspace agent tab (wB:p8)
 
 Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 3793cf88 after absorbing main at 53b6df93). Goal and spec: [design](2026-10-09-claude-mod-inbound-delivery-design.md).
@@ -19,13 +19,15 @@ Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 3793cf88 
 - ht-j16.17–.27 PR-roast and final-review fixes: per-seat liveness, ack chunking, capability-probe resilience, mod argv = hooks argv, notices while live, install safety, truncation marker (selectors, lazy variant), relay/intent markers, no delivery after the watch run ends, indented peer text — beads, ledger
 - ht-j16.28–.30 live-stress defects D1 (`/clear` rebind), D2 (reload mid-submit), D3 (Esc at permission dialog) — beads, run.md `postLoopFix`
 - ht-j16.31–.33 final review 7 must-fixes: pre-submit window re-check, thread/sender names in watch lines (spec D4), stale attention submit at session start — beads, run.md `postLoopFix`
+- 73a75cbf live re-run finding: a successor recorded a predecessor's already-delivered id again (fixed, delivery test) — run.md `postLoopFix`
 - dc5b2f6c final review 8 finding 1: predecessor batch with an attention block submitted twice after reload (fixed directly, with a delivery test) — run.md `postLoopFix`
 
 ## Verification
 
-- Sweep: 4029 passed, 0 failed, 43 skipped @ 53b6df93 (167 s, budget 5 min); leak check clean; clippy and check-default-features clean; also passed @ 11b01cd5 before the last main merge. A loaded run at 53b6df93 failed 2 untouched hermes runtime tests, which passed alone and in the quiet re-run: flake ht-uy3 — run.md `codeBuckets.sweep`, `sweepFix`
-- Mod JS tests: 83/83 (`scripts/test-claude-mod`) at dc5b2f6c — run.md `postLoopFix`
-- Live stress at b562d1e4 (final code SHA), 3 iterations: 13/14 scenarios 3/3; `reload_mid_turn` 2/3 — [evidence README](../../../evidence/claude-mod-delivery/README.md), run.md `liveStress`
+- Sweep: 4029 passed, 0 failed, 43 skipped @ f62267f5 (262 s, budget 5 min); leak check clean; clippy and check-default-features clean. Two earlier runs at the same SHA under load (~25, a concurrent worktree's suite) each failed one different test (release-build manifest timeout; hermes resume check-in UnknownOutcome) that passed alone: flakes ht-wur; a loaded run at 53b6df93 likewise hit ht-uy3 — run.md `codeBuckets.sweep`
+- Mod JS tests: 84/84 (`scripts/test-claude-mod`) at 73a75cbf — code-final-review-9.md
+- Live stress: full 14 scenarios at b562d1e4, 13/14 3/3 and reload_mid_turn 2/3 (one extra ledger entry); after the fix at 73a75cbf, reload_mid_turn, reload, clear_rebind and idle_submit 3/3 each — [evidence README](../../../evidence/claude-mod-delivery/README.md), run.md `liveStress`
+- Re-review of the post-review-8 fixes (dc5b2f6c, 73a75cbf): ready, no must-fix — [code-final-review-9.md](code-final-review-9.md)
 - Post-cap audit roast (bd8e6661 → 23fb8208 + merge 81dbb244 resolution): clean (1 nit) [converged] — [report](2026-10-09-claude-mod-inbound-delivery-roast-pr-post-cap-audit.md)
 
 ## Remaining
@@ -34,13 +36,14 @@ Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 3793cf88 
 - Escalation (design roast 1): `$.session.id()` in `session.end` returns the ending id — run.md `parked`; this is live defect D1, fixed by ht-j16.28, `clear_rebind` 3/3 live
 - Escalation (security review): frame markers spoofable by peer text — run.md `parked`; mitigated by ht-j16.27 indentation, recorded as a TRUST-POLICY accepted limit
 - Escalation (post-cap audit): D3 heuristic may hold idle submits up to 120 s after an ordinary failed/denied tool call, engine signal unverified — run.md `parked`, audit report
-- `reload_mid_turn` 2/3 live: a submit resolving just before dispose leaves its `submitting` record, the successor records a second `delivered` (one submit, one presentation, ack `already_settled`) — evidence README
+- Re-review 9 minors: a successor still ledgers a predecessor's attention id a second time (noise only); the stale-submitting case is covered only by a targeted test — code-final-review-9.md
 - Final review 8 minors: stress model does not count predecessor submits; session-start double presentation (digest + native wake before the mod registers) not named in TRUST-POLICY; `rec.attentionVersions` dead state; drain re-pages pending bodies per attention frame; rebind-grace ack accepted before re-registration — final review, [code-final-review-8.md](code-final-review-8.md)
 - out of scope (filtered): [Nit] src/service/mod_channels.rs:240 sweep stall close by seat only — scopeFilter-round-1
 - out of scope (filtered): [Nit] src/service/mod_channels.rs:193; src/daemon/settings.rs:20 `set_mod_delivery` has no production caller — scopeFilter-round-1
 - out of scope (filtered): [Nit] src/cli/setup.rs:1708 interactive prompt inside `execute()` — scopeFilter-round-1
 - out of scope (filtered): [Nit] scripts/test-claude-mod JS mod tests unenforced (skip when `claude` absent; not in nextest/CI) — scopeFilter-round-1
 - cluster dropped: mod-test-enforcement (required mode for `scripts/test-claude-mod`, wired into the sweep) — scopeFilter-round-1
+- Flakes under suite load: ht-uy3 (hermes runtime capture), ht-wur (hermes resume check-in, release-build manifest timeout) — run.md `codeBuckets.sweep`
 - Follow-up beads: ht-182 unsupervised mod-channel worker (P2), ht-22y attention marker without launch selectors (P3), ht-oag unbounded mod delivered/emitted sets (P3) — run.md `followUps`
 - Not exercised live: truncated bodies, 120 s hold and draft timers, 10-min stall/cooldown, daemon restart, in-session `/resume`/`/branch`, subagent tool calls, non-default permission modes, a real Herdr server (stand-in endpoint) — evidence README
 - Post-cap audit FYI: Claude-specific branch in the shared setup dispatcher (src/cli/setup.rs:745) — audit report

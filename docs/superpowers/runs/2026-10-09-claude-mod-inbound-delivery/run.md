@@ -31,8 +31,8 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (code-final-review-8.md; its two must-fixes were resolved after it, unreviewed by a further final review: finding 1 fixed at dc5b2f6c, live stress re-run at b562d1e4 13/14 3/3 with reload_mid_turn 2/3 ledger-only; post-cap audit clean)
-  sweep: 53b6df93 — 4029 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (167 s; leak check clean; clippy and check-default-features clean; first run at this SHA under load failed 2 hermes runtime capture tests that pass 3/3 alone and are outside this branch, filed as ht-uy3) @ 53b6df93
+  review: ready (code-final-review-9.md: re-review of the post-review-8 fixes dc5b2f6c and 73a75cbf, no must-fix; review 8's must-fixes resolved: finding 1 at dc5b2f6c, live re-runs at b562d1e4 and 73a75cbf)
+  sweep: f62267f5 — 4029 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (262 s; leak check clean; clippy and check-default-features clean; two earlier runs at this SHA under load ~25 from a concurrent worktree suite each failed one different test that passes alone — flakes ht-wur, ht-uy3) @ f62267f5
   slowness: round 1 (fix re-entry): merge queue peaked at 5 — serial merge lane bottleneck
   worktreesKept:
   processSweep: stopped 0 · survived 0
@@ -65,3 +65,5 @@ sweepFix: none needed (11b01cd5 passed; at 53b6df93 the 2 load failures in untou
 friction: 6 events
 baseAbsorbed: 90066db1 → 3793cf88 (merge 53b6df93), 0 conflicted files (warning-wake candidate refinement, pacer wake hook, test schedule; no overlap with mod suppression code)
 feedback: sent to the superpowers workspace agent tab wB:p8 (herdr agent prompt), report upstream-feedback-draft.md
+postLoopFix: live re-run reload_mid_turn 2/3 (second delivered ledger entry) fixed at 73a75cbf with a delivery test shown failing without it; independent re-review of 1c66f49f..73a75cbf (dc5b2f6c, 73a75cbf): ready, no must-fix — code-final-review-9.md
+liveStress: targeted re-run at 73a75cbf: reload_mid_turn, reload, clear_rebind, idle_submit 3/3 each, 0 native prompts, leak check clean (docs/evidence/claude-mod-delivery/final-subset/)
