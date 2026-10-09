@@ -73,10 +73,10 @@ It never had a `drop` key or a `context` key.
 
 ### Observations
 
-- **A queued plugin prompt is never discarded by Esc.** The Esc trials were t1, t3, t5, t9, t10,
+- **No queued plugin prompt was discarded by Esc in these trials.** The Esc trials were t1, t3, t5, t9, t10,
   t15, t16, t17 and t19, with Esc during the tool call or before the first response. In all nine,
   the plugin prompt started its own turn within about 75 to 100 ms of the Esc. Its `turn.start`
-  fired before the aborted user turn's `turn.complete`, as in spike row 10. The model answered
+  could fire before the aborted user turn's `turn.complete`, as in spike row 10; t5 instead completed the aborted user turn first. The model answered
   PINEAPPLE every time.
 - **Esc right at the boundary.** In t7 and t13, Esc arrived after the user turn ended but before the
   plugin turn began. The plugin prompt still entered the conversation, and the same keypress then
@@ -85,7 +85,7 @@ It never had a `drop` key or a `context` key.
   transcript, and the next user turn's model quoted the marker (t13). A second Esc gives the same
   result (t8, t14). In these cases the message is in the model's context, but the model did not
   respond in the plugin's own turn. This is the same as a user prompt the user interrupted.
-- **The submit promise settles only when the prompt enters.** It resolves in the same millisecond as
+- **The submit promise settles only when the prompt enters.** It resolves at or within 1 ms of
   the plugin turn's `turn.start` (and `prompt.submit.out` with `entered: true`). It never resolves at
   call time or while queued. The resolve value is the `PromptSubmitResult` success arm,
   `{ text, origin }`.
@@ -152,12 +152,12 @@ t18, a submit attributed to the in-flight `prompt.submit` dispatch, which reject
 
 **SAFE** on Claude Code 2.1.295.
 
-- A plugin prompt queued behind a user turn is never discarded when the user presses Esc. It is
-  delivered as its own turn right after the interrupt, about 75 to 100 ms later, before the aborted
-  turn's `turn.complete`.
+- In these trials, a plugin prompt queued behind a user turn was not discarded when the user pressed Esc. It is
+  delivered as its own turn right after the interrupt, about 75 to 100 ms later; its start may
+  precede the aborted turn's `turn.complete`.
 - If the Esc lands at the boundary, or a second Esc follows, the plugin turn itself is aborted. The
   prompt still stays in the conversation, and the next turn's model reads it.
-- `$.prompt.submit` resolves only when the prompt enters, in the same millisecond as its own
+- `$.prompt.submit` resolves only when the prompt enters, at or within 1 ms of its own
   `turn.start`, with `{ text, origin: { kind: 'plugin', name } }` (no `drop`).
 - The one non-delivery seen was a rejection (`prompt.submit: called from a prompt.submit hook …`),
   which the mod already treats as a drop and does not ack.
