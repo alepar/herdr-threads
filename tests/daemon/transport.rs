@@ -3195,13 +3195,12 @@ async fn cancelled_serve_loop_returns_without_polling() {
         entered: AtomicUsize::new(0),
         release: std::sync::atomic::AtomicBool::new(false),
     });
-    // The property is "without polling": a polling loop waits out the rest of
-    // its poll interval, and with the fixed 50 ms park below that wait is
-    // nearly identical on every attempt. One wall-clock sample can also absorb a
-    // host stall (hosted 5e69f9c7 manual run, test running alone: 24.9 ms for
-    // a path that is microseconds of work), so up to three fresh loops are
-    // cancelled and one must stop within the unchanged 20 ms bound; every
-    // attempt must still drain.
+    // Sample prompt cancellation on up to three fresh loops: one must stop
+    // within 20 ms, and every attempt must drain. This does not rule out an
+    // intermittently slow implementation or every polling interval (a poll
+    // already nearing its deadline can pass). The hosted 5e69f9c7 manual run
+    // measured 24.9 ms; host scheduling delay is inferred from local
+    // microsecond samples, not measured on that runner.
     let mut samples = Vec::new();
     for _ in 0..3 {
         let (server, shutdown, path, root, _instance) = started_server(service.clone()).await;
