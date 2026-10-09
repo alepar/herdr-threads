@@ -30,3 +30,4 @@ c29 · r2 · GAP · draft vs idle submit · applied — hold up to 120 s while b
 c30 · r2 · UNOWNED-SEAM · stall accessor · applied — ht-j16.4 consumes is_live and stalled
 c31 · r2 · GAP · R12 registration policy duty · applied — ht-j16.2 TRUST clause
 c32 · r2 · NEEDS-SPEC · turns without tool calls / append mid-turn · not honoured (round 2) — spec D5 delivers after turn end; spike showed append mid-turn is read in-turn
+g1 · graph · GRAPH-EDGE · ht-j16.9 <- ht-j16.10 · applied — drop: live stress consumes no artifact of the sweep; gate ht-j16.8 already orders it after the fix loop

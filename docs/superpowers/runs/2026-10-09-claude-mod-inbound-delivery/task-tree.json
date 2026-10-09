@@ -80,21 +80,21 @@
       }
     ],
     "dependency_count": 7,
-    "dependent_count": 1,
+    "dependent_count": 0,
     "comment_count": 0,
     "parent": "ht-j16"
   },
   {
     "id": "ht-j16.9",
     "title": "Live race stress: mod delivery in real Claude TUI sessions",
-    "description": "Gated final-SHA live stress of mod delivery in real Claude TUI sessions with evidence, read-only fallback to unit stress.\nSpec docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md D10 (live). Final-SHA evidence. tests/native/claude_mod/stress.py: drive real Claude Code TUI sessions in a private tmux server (tmux -L \u003cunique\u003e) with an isolated signed-in CLAUDE_CONFIG_DIR, the installed mod (CLAUDE_CODE_PLUGIN_DIRS) and an isolated herdr-threads daemon/state dir plus HERDR_PANE_ID from an isolated Herdr test session (scripts/lib/isolated-herdr.sh) or a fake pane id if the daemon permits; N iterations (default 20 each) of: send during busy turn (expect context delivery + ack), send while idle (submit + ack), lazy send (append, no turn), queued user prompt at turn end, Stop-hook continuation, Esc interrupt with pending message (expect hold, no takeover), permission dialog open, /clear and /resume (rebind, no duplicate), reload, kill watch child (fallback to native wake path, then reconnect re-stream without duplicates). Assert from daemon receipts + mod debug ledger: no duplicate deliveries/acks, no submit while busy, every message settled or still pending (never lost). Write evidence to docs/evidence/claude-mod-delivery/. Uses disable autoupdater env. Never touches the shared Herdr server or real ~/.claude. Profile: a signed-in isolated profile exists at /private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/profile (copy it to a temp dir per run; do not modify the original). Read-only fallback when no signed-in profile is usable: run only the mod unit-level randomized stress (claude plugin test) and record the live gap in the evidence file. Stops every process it starts.\nblocked-by ht-j16.8: consumes fix loop exited gate.\nFiles: tests/native/claude_mod/**, docs/evidence/claude-mod-delivery/**.\nblocked-by ht-j16.2: consumes watch connection;\nblocked-by ht-j16.3: consumes AckModDelivered;\nblocked-by ht-j16.4: consumes wake routing;\nblocked-by ht-j16.5: consumes watch CLI;\nblocked-by ht-j16.6: consumes mod;\nblocked-by ht-j16.7: consumes mod installer.\nPromotion-review amendment: the mod ledger it reads is produced by ht-j16.6 when HERDR_THREADS_MOD_LEDGER is set (contract in ht-j16.1).\nblocked-by ht-j16.10: consumes end-to-end integration proof (integration sweep)\nDesign roast r1 amendments (spec D2–D8 rewritten 2026-10-09 are authoritative where earlier amendments above differ): add live scenarios: UserPromptSubmit hook blocking (submit drop keeps items pending), denied tool call with pending context, reload mid-turn (no submit while busy), /resume keeps delivered set (no duplicate).",
+    "description": "Gated final-SHA live stress of mod delivery in real Claude TUI sessions with evidence, read-only fallback to unit stress.\nSpec docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md D10 (live). Final-SHA evidence. tests/native/claude_mod/stress.py: drive real Claude Code TUI sessions in a private tmux server (tmux -L \u003cunique\u003e) with an isolated signed-in CLAUDE_CONFIG_DIR, the installed mod (CLAUDE_CODE_PLUGIN_DIRS) and an isolated herdr-threads daemon/state dir plus HERDR_PANE_ID from an isolated Herdr test session (scripts/lib/isolated-herdr.sh) or a fake pane id if the daemon permits; N iterations (default 20 each) of: send during busy turn (expect context delivery + ack), send while idle (submit + ack), lazy send (append, no turn), queued user prompt at turn end, Stop-hook continuation, Esc interrupt with pending message (expect hold, no takeover), permission dialog open, /clear and /resume (rebind, no duplicate), reload, kill watch child (fallback to native wake path, then reconnect re-stream without duplicates). Assert from daemon receipts + mod debug ledger: no duplicate deliveries/acks, no submit while busy, every message settled or still pending (never lost). Write evidence to docs/evidence/claude-mod-delivery/. Uses disable autoupdater env. Never touches the shared Herdr server or real ~/.claude. Profile: a signed-in isolated profile exists at /private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/profile (copy it to a temp dir per run; do not modify the original). Read-only fallback when no signed-in profile is usable: run only the mod unit-level randomized stress (claude plugin test) and record the live gap in the evidence file. Stops every process it starts.\nblocked-by ht-j16.8: consumes fix loop exited gate.\nFiles: tests/native/claude_mod/**, docs/evidence/claude-mod-delivery/**.\nblocked-by ht-j16.2: consumes watch connection;\nblocked-by ht-j16.3: consumes AckModDelivered;\nblocked-by ht-j16.4: consumes wake routing;\nblocked-by ht-j16.5: consumes watch CLI;\nblocked-by ht-j16.6: consumes mod;\nblocked-by ht-j16.7: consumes mod installer.\nPromotion-review amendment: the mod ledger it reads is produced by ht-j16.6 when HERDR_THREADS_MOD_LEDGER is set (contract in ht-j16.1).\n(edge to ht-j16.10 dropped by the parallelism pass: no consumed artifact; the fix-loop gate ht-j16.8 orders this leaf after all code)\nDesign roast r1 amendments (spec D2–D8 rewritten 2026-10-09 are authoritative where earlier amendments above differ): add live scenarios: UserPromptSubmit hook blocking (submit drop keeps items pending), denied tool call with pending context, reload mid-turn (no submit while busy), /resume keeps delivered set (no duplicate).",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-09T06:24:09Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-09T06:55:14Z",
+    "updated_at": "2026-10-09T07:04:13Z",
     "labels": [
       "sp:ht-j16"
     ],
@@ -133,14 +133,6 @@
       },
       {
         "issue_id": "ht-j16.9",
-        "depends_on_id": "ht-j16.10",
-        "type": "blocks",
-        "created_at": "2026-10-09T06:29:41Z",
-        "created_by": "Alexey Parfenov",
-        "metadata": "{}"
-      },
-      {
-        "issue_id": "ht-j16.9",
         "depends_on_id": "ht-j16",
         "type": "parent-child",
         "created_at": "2026-10-09T06:24:09Z",
@@ -172,7 +164,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 8,
+    "dependency_count": 7,
     "dependent_count": 0,
     "comment_count": 0,
     "parent": "ht-j16"
