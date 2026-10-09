@@ -219,6 +219,58 @@ fn archival_worker_initial_unknown_does_not_read_host_and_parked_lane_stops() {
 }
 
 #[test]
+fn archival_worker_lets_a_commit_burst_settle_before_its_pass() {
+    use herdr_threads::service::archival::KICK_SETTLE;
+    use std::{sync::mpsc, time::Duration};
+    let (mut worker, host, _db, _directory) = worker_fixture();
+    // A pass that touches neither the host nor the store: only its timing matters.
+    worker.after_ms = 0;
+    let cancellation = worker.cancellation.clone();
+    let status = Arc::new(herdr_threads::service::workers::WorkerStatus::default());
+    let pacer = Arc::new(herdr_threads::service::pacer::Pacer::new(
+        "archival",
+        Arc::new(RunningClock(std::time::Instant::now())),
+        cancellation.clone(),
+    ));
+    let (idle_tx, idle_rx) = mpsc::channel();
+    pacer.set_idle_hook(Box::new(move |_| {
+        let _ = idle_tx.send(std::time::Instant::now());
+    }));
+    let handle =
+        herdr_threads::service::archival::start(worker, pacer.clone(), status.clone()).unwrap();
+    idle_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("boot pass parks the lane");
+    for _ in 0..2 {
+        let kicked = std::time::Instant::now();
+        pacer.kick();
+        let parked = idle_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("a kicked lane runs its pass");
+        assert!(
+            parked.duration_since(kicked) >= KICK_SETTLE,
+            "the pass ran {:?} after the kick, inside the settle window",
+            parked.duration_since(kicked)
+        );
+        assert!(
+            idle_rx.recv_timeout(KICK_SETTLE * 2).is_err(),
+            "one kick runs one pass"
+        );
+    }
+    pacer.kick();
+    std::thread::sleep(Duration::from_millis(20));
+    let cancelled = std::time::Instant::now();
+    cancellation.cancel();
+    handle.join().unwrap();
+    assert!(
+        cancelled.elapsed() < KICK_SETTLE,
+        "cancellation ends the settle wait"
+    );
+    assert!(!status.lane_dead());
+    assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn archival_worker_before_host_admission_waits_for_safety_tick() {
     use herdr_threads::{
         service::{
