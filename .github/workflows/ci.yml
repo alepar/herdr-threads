@@ -83,7 +83,9 @@ jobs:
           printf 'TMPDIR=%s\n' "$short" >> "$GITHUB_ENV"
 
       - name: Locked build
-        run: cargo build --locked --all-targets --all-features
+        # Match nextest's test profile before the strict suite timer starts.
+        # cargo build selects dev, so it would not warm optimized test artifacts.
+        run: cargo test --locked --all-targets --all-features --no-run
 
       - name: Format
         run: cargo fmt --all -- --check
