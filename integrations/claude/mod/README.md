@@ -99,7 +99,14 @@ builds `io` from `$`. Rules (spec D5, D6):
 - **Idle-submit gates.** (1) After an aborted `turn.complete` submits are held until a later
   non-aborted main turn completes, or 120 s pass with no open turn and an empty prompt box
   (this overrides the draft rule). (2) A non-empty prompt box holds a submit up to 120 s. (3) One
-  submit in flight. A `drop` keeps the items, ledgers `refused` and backs off 30 s.
+  submit in flight. A `drop` keeps the items while their run is connected, ledgers `refused` and backs off 30 s.
+- **Channel loss.** Items are delivered only while the `watch` run that streamed them is
+  connected, from its `status connected` line until its `closing`/`refused` line, its exit or a
+  `session.end`. Then every queued item not in flight is dropped (ledger `refused`, reason
+  `channel_lost:<why>`), and the next run re-streams whatever is still pending. A submit or
+  append in flight at the loss that succeeds counts as delivered and is acked. One that is
+  dropped or denied is discarded, unless the new run re-streamed it. The delivered-but-unacked
+  set is kept and re-acked after the next `connected`.
 - **Acks.** After a resolved delivery the mod runs `watch ack --via <path> <ids>` for messages
   and lazy rows only; never attention items, never truncated items. Per-id results: `settled`,
   `already_settled`, `refused_terminal` and `stale_generation` leave the set (the last also

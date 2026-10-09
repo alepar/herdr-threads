@@ -68,6 +68,7 @@ export function createCore(io) {
     lastHeld: '',
     child: null,
     run: 0,
+    live: false,
     runAttention: new Set(),
     connectedAt: null,
     stopped: false,
@@ -116,11 +117,32 @@ export function createCore(io) {
 
   // ---- child lifecycle -------------------------------------------------
 
+  /** The watch run is gone: forget every queued item that is not in flight. */
+  function dropQueued(why) {
+    S.live = false
+    const dropped = S.queue.filter((q) => !q.inflight).map((q) => q.id)
+    S.queue = S.queue.filter((q) => q.inflight)
+    S.draftSince = null
+    S.lastHeld = ''
+    if (dropped.length) ledger('refused', { ids: dropped, reason: `channel_lost:${why}` })
+  }
+
+  /** Removes items whose run ended while their call was in flight. */
+  function discardStale(items, why) {
+    const stale = items.filter((it) => it.run !== S.run || !S.live)
+    if (!stale.length) return items
+    const gone = new Set(stale.map((it) => it.id))
+    S.queue = S.queue.filter((q) => !gone.has(q.id))
+    ledger('refused', { ids: stale.map((it) => it.id), reason: `channel_lost:${why}` })
+    return items.filter((it) => !gone.has(it.id))
+  }
+
   function stopChild() {
     S.run++
     const c = S.child
     S.child = null
     S.connectedAt = null
+    S.live = false
     if (c) {
       try {
         c.stop()
@@ -134,6 +156,7 @@ export function createCore(io) {
     const run = S.run
     S.runAttention = new Set()
     S.connectedAt = null
+    S.live = false
     S.restartAt = null
     try {
       S.child = io.spawn(cmd('watch', '--harness', 'claude', '--session', S.sid), {
@@ -149,8 +172,10 @@ export function createCore(io) {
 
   function onChildExit(code, run) {
     if (run !== undefined && run !== S.run) return
+    S.run++
     S.child = null
     if (S.disposed) return
+    dropQueued(`exit:${code}`)
     ledger('restart', { reason: `exit:${code}` })
     const wasConnected = S.connectedAt
     S.connectedAt = null
@@ -173,7 +198,12 @@ export function createCore(io) {
       if (o.state === 'connected') {
         S.connectedAt = io.now()
         S.lastAckRetry = io.now()
+        S.live = true
         retryAcks()
+        void pumpLazy()
+        void pump()
+      } else if (o.state === 'closing' || o.state === 'refused') {
+        dropQueued(`${o.state}:${o.reason ?? ''}`)
       }
       return
     }
@@ -181,7 +211,9 @@ export function createCore(io) {
     ledger('received', { ids: [o.id] })
     if (o.kind === 'attention') {
       const v = o.attention_version
-      if (S.runAttention.has(o.id) || S.queue.some((q) => q.id === o.id)) {
+      const dup = S.queue.find((q) => q.id === o.id)
+      if (dup) dup.run = S.run
+      if (S.runAttention.has(o.id) || dup) {
         retryAcks()
         return
       }
@@ -190,6 +222,7 @@ export function createCore(io) {
         kind: 'attention',
         body: String(o.text ?? ''),
         version: v,
+        run: S.run,
         ackable: false,
       })
     } else {
@@ -197,7 +230,11 @@ export function createCore(io) {
         if (S.rec.unacked[o.id] !== undefined) retryAcks()
         return
       }
-      if (S.queue.some((q) => q.id === o.id)) return
+      const dup = S.queue.find((q) => q.id === o.id)
+      if (dup) {
+        dup.run = S.run
+        return
+      }
       const truncated = o.truncated === true
       S.queue.push({
         id: o.id,
@@ -209,6 +246,7 @@ export function createCore(io) {
         user_intent: o.user_intent ?? null,
         body: String(o.body ?? ''),
         truncated,
+        run: S.run,
         ackable: !truncated && (o.kind === 'lazy' || o.ack_required === true),
       })
     }
@@ -318,10 +356,10 @@ export function createCore(io) {
 
   /** Idle path: one batched submit, never while a main turn is open. */
   async function pump() {
-    if (S.inert || S.disposed || S.pumping) return
+    if (S.inert || S.disposed || S.pumping || !S.live) return
     S.pumping = true
     try {
-      const items = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight)
+      const items = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run)
       if (!items.length || S.submitInflight) return
       if (busy()) return
       const ids = items.map((i) => i.id)
@@ -331,14 +369,14 @@ export function createCore(io) {
       try {
         box = await io.promptRead()
       } catch {}
-      if (S.disposed || S.submitInflight || busy()) return
+      if (S.disposed || !S.live || S.submitInflight || busy()) return
       if (S.turns.abortHoldSince != null) return held('post_abort', ids)
       if (box && box.text !== '') {
         if (S.draftSince == null) S.draftSince = io.now()
         if (io.now() - S.draftSince < DRAFT_WAIT_MS) return held('draft', ids)
       }
       S.draftSince = null
-      const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight)
+      const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run)
       if (!batch.length) return
       const gen = S.gen
       for (const it of batch) it.inflight = true
@@ -363,6 +401,7 @@ export function createCore(io) {
           for (const it of batch) it.inflight = false
           if (r.missing) return goInert()
           if (r.drop !== undefined) {
+            discardStale(batch, 'late_drop')
             S.submitBackoffUntil = io.now() + DROP_BACKOFF_MS
             ledger('refused', { ids: bids, via: 'submit', reason: `drop:${r.drop}` })
             return
@@ -377,9 +416,9 @@ export function createCore(io) {
 
   /** Lazy rows are appended at once, busy or idle. */
   async function pumpLazy() {
-    if (S.inert || S.disposed || S.appendInflight) return
+    if (S.inert || S.disposed || S.appendInflight || !S.live) return
     if (io.now() < S.appendBackoffUntil) return
-    const batch = S.queue.filter((q) => q.kind === 'lazy' && !q.inflight)
+    const batch = S.queue.filter((q) => q.kind === 'lazy' && !q.inflight && q.run === S.run)
     if (!batch.length) return
     const gen = S.gen
     for (const it of batch) it.inflight = true
@@ -402,6 +441,7 @@ export function createCore(io) {
         for (const it of batch) it.inflight = false
         if (r.missing) return goInert()
         if (r.deny !== undefined) {
+          discardStale(batch, 'late_deny')
           S.appendBackoffUntil = io.now() + DROP_BACKOFF_MS
           ledger('refused', { ids, via: 'append', reason: `deny:${r.deny}` })
           return
@@ -475,8 +515,8 @@ export function createCore(io) {
     if (!busy()) return result
     const answered =
       result && result.result !== undefined && result.deny === undefined && result.isError !== true
-    if (!answered) return result
-    const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight)
+    if (!answered || !S.live) return result
+    const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run)
     if (!batch.length) return result
     void complete(batch, 'context')
     return { ...result, context: [...(result.context ?? []), frame(batch)] }
@@ -489,6 +529,7 @@ export function createCore(io) {
     S.submitInflight = false
     S.appendInflight = false
     for (const it of S.queue) it.inflight = false
+    dropQueued(`session_end:${reason}`)
     S.stopped = false
     S.restartAt = null
     S.backoffIdx = 0
@@ -578,6 +619,7 @@ export function createCore(io) {
       rec: JSON.parse(JSON.stringify(S.rec)),
       sid: S.sid,
       inert: S.inert,
+      live: S.live,
       stopped: S.stopped,
       childRunning: S.child != null,
       restartAt: S.restartAt,

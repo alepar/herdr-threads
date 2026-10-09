@@ -37,7 +37,7 @@ function prng(seed: number) {
   }
 }
 
-const totals = { submits: 0, contexts: 0, appends: 0, acks: 0, drops: 0, holdBlocks: 0, reloads: 0, schedules: 0 }
+const totals = { submits: 0, contexts: 0, appends: 0, acks: 0, drops: 0, holdBlocks: 0, reloads: 0, channelLost: 0, schedules: 0 }
 
 function runSchedule(seed: number) {
   const r = prng(seed)
@@ -77,6 +77,16 @@ function runSchedule(seed: number) {
     throw new Error(what)
   }
 
+  // which spawn index last streamed each id
+  const streamedBy = new Map<string, number>()
+  const checkRun = (ids: string[]) => {
+    const c = world.spawns[world.spawns.length - 1]
+    if (!c || !c.connected || c.ended || c.stopped) fail('delivery while the watch run is not connected')
+    for (const id of ids) {
+      if (streamedBy.get(id) !== world.spawns.length - 1) fail(`${id} delivered from a run that ended`)
+    }
+  }
+
   const idsOf = (text: string) => [...text.matchAll(/\[herdr-threads\] (?:message|lazy) (\S+) in /g)].map((x) => x[1])
 
   const io: Any = {
@@ -95,6 +105,7 @@ function runSchedule(seed: number) {
       if (m.hold) fail('submit within the post-abort hold')
       totals.submits++
       const ids = idsOf(text)
+      checkRun(ids)
       const done = (res: Any) => {
         if (res.drop === undefined) for (const id of ids) okVia.submit.add(key(sidAtCall, id))
         else totals.drops++
@@ -114,6 +125,7 @@ function runSchedule(seed: number) {
     append: (text: string) => {
       totals.appends++
       const ids = idsOf(text)
+      checkRun(ids)
       const sidNow = core.snapshot().sid
       if (r.chance(world.denyRate)) return Promise.resolve({ deny: 'denied' })
       for (const id of ids) okVia.append.add(key(sidNow, id))
@@ -181,9 +193,10 @@ function runSchedule(seed: number) {
         }
       }
       if (e.kind === 'held') totals.holdBlocks++
+      if (e.kind === 'refused' && String(e.reason).startsWith('channel_lost:')) totals.channelLost++
     },
     spawn: (argv: string[], cb: Any) => {
-      const c = { argv, cb, stopped: false, stop() { c.stopped = true } }
+      const c = { argv, cb, stopped: false, connected: false, ended: false, stop() { c.stopped = true } }
       world.spawns.push(c)
       return c
     },
@@ -269,7 +282,7 @@ function runSchedule(seed: number) {
       core.onTurnStart({ turnId: `sub${r.int(5)}`, agentId: 'a1' })
       if (r.chance(0.5)) core.onTurnComplete({ turnId: `sub${r.int(5)}`, agentId: 'a1', isAborted: r.chance(0.5) })
     }],
-    [10, 'tool.call', async () => {
+    [18, 'tool.call', async () => {
       const sub = r.chance(0.2)
       const kind = r.pick(['answered', 'answered', 'denied', 'error'])
       const input: Any =
@@ -280,13 +293,20 @@ function runSchedule(seed: number) {
         if (sub || kind !== 'answered') fail(`context attached to a ${sub ? 'subagent' : kind} result`)
         const ctx = out.context[out.context.length - 1]
         totals.contexts++
+        checkRun(idsOf(ctx))
         for (const id of idsOf(ctx)) okVia.context.add(key(core.snapshot().sid, id))
       }
     }],
     [5, 'box', async () => {
       world.box = r.chance(0.5) ? '' : 'draft text'
     }],
-    [12, 'stream item', async () => {
+    [14, 'stream item', async () => {
+      const c = child()
+      if (c.ended) return
+      if (!c.connected && r.chance(0.9)) {
+        c.connected = true
+        c.cb.line({ schema: 1, id: 'status:1', kind: 'status', state: 'connected' })
+      }
       const kind = r.pick(['message', 'message', 'lazy', 'attention'])
       if (kind === 'attention') {
         const v = 1 + r.int(4)
@@ -295,16 +315,29 @@ function runSchedule(seed: number) {
       }
       const it = newItem(kind)
       items.set(it.id, it)
-      child().cb.line(it)
+      streamedBy.set(it.id, world.spawns.length - 1)
+      c.cb.line(it)
     }],
     [4, 'restream', async () => {
+      const c = child()
+      if (c.ended) return
       const ids = [...items.keys()]
-      if (ids.length) child().cb.line(items.get(r.pick(ids)))
+      if (!ids.length) return
+      if (!c.connected && r.chance(0.9)) {
+        c.connected = true
+        c.cb.line({ schema: 1, id: 'status:1', kind: 'status', state: 'connected' })
+      }
+      const id = r.pick(ids)
+      streamedBy.set(id, world.spawns.length - 1)
+      c.cb.line(items.get(id))
     }],
-    [3, 'status', async () => {
-      child().cb.line({ schema: 1, id: 'status:1', kind: 'status', state: 'connected' })
+    [5, 'status', async () => {
+      const c = child()
+      if (c.ended) return
+      c.connected = true
+      c.cb.line({ schema: 1, id: 'status:1', kind: 'status', state: 'connected' })
     }],
-    [6, 'resolve submit', async () => {
+    [10, 'resolve submit', async () => {
       const p = world.pendingSubmits.shift()
       if (!p) return
       const x = r.next()
@@ -318,7 +351,20 @@ function runSchedule(seed: number) {
       }
     }],
     [10, 'advance', async () => advance(r.pick([300, 1000, 5000, 31_000, 121_000]))],
-    [4, 'child exit', async () => child().cb.exit(r.int(4))],
+    [4, 'child exit', async () => {
+      const c = child()
+      c.ended = true
+      c.cb.exit(r.int(4))
+    }],
+    [3, 'close', async () => {
+      const c = child()
+      if (c.ended) return
+      const reason = r.pick(['stalled', 'retired', 'disabled', 'replaced', 'stream_ended'])
+      const exit = reason === 'disabled' || reason === 'replaced' ? 3 : 0
+      c.cb.line({ schema: 1, id: 'status:9', kind: 'status', state: 'closing', reason, exit })
+      c.ended = true
+      c.cb.exit(exit)
+    }],
     [2, 'reload', async () => {
       // a reload while a submit is in flight can deliver twice (accepted limit):
       // let in-flight work finish first
@@ -400,4 +446,5 @@ test('randomized stress: no submit during a turn or hold, ids delivered and acke
   expect(totals.drops).toBeGreaterThan(50)
   expect(totals.holdBlocks).toBeGreaterThan(100)
   expect(totals.reloads).toBeGreaterThan(100)
+  expect(totals.channelLost).toBeGreaterThan(50)
 })
