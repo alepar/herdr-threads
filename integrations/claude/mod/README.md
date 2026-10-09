@@ -96,7 +96,9 @@ builds `io` from `$`. Rules (spec D5, D6):
   leaves them queued). While idle they go out as one batched `$.prompt.submit`, never awaited
   in a hook, never while a main turn is open (re-checked right before the call). `lazy` rows
   go to `$.session.append` at once. Each context or append delivery logs one dim `$.ui.log` line.
-- **Idle-submit gates.** (1) After an aborted `turn.complete` submits are held until a later
+- **Idle-submit gates.** (1) After a main turn that was interrupted (an aborted `turn.complete`, `reason` `aborted`, or a
+  turn whose last main `tool.call` ended in a deny or an error, which is how Esc at a permission
+  dialog shows) submits are held until a later
   non-aborted main turn completes, or 120 s pass with no open turn and an empty prompt box
   (this overrides the draft rule). (2) A non-empty prompt box holds a submit up to 120 s. (3) One
   submit in flight. A `drop` keeps the items while their run is connected, ledgers `refused` and backs off 30 s.

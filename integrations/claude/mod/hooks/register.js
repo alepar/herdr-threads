@@ -50,6 +50,13 @@ export function frame(items) {
 
 const emptyRec = () => ({ delivered: {}, unacked: {}, attentionVersions: [] })
 
+// Esc at a permission dialog (ht-j16.30, live stress D3): the engine ends that turn with a
+// non-aborted turn.complete, so the hold cannot key on isAborted alone. The exact tool.call
+// result shape for a user reject could not be read out of the 2.1.295 binary, so this is the
+// fallback heuristic: any main tool result that is not an answer (a deny, or isError) counts.
+// It is judged on the last main tool call of the turn only.
+const userRejected = (r) => !!r && (r.deny !== undefined || r.isError === true)
+
 export function createCore(io) {
   const S = {
     inert: false,
@@ -59,6 +66,7 @@ export function createCore(io) {
     turns: { open: [], assumedBusy: false, abortHoldSince: null, submitting: null },
     loadedAt: 0,
     sawStart: false,
+    turnRejected: false,
     queue: [],
     submitInflight: false,
     appendInflight: false,
@@ -585,6 +593,7 @@ export function createCore(io) {
   function onTurnStart(e) {
     if (S.inert || !e || e.agentId) return
     S.sawStart = true
+    S.turnRejected = false
     S.turns.open = [e.turnId]
     persistTurns()
     const framed = framedIds(e.text)
@@ -606,13 +615,16 @@ export function createCore(io) {
     const i = S.turns.open.indexOf(e.turnId)
     if (i >= 0) S.turns.open = S.turns.open.slice(i + 1)
     S.turns.assumedBusy = false
-    S.turns.abortHoldSince = e.isAborted ? io.now() : null
+    const interrupted = e.isAborted === true || e.reason === 'aborted' || S.turnRejected
+    S.turnRejected = false
+    S.turns.abortHoldSince = interrupted ? io.now() : null
     persistTurns()
     void pump()
   }
 
   async function onToolCall(e, result) {
     if (S.inert || !e || e.agentId) return result
+    S.turnRejected = userRejected(result)
     if (!busy()) return result
     const answered =
       result && result.result !== undefined && result.deny === undefined && result.isError !== true
