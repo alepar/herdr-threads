@@ -94,6 +94,31 @@ through an agent-to-agent lifecycle check-in (A4); waiting for the agy generic w
 because Hermes's evidence is already in-band and the agy design is unsettled (thread `teAfuOE4V`,
 no reply at spec time); Herdr's `agent_session.session_start_source`, discarded per D1.
 
+### D2a. Envelope and policy contract (pinned)
+
+The bridge envelope's `role_association` object gains one field, `enrollment_witness`, whose
+value is the string `"cli_platform"` or JSON `null`; it is always present (strict parse,
+byte-identical decode, `hermes.rs` `parse`/`decode`). The bridge sets it to `"cli_platform"`
+exactly when the native callback's `platform` is the string `"cli"`, and to `null` otherwise.
+Per callback:
+
+| Callback | `role` | `provenance` | `enrollment_witness` |
+|---|---|---|---|
+| `on_session_start`, platform `"cli"` | `"top"` | `"cli_session_start"` (new) | `"cli_platform"` |
+| `on_session_start`, platform `None` or `""` | `"unknown"` | as today | `null` |
+| `pre_llm_call`, no parent | `"top"` | `"explicit_parent"` | `"cli_platform"` iff platform `"cli"`, else `null` |
+| `post_tool_call`, `on_session_reset` | as today | as today | `null` |
+
+Rust side: `enum EnrollmentPolicy { Lifecycle, WitnessedStartAndUnownedTurn }` returned by
+`HarnessAdapter::enrollment_policy()` (default `Lifecycle`; Hermes
+`WitnessedStartAndUnownedTurn`), and `enum EnrollmentKind { Lifecycle, SessionStart, UnownedTurn }`
+returned by `DecodedEvent::enrollment(policy)`. `Lifecycle` is today's rule (top-level
+`Lifecycle(Startup|Clear|Resume)` with context delivery, can check in). `SessionStart` is
+`EventIntent::Enroll` with role top-level and witness `cli_platform`. `UnownedTurn` is a
+top-level `QualifiedTurn` with witness `cli_platform`, honored only after `find_seat` returns
+`Unowned`. A witness on any other callback, or `cli_session_start` with a `null` witness, is a
+strict-parse refusal.
+
 ### D3. Enrollment without check-in at session start
 
 **Recommended: a new decoded intent, `EventIntent::Enroll`, that runs `resolve_seat` (with
