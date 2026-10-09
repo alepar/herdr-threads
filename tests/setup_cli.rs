@@ -488,7 +488,18 @@ fn created_settings_are_deleted_by_unsetup() {
     let unsetup = s.run(&["--json", "unsetup", "claude"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
     assert_eq!(json(&unsetup)["deleted_created_settings"], true);
-    assert!(!s.claude_config.exists());
+    assert!(!s.settings().exists());
+    // Backups of every mutation are retained, so the created directory stays with only them.
+    let left: Vec<String> = fs::read_dir(&s.claude_config)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(!left.is_empty());
+    assert!(
+        left.iter()
+            .all(|name| name.starts_with("settings.json.") && name.ends_with(".herdr-threads")),
+        "{left:?}"
+    );
 }
 
 /// Kills setup writing config when no executable is available.

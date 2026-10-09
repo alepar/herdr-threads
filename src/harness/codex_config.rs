@@ -21,6 +21,7 @@
 //! Codex's own later writes (for example `hooks.state` trust hashes) are kept.
 use super::setup::{
     InstallPhase, SetupError, config_bytes, fingerprint, publish_manifest, write_replacement,
+    write_user_config,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -528,7 +529,7 @@ pub fn install(
             if config_bytes(config)? != current {
                 return Err(SetupError::Conflict.into());
             }
-            write_replacement(config, &bytes, false)?;
+            write_user_config(config, &current, &bytes)?;
             manifest.phase = InstallPhase::Installed;
             manifest.installed_fingerprint = fingerprint(&bytes);
             manifest.upgrade_base = None;
@@ -564,7 +565,7 @@ pub fn install(
         if config_bytes(config)? != current {
             return Err(SetupError::Conflict.into());
         }
-        write_replacement(config, &bytes, false)?;
+        write_user_config(config, &current, &bytes)?;
     }
     let mut installed = manifest;
     installed.phase = InstallPhase::Installed;
@@ -608,7 +609,7 @@ fn upgrade(
         if config_bytes(config)? != current {
             return Err(SetupError::Conflict.into());
         }
-        write_replacement(config, &bytes, false)?;
+        write_user_config(config, current, &bytes)?;
     }
     manifest.phase = InstallPhase::Installed;
     manifest.upgrade_base = None;
@@ -671,7 +672,7 @@ pub fn remove(config: &Path, manifest_path: &Path) -> Result<bool, SetupError> {
         return Err(SetupError::Conflict);
     }
     if removed != current {
-        write_replacement(config, &removed, false)?;
+        write_user_config(config, &current, &removed)?;
     }
     std::fs::remove_file(manifest_path).map_err(|_| SetupError::Io)?;
     Ok(true)

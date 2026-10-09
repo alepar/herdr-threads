@@ -16,7 +16,7 @@
 //! a value changed by hand since is left alone.
 use super::{
     claude::PROMPT_SUGGESTION_SETTING,
-    setup::{SetupError, config_bytes, publish_manifest, write_replacement},
+    setup::{SetupError, config_bytes, publish_manifest, write_replacement, write_user_config},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -162,7 +162,7 @@ pub fn disable(config: &Path, manifest_path: &Path) -> Result<DisableOutcome, Se
         if config_bytes(config)? != current {
             return Err(SetupError::Conflict);
         }
-        write_replacement(config, &written, false)
+        write_user_config(config, &current, &written)
     })();
     if let Err(error) = published {
         // Nothing was written: drop a record this run created, keep an earlier one.
@@ -231,7 +231,7 @@ pub fn revert(config: &Path, manifest_path: &Path) -> Result<RevertOutcome, Setu
     if config_bytes(config)? != current {
         return Err(SetupError::Conflict);
     }
-    write_replacement(config, &restored, false)?;
+    write_user_config(config, &current, &restored)?;
     fs::remove_file(manifest_path).map_err(|_| SetupError::Io)?;
     Ok(RevertOutcome::Reverted)
 }

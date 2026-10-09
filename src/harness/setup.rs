@@ -1024,6 +1024,68 @@ pub(crate) fn config_bytes(path: &Path) -> Result<Vec<u8>, SetupError> {
     Ok(bytes)
 }
 
+/// Replace a user configuration file whose bytes the caller just validated as `current`.
+/// An unchanged result writes nothing; otherwise `current` is first kept as a private sibling
+/// backup (see [`backup_user_config`]). herdr-threads state and manifests use
+/// [`write_replacement`] directly and are never backed up.
+pub(crate) fn write_user_config(
+    path: &Path,
+    current: &[u8],
+    bytes: &[u8],
+) -> Result<(), SetupError> {
+    if config_bytes(path)? != current {
+        return Err(SetupError::Conflict);
+    }
+    if current == bytes {
+        return Ok(());
+    }
+    backup_user_config(path, current)?;
+    write_replacement(path, bytes, false)
+}
+
+/// Keep `current` beside `path` as `<name>.<UTC timestamp>-<uuid>.herdr-threads`: mode 0600,
+/// never overwriting, synced with its directory before the caller mutates `path`. Backups are
+/// retained; herdr-threads never restores from, prunes or trusts them.
+pub(crate) fn backup_user_config(
+    path: &Path,
+    current: &[u8],
+) -> Result<std::path::PathBuf, SetupError> {
+    let parent = path.parent().ok_or(SetupError::Invalid)?;
+    let file_name = path
+        .file_name()
+        .ok_or(SetupError::Invalid)?
+        .to_string_lossy();
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| SetupError::Io)?
+        .as_millis();
+    let stamp: String =
+        super::manifest::format_rfc3339_utc(i64::try_from(millis).map_err(|_| SetupError::Io)?)
+            .chars()
+            .filter(|c| !matches!(c, '-' | ':'))
+            .collect();
+    let backup = parent.join(format!(
+        "{file_name}.{stamp}-{}.herdr-threads",
+        uuid::Uuid::new_v4()
+    ));
+    let result = (|| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&backup).map_err(|_| SetupError::Io)?;
+        file.write_all(current).map_err(|_| SetupError::Io)?;
+        file.sync_all().map_err(|_| SetupError::Io)?;
+        fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|_| SetupError::Io)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&backup);
+    }
+    result.map(|()| backup)
+}
+
 pub(crate) fn write_replacement(
     path: &Path,
     bytes: &[u8],
@@ -1241,7 +1303,7 @@ fn install_user_settings_inner<F: FnOnce()>(
             if config_bytes(config)? != current {
                 return Err(SetupError::Conflict);
             }
-            write_replacement(config, &resume.bytes, false)?;
+            write_user_config(config, &current, &resume.bytes)?;
             if fault == InstallFault::InterruptAfterPublication {
                 action.take().expect("one fault action")();
                 return Err(SetupError::Io);
@@ -1324,7 +1386,7 @@ fn install_user_settings_inner<F: FnOnce()>(
     if fault == InstallFault::BeforeReplacement {
         action.take().expect("one fault action")();
     }
-    write_replacement(config, &plan.proposed_bytes, false)?;
+    write_user_config(config, expected_base, &plan.proposed_bytes)?;
     let mut installed = manifest;
     installed.phase = InstallPhase::Installed;
     replace_manifest(manifest_path, &installed)?;
@@ -1600,7 +1662,7 @@ pub fn remove_user_settings(
         return Err(SetupError::Conflict);
     }
     if removed != current {
-        write_replacement(config, &removed, false)?;
+        write_user_config(config, &current, &removed)?;
     }
     fs::remove_file(manifest_path).map_err(|_| SetupError::Io)
 }

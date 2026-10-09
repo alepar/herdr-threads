@@ -3325,3 +3325,101 @@ fn operation_scope_defaults_preserve_legacy_resolution_and_refuse_foreign_genera
     );
     assert!(!root.exists(), "refusal created a native or state root");
 }
+
+fn backups(dir: &std::path::Path) -> Vec<(String, Vec<u8>, u32)> {
+    let mut found: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.to_string_lossy().ends_with(".herdr-threads"))
+        .map(|path| {
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            (name, fs::read(&path).unwrap(), mode)
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// Kills a replacement that loses the prior bytes, exposes them, or changes the file's mode.
+#[test]
+fn user_config_backup_keeps_exact_prior_bytes_privately() {
+    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    fs::create_dir(&dir).unwrap();
+    let config = dir.join("settings.json");
+    fs::write(&config, b"{\"a\":1}").unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o644)).unwrap();
+    write_user_config(&config, b"{\"a\":1}", b"{\"a\":2}").unwrap();
+    assert_eq!(fs::read(&config).unwrap(), b"{\"a\":2}");
+    assert_eq!(
+        fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    let found = backups(&dir);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (name, bytes, mode) = &found[0];
+    assert_eq!(bytes, b"{\"a\":1}");
+    assert_eq!(*mode, 0o600);
+    // settings.json.<YYYYMMDDTHHMMSSZ>-<uuid>.herdr-threads
+    let stamp = name
+        .strip_prefix("settings.json.")
+        .and_then(|rest| rest.strip_suffix(".herdr-threads"))
+        .unwrap();
+    let (time, id) = stamp.split_at(16);
+    assert!(time.ends_with('Z') && time.as_bytes()[8] == b'T', "{name}");
+    assert!(uuid::Uuid::parse_str(&id[1..]).is_ok(), "{name}");
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Kills a backup or write for an unchanged file, and a write over bytes the caller did not see.
+#[test]
+fn user_config_unchanged_or_stale_writes_nothing() {
+    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    fs::create_dir(&dir).unwrap();
+    let config = dir.join("hooks.json");
+    fs::write(&config, b"{}").unwrap();
+    write_user_config(&config, b"{}", b"{}").unwrap();
+    assert!(backups(&dir).is_empty());
+    assert_eq!(
+        write_user_config(&config, b"{\"seen\":true}", b"{\"x\":1}"),
+        Err(SetupError::Conflict)
+    );
+    assert_eq!(fs::read(&config).unwrap(), b"{}");
+    assert!(backups(&dir).is_empty());
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Kills a real hook writer that publishes or removes without keeping each prior version.
+#[test]
+fn hook_install_and_removal_back_up_each_prior_version() {
+    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    let scope = dir.join(".claude");
+    fs::create_dir_all(&scope).unwrap();
+    let config = scope.join("settings.json");
+    let manifest = dir.join("manifest.json");
+    let original = br#"{"permissions":{"deny":["Bash(rm *)"]}}"#;
+    fs::write(&config, original).unwrap();
+    let argv = vec!["/tmp/herdr-threads".into(), "hook".into()];
+    install_claude_user(&config, &manifest, &argv, original).unwrap();
+    let installed = fs::read(&config).unwrap();
+    assert_ne!(installed, original);
+    assert_eq!(
+        backups(&scope)
+            .into_iter()
+            .map(|(_, bytes, _)| bytes)
+            .collect::<Vec<_>>(),
+        [original.to_vec()]
+    );
+    remove_claude_user(&config, &manifest).unwrap();
+    let mut saved: Vec<_> = backups(&scope)
+        .into_iter()
+        .map(|(_, bytes, _)| bytes)
+        .collect();
+    saved.sort();
+    let mut expected = vec![original.to_vec(), installed];
+    expected.sort();
+    assert_eq!(saved, expected);
+    fs::remove_dir_all(dir).unwrap();
+}
