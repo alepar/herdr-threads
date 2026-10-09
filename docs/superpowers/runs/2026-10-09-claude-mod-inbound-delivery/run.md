@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-claude-mod-inbound-delivery
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: fix-loop
+phase: report
 codeMechanism: Workflow
 resumeChange: 2026-10-09 · "Goal set: finish super-auto work, prepare integration branch ready for merge into main, notify /herdr tab 'main' for merging and release cutting" · phase 7 prepares the branch (sweep at tip, base absorbed) and hands the merge and release to the Herdr tab 'main' instead of merging locally
 
@@ -18,19 +18,19 @@ parked:
 - 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md · escalation · "idle check vs submit non-atomic: a user Enter between the mod's idle check and the engine's acceptance can queue the plugin prompt behind the user's turn; spike check needed"
 - 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md · escalation · "$.session.id() inside session.end may return the ending session's id; restart path must re-read later"
 - coverage-round-2 · degraded-verdict · "coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage — design roast reviews the settled tree"
-- 2026-10-09 background commit security review · escalation · "mod frame relay/intent markers can be spoofed by peer-controlled body, thread or sender text (a fake marked header line); raw-body escaping was rejected twice under the cooperative model (design roast 1, PR roast 1); follow-up: delimit or escape peer text inside the frame now that markers carry meaning"
+- 2026-10-09 background commit security review · escalation · "mod frame relay/intent markers can be spoofed by peer-controlled body, thread or sender text (a fake marked header line); raw-body escaping was rejected twice under the cooperative model (design roast 1, PR roast 1); follow-up: delimit or escape peer text inside the frame now that markers carry meaning; recorded as a TRUST-POLICY accepted limit"
 roastDesignRound: 2
 roast-design: 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md, 2026-10-09-claude-mod-inbound-delivery-roast-design-2.md
 stepBackDesign-round-1: patch — 11 findings fixable in place; four clusters (D12 override layer folded into D2–D8, delivered predicate per path, install env/managed-policy checks, ack per-id result taxonomy) plus reload turn-state
 roastDesignExit: converged at round 2 (Should-fix 8 confirmed [converged], 0 Blocking); punch list of 8 applied inline as spec/bead text, no re-roast; iteration-1 escalations (submit atomicity under Esc; $.session.id() in session.end) remain parked
 graph-pass: depth 4→3 · width 2.5→3.3 · applied 1 · parked 0
 codeBuckets:
-  completed: ht-j16.1, ht-j16.3, ht-j16.6, ht-j16.5, ht-j16.7, ht-j16.4, ht-j16.2, ht-j16.10, ht-j16.19, ht-j16.18, ht-j16.22, ht-j16.20, ht-j16.17, ht-j16.21, ht-j16.23
+  completed: ht-j16.1, ht-j16.3, ht-j16.6, ht-j16.5, ht-j16.7, ht-j16.4, ht-j16.2, ht-j16.10, ht-j16.19, ht-j16.18, ht-j16.22, ht-j16.20, ht-j16.17, ht-j16.21, ht-j16.23, ht-j16.25, ht-j16.24
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (F1 mod frame drops author_role/relays_user/user_intent markers; test-count check pending sweep) — code-final-review-3.md
+  review: not ready (conflicts with main @3d10e3bb in 11 files; TRUST-POLICY accepted limits missing; full suite and live stress not run) — code-final-review-4.md
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: round 1 (fix re-entry): merge queue peaked at 5 — serial merge lane bottleneck
   worktreesKept:

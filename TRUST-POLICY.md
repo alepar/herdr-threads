@@ -509,6 +509,16 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   items delivered but not ACKed before a branch may be delivered again.
 - **An outer mod could strip context.** A mod wrapping `tool.call` outside herdr-threads' hook could remove
   the attached context after the herdr-threads hook returned; the receipt is already settled.
+- **Re-registration resets the stall clock.** Each registration starts a fresh channel whose stall clock
+  begins at registration, so a mod whose `watch` keeps reconnecting without ever delivering can hold native
+  wake off for as long as it keeps reconnecting. Deadlines and hard-deadline warnings still run; disabling
+  the mod (`mod_delivery: off`, or `unsetup`) returns the seat to native wake.
+- **A daemon restart can deliver twice.** After a restart the wake lane's first pass can run before the mod
+  re-registers, so one item may reach the agent both through native wake and through the mod. At-least-once,
+  as above; never lost.
+- **Mod frame markers are not escaped.** The mod frames peer bodies, thread and sender names as raw text after
+  its `[human]` / `[relays user]` / intent markers; a cooperative peer could write text that looks like a
+  marked header. The markers are as trustworthy as the peers, as on every other read path.
 
 ## Decision record
 
