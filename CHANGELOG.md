@@ -4,6 +4,7 @@
 
 ## v0.4.0
 
+- **Focused attention warnings.** Built-in overdue warnings wake only the seat that owes the response; clears and other members' transitions arrive as informational notices at their next check-in. Receipt and ACK provenance stay unchanged. Saturated notice windows retain a conservative wake fallback.
 - **Harness adapters.** Registered adapters provide harness discovery, setup, managed launch, context delivery and composer policies, including the Hermes integration. Unknown harness metadata grants no authority or optional capabilities.
 - **Recorded runtime evidence.** Bounded, attributed runtime and contract evidence preserves legacy history and reports acceptance limits honestly.
 - **Herdr 0.9.1 or newer.** The adapter enforces the manifest's `min_herdr_version` floor instead of admitting only 0.9.1 and 0.9.3 with protocol 22, so 0.9.2 and later releases connect. `protocol` is shown in Health and never gates. A release newer than 0.9.3 adds the Health limitation `untested Herdr X.Y.Z; tested 0.9.1-0.9.3` without degrading. A method or params a Herdr release does not accept fail as `unsupported` for that operation only.

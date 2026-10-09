@@ -106,6 +106,9 @@ mod lazy_settlement;
 #[path = "integration/lazy_attention.rs"]
 mod lazy_attention;
 
+#[path = "integration/notice_wake.rs"]
+mod notice_wake;
+
 #[path = "integration/lazy_config_smoke.rs"]
 mod lazy_config_smoke;
 

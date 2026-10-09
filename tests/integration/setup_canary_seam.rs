@@ -126,9 +126,74 @@ impl Case {
         ))
     }
 
-    fn consumer(&self, bytes: &[u8]) -> String {
-        fs::write(self.root.join("candidate.json"), bytes).unwrap();
-        self.shell("t0_py setup-assert \"$H\" \"$V\" \"$1/candidate.json\" \"$confdir\"")
+    /// Runs the actual consumer once per check, in order, inside one sourced
+    /// canary shell (the shell prelude is the expensive part; each check still
+    /// gets its own `t0_py setup-assert` process). Returns each check's stdout.
+    fn consumers(&self, checks: &[Check]) -> Vec<String> {
+        let config = self.config();
+        let config_name = config.file_name().unwrap().to_str().unwrap();
+        let mut body = String::new();
+        for (i, check) in checks.iter().enumerate() {
+            fs::write(self.root.join(format!("candidate-{i}.json")), &check.output).unwrap();
+            body.push_str(&format!("printf '@@check {i}\\n'\n"));
+            match &check.config {
+                Config::Keep => {}
+                Config::Write(bytes) => {
+                    fs::write(self.root.join(format!("config-{i}")), bytes).unwrap();
+                    body.push_str(&format!(
+                        "cp \"$1/config-{i}\" \"$confdir/{config_name}\"\n"
+                    ));
+                }
+                Config::Remove => {
+                    body.push_str(&format!("rm \"$confdir/{config_name}\"\n"));
+                }
+            }
+            body.push_str(&format!(
+                "t0_py setup-assert \"$H\" \"$V\" \"$1/candidate-{i}.json\" \"$confdir\"\n"
+            ));
+        }
+        let stdout = self.shell(&body);
+        let results: Vec<String> = stdout
+            .split("@@check ")
+            .skip(1)
+            .enumerate()
+            .map(|(i, part)| {
+                let (index, result) = part.split_once('\n').unwrap();
+                assert_eq!(index, i.to_string(), "{stdout}");
+                result.to_owned()
+            })
+            .collect();
+        assert_eq!(results.len(), checks.len(), "{stdout}");
+        results
+    }
+}
+
+enum Config {
+    Keep,
+    Write(Vec<u8>),
+    Remove,
+}
+
+/// One consumer check: the candidate setup output and the owned configuration
+/// in place when the consumer runs. `expect` judges the consumer's stdout.
+struct Check {
+    label: String,
+    output: Vec<u8>,
+    config: Config,
+    expect: Box<dyn Fn(&str) -> bool + Send>,
+}
+
+fn check(
+    label: impl Into<String>,
+    output: Vec<u8>,
+    config: Config,
+    expect: impl Fn(&str) -> bool + Send + 'static,
+) -> Check {
+    Check {
+        label: label.into(),
+        output,
+        config,
+        expect: Box::new(expect),
     }
 }
 
@@ -154,92 +219,132 @@ fn real_codex_setup_reaches_live_canary_consumer() {
 }
 
 // Kills accepting declaration as unconditional success or trusting JSON alone.
+// One test per harness (separate processes under nextest, so they run in
+// parallel); each runs all its consumer checks, in order, in one canary shell.
 #[test]
-fn actual_setup_consumer_rejects_bad_output_and_owned_configuration() {
-    for harness in ["claude", "codex"] {
-        let case = Case::new(harness);
-        let (original, _) = case.setup();
-        // Optional diagnostic metadata neither matches V nor supplies proof.
-        for version in [None, Some(json!("unqualified diagnostic metadata"))] {
-            let mut doc = original.clone();
-            let observation = doc["setup"]["harness_version"].as_object_mut().unwrap();
-            match version {
-                Some(version) => {
-                    observation.insert("version".into(), version);
-                }
-                None => {
-                    observation.remove("version");
-                }
+fn actual_claude_setup_consumer_rejects_bad_output_and_owned_configuration() {
+    consumer_rejects("claude");
+}
+
+#[test]
+fn actual_codex_setup_consumer_rejects_bad_output_and_owned_configuration() {
+    consumer_rejects("codex");
+}
+
+fn consumer_rejects(harness: &'static str) {
+    let case = Case::new(harness);
+    let (original, _) = case.setup();
+    let to_vec = |doc: &Value| serde_json::to_vec(doc).unwrap();
+    let mut checks = vec![];
+    // Optional diagnostic metadata neither matches V nor supplies proof.
+    for version in [None, Some(json!("unqualified diagnostic metadata"))] {
+        let mut doc = original.clone();
+        let observation = doc["setup"]["harness_version"].as_object_mut().unwrap();
+        match version.clone() {
+            Some(version) => {
+                observation.insert("version".into(), version);
             }
-            assert!(
-                case.consumer(&serde_json::to_vec(&doc).unwrap())
-                    .starts_with("pass\t")
-            );
-        }
-        for bad in [b"not json".as_slice(), b"[]", b"{}", b"{\"setup\":[]}"] {
-            assert!(case.consumer(bad).starts_with("fail\t"));
-        }
-        for action in [Value::Null, json!("removed"), json!("failed")] {
-            let mut doc = original.clone();
-            doc["setup"]["action"] = action;
-            assert!(
-                case.consumer(&serde_json::to_vec(&doc).unwrap())
-                    .starts_with("fail\tsetup.action")
-            );
-        }
-        for observation in [
-            Value::Null,
-            json!([]),
-            json!("bad"),
-            json!({}),
-            json!({"admission":"listed","version":null}),
-            json!({"admission":"contract_declared","version":42}),
-        ] {
-            let mut doc = original.clone();
-            doc["setup"]["harness_version"] = observation;
-            assert!(
-                case.consumer(&serde_json::to_vec(&doc).unwrap())
-                    .starts_with("fail\t")
-            );
-        }
-        let bytes = serde_json::to_vec(&original).unwrap();
-        let installed: Value = serde_json::from_slice(&fs::read(case.config()).unwrap()).unwrap();
-        let events: &[&str] = if harness == "claude" {
-            &["SessionStart", "PreToolUse"]
-        } else {
-            &["SessionStart", "SubagentStart", "PreToolUse"]
-        };
-        for event in events {
-            let mut config = installed.clone();
-            config["hooks"].as_object_mut().unwrap().remove(*event);
-            fs::write(case.config(), serde_json::to_vec(&config).unwrap()).unwrap();
-            let result = case.consumer(&bytes);
-            assert!(
-                result.starts_with("fail\t") && result.contains("owned"),
-                "{event}: {result}"
-            );
-        }
-        if harness == "claude" {
-            let mut config = installed.clone();
-            for group in config["hooks"]["PreToolUse"].as_array_mut().unwrap() {
-                group["matcher"] = json!("Edit");
+            None => {
+                observation.remove("version");
             }
-            fs::write(case.config(), serde_json::to_vec(&config).unwrap()).unwrap();
-            assert!(case.consumer(&bytes).contains("no owned PreToolUse(Bash)"));
         }
-        for bad in [
-            "not json",
-            "[]",
-            "{}",
-            "{\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"command\":\"echo foreign\"}]}]}}",
-        ] {
-            fs::write(case.config(), bad).unwrap();
-            assert!(case.consumer(&bytes).starts_with("fail\t"));
-        }
-        fs::remove_file(case.config()).unwrap();
-        assert!(case.consumer(&bytes).starts_with("fail\t"));
-        assert!(!case.root.join("probe/bin/invocations").exists());
+        checks.push(check(
+            format!("version {version:?}"),
+            to_vec(&doc),
+            Config::Keep,
+            |r| r.starts_with("pass\t"),
+        ));
     }
+    for bad in [b"not json".as_slice(), b"[]", b"{}", b"{\"setup\":[]}"] {
+        checks.push(check(
+            format!("output {}", String::from_utf8_lossy(bad)),
+            bad.to_vec(),
+            Config::Keep,
+            |r| r.starts_with("fail\t"),
+        ));
+    }
+    for action in [Value::Null, json!("removed"), json!("failed")] {
+        let mut doc = original.clone();
+        doc["setup"]["action"] = action.clone();
+        checks.push(check(
+            format!("action {action}"),
+            to_vec(&doc),
+            Config::Keep,
+            |r| r.starts_with("fail\tsetup.action"),
+        ));
+    }
+    for observation in [
+        Value::Null,
+        json!([]),
+        json!("bad"),
+        json!({}),
+        json!({"admission":"listed","version":null}),
+        json!({"admission":"contract_declared","version":42}),
+    ] {
+        let mut doc = original.clone();
+        doc["setup"]["harness_version"] = observation.clone();
+        checks.push(check(
+            format!("observation {observation}"),
+            to_vec(&doc),
+            Config::Keep,
+            |r| r.starts_with("fail\t"),
+        ));
+    }
+    let bytes = to_vec(&original);
+    let installed: Value = serde_json::from_slice(&fs::read(case.config()).unwrap()).unwrap();
+    let events: &[&str] = if harness == "claude" {
+        &["SessionStart", "PreToolUse"]
+    } else {
+        &["SessionStart", "SubagentStart", "PreToolUse"]
+    };
+    for event in events {
+        let mut config = installed.clone();
+        config["hooks"].as_object_mut().unwrap().remove(*event);
+        checks.push(check(
+            format!("config without {event}"),
+            bytes.clone(),
+            Config::Write(to_vec(&config)),
+            |r| r.starts_with("fail\t") && r.contains("owned"),
+        ));
+    }
+    if harness == "claude" {
+        let mut config = installed.clone();
+        for group in config["hooks"]["PreToolUse"].as_array_mut().unwrap() {
+            group["matcher"] = json!("Edit");
+        }
+        checks.push(check(
+            "PreToolUse matcher Edit",
+            bytes.clone(),
+            Config::Write(to_vec(&config)),
+            |r| r.contains("no owned PreToolUse(Bash)"),
+        ));
+    }
+    for bad in [
+        "not json",
+        "[]",
+        "{}",
+        "{\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"command\":\"echo foreign\"}]}]}}",
+    ] {
+        checks.push(check(
+            format!("config {bad}"),
+            bytes.clone(),
+            Config::Write(bad.as_bytes().to_vec()),
+            |r| r.starts_with("fail\t"),
+        ));
+    }
+    checks.push(check("config removed", bytes, Config::Remove, |r| {
+        r.starts_with("fail\t")
+    }));
+    let results = case.consumers(&checks);
+    let failures: Vec<_> = checks
+        .iter()
+        .zip(&results)
+        .filter(|(check, result)| !(check.expect)(result))
+        .map(|(check, result)| format!("{harness} {}: {result}", check.label))
+        .collect();
+    assert!(failures.is_empty(), "{failures:#?}");
+    assert!(!case.config().exists());
+    assert!(!case.root.join("probe/bin/invocations").exists());
 }
 
 // Kills swallowing actual setup exit errors or unavailable ht infrastructure.

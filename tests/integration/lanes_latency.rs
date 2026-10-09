@@ -556,7 +556,10 @@ fn send_is_attempted_within_100ms_without_a_tick_wait() {
 /// An idle daemon commits nothing from the deadline, wake or request origins
 /// and each of those two lanes makes at most one pass per 5 s safety tick,
 /// with the observation lane running at its own 5 s cadence. Observation
-/// commits (admission, snapshot stage, seal, publish) kick no lane.
+/// commits (admission, snapshot stage, seal, publish) kick no lane. The name
+/// keeps its historical `_30s`; the idle window is `IDLE_WINDOW` (12 s: two
+/// full 5 s safety ticks of each lane and two observation cycles, so a lane
+/// that polls on a short turn still overshoots the per-tick bound).
 /// Kills: a lane that polls on a short turn (many passes), a tick pass that
 /// commits (an empty scan writing), and an observation commit that is mapped
 /// to a lane and so wakes the wake lane every cycle.
@@ -575,24 +578,45 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
     let s = &scene.session;
     // Let setup's own work (invitation wake, receipts, first observation
     // publication) settle, then take the baseline.
-    std::thread::sleep(Duration::from_secs(8));
-    s.wait_commits_quiet("wake", Duration::from_secs(2));
-    s.wait_commits_quiet("deadline", Duration::from_secs(2));
-    // On a loaded host setup's own wake work can outlast the fixed 8 s: take
-    // the baseline once neither lane has passed for 3 s. A lane that polls on
-    // a short turn never gets there, so that failure still fails here.
-    for lane in [Lane::Wakes, Lane::Deadlines] {
-        let give_up = Instant::now() + Duration::from_secs(90);
-        let mut last = (s.probe.idle_events(lane), Instant::now());
-        while last.1.elapsed() < Duration::from_secs(3) {
-            assert!(
-                Instant::now() < give_up,
-                "the {lane:?} lane never went quiet after setup"
-            );
-            std::thread::sleep(Duration::from_millis(100));
-            let now = s.probe.idle_events(lane);
+    // Both commit origins stand still together (neither lane ticks a commit
+    // at idle, so one shared 2 s window serves both).
+    {
+        let both = || (s.commits("wake"), s.commits("deadline"));
+        let give_up = Instant::now() + Duration::from_secs(60);
+        let mut last = (both(), Instant::now());
+        while last.1.elapsed() < Duration::from_secs(2) {
+            assert!(Instant::now() < give_up, "setup commits never went quiet");
+            std::thread::sleep(Duration::from_millis(20));
+            let now = both();
             if now != last.0 {
                 last = (now, Instant::now());
+            }
+        }
+    }
+    // Take the baseline once each lane has gone 3 s without a pass (setup's
+    // own wake work can run long on a loaded host). The lanes are watched
+    // side by side, each on its own 5 s tick phase. A lane that polls on a
+    // short turn never gets there, so that failure still fails here.
+    {
+        let lanes = [Lane::Wakes, Lane::Deadlines];
+        let give_up = Instant::now() + Duration::from_secs(90);
+        let mut last = lanes.map(|lane| (s.probe.idle_events(lane), Instant::now()));
+        let mut quiet = [false; 2];
+        while quiet != [true; 2] {
+            std::thread::sleep(Duration::from_millis(100));
+            for (index, lane) in lanes.into_iter().enumerate() {
+                if quiet[index] {
+                    continue;
+                }
+                assert!(
+                    Instant::now() < give_up,
+                    "the {lane:?} lane never went quiet after setup"
+                );
+                let now = s.probe.idle_events(lane);
+                if now != last[index].0 {
+                    last[index] = (now, Instant::now());
+                }
+                quiet[index] = last[index].1.elapsed() >= Duration::from_secs(3);
             }
         }
     }
@@ -602,7 +626,8 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
         s.probe.idle_events(Lane::Wakes),
         s.probe.idle_events(Lane::Deadlines),
     );
-    let window = Duration::from_secs(30);
+    const IDLE_WINDOW: Duration = Duration::from_secs(12);
+    let window = IDLE_WINDOW;
     let started = Instant::now();
     std::thread::sleep(window);
     let elapsed = started.elapsed();
@@ -640,14 +665,23 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
     );
 }
 
-/// A deadline-lane commit that creates a warning wake (an overdue invitation
-/// writes `warning_jobs`, then `warning_recipients` and `wake_work`) is
-/// attempted by the wake lane in under 100 ms, with no tick wait for the wake
-/// lane: the commit's kick, not its 5 s safety tick, starts the pass.
+/// A deadline-lane commit that creates a warning (an overdue invitation writes
+/// `warning_jobs`, then `warning_recipients`) starts a kicked wake-lane pass in
+/// under 100 ms, with no tick wait for the wake lane. A kick is flushed only
+/// after its commit, and a latched kick wins over a tick, so the first
+/// `Kicked` pass start at or after the deadline-origin kick began after the
+/// publication and judged it. The inviter owes nothing and the guest is
+/// unbound, so that pass reserves nothing: the transition reaches the inviter
+/// as a check-in notice only. (A hard-deadline warning's affected seat was
+/// already reserved once for the obligation it owes, so its warning wake
+/// follows the configured minimum spacing, not this latency; store tests
+/// cover its eligibility.)
 /// Kills: a deadline-origin commit that does not kick the wake lane (the
-/// warning would wait up to 5 s), and a wake lane that ignores the kick.
+/// warning would wait up to 5 s), a wake lane that ignores the kick (only a
+/// tick would start the next pass), and a wake for a member who owes nothing.
 #[test]
-fn deadline_commit_creating_a_warning_wake_is_attempted_within_100ms() {
+fn deadline_commit_creating_a_warning_starts_a_kicked_wake_pass_within_100ms() {
+    use herdr_threads::service::pacer::Wake;
     let Some(session) = Session::new("warning_wake_within_100ms") else {
         return;
     };
@@ -666,42 +700,75 @@ fn deadline_commit_creating_a_warning_wake_is_attempted_within_100ms() {
         .as_str()
         .unwrap()
         .to_owned();
-    // The inviter has had no attention yet, so the warning is the first wake it
-    // is owed; the guest's own invitation wake is not the measured one.
     session.ok(
         Some(&inviter),
         &["invite", &thread, "--seat", &guest, "--deadline", "1"],
     );
     session.wait_commits_quiet("wake", Duration::from_millis(1500));
+    let starts = Arc::new(Mutex::new(Vec::<(Wake, Instant)>::new()));
+    let recorded = Arc::clone(&starts);
+    session.probe.set_registered_wake_hook(
+        Lane::Wakes,
+        Box::new(move |wake| recorded.lock().unwrap().push((wake, Instant::now()))),
+    );
     let kicks_before = session.probe.kick_log().len();
-    let committed_at = session.probe.next_commit_instant(Lane::Wakes);
-    let mut attempt = FirstCommit::watch(move || *committed_at.lock().unwrap());
+    let wake_commits = session.commits("wake");
     // The deadline passes after 1 s; the deadline lane notices at its next
     // 5 s safety tick (documented as up to 5 s late).
-    let attempted_at = attempt
-        .wait(Duration::from_secs(15))
-        .expect("the overdue invitation never produced a wake attempt");
-    let kicks = session.probe.kick_log().split_off(kicks_before);
-    let (_, _, kicked_at) = kicks
-        .iter()
-        .find(|(lanes, origin, _)| lanes.contains(Lane::Wakes) && *origin == Some(Lane::Deadlines))
-        .unwrap_or_else(|| panic!("no deadline-origin Wakes kick: {kicks:?}"));
-    let latency = attempted_at.saturating_duration_since(*kicked_at);
-    assert!(
-        latency < Duration::from_millis(100),
-        "deadline commit to wake attempt took {latency:?}: {kicks:?}"
-    );
-    assert!(
+    // Pin the kick to the publication: once the inviter's recipient row is
+    // committed, its commit's kick is logged; the latest deadline-origin Wakes
+    // kick from then on follows that commit.
+    let attributed = || -> bool {
         session
             .db()
             .query_row(
                 "SELECT count(*) FROM warning_recipients WHERE seat_id=?1",
                 [&inviter.seat],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0
+    };
+    wait_until(
+        "the overdue warning's attribution",
+        Duration::from_secs(15),
+        attributed,
+    );
+    std::thread::sleep(Duration::from_millis(50));
+    let kicks = session.probe.kick_log().split_off(kicks_before);
+    let (_, _, kicked_at) = *kicks
+        .iter()
+        .rev()
+        .find(|(lanes, origin, _)| lanes.contains(Lane::Wakes) && *origin == Some(Lane::Deadlines))
+        .unwrap_or_else(|| panic!("no deadline-origin Wakes kick: {kicks:?}"));
+    std::thread::sleep(Duration::from_secs(1));
+    let starts = starts.lock().unwrap().clone();
+    let (_, started_at) = starts
+        .iter()
+        .copied()
+        .find(|(wake, at)| *wake == Wake::Kicked && *at >= kicked_at)
+        .unwrap_or_else(|| panic!("the wake lane ignored the deadline-origin kick: {starts:?}"));
+    let latency = started_at.duration_since(kicked_at);
+    assert!(
+        latency < Duration::from_millis(100),
+        "deadline commit to kicked wake pass took {latency:?}: {starts:?}"
+    );
+    assert!(
+        session
+            .db()
+            .query_row(
+                "SELECT count(*) FROM warning_conditions WHERE affected_seat_id=?1",
+                [&guest],
                 |row| row.get::<_, i64>(0)
             )
             .unwrap()
-            > 0,
-        "the warning's recipients include the inviter"
+            == 1,
+        "the measured kick follows the overdue warning's publication"
+    );
+    assert_eq!(
+        session.commits("wake"),
+        wake_commits,
+        "no wake is attempted for an inviter who owes nothing"
     );
     assert!(lanes_for_table("warning_recipients").contains(Lane::Wakes));
     assert!(lanes_for_table("warning_jobs").contains(Lane::Deadlines));
@@ -824,7 +891,10 @@ fn herdr_stopped_freezes_wake_lane() {
         return;
     }
     const SEATS: u64 = 3;
-    const OUTAGE: Duration = Duration::from_secs(30);
+    // Two full 5 s wake safety ticks (the frozen lane must keep ticking) and
+    // far more than the per-seat refusal backoff's first steps (100 ms
+    // doubling: an unfrozen lane would commit refusals within ~1.5 s).
+    const OUTAGE: Duration = Duration::from_secs(11);
     let Some(scene) = Scene::new("herdr_stopped_freezes_wake_lane", SEATS as usize) else {
         return;
     };

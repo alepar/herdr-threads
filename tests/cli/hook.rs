@@ -2891,7 +2891,15 @@ mod continuity_gate {
             }),
         };
         let client = SlowDigest {
-            delay: Duration::from_millis(if current_budget_ms < 1500 { 600 } else { 100 }),
+            // An expired-window case's digest overruns its window by 600 ms;
+            // otherwise the digest is quick. Windows are wide enough that the
+            // in-process setup before the digest (journal and context writes)
+            // cannot consume them on a loaded machine.
+            delay: Duration::from_millis(if current_budget_ms < 2000 {
+                current_budget_ms + 600
+            } else {
+                100
+            }),
             clock: Arc::clone(&call_clock),
             seen: Mutex::new(vec![]),
         };
@@ -2932,11 +2940,12 @@ mod continuity_gate {
     }
     #[test]
     fn qualified_current_coordinator_slow_digest_shares_one_tool_deadline() {
-        let seen = qualified_slow_digest(false, true, 1500);
+        // A 2500 ms current window (the production lifecycle budget is 5000).
+        let seen = qualified_slow_digest(false, true, 2500);
         assert_eq!(seen.len(), 2);
         assert!(seen[0].0 && !seen[1].0);
         assert!(
-            seen[0].1 - seen[0].2 <= 1500,
+            seen[0].1 - seen[0].2 <= 2500,
             "digest was given lifecycle budget: {seen:?}"
         );
         assert!(
@@ -2944,7 +2953,7 @@ mod continuity_gate {
             "dispatch extended the digest deadline: {seen:?}"
         );
         assert!(
-            seen[1].1 - seen[1].2 < 1450,
+            seen[1].1 - seen[1].2 < 2450,
             "slow digest did not consume dispatch budget: {seen:?}"
         );
     }
@@ -2952,14 +2961,14 @@ mod continuity_gate {
     // the durable Current request with a newly started transport window.
     #[test]
     fn qualified_current_coordinator_expired_digest_never_dispatches() {
-        let seen = qualified_slow_digest(false, true, 500);
+        let seen = qualified_slow_digest(false, true, 1500);
         assert_eq!(seen.len(), 1, "expired callback still dispatched: {seen:?}");
         assert!(seen[0].0);
     }
     #[test]
     fn qualified_startup_and_clear_coordinator_retain_lifecycle_deadline() {
         for (reset, registered) in [(false, false), (true, true)] {
-            let seen = qualified_slow_digest(reset, registered, 1500);
+            let seen = qualified_slow_digest(reset, registered, 2500);
             assert_eq!(seen.len(), 2);
             assert!(
                 seen[0].1 - seen[0].2 > 4000,
@@ -4751,11 +4760,19 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
         .collect();
     let (offer, overview, digest, _) =
         startup_offer_with_topic(&instruction, &threads, Some(&"\"".repeat(120)));
-    let mut compared = 0;
+    // The pinned commands fit up to a harness-specific state-dir depth (the
+    // fitting boundary; inside 0..450 for both harnesses). Routing can only
+    // evict there, so every depth in a window just below the boundary is
+    // compared, and depths further below are sampled.
+    const DEPTHS: usize = 450;
+    const BOUNDARY_WINDOW: usize = 48;
+    const SAMPLE_STRIDE: usize = 16;
     for harness in [Harness::Claude, Harness::Codex] {
         let mut ev = event(CLAUDE_START);
         ev.harness = harness;
-        for depth in 0..450 {
+        // Returns whether the pinned commands fit without routing (and then
+        // checks that routing keeps them).
+        let case = |depth: usize| -> bool {
             let root = format!("/private/tmp/{}/state", "d".repeat(depth));
             let prefix = prefix(&root);
             let actions = next_actions(&prefix, Some(&digest));
@@ -4777,34 +4794,48 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
                 ))
             };
             let baseline = encode(None);
-            if actions
+            if !actions
                 .items
                 .iter()
                 .take(actions.pinned)
                 .all(|line| baseline.contains(line))
             {
-                compared += 1;
-                let routed = encode(Some(&routing));
-                assert!(routed.len() <= MAX_CONTEXT);
-                for line in actions.items.iter().take(actions.pinned) {
-                    assert!(
-                        routed.contains(line),
-                        "{harness:?} depth={depth} lost {line}: {routed}"
-                    );
-                }
-                let (_, peer) = routed.split_once("\nuntrusted_peer_data: ").unwrap();
-                let peer: String = serde_json::from_str(peer).unwrap();
-                assert!(peer.contains(&overview.rows[0]), "main row missing: {peer}");
-                if harness == Harness::Codex {
-                    assert!(routed.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
-                }
+                return false;
             }
+            let routed = encode(Some(&routing));
+            assert!(routed.len() <= MAX_CONTEXT);
+            for line in actions.items.iter().take(actions.pinned) {
+                assert!(
+                    routed.contains(line),
+                    "{harness:?} depth={depth} lost {line}: {routed}"
+                );
+            }
+            let (_, peer) = routed.split_once("\nuntrusted_peer_data: ").unwrap();
+            let peer: String = serde_json::from_str(peer).unwrap();
+            assert!(peer.contains(&overview.rows[0]), "main row missing: {peer}");
+            if harness == Harness::Codex {
+                assert!(routed.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+            }
+            true
+        };
+        // Walk down from the deepest root to the fitting boundary.
+        let mut depth = DEPTHS;
+        while depth > 0 && !case(depth - 1) {
+            depth -= 1;
+        }
+        let boundary = depth;
+        assert!(
+            boundary < DEPTHS && boundary > BOUNDARY_WINDOW,
+            "{harness:?}: the fixture did not cover the fitting boundary ({boundary})"
+        );
+        // Every depth just below the boundary fits and keeps its commands.
+        for depth in boundary - BOUNDARY_WINDOW..boundary - 1 {
+            assert!(case(depth), "{harness:?} depth={depth} below the boundary");
+        }
+        for depth in (0..boundary - BOUNDARY_WINDOW).step_by(SAMPLE_STRIDE) {
+            assert!(case(depth), "{harness:?} depth={depth} below the boundary");
         }
     }
-    assert!(
-        compared > 100,
-        "the fixture did not cover the fitting boundary"
-    );
 }
 
 // Generic composition must deliver canonical routing through the registered Hermes
@@ -6268,7 +6299,12 @@ mod registered_resume {
                 &claude(),
                 &i.bytes,
                 &herdr(),
-                Instant::now() + LIFECYCLE_BUDGET,
+                // The fixture service is a spawned child; on a loaded machine
+                // it can miss the 5 s production lifecycle budget and the
+                // hook (correctly) reports UnknownOutcome. These tests assert
+                // eligibility and replay, not that budget, so the fixture
+                // grants four times it.
+                Instant::now() + LIFECYCLE_BUDGET * 4,
                 Arc::new(SystemClock::new()),
                 None,
             );

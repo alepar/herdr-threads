@@ -1491,65 +1491,75 @@ fn prepared_retry_refuses_independent_unmarked_session_start_hook() {
 }
 
 // Kills: prepared removal or resumption that ignores the superseded groups recorded by a drifted
-// upgrade intent. Driven through the real upgrade boundaries for each drift variant.
+// upgrade intent. Driven through the real upgrade boundaries for each drift variant: every
+// (boundary, resume-or-remove) pair runs once, and the drift variants alternate so each variant
+// meets both boundaries and both outcomes (each case pays for durable installs).
 #[test]
 fn interrupted_drift_upgrade_resumes_or_removes_from_each_real_boundary() {
-    for (name, drift) in declaration_drifts() {
-        for fault in [
-            InstallFault::InterruptAfterIntent,
-            InstallFault::InterruptAfterPublication,
-        ] {
-            for resume in [false, true] {
-                let (dir, config, manifest_path) = claude_scope();
-                let original = br#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"user-start"}]}]},"other":1}"#;
-                fs::write(&config, original).unwrap();
-                let argv = vec!["/tmp/owned".into()];
-                let full = install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-                drift_installation(&config, &manifest_path, &drift);
+    let drifts = declaration_drifts();
+    assert_eq!(
+        drifts.len(),
+        2,
+        "the rotation below covers exactly two variants"
+    );
+    for (f, fault) in [
+        InstallFault::InterruptAfterIntent,
+        InstallFault::InterruptAfterPublication,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for (r, resume) in [false, true].into_iter().enumerate() {
+            let (name, drift) = &drifts[(f + r) % 2];
+            let (dir, config, manifest_path) = claude_scope();
+            let original = br#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"user-start"}]}]},"other":1}"#;
+            fs::write(&config, original).unwrap();
+            let argv = vec!["/tmp/owned".into()];
+            let full = install_claude_user(&config, &manifest_path, &argv, original).unwrap();
+            drift_installation(&config, &manifest_path, drift);
+            assert_eq!(
+                install_claude_user_with_fault(
+                    &config,
+                    &manifest_path,
+                    &argv,
+                    original,
+                    fault,
+                    || {}
+                ),
+                Err(SetupError::Io),
+                "{name} {fault:?}"
+            );
+            let intent = read_manifest_file(&manifest_path);
+            assert_eq!(intent.phase, InstallPhase::Prepared, "{name} {fault:?}");
+            assert!(!intent.superseded.is_empty(), "{name} {fault:?}");
+            if resume {
+                let resumed =
+                    install_claude_user(&config, &manifest_path, &argv, original).unwrap();
+                assert_eq!(resumed.owned, full.owned, "{name} {fault:?}");
+                assert!(resumed.superseded.is_empty());
+                let now: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
                 assert_eq!(
-                    install_claude_user_with_fault(
-                        &config,
-                        &manifest_path,
-                        &argv,
-                        original,
-                        fault,
-                        || {}
-                    ),
-                    Err(SetupError::Io),
+                    now["hooks"]["PreToolUse"],
+                    json!([full.owned[1].group]),
                     "{name} {fault:?}"
                 );
-                let intent = read_manifest_file(&manifest_path);
-                assert_eq!(intent.phase, InstallPhase::Prepared, "{name} {fault:?}");
-                assert!(!intent.superseded.is_empty(), "{name} {fault:?}");
-                if resume {
-                    let resumed =
-                        install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-                    assert_eq!(resumed.owned, full.owned, "{name} {fault:?}");
-                    assert!(resumed.superseded.is_empty());
-                    let now: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-                    assert_eq!(
-                        now["hooks"]["PreToolUse"],
-                        json!([full.owned[1].group]),
-                        "{name} {fault:?}"
-                    );
-                    assert!(
-                        inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown)
-                            .unwrap()
-                            .installed
-                    );
-                }
-                remove_claude_user(&config, &manifest_path)
-                    .unwrap_or_else(|e| panic!("{name} {fault:?} resume={resume}: {e:?}"));
-                let after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-                let original: Value = serde_json::from_slice(original).unwrap();
-                let mut expected = original.clone();
-                if after["hooks"]["PreToolUse"] == json!([]) {
-                    expected["hooks"]["PreToolUse"] = json!([]);
-                }
-                assert_eq!(after, expected, "{name} {fault:?} resume={resume}");
-                assert!(!manifest_path.exists());
-                fs::remove_dir_all(dir).unwrap();
+                assert!(
+                    inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown)
+                        .unwrap()
+                        .installed
+                );
             }
+            remove_claude_user(&config, &manifest_path)
+                .unwrap_or_else(|e| panic!("{name} {fault:?} resume={resume}: {e:?}"));
+            let after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+            let original: Value = serde_json::from_slice(original).unwrap();
+            let mut expected = original.clone();
+            if after["hooks"]["PreToolUse"] == json!([]) {
+                expected["hooks"]["PreToolUse"] = json!([]);
+            }
+            assert_eq!(after, expected, "{name} {fault:?} resume={resume}");
+            assert!(!manifest_path.exists());
+            fs::remove_dir_all(dir).unwrap();
         }
     }
 }

@@ -578,13 +578,17 @@ mod tests {
         let reference = cache_reference(&saved, &output.context).unwrap();
         let mut cursor = None;
         let mut collected = Vec::new();
+        let mut pages = 0;
         loop {
+            // Each page re-hashes and re-encodes the whole ~64 KiB output, so
+            // the budget keeps the walk to about eight full pages (each cut
+            // inside a run of two-byte characters) rather than dozens.
             let result = cached_output_page(
                 &saved,
                 &CachePageRequest {
                     reference: reference.clone(),
                     cursor,
-                    max_bytes: 2048,
+                    max_bytes: 8192,
                 },
                 &output,
             )
@@ -592,6 +596,7 @@ mod tests {
             let CommandResult::CachedCheckInPage(page) = result else {
                 panic!("wrong result")
             };
+            pages += 1;
             assert_eq!(page.start as usize, collected.len());
             collected.extend_from_slice(page.chunk_data.as_bytes());
             if page.next_argv.is_none() {
@@ -603,6 +608,7 @@ mod tests {
                 offset: page.end,
             });
         }
+        assert!(pages > 2, "{pages} pages");
         assert_eq!(collected, original);
         let mut wrong_reference = reference.clone();
         wrong_reference.output_sha256 = "0".repeat(64);

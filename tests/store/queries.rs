@@ -2046,8 +2046,15 @@ fn body_paging_returns_complete_remainder_whenever_it_fits() {
         )
         .unwrap()
         .len() as u32;
+        // Budgets are swept densely within 16 bytes of the full size (the
+        // boundary where a complete remainder starts to fit) and every 9th
+        // byte elsewhere: an off-by-reservation bug fails on a contiguous
+        // range starting at full_size, so the stride still lands in it.
+        let sampled = |range: std::ops::Range<u32>| {
+            range.filter(|max| full_size.abs_diff(*max) <= 16 || max % 9 == 0)
+        };
         // Sweep across full_size <= max < full_size + partial-page overhead.
-        for max in full_size..full_size + 600 {
+        for max in sampled(full_size..full_size + 600) {
             let CommandResult::Message(result) =
                 body_page(&store, None, Some(offset), max).unwrap()
             else {
@@ -2069,7 +2076,7 @@ fn body_paging_returns_complete_remainder_whenever_it_fits() {
         }
         // Below full size, the result is a fitting partial page or InvalidBudget,
         // never a page over budget.
-        for max in 0..full_size {
+        for max in sampled(0..full_size) {
             match body_page(&store, None, Some(offset), max) {
                 Ok(page) => {
                     assert!(
@@ -2646,14 +2653,18 @@ fn participant_stale_restart_uses_typed_thread_route() {
     );
 }
 
+// A long run of non-matching messages is scanned in candidate-capped pages
+// (100 candidates each), so every page returns a work continuation and the
+// page count tracks the run length. 3,000 rows (30 pages) keep the property;
+// the original 30,000-row run only multiplied the page count.
 #[test]
-fn search_30000_sparse_nonmatches_remains_paged() {
+fn search_3000_sparse_nonmatches_remains_paged() {
     let (store, db) = fixture();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    for n in 1..=30_000 {
+    for n in 1..=3_000 {
         db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),?1,'t',?2,'ordinary','s','unrelated',0)",params![format!("m{n}"),n]).unwrap();
     }
-    db.execute("UPDATE threads SET next_sequence=30001 WHERE id='t'", [])
+    db.execute("UPDATE threads SET next_sequence=3001 WHERE id='t'", [])
         .unwrap();
     db.execute_batch("COMMIT").unwrap();
     let mut cursor = None;
@@ -2674,9 +2685,9 @@ fn search_30000_sparse_nonmatches_remains_paged() {
         if cursor.is_none() {
             break;
         }
-        assert!(pages <= 302);
+        assert!(pages <= 32);
     }
-    assert!(pages >= 300);
+    assert!(pages >= 30);
 }
 
 #[test]
@@ -4888,6 +4899,12 @@ fn user_intent_inbox_canonical_claims_survive_full_and_chunked_output() {
         results::InboxBatchItem,
         summary::{AuthorRole, UserIntent},
     };
+    // One store serves every case: each case publishes its own message with
+    // a pending receipt, reads it back, then ACKs it so the next case starts
+    // from an empty inbox (a fresh store per case only repeated the setup).
+    let (store, db) = fixture();
+    bind_query_agent(&db);
+    let mut case = 0i64;
     for (role, relay) in [
         (Some(AuthorRole::Human), false),
         (Some(AuthorRole::Human), true),
@@ -4907,8 +4924,8 @@ fn user_intent_inbox_canonical_claims_survive_full_and_chunked_output() {
         };
         for intent in intents {
             for long in [false, true] {
-                let (store, db) = fixture();
-                bind_query_agent(&db);
+                case += 1;
+                let id = format!("m-intent-{case}");
                 let body = if long {
                     "α".repeat(900)
                 } else {
@@ -4921,11 +4938,20 @@ fn user_intent_inbox_canonical_claims_survive_full_and_chunked_output() {
                     [], |r| r.get(0)).unwrap();
                 db.execute_batch("DROP TRIGGER messages_summary_author_insert")
                     .unwrap();
-                db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at,author_role,relays_user,user_intent,author_role_backfilled) VALUES ('i',1,'m-intent','t',1,'ordinary',?5,?1,0,?2,?3,?4,?6)",
+                db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at,author_role,relays_user,user_intent,author_role_backfilled) VALUES ('i',?7,?8,'t',?7,'ordinary',?5,?1,0,?2,?3,?4,?6)",
                     rusqlite::params![body, role.map(AuthorRole::as_str), relay, intent.map(UserIntent::as_str),
-                        if role == Some(AuthorRole::Service) { None } else { Some("s") }, role.is_some() && intent.is_none()]).unwrap();
+                        if role == Some(AuthorRole::Service) { None } else { Some("s") }, role.is_some() && intent.is_none(), case, id]).unwrap();
                 db.execute_batch(&insert_guard).unwrap();
-                db.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m-intent','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+                db.execute(
+                    "INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t','s','pending',300)",
+                    [&id],
+                )
+                .unwrap();
+                db.execute(
+                    "UPDATE threads SET next_sequence=?1 WHERE id='t'",
+                    [case + 1],
+                )
+                .unwrap();
                 let mut request = PageRequest {
                     cursor: None,
                     limit: 1,
@@ -5010,6 +5036,11 @@ fn user_intent_inbox_canonical_claims_survive_full_and_chunked_output() {
                 }
                 assert_eq!(assembled, body);
                 assert_eq!(chunks > 1, long, "exercise full and chunked producers");
+                db.execute(
+                    "UPDATE receipts SET state='acked',acked_at=1,ack_actor_seat_id='s',ack_generation=1,ack_observation='obs' WHERE message_id=?1",
+                    [&id],
+                )
+                .unwrap();
             }
         }
     }

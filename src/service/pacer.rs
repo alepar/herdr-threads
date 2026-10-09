@@ -111,6 +111,8 @@ struct State {
 
 #[cfg(any(test, feature = "test-support"))]
 type IdleHook = Box<dyn Fn(u64) + Send + Sync>;
+#[cfg(any(test, feature = "test-support"))]
+type WakeHook = Box<dyn Fn(Wake) + Send + Sync>;
 
 struct Inner {
     lane: &'static str,
@@ -121,6 +123,8 @@ struct Inner {
     notify: tokio::sync::Notify,
     #[cfg(any(test, feature = "test-support"))]
     idle_hook: Mutex<Option<IdleHook>>,
+    #[cfg(any(test, feature = "test-support"))]
+    wake_hook: Mutex<Option<WakeHook>>,
     subscription: Mutex<Option<CancelSubscription>>,
 }
 
@@ -150,6 +154,19 @@ impl Inner {
         }
         #[cfg(not(any(test, feature = "test-support")))]
         let _ = count;
+    }
+    /// Runs the wake hook as a wait ends, before the lane's next pass starts.
+    fn record_wake(&self, wake: Wake) -> Wake {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(hook) = self
+            .wake_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            hook(wake);
+        }
+        wake
     }
     /// Decides the wake reason, or how long (clock ms) until the next time-based one.
     fn evaluate(&self, st: &mut State, deadline: u64) -> Result<Wake, u64> {
@@ -221,6 +238,8 @@ impl Pacer {
             notify: tokio::sync::Notify::new(),
             #[cfg(any(test, feature = "test-support"))]
             idle_hook: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            wake_hook: Mutex::new(None),
             subscription: Mutex::new(None),
         });
         let weak: Weak<Inner> = Arc::downgrade(&inner);
@@ -316,6 +335,13 @@ impl Pacer {
         *self.0.idle_hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
     }
 
+    /// Registers a hook run as each wait ends, with its reason: the start of
+    /// the pass that wait releases.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_wake_hook(&self, hook: WakeHook) {
+        *self.0.wake_hook.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
     fn call_deadline(&self, tick: Duration) -> u64 {
         let start = self.0.clock.monotonic_now().0;
         start.saturating_add(u64::try_from(tick.as_millis()).unwrap_or(u64::MAX))
@@ -328,7 +354,10 @@ impl Pacer {
         let mut st = self.0.lock();
         loop {
             match self.0.evaluate(&mut st, deadline) {
-                Ok(w) => return w,
+                Ok(w) => {
+                    drop(st);
+                    return self.0.record_wake(w);
+                }
                 Err(remaining_ms) => {
                     let timeout = Duration::from_millis(remaining_ms.max(1));
                     st = self
@@ -353,7 +382,10 @@ impl Pacer {
             let remaining_ms = {
                 let mut st = self.0.lock();
                 match self.0.evaluate(&mut st, deadline) {
-                    Ok(w) => return w,
+                    Ok(w) => {
+                        drop(st);
+                        return self.0.record_wake(w);
+                    }
                     Err(r) => r,
                 }
             };

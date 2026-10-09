@@ -856,9 +856,9 @@ impl Journal {
         let result = (|| {
             let mut file = private_new(&temp)?;
             serde_json::to_writer(&mut file, &progress)?;
-            file.sync_all()?;
+            durable_sync(&file)?;
             fs::rename(&temp, &path)?;
-            File::open(&self.root)?.sync_all()
+            durable_sync(&File::open(&self.root)?)
         })();
         if result.is_err() {
             let _ = fs::remove_file(&temp);
@@ -874,7 +874,7 @@ impl Journal {
     ) -> io::Result<()> {
         let _lock = self.lock()?;
         match fs::remove_file(self.lazy_display_path(claim, message)?) {
-            Ok(()) => File::open(&self.root)?.sync_all(),
+            Ok(()) => durable_sync(&File::open(&self.root)?),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e),
         }
@@ -931,8 +931,8 @@ impl Journal {
             }
             let mut file = private_new(&marker)?;
             file.write_all(b"1\n")?;
-            file.sync_all()?;
-            File::open(&journal.root)?.sync_all()?;
+            durable_sync(&file)?;
+            durable_sync(&File::open(&journal.root)?)?;
         }
         Ok(journal)
     }
@@ -1006,9 +1006,9 @@ impl Journal {
         let path = self.root.join(format!(".counter-{}", Uuid::new_v4()));
         let mut file = private_new(&path)?;
         writeln!(file, "{ordinal}")?;
-        file.sync_all()?;
+        durable_sync(&file)?;
         fs::rename(path, self.root.join("next-ordinal"))?;
-        File::open(&self.root)?.sync_all()
+        durable_sync(&File::open(&self.root)?)
     }
     fn path(&self, reference: &IntentRef) -> PathBuf {
         self.root.join(format!(
@@ -1109,9 +1109,9 @@ impl Journal {
         let temp = self.root.join(format!(".display-{}.tmp", Uuid::new_v4()));
         let mut file = private_new(&temp)?;
         serde_json::to_writer(&mut file, &progress)?;
-        file.sync_all()?;
+        durable_sync(&file)?;
         fs::rename(&temp, &path)?;
-        File::open(&self.root)?.sync_all()?;
+        durable_sync(&File::open(&self.root)?)?;
         Ok(flushed == body_len)
     }
 
@@ -1123,7 +1123,7 @@ impl Journal {
         let _lock = self.lock()?;
         let path = self.displayed_progress_path(claim, message);
         match fs::remove_file(path) {
-            Ok(()) => File::open(&self.root)?.sync_all(),
+            Ok(()) => durable_sync(&File::open(&self.root)?),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
         }
@@ -1325,12 +1325,12 @@ impl Journal {
         file.write_all(b"\n")?;
         file.write_all(&body)?;
         file.write_all(b"\n")?;
-        file.sync_all()?;
+        durable_sync(&file)?;
         fs::rename(path, self.path(&reference))?;
         // The entry is already visible. A failed durability barrier must not
         // hide the operation's exact recovery reference from the caller.
         File::open(&self.root)
-            .and_then(|dir| dir.sync_all())
+            .and_then(|dir| durable_sync(&dir))
             .map_err(|error| {
                 io::Error::new(
                     error.kind(),
@@ -1510,7 +1510,7 @@ impl Journal {
     }
     pub fn complete(&self, reference: &IntentRef) -> io::Result<()> {
         fs::remove_file(self.path(reference))?;
-        File::open(&self.root)?.sync_all()
+        durable_sync(&File::open(&self.root)?)
     }
     pub fn page(&self, request: &PageRequest) -> io::Result<PendingPage> {
         self.page_with_argv(request, &["pending-ops".to_owned()])
@@ -1903,3 +1903,21 @@ fn private_open(path: &Path) -> io::Result<File> {
 #[cfg(test)]
 #[path = "../../tests/cli/journal.rs"]
 mod tests;
+
+/// `sync_all`, except in test-support builds started with
+/// `HT_TEST_RELAXED_DURABILITY=1` (children tagged by `test_support::spawn`):
+/// every CLI write synced the journal several times (`F_FULLFSYNC` on macOS),
+/// which queued on the disk under a loaded suite. Ordinary builds always sync.
+fn durable_sync(file: &File) -> std::io::Result<()> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        static RELAXED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *RELAXED.get_or_init(|| {
+            std::env::var_os(crate::store::connection::TEST_RELAXED_DURABILITY_ENV)
+                .is_some_and(|v| v == "1")
+        }) {
+            return Ok(());
+        }
+    }
+    file.sync_all()
+}

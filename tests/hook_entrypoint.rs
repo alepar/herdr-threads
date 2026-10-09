@@ -63,12 +63,17 @@ fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Comma
 
 /// CheckIn fault modes for the counting wrapper.
 const PASS: u8 = 0;
-/// Sleep 3 s, then forward (a hung daemon that eventually answers). Applies to
-/// CheckIn and to the attention digest query.
+/// Sleep 3 s (past the 1.5 s tool budget), then forward (a hung daemon that
+/// eventually answers). Applies to CheckIn and to the attention digest query.
 const HANG: u8 = 1;
 /// Reject with CallerUnverified without forwarding (definitive rejection).
 const REJECT: u8 = 2;
-/// Sleep past the lifecycle budget, then drop without forwarding (lost call).
+/// How long a `HANG` daemon holds a call: past the 1.5 s tool budget.
+const HANG_FOR: Duration = Duration::from_millis(3000);
+/// Drop without forwarding, answering the ambiguous `DeadlineExceeded` a call
+/// lost past its deadline yields (lost call). The hook's own budget is
+/// stretched by the test timeout scale, so sleeping past the production
+/// lifecycle budget first would only add wall-clock time.
 const DROP: u8 = 3;
 /// Withhold the capability response beyond the production tool deadline.
 const WITHHOLD_CAPABILITIES: u8 = 4;
@@ -343,7 +348,7 @@ impl Counting {
             self.digests.fetch_add(1, Ordering::SeqCst);
             // A hung daemon hangs every attention read, not only CheckIn.
             if self.mode.load(Ordering::SeqCst) == HANG {
-                std::thread::sleep(Duration::from_millis(3000));
+                std::thread::sleep(HANG_FOR);
             }
         }
         if matches!(command, Command::CheckIn(_)) {
@@ -352,7 +357,7 @@ impl Counting {
                 |code, detail: &str| herdr_threads::protocol::results::ApiError::new(code, detail);
             use herdr_threads::protocol::results::ErrorCode;
             match self.mode.load(Ordering::SeqCst) {
-                HANG => std::thread::sleep(Duration::from_millis(3000)),
+                HANG => std::thread::sleep(HANG_FOR),
                 REJECT => {
                     return Err(error(
                         ErrorCode::CallerUnverified,
@@ -360,7 +365,6 @@ impl Counting {
                     ));
                 }
                 DROP => {
-                    std::thread::sleep(Duration::from_millis(5300));
                     return Err(error(ErrorCode::DeadlineExceeded, "dropped"));
                 }
                 _ => (),
@@ -1253,7 +1257,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         "{}",
         hung.stderr
     );
-    std::thread::sleep(Duration::from_millis(3200));
+    std::thread::sleep(HANG_FOR + Duration::from_millis(200));
     // A tool-boundary read leaves nothing pending: the next hook is clean.
     let recovered = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
     assert_eq!(recovered.code, Some(0), "{}", recovered.stderr);
@@ -1341,6 +1345,9 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
 // wedges with TooLarge after about 128 calls), a tool path that stops reading
 // attention (the digest count must rise by exactly one per call), and one that
 // checks in although nothing advanced (the CheckIn count must not move).
+// Past the ~128-call wedge point of a journaling tool path; the journal bytes
+// are compared exactly as well, so one journaling call already fails.
+const TOOL_HOOK_CALLS: u64 = 130;
 #[test]
 fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     let fx = Fixture::start();
@@ -1353,7 +1360,7 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
     let digests_before = fx.digests.load(Ordering::SeqCst);
     let mut slowest = Duration::ZERO;
     let clock = Instant::now();
-    for n in 0..210 {
+    for n in 0..TOOL_HOOK_CALLS {
         let hook = fx.hook("w9:p1", &tool("sess-1"));
         assert_eq!(hook.code, Some(0), "call {n}: {}", hook.stderr);
         assert!(hook.stderr.is_empty(), "call {n}: {}", hook.stderr);
@@ -1371,7 +1378,7 @@ fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
         slowest = slowest.max(hook.elapsed);
     }
     eprintln!(
-        "210 tool hooks: total {:?}, slowest {:?}",
+        "{TOOL_HOOK_CALLS} tool hooks: total {:?}, slowest {:?}",
         clock.elapsed(),
         slowest
     );
@@ -2217,6 +2224,10 @@ impl Fixture {
     fn production_history(&self, acked: u64) -> Duration {
         let started = Instant::now();
         let context = StoreContext::new(self.db.clone(), Arc::new(SystemClock::new()));
+        // History setup only: the production writers run unchanged, but this
+        // setup connection commits with `synchronous=NORMAL` (WAL), so writing
+        // the history is not fsync-bound on a disk shared with the suite.
+        context.relax_commit_durability();
         let mut conn = context.open_writer().unwrap();
         conn.busy_timeout(Duration::from_secs(30)).unwrap();
         conn.execute_batch(
@@ -2373,6 +2384,10 @@ impl Fixture {
     fn settled_warning_history(&self, settled: u64) -> Duration {
         let started = Instant::now();
         let context = StoreContext::new(self.db.clone(), Arc::new(SystemClock::new()));
+        // History setup only: the production writers run unchanged, but this
+        // setup connection commits with `synchronous=NORMAL` (WAL), so writing
+        // the history is not fsync-bound on a disk shared with the suite.
+        context.relax_commit_durability();
         let mut conn = context.open_writer().unwrap();
         conn.busy_timeout(Duration::from_secs(30)).unwrap();
         conn.execute_batch(
@@ -2512,6 +2527,10 @@ impl Fixture {
         use herdr_threads::test_support::history;
         let started = Instant::now();
         let context = StoreContext::new(self.db.clone(), Arc::new(SystemClock::new()));
+        // History setup only: the production writers run unchanged, but this
+        // setup connection commits with `synchronous=NORMAL` (WAL), so writing
+        // the history is not fsync-bound on a disk shared with the suite.
+        context.relax_commit_durability();
         let mut conn = context.open_writer().unwrap();
         conn.busy_timeout(Duration::from_secs(30)).unwrap();
         conn.execute_batch(
@@ -2913,24 +2932,29 @@ fn hook_phase_capture_rejects_overflow_and_cross_window_handlers() {
     assert_eq!(fresh.len, 3, "new capture must reset prior evidence");
 }
 
-// Default-run size (debug): 2,000 items per pending axis, past the 1,000 cap.
+// Default-run size (debug): one item past the 1,000 attention count cap
+// (`MAX_PENDING_WARNING_COUNT`), the smallest history that saturates it.
 // Kills M-post-filter-cap and M-walk-without-LIMIT only at scale (see the
 // release 10^5 cases); at this size it pins the saturated `1000+` summary,
 // the settlement of offered notices and the quiet/emit contract.
+const PAST_COUNT_CAP: u64 = herdr_threads::protocol::results::MAX_PENDING_WARNING_COUNT + 1;
+
 #[test]
 fn two_thousand_pending_invitations_stay_bounded_and_emit_new_invitation() {
-    pending_axis_stays_bounded_and_emits_new_invitation(PendingAxis::Invitations, 2_000);
+    pending_axis_stays_bounded_and_emits_new_invitation(PendingAxis::Invitations, PAST_COUNT_CAP);
 }
 
 #[test]
 fn two_thousand_pending_receipts_stay_bounded_and_emit_new_invitation() {
-    pending_axis_stays_bounded_and_emits_new_invitation(PendingAxis::Receipts, 2_000);
+    pending_axis_stays_bounded_and_emits_new_invitation(PendingAxis::Receipts, PAST_COUNT_CAP);
 }
 
-// Default-run size for the page-by-page notice settlement (see below).
+// Default-run size for the page-by-page notice settlement (see below): the
+// smallest backlog that stays saturated (`1000+`) through every page the test
+// walks (five 16-notice pages).
 #[test]
 fn two_thousand_programmatic_notices_are_offered_page_by_page() {
-    programmatic_backlog_is_offered_page_by_page(2_000);
+    programmatic_backlog_is_offered_page_by_page(1_101);
 }
 
 // Wave-2 fix1 (a) acceptance matrix at 10^5, release, built binary: run with

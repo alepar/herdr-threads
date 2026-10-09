@@ -75,9 +75,35 @@ fn observation_lines(log: &str) -> Vec<String> {
         .collect()
 }
 
+/// The highest `retrying (attempt N, ...)` count `daemon health` reports.
+fn max_retry_attempt(health: &str) -> u32 {
+    health
+        .split("retrying (attempt ")
+        .skip(1)
+        .filter_map(|rest| {
+            rest.split(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|digits| digits.parse().ok())
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Failures the observation lane must have recorded before the log is
+/// judged: the backoff's first steps (100 ms doubling) come within a few
+/// seconds of the first one, so a line per backoff step would show as five
+/// lines.
+const ATTEMPTS: u32 = 5;
+
 /// Kills: no daemon.log line for the observation lane's failures (silent
-/// outage), a line per backoff step (log flood), and a summary without a
-/// count.
+/// outage) and a line per backoff step (log flood). The window waits for
+/// `ATTEMPTS` consecutive failures (a few seconds of backoff), not the 30 s
+/// summary window (`LANE_LOG_WINDOW_MS`): the summary's count, window and
+/// attempt are pinned with a fake clock by `daemon::lane_log`
+/// (`first_occurrence_then_one_summary_per_window`,
+/// `injected_failure_in_each_lane_lands_rate_limited`), and they share this
+/// limiter and sink. Any summary that does appear must still be capped and
+/// carry its count.
 #[test]
 fn herdr_stopped_logs_once_then_capped_summaries() {
     let Some(herdr) = IsolatedHerdr::new("herdr_stopped_logs_once_then_capped_summaries") else {
@@ -99,23 +125,30 @@ fn herdr_stopped_logs_once_then_capped_summaries() {
 
     herdr.stop();
     let stopped = Instant::now();
-    let deadline = stopped + Duration::from_secs(90);
-    let lines = loop {
-        let lines = observation_lines(&scratch.daemon_log());
-        if lines.iter().any(|line| line.contains(" repeated ")) {
-            break lines;
+    let deadline = stopped + Duration::from_secs(60);
+    let mut health;
+    loop {
+        health = String::from_utf8_lossy(&scratch.cli(&["daemon", "health"]).stdout).into_owned();
+        if max_retry_attempt(&health) >= ATTEMPTS {
+            break;
         }
         assert!(
             Instant::now() < deadline,
-            "no summary line within 90 s: {lines:?}"
+            "fewer than {ATTEMPTS} failed attempts within 60 s: {health}"
         );
-        std::thread::sleep(Duration::from_millis(500));
-    };
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let lines = observation_lines(&scratch.daemon_log());
     let elapsed = stopped.elapsed().as_secs();
 
     let (summaries, firsts): (Vec<_>, Vec<_>) =
         lines.iter().partition(|line| line.contains(" repeated "));
-    // One first-occurrence line per distinct error class.
+    assert!(
+        !firsts.is_empty(),
+        "no daemon.log line after {ATTEMPTS} failures ({health}): {lines:?}"
+    );
+    // One first-occurrence line per distinct error class, however many
+    // backoff steps failed.
     let mut classes: Vec<&str> = firsts
         .iter()
         .map(|line| {
@@ -131,9 +164,13 @@ fn herdr_stopped_logs_once_then_capped_summaries() {
         classes.len()
     };
     assert_eq!(firsts.len(), distinct, "{lines:?}");
+    assert!(
+        lines.len() < ATTEMPTS as usize,
+        "a line per backoff step ({health}): {lines:?}"
+    );
     // Capped: at most one summary per 30 s window per class since the stop.
     assert!(
-        summaries.len() <= distinct * (elapsed as usize / 30 + 1),
+        summaries.len() <= distinct * (elapsed as usize / 30),
         "{} summaries in {elapsed}s: {lines:?}",
         summaries.len()
     );

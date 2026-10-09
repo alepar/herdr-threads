@@ -214,6 +214,27 @@ impl Session {
         }
     }
 
+    /// Waits until none of the `origins` commit counters has moved for
+    /// `window` (one shared window, not one per origin in turn).
+    pub(crate) fn wait_all_commits_quiet(&self, origins: &[&str], window: Duration) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let read = || -> Vec<u64> { origins.iter().map(|o| self.commits(o)).collect() };
+        let mut last = read();
+        let mut since = Instant::now();
+        while since.elapsed() < window {
+            assert!(
+                Instant::now() < deadline,
+                "{origins:?} commits never went quiet"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+            let now = read();
+            if now != last {
+                last = now;
+                since = Instant::now();
+            }
+        }
+    }
+
     pub(crate) fn db(&self) -> rusqlite::Connection {
         let paths = InstancePaths::resolve(
             &RuntimeContext::explicit(self.state.clone(), self.herdr.socket_path(), None).unwrap(),
@@ -355,6 +376,41 @@ pub(crate) fn kicks_since(s: &Session, from: usize) -> Vec<KickRecord> {
     s.probe.kick_log().split_off(from)
 }
 
+/// Lets setup's own work (the seat's check-in wake) settle before an idle
+/// window: every lane has finished a pass, and the idle origins go quiet.
+pub(crate) fn settle_setup(s: &Session) {
+    wait_lanes_settled(s, Duration::from_millis(500));
+    s.wait_all_commits_quiet(
+        &["wake", "deadline", "request"],
+        Duration::from_millis(1500),
+    );
+}
+
+/// The shortest idle window that spans one wake safety tick
+/// (`WAKE_SAFETY_TICK_MILLIS`, 5 s) and one observation cadence (5 s) with
+/// margin. The window is extended (never past `IDLE_WINDOW_LIMIT`) until both
+/// the wake lane and the observation lane have made a pass in it, so a loaded
+/// machine that delays a tick does not fail the lower bounds; the upper bound
+/// on wake passes is computed from the window's actual length.
+pub(crate) const IDLE_WINDOW: Duration = Duration::from_millis(5_500);
+const IDLE_WINDOW_LIMIT: Duration = Duration::from_secs(30);
+
+/// Runs an idle window (see [`IDLE_WINDOW`]), kicking retention every 500 ms
+/// (it has no commit-driven kick), and returns its length.
+pub(crate) fn run_idle_window(s: &Session, wake_from: u64, observation_from: u64) -> Duration {
+    let started = Instant::now();
+    loop {
+        s.probe.kick_registered(Lane::Retention);
+        std::thread::sleep(Duration::from_millis(500));
+        let elapsed = started.elapsed();
+        let passes_seen = s.probe.registered_idle_events(Lane::Wakes) > wake_from
+            && s.commits("observation") > observation_from;
+        if (elapsed >= IDLE_WINDOW && passes_seen) || elapsed >= IDLE_WINDOW_LIMIT {
+            return elapsed;
+        }
+    }
+}
+
 /// The production factory registers all registered lanes with the commit-kick
 /// registry the store's hooks kick through, and attaches each lane's Pacer to
 /// the `WorkerStatus` Health reads. A kick sent through the registry makes the
@@ -416,9 +472,8 @@ fn committed_wake_work_insert_kicks_the_wake_pacer() {
         &["invite", &thread, "--seat", &sender.seat],
     );
     s.ok(Some(&sender), &["accept", &thread]);
-    wait_lanes_settled(&s, Duration::from_millis(1500));
-    s.wait_commits_quiet("wake", Duration::from_millis(1500));
-    s.wait_commits_quiet("deadline", Duration::from_millis(1500));
+    wait_lanes_settled(&s, Duration::from_millis(1000));
+    s.wait_all_commits_quiet(&["wake", "deadline"], Duration::from_millis(1000));
 
     // 1. A request-origin commit to a wake-mapped table.
     let kicks_from = s.probe.kick_log().len();
@@ -441,8 +496,7 @@ fn committed_wake_work_insert_kicks_the_wake_pacer() {
     );
 
     // 2. A send: the deadline lane materializes the seat's `wake_work`.
-    s.wait_commits_quiet("wake", Duration::from_millis(1500));
-    s.wait_commits_quiet("deadline", Duration::from_millis(1500));
+    s.wait_all_commits_quiet(&["wake", "deadline"], Duration::from_millis(1000));
     let kicks_from = s.probe.kick_log().len();
     let wake_commits = s.commits("wake");
     s.ok(
@@ -532,7 +586,7 @@ fn injected_lane_failure_logs_and_degrades_then_clears() {
                 s.probe.lane_fault_hits(lane) - hits_from
             );
             s.probe.kick_registered(lane);
-            std::thread::sleep(Duration::from_millis(250));
+            std::thread::sleep(Duration::from_millis(25));
         }
         wait_until(
             &format!("{name} to report its failure"),
@@ -584,10 +638,15 @@ fn injected_lane_failure_logs_and_degrades_then_clears() {
         assert_eq!(added[1], &pointer, "{name}");
 
         s.probe.heal_lane(lane);
+        // Kicked, so the deadline and wake lanes' next good pass need not wait
+        // for their 5 s safety tick (a kick never shortens a backoff).
         wait_until(
             &format!("a later success to clear {name}"),
             Duration::from_secs(40),
-            || s.probe.lane_health(lane).is_none(),
+            || {
+                s.probe.kick_registered(lane);
+                s.probe.lane_health(lane).is_none()
+            },
         );
         let (state, cleared) = s.health();
         assert_eq!(state, "healthy", "{name}: {cleared:?}");
@@ -623,10 +682,11 @@ fn spawn_blocking_revoke_counts_as_request_origin() {
     };
     let pane = s.first_pane();
     s.seat(&pane);
-    wait_lanes_settled(&s, Duration::from_millis(1500));
-    for origin in ["deadline", "wake", "retention"] {
-        s.wait_commits_quiet(origin, Duration::from_millis(1500));
-    }
+    wait_lanes_settled(&s, Duration::from_millis(1000));
+    s.wait_all_commits_quiet(
+        &["deadline", "wake", "retention"],
+        Duration::from_millis(1000),
+    );
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = PersistentServiceClient::new(
         s.descriptor.endpoint.clone(),
@@ -710,12 +770,18 @@ fn spawn_blocking_revoke_counts_as_request_origin() {
 }
 
 /// With all registered lanes running on the production worker set and nothing to do
-/// for 30 s: the per-origin counter shows no deadline, wake, request or
+/// for an idle window spanning a wake safety tick and an observation cadence
+/// ([`IDLE_WINDOW`], 5.5 s or more; the name keeps its historical `30s`):
+/// the per-origin counter shows no deadline, wake, request or
 /// admission-observer commit; the wake lane makes at most one pass per 5 s
-/// window; and retention (kicked every 5 s, since it has no commit-driven
+/// window; and retention (kicked every 500 ms, since it has no commit-driven
 /// kick) prunes the superseded snapshot generations the observation lane
 /// keeps publishing, with those Retention-origin commits kicking no lane.
-/// Kills: a lane that polls on a short turn, an idle pass that commits, a
+/// Over the short window the pass bound (`elapsed/5 + 1`) only catches a
+/// lane that polls faster than ~2.7 s; slower short-turn polling is caught
+/// by `lanes_latency::idle_daemon_commits_nothing_from_deadline_wake_request_for_30s`
+/// (12 s window, under ~4 s).
+/// Kills: a lane that polls on a very short turn, an idle pass that commits, a
 /// retention prune whose kick wakes the wake or deadline lane (it would then
 /// pass more than once per window and commit), and a lane (retention for
 /// one) missing from the production worker set.
@@ -731,12 +797,8 @@ fn idle_five_lanes_30s() {
     };
     let pane = s.first_pane();
     s.seat(&pane);
-    // Let setup's own work (the seat's check-in wake, the first observation
-    // publications) settle, then take the baseline.
-    std::thread::sleep(Duration::from_secs(8));
-    for origin in ["wake", "deadline", "request"] {
-        s.wait_commits_quiet(origin, Duration::from_secs(2));
-    }
+    // Let setup's own work settle, then take the baseline.
+    settle_setup(&s);
     let counts = s.probe.commit_counts();
     let kicks_from = s.probe.kick_log().len();
     let wake_from = s.probe.registered_idle_events(Lane::Wakes);
@@ -761,13 +823,8 @@ fn idle_five_lanes_30s() {
         )
         .unwrap();
     assert_eq!(stale_jobs(), 1);
-    let window = Duration::from_secs(30);
-    let started = Instant::now();
-    while started.elapsed() < window {
-        s.probe.kick_registered(Lane::Retention);
-        std::thread::sleep(Duration::from_secs(5));
-    }
-    let elapsed = started.elapsed();
+    let observation_from = counts.get("observation").copied().unwrap_or(0);
+    let elapsed = run_idle_window(&s, wake_from, observation_from);
     let after = s.probe.commit_counts();
     for origin in ["deadline", "wake", "request", "admission-observer"] {
         assert_eq!(
@@ -777,11 +834,12 @@ fn idle_five_lanes_30s() {
         );
     }
     assert!(
-        after["observation"] > counts["observation"],
+        after.get("observation").copied().unwrap_or(0) > observation_from,
         "the observation lane never committed: {counts:?} -> {after:?}"
     );
     assert!(
-        after["retention"] > counts["retention"],
+        after.get("retention").copied().unwrap_or(0)
+            > counts.get("retention").copied().unwrap_or(0),
         "retention pruned nothing in {elapsed:?}: {counts:?} -> {after:?}"
     );
     assert_eq!(stale_jobs(), 0, "retention deleted the stale completed job");

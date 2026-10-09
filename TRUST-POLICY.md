@@ -366,6 +366,13 @@ response loss can lose an informational offer after commitment, and an explicit 
 can present the retained result again. Delivery is neither invitation acceptance nor receipt ACK,
 agreement, adoption or task completion. Logical publication tokens stay unchanged by projection;
 an advertised read-only delivery hint lets hooks drain newly attributed and remaining notice pages.
+Delivery is not a wake. A built-in transition wakes only the affected seat of a still-open
+condition (the hard-deadline backstop for the obligation that seat owes); a clear, and every
+transition about another seat, waits for the member's next check-in offer. Accepted limit: an idle
+member learns of another seat's overdue or cleared obligation only when its pane next checks in. When
+more than the bounded window of pending warnings or unoffered notices is visible, narrowing cannot rule
+out an older waking notice (such as a service notice), so the wake keeps its unnarrowed answer and the
+offer probe stays conservative: it may still wake, never silently drop one.
 
 **A8. Passive lazy delivery bookkeeping.** Recorded `ordinary`/`lazy` delivery mode is immutable and
 independent of sender role, relay and human intent. A lazy audience is frozen by canonical preparation

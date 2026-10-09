@@ -419,11 +419,23 @@ fn at_scale(threads: u64) -> Connection {
 // membership-interval lookup that is not seat-leading (a scan of every
 // interval). The seat's work is
 // identical in indexed candidates, and within 10% in SQLite VM instructions,
-// from 10^3 to 10^5 instance threads.
+// from 10^3 to 10^4 instance threads (a 10x span: any per-thread walk grows
+// tenfold). The 10^5 case is
+// `digest_cost_is_flat_from_a_thousand_to_a_hundred_thousand_threads`.
 #[test]
+fn digest_cost_is_flat_from_a_thousand_to_ten_thousand_threads() {
+    assert_digest_cost_flat_in_threads(&[1_000, 10_000]);
+}
+
+#[test]
+#[ignore = "seeds 10^5 instance threads; run in release"]
 fn digest_cost_is_flat_from_a_thousand_to_a_hundred_thousand_threads() {
+    assert_digest_cost_flat_in_threads(&[1_000, 10_000, 100_000]);
+}
+
+fn assert_digest_cost_flat_in_threads(sizes: &[u64]) {
     let mut observed = Vec::new();
-    for threads in [1_000u64, 10_000, 100_000] {
+    for &threads in sizes {
         let db = at_scale(threads);
         let (run, units) = vm_units(&db, || digest(&db, "s"));
         assert_eq!(ids(&run.digest.invitations), ["inv-s"]);
@@ -494,9 +506,12 @@ fn with_settled_history(acked: u64, warns: u64) -> Connection {
 }
 
 // Digest fix2 B1: per-call work is proportional to the seat's pending
-// attention, never to its retained history. From 10^3 to 10^5 ACKed receipts
+// attention, never to its retained history. From 10^3 to 10^4 ACKed receipts
 // on the digest seat (half physical, half manifest-backed) and from 10^3 to
-// 10^4 settled warnings in its member thread, the digest examines exactly the
+// 10^4 settled warnings in its member thread (10x on both axes; the 10^5
+// receipt case is
+// `digest_cost_is_flat_at_a_hundred_thousand_acked_receipts`), the digest
+// examines exactly the
 // same indexed candidates and the same SQLite VM work (within 10%). Kills:
 // the full-history receipt walk (`scan_effective_receipts(Seat)` to
 // completion), a physical walk on `receipts_seat_state_ordinal` without the
@@ -506,8 +521,22 @@ fn with_settled_history(acked: u64, warns: u64) -> Connection {
 // trigger (settled rows left in a projection).
 #[test]
 fn digest_cost_is_flat_in_the_seats_acked_receipts_and_settled_warnings() {
+    assert_digest_cost_flat_in_settled_history(&[(1_000, 1_002), (10_000, 10_002)]);
+}
+
+#[test]
+#[ignore = "seeds 10^5 ACKed receipts; run in release"]
+fn digest_cost_is_flat_at_a_hundred_thousand_acked_receipts() {
+    assert_digest_cost_flat_in_settled_history(&[
+        (1_000, 1_002),
+        (10_000, 3_000),
+        (100_000, 10_002),
+    ]);
+}
+
+fn assert_digest_cost_flat_in_settled_history(sizes: &[(u64, u64)]) {
     let mut observed = Vec::new();
-    for (acked, warns) in [(1_000u64, 1_002u64), (10_000, 3_000), (100_000, 10_002)] {
+    for &(acked, warns) in sizes {
         let db = with_settled_history(acked, warns);
         assert_eq!(
             db.query_row(
@@ -638,8 +667,10 @@ fn production_history(
     let guard = RemoveOnDrop(path);
     let mut conn = context.open_writer().unwrap();
     // Setup speed only: the send writer's preparation lookup scans every
-    // retained preparation (reported separately), so keep them cached.
+    // retained preparation (reported separately), so keep them cached, and
+    // a throwaway store needs no fsync per writer commit.
     conn.pragma_update(None, "cache_size", -262_144).unwrap();
+    conn.pragma_update(None, "synchronous", "OFF").unwrap();
     conn.execute_batch("\
         INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1);\
         INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('snd','i','resolved','native','p-snd',1,1,0,1),('rcv','i','resolved','native','p-rcv',1,1,0,1);\
@@ -833,13 +864,14 @@ fn assert_check_in_reads_flat(sizes: &[u64]) {
 // its candidate limit inside `hist` and returns one warning instead of two).
 // The default-suite guard for the same regressions (ht-zo4.7): ACKed
 // receipts and settled invitations are never visited, so the work is flat
-// already from 200 to 2,000 (10x), without the minutes-long 10^4 seeding.
+// already from 50 to 500 (10x; 500 still exceeds the first warnings page's
+// candidate limit), without the minutes-long 10^4 seeding.
 // It replaces the wall-clock budget check of
 // hook_entrypoint::twenty_thousand_acked_receipts_stay_quiet_and_new_attention_is_emitted
 // (now release-only) with deterministic SQLite VM work.
 #[test]
-fn check_in_reads_are_flat_from_two_hundred_to_two_thousand_acked_receipts() {
-    assert_check_in_reads_flat(&[200, 2_000]);
+fn check_in_reads_are_flat_from_fifty_to_five_hundred_acked_receipts() {
+    assert_check_in_reads_flat(&[50, 500]);
 }
 
 #[test]
@@ -1291,7 +1323,8 @@ fn scale_invariance_inventory_of_canonical_effective_scans() {
 }
 
 // Digest fix3, kept under wave-2 (a): check-in's pending warning count never
-// walks the instance's threads. From 10^3 to 10^5 instance threads (each with
+// walks the instance's threads. From 10^3 to 10^4 instance threads (the 10^5
+// case is `pending_warning_count_is_flat_at_a_hundred_thousand_threads`; each with
 // an ordinary message and no warning) the count for `s` (one pending
 // invitation-overdue warning, through its membership) is exact with the same
 // SQLite VM work (within 10%). Kills: a per-thread count loop (`SELECT id FROM
@@ -1299,6 +1332,16 @@ fn scale_invariance_inventory_of_canonical_effective_scans() {
 // grows with every retained thread.
 #[test]
 fn pending_warning_count_is_flat_in_instance_threads() {
+    assert_pending_warning_count_flat_in_threads(&[1_000, 10_000]);
+}
+
+#[test]
+#[ignore = "seeds 10^5 instance threads; run in release"]
+fn pending_warning_count_is_flat_at_a_hundred_thousand_threads() {
+    assert_pending_warning_count_flat_in_threads(&[1_000, 10_000, 100_000]);
+}
+
+fn assert_pending_warning_count_flat_in_threads(sizes: &[u64]) {
     use crate::protocol::time::{CallBudget, MonoInstant};
     let clock = crate::app::SystemClock::new();
     let budget = CallBudget {
@@ -1306,7 +1349,7 @@ fn pending_warning_count_is_flat_in_instance_threads() {
         cancellation: Default::default(),
     };
     let mut observed = Vec::new();
-    for threads in [1_000u64, 10_000, 100_000] {
+    for &threads in sizes {
         let db = empty();
         db.execute_batch(&format!("\
             WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<{threads})\
@@ -1874,4 +1917,72 @@ fn recipients_backfill_covers_existing_warnings() {
     let run = digest(&db, "s");
     assert_eq!(ids(&run.digest.warnings), ["w1"]);
     assert_eq!(run.digest.warnings.count, 1);
+}
+
+// Kills narrowing a saturated warning window to nothing: a full window of
+// newer transitions about another seat must not hide an older unoffered
+// service notice for this seat (ht-pb7 review). The wake keeps the
+// conservative unnarrowed answer, and the offer probe saturates true. The
+// unsaturated control kills a fallback that ignores saturation.
+#[test]
+fn saturated_other_seat_transitions_do_not_hide_an_older_waking_notice() {
+    let db = empty();
+    db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    db.execute_batch("\
+        INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t6','i','f','g',0,0);\
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t6','s',1,1),('t6','o',1,1);\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset,author_kind,author_service_id) VALUES ('n0','i','t6',1,'warn','{}',0,20,1,'programmatic','svc');\
+        INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES ('np0','n0',20,1);\
+    ").unwrap();
+    let transitions = |from: i64, to: i64| {
+        db.execute_batch("BEGIN").unwrap();
+        for n in from..to {
+            let (id, seq) = (format!("w{n}"), 21 + n);
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES (?1,'i','t6',?2,'warn','{}',0,?3,1)", params![id, n + 2, seq]).unwrap();
+            db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t6',?1,'o',?1,?2)", params![id, seq]).unwrap();
+            db.execute(
+                "INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES (?1,'s',?2)",
+                params![id, seq],
+            )
+            .unwrap();
+        }
+        db.execute_batch("COMMIT").unwrap();
+    };
+    // Unsaturated, all informational: other seats' transitions never wake s.
+    transitions(0, 3);
+    assert_eq!(wake_attention(&db, "s").attention.latest_warning_seq, None);
+    assert!(!seat_has_pending_wake_notices(&db, "s").unwrap());
+    // The older service notice is delivered to s (projected before them).
+    db.execute(
+        "INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('n0','s',1)",
+        [],
+    )
+    .unwrap();
+    // Keep the notice older than every transition: below them by ordinal,
+    // above the unoffered frontier (0).
+    db.execute_batch(
+        "UPDATE digest_programmatic_warnings SET ordinal=ordinal+10 WHERE warning_id!='n0';\
+         UPDATE digest_programmatic_warnings SET ordinal=1 WHERE warning_id='n0';",
+    )
+    .unwrap();
+    assert_eq!(
+        wake_attention(&db, "s").attention.latest_warning_seq,
+        Some(20)
+    );
+    // Saturated: a full window of newer transitions hides the service notice.
+    transitions(3, WINDOW as i64);
+    assert!(
+        seat_pending_warnings(&db, "s", &no_budget)
+            .unwrap()
+            .saturated,
+        "the fixture saturates the notice walk"
+    );
+    let wake = wake_attention(&db, "s");
+    assert!(
+        wake.attention.latest_warning_seq.is_some(),
+        "a saturated window must stay conservative: {:?}",
+        wake.attention
+    );
+    assert!(seat_has_pending_wake_notices(&db, "s").unwrap());
 }

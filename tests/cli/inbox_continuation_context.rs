@@ -3,8 +3,12 @@ use crate::lazy_config_smoke::World;
 use herdr_threads::test_support::spawn;
 use serde_json::Value;
 
+/// Fixture readiness, not a latency claim: under a starved host a deadline-lane
+/// pass can miss its 500 ms admission budget and back off (hosted push
+/// 37897718472 missed the former 2 s wait). The bound is a hang guard; on
+/// expiry it reports the jobs and the daemon log.
 fn wait_for_send_attention(w: &World) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let unfinished: i64 = w
             .db()
@@ -17,10 +21,22 @@ fn wait_for_send_attention(w: &World) {
         if unfinished == 0 {
             return;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "private send attention failed to finish"
-        );
+        if std::time::Instant::now() >= deadline {
+            let db = w.db();
+            let mut jobs = db
+                .prepare("SELECT kind,status,last_error FROM work_jobs ORDER BY ordinal")
+                .unwrap();
+            let jobs: Vec<(String, String, Option<String>)> = jobs
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            let log = herdr_threads::daemon::logs::daemon_log_path(&w.paths());
+            panic!(
+                "private send attention failed to finish: jobs={jobs:?}\ndaemon log:\n{}",
+                std::fs::read_to_string(log).unwrap_or_default()
+            );
+        }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
@@ -28,9 +44,10 @@ fn wait_for_send_attention(w: &World) {
 #[test]
 fn continuation_legacy_own_text_survives_v2_capability_upgrade() {
     use std::sync::atomic::Ordering;
-    let w = World::new();
+    let w = World::agents_only();
     let lazy = w.send("legacy traversal must leave lazy pending", &[]);
-    let body = "native-legacy-é界-".repeat(1100);
+    // 9.5 KB: more than two 4096-byte pages, so at least two continuations.
+    let body = "native-legacy-é界-".repeat(500);
     let ordinary = w.send(&body, &["--nudge", "--require-ack", &w.seats[1]]);
     wait_for_send_attention(&w);
     let proxy = crate::lazy_config_smoke::Proxy::new(w.paths(), &w.root);
@@ -146,12 +163,13 @@ fn continuation_legacy_own_text_survives_v2_capability_upgrade() {
 
 #[test]
 fn continuation_legacy_checkin_replays_on_v2_daemon_readonly() {
-    let w = World::new();
+    let w = World::agents_only();
     let lazy = w.send("pending lazy delivery", &[]);
     let ordinary = w.send("pending ordinary receipt", &["--require-ack", &w.seats[1]]);
     let mut expected = std::collections::BTreeSet::from([w.thread.clone()]);
-    // The real check-in builder caps its v1 inbox offer at 20 threads.
-    for n in 0..21 {
+    // The real check-in builder caps its v1 inbox offer at 20 threads; these
+    // 20 plus the fixture thread make 21, one past the cap.
+    for n in 0..20 {
         let topic = format!("legacy continuation {n}");
         let thread = w.ok(Some(0), false, &["thread", "create", "--topic", &topic])["data"]
             .as_str()
@@ -258,7 +276,7 @@ fn continuation_legacy_checkin_replays_on_v2_daemon_readonly() {
 
 #[test]
 fn continuation_malformed_namespace_is_refused() {
-    let w = World::new();
+    let w = World::agents_only();
     let lazy = w.send("must remain pending", &[]);
     let before = w.projection_snapshot();
     let intents = w.intents();
@@ -289,10 +307,12 @@ fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, s
         w,
         serde_json::json!({"owned_root":w.root,"daemon_pid":descriptor.pid}),
     );
-    let body = "é界-'$`-".repeat(1500);
+    // 11 KB lazy (alone in the foreign-seat case) and 6 KB ordinary bodies:
+    // each crosses a 4096-byte page, and the lazy body alone needs three pages.
+    let body = "é界-'$`-".repeat(1000);
     let lazy = w.send(&body, &[]);
     let receipt_seat = if selected == 2 { 1 } else { selected };
-    let ordinary_body = "ordinary-é界-'$`-".repeat(1100);
+    let ordinary_body = "ordinary-é界-'$`-".repeat(300);
     let ordinary = w.send(&ordinary_body, &["--require-ack", &w.seats[receipt_seat]]);
     // Ordinary send returns before its worker materializes receipt projections.
     // Let this private fixture's job finish before comparing read-only pages.
@@ -555,7 +575,7 @@ fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, s
 
 #[test]
 fn continuation_machine_preserves_readonly_across_utf8_chunks() {
-    let w = World::new();
+    let w = World::agents_only();
     traverse(
         &w,
         1,
@@ -587,7 +607,12 @@ fn continuation_json_foreign_seat_preserves_scope() {
 #[test]
 fn continuation_explicit_own_and_foreign_text_stay_readonly() {
     for selected in [1, 2] {
-        let w = World::new();
+        // Own (seat 1) traversal never involves the Human seat 2.
+        let w = if selected == 1 {
+            World::agents_only()
+        } else {
+            World::new()
+        };
         traverse(
             &w,
             1,
@@ -605,7 +630,7 @@ fn continuation_human_own_text_keeps_actor_and_completes() {
 }
 #[test]
 fn continuation_agent_own_text_retains_ack_and_completion() {
-    let w = World::new();
+    let w = World::agents_only();
     traverse(&w, 1, false, &["inbox", "--max-bytes", "4096"], false, 1);
 }
 
@@ -636,7 +661,9 @@ fn continuation_legacy_human_long_topics_fit_and_remain_readonly() {
     );
     let lazy = w.send("passive control", &[]);
     let mut expected = std::collections::BTreeSet::from([w.thread.clone()]);
-    for n in 0..21 {
+    // About eleven long-topic rows fit the 2400-byte Human page, so these 13
+    // plus the fixture thread (14 rows) cross the byte bound into a continuation.
+    for n in 0..13 {
         let topic = format!("topic-{n:02}-{}", "界".repeat(45));
         let thread = w.ok(Some(0), false, &["thread", "create", "--topic", &topic])["data"]
             .as_str()

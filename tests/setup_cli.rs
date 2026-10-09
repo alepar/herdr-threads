@@ -1941,7 +1941,12 @@ fn moved_binary_conflict_names_both_paths() {
 
         let moved_dir = s.root.join("moved bin");
         fs::create_dir(&moved_dir).unwrap();
-        fs::copy(BIN, moved_dir.join("herdr-threads")).unwrap();
+        // A hard link is a second path to the same executable: setup records
+        // the invoked path, and a fresh copy pays macOS's first-exec code
+        // signature check on every run. Copy only across filesystems.
+        if fs::hard_link(BIN, moved_dir.join("herdr-threads")).is_err() {
+            fs::copy(BIN, moved_dir.join("herdr-threads")).unwrap();
+        }
         let moved = moved_dir.join("herdr-threads").canonicalize().unwrap();
         let recorded = Path::new(BIN).canonicalize().unwrap();
         // `Scratch::command` runs the built binary: run the copy with the same environment.
@@ -3348,26 +3353,30 @@ fn task51_public_assertions(
 
 #[test]
 fn task51_public_hermes_removal_reports_modified_residue_and_no_removal() {
+    // The removal removes nothing, so both report formats run against one
+    // install; the whole tree is asserted unchanged by each run.
+    let f = task51_installed();
+    let dir = f.selected_home("work").join("plugins/herdr-threads");
+    let manifest = task51_manifest(&f);
+    let index = f.scratch.state.join("setup/hermes/selectors-v1.json");
+    let before_manifest = fs::read(&manifest).unwrap();
+    let before_index = fs::read(&index).unwrap();
+    let other: Vec<_> = ["bridge_config.json", "plugin.yaml"]
+        .into_iter()
+        .map(|name| (dir.join(name), fs::read(dir.join(name)).unwrap()))
+        .collect();
+    let user = b"# exact user-owned bridge edit\n";
+    fs::write(dir.join("__init__.py"), user).unwrap();
     for json_format in [true, false] {
-        let f = task51_installed();
-        let dir = f.selected_home("work").join("plugins/herdr-threads");
-        let manifest = task51_manifest(&f);
-        let index = f.scratch.state.join("setup/hermes/selectors-v1.json");
-        let before_manifest = fs::read(&manifest).unwrap();
-        let before_index = fs::read(&index).unwrap();
-        let other: Vec<_> = ["bridge_config.json", "plugin.yaml"]
-            .into_iter()
-            .map(|name| (dir.join(name), fs::read(dir.join(name)).unwrap()))
-            .collect();
-        let user = b"# exact user-owned bridge edit\n";
-        fs::write(dir.join("__init__.py"), user).unwrap();
+        let before = task51_snapshot(&f.scratch.root);
         let out = task51_command(&f, "unsetup", json_format).output().unwrap();
         assert_eq!(fs::read(dir.join("__init__.py")).unwrap(), user);
-        assert_eq!(fs::read(manifest).unwrap(), before_manifest);
-        assert_eq!(fs::read(index).unwrap(), before_index);
-        for (path, bytes) in other {
-            assert_eq!(fs::read(path).unwrap(), bytes);
+        assert_eq!(fs::read(&manifest).unwrap(), before_manifest);
+        assert_eq!(fs::read(&index).unwrap(), before_index);
+        for (path, bytes) in &other {
+            assert_eq!(&fs::read(path).unwrap(), bytes);
         }
+        assert_eq!(task51_snapshot(&f.scratch.root), before);
         task51_public_assertions(&out, json_format, &[], &["__init__.py"], true);
     }
 }
@@ -3708,27 +3717,22 @@ fn task51_target(f: &HermesScopeFixture, name: &str) -> PathBuf {
     }
 }
 
-#[test]
-fn task51_owned_consumers_refuse_fifo_without_writes_or_held_locks() {
+// One FIFO case per owned-file class and consumer verb: both selector files
+// (the lock-protected index pair), the physical marker, the manifest, one
+// staged plugin asset (`__init__.py`; `bridge_config.json` and `plugin.yaml`
+// share its read policy) and the runtime helper. Split into tests so the
+// classes run in parallel. Cases share one Hermes install: the original
+// file is moved aside for the FIFO and moved back after the refusal, and the
+// restored tree must equal the fresh install's snapshot before the next case.
+fn task51_fifo_refusals(cases: &[(&str, &str)]) {
     use std::ffi::CString;
     let mut timeouts = Vec::new();
-    for (name, verb) in [
-        ("index-marker", "unsetup"),
-        ("index", "unsetup"),
-        ("physical-marker", "unsetup"),
-        ("physical-marker", "setup-status"),
-        ("manifest", "unsetup"),
-        ("manifest", "setup-status"),
-        ("__init__.py", "unsetup"),
-        ("__init__.py", "setup-status"),
-        ("bridge_config.json", "unsetup"),
-        ("plugin.yaml", "unsetup"),
-        ("helper", "setup"),
-        ("helper", "setup-status"),
-    ] {
-        let f = task51_installed();
+    let f = task51_installed();
+    let fresh = task51_snapshot(&f.scratch.root);
+    let spare = f.scratch.root.join("fifo-original");
+    for &(name, verb) in cases {
         let path = task51_target(&f, name);
-        fs::remove_file(&path).unwrap();
+        fs::rename(&path, &spare).unwrap();
         let c_path = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
         let before = task51_snapshot(&f.scratch.root);
@@ -3751,12 +3755,19 @@ fn task51_owned_consumers_refuse_fifo_without_writes_or_held_locks() {
             );
         }
         match status {
-            None => timeouts.push(label),
+            None => timeouts.push(label.clone()),
             Some(status) => assert!(
                 !status.success(),
                 "special file accepted: {label}: {stdout}{stderr}"
             ),
         }
+        fs::remove_file(&path).unwrap();
+        fs::rename(&spare, &path).unwrap();
+        assert_eq!(
+            task51_snapshot(&f.scratch.root),
+            fresh,
+            "install not restored after {label}"
+        );
     }
     assert!(
         timeouts.is_empty(),
@@ -3765,97 +3776,200 @@ fn task51_owned_consumers_refuse_fifo_without_writes_or_held_locks() {
 }
 
 #[test]
-fn task51_owned_read_regular_and_refusal_neighbors() {
+fn task51_owned_consumers_refuse_fifo_selectors() {
+    task51_fifo_refusals(&[("index-marker", "unsetup"), ("index", "unsetup")]);
+}
+
+#[test]
+fn task51_owned_consumers_refuse_fifo_marker_and_manifest() {
+    task51_fifo_refusals(&[
+        ("physical-marker", "unsetup"),
+        ("physical-marker", "setup-status"),
+        ("manifest", "unsetup"),
+        ("manifest", "setup-status"),
+    ]);
+}
+
+#[test]
+fn task51_owned_consumers_refuse_fifo_asset_and_helper() {
+    task51_fifo_refusals(&[
+        ("__init__.py", "unsetup"),
+        ("__init__.py", "setup-status"),
+        ("helper", "setup"),
+        ("helper", "setup-status"),
+    ]);
+}
+
+// Each metadata policy is exercised through its actual caller, including
+// helper multi-link acceptance versus selector multi-link refusal. One name
+// per acceptance class (selector, physical marker, manifest, staged asset,
+// helper) against every neighbour kind; `index-marker`, `bridge_config.json`
+// and `plugin.yaml` share their class's policy (the FIFO tests still open the
+// selector marker). An unmodified install is the same `unsetup` for every
+// non-helper name, so the "regular" control runs once for unsetup (on the
+// selector) and once for the helper's setup-status. One test per class so the
+// classes run in parallel.
+//
+// A Hermes install is the expensive part of each case, so cases share one:
+// every neighbour is made by moving the original aside (never deleting it),
+// and after the case it is moved back. A refusal is asserted not to mutate
+// anything, so the restored tree must equal the fresh install's snapshot
+// (inode, mode and bytes of every entry); the next case then sees a fresh
+// install. An accepted unsetup consumes the install, and any case whose
+// restore does not reproduce the snapshot gets a fresh install.
+fn task51_neighbors(name: &str) {
     use std::os::unix::fs::symlink;
-    // Each metadata policy is exercised through its actual caller, including
-    // helper multi-link acceptance versus selector multi-link refusal.
-    for name in [
-        "index-marker",
-        "index",
-        "physical-marker",
-        "manifest",
-        "__init__.py",
-        "bridge_config.json",
-        "plugin.yaml",
-        "helper",
+    let regular_control = name == "index" || name == "helper";
+    let mut installed: Option<(HermesScopeFixture, Vec<_>)> = None;
+    for neighbor in [
+        "regular",
+        "missing",
+        "symlink",
+        "directory",
+        "oversize",
+        "public-mode",
+        "hardlink",
     ] {
-        for neighbor in [
-            "regular",
-            "missing",
-            "symlink",
-            "directory",
-            "oversize",
-            "public-mode",
-            "hardlink",
-        ] {
+        if neighbor == "regular" && !regular_control {
+            continue;
+        }
+        let (f, fresh) = installed.take().unwrap_or_else(|| {
             let f = task51_installed();
-            let path = task51_target(&f, name);
-            let original = fs::read(&path).unwrap();
-            let spare = f.scratch.root.join("neighbor-original");
-            match neighbor {
-                "regular" => {}
-                "missing" => {
-                    fs::remove_file(&path).unwrap();
-                }
-                "symlink" => {
-                    fs::rename(&path, &spare).unwrap();
-                    symlink(&spare, &path).unwrap();
-                }
-                "directory" => {
-                    fs::remove_file(&path).unwrap();
-                    fs::create_dir(&path).unwrap();
-                }
-                "oversize" => {
-                    fs::write(&path, vec![b'x'; 1_048_577]).unwrap();
-                }
-                "public-mode" => {
-                    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-                }
-                "hardlink" => {
-                    fs::hard_link(&path, &spare).unwrap();
-                }
-                _ => unreachable!(),
+            let fresh = task51_snapshot(&f.scratch.root);
+            (f, fresh)
+        });
+        let path = task51_target(&f, name);
+        let original = fs::read(&path).unwrap();
+        let mode = fs::symlink_metadata(&path).unwrap().permissions();
+        let spare = f.scratch.root.join("neighbor-original");
+        match neighbor {
+            "regular" => {}
+            "missing" => {
+                fs::rename(&path, &spare).unwrap();
             }
-            let verb = if name == "helper" {
-                "setup-status"
-            } else {
-                "unsetup"
-            };
-            let logs = Scratch::new();
-            let label = format!("{name}-{neighbor}");
-            let before = task51_snapshot(&f.scratch.root);
-            let calls = fs::read(&f.calls).unwrap();
-            let (status, stdout, stderr) =
-                task51_bounded(&mut task51_command(&f, verb, true), &logs.root, &label);
-            let status = status.unwrap_or_else(|| panic!("neighbor blocked: {label}"));
-            let selector = name == "index" || name == "index-marker";
-            let physical_marker = name == "physical-marker";
-            let asset = ["__init__.py", "bridge_config.json", "plugin.yaml"].contains(&name);
-            let accepted = neighbor == "regular"
-                || (neighbor == "missing" && (asset || name == "helper"))
-                || (neighbor == "public-mode" && !selector && !physical_marker && name != "helper")
-                || (neighbor == "hardlink" && !selector && !physical_marker);
-            assert_eq!(status.success(), accepted, "{label}: {stdout}{stderr}");
-            task51_locks_released(&f, &logs.root);
-            if !accepted {
+            "symlink" => {
+                fs::rename(&path, &spare).unwrap();
+                symlink(&spare, &path).unwrap();
+            }
+            "directory" => {
+                fs::rename(&path, &spare).unwrap();
+                fs::create_dir(&path).unwrap();
+            }
+            "oversize" => {
+                fs::write(&path, vec![b'x'; 1_048_577]).unwrap();
+            }
+            "public-mode" => {
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            "hardlink" => {
+                fs::hard_link(&path, &spare).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let verb = if name == "helper" {
+            "setup-status"
+        } else {
+            "unsetup"
+        };
+        let logs = Scratch::new();
+        let label = format!("{name}-{neighbor}");
+        let before = task51_snapshot(&f.scratch.root);
+        let calls = fs::read(&f.calls).unwrap();
+        let (status, stdout, stderr) =
+            task51_bounded(&mut task51_command(&f, verb, true), &logs.root, &label);
+        let status = status.unwrap_or_else(|| panic!("neighbor blocked: {label}"));
+        let selector = name == "index" || name == "index-marker";
+        let physical_marker = name == "physical-marker";
+        let asset = ["__init__.py", "bridge_config.json", "plugin.yaml"].contains(&name);
+        let accepted = neighbor == "regular"
+            || (neighbor == "missing" && (asset || name == "helper"))
+            || (neighbor == "public-mode" && !selector && !physical_marker && name != "helper")
+            || (neighbor == "hardlink" && !selector && !physical_marker);
+        assert_eq!(status.success(), accepted, "{label}: {stdout}{stderr}");
+        task51_locks_released(&f, &logs.root);
+        if !accepted {
+            assert_eq!(
+                task51_snapshot(&f.scratch.root),
+                before,
+                "refusal mutated {label}"
+            );
+            if name == "helper" {
                 assert_eq!(
-                    task51_snapshot(&f.scratch.root),
-                    before,
-                    "refusal mutated {label}"
+                    fs::read(&f.calls).unwrap(),
+                    calls,
+                    "executed refused helper"
                 );
-                if name == "helper" {
-                    assert_eq!(
-                        fs::read(&f.calls).unwrap(),
-                        calls,
-                        "executed refused helper"
-                    );
-                }
-            }
-            if path.is_file() && (name == "helper" || !accepted) && neighbor != "oversize" {
-                assert_eq!(fs::read(&path).unwrap(), original, "{label}");
             }
         }
+        if path.is_file() && (name == "helper" || !accepted) && neighbor != "oversize" {
+            assert_eq!(fs::read(&path).unwrap(), original, "{label}");
+        }
+        if accepted && verb == "unsetup" {
+            // The removal consumed the install: install again in place.
+            let _ = fs::remove_file(&spare);
+            let out = task51_command(&f, "setup", true).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}{}",
+                text(&out.stdout),
+                text(&out.stderr)
+            );
+            let fresh = task51_snapshot(&f.scratch.root);
+            installed = Some((f, fresh));
+            continue;
+        }
+        // Undo the neighbour; reuse the install only if it is exactly the fresh one.
+        let restored = (|| -> std::io::Result<()> {
+            match neighbor {
+                "regular" | "public-mode" => fs::set_permissions(&path, mode.clone()),
+                "oversize" => fs::write(&path, &original),
+                "missing" => fs::rename(&spare, &path),
+                "symlink" => {
+                    fs::remove_file(&path)?;
+                    fs::rename(&spare, &path)
+                }
+                "directory" => {
+                    fs::remove_dir(&path)?;
+                    fs::rename(&spare, &path)
+                }
+                "hardlink" => fs::remove_file(&spare),
+                _ => unreachable!(),
+            }
+        })();
+        let reusable = restored.is_ok() && task51_snapshot(&f.scratch.root) == fresh;
+        assert!(
+            reusable || accepted,
+            "refused {label} left the install changed after undoing the neighbour"
+        );
+        if reusable {
+            installed = Some((f, fresh));
+        }
     }
+}
+
+#[test]
+fn task51_owned_read_neighbors_selector() {
+    task51_neighbors("index");
+}
+
+#[test]
+fn task51_owned_read_neighbors_physical_marker() {
+    task51_neighbors("physical-marker");
+}
+
+#[test]
+fn task51_owned_read_neighbors_manifest() {
+    task51_neighbors("manifest");
+}
+
+#[test]
+fn task51_owned_read_neighbors_asset() {
+    task51_neighbors("__init__.py");
+}
+
+#[test]
+fn task51_owned_read_neighbors_helper() {
+    task51_neighbors("helper");
 }
 
 /// Foreground settings remain user-owned; setup only inspects and advises.
