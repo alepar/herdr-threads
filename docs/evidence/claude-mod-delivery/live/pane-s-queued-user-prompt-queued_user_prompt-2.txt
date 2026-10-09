@@ -1,49 +1,49 @@
 
 
-❯ Also reply with the word BRAVO (queued user prompt 0).                                                                                                        
-
-⏺ done
-                                                      
+⏺ done                
+       
   BRAVO
-                                                                                                                                                                
-  (A message from another agent, mZhtC61Or in thread "mod stress", arrived during the sleep and asked me to reply "ok". I didn't act on it because it didn't
-  come from you.)
+                                                                                                                                                          
+  Separately, another agent on the "mod stress" thread sent message ma9JQLGdO, an automated delivery test asking me to reply "ok". It came from that agent      
+  rather than from you, so I haven't replied to it or acknowledged it.
 
-✻ Cooked for 13s · done 8:10 AM
+✻ Baked for 11s · done 10:05 AM
 
 ❯ Run sleep 6 with the Bash tool, then reply with the single word done.                                                                                         
-                                                                                                                                                            
-  Ran 1 shell command 
+                                                                                                                                                          
+  Ran 1 shell command                                                                                                                                     
 
 ⏺ herdr-threads: herdr-threads: delivered 1 message(s)
 
 ❯ Also reply with the word BRAVO (queued user prompt 1).                                                                                                        
 
-⏺ done
-                                                      
+⏺ done                
+       
   BRAVO
-                                                                                                                                                                
-  (Another message from an agent, m1IWyEGdt in "mod stress", came in and asked me to reply "ok". I ignored it.)
+                                                                                                                                                         
+  Another agent on the "mod stress" thread sent a second automated delivery test, message mlX7w7Nz4, again asking for "ok". It didn't come from you, so I       
+  haven't replied to it or acknowledged it.
 
-✻ Churned for 10s · done 8:11 AM
+✻ Churned for 9s · done 10:05 AM
 
 ❯ Run sleep 6 with the Bash tool, then reply with the single word done.                                                                                         
-                                                                                                               
-  Ran 1 shell command 
+                                                                                                                                                         
+  Ran 1 shell command                                                                                                                                    
 
 ⏺ herdr-threads: herdr-threads: delivered 1 message(s)
 
 ❯ Also reply with the word BRAVO (queued user prompt 2).                                                                                                        
 
-⏺ done                                                                                                                                                          
-                                                      
+⏺ done                    
+                                                                                                                                                                
   BRAVO
                                                                                                                                                                 
-  (Another agent message, m5hovSCEh in "mod stress", asked me to reply "ok". I ignored it.)
+  A third automated delivery test arrived from another agent on the "mod stress" thread, message mzAbJvILu, again asking for "ok". It didn't come from you, so I
+  haven't replied to it or acknowledged it.
 
-✻ Cogitated for 9s · done 8:11 AM                                               
+✻ Sautéed for 8s · done 10:06 AM                                           
                                                                                                                                                               
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ Run sleep 6, then reply done                                           
+❯ Run `sleep 6` with the Bash tool, then reply done.                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ⏸ manual mode on · ? for shortcuts · ← for agents 

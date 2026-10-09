@@ -19,14 +19,16 @@ Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 3793cf88 
 - ht-j16.17–.27 PR-roast and final-review fixes: per-seat liveness, ack chunking, capability-probe resilience, mod argv = hooks argv, notices while live, install safety, truncation marker (selectors, lazy variant), relay/intent markers, no delivery after the watch run ends, indented peer text — beads, ledger
 - ht-j16.28–.30 live-stress defects D1 (`/clear` rebind), D2 (reload mid-submit), D3 (Esc at permission dialog) — beads, run.md `postLoopFix`
 - ht-j16.31–.33 final review 7 must-fixes: pre-submit window re-check, thread/sender names in watch lines (spec D4), stale attention submit at session start — beads, run.md `postLoopFix`
+- ht-j16.34 mod attention narrowed to warnings that wake the seat (interaction with main's 251b7dbd); `InboxBatchV2Item::Warning.informational` wire field — beads, run.md `postLoopFix`
 - 73a75cbf live re-run finding: a successor recorded a predecessor's already-delivered id again (fixed, delivery test) — run.md `postLoopFix`
 - dc5b2f6c final review 8 finding 1: predecessor batch with an attention block submitted twice after reload (fixed directly, with a delivery test) — run.md `postLoopFix`
 
 ## Verification
 
-- Sweep: 4029 passed, 0 failed, 43 skipped @ f62267f5 (262 s, budget 5 min); leak check clean; clippy and check-default-features clean. Two earlier runs at the same SHA under load (~25, a concurrent worktree's suite) each failed one different test (release-build manifest timeout; hermes resume check-in UnknownOutcome) that passed alone: flakes ht-wur; a loaded run at 53b6df93 likewise hit ht-uy3 — run.md `codeBuckets.sweep`
+- Sweep: 4032 passed, 0 failed, 43 skipped @ 573841ed (260 s, budget 5 min); leak check clean; clippy, fmt, check-default-features clean. Loaded runs at earlier tips (load ~21-25 from concurrent worktree suites) each failed one different untouched test that passed alone: flakes ht-wur, ht-uy3 — run.md `codeBuckets.sweep`
 - Mod JS tests: 84/84 (`scripts/test-claude-mod`) at 73a75cbf — code-final-review-9.md
-- Live stress: full 14 scenarios at b562d1e4, 13/14 3/3 and reload_mid_turn 2/3 (one extra ledger entry); after the fix at 73a75cbf, reload_mid_turn, reload, clear_rebind and idle_submit 3/3 each — [evidence README](../../../evidence/claude-mod-delivery/README.md), run.md `liveStress`
+- Live stress at 573841ed (final code SHA): 14/14 scenarios 3/3, 51 ACK + 3 lazy messages all settled — [evidence README](../../../evidence/claude-mod-delivery/README.md); earlier: first run found D1-D3, b562d1e4 13/14, 73a75cbf reload/clear/idle 3/3 — run.md `liveStress`
+- Whole-epic final review 10 at 8e7eaa41: one defect (mod attention ignored main's `warning_wakes_seat`, so bystander seats got prompts) → ht-j16.34, fixed at 2945d1ee, independent review ready — [code-final-review-10.md](code-final-review-10.md), run.md `postLoopFix`
 - Re-review of the post-review-8 fixes (dc5b2f6c, 73a75cbf): ready, no must-fix — [code-final-review-9.md](code-final-review-9.md)
 - Post-cap audit roast (bd8e6661 → 23fb8208 + merge 81dbb244 resolution): clean (1 nit) [converged] — [report](2026-10-09-claude-mod-inbound-delivery-roast-pr-post-cap-audit.md)
 

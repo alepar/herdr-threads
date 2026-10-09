@@ -26,13 +26,13 @@ stepBackDesign-round-1: patch — 11 findings fixable in place; four clusters (D
 roastDesignExit: converged at round 2 (Should-fix 8 confirmed [converged], 0 Blocking); punch list of 8 applied inline as spec/bead text, no re-roast; iteration-1 escalations (submit atomicity under Esc; $.session.id() in session.end) remain parked
 graph-pass: depth 4→3 · width 2.5→3.3 · applied 1 · parked 0
 codeBuckets:
-  completed: ht-j16.1, ht-j16.3, ht-j16.6, ht-j16.5, ht-j16.7, ht-j16.4, ht-j16.2, ht-j16.10, ht-j16.19, ht-j16.18, ht-j16.22, ht-j16.20, ht-j16.17, ht-j16.21, ht-j16.23, ht-j16.25, ht-j16.24, ht-j16.9, ht-j16.27, ht-j16.26, ht-j16.28, ht-j16.29, ht-j16.30, ht-j16.32, ht-j16.31, ht-j16.33
+  completed: ht-j16.1, ht-j16.3, ht-j16.6, ht-j16.5, ht-j16.7, ht-j16.4, ht-j16.2, ht-j16.10, ht-j16.19, ht-j16.18, ht-j16.22, ht-j16.20, ht-j16.17, ht-j16.21, ht-j16.23, ht-j16.25, ht-j16.24, ht-j16.9, ht-j16.27, ht-j16.26, ht-j16.28, ht-j16.29, ht-j16.30, ht-j16.32, ht-j16.31, ht-j16.33, ht-j16.34
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: ready (code-final-review-9.md: re-review of the post-review-8 fixes dc5b2f6c and 73a75cbf, no must-fix; review 8's must-fixes resolved: finding 1 at dc5b2f6c, live re-runs at b562d1e4 and 73a75cbf)
-  sweep: f62267f5 — 4029 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (262 s; leak check clean; clippy and check-default-features clean; two earlier runs at this SHA under load ~25 from a concurrent worktree suite each failed one different test that passes alone — flakes ht-wur, ht-uy3) @ f62267f5
+  review: ready (whole-epic final review 10 at 8e7eaa41 found one defect, ht-j16.34, fixed and independently reviewed ready at 2945d1ee; review 9 ready for dc5b2f6c/73a75cbf)
+  sweep: 573841ed — 4032 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (260 s; leak check clean; clippy, fmt, check-default-features clean; loaded runs at f62267f5 and 8e7eaa41 hit flakes ht-wur/ht-uy3 in untouched tests) @ 573841ed
   slowness: round 1 (fix re-entry): merge queue peaked at 5 — serial merge lane bottleneck
   worktreesKept:
   processSweep: stopped 0 · survived 0
@@ -68,3 +68,5 @@ feedback: sent to the superpowers workspace agent tab wB:p8 (herdr agent prompt)
 postLoopFix: live re-run reload_mid_turn 2/3 (second delivered ledger entry) fixed at 73a75cbf with a delivery test shown failing without it; independent re-review of 1c66f49f..73a75cbf (dc5b2f6c, 73a75cbf): ready, no must-fix — code-final-review-9.md
 liveStress: targeted re-run at 73a75cbf: reload_mid_turn, reload, clear_rebind, idle_submit 3/3 each, 0 native prompts, leak check clean (docs/evidence/claude-mod-delivery/final-subset/)
 baseAbsorbed: 3793cf88 → 88f5c69f (merge d2e8a84d), 0 conflicted files (main merged 6da43c6c and prepared v0.5.0; the branch now differs from main only by 73a75cbf's mod fix and docs/evidence; clippy, check-default-features, mod tests 84/84, integration mod_delivery+sweep_remaining 41/41 at the merge)
+postLoopFix: whole-epic final review 10 at 8e7eaa41 (not ready: mod attention ignored main's warning_wakes_seat, bystander prompts) filed as ht-j16.34, fixed at 2945d1ee (TRUST-POLICY A7 sentence, spec note, 3 new tests red→green), independent review ready, merged 573841ed
+liveStress: full run at 573841ed (final code SHA): 14/14 scenarios 3/3, 1 native prompt, leak check clean
