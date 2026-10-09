@@ -250,6 +250,13 @@ impl Drop for Host {
     }
 }
 
+type IdentityRow = Vec<(String, rusqlite::types::Value)>;
+#[derive(Debug, PartialEq)]
+struct RecipientIdentity {
+    seat: IdentityRow,
+    bindings: Vec<IdentityRow>,
+}
+
 struct Fixture {
     daemon: OwnedChild,
     host: Host,
@@ -492,6 +499,34 @@ impl Fixture {
     }
     fn count(&self, sql: &str) -> i64 {
         self.db().query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+    fn recipient_identity(&self) -> RecipientIdentity {
+        let db = self.db();
+        let tx = db.unchecked_transaction().unwrap();
+        // Compare complete schema-27 rows, including observation/registration
+        // timestamps. This fixed topology has no legitimate recipient transition.
+        let rows = |sql: &str| {
+            let mut stmt = tx.prepare(sql).unwrap();
+            let columns: Vec<_> = stmt.column_names().into_iter().map(str::to_owned).collect();
+            stmt.query_map([], |row| {
+                columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| Ok((name.clone(), row.get(i)?)))
+                    .collect::<rusqlite::Result<IdentityRow>>()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+        };
+        let mut seats = rows("SELECT * FROM seats WHERE id='recipient'");
+        assert_eq!(seats.len(), 1);
+        RecipientIdentity {
+            seat: seats.pop().unwrap(),
+            bindings: rows(
+                "SELECT * FROM occupant_bindings WHERE seat_id='recipient' ORDER BY ordinal",
+            ),
+        }
     }
     fn journal(&self) -> PathBuf {
         self.paths.instance_dir.join("intents")
@@ -955,6 +990,8 @@ fn existing_peer_pane_and_seat_do_not_launch() {
         }
         let before = f.count("SELECT count(*) FROM seats");
         let bindings = f.count("SELECT count(*) FROM occupant_bindings");
+        let identity = f.recipient_identity();
+        println!("recipient {state} before delivery: {identity:?}");
         let target = if selector == "--pane" {
             "w4:p2"
         } else {
@@ -981,6 +1018,9 @@ fn existing_peer_pane_and_seat_do_not_launch() {
         assert_eq!(f.effect_counts(), (0, 0, want_invites, 1));
         assert_eq!(f.count("SELECT count(*) FROM seats"), before);
         assert_eq!(f.count("SELECT count(*) FROM occupant_bindings"), bindings);
+        let delivered_identity = f.recipient_identity();
+        println!("recipient {state} after delivery: {delivered_identity:?}");
+        assert_eq!(delivered_identity, identity);
         assert!(f.host.state.lock().unwrap().helpers.is_empty());
         assert!(!f.iso.path("shell.log").exists());
         assert_eq!(
@@ -994,6 +1034,11 @@ fn existing_peer_pane_and_seat_do_not_launch() {
         ));
         assert_eq!(replay, frame);
         assert_eq!(f.effect_counts(), exact);
+        assert_eq!(f.count("SELECT count(*) FROM seats"), before);
+        assert_eq!(f.count("SELECT count(*) FROM occupant_bindings"), bindings);
+        let replayed_identity = f.recipient_identity();
+        println!("recipient {state} after retry: {replayed_identity:?}");
+        assert_eq!(replayed_identity, identity);
         assert!(!f.iso.path("shell.log").exists());
     }
 }
