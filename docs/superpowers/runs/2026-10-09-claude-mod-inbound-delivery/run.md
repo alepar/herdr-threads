@@ -25,12 +25,12 @@ stepBackDesign-round-1: patch — 11 findings fixable in place; four clusters (D
 roastDesignExit: converged at round 2 (Should-fix 8 confirmed [converged], 0 Blocking); punch list of 8 applied inline as spec/bead text, no re-roast; iteration-1 escalations (submit atomicity under Esc; $.session.id() in session.end) remain parked
 graph-pass: depth 4→3 · width 2.5→3.3 · applied 1 · parked 0
 codeBuckets:
-  completed: ht-j16.1, ht-j16.3, ht-j16.6, ht-j16.5, ht-j16.7, ht-j16.4, ht-j16.2, ht-j16.10, ht-j16.19, ht-j16.18, ht-j16.22, ht-j16.20, ht-j16.17, ht-j16.21, ht-j16.23, ht-j16.25, ht-j16.24
+  completed: ht-j16.1, ht-j16.3, ht-j16.6, ht-j16.5, ht-j16.7, ht-j16.4, ht-j16.2, ht-j16.10, ht-j16.19, ht-j16.18, ht-j16.22, ht-j16.20, ht-j16.17, ht-j16.21, ht-j16.23, ht-j16.25, ht-j16.24, ht-j16.9, ht-j16.27, ht-j16.26
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (conflicts with main @3d10e3bb in 11 files; TRUST-POLICY accepted limits missing; full suite and live stress not run) — code-final-review-4.md
+  review: not ready (full suite unmeasured; no live evidence for default-on mod) — code-final-review-6.md
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: round 1 (fix re-entry): merge queue peaked at 5 — serial merge lane bottleneck
   worktreesKept:
@@ -53,3 +53,4 @@ regressionPass-round-2: [Should-fix] src/protocol/watch.rs:86 (marker lacks inst
 baseAbsorbed: 3d10e3bb → 81dbb244, 11 conflicted files (behavioural: setup.rs D8 port into main's Claude setup backend, claude version gate moved to setup-status only, watch --harness renamed to mod_harness)
 baseAbsorbed: 25db37f3 → 9d66d07c, 0 conflicted files (7 test-only commits)
 postLoopFix: final-review-5 F1 (stale mod queue after channel loss, breaks TRUST-POLICY A4) and F2 (unindented frame bodies, TRUST-POLICY limit mis-stated) filed as fix beads after loop exit instead of the punch list — invariant violation and a false policy statement; ht-j16.9 ran its fallback (copied profile not signed in), live run to be retried against the original spike profile
+followUps: ht-182 (mod worker supervision), ht-22y (attention marker selectors), ht-oag (unbounded mod sets)
