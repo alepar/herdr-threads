@@ -2615,6 +2615,25 @@ mod live {
         }
         assert!(bytes.len() <= 1024 * 1024);
     }
+    // A proven zero-submission rearm is retryable unfinished work with valid
+    // arguments: never a usage error (exit 2), always the documented retryable
+    // unavailable class (exit 3), with the retry remedy kept in the message.
+    fn assert_retryable_rearm_error(error: &RunError) {
+        let RunError::Api(api) = error else {
+            panic!("rearm must be a typed API error: {error:?}");
+        };
+        assert_eq!(
+            api.code,
+            crate::protocol::results::ErrorCode::HostUnavailable,
+            "{error:?}"
+        );
+        assert_eq!(error.exit_code(), crate::cli::exit::EXIT_UNAVAILABLE);
+        assert!(
+            api.detail.contains("retry the original to continue"),
+            "{error:?}"
+        );
+        assert!(api.detail.contains("no automatic submission"), "{error:?}");
+    }
     fn assert_no_downstream_or_resubmission(f: &Fixture, launcher: &DownstreamLauncher) {
         let s = f.peer.state.lock().unwrap();
         assert_eq!(s.native_calls, 1, "reporting must not submit attempt N+1");
@@ -2644,7 +2663,7 @@ mod live {
             let mut launcher = DownstreamLauncher::default();
             let mut bytes = vec![];
             let error = downstream_format(&f, &mut launcher, json, &mut bytes).unwrap_err();
-            assert!(!matches!(error, RunError::Io(_)), "{error:?}");
+            assert_retryable_rearm_error(&error);
             assert_prepared_next_attempt_report(&f, json, &bytes);
             assert_no_downstream_or_resubmission(&f, &launcher);
             assert_eq!(
@@ -2676,7 +2695,7 @@ mod live {
             f.peer.state.lock().unwrap().calls.clear();
             let mut bytes = vec![];
             let error = downstream_format(&f, &mut launcher, json, &mut bytes).unwrap_err();
-            assert!(!matches!(error, RunError::Io(_)), "{error:?}");
+            assert_retryable_rearm_error(&error);
             assert_prepared_next_attempt_report(&f, json, &bytes);
             assert_no_downstream_or_resubmission(&f, &launcher);
             assert!(

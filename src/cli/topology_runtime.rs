@@ -153,6 +153,20 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     }
 }
 
+/// Report phase for an admitted post-publication continuation failure before
+/// the inner writer, from the last observed canonical state (None = unknown).
+/// A completed or cancelled bootstrap is not unfinished work: no report. A
+/// created or attached bootstrap is past creation.
+fn continuation_failure_phase(observed: Option<BootstrapState>) -> Option<&'static str> {
+    match observed {
+        Some(BootstrapState::Completed | BootstrapState::Cancelled) => None,
+        None | Some(BootstrapState::Prepared | BootstrapState::PossibleCreation) => {
+            Some("creation")
+        }
+        Some(_) => Some("continuation"),
+    }
+}
+
 pub(crate) fn run(
     parsed: ParsedCli,
     claim: CallerClaim,
@@ -449,21 +463,8 @@ pub(crate) fn run(
                     &output.context,
                 )
                 .is_ok_and(|actor| actor == OriginalActor::Agent)
-                && observed.as_ref().is_none_or(|v| {
-                    !matches!(
-                        v.state,
-                        BootstrapState::Completed | BootstrapState::Cancelled
-                    )
-                })
+                && let Some(phase) = continuation_failure_phase(observed.as_ref().map(|v| v.state))
             {
-                // Label the unfinished phase from the observed canonical state;
-                // a created or attached bootstrap is past creation.
-                let phase = match observed.as_ref().map(|v| v.state) {
-                    None | Some(BootstrapState::Prepared | BootstrapState::PossibleCreation) => {
-                        "creation"
-                    }
-                    Some(_) => "continuation",
-                };
                 super::topology_handoff::write_pending_observed(
                     &reference,
                     &identity,
@@ -666,4 +667,27 @@ pub(crate) fn run_operator(
         writer,
     )?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Every canonical state has an explicit report decision: unknown or
+    // pre-creation states are "creation", created/attached are "continuation",
+    // and completed/cancelled bootstraps stay silent (the original error alone).
+    #[test]
+    fn continuation_failure_phase_follows_observed_canonical_state() {
+        assert_eq!(continuation_failure_phase(None), Some("creation"));
+        for (state, phase) in [
+            (BootstrapState::Prepared, Some("creation")),
+            (BootstrapState::PossibleCreation, Some("creation")),
+            (BootstrapState::Created, Some("continuation")),
+            (BootstrapState::Attached, Some("continuation")),
+            (BootstrapState::Completed, None),
+            (BootstrapState::Cancelled, None),
+        ] {
+            assert_eq!(continuation_failure_phase(Some(state)), phase, "{state:?}");
+        }
+    }
 }
