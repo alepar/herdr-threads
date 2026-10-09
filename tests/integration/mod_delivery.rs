@@ -117,8 +117,12 @@ type Calls = Arc<Mutex<Vec<(String, Value)>>>;
 
 /// The private Herdr endpoint: serves the scripted (mutable) panes like the
 /// sweep's, answers `agent.prompt` as delivered, and records every call.
+/// Each connection is answered on its own thread as soon as it is accepted
+/// (a blocking accept, no polling), like a real Herdr server: concurrent
+/// hooks and daemon reads never queue behind one another here.
 struct Host {
     stop: Arc<AtomicBool>,
+    socket: PathBuf,
     worker: Option<JoinHandle<()>>,
     panes: Arc<Mutex<Vec<Value>>>,
     calls: Calls,
@@ -126,65 +130,73 @@ struct Host {
 impl Host {
     fn start(socket: &std::path::Path, panes: Vec<Value>) -> Self {
         let listener = UnixListener::bind(socket).unwrap();
-        listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let panes = Arc::new(Mutex::new(panes));
         let calls: Calls = Arc::default();
         let (stopped, scripted, log) = (stop.clone(), panes.clone(), calls.clone());
         let worker = std::thread::spawn(move || {
-            while !stopped.load(Ordering::SeqCst) {
-                let mut stream = match listener.accept() {
-                    Ok((stream, _)) => stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(5));
-                        continue;
-                    }
-                    Err(error) => panic!("stand-in Herdr accept: {error}"),
-                };
-                // macOS rejects these once the peer has hung up.
-                if stream.set_nonblocking(false).is_err()
-                    || stream
-                        .set_read_timeout(Some(Duration::from_secs(10)))
-                        .is_err()
-                {
-                    continue;
+            for stream in listener.incoming() {
+                if stopped.load(Ordering::SeqCst) {
+                    return;
                 }
-                let mut line = String::new();
-                if BufReader::new(&mut stream).read_line(&mut line).is_err() || line.is_empty() {
-                    continue;
-                }
-                let Ok(request) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                let method = request["method"].as_str().unwrap_or_default().to_owned();
-                log.lock()
-                    .unwrap()
-                    .push((method.clone(), request["params"].clone()));
-                let panes = scripted.lock().unwrap().clone();
-                let reply = if method == "agent.prompt" {
-                    match panes
-                        .iter()
-                        .find(|pane| pane["pane_id"] == request["params"]["target"])
-                    {
-                        Some(pane) if pane["agent"].is_string() => json!({"id":request["id"],
-                            "result":{"type":"agent_prompted","agent":{
-                                "agent":pane["agent"],"agent_status":"working",
-                                "pane_id":pane["pane_id"],"terminal_id":pane["terminal_id"]}}}),
-                        _ => json!({"id":request["id"],
-                            "error":{"code":"agent_not_found","message":"no agent in pane"}}),
-                    }
-                } else {
-                    host_reply(&panes, &request)
-                };
-                let _ = writeln!(stream, "{reply}");
+                let Ok(stream) = stream else { continue };
+                let (scripted, log) = (scripted.clone(), log.clone());
+                std::thread::spawn(move || Self::serve(stream, &scripted, &log));
             }
         });
         Self {
             stop,
+            socket: socket.to_owned(),
             worker: Some(worker),
             panes,
             calls,
         }
+    }
+    fn serve(
+        mut stream: std::os::unix::net::UnixStream,
+        scripted: &Mutex<Vec<Value>>,
+        log: &Calls,
+    ) {
+        // macOS rejects this once the peer has hung up.
+        if stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .is_err()
+        {
+            return;
+        }
+        let mut line = String::new();
+        if BufReader::new(&mut stream).read_line(&mut line).is_err() || line.is_empty() {
+            return;
+        }
+        let Ok(request) = serde_json::from_str::<Value>(&line) else {
+            return;
+        };
+        let method = request["method"].as_str().unwrap_or_default().to_owned();
+        let panes = {
+            // One lock for the record and the read: a call is recorded
+            // against the panes it was answered from.
+            let mut calls = log.lock().unwrap();
+            calls.push((method.clone(), request["params"].clone()));
+            let panes = scripted.lock().unwrap().clone();
+            drop(calls);
+            panes
+        };
+        let reply = if method == "agent.prompt" {
+            match panes
+                .iter()
+                .find(|pane| pane["pane_id"] == request["params"]["target"])
+            {
+                Some(pane) if pane["agent"].is_string() => json!({"id":request["id"],
+                    "result":{"type":"agent_prompted","agent":{
+                        "agent":pane["agent"],"agent_status":"working",
+                        "pane_id":pane["pane_id"],"terminal_id":pane["terminal_id"]}}}),
+                _ => json!({"id":request["id"],
+                    "error":{"code":"agent_not_found","message":"no agent in pane"}}),
+            }
+        } else {
+            host_reply(&panes, &request)
+        };
+        let _ = writeln!(stream, "{reply}");
     }
     fn set_panes(&self, panes: Vec<Value>) {
         *self.panes.lock().unwrap() = panes;
@@ -204,6 +216,8 @@ impl Host {
 impl Drop for Host {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        // Wake the blocking accept so the worker sees the stop.
+        let _ = std::os::unix::net::UnixStream::connect(&self.socket);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -1511,7 +1525,9 @@ fn drop_then_grace_expiry_kicks_native_wake() {
     let mark = rig.host.mark();
     let id = rig.send_ordinary("sent while the watch is down");
     rig.assert_no_prompt(mark, QUIET);
-    rig.advance(31_000);
+    // The quiet window just observed already gave what was in flight time
+    // to finish (it is longer than `Rig::advance`'s pause), so jump at once.
+    rig.clock.advance(31_000);
     rig.wait_channel(None);
     rig.wait_prompt(mark, PANE_B);
     assert_eq!(rig.receipt_state(&id), "pending");
@@ -2019,7 +2035,9 @@ fn clear_within_rebind_grace_emits_no_session_start_digest_and_no_native_kick() 
     );
     rig.wait_channel(Some("rebind_grace"));
     rig.assert_no_prompt(mark, QUIET);
-    rig.advance(31_000);
+    // The quiet window just observed already gave what was in flight time
+    // to finish (it is longer than `Rig::advance`'s pause), so jump at once.
+    rig.clock.advance(31_000);
     rig.wait_channel(None);
     rig.wait_prompt(mark, PANE_B);
     assert_eq!(rig.receipt_state(&id), "pending");
@@ -2362,9 +2380,9 @@ fn watch_admission_over_cap_refuses_busy() {
     );
     rig.host.set_panes(panes);
     // Register the extra seats through their SessionStart hooks, four at a
-    // time: the stand-in Herdr answers one call at a time, so wider batches
-    // only queue the hooks' host calls past their budgets (an uncommitted
-    // check-in, retried below) and make the registration slower overall.
+    // time: the daemon commits the check-ins one at a time, so wider batches
+    // (measured: 8 and 16) only queue the hooks past their budgets (an
+    // uncommitted check-in, retried below) and are no faster overall.
     for chunk in extra.chunks(4) {
         std::thread::scope(|scope| {
             for (id, session) in chunk {
@@ -2493,9 +2511,11 @@ fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
     affected.wait_item(&id);
     let result = rig.ack_result(SESSION_B, "context", &id);
     assert_eq!(result["result"], "settled", "{result}");
-    bystander.assert_no_line("attention before the deadline", QUIET, |l| {
-        l["kind"] == "attention"
-    });
+    // The bystander's absence of `attention` is checked once, at the end:
+    // `assert_no_line` also judges every line already read, so that one
+    // window covers everything the bystander printed since it connected
+    // (before the deadline, its drain while C is overdue, after C's clear),
+    // and it starts after the last transition.
 
     let conditions = || -> Vec<Option<String>> {
         let db = rig.db();
@@ -2507,15 +2527,22 @@ fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
             .collect::<Result<_, _>>()
             .unwrap()
     };
-    // Only C misses the deadline: one open condition about C.
+    // Only C misses the deadline: one open condition about C. The deadline
+    // lane notices the advanced clock on its next pass; kick it rather than
+    // wait out its safety tick (detection latency is not under test).
     rig.advance(2 * MINUTE_MS);
+    rig.probe.kick_registered(Lane::Deadlines);
     wait_until("C's overdue condition to open", STEP, || {
         (conditions() == [None]).then_some(())
     });
     affected.wait_attention_marker();
-    bystander.assert_no_line("attention for C's overdue open", QUIET, |l| {
-        l["kind"] == "attention"
-    });
+    // Make the bystander drain while C's condition is still open: a lazy row
+    // changes its fingerprint, so the next worker pass (kicked by the row's
+    // commit, which follows the open's) pushes it Attention and its drain
+    // reads every pending item, the open notice among them. An `attention`
+    // line from that drain follows the row's line and is caught below.
+    let synced = rig.send_lazy("drains the bystander while C is overdue");
+    bystander.wait_item(&synced);
 
     // C's late ACK clears it: a clear wakes nobody.
     rig.cli(Some((&c, PANE_C)), &["ack", &id]).data("late ack");
@@ -2523,7 +2550,7 @@ fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
         let now = conditions();
         (now.len() == 1 && now[0].is_some()).then_some(())
     });
-    bystander.assert_no_line("attention for C's overdue clear", QUIET, |l| {
+    bystander.assert_no_line("attention for C's overdue open or clear", QUIET, |l| {
         l["kind"] == "attention"
     });
     // C's own ACK may drain while its open condition is still uncleared (one
