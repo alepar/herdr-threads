@@ -1189,7 +1189,11 @@ fn lapsed_reservation_fetch_is_honoured_while_free() {
     // owner and token; every fetch and competing lease still uses the daemon.
     let mut db = rusqlite::Connection::open(fx.world.instance_dir.join("threads.sqlite3")).unwrap();
     db.busy_timeout(Duration::from_secs(5)).unwrap();
-    let tx = db.transaction().unwrap();
+    // Take the writer lock before reading: a deferred read transaction cannot
+    // upgrade while a daemon writer is active, even with the busy timeout.
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
     let expired_at = utc_ms() as i64 - 1;
     for ticket in &jobs {
         let (reserved_at, lease_until, fetched_at): (i64, i64, Option<i64>) = tx
