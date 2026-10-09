@@ -424,6 +424,9 @@ or registry. Deciding completion, completed preview, terminal decode and present
 share it. Validation does not repeat the producer's filesystem routing lookup: it
 accepts only the verbatim canonical-namespace routing object (valid instance UUID) or
 the null-routing form, with identical fallback and suffix; any other routing refuses.
+So if a symlink component appears in a not-yet-existing namespace suffix, or the host
+endpoint parent changes, between preparation and launch, the launch-time canonical
+object differs and that genuine report refuses, without relaunch or data loss.
 Fresh Root preparation and launch still apply today's native admission and geometry,
 and refuse before effects when today's composer would differ from frozen V1, so a
 future composer change stops new Root launches rather than producing reports that

@@ -1071,7 +1071,7 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
                 != crate::harness::launch::compose_bootstrap_v1_argv(harness, request.argv.clone())?
             {
                 return Err(super::invalid_request(
-                    "current native composition differs from frozen V1 bootstrap contract",
+                    "current launch composition differs from bootstrap plan V1; a new bootstrap plan version is required",
                 ));
             }
             request

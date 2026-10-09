@@ -1643,7 +1643,7 @@ fn frozen_v1_bootstrap_composition_keeps_original_caller_forms() {
         assert_eq!(
             compose_native_argv(*harness, caller.clone(), vec![]).unwrap(),
             caller,
-            "baseline: unperturbed current composer agrees with V1 for {argv:?}"
+            "tripwire: today's composer differs from V1 for {argv:?}"
         );
     }
     let refused: &[&[&str]] = &[
@@ -1660,8 +1660,21 @@ fn frozen_v1_bootstrap_composition_keeps_original_caller_forms() {
         &["--no-daemon", "--no-daemon", "P"],
         &["exec", "--no-daemon", "P"],
     ];
+    // Tripwire: today's composer must still agree with frozen V1 on every
+    // admitted and refused form. A failure here means today's launch
+    // composition changed: introduce bootstrap plan version 2 for new plans;
+    // never edit V1 (retained V1 reports are validated against it).
     for argv in refused {
         assert!(v1(Harness::Codex, argv).is_err(), "{argv:?}");
+        assert!(
+            compose_native_argv(
+                Harness::Codex,
+                argv.iter().map(|a| a.to_string()).collect(),
+                vec![]
+            )
+            .is_err(),
+            "tripwire: today's composer admits V1-refused {argv:?}"
+        );
     }
     assert!(v1(Harness::Human, &["P"]).is_err());
     let hermes = crate::harness::registry::builtins()

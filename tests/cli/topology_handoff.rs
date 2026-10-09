@@ -4570,6 +4570,46 @@ mod live {
         assert_downstream_once(&f, &launcher);
     }
     #[test]
+    fn root_launch_refuses_before_start_when_current_composition_differs_from_v1() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        let _drift = crate::harness::launch::current_drift::arm_output("--drifted");
+        let mut output = vec![];
+        let result = downstream(&f, &mut launcher, &mut output);
+        assert!(
+            format!("{result:?}").contains("a new bootstrap plan version is required"),
+            "{result:?}"
+        );
+        assert_eq!(launcher.starts, 0, "no native start");
+        let child: ChildProgress = serde_json::from_slice(
+            &std::fs::read(child_progress_path(&f.journal, &f.peer.reference)).unwrap(),
+        )
+        .unwrap();
+        assert!(!child.progress.possible_start);
+        assert!(child.progress.launch.is_none());
+        let report: serde_json::Value = serde_json::from_slice(&output)
+            .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output)));
+        let report = report.get("bootstrap").unwrap_or(&report);
+        let manual = report["manual_launch_after_confirming_no_start_argv"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{report}"));
+        let ns = &f.peer.identity.payload.handoff.namespace;
+        let context = crate::protocol::output::ContinuationContext {
+            state_dir: Some(ns.state_dir.to_string_lossy().into_owned()),
+            host: Some(ns.host_endpoint.to_string_lossy().into_owned()),
+        };
+        let thread = child.progress.thread.as_ref().unwrap();
+        assert_eq!(
+            manual.last().unwrap(),
+            &serde_json::json!(super::super::super::handoff::bootstrap_v1::prompt(
+                thread.as_str(),
+                &context,
+                &f.peer.identity.claim.instance,
+            ))
+        );
+        assert!(!manual.iter().any(|token| token == "--drifted"));
+    }
+    #[test]
     fn historical_v1_reply_loss_and_terminal_save_loss_recover_after_drift() {
         for fault in [Fault::CompleteReply, Fault::TerminalSave] {
             let f = Fixture::downstream(Fault::CompleteBefore);
@@ -4707,9 +4747,19 @@ fn fresh_root_preparation_uses_current_admission_and_v1_generated_input() {
             &identity.claim.instance
         )
     );
-    let _drift = crate::harness::launch::current_drift::arm(None, Some("saved value"));
+    let drift = crate::harness::launch::current_drift::arm(None, Some("saved value"));
     assert!(
         prepared(&request(), temp.path()).is_err(),
         "current composer refusal must stop fresh preparation"
     );
+    drop(drift);
+    // Today's composer accepts but launches different argv than frozen V1:
+    // preparation refuses before any publication or durable work.
+    let _drift = crate::harness::launch::current_drift::arm_output("--drifted");
+    let refused = prepared(&request(), temp.path());
+    assert!(
+        format!("{refused:?}").contains("a new bootstrap plan version is required"),
+        "{refused:?}"
+    );
+    assert!(!temp.path().join("intents").exists());
 }

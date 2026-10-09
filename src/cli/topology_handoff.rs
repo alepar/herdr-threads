@@ -264,7 +264,7 @@ fn preflight_launch_argv(
         )?
     {
         return Err(super::invalid_request(
-            "current native composition differs from frozen V1 bootstrap contract",
+            "current launch composition differs from bootstrap plan V1; a new bootstrap plan version is required",
         ));
     }
     crate::ports::NativeLaunchRequest::validate_argv(&argv).map_err(super::invalid_request)?;

@@ -187,10 +187,16 @@ pub fn compose_native_argv(
         ));
     }
     let registration = launch_registration(super::registry::builtins(), harness)?;
-    registration
+    #[allow(unused_mut)]
+    let mut argv = registration
         .launch_policy()
         .expect("checked provider")
-        .compose_argv(caller, owned)
+        .compose_argv(caller, owned)?;
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(extra) = current_drift::appended_arg() {
+        argv.push(extra.to_owned());
+    }
+    Ok(argv)
 }
 /// Test-only, thread-local simulation of a later change to today's mutable
 /// launch composition (the prompt renderer and [`compose_native_argv`]). It
@@ -203,6 +209,7 @@ pub mod current_drift {
     thread_local! {
         static PROMPT_SUFFIX: Cell<Option<&'static str>> = const { Cell::new(None) };
         static REJECTED_TOKEN: Cell<Option<&'static str>> = const { Cell::new(None) };
+        static APPENDED_ARG: Cell<Option<&'static str>> = const { Cell::new(None) };
     }
 
     /// Restores the unperturbed current composition on drop.
@@ -211,6 +218,7 @@ pub mod current_drift {
         fn drop(&mut self) {
             PROMPT_SUFFIX.with(|cell| cell.set(None));
             REJECTED_TOKEN.with(|cell| cell.set(None));
+            APPENDED_ARG.with(|cell| cell.set(None));
         }
     }
 
@@ -220,6 +228,17 @@ pub mod current_drift {
         PROMPT_SUFFIX.with(|cell| cell.set(prompt_suffix));
         REJECTED_TOKEN.with(|cell| cell.set(rejected_token));
         Armed(())
+    }
+
+    /// Today's composer accepts every argument but appends `appended` to
+    /// its output: a different, still admitted native argv.
+    pub fn arm_output(appended: &'static str) -> Armed {
+        APPENDED_ARG.with(|cell| cell.set(Some(appended)));
+        Armed(())
+    }
+
+    pub(crate) fn appended_arg() -> Option<&'static str> {
+        APPENDED_ARG.with(Cell::get)
     }
 
     pub(crate) fn prompt_suffix() -> Option<&'static str> {
