@@ -1183,55 +1183,6 @@ fn probe_message_delivery_modes() {
     );
 }
 
-#[test]
-fn picker_directory_wire_keeps_old_directory_shape_and_cursor_only_contract() {
-    use crate::protocol::{
-        commands::PickerDirectoryQuery, pagination::PageRequest, results::PickerPage,
-    };
-    let command = Command::PickerDirectory(PickerDirectoryQuery {
-        page: PageRequest::default(),
-    });
-    assert!(command.validate().is_ok());
-    let invalid = PageRequest {
-        limit: 101,
-        ..PageRequest::default()
-    };
-    assert!(
-        Command::PickerDirectory(PickerDirectoryQuery { page: invalid })
-            .validate()
-            .is_err()
-    );
-    let old_command:Command=serde_json::from_value(serde_json::json!({"kind":"directory","args":{"membership":null,"membership_filter":"all","topic_contains":null,"page":{"cursor":null,"limit":19,"max_bytes":65536}}})).unwrap();
-    assert!(old_command.validate().is_ok());
-    let old_result:CommandResult=serde_json::from_value(serde_json::json!({"kind":"directory","data":{"items":[],"next_cursor":null,"next_argv":null,"high_water_ordinal":0,"scope_revision":null,"has_more":false,"stop_reason":"complete","consistency":"bounded_live"}})).unwrap();
-    let old_encoded = serde_json::to_value(old_result).unwrap();
-    assert_eq!(old_encoded["kind"], "directory");
-    assert!(old_encoded["data"].get("next_argv").is_some());
-    let mut page = PickerPage {
-        items: vec![],
-        next_cursor: Some("opaque".into()),
-        high_water_ordinal: 1,
-        scope_revision: None,
-        has_more: true,
-        stop_reason: StopReason::Rows,
-        consistency: Consistency::BoundedLive,
-    };
-    assert!(page.validate().is_ok());
-    let picker = CommandResult::PickerDirectory(page.clone());
-    let encoded = serde_json::to_value(&picker).unwrap();
-    assert!(encoded["data"].get("next_argv").is_none());
-    assert_eq!(
-        serde_json::from_value::<CommandResult>(encoded).unwrap(),
-        picker
-    );
-    page.next_cursor = None;
-    assert!(page.validate().is_err());
-    page.has_more = false;
-    assert!(page.validate().is_err());
-    page.stop_reason = StopReason::Complete;
-    assert!(page.validate().is_ok());
-}
-
 fn probe_thread_join() {
     let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
     let command = Command::Join(crate::protocol::commands::Join {

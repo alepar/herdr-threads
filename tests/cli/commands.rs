@@ -1681,7 +1681,7 @@ fn handoff_thread_name_uses_shared_canonical_resolution() {
 #[test]
 fn actor_route_immediate_namespace_and_output_are_independent() {
     for executable in ["herdr-threads", "ht", "/private/a space/ht"] {
-        for args in [vec!["inbox"], vec!["send", "t1", "--body", "human --operator --human"], vec!["ack", "m1"], vec!["accept", "t1"], vec!["leave", "t1"], vec!["check-in"], vec!["invite", "t1", "--seat", "s1"], vec!["reject", "t1", "--invitation", "i1", "--reason", "reason"], vec!["accept-required", "t1", "--invitation", "i1", "--requirement", "r1", "--revision", "1"]] {
+        for args in [vec!["inbox"], vec!["send", "t1", "--body", "human --operator --human"], vec!["ack", "m1"], vec!["accept", "t1"], vec!["join", "t1"], vec!["leave", "t1"], vec!["check-in"], vec!["invite", "t1", "--seat", "s1"], vec!["reject", "t1", "--invitation", "i1", "--reason", "reason"], vec!["accept-required", "t1", "--invitation", "i1", "--requirement", "r1", "--revision", "1"]] {
             let ordinary = parse_argv(std::iter::once(executable).chain(args.iter().copied())).unwrap();
             let human = parse_argv([executable, "human"].into_iter().chain(args.iter().copied())).unwrap();
             assert_eq!(ordinary.action, human.action);
@@ -1707,7 +1707,7 @@ fn permission_cli_inputs_are_bounded_and_command_scoped() {
 #[test]
 fn ordinary_catalog_exports_positive_syntax_contract() {
     let catalog = ordinary_catalog();
-    for prefix in [&["send"][..], &["launch"], &["seat", "resolve"], &["service", "inspect"], &["--skill"], &["thread", "rename"], &["--version"], &["--help"]] {
+    for prefix in [&["send"][..], &["join"], &["launch"], &["seat", "resolve"], &["service", "inspect"], &["--skill"], &["thread", "rename"], &["--version"], &["--help"]] {
         assert!(catalog.families.iter().any(|f| f.prefix == prefix), "missing {prefix:?}");
     }
     assert!(catalog.output_flags.contains(&"--human"));

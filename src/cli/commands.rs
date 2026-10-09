@@ -118,6 +118,10 @@ pub fn ordinary_catalog() -> OrdinaryCatalog {
                 human_options: &["--operator"],
             },
             OrdinaryFamily {
+                prefix: &["join"],
+                human_options: &[],
+            },
+            OrdinaryFamily {
                 prefix: &["accept"],
                 human_options: &[],
             },
