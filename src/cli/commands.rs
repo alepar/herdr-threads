@@ -688,7 +688,7 @@ enum Top {
     /// registers, accepts or ACKs: the handoff is read through the hooks.
     #[command(after_help = super::launch::LAUNCH_HELP)]
     Launch(LaunchArgs),
-    /// Deliver one durable task, then start an agent in an explicit pane.
+    /// Deliver durable work to a new tab, explicit launch pane, or existing peer.
     #[command(after_help = format!("{}\n\n{}", super::handoff::HANDOFF_HELP, super::topology_recover::RECOVERY_HELP))]
     Handoff(HandoffArgs),
     #[command(name = "_topology-recover", hide = true)]

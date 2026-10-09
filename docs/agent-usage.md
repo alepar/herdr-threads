@@ -224,34 +224,111 @@ Type a fuzzy subsequence of a name or topic, use arrows or Ctrl-N/P, then Enter 
 
 Human transcripts name authors and event recipients relative to the live invoking pane: `alice` in the same tab, `tryout/alice` in another tab of the same workspace, and `project/tryout/alice` in another workspace. Scope omission compares parent IDs, even when labels collide. Missing labels use IDs, the pane component stays visible, hostile labels are escaped, and unavailable host labels do not prevent durable history reads. Cached snapshots refresh during follow; JSON, machine output and recovery references keep their canonical IDs.
 
-### Durable handoff before launch
+### Durable handoff and recovery
 
 ```sh
 herdr-threads handoff --new-thread --thread-name review --topic "Review the change" \
-  --pane bob --kind codex -- "Review the change"
+  --goal "Review the change and report findings" --pane bob --kind codex -- "Review the change"
 herdr-threads handoff --thread review --pane alice --kind claude -- "Check the tests"
+herdr-threads handoff --new-tab parser-review --space fixture-workspace --cwd /fictional/ht-pressure/parser \
+  --new-thread --thread-name parser-review --topic 'Parser recovery review' \
+  --goal 'Review the parser recovery patch and report findings' --kind codex -- 'Review the parser recovery patch'
+herdr-threads handoff --existing --seat fixture-seat-reviewer --thread fixture-thread-review -- 'Review the latest patch'
+herdr-threads handoff --existing --pane w9001:p102 --new-thread \
+  --topic 'Review parser recovery' --goal 'Review recovery patch independently' -- 'Review recovery patch independently'
 ```
 
-Handoff requires an explicit pane and exactly one of `--new-thread` or `--thread`.
+The fixture IDs and paths above are illustrative. Handoff chooses one target mode
+and exactly one `--new-thread` or `--thread ID_OR_NAME`: an explicit pane launch
+(`--pane PANE --kind claude|codex`), intentional new-tab creation
+(`--new-tab LABEL --kind claude|codex`), or existing-seat delivery
+(`--existing --seat SEAT` or `--existing --pane PANE`). The guarded new modes
+require an original top-level Agent and the daemon capability. Native execution
+still requires the selected harness's approval and configuration; this reference
+does not establish installed permission.
+
+`--new-tab` conflicts with `--existing`, `--tab`, `--pane` and `--seat`. Its
+`--cwd` must be an absolute existing directory; omission uses the invocation cwd,
+and the path is normalized before publication. `--space` resolves an exact live
+workspace ID or unique label; omission uses the caller's live workspace, never
+UI focus. Creation is intentional even if its label already exists, and does not
+focus the new tab. No caller identity or routing environment is copied into it.
+
+Delivery requires exactly one existing canonical seat or pane. `--space` and
+`--tab` may qualify its pane but conflict with `--seat`. It never allocates,
+moves, rebinds or registers a seat, and unresolved, held, retired or foreign seats
+refuse. Delivery never launches or restarts the peer. It forbids `--kind`,
+`--harness-binary`, `--name` and `--agent-arg`, ignores launch-option environment,
+and reports `outcome: staged` with participation `joined`, `invited_pending` or
+`staged_unbound`. An unbound resolved seat may receive work; the report does not
+establish a working or available session, accepted assignment or completed task.
+
 The new channel joins its sender; an existing channel requires the sender already
-joined. `--thread-name`, `--topic`, and `--goal` apply only to new channels. Topic
-defaults to `Handoff to DISPLAY`, using the same relative escaped pane nickname as
-human transcripts; goal defaults to topic. `--name` retains its native agent meaning.
+joined. `--thread-name`, `--topic` and `--goal` apply only to new channels. Topic
+defaults to `Handoff to DISPLAY`: the relative escaped pane display for legacy
+launch, tab label for new-tab, or canonical recipient seat ID for delivery. Goal
+defaults to topic. `--name` names the native agent, not the channel. Thread names
+resolve once to canonical IDs; ambiguous names refuse and retry keeps the saved ID.
 
-One quoted argument after `--` becomes one durable addressed message (1–1024 UTF-8 bytes). Repeat
-`--agent-arg` for native options; `launch -- ...` retains its existing argv meaning.
-The native initial prompt contains a scoped inbox command and names the canonical
-thread ID, without duplicating the task body. Neither launch nor handoff accepts
-invitations, ACKs messages, or declares work complete.
+One quoted argument after `--` becomes one durable addressed message (1–1024 UTF-8
+bytes), never native argv. Repeat `--agent-arg=OPTION` for native launch options;
+`launch -- ...` retains its existing argv meaning. Optional
+`HERDR_THREADS_CODEX_OPTS` / `HERDR_THREADS_CLAUDE_OPTS` prepend arguments using
+shell-style quotes and escapes without variable or command expansion; unset or
+empty adds nothing. Launch handoff freezes the combined argv before preflight,
+and retry uses those saved arguments even if the environment changes. Handoff
+stages an invitation when needed and an addressed message; launch modes then
+perform guarded launch. Startup gets fixed scoped inbox instructions and the
+canonical thread ID, without duplicating the task body. Handoff never accepts
+or ACKs for the recipient, nor declares task adoption or task completion.
 
-Private compound intents retain the caller, canonical pane/seat/thread IDs, payload,
-and exact mutation keys. `pending-ops` lists the compound recovery reference;
-`retry REF` preserves completed work and resumes without duplicate messages.
-Confirmed pre-start refusals can be retried after repair with all guards rechecked.
-Once a start may have happened, including a crash across its durable submission
-fence, retry never automatically launches again. The report gives completed IDs,
-the failed or uncertain phase, inspect commands, and manual launch argv to use only
-after confirming no agent started. Output failure also retains recoverable state.
+Private compound intents retain the caller, exact namespace, canonical IDs,
+payload and mutation keys. `pending-ops` lists the compound recovery reference;
+`retry REF` preserves committed work without duplicate messages or invitations.
+Confirmed pre-start refusals can retry after repair with guards rechecked. Unknown
+tab creation cannot automatically create another tab: inspect the reported exact
+namespace and attempt. It is distinct from downstream possible start. Once a
+start may have happened, including a crash across its durable submission fence,
+retry never automatically launches again. Inspect the exact downstream pane/seat
+before using any reported manual launch argv, after confirming no agent started;
+manual launch guidance does not prove tab noncreation. Completed retry presents
+the retained historical report and cleans its own local intent without repeating
+effects or proving current availability. Output failure retains recoverable state.
+
+Administrative bootstrap recovery uses `human` immediately after the executable,
+with routing/output globals following it. Root `--human` selects output only.
+Each example below is an alternative disposition for the explicit inspected
+attempt, not a sequence to run. Keep the exact reported reference, positive
+attempt, state directory and endpoint; the fixture values are illustrative.
+
+```sh
+herdr-threads human --state-dir /fictional/ht-pressure/state-ember --host-endpoint /fictional/ht-pressure/ember.sock \
+  --machine handoff recover local:41 --attempt 3 --created-pane w9001:p104
+herdr-threads human --state-dir /fictional/ht-pressure/state-ember --host-endpoint /fictional/ht-pressure/ember.sock \
+  --machine handoff recover local:41 --attempt 3 --not-created
+herdr-threads human --state-dir /fictional/ht-pressure/state-ember --host-endpoint /fictional/ht-pressure/ember.sock \
+  --machine handoff recover local:41 --attempt 3 --cancel --reason 'Inspected quiescent bootstrap abandoned'
+```
+
+Recovery requires the guarded daemon capability and records a separate
+`operator:local-user:<uid>` administrative assertion, preserving the original
+Agent claim and scope. A root `--operator` form cannot substitute for the Human
+namespace. `--created-pane` asserts that this exact result belongs to the inspected
+attempt, requiring fresh coherent structural evidence and ordinary guards;
+labels do not prove ownership. Recovery never launches or delivers downstream
+work. The original Agent's later live retry still requires current canonical
+authority. Exact recovery replay presents its historical decision, never a new
+decision about a newer attempt.
+
+`--not-created` asserts inspected noncreation and quiescence: the original attempt
+cannot still create. `--cancel --reason TEXT` asserts inspected quiescence and
+administrative abandonment, not completion; reason must be nonblank and at most
+4096 UTF-8 bytes. A known in-flight invocation refuses conflicting recovery;
+snapshots or guessed PIDs do not prove quiescence or authorize killing an unowned
+process. Bootstrap cancellation refuses while an exact legacy child fence or live
+hint remains. That child may stay protected indefinitely after pane loss or seat
+retirement; cancellation cannot release its fence. Product cleanup never closes
+created topology or removes committed messages, invitations, receipts or membership.
 
 ### Compatibility and choosing a target
 

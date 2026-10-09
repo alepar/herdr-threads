@@ -23,6 +23,8 @@ mod contracts;
 mod handoff_fences;
 #[path = "handoff_topology_authority.rs"]
 mod handoff_topology_authority;
+#[path = "handoff_topology_cli.rs"]
+mod handoff_topology_cli;
 #[path = "host_adapter.rs"]
 mod host_adapter;
 #[path = "installer_integrations.rs"]
