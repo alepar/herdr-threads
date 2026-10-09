@@ -1,0 +1,386 @@
+[
+  {
+    "id": "ht-j16.9",
+    "title": "Live race stress: mod delivery in real Claude TUI sessions",
+    "description": "Spec docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md D10 (live). Final-SHA evidence. tests/native/claude_mod/stress.py: drive real Claude Code TUI sessions in a private tmux server (tmux -L \u003cunique\u003e) with an isolated signed-in CLAUDE_CONFIG_DIR, the installed mod (CLAUDE_CODE_PLUGIN_DIRS) and an isolated herdr-threads daemon/state dir plus HERDR_PANE_ID from an isolated Herdr test session (scripts/lib/isolated-herdr.sh) or a fake pane id if the daemon permits; N iterations (default 20 each) of: send during busy turn (expect context delivery + ack), send while idle (submit + ack), lazy send (append, no turn), queued user prompt at turn end, Stop-hook continuation, Esc interrupt with pending message (expect hold, no takeover), permission dialog open, /clear and /resume (rebind, no duplicate), reload, kill watch child (fallback to native wake path, then reconnect re-stream without duplicates). Assert from daemon receipts + mod debug ledger: no duplicate deliveries/acks, no submit while busy, every message settled or still pending (never lost). Write evidence to docs/evidence/claude-mod-delivery/. Uses disable autoupdater env. Never touches the shared Herdr server or real ~/.claude. Profile: a signed-in isolated profile exists at /private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/profile (copy it to a temp dir per run; do not modify the original). Read-only fallback when no signed-in profile is usable: run only the mod unit-level randomized stress (claude plugin test) and record the live gap in the evidence file. Stops every process it starts. blocked-by ht-j16.8: consumes fix loop exited gate. Files: tests/native/claude_mod/**, docs/evidence/claude-mod-delivery/**.\nblocked-by ht-j16.2: consumes watch connection; blocked-by ht-j16.3: consumes AckModDelivered; blocked-by ht-j16.4: consumes wake routing; blocked-by ht-j16.5: consumes watch CLI; blocked-by ht-j16.6: consumes mod; blocked-by ht-j16.7: consumes mod installer.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-09T06:24:09Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-09T06:24:27Z",
+    "labels": [
+      "sp:ht-j16"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-j16.9",
+        "depends_on_id": "ht-j16.2",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:16Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.9",
+        "depends_on_id": "ht-j16.8",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:15Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.9",
+        "depends_on_id": "ht-j16.3",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:17Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.9",
+        "depends_on_id": "ht-j16.4",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:17Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.9",
+        "depends_on_id": "ht-j16",
+        "type": "parent-child",
+        "created_at": "2026-10-09T06:24:09Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.9",
+        "depends_on_id": "ht-j16.6",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:19Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.9",
+        "depends_on_id": "ht-j16.7",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:20Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.9",
+        "depends_on_id": "ht-j16.5",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 7,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-j16"
+  },
+  {
+    "id": "ht-j16.8",
+    "title": "Gate: fix loop exited",
+    "description": "Released by super-auto when the phase-5 code fix loop exits. Holds final-SHA evidence leaves.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-09T06:24:08Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-09T06:24:08Z",
+    "labels": [
+      "sp:gate",
+      "sp:ht-j16"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-j16.8",
+        "depends_on_id": "ht-j16",
+        "type": "parent-child",
+        "created_at": "2026-10-09T06:24:08Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-j16"
+  },
+  {
+    "id": "ht-j16.7",
+    "title": "Install the mod via setup claude (CLAUDE_CODE_PLUGIN_DIRS)",
+    "description": "Spec docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md D8. Embed integrations/claude/mod files with include_str!; setup claude writes them to \u003cstate\u003e/claude-mod/herdr-threads/ (rewritten on upgrade), appends that dir to env.CLAUDE_CODE_PLUGIN_DIRS in the user's Claude settings.json preserving an existing value (':'-joined), recorded in the owned setup manifest; unsetup removes only the appended path and the files; setup-status reports mod installed, claude --version \u003e= 2.1.287 (older: mod not loaded, native wake fallback), and whether a channel is live for any Claude seat (best effort). Update integrations/claude/README.md. owns: mod install/uninstall. consumes: mod file layout (ht-j16.1). blocked-by ht-j16.1: consumes boundary contract. Files: src/harness/setup.rs, src/cli/setup.rs, src/harness/claude.rs, integrations/claude/README.md, tests/setup_cli.rs. Acceptance: isolated HOME/CLAUDE_CONFIG_DIR tests for install, preserve existing env value, idempotent re-run, upgrade rewrite, unsetup.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-09T06:23:50Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-09T06:23:50Z",
+    "labels": [
+      "sp:ht-j16"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-j16.7",
+        "depends_on_id": "ht-j16.1",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:14Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.7",
+        "depends_on_id": "ht-j16",
+        "type": "parent-child",
+        "created_at": "2026-10-09T06:23:50Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-j16"
+  },
+  {
+    "id": "ht-j16.6",
+    "title": "Claude mod: delivery state machine and plugin tests",
+    "description": "Spec docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md D5,D10. Implement integrations/claude/mod/hooks/register.js: spawn watch for the session's life (restart with backoff 1,2,5,10,30s on exit; restart on session.end clear/resume with fresh $.session.id(); session.start reload safe); parse JSON lines; busy = set of open main turn ids (ignore agentId events); message/attention while busy -\u003e attach as tool.call context on next main tool result; idle -\u003e one batched $.prompt.submit never awaited in a hook and never while a main turn is open; hold after aborted turn until a later non-aborted main turn completes or 120s idle with empty prompt box; lazy -\u003e $.session.append immediately; one submit in flight; dedupe via $.store keyed by session id; $.ui.log line per context/append delivery; framing per D4 (untrusted data header, never starts with '/'); after each resolved delivery run 'herdr-threads watch ack --via ...' with only fully delivered ids. Tests (.test.ts via 'claude plugin test'): every D5 rule plus a seeded randomized stress of \u003e=500 schedules interleaving turn.start/complete (aborted, out-of-order), tool.call, prompt-box text, stream items, child exit, reload, asserting: no submit while a main turn is open, none within the post-abort hold, each id delivered and acked at most once, nothing truncated acked. If 'claude' is unavailable the suite skips with a recorded reason. owns: mod behaviour. consumes: watch JSON-line schema and mod file layout (ht-j16.1). blocked-by ht-j16.1: consumes boundary contract. Files: integrations/claude/mod/**. Acceptance: claude plugin validate --strict passes; claude plugin test passes.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-09T06:23:49Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-09T06:23:49Z",
+    "labels": [
+      "sp:ht-j16"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-j16.6",
+        "depends_on_id": "ht-j16.1",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:13Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.6",
+        "depends_on_id": "ht-j16",
+        "type": "parent-child",
+        "created_at": "2026-10-09T06:23:49Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-j16"
+  },
+  {
+    "id": "ht-j16.5",
+    "title": "herdr-threads watch and watch ack CLI",
+    "description": "Spec docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md D3,D4,D6. 'herdr-threads watch --harness claude --session \u003cid\u003e': builds the CallerClaim for HERDR_PANE_ID like hooks do, opens the watch connection (MOD_WATCH capability check), prints status lines, and after WatchAccepted and every Attention frame drains bounded pages (\u003c=32 items/64 KiB) of pending ordinary receipts (InboxBatch-style read), lazy pending rows (lazy_delivery pending page), and an attention item for non-message attention, printing one schema:1 JSON line per item with stable id; bodies over 8 KiB truncated with marker and truncated=true; exits non-zero with one status JSON line on refusal or Close, exit 0 on stdin/stdout closed; no ACKs. 'herdr-threads watch ack --session \u003cid\u003e --via context|submit|append \u003cids...\u003e' sends AckModDelivered, refuses ids it knows were truncated (local hint file under the instance contexts dir is acceptable as a hint only), prints per-id result JSON. owns: watch CLI behaviour. consumes: watch wire types, JSON-line schema, AckModDelivered shape (ht-j16.1). blocked-by ht-j16.1: consumes boundary contract. Files: src/cli/watch.rs, src/cli/commands.rs, src/cli/mod.rs. Acceptance: CLI tests against an in-process or test daemon for drain/paging/truncation/refusal exit codes.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-09T06:23:48Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-09T06:23:48Z",
+    "labels": [
+      "sp:ht-j16"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-j16.5",
+        "depends_on_id": "ht-j16.1",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:12Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.5",
+        "depends_on_id": "ht-j16",
+        "type": "parent-child",
+        "created_at": "2026-10-09T06:23:48Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-j16"
+  },
+  {
+    "id": "ht-j16.4",
+    "title": "Route wakes around live mod channels (suppress, stall, disconnect)",
+    "description": "Spec docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md D7. While ModChannels::is_live(seat, current generation): NativeWakeDispatcher::attempt and can_reserve_poke skip native prompts and pokes for the seat (attention stays pending; deadlines and hard warnings continue); the tool-boundary hook check-in result carries a mod_channel_live flag and the PreToolUse hook omits its attention digest when set; stall rule: channel live but no mod ack for 10 minutes while ordinary receipts streamed to it remain pending -\u003e native ladder runs for that seat with existing composer guards, channel kept, cleared by any later mod ack; disconnect -\u003e immediate wake-lane kick for that seat. owns: wake routing policy for mod channels, mod_channel_live check-in flag. consumes: ModChannels trait (ht-j16.1). blocked-by ht-j16.1: consumes boundary contract. Files: src/notification/dispatch.rs, src/notification/policy.rs, src/scheduler/mod.rs, src/cli/hook.rs, src/protocol/results.rs (flag), src/store/wake.rs if a stall timestamp is persisted (prefer in-memory). Acceptance: scheduler tests with a fake ModChannels: suppressed while live, stall releases, disconnect kicks, hook digest omitted while live.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-09T06:23:47Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-09T06:23:47Z",
+    "labels": [
+      "sp:ht-j16"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-j16.4",
+        "depends_on_id": "ht-j16.1",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:11Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.4",
+        "depends_on_id": "ht-j16",
+        "type": "parent-child",
+        "created_at": "2026-10-09T06:23:47Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-j16"
+  },
+  {
+    "id": "ht-j16.3",
+    "title": "AckModDelivered deciding transaction",
+    "description": "Spec docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md D6. Implement the daemon handler for AckModDelivered: decide against A2 (current binding generation, provenance cooperative_top_level, live watch registration for that generation via ModChannels::is_live); ordinary pending receipts addressed to the seat settle like AckDisplayed with ack_observation.action_provenance=cooperative_mod_delivery (binding provenance kept separately); lazy ids complete as displayed (A8) under the same claim; refuse unknown, unaddressed, stale-generation ids individually with typed reasons, leaving them pending; idempotent replay. Clears the channel stall marker (D7). owns: AckModDelivered semantics. consumes: AckModDelivered shape, provenance constants, ModChannels trait (ht-j16.1). blocked-by ht-j16.1: consumes boundary contract. Files: src/store/receipts.rs, src/store/lazy_delivery.rs, src/service/ (command handler), src/cli/journal.rs if the ack is journaled like AckDisplayed. Acceptance: store tests for each rule incl. lazy completion, refusal per id, replay, no settlement without live channel.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-09T06:23:46Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-09T06:23:46Z",
+    "labels": [
+      "sp:ht-j16"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-j16.3",
+        "depends_on_id": "ht-j16",
+        "type": "parent-child",
+        "created_at": "2026-10-09T06:23:46Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.3",
+        "depends_on_id": "ht-j16.1",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:11Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-j16"
+  },
+  {
+    "id": "ht-j16.2",
+    "title": "Daemon watch connection and ModChannels registry",
+    "description": "Spec docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md D2,D3. Implement the watch connection kind in serve_connection (first-frame sniff like ServiceWireRequest): decide registration in one transaction against A2 (seat resolved and not held; open cooperative_top_level binding; harness claude; native session equals claim), record a process-local ModChannels registration (seat, binding_generation) -\u003e connection with provenance cooperative_mod_channel (audit only), at most one per seat (newer replaces older with Close{replaced}); reply WatchAccepted{attention_version}; push Attention{version} when the seat's attention_version advances or lazy rows publish for it (hook into the existing kick path, src/service/kicks.rs); push Close{reason} and close on binding replaced/ended, seat retired/unresolved, daemon stop; drop removes registration and kicks the wake lane for that seat. Connection does not count against MAX_CONNECTIONS ordinary slots beyond its own; bounded per-seat. owns: ModChannels implementation (is_live, register/unregister, notify). consumes: watch wire types and ModChannels trait (ht-j16.1). blocked-by ht-j16.1: consumes boundary contract. Files: src/daemon/transport.rs, src/daemon/transport/watch_connection.rs (new), src/service/mod_channels.rs (new), src/service/kicks.rs, src/service/workers.rs, src/store/seats.rs (read-only decision helper). Acceptance: Rust tests for accept, each refusal reason, replace, push on attention, close on binding change, drop kicks wake lane.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-09T06:23:45Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-09T06:23:45Z",
+    "labels": [
+      "sp:ht-j16"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-j16.2",
+        "depends_on_id": "ht-j16",
+        "type": "parent-child",
+        "created_at": "2026-10-09T06:23:45Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-j16.2",
+        "depends_on_id": "ht-j16.1",
+        "type": "blocks",
+        "created_at": "2026-10-09T06:24:10Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-j16"
+  },
+  {
+    "id": "ht-j16.1",
+    "title": "Seam contract: mod watch protocol, ack command, provenances",
+    "description": "Spec docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md D2,D3,D4,D6,D9. Compilable boundary code, inert by default: protocol types WatchRequest/WatchAccepted/WatchFrame{Attention,Close{reason}} and refusal reasons (no_binding, session_mismatch, not_claude, held, unresolved, replaced, binding_changed, stopping); capability MOD_WATCH; command AckModDelivered{via: context|submit|append, ids} and its result; the watch stdout JSON-line schema (schema:1, kinds message|lazy|attention|status, truncated flag) as a serde type with a doc; provenance constants cooperative_mod_channel and cooperative_mod_delivery; a ModChannels port trait (register/unregister/is_live(seat,generation)/stalled/notify) with a no-op default wired into the service; stub CLI subcommands 'watch' and 'watch ack' that return not-implemented; stub mod plugin files under integrations/claude/mod/ (.claude-plugin/plugin.json, hooks/hooks.json, hooks/register.js exporting an empty register) so installer and mod beads can proceed; TRUST-POLICY.md amendment per D9 (A3 values, A4 routing+stall, A5 rows, A8 second completion source, accepted limits, decision record citing the user direction 'delivery is the receipt'). owns: watch wire types, AckModDelivered shape, watch JSON-line schema, provenance constants, ModChannels trait, mod file layout. Files: src/protocol/{wire.rs,commands.rs,results.rs,capabilities.rs,authority.rs}, src/ports.rs, src/cli/commands.rs, src/cli/watch.rs (new stub), integrations/claude/mod/**, TRUST-POLICY.md. Acceptance: compiles, clippy clean, suite green for touched modules, wiring present but inert.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-09T06:23:14Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-09T06:23:14Z",
+    "labels": [
+      "sp:ht-j16"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-j16.1",
+        "depends_on_id": "ht-j16",
+        "type": "parent-child",
+        "created_at": "2026-10-09T06:23:14Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 6,
+    "comment_count": 0,
+    "parent": "ht-j16"
+  },
+  {
+    "id": "ht-j16",
+    "title": "Claude Code mod inbound delivery",
+    "description": "Root epic for super-auto run 2026-10-09-claude-mod-inbound-delivery. Spec: docs/superpowers/runs/2026-10-09-claude-mod-inbound-delivery/2026-10-09-claude-mod-inbound-delivery-design.md. Goal: Claude sessions receive herdr-threads messages from a bundled Claude Code mod (mid-turn, idle, lazy), receipts settle as cooperative_mod_delivery, native wake fallback when disconnected.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-09T06:23:04Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-09T06:23:04Z",
+    "labels": [
+      "sp:ht-j16"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]

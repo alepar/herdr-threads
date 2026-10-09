@@ -161,7 +161,7 @@ The daemon decides `AckModDelivered` against A2:
 It then:
 - **Ordinary pending receipts:** settles them exactly as `AckDisplayed` does, with `ack_observation.action_provenance = "cooperative_mod_delivery"`. The binding's `cooperative_top_level` provenance is kept separately.
 - **Lazy ids:** completes them as displayed (A8), with the same claim.
-- Refuses anything else: unknown or truncated ids, ids not addressed to the seat, a stale generation. The refused items stay pending.
+- Refuses anything else: unknown ids; truncated ids (decided from the stored body length against the 8 KiB limit, never from a client hint); ids not addressed to the seat; a stale generation. The refused items stay pending.
 
 Only items the mod delivered in full may be acked; `watch ack` refuses ids the stream marked truncated.
 
@@ -190,7 +190,7 @@ This is a user-approved change to the 2026-10 "no read/delivery auto-ACK" direct
 
 A message streamed but never acked stays pending and is re-streamed on reconnect, or reaches the agent through the native wake.
 
-A channel that is connected but has acked nothing for 10 minutes while ordinary receipts it was sent are pending counts as stalled. For example, the mod is holding after an interrupt and the user has walked away. The daemon then lets the native wake ladder run for that seat, with the existing composer guards, while keeping the channel. Any later mod ack clears the stall.
+A channel counts as stalled when it is live, its last mod ack (or its registration, if it has none) is more than 10 minutes old, and some ordinary pending receipt for the seat was published at or before the last pushed `Attention` frame and is itself more than 10 minutes old. The registry (D2) owns this state. For example, the mod is holding after an interrupt and the user has walked away. The daemon then lets the native wake ladder run for that seat, with the existing composer guards, while keeping the channel. Any later mod ack clears the stall.
 
 **Considered:**
 - Hard suppression with no stall bound: one stuck mod would silence a seat forever.
@@ -243,6 +243,7 @@ Amend TRUST-POLICY.md in the bead that introduces the constants:
 
   If the `claude` binary is unavailable, the test harness skips the suite with a recorded reason.
 - **Rust tests:** watch registration and refusals, push frames, close on binding change, `AckModDelivered` deciding rules, routing suppression and stall, disconnect kick, setup and unsetup manifests.
+- **Mod ledger.** When `HERDR_THREADS_MOD_LEDGER` names a file, the mod appends one JSON line per decision (received, delivered, acked, held, submit, refused, restart). The stress tests assert against it.
 - **Live stress.** `tests/native/claude_mod/stress.py` drives real TUI sessions in a private tmux server with an isolated, signed-in profile, over N iterations of the spike's boundary scenarios: queued user prompt, Stop-hook continuation, Esc, permission dialog, `/clear`, reload. It is gated (it needs a signed-in isolated profile). Its read-only fallback, when no profile is available, runs only the unit-level stress and records the gap.
 
 ### D11. Scope and non-goals

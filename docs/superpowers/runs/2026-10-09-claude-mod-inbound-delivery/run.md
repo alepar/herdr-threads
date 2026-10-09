@@ -10,3 +10,5 @@ branch: super-auto/claude-mod-inbound-delivery
 base: main
 spec: 2026-10-09-claude-mod-inbound-delivery-design.md
 epic: ht-j16
+approvals:
+- top-split · auto · ht-j16.1 LEAF, ht-j16.2 LEAF, ht-j16.3 LEAF, ht-j16.4 LEAF, ht-j16.5 LEAF, ht-j16.6 LEAF, ht-j16.7 LEAF, ht-j16.8 LEAF (gate), ht-j16.9 LEAF
