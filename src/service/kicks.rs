@@ -211,10 +211,45 @@ pub fn mapped_tables() -> impl Iterator<Item = &'static str> {
         .copied()
 }
 
+/// Tables whose commits may change what a live mod watch channel shows or
+/// whether it stays valid (spec D2): every attention source (ordinary and
+/// lazy receipts, invitations and their cancellations, warnings, notices,
+/// catch-up releases) and every channel-closing fact (binding, seat and
+/// recovery-hold changes). A commit touching one of them wakes the mod
+/// worker, which re-reads the seats with a live channel.
+pub const MOD_NOTIFY_TABLES: &[&str] = &[
+    "wake_work",
+    "receipts",
+    "receipt_state",
+    "lazy_recipients",
+    // Lazy rows become visible when their manifest publishes.
+    "send_manifests",
+    "invitations",
+    "invitation_cancellations",
+    "invitation_rejections",
+    "warning_recipients",
+    "warning_offer",
+    // A warning is pending (digest backlog) from its job, before attribution.
+    "warning_jobs",
+    "warning_conditions",
+    "digest_programmatic_warnings",
+    "catch_up",
+    "occupant_bindings",
+    "seats",
+    "recovery_holds",
+    "service_notification_recipients",
+];
+
+/// True when a commit touching `table` must wake the mod worker.
+pub fn notifies_mod(table: &str) -> bool {
+    MOD_NOTIFY_TABLES.contains(&table)
+}
+
 /// Registry of lane Pacers. A kick to an unregistered lane is a no-op.
 #[derive(Default)]
 pub struct CommitKicks {
     pacers: Mutex<[Option<Arc<Pacer>>; 6]>,
+    mod_observer: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl CommitKicks {
@@ -239,6 +274,25 @@ impl CommitKicks {
         };
         for pacer in targets {
             pacer.kick();
+        }
+    }
+
+    /// Registers the observer a commit touching [`MOD_NOTIFY_TABLES`] calls
+    /// (after the writer guard is released). It only wakes the mod worker; it
+    /// must never do store work on the committing thread.
+    pub fn set_mod_observer(&self, observer: Arc<dyn Fn() + Send + Sync>) {
+        *self.mod_observer.lock().unwrap_or_else(|e| e.into_inner()) = Some(observer);
+    }
+
+    /// Calls the mod observer, outside any lock of this registry.
+    pub fn notify_mod(&self) {
+        let observer = self
+            .mod_observer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(observer) = observer {
+            observer();
         }
     }
 

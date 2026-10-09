@@ -2301,10 +2301,78 @@ impl PriorLadder {
     }
 }
 
+/// What the mod watch channel needs to read from the store (spec D2, D7).
+/// A narrow supertrait of [`StorePort`] so the registry can be exercised
+/// against a small fake; read-only, one read transaction per call.
+pub trait ModStoreReads: Send + Sync {
+    /// The A2 view of `seat` for a watch registration or a channel check.
+    /// `None`: no such seat in this store's instance.
+    fn mod_seat_view(
+        &self,
+        seat: &SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<ModSeatView>, ApiError>;
+    /// The oldest publication time among the seat's ordinary pending receipts
+    /// published at or before `at_or_before` whose body is at most
+    /// `body_limit` bytes (truncated items never count toward a stall).
+    fn mod_stall_oldest(
+        &self,
+        seat: &SeatId,
+        at_or_before: UtcMillis,
+        body_limit: usize,
+        budget: &CallBudget,
+    ) -> Result<Option<UtcMillis>, ApiError>;
+}
+
+/// The open binding as the mod channel decision sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModBindingView {
+    pub generation: u64,
+    pub provenance: String,
+    pub harness: String,
+    pub native_session: String,
+}
+
+/// Change detector for one seat's mod-visible state: an Attention frame is
+/// pushed when it differs from the last one seen by the registry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModFingerprint {
+    pub attention_version: u64,
+    pub pending_receipts: u64,
+    pub max_pending_ordinal: i64,
+    pub lazy_pending: u64,
+    pub max_lazy_rowid: i64,
+    /// Pending invitations, open warnings and notices (bounded count).
+    pub other_pending: u64,
+    pub binding_generation: Option<u64>,
+}
+
+impl ModFingerprint {
+    /// True when something addressed to the seat is pending.
+    pub fn has_pending(&self) -> bool {
+        self.pending_receipts > 0 || self.lazy_pending > 0 || self.other_pending > 0
+    }
+}
+
+/// One seat's A2 state for the mod channel, read in one transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModSeatView {
+    pub seat: SeatId,
+    /// `seats.state`.
+    pub state: String,
+    pub retired: bool,
+    pub continuity_resolved: bool,
+    /// An open recovery hold covers the seat's target.
+    pub held: bool,
+    pub binding: Option<ModBindingView>,
+    pub attention_version: u64,
+    pub fingerprint: ModFingerprint,
+}
+
 /// Store implementations inject a clock at construction and sample UTC inside each
 /// deciding write transaction, after validation and lock/queue waits. Mutation and due
 /// methods have no caller-provided UTC decision time.
-pub trait StorePort: Send + Sync {
+pub trait StorePort: ModStoreReads + Send + Sync {
     fn clock(&self) -> &dyn Clock;
     fn archival_pass(
         &self,
@@ -3122,6 +3190,19 @@ pub trait LocalClient: Send + Sync {
     }
 }
 pub trait LocalService: Send + Sync {
+    /// Decide a mod watch registration against A2 and record the channel
+    /// (spec D2). Returns the channel id and the seat's attention version.
+    /// The default refuses: a service without a registry serves no channel.
+    fn watch_register(
+        &self,
+        _request: &crate::protocol::watch::WatchRequest,
+        _sink: std::sync::Arc<dyn ModChannelSink>,
+        _budget: &CallBudget,
+    ) -> Result<(ModChannelId, u64), crate::protocol::watch::WatchRefusalReason> {
+        Err(crate::protocol::watch::WatchRefusalReason::Disabled)
+    }
+    /// The watch stream ended without a Close.
+    fn watch_unregister(&self, _channel: ModChannelId, _now: UtcMillis) {}
     /// Operator recovery routes through the ordinary same-UID transport path.
     fn service_control(
         &self,

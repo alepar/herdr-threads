@@ -27,7 +27,8 @@ pub const INBOX_BATCH: &str = "inbox.batch_v1";
 pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 
 /// The Claude mod watch connection (`protocol::watch`). Defined by the ht-j16.1
-/// seam contract; listed in `ADVERTISED` only when ht-j16.2's handler lands.
+/// seam contract; its handler (`daemon::transport::watch_connection`) landed
+/// with ht-j16.2.
 pub const MOD_WATCH: &str = "mod.watch_v1";
 
 /// Everything this daemon build serves. A capability is listed only once its
@@ -54,6 +55,7 @@ pub const ADVERTISED: &[&str] = &[
     MESSAGE_DELIVERY_MODES,
     LAZY_SEND,
     INBOX_BATCH_V2,
+    MOD_WATCH,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set
