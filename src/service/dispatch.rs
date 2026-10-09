@@ -7,12 +7,16 @@ use crate::{
         SendPreparationProgress, ServiceAuthorityGate, ServiceConnectionAuthority, StorePort,
     },
     protocol::{
-        authority::{CallerRole, OperatorActor, PeerIdentity},
-        commands::{Command, OperatorCommand, PermitMutation},
+        authority::{
+            COOPERATIVE_TOP_LEVEL_PROVENANCE, CallerClaim, CallerRole, Harness, OperatorActor,
+            PeerIdentity,
+        },
+        commands::{AckModDelivered, Command, OperatorCommand, PermitMutation},
         output::OutputSpec,
         results::{ApiError, CommandResult, ErrorCode},
         service::{ServiceOperation, ServiceResult},
         time::{CallBudget, Clock},
+        watch::{ModAckItem, ModAckOutcome, ModAckReason, ModAckReport},
     },
     service::{fair_writer::FairWriter, workers::BoundedLane},
 };
@@ -142,6 +146,94 @@ impl DomainService {
             mutation => self.store.mutate(mutation, permit, budget),
         }
     }
+    /// Spec D6 pre-decision for `watch ack`: classify the whole batch against
+    /// the seat's open binding and the live channel registry, then route the
+    /// settlement through the cooperative mutation path. The store decides per
+    /// id against the canonical view (A2); a stale client claim is never used
+    /// for a resumed generation.
+    fn ack_mod_delivered(
+        &self,
+        request: AckModDelivered,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+        read: ReadContext,
+    ) -> Result<CommandResult, ApiError> {
+        Command::AckModDelivered(request.clone())
+            .validate()
+            .map_err(|why| error(ErrorCode::InvalidRequest, why))?;
+        let seat = request.claim.seat.clone();
+        let report = |result: ModAckOutcome, reason: Option<ModAckReason>| {
+            Ok(CommandResult::ModDeliveryAcked(ModAckReport {
+                results: request
+                    .messages
+                    .iter()
+                    .map(|id| ModAckItem {
+                        id: id.clone(),
+                        result,
+                        reason,
+                    })
+                    .collect(),
+            }))
+        };
+        let binding = self.store.mod_ack_binding(&self.instance, &seat, budget)?;
+        let Some(binding) = binding.filter(|binding| {
+            binding.provenance == COOPERATIVE_TOP_LEVEL_PROVENANCE && binding.harness == "claude"
+        }) else {
+            // The check-in that opens the binding may not have committed yet.
+            return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
+        };
+        let same_session = request.claim.native_session == binding.native_session;
+        let effective = if request.claim.binding_generation == binding.generation && same_session {
+            request.clone()
+        } else if same_session
+            && binding
+                .previous
+                .as_ref()
+                .is_some_and(|(generation, session)| {
+                    *generation == request.claim.binding_generation
+                        && *session == binding.native_session
+                })
+        {
+            // Resume: the previous generation of the same native session. The
+            // decision is against the canonical current binding, never the
+            // stale client claim.
+            AckModDelivered {
+                claim: CallerClaim {
+                    instance: self.instance.clone(),
+                    seat: seat.clone(),
+                    binding_generation: binding.generation,
+                    role: CallerRole::TopLevel,
+                    harness: Harness::Claude,
+                    native_session: binding.native_session.clone(),
+                    execution: binding.execution.clone(),
+                    target: binding.target.clone(),
+                },
+                ..request.clone()
+            }
+        } else {
+            return report(ModAckOutcome::StaleGeneration, None);
+        };
+        // A channel in reconnect or rebind grace counts as live.
+        if !self.mod_channels.is_live(&seat, binding.generation) {
+            return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
+        }
+        let result = self.cooperative_mutation(
+            PermitMutation::AckModDelivered(effective),
+            peer,
+            budget,
+            read,
+            false,
+        )?;
+        if let CommandResult::ModDeliveryAcked(report) = &result
+            && report
+                .results
+                .iter()
+                .any(|item| item.result.counts_as_mod_ack())
+        {
+            self.mod_channels.record_ack(&seat, self.clock.utc_now());
+        }
+        Ok(result)
+    }
     pub fn with_host(
         instance: String,
         store: Arc<dyn StorePort>,
@@ -268,11 +360,9 @@ impl LocalService for DomainService {
                 ErrorCode::Unauthorized,
                 "verified operation scope required",
             )),
-            // Spec D6: decided by ht-j16.3 against A2; inert until then.
-            Command::AckModDelivered(_) => Err(error(
-                ErrorCode::Unsupported,
-                "mod delivery ack is not served by this daemon",
-            )),
+            Command::AckModDelivered(request) => {
+                self.ack_mod_delivered(request, peer, budget, read)
+            }
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
@@ -508,53 +598,6 @@ mod operator_tests {
     }
 
     #[test]
-    fn domain_refuses_ack_mod_delivered_unsupported() {
-        use crate::protocol::{
-            authority::{CallerClaim, CallerRole, Harness},
-            commands::AckModDelivered,
-            ids::{ExecutionId, MessageId, NativeSessionId, SeatId},
-            watch::ModDeliveryVia,
-        };
-        let path = std::env::temp_dir().join(format!("mod-ack-{}.db", uuid::Uuid::new_v4()));
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-        let store = Arc::new(
-            SqliteStore::new(
-                StoreContext::new(path.clone(), clock.clone()),
-                "i",
-                StoreSettings::default(),
-            )
-            .unwrap(),
-        );
-        let domain = DomainService::new("i".into(), store, clock.clone()).with_operator_owner(501);
-        let result = domain.handle(
-            Command::AckModDelivered(AckModDelivered {
-                via: ModDeliveryVia::Context,
-                messages: vec![MessageId::new("m1")],
-                operation: OperationId::new("op"),
-                claim: CallerClaim {
-                    instance: "i".into(),
-                    seat: SeatId::new("s1"),
-                    binding_generation: 1,
-                    role: CallerRole::TopLevel,
-                    harness: Harness::Claude,
-                    native_session: NativeSessionId::new("n1"),
-                    execution: ExecutionId::new("e1"),
-                    target: HostTargetId::new("p"),
-                },
-            }),
-            PeerIdentity::from_kernel(501),
-            &CallBudget {
-                deadline: MonoInstant(clock.monotonic_now().0 + 1000),
-                cancellation: Cancellation::default(),
-            },
-        );
-        assert_eq!(result.unwrap_err().code, ErrorCode::Unsupported);
-        assert!(domain.mod_channels().status().is_none());
-        drop(domain);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
     fn summary_commands_reach_the_store() {
         use crate::protocol::{
             authority::{CallerClaim, CallerRole, Harness},
@@ -697,3 +740,7 @@ mod operator_tests {
 #[cfg(test)]
 #[path = "../../tests/service/cooperative.rs"]
 mod cooperative_tests;
+
+#[cfg(test)]
+#[path = "../../tests/service/mod_ack_dispatch.rs"]
+mod mod_ack_dispatch_tests;

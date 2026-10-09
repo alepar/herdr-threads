@@ -195,6 +195,38 @@ pub fn complete_addressed(
     Ok(addressed)
 }
 
+/// Where a lazy row stands for one seat (read-only helper for mod acks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LazyCompletion {
+    /// Published and addressed to the seat; display not yet completed.
+    Pending,
+    /// Published, addressed, and already completed as displayed.
+    Completed,
+    /// Not a published row addressed to the seat in this instance.
+    NotAddressed,
+}
+
+pub fn lazy_completion_state(
+    conn: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    message: &MessageId,
+) -> Result<LazyCompletion, ApiError> {
+    let state: Option<String> = conn
+        .query_row(
+            "SELECT r.state FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?3",
+            params![seat.as_str(), message.as_str(), instance],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    Ok(match state.as_deref() {
+        Some("displayed") => LazyCompletion::Completed,
+        Some(_) => LazyCompletion::Pending,
+        None => LazyCompletion::NotAddressed,
+    })
+}
+
 pub fn stage_recipient(
     tx: &Transaction<'_>,
     preparation: &str,
