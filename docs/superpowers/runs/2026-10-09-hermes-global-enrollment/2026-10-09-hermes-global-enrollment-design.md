@@ -304,3 +304,15 @@ session-start callbacks for harnesses that have it later in the turn; keep enrol
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+### 2026-10-09: integration sweep (ht-4ne.5)
+
+- No divergence from the design found. The wording sweep (TRUST-POLICY.md, README, skill, Hermes README,
+  `LAUNCH_HELP`, setup help) needed no edits, and the launch-only grep is clean.
+- The main flow (bare CLI start, first turn, `/new`, children, Claude/Codex) is proven through the real binary
+  in `tests/integration/hermes_enrollment_sweep.rs` against `FakeHost`; the installed-bridge variant stays in
+  `hermes_enrollment_smoke.rs` (ht-4ne.3), which needs an isolated Herdr.
+- `tests/fixtures/hermes/enrollment-envelopes.json` holds the six D2a rows the real bridge emits. Only the
+  fields the rows vary (callback, platform, ids, `role_association`, `shape`) come from the bridge; runtime
+  identity and startup capture are the shared `envelopes.json` values, so the file carries no machine paths.
+  The Python bridge test and the Rust strict-parse test are both pinned to it.

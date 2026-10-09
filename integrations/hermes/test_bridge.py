@@ -389,6 +389,31 @@ class BridgeTests(unittest.TestCase):
         self.assertIsNone(reset["role_association"])
         self.assertNotIn("PRIVATE", json.dumps(self.requests()))
 
+    def test_envelopes_match_rust_fixture(self):
+        # The Rust strict parser is pinned to the same file
+        # (`bridge_emitted_enrollment_envelopes_parse_and_decode`).
+        fixture = json.loads((SOURCE.parents[2] / "tests/fixtures/hermes/enrollment-envelopes.json").read_text())
+        cb = self.callbacks
+        qualified = {**cb["qualified"], "session_id": "fixture-session"}
+        drives = {
+            "cli_start": ("on_session_start", {"session_id": "fixture-session", "platform": "cli", "model": "m"}),
+            "empty_platform_start": ("on_session_start", {"session_id": "fixture-session", "platform": "", "model": "m"}),
+            "top_turn_cli": ("pre_llm_call", {**qualified, "turn_id": "fixture-turn", "platform": "cli"}),
+            "top_turn_empty_platform": ("pre_llm_call", {**qualified, "turn_id": "fixture-turn-2", "platform": ""}),
+            "post_tool": ("post_tool_call", {**cb["tool"], "session_id": "fixture-session", "turn_id": "fixture-turn"}),
+            "reset": ("on_session_reset", {**cb["reset"], "session_id": "fixture-session"}),
+        }
+        self.assertEqual(set(fixture), set(drives))
+        self.load()
+        for row, (callback, payload) in drives.items():
+            before = len(self.requests())
+            self.request(callback, payload)
+            sent = self.requests()
+            self.assertEqual(len(sent), before + 1, row)
+            emitted, pinned = sent[-1]["request"], fixture[row]
+            for key in ("callback", "platform", "role_association"):
+                self.assertEqual(emitted[key], pinned[key], f"{row}.{key}")
+
     def requests(self):
         path = self.state / "requests"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
