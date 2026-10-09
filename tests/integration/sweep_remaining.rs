@@ -2364,11 +2364,18 @@ fn retention_keeps_tables_bounded_while_discovery_stays_flat() {
         Duration::from_secs(20),
         || generations() > before,
     );
-    let retention_from = s.commits("retention");
-    s.probe.kick_registered(Lane::Retention);
-    wait_until("a retention pass", Duration::from_secs(20), || {
-        s.commits("retention") > retention_from
-    });
+    // Wait for passes, not commits: a pass with nothing left to prune only
+    // reads and commits nothing (earlier drain passes already pruned, the new
+    // row is an in-flight 'building' stage, or a publication freed nothing).
+    // Two kicked passes in turn: the second starts after a new generation row
+    // appeared. A pass that errors also counts as a pass here.
+    for _ in 0..2 {
+        let passes = s.probe.registered_idle_events(Lane::Retention);
+        s.probe.kick_registered(Lane::Retention);
+        wait_until("a retention pass", Duration::from_secs(20), || {
+            s.probe.registered_idle_events(Lane::Retention) > passes
+        });
+    }
     let generations = count(&db, "SELECT count(*) FROM snapshot_generations");
     assert!(
         generations <= 6,
