@@ -1723,7 +1723,9 @@ mod live {
             .is_err()
         );
         let retained = f.checkpoint();
-        // Control: the undamaged restored bundle composes.
+        // Control: the undamaged restored bundle composes (restore first, so
+        // this proves restore fidelity, not just the original state).
+        f.restore(&retained);
         assert!(composition_scan(&f).coverage.is_some());
         for control in [
             "child_version",
@@ -2239,7 +2241,9 @@ mod live {
             .is_err()
         );
         let retained = f.checkpoint();
-        // Control: the uncontradicted restored bundle composes.
+        // Control: the uncontradicted restored bundle composes (restore first,
+        // so this proves restore fidelity, not just the original state).
+        f.restore(&retained);
         assert!(composition_scan(&f).coverage.is_some());
         for control in ["creation", "attempt"] {
             f.restore(&retained);
