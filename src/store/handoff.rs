@@ -99,7 +99,7 @@ fn thread_in_instance(
     )
     .map_err(store_error)
 }
-fn validate_live(
+pub(crate) fn validate_live(
     db: &Connection,
     identity: &HandoffIdentity,
     thread: Option<&ThreadId>,
@@ -122,6 +122,83 @@ fn validate_live(
     }
     Ok(())
 }
+pub(crate) fn validate_handoff_requirement(
+    db: &Connection,
+    requirement: &crate::protocol::authority::HandoffRequirement,
+    replay: bool,
+) -> Result<(), ApiError> {
+    match requirement {
+        crate::protocol::authority::HandoffRequirement::Delivery(request) => {
+            if replay {
+                validate_delivery_replay(db, request)
+            } else {
+                validate_delivery_effect(db, request)
+            }
+        }
+        crate::protocol::authority::HandoffRequirement::BootstrapChild { namespace, command } => {
+            super::topology_handoff::validate_selected_child_phase(db, namespace, command, replay)
+        }
+    }
+}
+/// Only an exact absorbing fence grants historical presentation without live guards.
+pub(crate) fn validate_delivery_replay(
+    db: &Connection,
+    request: &crate::protocol::handoff::DeliveryMutation,
+) -> Result<(), ApiError> {
+    request.validate().map_err(ApiError::invalid_request)?;
+    let identity = request.identity();
+    let saved = current(db, &identity)?;
+    if saved
+        .as_ref()
+        .is_some_and(|v| v.state == HandoffState::Completed)
+    {
+        return Ok(());
+    }
+    validate_live(
+        db,
+        &identity,
+        saved.as_ref().and_then(|v| v.thread.as_ref()),
+    )?;
+    validate_delivery_effect(db, request)
+}
+/// The explicit envelope selects this guard, never an operation-key prefix.
+pub(crate) fn validate_delivery_effect(
+    db: &Connection,
+    request: &crate::protocol::handoff::DeliveryMutation,
+) -> Result<(), ApiError> {
+    request
+        .validate()
+        .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+    let identity = request.identity();
+    let saved = current(db, &identity)?;
+    use crate::protocol::handoff::DeliveryAction;
+    if !matches!(request.action, DeliveryAction::Begin(_))
+        && saved.as_ref().is_none_or(|r| r.state != HandoffState::Live)
+    {
+        return Err(api_error(
+            ErrorCode::Conflict,
+            "delivery effect requires exact live fence",
+        ));
+    }
+    if let Some(saved) = saved {
+        if saved.state != HandoffState::Live {
+            return Err(api_error(ErrorCode::Conflict, "delivery is completed"));
+        }
+        let requested = match &request.action {
+            DeliveryAction::Invite(v) => Some(&v.thread),
+            DeliveryAction::Send(v) => Some(&v.thread),
+            _ => None,
+        };
+        if requested.is_some() && saved.thread.as_ref() != requested {
+            return Err(api_error(
+                ErrorCode::OperationPayloadMismatch,
+                "delivery phase thread differs from canonical fence",
+            ));
+        }
+    }
+    super::seats::eligible_delivery_recipient(db, &identity.claim.instance, &identity.recipient)
+}
+
 fn recorded_create(
     db: &Connection,
     identity: &HandoffIdentity,
@@ -368,8 +445,38 @@ pub fn mutate(
     db: &mut Connection,
     budget: &crate::protocol::time::CallBudget,
     command: &crate::protocol::handoff::HandoffMutation,
+    permit: crate::protocol::authority::MutationPermit,
+    complete: bool,
+) -> Result<CommandResult, ApiError> {
+    mutate_impl(context, db, budget, command, permit, complete, None)
+}
+pub(crate) fn mutate_in_namespace(
+    context: &super::connection::StoreContext,
+    db: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &crate::protocol::handoff::HandoffMutation,
+    permit: crate::protocol::authority::MutationPermit,
+    complete: bool,
+    canonical: &crate::protocol::handoff::HandoffNamespace,
+) -> Result<CommandResult, ApiError> {
+    mutate_impl(
+        context,
+        db,
+        budget,
+        command,
+        permit,
+        complete,
+        Some(canonical),
+    )
+}
+fn mutate_impl(
+    context: &super::connection::StoreContext,
+    db: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    command: &crate::protocol::handoff::HandoffMutation,
     mut permit: crate::protocol::authority::MutationPermit,
     complete: bool,
+    canonical: Option<&crate::protocol::handoff::HandoffNamespace>,
 ) -> Result<CommandResult, ApiError> {
     if !installed(db)? {
         return Err(api_error(
@@ -377,9 +484,10 @@ pub fn mutate(
             "daemon has no archival handoff contract",
         ));
     }
+    let delivery = permit.delivery_requirement().cloned();
     let identity = &command.identity;
     validate_identity(identity)?;
-    let (claim, issuance) = permit.cooperative_metadata();
+    let (claim, issuance, _) = permit.cooperative_metadata();
     let digest = super::control::cooperative_payload_hash(
         if complete {
             "complete_handoff"
@@ -413,6 +521,13 @@ pub fn mutate(
             )?;
             let result = if complete {
                 complete_pending(tx, identity, decision.utc)?
+            } else if let Some(canonical) = canonical {
+                super::topology_handoff::begin_selected_child(
+                    tx,
+                    canonical,
+                    identity,
+                    decision.utc,
+                )?
             } else {
                 begin_pending(tx, identity, decision.utc)?
             };
@@ -431,6 +546,17 @@ pub fn mutate(
                         ErrorCode::StoreCorrupt,
                         "completed operation has live fence",
                     ));
+                }
+                if let Some(canonical) = canonical {
+                    super::topology_handoff::begin_selected_child(
+                        tx,
+                        canonical,
+                        identity,
+                        context.clock().utc_now(),
+                    )?;
+                }
+                if let Some(delivery) = &delivery {
+                    validate_delivery_effect(tx, delivery)?;
                 }
                 validate_live(tx, identity, result.thread.as_ref())?;
             }

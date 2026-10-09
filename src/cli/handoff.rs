@@ -25,6 +25,9 @@ use std::{
 
 pub const HANDOFF_HELP: &str =
     "Choose exactly one of --new-thread or --thread ID_OR_NAME, and an explicit --pane.
+A guarded daemon also supports --new-tab LABEL --kind claude|codex, or
+--existing --seat SEAT (optionally --pane). New modes require an original
+top-level Agent; existing delivery stages work without a launch.
 New threads join the sender; existing threads require a joined sender. --thread-name,
 --topic and --goal apply only to new threads. Topic defaults to Handoff to DISPLAY;
 goal defaults to topic. --name names the native agent, not the channel.

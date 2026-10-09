@@ -1477,6 +1477,17 @@ impl StorePort for SqliteStore {
         }
         let mut writer = self.writer(budget)?;
         match command {
+            PermitMutation::BeginBootstrap(_)
+            | PermitMutation::ReserveBootstrapAttempt(_)
+            | PermitMutation::RecordBootstrapCreated(_)
+            | PermitMutation::RecordBootstrapNotSubmitted(_)
+            | PermitMutation::AttachBootstrapHandoff(_)
+            | PermitMutation::CompleteLinkedBootstrap(_)
+            | PermitMutation::CheckBootstrapSubmission(_)
+            | PermitMutation::ResolveBootstrapSeat(_) => Err(api_error(
+                ErrorCode::Unsupported,
+                "bootstrap requires guarded selected runtime",
+            )),
             PermitMutation::CheckIn(_) => Err(api_error(
                 ErrorCode::InvalidRequest,
                 "check-in requires verified registration and read context",
@@ -2659,6 +2670,62 @@ pub fn cooperative_permit_request(
 ) -> Result<crate::ports::CooperativePermitRequest, ApiError> {
     use crate::protocol::authority::ObligationRef;
     let (claim, operation, obligation, payload_hash, check_in_mode) = match command {
+        PermitMutation::BeginBootstrap(v) => (
+            v.identity.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("begin_bootstrap", &**v)?,
+            None,
+        ),
+        PermitMutation::ReserveBootstrapAttempt(v) => (
+            v.identity.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("reserve_bootstrap_attempt", &**v)?,
+            None,
+        ),
+        PermitMutation::RecordBootstrapCreated(v) => (
+            v.identity.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("record_bootstrap_created", &**v)?,
+            None,
+        ),
+        PermitMutation::RecordBootstrapNotSubmitted(v) => (
+            v.identity.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("record_bootstrap_not_submitted", &**v)?,
+            None,
+        ),
+        PermitMutation::AttachBootstrapHandoff(v) => (
+            v.identity.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("attach_bootstrap_handoff", &**v)?,
+            None,
+        ),
+        PermitMutation::CompleteLinkedBootstrap(v) => (
+            v.identity.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("complete_linked_bootstrap", &**v)?,
+            None,
+        ),
+        PermitMutation::CheckBootstrapSubmission(v) => (
+            v.identity.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("check_bootstrap_submission", &**v)?,
+            None,
+        ),
+        PermitMutation::ResolveBootstrapSeat(v) => (
+            v.identity.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("resolve_bootstrap_seat", &**v)?,
+            None,
+        ),
         PermitMutation::CheckIn(v) => (
             v.claim.clone(),
             v.operation.clone(),

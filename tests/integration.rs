@@ -120,3 +120,7 @@ mod channel_activation;
 #[cfg(feature = "test-support")]
 #[path = "integration/readme_tryout.rs"]
 mod readme_tryout;
+
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+#[path = "integration/topology_activation.rs"]
+mod topology_activation;

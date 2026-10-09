@@ -2765,6 +2765,43 @@ pub fn resolve_bootstrap_seat(
     guard: &crate::ports::BootstrapAttachmentGuard,
     budget: &CallBudget,
 ) -> Result<SeatId, ApiError> {
+    resolve_bootstrap_seat_impl(context, conn, canonical, request, guard, budget, None)
+}
+/// Permit consumption shares the exact ordinary allocation transaction.
+pub(crate) fn resolve_bootstrap_seat_accountable(
+    context: &StoreContext,
+    conn: &mut Connection,
+    canonical: &crate::protocol::handoff::HandoffNamespace,
+    request: &crate::protocol::handoff::ResolveBootstrapSeat,
+    guard: &crate::ports::BootstrapAttachmentGuard,
+    budget: &CallBudget,
+    permit: MutationPermit,
+) -> Result<SeatId, ApiError> {
+    resolve_bootstrap_seat_impl(
+        context,
+        conn,
+        canonical,
+        request,
+        guard,
+        budget,
+        Some(permit),
+    )
+}
+fn resolve_bootstrap_seat_impl(
+    context: &StoreContext,
+    conn: &mut Connection,
+    canonical: &crate::protocol::handoff::HandoffNamespace,
+    request: &crate::protocol::handoff::ResolveBootstrapSeat,
+    guard: &crate::ports::BootstrapAttachmentGuard,
+    budget: &CallBudget,
+    mut permit: Option<MutationPermit>,
+) -> Result<SeatId, ApiError> {
+    let input = super::cooperative_permit_request(
+        &crate::protocol::commands::PermitMutation::ResolveBootstrapSeat(Box::new(request.clone())),
+    )?;
+    let issuance = permit
+        .as_ref()
+        .map(|permit| permit.cooperative_metadata().1);
     snapshot_budget(context, budget)?;
     request
         .validate()
@@ -2815,12 +2852,15 @@ pub fn resolve_bootstrap_seat(
         }
         Ok(owner)
     };
-    let result = schema::execute_idempotent_transaction_presented(
+    let result = schema::execute_budgeted_idempotent_transaction_with_constraints(
         context,
         conn,
+        budget,
+        issuance.as_ref(),
         &format!("service-allocation:{}", canonical.instance),
         request.operation.as_str(),
         digest,
+        |tx| super::seats::cooperative_instance(tx, &canonical.instance, &request.identity.claim),
         |tx| {
             if validate(tx, false)?.is_none() {
                 validate_resolution_allocation(
@@ -2833,6 +2873,18 @@ pub fn resolve_bootstrap_seat(
         },
         |tx, at| {
             snapshot_budget(context, budget)?;
+            if let Some(permit) = permit.as_mut() {
+                super::control::decide_accountable(
+                    tx,
+                    at,
+                    permit,
+                    &input.claim,
+                    &input.claim.seat,
+                    &input.operation,
+                    &input.obligation,
+                    &input.payload_hash,
+                )?;
+            }
             let (result, allocated) = ordinary_resolution_apply(
                 tx,
                 at,
@@ -3851,6 +3903,49 @@ pub(crate) fn cooperative_instance(
     Ok(())
 }
 
+/// Delivery's current recipient predicate uses canonical continuity without
+/// allocating, binding or requiring a working session on an unbound seat.
+pub(crate) fn eligible_delivery_recipient(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+) -> Result<(), ApiError> {
+    type Row = (
+        String,
+        Option<String>,
+        i64,
+        Option<String>,
+        i64,
+        Option<i64>,
+        Option<i64>,
+    );
+    let row: Option<Row> = db.query_row("SELECT s.state,s.target_id,s.target_generation,h.host_boot,h.host_epoch,s.retired_at,s.retired_seq FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1 AND s.instance_id=?2", params![seat.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
+    let Some((state, Some(target), generation, boot, epoch, retired_at, retired_seq)) = row else {
+        return Err(api_error(
+            ErrorCode::TargetUnresolved,
+            "delivery recipient missing or foreign",
+        ));
+    };
+    let held: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM recovery_holds WHERE instance_id=?1 AND target_id=?2 AND released_at IS NULL)", params![instance, target], |r| r.get(0)).map_err(store_error)?;
+    let observation = effective::effective_observation(db, instance, &target)?;
+    if state != "resolved"
+        || retired_at.is_some()
+        || retired_seq.is_some()
+        || held
+        || observation.as_ref().is_none_or(|o| {
+            o.structural_generation != generation
+                || Some(o.host_boot.as_str()) != boot.as_deref()
+                || o.epoch != epoch
+        })
+    {
+        return Err(api_error(
+            ErrorCode::TargetUnresolved,
+            "delivery recipient unresolved, held or invalidated",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn cooperative_mapping(
     db: &Connection,
     claim: &crate::protocol::authority::CallerClaim,
@@ -3968,6 +4063,45 @@ pub(crate) fn cooperative_mapping(
         terminal: observation.as_ref().and_then(|o| o.terminal_id.clone()),
         incarnation: observation.and_then(|o| o.incarnation),
     })
+}
+
+/// Parent Begin is canonically retained separately from the legacy child Begin
+/// which deliberately shares its frozen operation key. Never consult the child ledger.
+pub(crate) fn issue_bootstrap_begin_permit(
+    context: &StoreContext,
+    db: &Connection,
+    instance: &str,
+    canonical: &crate::protocol::handoff::HandoffNamespace,
+    command: &crate::protocol::handoff::BeginBootstrap,
+    budget: &CallBudget,
+) -> Result<MutationPermit, ApiError> {
+    crate::protocol::commands::Command::BeginBootstrap(Box::new(command.clone()))
+        .validate()
+        .map_err(ApiError::invalid_request)?;
+    super::topology_handoff::encode_identity(canonical, &command.identity)?;
+    cooperative_instance(db, instance, &command.identity.claim)?;
+    let current = super::topology_handoff::current(db, canonical, &command.identity)?;
+    let mapping = if current
+        .is_some_and(|v| v.state == crate::protocol::handoff::BootstrapState::Completed)
+    {
+        // Historical replay cannot consume a live deciding fence.
+        (0, 0)
+    } else {
+        let mapping = cooperative_mapping(db, &command.identity.claim, None)?;
+        (mapping.revision, mapping.invalidation_revision)
+    };
+    let request = crate::store::cooperative_permit_request(
+        &crate::protocol::commands::PermitMutation::BeginBootstrap(Box::new(command.clone())),
+    )?;
+    Ok(MutationPermit::cooperative(
+        request.claim,
+        request.operation,
+        request.obligation,
+        request.payload_hash,
+        context.clock().monotonic_now(),
+        mapping,
+        budget.clone(),
+    ))
 }
 
 pub(crate) fn issue_cooperative_permit(

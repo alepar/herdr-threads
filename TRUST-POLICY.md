@@ -361,7 +361,20 @@ the original actor, compare the canonical namespace and obtain the exact canonic
 fence before presentation or cleanup. It permits honest replay after output, unlink or directory
 sync failure, at the cost of retained local disk records. It is not live archival protection;
 malformed or contradictory records conservatively refuse, and canonical terminal state dominates
-stale archival scans. New public modes remain inert until those production guards are integrated.
+stale archival scans. Public new modes require the guarded runtime capability. Delivery
+carries the exact frozen Agent original and namespace on restricted phase and read
+requests; the daemon compares its independently selected path bytes before preparation,
+effects, replay and historical presentation. Read-only preparation checks the canonical
+caller, channel and recipient before local publication. Each live effect checks current
+recipient eligibility in its deciding transaction. A resolved unbound recipient is allowed;
+this neither starts an agent nor accepts an invitation or ACKs a receipt. Completed
+presentation checks the exact canonical fence and retained report without live mapping
+requirements. Generic runtimes without the required producer/deciding adapter do not
+advertise this capability and cannot execute these routes.
+Linked bootstrap Invite and Send phases derive their required namespace and exact
+payload from canonical child-key registration, full frozen parent and attachment.
+Missing selected context refuses even cached history; unregistered legacy phases
+retain their existing behavior. Completed linked history skips only live guards.
 
 Canonical topology storage has encoded-byte ceilings for retained bootstrap envelopes:
 128 KiB for the full frozen identity, creation evidence and attachment; 256 KiB for
@@ -373,8 +386,12 @@ Oversized writes must refuse before effects and preserve existing records; bound
 reads of oversized or corrupt data must refuse, never present clipped data or grant
 submission permission. Records are never truncated to fit. These limits neither
 change attribution nor authorize from a client-local journal or today's occupant.
-Public activation and future transition writers must retain the canonical guards
-and enforce the same limits.
+Public preparation also checks the actual serialized request-bearing local progress
+against its existing 128 KiB cap using the observed endpoint witness, before publication,
+Begin or reservation. A canonical maximum-size identity need not fit that larger producer
+envelope. Future native response metadata is not statically known; an unpersistable created
+response conservatively retains possible creation and refuses automatic resubmission.
+Transition writers retain the canonical guards and enforce the same limits.
 
 These are decisions, not bugs. Each is safe to rely on only as stated.
 

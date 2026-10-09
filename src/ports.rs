@@ -2421,6 +2421,74 @@ impl PriorLadder {
 /// Store implementations inject a clock at construction and sample UTC inside each
 /// deciding write transaction, after validation and lock/queue waits. Mutation and due
 /// methods have no caller-provided UTC decision time.
+/// Required deciding bootstrap adapter, supplied only by an equipped runtime.
+/// Namespace is independently selected by election; guards remain transient.
+pub trait BootstrapStorePort: Send + Sync {
+    fn bootstrap_begin_permit(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        command: &crate::protocol::handoff::BeginBootstrap,
+        budget: &CallBudget,
+    ) -> Result<MutationPermit, ApiError>;
+    fn bootstrap_prepare_send_step(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        command: &crate::protocol::commands::SendMessage,
+        admission: DurableWorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<SendPreparationProgress, ApiError>;
+    fn delivery_query(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        request: &crate::protocol::handoff::DeliveryMutation,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+    fn delivery_mutate(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        request: &crate::protocol::handoff::DeliveryMutation,
+        permit: MutationPermit,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+    fn delivery_prepare_send_step(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        request: &crate::protocol::handoff::DeliveryMutation,
+        admission: DurableWorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<SendPreparationProgress, ApiError>;
+
+    fn bootstrap_mutate(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        command: PermitMutation,
+        permit: MutationPermit,
+        guard: Option<BootstrapAttachmentGuard>,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+    fn bootstrap_query(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        command: &Command,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+    fn bootstrap_recovery_replay(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        request: &crate::protocol::handoff::RecoverBootstrap,
+        actor: &crate::protocol::authority::OperatorActor,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::protocol::handoff::BootstrapRecoveryResult>, ApiError>;
+    fn bootstrap_recover(
+        &self,
+        canonical: &crate::protocol::handoff::HandoffNamespace,
+        request: &crate::protocol::handoff::RecoverBootstrap,
+        actor: &crate::protocol::authority::OperatorActor,
+        guard: Option<BootstrapAttachmentGuard>,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+}
+
 pub trait StorePort: Send + Sync {
     fn clock(&self) -> &dyn Clock;
     fn archival_pass(

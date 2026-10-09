@@ -463,7 +463,7 @@ fn root_operator_retry_refuses_before_completed_presentation_and_cleanup() {
     args.insert(1, "human".into());
     let error = super::super::run_in_pane(args, None, &mut output).unwrap_err();
     assert!(
-        matches!(error,RunError::Api(ref e) if e.code==ErrorCode::Unsupported),
+        matches!(error,RunError::Api(ref e) if e.code==ErrorCode::HostUnavailable),
         "{error:?}"
     );
     assert_eq!(before, env.snapshot());

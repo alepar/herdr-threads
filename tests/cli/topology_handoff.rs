@@ -320,7 +320,7 @@ fn publication_selected_workspace_and_new_channel_defaults() {
     );
 }
 #[test]
-fn publication_public_route_is_fenced_before_namespace_access() {
+fn publication_public_route_refuses_unavailable_daemon_before_publication() {
     let temp = Temp::new();
     let state = temp.path().join("must not exist");
     let argv = vec![
@@ -339,14 +339,45 @@ fn publication_public_route_is_fenced_before_namespace_access() {
         "work".into(),
     ];
     let mut output = vec![];
+    let result = super::super::run_in_pane(argv.clone(), None, &mut output);
+    assert!(
+        matches!(
+            result,
+            Err(RunError::Api(ApiError {
+                code: crate::protocol::results::ErrorCode::InvalidRequest,
+                ..
+            }))
+        ),
+        "{result:?}"
+    );
+    assert!(!state.exists());
+    assert!(output.is_empty());
+    let mut argv = argv;
+    argv.splice(
+        1..1,
+        [
+            "--cooperative-seat",
+            "sender",
+            "--cooperative-target",
+            "w4:p1",
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+        ]
+        .map(str::to_owned),
+    );
     let result = super::super::run_in_pane(argv, None, &mut output);
-    assert!(matches!(
-        result,
-        Err(RunError::Api(ApiError {
-            code: crate::protocol::results::ErrorCode::Unsupported,
-            ..
-        }))
-    ));
+    assert!(
+        matches!(
+            result,
+            Err(RunError::Api(ApiError {
+                code: crate::protocol::results::ErrorCode::HostUnavailable,
+                ..
+            }))
+        ),
+        "{result:?}"
+    );
     assert!(!state.exists());
     assert!(output.is_empty());
 }
@@ -753,7 +784,9 @@ mod live {
             assert_eq!(claim, &self.identity.claim);
             if let crate::protocol::commands::PermitMutation::SendMessage(send) = &mutation {
                 loop {
-                    match store.prepare_send_step(
+                    match crate::ports::BootstrapStorePort::bootstrap_prepare_send_step(
+                        &store,
+                        &self.identity.payload.handoff.namespace,
                         send,
                         crate::ports::DurableWorkAdmission::new(16).unwrap(),
                         budget,
@@ -770,6 +803,15 @@ mod live {
                 crate::store::cooperative_permit_request(&mutation)?,
                 budget,
             )?;
+            let permit = if matches!(
+                mutation,
+                crate::protocol::commands::PermitMutation::Invite(_)
+                    | crate::protocol::commands::PermitMutation::SendMessage(_)
+            ) {
+                permit.with_bootstrap_child(&self.identity.payload.handoff.namespace, &mutation)
+            } else {
+                permit
+            };
             if let crate::protocol::commands::PermitMutation::CreateThread(create) = &mutation {
                 crate::store::control::create_thread_in_namespace(
                     &context,
@@ -2060,6 +2102,86 @@ mod live {
         assert_eq!(f.peer.status().state, BootstrapState::PossibleCreation);
     }
     #[test]
+    fn phase13_operator_created_keeps_original_request_and_allows_second_agent_retry() {
+        for retained_request in [true, false] {
+            let f = Fixture::new(Fault::HostReply);
+            unknown(f.run());
+            let old = load_bootstrap_progress(&f.journal, &f.peer.reference, &f.peer.identity)
+                .unwrap()
+                .unwrap();
+            let original_request = old.request.clone().unwrap();
+            let mut local = old;
+            if !retained_request {
+                local.request = None;
+            }
+            save_bootstrap_progress(&f.journal, &f.peer.reference, &local).unwrap();
+            let mut evidence = crate::protocol::handoff::topology_contract_tests::created();
+            evidence.witness = f.witness.clone();
+            evidence.witness.socket.inode += 1;
+            evidence.correlation = if retained_request {
+                original_request.correlation.clone()
+            } else {
+                HostCallId::new("operator-assertion-correlation")
+            };
+            let (_, observation, admission, _) = scoped_current(&f);
+            let guard = crate::ports::BootstrapAttachmentGuard::try_new(
+                &crate::protocol::commands::ResolveSeat {
+                    target: evidence.root_pane.clone(),
+                    operation: f.peer.identity.payload.resolve_key.clone(),
+                },
+                crate::ports::BootstrapPaneObservation::try_new(
+                    observation,
+                    evidence.workspace.clone(),
+                    evidence.tab.clone(),
+                    evidence.witness.clone(),
+                )
+                .unwrap(),
+                &admission,
+            )
+            .unwrap();
+            let mut recovery = RecoverBootstrap {
+                identity: f.peer.identity.clone(),
+                expected_attempt: BootstrapAttempt::first(),
+                operation: OperationId::new("placeholder"),
+                disposition: BootstrapRecoveryDisposition::CreatedPane {
+                    evidence,
+                    structural_reference: HostCallId::new("earlier-operator-read"),
+                },
+            };
+            recovery.operation = recovery.decision_operation().unwrap();
+            {
+                let mut state = f.peer.state.lock().unwrap();
+                let tx = state.db.transaction().unwrap();
+                canonical::attempts::recover(
+                    &tx,
+                    &f.peer.identity.payload.handoff.namespace,
+                    &recovery,
+                    501,
+                    UtcMillis(3),
+                    Some(&guard),
+                )
+                .unwrap();
+                tx.commit().unwrap();
+                state.fault = Fault::None;
+            }
+            assert_eq!(f.run().unwrap().state, BootstrapState::Attached);
+            assert_eq!(
+                f.run().unwrap().state,
+                BootstrapState::Attached,
+                "second retry must parse its retained original native submission proof"
+            );
+            let saved = load_bootstrap_progress(&f.journal, &f.peer.reference, &f.peer.identity)
+                .unwrap()
+                .unwrap();
+            assert_eq!(saved.request, retained_request.then_some(original_request));
+            assert!(
+                saved.creation.is_none(),
+                "operator canonical evidence cannot fabricate a local native submission receipt"
+            );
+            assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
+        }
+    }
+    #[test]
     fn live_lost_host_reply_never_creates_twice() {
         let f = Fixture::new(Fault::HostReply);
         unknown(f.run());
@@ -3150,4 +3272,33 @@ mod live {
         drop(s);
         assert_eq!(result.creation, f.peer.status().creation);
     }
+}
+
+#[test]
+fn phase13_prepublication_capacity_uses_actual_request_envelope_bound() {
+    let mut identity = crate::protocol::handoff::topology_contract_tests::identity();
+    let witness = crate::protocol::handoff::topology_contract_tests::created().witness;
+    super::preflight_progress_capacity(&identity, &witness).unwrap();
+    identity.payload.launch.argv = vec!["\"".repeat(4096); 16];
+    let excess = serde_json::to_vec(&identity).unwrap().len()
+        - crate::store::topology_handoff::MAX_IDENTITY_BYTES;
+    let last = identity.payload.launch.argv.last_mut().unwrap();
+    last.truncate(last.len() - excess.div_ceil(2));
+    if !excess.is_multiple_of(2) {
+        last.push('x');
+    }
+    identity.digest = identity.semantic_digest().unwrap();
+    let encoded = crate::store::topology_handoff::encode_identity(
+        &identity.payload.handoff.namespace,
+        &identity,
+    )
+    .unwrap();
+    assert_eq!(
+        encoded.len(),
+        crate::store::topology_handoff::MAX_IDENTITY_BYTES
+    );
+    assert!(
+        super::preflight_progress_capacity(&identity, &witness).is_err(),
+        "a valid canonical max identity must refuse when genuine request metadata cannot fit"
+    );
 }

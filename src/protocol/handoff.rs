@@ -25,6 +25,128 @@ pub struct HandoffMutation {
     pub identity: HandoffIdentity,
     pub operation: OperationId,
 }
+/// Capability-gated delivery envelope. Old phase requests and replay bytes remain unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliveryMutation {
+    pub scope: crate::cli::journal::IntentScope,
+    pub claim: CallerClaim,
+    pub digest: String,
+    pub plan: crate::cli::journal::DeliveryPlan,
+    pub action: DeliveryAction,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "phase",
+    content = "request",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum DeliveryAction {
+    Status(HandoffIdentity),
+    Prepare(HandoffIdentity),
+    Begin(HandoffMutation),
+    Create(crate::protocol::commands::CreateThread),
+    Invite(crate::protocol::commands::Invite),
+    Send(crate::protocol::commands::SendMessage),
+    Complete(HandoffMutation),
+}
+impl DeliveryMutation {
+    pub fn identity(&self) -> HandoffIdentity {
+        let keys = &self.plan.payload.keys;
+        HandoffIdentity {
+            compound: keys.compound.clone(),
+            digest: self.digest.clone(),
+            claim: self.claim.clone(),
+            thread: self.plan.payload.channel.thread().cloned(),
+            recipient: self.plan.recipient.clone(),
+            create_key: keys.create.clone(),
+            invite_key: keys.invite.clone(),
+            send_key: keys.send.clone(),
+        }
+    }
+    pub fn inner(&self) -> Result<crate::protocol::commands::PermitMutation, &'static str> {
+        use crate::protocol::commands::PermitMutation;
+        Ok(match &self.action {
+            DeliveryAction::Status(_) | DeliveryAction::Prepare(_) => {
+                return Err("delivery query has no mutation permit");
+            }
+            DeliveryAction::Begin(v) => PermitMutation::BeginHandoff(v.clone()),
+            DeliveryAction::Create(v) => PermitMutation::CreateThread(v.clone()),
+            DeliveryAction::Invite(v) => PermitMutation::Invite(v.clone()),
+            DeliveryAction::Send(v) => PermitMutation::SendMessage(v.clone()),
+            DeliveryAction::Complete(v) => PermitMutation::CompleteHandoff(v.clone()),
+        })
+    }
+    pub fn validate(&self) -> Result<(), &'static str> {
+        use crate::cli::journal::{OriginalActor, SemanticMutation, classify_original_actor};
+        use sha2::{Digest, Sha256};
+        self.plan.validate().map_err(|_| "invalid delivery plan")?;
+        let semantic = SemanticMutation::Frozen {
+            claim: self.claim.clone(),
+            mutation: Box::new(SemanticMutation::HandoffDelivery(Box::new(
+                self.plan.clone(),
+            ))),
+        };
+        if classify_original_actor(&self.scope, &semantic)
+            .map_err(|_| "invalid delivery original actor")?
+            != OriginalActor::Agent
+            || self.claim.role != super::authority::CallerRole::TopLevel
+            || self.claim.instance != self.plan.payload.namespace.instance
+            || self.digest
+                != format!(
+                    "{:x}",
+                    Sha256::digest(
+                        serde_json::to_vec(&semantic).map_err(|_| "invalid delivery semantic")?
+                    )
+                )
+        {
+            return Err("delivery original identity mismatch");
+        }
+        let keys = &self.plan.payload.keys;
+        let thread_matches = |thread: &ThreadId| {
+            self.plan
+                .payload
+                .channel
+                .thread()
+                .is_none_or(|saved| saved == thread)
+        };
+        let matches = match &self.action {
+            DeliveryAction::Status(v) | DeliveryAction::Prepare(v) => *v == self.identity(),
+            DeliveryAction::Begin(v) => v.identity == self.identity() && v.operation == keys.begin,
+            DeliveryAction::Complete(v) => {
+                v.identity == self.identity() && v.operation == keys.complete
+            }
+            DeliveryAction::Create(v) => {
+                v.claim == self.claim
+                    && v.operation == keys.create
+                    && matches!(&self.plan.payload.channel, HandoffChannel::New { name, topic, goal } if name == &v.name && topic == &v.topic && goal == &v.goal)
+            }
+            DeliveryAction::Invite(v) => {
+                v.claim == self.claim
+                    && v.operation == keys.invite
+                    && v.seat == self.plan.recipient
+                    && v.deadline_millis.is_none()
+                    && thread_matches(&v.thread)
+            }
+            DeliveryAction::Send(v) => {
+                v.claim == self.claim
+                    && v.operation == keys.send
+                    && v.body == self.plan.payload.body
+                    && v.invited_recipients == [self.plan.recipient.clone()]
+                    && v.deadline_millis.is_none()
+                    && !v.relays_user
+                    && v.user_intent.is_none()
+                    && thread_matches(&v.thread)
+            }
+        };
+        if !matches {
+            return Err("delivery phase differs from frozen original");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandoffState {

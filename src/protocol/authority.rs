@@ -115,6 +115,9 @@ pub struct OperatorActor {
     effective_uid: u32,
 }
 impl OperatorActor {
+    pub(crate) fn effective_uid(&self) -> u32 {
+        self.effective_uid
+    }
     pub(crate) fn from_peer(peer: PeerIdentity, owner_uid: u32) -> Option<Self> {
         (peer.effective_uid == owner_uid).then_some(Self {
             effective_uid: owner_uid,
@@ -169,6 +172,15 @@ pub struct CooperativeDecisionFence {
     pub known_invalidated: bool,
 }
 
+/// Private runtime requirements are never accepted from a wire decoder.
+#[derive(Debug, Clone)]
+pub(crate) enum HandoffRequirement {
+    Delivery(Box<crate::protocol::handoff::DeliveryMutation>),
+    BootstrapChild {
+        namespace: crate::protocol::handoff::HandoffNamespace,
+        command: Box<crate::protocol::commands::PermitMutation>,
+    },
+}
 /// One transaction decision may consume this exact request/payload grant once.
 #[derive(Debug)]
 pub struct MutationPermit {
@@ -181,6 +193,7 @@ pub struct MutationPermit {
     observed_at: MonoInstant,
     consumed: bool,
     cooperative_budget: CallBudget,
+    handoff_requirement: Option<HandoffRequirement>,
 }
 impl MutationPermit {
     /// Stable durable-seat scope for looking up a previously committed operation.
@@ -208,10 +221,47 @@ impl MutationPermit {
             observed_at,
             consumed: false,
             cooperative_budget: budget,
+            handoff_requirement: None,
         }
     }
-    pub(crate) fn cooperative_metadata(&self) -> (CallerClaim, CallBudget) {
-        (self.claim.clone(), self.cooperative_budget.clone())
+    /// Selected store attaches only a validated explicit frozen delivery envelope.
+    pub(crate) fn with_delivery(
+        mut self,
+        request: &crate::protocol::handoff::DeliveryMutation,
+    ) -> Self {
+        self.handoff_requirement = Some(HandoffRequirement::Delivery(Box::new(request.clone())));
+        self
+    }
+    pub(crate) fn delivery_requirement(
+        &self,
+    ) -> Option<&crate::protocol::handoff::DeliveryMutation> {
+        match self.handoff_requirement.as_ref() {
+            Some(HandoffRequirement::Delivery(request)) => Some(request),
+            _ => None,
+        }
+    }
+    pub(crate) fn with_bootstrap_child(
+        mut self,
+        namespace: &crate::protocol::handoff::HandoffNamespace,
+        command: &crate::protocol::commands::PermitMutation,
+    ) -> Self {
+        self.handoff_requirement = Some(HandoffRequirement::BootstrapChild {
+            namespace: namespace.clone(),
+            command: Box::new(command.clone()),
+        });
+        self
+    }
+    pub(crate) fn handoff_requirement(&self) -> Option<&HandoffRequirement> {
+        self.handoff_requirement.as_ref()
+    }
+    pub(crate) fn cooperative_metadata(
+        &self,
+    ) -> (CallerClaim, CallBudget, Option<HandoffRequirement>) {
+        (
+            self.claim.clone(),
+            self.cooperative_budget.clone(),
+            self.handoff_requirement.clone(),
+        )
     }
     pub(crate) fn claim(&self) -> &CallerClaim {
         &self.claim

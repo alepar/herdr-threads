@@ -1,10 +1,10 @@
 //! Frozen bootstrap identity and transaction-local canonical persistence.
 //!
-//! A future daemon consumer must supply its actual daemon-selected namespace,
+//! The equipped daemon supplies its actual daemon-selected namespace,
 //! never a namespace inferred from a caller, original intent or frozen identity.
 //! Persistence/status never confer submission or receipt authority. The store-only
 //! attempts API reserves one-use authorization against A2 in its deciding transaction.
-//! Schema27 is registered; public dispatch/permits remain gated. Begin reuses
+//! Schema27 is registered; public dispatch requires the equipped runtime. Begin reuses
 //! existing live mapping/member guards in its caller transaction.
 use super::connection::api_error;
 use crate::protocol::{
@@ -93,10 +93,12 @@ pub fn compare_identity(
 mod attachment;
 pub mod attempts;
 mod persistence;
+mod runtime;
 pub use attachment::{attach_created, attach_pending, complete_linked_pending};
 pub(crate) use attachment::{
-    guard_bare_completion, guard_child_begin, guard_linked_begin, guard_unscoped_create,
-    validate_bootstrap_resolution, validate_create_command,
+    begin_selected_child, guard_bare_completion, guard_child_begin, guard_linked_begin,
+    guard_unscoped_child_phase, guard_unscoped_create, validate_bootstrap_resolution,
+    validate_create_command, validate_selected_child_phase,
 };
 pub use persistence::{
     MAX_ATTACHMENT_BYTES, MAX_COMPLETED_BYTES, MAX_CREATION_BYTES, MAX_RECOVERY_BYTES,

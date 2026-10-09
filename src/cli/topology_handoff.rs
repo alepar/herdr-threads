@@ -370,7 +370,9 @@ pub fn resume_to_attachment<
             ));
         }
         local.possible_creation = true;
-        local.creation = Some(created.clone());
+        // Canonical operator evidence is authority for downstream attachment,
+        // not a receipt of this client's original native submission. Retain
+        // the genuine saved request/witness and any matching actual receipt.
         save_bootstrap_progress(journal, reference, &local)?;
         return resolve_and_attach(&identity, &current, &call, &status);
     }
@@ -726,6 +728,52 @@ fn save_bootstrap_progress(
     super::handoff::save_progress(journal, reference, progress)?;
     Ok(())
 }
+/// Caller holds the original operation lock; retained bytes never become authority.
+pub(crate) fn saved_native_request(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+) -> Result<Option<crate::ports::CreateTabRequest>, RunError> {
+    Ok(
+        load_bootstrap_progress(journal, reference, identity)?
+            .and_then(|progress| progress.request),
+    )
+}
+/// Before publication, check the known eventual request-bearing envelope with
+/// the actual witnessed endpoint metadata and the actual serializer/cap.
+pub(crate) fn preflight_progress_capacity(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    witness: &crate::host::continuity::LocalEndpointWitness,
+) -> Result<(), RunError> {
+    let preview = BootstrapProgress {
+        version: 1,
+        identity: identity.clone(),
+        attempt: crate::protocol::handoff::BootstrapAttempt::first(),
+        possible_creation: true,
+        request: Some(crate::ports::CreateTabRequest {
+            correlation: crate::protocol::ids::HostCallId::new(uuid::Uuid::new_v4().to_string()),
+            workspace: identity.payload.workspace.clone(),
+            cwd: identity.payload.cwd.clone(),
+            label: identity.payload.label.clone(),
+            focus: identity.payload.focus,
+            env: identity.payload.env.clone(),
+            expected_witness: witness.clone(),
+        }),
+        creation: None,
+        not_submitted: false,
+    };
+    if serde_json::to_vec(&preview)
+        .map_err(std::io::Error::other)?
+        .len()
+        > MAX_BOOTSTRAP_PROGRESS
+    {
+        return Err(super::invalid_request(
+            "bootstrap request-bearing progress exceeds retained byte cap",
+        ));
+    }
+    Ok(())
+}
+
 fn load_bootstrap_progress(
     journal: &super::journal::Journal,
     reference: &super::journal::IntentRef,
@@ -895,7 +943,7 @@ fn close_not_submitted(
     }
     Ok(result)
 }
-fn creation_unknown(
+pub(crate) fn creation_unknown(
     reference: &super::journal::IntentRef,
     identity: &crate::protocol::handoff::BootstrapIdentity,
     attempt: crate::protocol::handoff::BootstrapAttempt,
@@ -1015,7 +1063,7 @@ fn load_child_progress(
     }
     Ok(saved.progress)
 }
-fn bootstrap_identity(
+pub(crate) fn bootstrap_identity(
     pending: &super::journal::PendingIntent,
 ) -> Result<crate::protocol::handoff::BootstrapIdentity, RunError> {
     let super::journal::SemanticMutation::Frozen { claim, mutation } = &pending.semantic else {
@@ -1471,6 +1519,67 @@ pub(crate) fn resume_to_writer<
         )?;
         current = status()?;
     }
+    present_completed(
+        journal, reference, &identity, current, retained, output, writer,
+    )
+}
+
+/// Exact terminal presentation precedes every fresh host or caller read.
+pub(crate) fn try_completed<C: crate::ports::LocalClient + ?Sized, W: std::io::Write>(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    clock: &dyn crate::protocol::time::Clock,
+    output: &crate::protocol::output::OutputSpec,
+    writer: &mut W,
+) -> Result<bool, RunError> {
+    use crate::protocol::{commands::Command, handoff::*, results::ErrorCode};
+    let pending = load_original(journal, reference)?;
+    if super::journal::classify_original_actor(&pending.header.scope, &pending.semantic)?
+        != super::journal::OriginalActor::Agent
+    {
+        return Err(super::invalid_request("bootstrap needs original agent"));
+    }
+    let identity = bootstrap_identity(&pending)?;
+    crate::store::topology_handoff::encode_identity(namespace, &identity)?;
+    let _lock = super::handoff::lock(journal, reference)?;
+    let retained = read_terminal(journal, reference)?;
+    let current = match client.call(
+        Command::BootstrapStatus(Box::new(BootstrapStatus {
+            identity: identity.clone(),
+        })),
+        &super::cooperative_budget(clock),
+    ) {
+        Ok(result) => bootstrap_result(&identity, result)?,
+        Err(error) if error.code == ErrorCode::NotFound && retained.is_none() => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    if current.state != BootstrapState::Completed {
+        if retained.is_some() {
+            return Err(super::invalid_request(
+                "bootstrap terminal lacks canonical completion",
+            ));
+        }
+        return Ok(false);
+    }
+    present_completed(
+        journal, reference, &identity, current, retained, output, writer,
+    )?;
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn present_completed<W: std::io::Write>(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    current: crate::protocol::handoff::BootstrapResult,
+    retained: Option<BootstrapTerminal>,
+    output: &crate::protocol::output::OutputSpec,
+    writer: &mut W,
+) -> Result<crate::protocol::handoff::BootstrapResult, RunError> {
+    use crate::protocol::handoff::*;
     let done = current
         .completed
         .as_ref()
@@ -1478,7 +1587,7 @@ pub(crate) fn resume_to_writer<
         .ok_or_else(|| {
             super::invalid_request("completed bootstrap requires retained successful report")
         })?;
-    validate_completed(&identity, done)?;
+    validate_completed(identity, done)?;
     if let Some(terminal) = retained {
         if !same_record(&terminal.completed, done.as_ref())? {
             return Err(super::invalid_request(

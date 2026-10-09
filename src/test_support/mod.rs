@@ -13,6 +13,12 @@ pub mod search_barrier;
 pub mod server_completion;
 pub mod spawn;
 
+/// Explicit authenticated-peer fixture for direct handler controls.
+/// Production peers are constructed only from the socket kernel credential.
+pub fn peer_identity(uid: u32) -> crate::protocol::authority::PeerIdentity {
+    crate::protocol::authority::PeerIdentity::from_kernel(uid)
+}
+
 /// The `Unsupported` rejection a fixture returns for a port route it does not serve.
 pub fn unserved(detail: &str) -> crate::protocol::results::ApiError {
     crate::protocol::results::ApiError::unsupported(detail)

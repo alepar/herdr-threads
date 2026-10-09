@@ -65,6 +65,11 @@ mod bootstrap_recovery {
     }
 
     #[test]
+    fn phase13_public_native_recovery_and_replay_use_real_handler() {
+        native_recovery_case("dispatch");
+    }
+
+    #[test]
     fn phase13_actual_native_distinct_reads_recover_without_relabeling() {
         native_recovery_case("valid");
     }
@@ -194,12 +199,13 @@ mod bootstrap_recovery {
         }
         let cli = Arc::new(cli);
         let store = Arc::new(store);
+        let fair_writer = Arc::new(crate::service::fair_writer::FairWriter::new(8));
         let identity = crate::identity::repair::OrdinaryIdentity::new(
             "i".into(),
             store.clone(),
             cli.clone(),
             cli.clock.clone(),
-            Arc::new(crate::service::fair_writer::FairWriter::new(8)),
+            fair_writer.clone(),
         );
         let mut evidence = evidence;
         match change {
@@ -245,6 +251,104 @@ mod bootstrap_recovery {
         };
         request.operation = request.decision_operation().unwrap();
         let frozen = serde_json::to_vec(&request).unwrap();
+        if change == "dispatch" {
+            struct ActualObserver {
+                cli: Arc<NativeCli>,
+                last: std::sync::Mutex<Option<HostCallId>>,
+            }
+            impl crate::ports::BootstrapObserver for ActualObserver {
+                fn observe_bootstrap_target(
+                    &self,
+                    target: &HostTargetId,
+                    context: &HostCallContext,
+                ) -> Result<BootstrapPaneObservation, ApiError> {
+                    let pane = crate::ports::BootstrapObserver::observe_bootstrap_target(
+                        self.cli.as_ref(),
+                        target,
+                        context,
+                    )?;
+                    *self.last.lock().unwrap() = Some(pane.observation().call_id.clone());
+                    Ok(pane)
+                }
+            }
+            let observer = Arc::new(ActualObserver {
+                cli: cli.clone(),
+                last: std::sync::Mutex::new(None),
+            });
+            let service = crate::service::dispatch::DomainService::with_identity(
+                "i".into(),
+                store.clone(),
+                cli.clock.clone(),
+                Arc::new(identity),
+            )
+            .with_operator_owner(501)
+            .with_cooperative_owner(501, fair_writer)
+            .with_bootstrap_runtime(
+                id.payload.handoff.namespace.clone(),
+                observer.clone(),
+                store.clone(),
+            )
+            .unwrap();
+            use crate::ports::LocalService;
+            let command =
+                crate::protocol::commands::Command::RecoverBootstrap(Box::new(request.clone()));
+            let result = service.handle(
+                command.clone(),
+                crate::test_support::peer_identity(501),
+                &context.budget,
+            );
+            worker.join().unwrap();
+            fs::remove_file(&socket).unwrap();
+            assert!(
+                matches!(
+                    &result,
+                    Ok(crate::protocol::results::CommandResult::BootstrapRecovered(
+                        _
+                    ))
+                ),
+                "actual public native recovery: {result:?}"
+            );
+            let BootstrapRecoveryDisposition::CreatedPane {
+                structural_reference,
+                ..
+            } = &request.disposition
+            else {
+                unreachable!()
+            };
+            assert_ne!(
+                observer.last.lock().unwrap().as_ref().unwrap(),
+                structural_reference
+            );
+            let saved: Vec<u8> = db
+                .query_row(
+                    "SELECT result_json FROM bootstrap_recovery_decisions",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            db.execute_batch("UPDATE host_instances SET lifecycle_revision=lifecycle_revision+7; DELETE FROM observed_targets").unwrap();
+            // The socket is gone: replay must precede any host read.
+            assert_eq!(
+                service.handle(
+                    command,
+                    crate::test_support::peer_identity(501),
+                    &context.budget
+                ),
+                result
+            );
+            assert_eq!(
+                db.query_row::<Vec<u8>, _, _>(
+                    "SELECT result_json FROM bootstrap_recovery_decisions",
+                    [],
+                    |r| r.get(0)
+                )
+                .unwrap(),
+                saved
+            );
+            assert_eq!(serde_json::to_vec(&request).unwrap(), frozen);
+            return;
+        }
+
         if change == "live_metadata" {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(&socket).unwrap().permissions().mode();

@@ -1216,7 +1216,7 @@ struct HandoffArgs {
 }
 
 #[derive(Args)]
-#[command(about = "Administrative inspection assertion for one exact bootstrap attempt; public execution awaits canonical guards", group(clap::ArgGroup::new("disposition").required(true).multiple(false).args(["created_pane", "not_created", "cancel"])))]
+#[command(about = "Administrative inspection assertion for one exact bootstrap attempt; execution requires the guarded daemon capability", group(clap::ArgGroup::new("disposition").required(true).multiple(false).args(["created_pane", "not_created", "cancel"])))]
 struct RecoveryArgs {
     reference: String,
     #[arg(long, required = true)]
@@ -2391,8 +2391,8 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
     })
 }
 
-/// Neutral gate until canonical guards and the actual original-actor classifier
-/// are integrated. Never infer actor from current binding or recovery argv.
+/// Generic cooperative dispatch cannot execute topology modes; the explicit guarded
+/// production composition owns these routes. Never infer original actor from argv.
 pub fn reject_inert_handoff(
     semantic: &super::journal::SemanticMutation,
 ) -> Result<(), crate::protocol::results::ApiError> {

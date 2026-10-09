@@ -869,6 +869,7 @@ where
         shutdown,
         config,
         host,
+        None,
         LaneProbe::default(),
         on_ready,
     )
@@ -891,15 +892,76 @@ pub async fn run_elected_probed<R>(
 where
     R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
 {
-    run_elected_impl(paths, clock, shutdown, config, host, probe, on_ready).await
+    run_elected_impl(paths, clock, shutdown, config, host, None, probe, on_ready).await
 }
 
+/// Production native composition retains its required scoped observer before erasure.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_elected_guarded<R>(
+    paths: &InstancePaths,
+    context: &crate::daemon::paths::RuntimeContext,
+    clock: Arc<dyn Clock>,
+    shutdown: Cancellation,
+    config: ServiceConfig,
+    host: Arc<dyn HostPort>,
+    observer: Arc<dyn crate::ports::BootstrapObserver>,
+    on_ready: R,
+) -> io::Result<bool>
+where
+    R: FnOnce(&EndpointDescriptor) -> io::Result<()>,
+{
+    let selected_paths = InstancePaths::resolve_read_only(context)?;
+    if selected_paths.instance_dir.as_os_str() != paths.instance_dir.as_os_str()
+        || selected_paths.locator != paths.locator
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "guarded runtime paths differ from selected context",
+        ));
+    }
+    if host.native_launch_capability() != crate::ports::NativeLaunchCapability::HostGuardedStart {
+        return run_elected_impl(
+            paths,
+            clock,
+            shutdown,
+            config,
+            host,
+            None,
+            LaneProbe::default(),
+            on_ready,
+        )
+        .await;
+    }
+    let selected = (
+        context.state_dir.clone(),
+        context.host_endpoint.clone(),
+        observer,
+    );
+    run_elected_impl(
+        paths,
+        clock,
+        shutdown,
+        config,
+        host,
+        Some(selected),
+        LaneProbe::default(),
+        on_ready,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_elected_impl<R>(
     paths: &InstancePaths,
     clock: Arc<dyn Clock>,
     shutdown: Cancellation,
     config: ServiceConfig,
     host: Arc<dyn HostPort>,
+    bootstrap: Option<(
+        std::path::PathBuf,
+        std::path::PathBuf,
+        Arc<dyn crate::ports::BootstrapObserver>,
+    )>,
     probe: LaneProbe,
     on_ready: R,
 ) -> io::Result<bool>
@@ -976,6 +1038,7 @@ where
                     .with_commit_kicks(Arc::clone(&kicks)),
             );
             factory_probe.attach_store(&sqlite);
+            let bootstrap_store = sqlite.clone();
             let store: Arc<dyn StorePort> = sqlite;
             // The manifest policy, logged after election (stderr is the daemon
             // log from here on).
@@ -1208,7 +1271,7 @@ where
             let evidence_store = Arc::clone(&store);
             let states_store = Arc::clone(&store);
             let health_clock = Arc::clone(&factory_clock);
-            let domain = DomainService::with_identity(
+            let mut domain = DomainService::with_identity(
                 instance.to_string(),
                 store,
                 Arc::clone(&factory_clock),
@@ -1216,6 +1279,19 @@ where
             )
             .with_operator_owner(crate::daemon::paths::effective_uid())
             .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer);
+            if let Some((state_dir, host_endpoint, observer)) = &bootstrap {
+                domain = domain
+                    .with_bootstrap_runtime(
+                        crate::protocol::handoff::HandoffNamespace {
+                            instance: instance.to_string(),
+                            state_dir: state_dir.clone(),
+                            host_endpoint: host_endpoint.clone(),
+                        },
+                        observer.clone(),
+                        bootstrap_store,
+                    )
+                    .map_err(|error| io::Error::other(error.detail))?;
+            }
             let stop = StopController::new(instance, boot, cancellation);
             let provider = elected_health_provider(
                 instance,
@@ -1267,8 +1343,14 @@ where
                     Arc::clone(&factory_clock),
                 ),
             );
-            Ok(Arc::new(
+            let control = if bootstrap.is_some() {
+                ControlService::new_guarded(stop, health, domain)
+                    .map_err(|error| io::Error::other(error.detail))?
+            } else {
                 ControlService::new(stop, health, domain)
+            };
+            Ok(Arc::new(
+                control
                     .with_hook_parse_failures(factory_parse_failures)
                     .with_harness_evidence(harness_evidence)
                     .with_harness_states(states)

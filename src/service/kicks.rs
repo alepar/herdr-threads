@@ -92,6 +92,7 @@ const ARCHIVAL_TABLES: &[&str] = &[
     "channel_archival",
     "seat_archival",
     "channel_handoff_fences",
+    "bootstrap_handoffs",
 ];
 /// Tables whose commits wake the wake lane (spec D1).
 const WAKE_TABLES: &[&str] = &[
@@ -124,6 +125,12 @@ const DEADLINE_TABLES: &[&str] = &[
 /// lane). A new table must be added to one list; the exhaustive
 /// classification test fails until it is.
 pub const KNOWN_UNMAPPED: &[&str] = &[
+    // Bootstrap proof/history transitions also update the archival barrier parent.
+    "bootstrap_child_keys",
+    "bootstrap_attempts",
+    "bootstrap_recovery_decisions",
+    "bootstrap_attachments",
+    "bootstrap_reports",
     "allocation_decisions",
     "delivery_observations",
     "digest_notice_offer",
@@ -139,6 +146,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "harness_contract_diagnostics",
     "harness_unattributed",
     "harness_version_evidence",
+    // SQL26 retained rows have no active lane consumer in this composition.
+    "lazy_recipients",
     "host_instances",
     "membership_intervals",
     "memberships",

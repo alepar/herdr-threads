@@ -317,6 +317,40 @@ fn record_failure(
         status(tx, ns, id)
     })
 }
+/// Exact validated historical decision lookup; no observation or new decision.
+pub(crate) fn recovery_replay(
+    db: &Connection,
+    ns: &HandoffNamespace,
+    request: &RecoverBootstrap,
+) -> Result<Option<BootstrapRecoveryResult>, ApiError> {
+    request.disposition.validate().map_err(invalid)?;
+    if request.operation != request.decision_operation().map_err(invalid)? {
+        return Err(api_error(
+            ErrorCode::OperationPayloadMismatch,
+            "bootstrap recovery decision key mismatch",
+        ));
+    }
+    let result = status(db, ns, &request.identity)?;
+    let (parent, _) = parent(db, ns, &request.identity)?;
+    let saved = decision_history(
+        db,
+        ns,
+        &request.identity,
+        parent,
+        &result,
+        request.expected_attempt,
+    )?
+    .into_iter()
+    .find(|r| r.operation == request.operation);
+    if saved
+        .as_ref()
+        .is_some_and(|saved| !same(&saved.disposition, &request.disposition).unwrap_or(false))
+    {
+        return Err(corrupt());
+    }
+    Ok(saved)
+}
+
 /// Recovery is a local-account assertion under the caller-held normal operation
 /// lock. UID comes from the daemon's authenticated peer, never wire payload.
 /// CreatedPane additionally consumes store-admitted fresh structural evidence.
@@ -337,21 +371,7 @@ pub fn recover(
     }
     let result = status(tx, ns, &request.identity)?;
     let (parent, revision) = parent(tx, ns, &request.identity)?;
-    let decisions = decision_history(
-        tx,
-        ns,
-        &request.identity,
-        parent,
-        &result,
-        request.expected_attempt,
-    )?;
-    if let Some(saved) = decisions
-        .into_iter()
-        .find(|r| r.operation == request.operation)
-    {
-        if !same(&saved.disposition, &request.disposition)? {
-            return Err(corrupt());
-        }
+    if let Some(saved) = recovery_replay(tx, ns, request)? {
         return Ok(saved);
     }
     active(&result, request.expected_attempt)?;
