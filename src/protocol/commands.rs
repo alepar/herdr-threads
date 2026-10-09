@@ -1032,6 +1032,8 @@ pub enum PermitMutation {
     SendMessage(SendMessage),
     Ack(Ack),
     AckDisplayed(Ack),
+    /// Mod delivery ack (spec D6): settles per id under the daemon's decision.
+    AckModDelivered(AckModDelivered),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
     Leave(Leave),
@@ -1056,6 +1058,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::SendMessage(v) => Ok(Self::SendMessage(v)),
             Command::Ack(v) => Ok(Self::Ack(v)),
             Command::AckDisplayed(v) => Ok(Self::AckDisplayed(v)),
+            Command::AckModDelivered(v) => Ok(Self::AckModDelivered(v)),
             Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),

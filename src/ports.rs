@@ -2421,6 +2421,18 @@ pub trait StorePort: Send + Sync {
         command: crate::protocol::commands::RecordManagedLaunch,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// Read-only (spec D6): the seat's open binding and the binding row that
+    /// immediately precedes it, for the `AckModDelivered` pre-decision. `None`
+    /// when the seat has no open binding. A hint for classification only; the
+    /// deciding transaction re-checks the claim against the canonical view (A2).
+    fn mod_ack_binding(
+        &self,
+        _instance: &str,
+        _seat: &crate::protocol::ids::SeatId,
+        _budget: &CallBudget,
+    ) -> Result<Option<ModAckBinding>, ApiError> {
+        Ok(None)
+    }
     /// Local durable validation only; implementations must not invent native proof.
     fn issue_cooperative_permit(
         &self,
@@ -2952,6 +2964,19 @@ pub struct ModChannelRegistration {
     pub native_session: NativeSessionId,
     pub harness: Harness,
     pub registered_at: UtcMillis,
+}
+
+/// The open binding of a seat plus its immediate predecessor (spec D6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModAckBinding {
+    pub generation: u64,
+    pub provenance: String,
+    pub harness: String,
+    pub native_session: crate::protocol::ids::NativeSessionId,
+    pub execution: crate::protocol::ids::ExecutionId,
+    pub target: crate::protocol::ids::HostTargetId,
+    /// The preceding binding row of the seat: its generation and native session.
+    pub previous: Option<(u64, crate::protocol::ids::NativeSessionId)>,
 }
 
 /// Where the registry pushes frames for one connection; `false`: it is gone.
