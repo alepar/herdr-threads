@@ -96,7 +96,7 @@ fn prepared(
             namespace: &namespace,
             topology: &topology(),
             invocation_cwd: root,
-            options: Some("--config 'quoted $HOME' $(literal)".into()),
+            options: Some("--config 'quoted $HOME' --config '$(literal)'".into()),
             client: &ReadOnly,
             clock: &crate::app::SystemClock::new(),
         },
@@ -113,6 +113,7 @@ fn publication_freezes_route_argv_caller_and_channel() {
         vec![
             "--config",
             "quoted $HOME",
+            "--config",
             "$(literal)",
             "--model",
             "saved value"
@@ -2442,6 +2443,74 @@ mod live {
         unknown(downstream(&f, &mut launcher, &mut vec![]));
         assert_downstream_once(&f, &launcher);
     }
+
+    // Dropping execute_steps' phase/report would hide durable prestart refusal.
+    #[test]
+    fn final_sdd_pending_proven_not_submitted_preserves_phase_and_manual_frozen_argv() {
+        let f = Fixture::downstream(Fault::None);
+        let mut launcher = DownstreamLauncher {
+            not_submitted: true,
+            ..Default::default()
+        };
+        let mut bytes = vec![];
+        assert!(downstream(&f, &mut launcher, &mut bytes).is_err());
+        let frame: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("admitted refusal must report known progress");
+        let report = &frame["bootstrap"];
+        assert_eq!(report["phase"], "launch");
+        assert_eq!(report["outcome"], "pending");
+        assert_eq!(report["possible_start"], false);
+        assert!(report["thread"].is_string());
+        assert!(!report["message"].is_null());
+        let manual = report["manual_launch_after_confirming_no_start_argv"]
+            .as_array()
+            .unwrap();
+        assert!(manual.iter().any(|arg| arg == "saved value"));
+        assert_eq!(f.peer.status().state, BootstrapState::Attached);
+        assert!(child_progress_path(&f.journal, &f.peer.reference).exists());
+        assert!(!terminal_path(&f.journal, &f.peer.reference).exists());
+        downstream(&f, &mut launcher, &mut vec![]).unwrap();
+        assert_downstream_once(&f, &launcher);
+    }
+    #[test]
+    fn final_sdd_pending_write_and_flush_loss_preserve_possible_start_and_retry() {
+        for write in [true, false] {
+            let f = Fixture::downstream(Fault::None);
+            let mut launcher = DownstreamLauncher {
+                unknown: true,
+                ..Default::default()
+            };
+            let mut output = FailingOutput {
+                bytes: vec![],
+                write,
+            };
+            let error = downstream(&f, &mut launcher, &mut output).unwrap_err();
+            assert!(
+                matches!(error, RunError::Io(_)),
+                "pending reporting must exercise writer: {error:?}"
+            );
+            if !write {
+                assert!(!output.bytes.is_empty());
+            }
+            assert_eq!(f.peer.status().state, BootstrapState::Attached);
+            assert!(child_progress_path(&f.journal, &f.peer.reference).exists());
+            assert!(
+                f.journal
+                    .root()
+                    .join(format!("{}.intent", f.peer.reference.operation.as_str()))
+                    .exists()
+                    || load_original(&f.journal, &f.peer.reference).is_ok()
+            );
+            assert!(!terminal_path(&f.journal, &f.peer.reference).exists());
+            launcher.unknown = false;
+            let mut bytes = vec![];
+            unknown(downstream(&f, &mut launcher, &mut bytes));
+            let frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(frame["bootstrap"]["outcome"], "possible_start");
+            assert_downstream_once(&f, &launcher);
+        }
+    }
+
     struct FailingOutput {
         bytes: Vec<u8>,
         write: bool,

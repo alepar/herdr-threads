@@ -1809,15 +1809,12 @@ impl NativeLaunchRequest {
     /// Largest total of all native arguments.
     pub const MAX_ARGV_BYTES: usize = 32 * 1024;
 
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.argv.len() > 64 {
+    /// Validate the same native argument geometry before allocating launch effects.
+    pub fn validate_argv(argv: &[String]) -> Result<(), &'static str> {
+        if argv.len() > 64 {
             return Err("invalid native launch request: more than 64 native arguments");
         }
-        if self
-            .argv
-            .iter()
-            .any(|arg| arg.is_empty() || arg.contains('\0'))
-        {
+        if argv.iter().any(|arg| arg.is_empty() || arg.contains('\0')) {
             return Err(
                 "invalid native launch request: an empty native argument or one containing NUL",
             );
@@ -1825,8 +1822,7 @@ impl NativeLaunchRequest {
         // Herdr starts the agent by typing its command line into the pane's
         // shell, so a line break would submit a truncated command and the start
         // is never confirmed (observed: outcome_unknown with nothing started).
-        if self
-            .argv
+        if argv
             .iter()
             .any(|arg| arg.contains('\n') || arg.contains('\r'))
         {
@@ -1834,14 +1830,19 @@ impl NativeLaunchRequest {
                 "invalid native launch request: a native argument contains a line break; Herdr starts agents through the pane's shell, so pass the prompt on one line (or put it in a file and ask the agent to read it)",
             );
         }
-        if self.argv.iter().any(|arg| arg.len() > Self::MAX_ARG_BYTES) {
+        if argv.iter().any(|arg| arg.len() > Self::MAX_ARG_BYTES) {
             return Err(
                 "invalid native launch request: a native argument is over 16 KiB (put a long prompt in a file and ask the agent to read it)",
             );
         }
-        if self.argv.iter().map(String::len).sum::<usize>() > Self::MAX_ARGV_BYTES {
+        if argv.iter().map(String::len).sum::<usize>() > Self::MAX_ARGV_BYTES {
             return Err("invalid native launch request: native arguments total over 32 KiB");
         }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        Self::validate_argv(&self.argv)?;
         if self.expected_incarnation.is_empty()
             || self.expected_incarnation.len() > 128
             || self.configured_hook.scope.is_empty()

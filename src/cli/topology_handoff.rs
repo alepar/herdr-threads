@@ -214,7 +214,46 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
     };
     identity.digest = identity.semantic_digest().map_err(fail)?;
     identity.validate().map_err(fail)?;
+    preflight_launch_argv(&identity)?;
     Ok(identity)
+}
+
+/// Fresh public preparation only: never replace or reinterpret a retained original.
+fn preflight_launch_argv(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+) -> Result<(), RunError> {
+    use crate::protocol::{handoff::HandoffChannel, ids::ThreadId};
+    let namespace = &identity.payload.handoff.namespace;
+    let context = crate::protocol::output::ContinuationContext {
+        state_dir: Some(namespace.state_dir.to_string_lossy().into_owned()),
+        host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
+    };
+    // A new thread's identifier is not allocated yet. Reserve the longest legal
+    // identifier; no future random identifier may make the saved argv unlaunchable.
+    let longest = ThreadId::new("t".repeat(128));
+    let thread = match &identity.payload.handoff.channel {
+        HandoffChannel::Existing { thread } => thread,
+        HandoffChannel::New { .. } => &longest,
+    };
+    let mut argv = identity.payload.launch.argv.clone();
+    argv.push(super::handoff::bootstrap(
+        thread,
+        &context,
+        &identity.claim.instance,
+    ));
+    // Supported production hooks own no native args. This is the same composition
+    // and geometry used by prepare_managed, including Codex grammar validation.
+    let argv =
+        crate::harness::launch::compose_native_argv(identity.payload.launch.harness, argv, vec![])?;
+    crate::ports::NativeLaunchRequest::validate_argv(&argv).map_err(super::invalid_request)?;
+    // The retained successful report has a tighter per-argument ceiling than
+    // the native transport, including its generated prompt. Keep both contracts.
+    if argv.iter().any(|arg| arg.len() > 4096) {
+        return Err(super::invalid_request(
+            "bootstrap native argument exceeds retained report limit",
+        ));
+    }
+    Ok(())
 }
 
 /// Atomic journal publication uses the established allocator/lock/fsync contract.
@@ -1356,10 +1395,17 @@ pub(crate) fn resume_to_writer<
             v.state,
             BootstrapState::Attached | BootstrapState::Completed
         )
-    }) {
-        super::retry::run_bootstrap_retry(
-            journal, reference, actor, namespace, client, native, clock, submission,
-        )?;
+    }) && let Err(error) = super::retry::run_bootstrap_retry(
+        journal, reference, actor, namespace, client, native, clock, submission,
+    ) {
+        if reportable_failure(&error)
+            && let Ok(current) = status()
+        {
+            write_pending(
+                reference, &identity, &current, None, "creation", output, writer,
+            )?;
+        }
+        return Err(error);
     }
     let _lock = super::handoff::lock(journal, reference)?;
     let retained = read_terminal(journal, reference)?;
@@ -1399,7 +1445,7 @@ pub(crate) fn resume_to_writer<
                 "bootstrap child progress contradicts canonical thread",
             ));
         }
-        let (_, attempt) = super::handoff::execute_steps(
+        let (phase, attempt) = super::handoff::execute_steps(
             &plan,
             &identity.claim,
             &mut progress,
@@ -1456,10 +1502,32 @@ pub(crate) fn resume_to_writer<
                 .as_ref()
                 .is_none_or(|v| v["outcome"] != "started")
         {
+            write_pending(
+                reference,
+                &identity,
+                &current,
+                Some(&progress),
+                phase,
+                output,
+                writer,
+            )?;
             return Err(crate::protocol::results::ApiError::unknown_outcome(format!("bootstrap {} downstream possible start; inspect exact pane {} and seat {}; no automatic launch",reference.recovery_ref(),attachment.created.root_pane.as_str(),attachment.resolved_seat.as_str())).into());
         }
-        attempt?;
-        super::handoff::complete_with(
+        if let Err(error) = attempt {
+            if reportable_failure(&error) {
+                write_pending(
+                    reference,
+                    &identity,
+                    &current,
+                    Some(&progress),
+                    phase,
+                    output,
+                    writer,
+                )?;
+            }
+            return Err(error);
+        }
+        if let Err(error) = super::handoff::complete_with(
             &attachment.handoff,
             identity.payload.handoff.keys.complete.clone(),
             &progress,
@@ -1545,12 +1613,166 @@ pub(crate) fn resume_to_writer<
                 }
                 Ok(())
             },
-        )?;
+        ) {
+            if reportable_failure(&error) {
+                write_pending(
+                    reference,
+                    &identity,
+                    &current,
+                    Some(&progress),
+                    "complete",
+                    output,
+                    writer,
+                )?;
+            }
+            return Err(error);
+        }
         current = status()?;
     }
     present_completed(
         journal, reference, &identity, current, retained, output, writer,
     )
+}
+
+fn reportable_failure(error: &RunError) -> bool {
+    use crate::protocol::results::ErrorCode;
+    !matches!(error, RunError::Api(e) if matches!(e.code,
+        ErrorCode::Unauthorized | ErrorCode::CallerUnverified | ErrorCode::InstanceMismatch
+        | ErrorCode::OperationPayloadMismatch))
+}
+
+/// Presentation of admitted history only. These commands confer no admission,
+/// ownership, noncreation or quiescence; every deciding path rechecks its guards.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_pending<W: std::io::Write>(
+    reference: &super::journal::IntentRef,
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+    current: &crate::protocol::handoff::BootstrapResult,
+    progress: Option<&super::handoff::Progress>,
+    phase: &str,
+    output: &crate::protocol::output::OutputSpec,
+    writer: &mut W,
+) -> Result<(), RunError> {
+    use crate::protocol::handoff::BootstrapState;
+    if current.compound != identity.compound
+        || matches!(
+            current.state,
+            BootstrapState::Completed | BootstrapState::Cancelled
+        )
+    {
+        return Err(super::invalid_request("pending bootstrap status differs"));
+    }
+    let namespace = &identity.payload.handoff.namespace;
+    let context = crate::protocol::output::ContinuationContext {
+        state_dir: Some(namespace.state_dir.to_string_lossy().into_owned()),
+        host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
+    };
+    let prefix = super::hook::cli_prefix(&context);
+    let mut retry = vec![
+        "env".into(),
+        format!("HERDR_PANE_ID={}", identity.claim.target.as_str()),
+    ];
+    retry.extend(prefix.clone());
+    retry.extend(["retry".into(), reference.recovery_ref()]);
+    let mut inspect = prefix.clone();
+    inspect.push("pending".into());
+    let unknown_creation =
+        current.state == BootstrapState::PossibleCreation && current.creation.is_none();
+    let possible_start = progress.is_some_and(|p| {
+        p.possible_start && p.launch.as_ref().is_none_or(|v| v["outcome"] != "started")
+    });
+    let started =
+        progress.is_some_and(|p| p.launch.as_ref().is_some_and(|v| v["outcome"] == "started"));
+    let mut report = serde_json::json!({
+        "phase":phase,"failed":true,
+        "outcome":if unknown_creation {"creation_unknown"} else if possible_start {"possible_start"} else if started {"completion_pending"} else {"pending"},
+        "namespace":namespace,"recovery_ref":reference.recovery_ref(),"bootstrap_compound":identity.compound,
+        "attempt":current.attempt,"state":current.state,"attempt_state":current.attempt_state,"status_is_last_observed":true,
+        "workspace":identity.payload.workspace,"creation":current.creation,
+        "tab":current.creation.as_ref().map(|v| &v.tab),"pane":current.creation.as_ref().map(|v| &v.root_pane),
+        "seat":current.attachment.as_ref().map(|v| &v.resolved_seat),
+        "child_compound":current.attachment.as_ref().map(|v| &v.handoff.compound),
+        "possible_start":possible_start,"thread":null,"invitation":null,"message":null,
+        "retry_argv":retry,"inspect_argv":inspect,
+        "manual_launch_after_confirming_no_start_argv":null,"conditional_human_recovery":null,
+        "guidance":"Fields are last confirmed observations; null means unknown, not proof of nonexecution. Inspect this exact namespace and attempt. Retry never proves noncreation or no start. Do not launch manually unless inspection confirms no start. No automatic topology cleanup, launch, invitation acceptance or ACK."
+    });
+    if let (Some(attachment), Some(progress)) = (&current.attachment, progress) {
+        let plan = attached_handoff_plan(identity, attachment)?;
+        let legacy = super::handoff::report(
+            reference,
+            &plan,
+            progress,
+            phase,
+            true,
+            possible_start,
+            &identity.claim,
+        );
+        for key in ["thread", "invitation", "message"] {
+            report[key] = legacy[key].clone();
+        }
+        report["seat_inspect_argv"] = legacy["inspect_argv"].clone();
+        if !started && progress.thread.is_some() {
+            report["manual_launch_after_confirming_no_start_argv"] =
+                legacy["manual_launch_after_confirming_no_start_argv"].clone();
+        }
+    }
+    if unknown_creation {
+        let mut human = prefix;
+        human.insert(1, "human".into());
+        human.extend([
+            "handoff".into(),
+            "recover".into(),
+            reference.recovery_ref(),
+            "--attempt".into(),
+            current.attempt.get().to_string(),
+        ]);
+        let mut created = human.clone();
+        created.extend([
+            "--created-pane".into(),
+            "REPLACE_WITH_EXACT_INSPECTED_PANE".into(),
+        ]);
+        let mut absent = human.clone();
+        absent.push("--not-created".into());
+        human.extend([
+            "--cancel".into(),
+            "--reason".into(),
+            "REPLACE_WITH_INSPECTED_QUIESCENCE_REASON".into(),
+        ]);
+        report["conditional_human_recovery"] = serde_json::json!({
+            "conditions":"The operator must first inspect exact original namespace/attempt and exclude an in-flight invocation. Use created-pane only for an inspected exact pane; not-created only after confirming noncreation and quiescence; cancel only after confirming quiescence and no protected downstream child. These templates are alternatives, not automatic actions.",
+            "created_pane_argv":created,"not_created_argv":absent,"cancel_argv":human
+        });
+    }
+    let bytes = if output.format == crate::protocol::output::OutputFormat::Json {
+        format!("{}\n", serde_json::json!({"bootstrap":report})).into_bytes()
+    } else {
+        // Render commands with real shell quoting, retaining JSON argv arrays above.
+        let map = report.as_object_mut().unwrap();
+        for (key, value) in map.iter_mut() {
+            if key.ends_with("_argv")
+                && let Ok(argv) = serde_json::from_value::<Vec<String>>(value.clone())
+            {
+                *value = crate::protocol::output::format_command_argv(&argv).into();
+            }
+        }
+        if let Some(recovery) = report["conditional_human_recovery"].as_object_mut() {
+            for (key, value) in recovery.iter_mut() {
+                if key.ends_with("_argv")
+                    && let Ok(argv) = serde_json::from_value::<Vec<String>>(value.clone())
+                {
+                    *value = crate::protocol::output::format_command_argv(&argv).into();
+                }
+            }
+        }
+        super::setup::render_text(&report).into_bytes()
+    };
+    if bytes.len() > 1024 * 1024 {
+        return Err(super::invalid_request("oversized bootstrap pending report"));
+    }
+    writer.write_all(&bytes)?;
+    writer.flush()?;
+    Ok(())
 }
 
 /// Exact terminal presentation precedes every fresh host or caller read.
