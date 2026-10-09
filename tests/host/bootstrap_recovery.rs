@@ -67,6 +67,7 @@ mod bootstrap_recovery {
     #[test]
     fn phase13_public_native_recovery_and_replay_use_real_handler() {
         native_recovery_case("dispatch");
+        native_recovery_case("old_dispatch");
     }
 
     #[test]
@@ -241,6 +242,14 @@ mod bootstrap_recovery {
             })
             .unwrap();
         let mut request = RecoverBootstrap {
+            inspection: Some(
+                BootstrapRecoveryInspection::from_status(
+                    &topology_handoff::current(&db, &id.payload.handoff.namespace, &id)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap(),
+            ),
             identity: id.clone(),
             expected_attempt: BootstrapAttempt::first(),
             operation: id.compound.clone(),
@@ -251,7 +260,7 @@ mod bootstrap_recovery {
         };
         request.operation = request.decision_operation().unwrap();
         let frozen = serde_json::to_vec(&request).unwrap();
-        if change == "dispatch" {
+        if matches!(change, "dispatch" | "old_dispatch") {
             struct ActualObserver {
                 cli: Arc<NativeCli>,
                 last: std::sync::Mutex<Option<HostCallId>>,
@@ -290,6 +299,95 @@ mod bootstrap_recovery {
             )
             .unwrap();
             use crate::ports::LocalService;
+            if change == "old_dispatch" {
+                // Seed a genuine old committed None-shaped assertion. Complete
+                // the fixture's last capture first; replay runs with no socket.
+                scoped_read(&cli, &context);
+                worker.join().unwrap();
+                fs::remove_file(&socket).unwrap();
+                request.inspection = None;
+                request.operation = request.decision_operation().unwrap();
+                let BootstrapRecoveryDisposition::CreatedPane { evidence, .. } =
+                    &request.disposition
+                else {
+                    unreachable!()
+                };
+                let saved = BootstrapRecoveryResult {
+                    inspection: None,
+                    identity: id.clone(),
+                    attempt: request.expected_attempt,
+                    operation: request.operation.clone(),
+                    disposition: request.disposition.clone(),
+                    operator_uid: 501,
+                    operator_provenance: "operator:local-user:501".into(),
+                    creation: Some(evidence.clone()),
+                    state: BootstrapState::Created,
+                };
+                let tx = db.transaction().unwrap();
+                tx.execute("UPDATE bootstrap_attempts SET state='created',creation_json=?1 WHERE parent_id=1 AND attempt=1", [serde_json::to_vec(evidence).unwrap()]).unwrap();
+                tx.execute("INSERT INTO bootstrap_recovery_decisions(parent_id,attempt,operation,result_json,decision_kind) VALUES(1,1,?1,?2,'recovery')", rusqlite::params![request.operation.as_str(),serde_json::to_vec(&saved).unwrap()]).unwrap();
+                tx.execute("UPDATE bootstrap_handoffs SET state='created',latest_recovery_operation=?1,administrative_revision=1 WHERE id=1", [request.operation.as_str()]).unwrap();
+                tx.commit().unwrap();
+                db.execute_batch("UPDATE host_instances SET lifecycle_revision=lifecycle_revision+7; DELETE FROM observed_targets").unwrap();
+                let raw: Vec<u8> = db
+                    .query_row(
+                        "SELECT result_json FROM bootstrap_recovery_decisions",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                let frozen_old = serde_json::to_vec(&request).unwrap();
+                let result = service
+                    .handle(
+                        crate::protocol::commands::Command::RecoverBootstrap(Box::new(
+                            request.clone(),
+                        )),
+                        crate::test_support::peer_identity(501),
+                        &context.budget,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    result,
+                    crate::protocol::results::CommandResult::BootstrapRecovered(Box::new(saved))
+                );
+                assert!(
+                    observer.last.lock().unwrap().is_none(),
+                    "old committed replay must precede binding and observer checks"
+                );
+                assert_eq!(
+                    db.query_row(
+                        "SELECT result_json FROM bootstrap_recovery_decisions",
+                        [],
+                        |r| r.get::<_, Vec<u8>>(0)
+                    )
+                    .unwrap(),
+                    raw
+                );
+                assert_eq!(serde_json::to_vec(&request).unwrap(), frozen_old);
+                return;
+            }
+            let mut missing = request.clone();
+            missing.inspection = None;
+            missing.operation = missing.decision_operation().unwrap();
+            let refused = service.handle(
+                crate::protocol::commands::Command::RecoverBootstrap(Box::new(missing)),
+                crate::test_support::peer_identity(501),
+                &context.budget,
+            );
+            assert!(refused.is_err());
+            assert!(
+                observer.last.lock().unwrap().is_none(),
+                "unbound undecided CreatedPane must refuse before observer"
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM bootstrap_recovery_decisions",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
             let command =
                 crate::protocol::commands::Command::RecoverBootstrap(Box::new(request.clone()));
             let result = service.handle(

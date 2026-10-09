@@ -244,6 +244,17 @@ impl DomainService {
                     return Ok(CommandResult::BootstrapRecovered(Box::new(saved)));
                 }
             }
+            request
+                .inspection
+                .as_ref()
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidRequest,
+                        "undecided recovery needs retained canonical inspection",
+                    )
+                })?
+                .validate()
+                .map_err(|detail| error(ErrorCode::InvalidRequest, detail))?;
             if let crate::protocol::handoff::BootstrapRecoveryDisposition::CreatedPane {
                 evidence,
                 ..

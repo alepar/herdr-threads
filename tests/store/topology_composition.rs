@@ -4,8 +4,20 @@ use super::*;
 use crate::store::topology_handoff::attempts::recover;
 use std::sync::mpsc;
 
-fn cancellation_request(id: &BootstrapIdentity, a: &BootstrapAttachment) -> RecoverBootstrap {
+fn cancellation_request(
+    db: &Connection,
+    id: &BootstrapIdentity,
+    a: &BootstrapAttachment,
+) -> RecoverBootstrap {
     let mut request = RecoverBootstrap {
+        inspection: Some(
+            BootstrapRecoveryInspection::from_status(
+                &topology_handoff::current(db, &id.payload.handoff.namespace, id)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap(),
+        ),
         identity: id.clone(),
         expected_attempt: a.attempt,
         operation: OperationId::new("placeholder"),
@@ -46,7 +58,7 @@ fn real_attached() -> AttachmentFixture {
 fn topology_composition_real_cancel_and_namespace_begin_serialize_in_both_orders() {
     for cancel_first in [true, false] {
         let (_context, mut db, path, store, _observation, _budget, id, a) = real_attached();
-        let request = cancellation_request(&id, &a);
+        let request = cancellation_request(&db, &id, &a);
         let ns = id.payload.handoff.namespace.clone();
         let first = db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -153,7 +165,7 @@ fn topology_composition_late_cancel_and_begin_failures_preserve_opposite_decisio
     for fail_cancel in [true, false] {
         let (_context, mut db, path, store, _observation, _budget, id, a) = real_attached();
         let ns = &id.payload.handoff.namespace;
-        let request = cancellation_request(&id, &a);
+        let request = cancellation_request(&db, &id, &a);
         if fail_cancel {
             db.execute_batch("CREATE TEMP TRIGGER fail_cancel BEFORE UPDATE OF state ON bootstrap_handoffs WHEN NEW.state='cancelled' BEGIN SELECT RAISE(ABORT,'cancel late fixture failure'); END").unwrap();
         } else {

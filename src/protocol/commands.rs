@@ -872,6 +872,9 @@ impl Command {
             Self::ResolveBootstrapSeat(v) => return v.validate(),
             Self::RecoverBootstrap(v) => {
                 v.identity.validate()?;
+                if let Some(inspection) = &v.inspection {
+                    inspection.validate()?;
+                }
                 v.disposition.validate()?;
                 if v.operation != v.decision_operation()? {
                     return Err("bootstrap recovery key mismatch");

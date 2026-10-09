@@ -429,6 +429,7 @@ fn cancelled_replay_preserves_original_identity_without_current_live_authority()
         },
     };
     let mut decision = RecoverBootstrap {
+        inspection: None,
         identity: id.clone(),
         expected_attempt: BootstrapAttempt::first(),
         operation: OperationId::new("placeholder"),
@@ -436,6 +437,7 @@ fn cancelled_replay_preserves_original_identity_without_current_live_authority()
     };
     decision.operation = decision.decision_operation().unwrap();
     let retained = BootstrapRecoveryResult {
+        inspection: None,
         identity: id.clone(),
         attempt: BootstrapAttempt::first(),
         operation: decision.operation.clone(),
@@ -820,6 +822,7 @@ fn saved_recovery(
     creation: Option<herdr_threads::ports::CreatedTab>,
 ) -> BootstrapRecoveryResult {
     let mut request = RecoverBootstrap {
+        inspection: None,
         identity: id.clone(),
         expected_attempt: BootstrapAttempt::first(),
         operation: OperationId::new("placeholder"),
@@ -827,6 +830,7 @@ fn saved_recovery(
     };
     request.operation = request.decision_operation().unwrap();
     let result = BootstrapRecoveryResult {
+        inspection: None,
         identity: id.clone(),
         attempt: request.expected_attempt,
         operation: request.operation,
@@ -993,8 +997,45 @@ fn recovery_historical_noncreation_before_later_prepared_attempt_remains_valid()
                 status.creation,
                 if later_created { Some(created()) } else { None }
             );
-            assert_eq!(status.recovery, Some(Box::new(result)));
+            assert_eq!(status.recovery, Some(Box::new(result.clone())));
             let tx = db.transaction().unwrap();
+            let old_request = RecoverBootstrap {
+                inspection: None,
+                identity: id.clone(),
+                expected_attempt: result.attempt,
+                operation: result.operation.clone(),
+                disposition: result.disposition.clone(),
+            };
+            let request_bytes = serde_json::to_vec(&old_request).unwrap();
+            let result_bytes: Vec<u8> = tx
+                .query_row(
+                    "SELECT result_json FROM bootstrap_recovery_decisions",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                topology_handoff::attempts::recover(
+                    &tx,
+                    &namespace(),
+                    &old_request,
+                    501,
+                    UtcMillis(3),
+                    None
+                )
+                .unwrap(),
+                result
+            );
+            assert_eq!(serde_json::to_vec(&old_request).unwrap(), request_bytes);
+            assert_eq!(
+                tx.query_row(
+                    "SELECT result_json FROM bootstrap_recovery_decisions",
+                    [],
+                    |r| r.get::<_, Vec<u8>>(0)
+                )
+                .unwrap(),
+                result_bytes
+            );
             assert_eq!(
                 topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(3)).unwrap(),
                 status

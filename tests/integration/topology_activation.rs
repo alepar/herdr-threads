@@ -910,6 +910,11 @@ fn elected_public_delivery_is_staged_without_native_effect_and_completed_retry_i
             .iter()
             .any(|v| v == herdr_threads::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1)
     );
+    assert!(
+        caps.capabilities
+            .iter()
+            .any(|v| v == herdr_threads::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1)
+    );
     let until = Instant::now() + Duration::from_secs(5);
     while f.db().query_row("SELECT count(*) FROM host_instances WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap()==0 {assert!(Instant::now()<until,"reconciliation"); std::thread::sleep(Duration::from_millis(10));}
     let out = f.cli(
@@ -1265,6 +1270,12 @@ fn elected_unconfigured_daemon_refuses_new_mode_before_semantic_publication_or_e
             .capabilities
             .iter()
             .any(|v| v == herdr_threads::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1)
+    );
+    assert!(
+        !caps
+            .capabilities
+            .iter()
+            .any(|v| v == herdr_threads::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1)
     );
     let reads = f.pane_reads.load(Ordering::Relaxed);
     let refusal = f.cli(
@@ -1883,4 +1894,171 @@ fn elected_public_unknown_created_pane_retains_request_through_second_agent_retr
 fn elected_public_unknown_created_pane_without_request_uses_fresh_inspection() {
     let _serial = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
     public_unknown_created_pane_agent_retry_chain(false);
+}
+
+#[test]
+fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effects() {
+    use herdr_threads::{
+        cli::{
+            journal::{BootstrapPlan, IntentScope, Journal, SemanticMutation},
+            topology_recover::RecoveryPlan,
+        },
+        protocol::{
+            authority::{CallerClaim, CallerRole, Harness as ClaimHarness},
+            handoff::*,
+            ids::*,
+        },
+    };
+    let _serial = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
+    let f = Fixture::new_runtime(false);
+    let execution: String = f.db().query_row("SELECT execution_id FROM occupant_bindings WHERE seat_id='sender' AND ended_at IS NULL", [], |r| r.get(0)).unwrap();
+    let claim = CallerClaim {
+        instance: f.instance.to_string(),
+        seat: SeatId::new("sender"),
+        binding_generation: 1,
+        role: CallerRole::TopLevel,
+        harness: ClaimHarness::Codex,
+        native_session: NativeSessionId::new("session"),
+        execution: ExecutionId::new(execution),
+        target: HostTargetId::new("w4:p1"),
+    };
+    let payload = BootstrapPayload {
+        handoff: HandoffPayload {
+            namespace: HandoffNamespace {
+                instance: f.instance.to_string(),
+                state_dir: f.context.state_dir.clone(),
+                host_endpoint: f.context.host_endpoint.clone(),
+            },
+            keys: HandoffKeys {
+                compound: OperationId::new("task21-original"),
+                begin: OperationId::new("task21-begin"),
+                create: OperationId::new("task21-create"),
+                invite: OperationId::new("task21-invite"),
+                send: OperationId::new("task21-send"),
+                complete: OperationId::new("task21-complete"),
+            },
+            channel: HandoffChannel::New {
+                name: None,
+                topic: "task21".into(),
+                goal: "task21".into(),
+            },
+            body: "frozen original".into(),
+        },
+        workspace: HostTargetId::new("w4"),
+        cwd: f.root.clone(),
+        label: "task21".into(),
+        focus: false,
+        env: Default::default(),
+        launch: BootstrapLaunch {
+            harness: ClaimHarness::Codex,
+            binary: Some("/usr/bin/true".into()),
+            name: None,
+            argv: vec![],
+        },
+        handoff_key: OperationId::new("task21-child"),
+        resolve_key: OperationId::new("task21-resolve"),
+        attach_key: OperationId::new("task21-attach"),
+        linked_complete_key: OperationId::new("task21-linked"),
+    };
+    let scope = IntentScope::Cooperative {
+        instance: f.instance.to_string(),
+        seat: claim.seat.clone(),
+    };
+    let journal = Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+    let reference = journal
+        .record(
+            scope.clone(),
+            SemanticMutation::freeze(
+                SemanticMutation::HandoffBootstrap(Box::new(BootstrapPlan {
+                    version: 1,
+                    payload: payload.clone(),
+                })),
+                claim.clone(),
+            )
+            .unwrap(),
+            1,
+        )
+        .unwrap();
+    let mut identity = BootstrapIdentity {
+        compound: payload.handoff.keys.compound.clone(),
+        scope,
+        claim,
+        digest: String::new(),
+        payload,
+    };
+    identity.digest = identity.semantic_digest().unwrap();
+    identity.validate().unwrap();
+    let mut request = RecoverBootstrap {
+        inspection: None,
+        identity,
+        expected_attempt: BootstrapAttempt::first(),
+        operation: OperationId::new("placeholder"),
+        disposition: BootstrapRecoveryDisposition::NotCreated {
+            quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+        },
+    };
+    request.operation = request.decision_operation().unwrap();
+    let plan = RecoveryPlan {
+        version: 1,
+        original_ref: reference.clone(),
+        operator_uid: unsafe { libc::geteuid() },
+        request,
+    };
+    plan.validate().unwrap();
+    let operator_ref = journal
+        .record(
+            IntentScope::Operator {
+                instance: f.instance.to_string(),
+                local_user_uid: plan.operator_uid,
+            },
+            SemanticMutation::OperatorRecoverBootstrap(Box::new(plan)),
+            2,
+        )
+        .unwrap();
+    let snapshot = || {
+        let mut files: Vec<_> = fs::read_dir(f.paths.instance_dir.join("intents"))
+            .unwrap()
+            .map(|e| {
+                let p = e.unwrap().path();
+                (p.file_name().unwrap().to_owned(), fs::read(p).unwrap())
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    let before = snapshot();
+    let reads = f.pane_reads.load(Ordering::Relaxed);
+    let original_ref = reference.recovery_ref();
+    let saved_ref = operator_ref.recovery_ref();
+    for args in [
+        vec![
+            "handoff",
+            "recover",
+            original_ref.as_str(),
+            "--attempt",
+            "1",
+            "--not-created",
+        ],
+        vec!["retry", saved_ref.as_str()],
+    ] {
+        let result = f.cli(&args, true);
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("daemon lacks inspected recovery capability"),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(result.stdout.is_empty());
+        assert_eq!(snapshot(), before);
+        assert_eq!(f.pane_reads.load(Ordering::Relaxed), reads);
+        assert_eq!(f.effects.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            f.db()
+                .query_row("SELECT count(*) FROM bootstrap_handoffs", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
 }

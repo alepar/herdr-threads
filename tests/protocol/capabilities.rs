@@ -413,6 +413,7 @@ fn this_daemon_advertises_exactly_advertised() {
     );
     assert!(!caps.supports(HISTORY_FULL_BODIES) || ADVERTISED.contains(&HISTORY_FULL_BODIES));
     assert!(!caps.supports("nonexistent.capability"));
+    assert!(!caps.supports(BOOTSTRAP_INSPECTED_RECOVERY_V1));
 }
 
 #[test]

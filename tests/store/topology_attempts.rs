@@ -16,12 +16,13 @@ fn reserve(id: &BootstrapIdentity, n: u32) -> ReserveBootstrapAttempt {
         expected_attempt: attempt,
     }
 }
-fn decision(
+fn old_decision(
     id: &BootstrapIdentity,
     n: u32,
     disposition: BootstrapRecoveryDisposition,
 ) -> RecoverBootstrap {
     let mut d = RecoverBootstrap {
+        inspection: None,
         identity: id.clone(),
         expected_attempt: BootstrapAttempt::new(n).unwrap(),
         operation: id.compound.clone(),
@@ -29,6 +30,24 @@ fn decision(
     };
     d.operation = d.decision_operation().unwrap();
     d
+}
+fn decision(
+    db: &rusqlite::Connection,
+    id: &BootstrapIdentity,
+    n: u32,
+    disposition: BootstrapRecoveryDisposition,
+) -> RecoverBootstrap {
+    let mut request = old_decision(id, n, disposition);
+    request.inspection = Some(
+        BootstrapRecoveryInspection::from_status(
+            &topology_handoff::current(db, &namespace(), id)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap(),
+    );
+    request.operation = request.decision_operation().unwrap();
+    request
 }
 fn not_created() -> BootstrapRecoveryDisposition {
     BootstrapRecoveryDisposition::NotCreated {
@@ -46,6 +65,208 @@ fn cancel() -> BootstrapRecoveryDisposition {
 }
 fn error() -> ApiError {
     ApiError::new(ErrorCode::Unsupported, "transport fixture")
+}
+#[test]
+fn unbound_undecided_recovery_refuses_without_allocating_or_deciding() {
+    for disposition in [not_created(), cancel()] {
+        let mut db = fixture();
+        let id = identity();
+        let tx = db.transaction().unwrap();
+        let before = topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+        let request = old_decision(&id, 1, disposition);
+        let result = recover(&tx, &namespace(), &request, 501, UtcMillis(1), None);
+        assert!(
+            result.is_err(),
+            "an unbound undecided assertion mutated canonical state: {result:?}"
+        );
+        assert_eq!(
+            topology_handoff::current(&tx, &namespace(), &id)
+                .unwrap()
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM bootstrap_attempts", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            tx.query_row(
+                "SELECT count(*) FROM bootstrap_recovery_decisions",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+fn stale_inspection_refuses_possible_unknown_and_cancelled_snapshots_without_new_decisions() {
+    for outcome in ["possible", "unknown", "cancelled"] {
+        for disposition in [not_created(), cancel()] {
+            let mut db = fixture();
+            let id = identity();
+            let tx = db.transaction().unwrap();
+            topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+            let mut stale = decision(&tx, &id, 1, disposition);
+            if outcome == "cancelled" {
+                recover(
+                    &tx,
+                    &namespace(),
+                    &decision(&tx, &id, 1, cancel()),
+                    501,
+                    UtcMillis(1),
+                    None,
+                )
+                .unwrap();
+                // A different cancellation reason has no exact committed replay.
+                if let BootstrapRecoveryDisposition::Cancelled { reason, .. } =
+                    &mut stale.disposition
+                {
+                    *reason = "different frozen reason".into();
+                    stale.operation = stale.decision_operation().unwrap();
+                }
+            } else {
+                reserve_attempt(&tx, &namespace(), &reserve(&id, 1)).unwrap();
+                if outcome == "unknown" {
+                    record_outcome(
+                        &tx,
+                        &namespace(),
+                        &id,
+                        BootstrapAttempt::first(),
+                        &CreateTabOutcome::OutcomeUnknown(error()),
+                    )
+                    .unwrap();
+                }
+            }
+            let before = topology_handoff::current(&tx, &namespace(), &id)
+                .unwrap()
+                .unwrap();
+            let counts: (i64,i64) = tx.query_row("SELECT (SELECT count(*) FROM bootstrap_attempts),(SELECT count(*) FROM bootstrap_recovery_decisions)", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+            assert_eq!(
+                recover(&tx, &namespace(), &stale, 501, UtcMillis(2), None)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Conflict
+            );
+            assert_eq!(
+                topology_handoff::current(&tx, &namespace(), &id)
+                    .unwrap()
+                    .unwrap(),
+                before
+            );
+            assert_eq!(tx.query_row("SELECT (SELECT count(*) FROM bootstrap_attempts),(SELECT count(*) FROM bootstrap_recovery_decisions)", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap(), counts);
+        }
+    }
+}
+
+#[test]
+fn guarded_history_replays_before_current_binding_and_refuses_altered_or_corrupt_guards() {
+    let mut db = fixture();
+    let id = identity();
+    let request;
+    let saved;
+    {
+        let tx = db.transaction().unwrap();
+        topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+        request = decision(&tx, &id, 1, not_created());
+        saved = recover(&tx, &namespace(), &request, 501, UtcMillis(1), None).unwrap();
+        reserve_attempt(&tx, &namespace(), &reserve(&id, 2)).unwrap();
+        assert_eq!(
+            recover(&tx, &namespace(), &request, 501, UtcMillis(2), None).unwrap(),
+            saved
+        );
+        let mut changed = request.clone();
+        changed.inspection.as_mut().unwrap().digest = "a".repeat(64);
+        assert_eq!(
+            recover(&tx, &namespace(), &changed, 501, UtcMillis(3), None)
+                .unwrap_err()
+                .code,
+            ErrorCode::OperationPayloadMismatch
+        );
+        changed.operation = changed.decision_operation().unwrap();
+        assert_eq!(
+            recover(&tx, &namespace(), &changed, 501, UtcMillis(3), None)
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        tx.commit().unwrap();
+    }
+    let mut corrupt = saved.clone();
+    corrupt.inspection.as_mut().unwrap().version = 2;
+    db.execute_batch("DROP TRIGGER bootstrap_recovery_immutable")
+        .unwrap();
+    db.execute(
+        "UPDATE bootstrap_recovery_decisions SET result_json=?1",
+        [serde_json::to_vec(&corrupt).unwrap()],
+    )
+    .unwrap();
+    let tx = db.transaction().unwrap();
+    assert_eq!(
+        recover(&tx, &namespace(), &request, 501, UtcMillis(4), None)
+            .unwrap_err()
+            .code,
+        ErrorCode::StoreCorrupt
+    );
+}
+
+#[test]
+fn guarded_retained_result_keeps_the_256kib_ceiling_without_truncation() {
+    let mut db = fixture();
+    let id = identity();
+    let request;
+    let saved;
+    {
+        let tx = db.transaction().unwrap();
+        topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+        request = decision(&tx, &id, 1, not_created());
+        saved = recover(&tx, &namespace(), &request, 501, UtcMillis(1), None).unwrap();
+        let mut old_shape = saved.clone();
+        old_shape.inspection = None;
+        assert_eq!(
+            serde_json::to_vec(&saved).unwrap().len()
+                - serde_json::to_vec(&old_shape).unwrap().len(),
+            103
+        );
+        tx.commit().unwrap();
+    }
+    // Valid historical JSON whitespace reaches the exact retained envelope cap;
+    // this is a bounded read/DDL control, not a native or maximum writer claim.
+    let mut raw = serde_json::to_vec(&saved).unwrap();
+    raw.resize(topology_handoff::MAX_RECOVERY_BYTES, b' ');
+    db.execute_batch("DROP TRIGGER bootstrap_recovery_immutable")
+        .unwrap();
+    db.execute(
+        "UPDATE bootstrap_recovery_decisions SET result_json=?1",
+        [&raw],
+    )
+    .unwrap();
+    let tx = db.transaction().unwrap();
+    assert_eq!(
+        recover(&tx, &namespace(), &request, 501, UtcMillis(2), None).unwrap(),
+        saved
+    );
+    raw.push(b' ');
+    assert!(
+        tx.execute(
+            "UPDATE bootstrap_recovery_decisions SET result_json=?1",
+            [&raw]
+        )
+        .is_err()
+    );
+    assert_eq!(
+        tx.query_row(
+            "SELECT length(result_json) FROM bootstrap_recovery_decisions",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        256 * 1024
+    );
 }
 #[test]
 fn reserve_is_one_use_and_fresh_submission_checks_a2() {
@@ -113,7 +334,7 @@ fn unknown_creation_never_reauthorizes_and_proven_zero_submission_advances_once(
     recover(
         &tx,
         &namespace(),
-        &decision(&id, 1, not_created()),
+        &decision(&tx, &id, 1, not_created()),
         501,
         UtcMillis(1),
         None,
@@ -171,7 +392,7 @@ fn recovery_old_decision_is_historical_and_stale_undecided_refuses() {
     let tx = db.transaction().unwrap();
     topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
     reserve_attempt(&tx, &namespace(), &reserve(&id, 1)).unwrap();
-    let d = decision(&id, 1, not_created());
+    let d = decision(&tx, &id, 1, not_created());
     let saved = recover(&tx, &namespace(), &d, 501, UtcMillis(5), None).unwrap();
     assert_eq!(saved.state, BootstrapState::Prepared);
     assert_eq!(saved.operator_provenance, "operator:local-user:501");
@@ -184,7 +405,7 @@ fn recovery_old_decision_is_historical_and_stale_undecided_refuses() {
         recover(
             &tx,
             &namespace(),
-            &decision(&id, 1, cancel()),
+            &decision(&tx, &id, 1, cancel()),
             501,
             UtcMillis(7),
             None
@@ -219,7 +440,7 @@ fn cancellation_is_absorbing_and_requires_canonical_no_live_child() {
         let result = recover(
             &tx,
             &namespace(),
-            &decision(&id, 1, cancel()),
+            &decision(&tx, &id, 1, cancel()),
             501,
             UtcMillis(5),
             None,
@@ -249,15 +470,16 @@ fn cancellation_is_absorbing_and_requires_canonical_no_live_child() {
 fn historical_recovery_replay_refuses_corrupt_decision_snapshot() {
     let mut db = fixture();
     let id = identity();
-    let old = decision(&id, 1, not_created());
+    let old;
     let mut saved = {
         let tx = db.transaction().unwrap();
         topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+        old = decision(&tx, &id, 1, not_created());
         let saved = recover(&tx, &namespace(), &old, 501, UtcMillis(1), None).unwrap();
         recover(
             &tx,
             &namespace(),
-            &decision(&id, 2, not_created()),
+            &decision(&tx, &id, 2, not_created()),
             501,
             UtcMillis(2),
             None,
@@ -371,7 +593,7 @@ fn late_next_attempt_insert_failure_rolls_back_even_if_caller_commits_error() {
         recover(
             &tx,
             &namespace(),
-            &decision(&id, 1, not_created()),
+            &decision(&tx, &id, 1, not_created()),
             501,
             UtcMillis(1),
             None
@@ -423,7 +645,7 @@ fn stale_undecided_attempt_and_changed_phase_or_revision_refuse_without_effects(
         recover(
             &tx,
             &namespace(),
-            &decision(&id, 1, not_created()),
+            &decision(&tx, &id, 1, not_created()),
             501,
             UtcMillis(1),
             None
@@ -477,17 +699,7 @@ fn cancellation_retains_attached_identity_and_created_evidence_after_reopen() {
             send_key: id.payload.handoff.keys.send.clone(),
         },
     };
-    let d = decision(
-        &id,
-        1,
-        BootstrapRecoveryDisposition::Cancelled {
-            reason: "confirmed lost pane; child never begun".into(),
-            quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
-            child_guard: BootstrapCancellationGuard {
-                attached_child: Some(attachment.handoff.clone()),
-            },
-        },
-    );
+    let d;
     let saved = {
         let tx = db.transaction().unwrap();
         topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
@@ -519,7 +731,7 @@ fn cancellation_retains_attached_identity_and_created_evidence_after_reopen() {
             recover(
                 &tx,
                 &namespace(),
-                &decision(&id, 1, cancel()),
+                &decision(&tx, &id, 1, cancel()),
                 501,
                 UtcMillis(1),
                 None
@@ -527,6 +739,18 @@ fn cancellation_retains_attached_identity_and_created_evidence_after_reopen() {
             .unwrap_err()
             .code,
             ErrorCode::OperationPayloadMismatch
+        );
+        d = decision(
+            &tx,
+            &id,
+            1,
+            BootstrapRecoveryDisposition::Cancelled {
+                reason: "confirmed lost pane; child never begun".into(),
+                quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                child_guard: BootstrapCancellationGuard {
+                    attached_child: Some(attachment.handoff.clone()),
+                },
+            },
         );
         let saved = recover(&tx, &namespace(), &d, 501, UtcMillis(1), None).unwrap();
         tx.commit().unwrap();
@@ -564,6 +788,7 @@ fn cancellation_invalid_reason_and_created_without_structural_guard_refuse() {
     reserve_attempt(&tx, &namespace(), &reserve(&id, 1)).unwrap();
     for reason in [" ".into(), "é".repeat(2049)] {
         let d = decision(
+            &tx,
             &id,
             1,
             BootstrapRecoveryDisposition::Cancelled {
@@ -582,6 +807,7 @@ fn cancellation_invalid_reason_and_created_without_structural_guard_refuse() {
         );
     }
     let d = decision(
+        &tx,
         &id,
         1,
         BootstrapRecoveryDisposition::CreatedPane {
@@ -685,7 +911,7 @@ fn cancellation_serializes_with_underlying_live_child_insertion() {
         let error = recover(
             &tx,
             &namespace(),
-            &decision(&identity(), 1, self::cancel()),
+            &decision(&tx, &identity(), 1, self::cancel()),
             501,
             UtcMillis(1),
             None,
@@ -724,10 +950,11 @@ fn recovery_registry_missing_or_cross_role_key_refuses_current_and_historical_re
     ] {
         let mut db = fixture();
         let id = identity();
-        let d = decision(&id, 1, not_created());
+        let d;
         {
             let tx = db.transaction().unwrap();
             topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+            d = decision(&tx, &id, 1, not_created());
             recover(&tx, &namespace(), &d, 501, UtcMillis(1), None).unwrap();
             tx.commit().unwrap();
         }
@@ -758,10 +985,11 @@ fn decision_kind_namespace_attempt_and_excess_slots_are_retained_corruption() {
     ] {
         let mut db = fixture();
         let id = identity();
-        let d = decision(&id, 1, not_created());
+        let d;
         {
             let tx = db.transaction().unwrap();
             topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+            d = decision(&tx, &id, 1, not_created());
             recover(&tx, &namespace(), &d, 501, UtcMillis(1), None).unwrap();
             tx.commit().unwrap();
         }
@@ -953,7 +1181,7 @@ fn typed_zero_submission_refuses_wrong_key_attempt_creation_unknown_and_terminal
                 recover(
                     &tx,
                     &namespace(),
-                    &decision(&id, 1, cancel()),
+                    &decision(&tx, &id, 1, cancel()),
                     501,
                     UtcMillis(1),
                     None,
@@ -1051,7 +1279,7 @@ fn cancellation_writer_is_bounded_after_retained_legacy_history_and_checks_each_
                 let result = recover(
                     &tx,
                     &namespace(),
-                    &decision(&id, 1, cancel()),
+                    &decision(&tx, &id, 1, cancel()),
                     501,
                     UtcMillis(5),
                     None,

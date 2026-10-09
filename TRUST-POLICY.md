@@ -626,8 +626,19 @@ Full witness equality is deliberately conservative: socket metadata changes or
 an auxiliary socket for the same server may prevent fresh recovery even when
 process identity remains unchanged. Metadata does not prove creation, occupancy
 or caller authority, and refusal never repairs or rewrites a frozen witness. The normal
-operation lock must exclude a known in-flight invocation while the operator
-inspects and asserts noncreation or quiescence. No heuristic PID or topology
+operation lock continuously excludes a known in-flight invocation from fresh
+canonical inspection through immutable assertion publication and deciding dispatch.
+The frozen recovery request retains a versioned digest of the actual canonical
+attempt state, creation, attachment and latest recovery sampled under that lock.
+Saved retry never refreshes this inspection. After exact committed historical replay,
+the deciding transaction requires the retained binding to match its canonical view;
+missing old bindings and changed undecided snapshots conservatively refuse.
+New-client fresh recovery and every operator retry require the concrete inspected-
+recovery capability before publication or deciding dispatch, even for old unbound
+plans. Exact old committed requests keep their absent-field bytes, keys and results.
+Older clients may fail closed on new guarded recovery results, including results
+nested in bootstrap status; an inspection-aware client is required to present these
+new records. Guards are never stripped to fabricate older-client compatibility. No heuristic PID or topology
 snapshot proves quiescence, and recovery never kills an unowned process.
 
 Herdr offers correlation rather than creation idempotency. The product therefore

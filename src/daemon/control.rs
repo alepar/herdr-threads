@@ -264,6 +264,9 @@ where
                         .chain(self.bootstrap_guarded.then_some(
                             crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,
                         ))
+                        .chain(self.bootstrap_guarded.then_some(
+                            crate::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1,
+                        ))
                         .map(str::to_owned)
                         .collect(),
                 }))

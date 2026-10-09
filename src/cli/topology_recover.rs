@@ -128,6 +128,7 @@ pub fn prepare(
     disposition: BootstrapRecoveryDisposition,
     operator_uid: u32,
     namespace: &HandoffNamespace,
+    inspected: &crate::protocol::handoff::BootstrapResult,
 ) -> Result<RecoveryPlan, RunError> {
     let (original_ref, identity) = original(journal, request.reference.as_str())?;
     if crate::store::topology_handoff::encode_identity(namespace, &identity).is_err() {
@@ -152,7 +153,16 @@ pub fn prepare(
             "recovery disposition differs from explicit assertion",
         ));
     }
+    if inspected.compound != identity.compound || inspected.attempt != request.attempt {
+        return Err(super::invalid_request(
+            "inspection differs from requested bootstrap attempt",
+        ));
+    }
     let mut request = RecoverBootstrap {
+        inspection: Some(
+            crate::protocol::handoff::BootstrapRecoveryInspection::from_status(inspected)
+                .map_err(super::invalid_request)?,
+        ),
         identity,
         expected_attempt: request.attempt,
         operation: original_ref.operation.clone(),
@@ -203,8 +213,18 @@ pub fn publish(
 ) -> Result<IntentRef, RunError> {
     // Refuse an invalid retained original before the lock can create a file.
     validate_original(journal, plan, namespace)?;
-    let _lock = super::handoff::lock(journal, &plan.original_ref)?;
-    // Recheck after exclusion to cover changes between validation and locking.
+    let lock = super::handoff::lock(journal, &plan.original_ref)?;
+    publish_under_guard(journal, plan, namespace, created_at_millis, &lock)
+}
+
+/// Caller holds the original operation File continuously from inspection.
+pub(crate) fn publish_under_guard(
+    journal: &Journal,
+    plan: &RecoveryPlan,
+    namespace: &HandoffNamespace,
+    created_at_millis: i64,
+    _guard: &std::fs::File,
+) -> Result<IntentRef, RunError> {
     validate_original(journal, plan, namespace)?;
     Ok(journal.record(
         IntentScope::Operator {
@@ -242,8 +262,42 @@ pub(crate) fn retry_to_writer<C: crate::ports::LocalClient + ?Sized, W: Write>(
     // The operator origin alone does not validate the retained agent original.
     // Check it before the operation lock can create any local state.
     validate_original(journal, &plan, namespace)?;
-    let _lock = super::handoff::lock(journal, &plan.original_ref)?;
+    require_capability(client, clock)?;
+    let lock = super::handoff::lock(journal, &plan.original_ref)?;
+    retry_under_guard(
+        journal, reference, namespace, client, clock, output, writer, &lock,
+    )
+}
+
+/// Fresh path reuses its inspection guard rather than trying to lock itself.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn retry_under_guard<C: crate::ports::LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    reference: &IntentRef,
+    namespace: &HandoffNamespace,
+    client: &C,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+    _guard: &std::fs::File,
+) -> Result<CommandResult, RunError> {
+    if super::retry::preflight_original_actor(
+        journal.root(),
+        &reference.recovery_ref(),
+        super::actor_route::InvocationActor::Human,
+        &output.context,
+    )? != OriginalActor::HumanOrOperator
+    {
+        return Err(super::invalid_request(
+            "recovery retry needs an operator decision",
+        ));
+    }
+    let pending = journal.load(reference)?;
+    let SemanticMutation::OperatorRecoverBootstrap(plan) = pending.semantic else {
+        return Err(super::invalid_request("not an operator bootstrap recovery"));
+    };
     validate_original(journal, &plan, namespace)?;
+    require_capability(client, clock)?;
     let result = client.call(
         Command::RecoverBootstrap(Box::new(plan.request.clone())),
         &super::cooperative_budget(clock),
@@ -251,7 +305,8 @@ pub(crate) fn retry_to_writer<C: crate::ports::LocalClient + ?Sized, W: Write>(
     let CommandResult::BootstrapRecovered(saved) = &result else {
         return Err(super::invalid_request("unexpected recovery result"));
     };
-    if saved.identity != plan.request.identity
+    if saved.inspection != plan.request.inspection
+        || saved.identity != plan.request.identity
         || saved.attempt != plan.request.expected_attempt
         || saved.operation != plan.request.operation
         || saved.disposition != plan.request.disposition
@@ -270,6 +325,26 @@ pub(crate) fn retry_to_writer<C: crate::ports::LocalClient + ?Sized, W: Write>(
     )?;
     journal.complete(reference)?;
     Ok(result)
+}
+
+/// All operator retries, including historical unbound plans, fail before unsafe
+/// dispatch to older peers. A None plan cannot be used as a replay-only probe.
+pub(crate) fn require_capability<C: crate::ports::LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    match client.call(Command::Capabilities, &super::cooperative_budget(clock))? {
+        CommandResult::Capabilities(c)
+            if c.capabilities
+                .iter()
+                .any(|v| v == crate::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1) =>
+        {
+            Ok(())
+        }
+        _ => Err(super::unsupported(
+            "daemon lacks inspected recovery capability",
+        )),
+    }
 }
 
 /// Ready argv pins the original ref and inspected attempt, never latest attempt.

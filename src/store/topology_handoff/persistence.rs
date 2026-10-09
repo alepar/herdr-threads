@@ -363,6 +363,7 @@ pub(super) fn decision_history(
                 return Err(corrupt());
             }
             let decision = RecoverBootstrap {
+                inspection: result.inspection.clone(),
                 identity: result.identity.clone(),
                 expected_attempt: result.attempt,
                 operation: result.operation.clone(),

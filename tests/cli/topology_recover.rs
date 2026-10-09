@@ -101,22 +101,55 @@ struct Canonical {
 }
 impl LocalClient for Canonical {
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        if matches!(command, Command::Capabilities) {
+            return Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: vec![
+                        crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1.into(),
+                        crate::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1.into(),
+                    ],
+                },
+            ));
+        }
         self.calls.fetch_add(1, Ordering::Relaxed);
-        let Command::RecoverBootstrap(request) = command else {
-            panic!("recovery attempted downstream effect: {command:?}")
-        };
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction().unwrap();
-        let result = topology_handoff::attempts::recover(
-            &tx,
-            &self.namespace,
-            &request,
-            unsafe { libc::geteuid() },
-            UtcMillis(3),
-            Some(&self.guard),
-        )?;
+        let result = match command {
+            Command::RecoverBootstrap(request) => {
+                CommandResult::BootstrapRecovered(Box::new(topology_handoff::attempts::recover(
+                    &tx,
+                    &self.namespace,
+                    &request,
+                    unsafe { libc::geteuid() },
+                    UtcMillis(3),
+                    Some(&self.guard),
+                )?))
+            }
+            Command::BeginBootstrap(request) => {
+                CommandResult::Bootstrap(Box::new(topology_handoff::begin_pending(
+                    &tx,
+                    &self.namespace,
+                    &request.identity,
+                    UtcMillis(3),
+                )?))
+            }
+            Command::BootstrapStatus(request) => CommandResult::Bootstrap(Box::new(
+                topology_handoff::current(&tx, &self.namespace, &request.identity)?.unwrap(),
+            )),
+            Command::ReserveBootstrapAttempt(request) => {
+                CommandResult::BootstrapReserved(Box::new(
+                    topology_handoff::attempts::reserve_attempt(&tx, &self.namespace, &request)?,
+                ))
+            }
+            Command::CheckBootstrapSubmission(request) => {
+                CommandResult::BootstrapSubmissionChecked(
+                    topology_handoff::attempts::check_submission(&tx, &self.namespace, &request)?,
+                )
+            }
+            other => panic!("unexpected canonical fixture command: {other:?}"),
+        };
         tx.commit().unwrap();
-        Ok(CommandResult::BootstrapRecovered(Box::new(result)))
+        Ok(result)
     }
     fn call_with_output(
         &self,
@@ -136,9 +169,12 @@ struct Env {
 }
 impl Env {
     fn new() -> Self {
-        Self::new_with_hint(false)
+        Self::new_with_state(false, true)
     }
     fn new_with_hint(hint: bool) -> Self {
+        Self::new_with_state(hint, true)
+    }
+    fn new_with_state(hint: bool, reserved: bool) -> Self {
         let root = std::env::temp_dir().join(format!("ht-human-topology-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let runtime = crate::daemon::paths::RuntimeContext::explicit(
@@ -181,18 +217,20 @@ impl Env {
                 .unwrap();
         }
         topology_handoff::begin_pending(&tx, &namespace, &identity, UtcMillis(1)).unwrap();
-        topology_handoff::attempts::reserve_attempt(
-            &tx,
-            &namespace,
-            &ReserveBootstrapAttempt {
-                identity: identity.clone(),
-                operation: BootstrapAttempt::first()
-                    .operation(&identity.compound, "reserve")
-                    .unwrap(),
-                expected_attempt: BootstrapAttempt::first(),
-            },
-        )
-        .unwrap();
+        if reserved {
+            topology_handoff::attempts::reserve_attempt(
+                &tx,
+                &namespace,
+                &ReserveBootstrapAttempt {
+                    identity: identity.clone(),
+                    operation: BootstrapAttempt::first()
+                        .operation(&identity.compound, "reserve")
+                        .unwrap(),
+                    expected_attempt: BootstrapAttempt::first(),
+                },
+            )
+            .unwrap();
+        }
         tx.commit().unwrap();
         Self {
             root,
@@ -226,6 +264,7 @@ impl Env {
             canonical,
             unsafe { libc::geteuid() },
             &self.canonical.namespace,
+            &self.status(),
         )
         .unwrap()
     }
@@ -396,18 +435,17 @@ fn separate_operator_scope_keeps_original_claim_bytes_and_ref_immutable() {
         pending.header.semantic_digest
     );
 
-    assert_ne!(
+    assert!(
         prepare(
             &env.journal,
             &env.request(Assertion::NotCreated, 2),
             plan.request.disposition.clone(),
             plan.operator_uid,
-            &env.canonical.namespace
+            &env.canonical.namespace,
+            &env.status(),
         )
-        .unwrap()
-        .request
-        .operation,
-        plan.request.operation
+        .is_err(),
+        "an inspection of attempt1 cannot bind attempt2"
     );
     let mut foreign = env.canonical.namespace.clone();
     foreign.host_endpoint = "/foreign.sock".into();
@@ -417,7 +455,8 @@ fn separate_operator_scope_keeps_original_claim_bytes_and_ref_immutable() {
             &env.request(Assertion::NotCreated, 1),
             plan.request.disposition.clone(),
             plan.operator_uid,
-            &foreign
+            &foreign,
+            &env.status(),
         )
         .is_err()
     );
@@ -485,6 +524,8 @@ fn normal_operation_lock_refuses_known_inflight_without_call_or_cleanup() {
 #[test]
 fn lost_noncreation_output_replays_old_decision_after_attempt_two_without_new_permission() {
     let env = Env::new();
+    let stale_plan = env.cancel();
+    let late_plan = env.created();
     let reference = env.publish(&env.noncreation());
     assert!(env.retry(&reference, &mut LostOutput).is_err());
     assert!(env.journal.load(&reference).is_ok());
@@ -511,9 +552,9 @@ fn lost_noncreation_output_replays_old_decision_after_attempt_two_without_new_pe
     ));
     assert!(env.journal.load(&env.reference).is_ok());
     assert!(env.journal.load(&reference).is_err());
-    let stale = env.publish(&env.cancel());
+    let stale = env.publish(&stale_plan);
     assert!(env.retry(&stale, &mut Vec::new()).is_err());
-    let late = env.publish(&env.created());
+    let late = env.publish(&late_plan);
     assert!(env.retry(&late, &mut Vec::new()).is_err());
     assert!(env.status().creation.is_none());
     let mut db = env.canonical.db.lock().unwrap();
@@ -700,7 +741,8 @@ fn wrong_original_kind_harness_or_exact_scope_never_becomes_recovery() {
                 &request,
                 disposition.clone(),
                 unsafe { libc::geteuid() },
-                &env.canonical.namespace
+                &env.canonical.namespace,
+                &env.status(),
             )
             .is_err()
         );
@@ -886,4 +928,348 @@ retained_original_refusal_tests! {
     invalid_retained_original_malformed_consumer:Malformed,Consumer;
     invalid_retained_original_conflicting_consumer:ConflictingTerminal,Consumer;
     invalid_retained_original_changed_consumer:Changed,Consumer;
+}
+
+#[test]
+fn interrupted_saved_inspection_refuses_after_original_normal_retry_unknown_creation() {
+    let env = Env::new_with_state(false, false);
+    assert_eq!(env.status().attempt_state, BootstrapAttemptState::Prepared);
+    let plan = env.noncreation();
+    let frozen = serde_json::to_vec(&plan).unwrap();
+    let original = serde_json::to_vec(&env.journal.load(&env.reference).unwrap().semantic).unwrap();
+    // Publication completed, but the process interruption releases the original
+    // guard before deciding. The assertion keeps its original Prepared digest.
+    let saved_ref = env.publish(&plan);
+    struct Unknown<'a> {
+        id: &'a BootstrapIdentity,
+        calls: AtomicUsize,
+    }
+    impl CreateTabPort for Unknown<'_> {
+        fn create_tab(&self, request: &CreateTabRequest, _: &HostCallContext) -> CreateTabOutcome {
+            assert_eq!(request.workspace, self.id.payload.workspace);
+            assert_eq!(request.cwd, self.id.payload.cwd);
+            assert_eq!(request.label, self.id.payload.label);
+            assert_eq!(request.focus, self.id.payload.focus);
+            assert_eq!(request.env, self.id.payload.env);
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            CreateTabOutcome::OutcomeUnknown(ApiError::new(
+                ErrorCode::HostUnavailable,
+                "typed native unknown",
+            ))
+        }
+    }
+    let native = Unknown {
+        id: &env.identity,
+        calls: AtomicUsize::new(0),
+    };
+    let clock = crate::app::SystemClock::new();
+    let witness = env.evidence().witness;
+    let context = HostCallContext {
+        budget: super::super::cooperative_budget(&clock),
+        expected_boot: None,
+        expected_epoch: None,
+    };
+    let result = super::super::retry::run_bootstrap_retry(
+        &env.journal,
+        &env.reference,
+        super::super::actor_route::InvocationActor::Agent,
+        &env.canonical.namespace,
+        &env.canonical,
+        &native,
+        &clock,
+        super::super::topology_handoff::BootstrapSubmissionInputs {
+            witness: &witness,
+            context: &context,
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(native.calls.load(Ordering::Relaxed), 1);
+    let before = env.status();
+    assert_eq!(
+        before.attempt_state,
+        BootstrapAttemptState::PossibleCreation
+    );
+    let files = env.snapshot();
+    let mut output = vec![];
+    assert!(
+        env.retry(&saved_ref, &mut output).is_err(),
+        "the saved Prepared assertion authorized a new attempt after native unknown"
+    );
+    assert!(output.is_empty());
+    assert_eq!(env.status(), before);
+    assert_eq!(env.snapshot(), files);
+    let SemanticMutation::OperatorRecoverBootstrap(saved) =
+        env.journal.load(&saved_ref).unwrap().semantic
+    else {
+        panic!("saved operator plan")
+    };
+    assert_eq!(serde_json::to_vec(&saved).unwrap(), frozen);
+    assert_eq!(
+        serde_json::to_vec(&env.journal.load(&env.reference).unwrap().semantic).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn fresh_inspection_publication_and_decision_share_one_guard_without_self_deadlock() {
+    for format in [
+        crate::protocol::output::OutputFormat::Json,
+        crate::protocol::output::OutputFormat::Text,
+    ] {
+        let env = Env::new_with_state(false, false);
+        let clock = crate::app::SystemClock::new();
+        let guard = super::super::handoff::lock(&env.journal, &env.reference).unwrap();
+        assert!(super::super::handoff::lock(&env.journal, &env.reference).is_err());
+        let inspected = env.status();
+        let plan = prepare(
+            &env.journal,
+            &env.request(Assertion::NotCreated, 1),
+            BootstrapRecoveryDisposition::NotCreated {
+                quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+            },
+            unsafe { libc::geteuid() },
+            &env.canonical.namespace,
+            &inspected,
+        )
+        .unwrap();
+        let reference =
+            publish_under_guard(&env.journal, &plan, &env.canonical.namespace, 2, &guard).unwrap();
+        assert!(super::super::handoff::lock(&env.journal, &env.reference).is_err());
+        struct Contender<'a>(&'a Env);
+        impl LocalClient for Contender<'_> {
+            fn call_with_output(
+                &self,
+                command: Command,
+                _: &OutputSpec,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                self.call(command, budget)
+            }
+            fn call(
+                &self,
+                command: Command,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                assert!(
+                    super::super::handoff::lock(&self.0.journal, &self.0.reference).is_err(),
+                    "original operation escaped exclusion during dispatch"
+                );
+                self.0.canonical.call(command, budget)
+            }
+        }
+        let output = OutputSpec {
+            format,
+            context: crate::protocol::output::ContinuationContext {
+                state_dir: env
+                    .canonical
+                    .namespace
+                    .state_dir
+                    .to_str()
+                    .map(str::to_owned),
+                host: env
+                    .canonical
+                    .namespace
+                    .host_endpoint
+                    .to_str()
+                    .map(str::to_owned),
+            },
+        };
+        let mut bytes = vec![];
+        let saved = retry_under_guard(
+            &env.journal,
+            &reference,
+            &env.canonical.namespace,
+            &Contender(&env),
+            &clock,
+            &output,
+            &mut bytes,
+            &guard,
+        )
+        .unwrap();
+        assert!(
+            matches!(saved, CommandResult::BootstrapRecovered(ref r) if r.inspection == plan.request.inspection)
+        );
+        assert!(!bytes.is_empty());
+        assert_eq!(env.status().attempt.get(), 2);
+        assert!(env.journal.load(&reference).is_err());
+        drop(guard);
+        assert!(super::super::handoff::lock(&env.journal, &env.reference).is_ok());
+    }
+}
+
+#[test]
+fn unsupported_peer_refuses_saved_guarded_and_old_unbound_plans_without_dispatch_or_cleanup() {
+    for old in [false, true] {
+        let env = Env::new();
+        let mut plan = env.noncreation();
+        if old {
+            plan.request.inspection = None;
+            plan.request.operation = plan.request.decision_operation().unwrap();
+        }
+        let reference = env.publish(&plan);
+        let before = env.snapshot();
+        let status = env.status();
+        struct OldPeer;
+        impl LocalClient for OldPeer {
+            fn call_with_output(
+                &self,
+                command: Command,
+                _: &OutputSpec,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                self.call(command, budget)
+            }
+            fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+                assert_eq!(
+                    command,
+                    Command::Capabilities,
+                    "unsafe recovery reached an older peer"
+                );
+                Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList {
+                        capabilities: vec![
+                            crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1.into(),
+                        ],
+                    },
+                ))
+            }
+        }
+        let mut bytes = vec![];
+        let result = super::super::retry::run_topology_recovery_retry_to_writer(
+            &env.journal,
+            &reference,
+            super::super::actor_route::InvocationActor::Human,
+            &env.canonical.namespace,
+            &OldPeer,
+            &crate::app::SystemClock::new(),
+            &OutputSpec::default(),
+            &mut bytes,
+        );
+        assert!(matches!(result, Err(RunError::Api(ref e)) if e.code == ErrorCode::Unsupported));
+        assert!(bytes.is_empty());
+        assert_eq!(env.snapshot(), before);
+        assert_eq!(env.status(), status);
+    }
+}
+
+#[test]
+fn mismatched_response_inspection_retains_saved_request_without_output_or_cleanup() {
+    let env = Env::new();
+    let plan = env.noncreation();
+    let reference = env.publish(&plan);
+    let before = env.snapshot();
+    struct WrongResponse<'a>(&'a Canonical);
+    impl LocalClient for WrongResponse<'_> {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+            let mut result = self.0.call(command, budget)?;
+            if let CommandResult::BootstrapRecovered(ref mut saved) = result {
+                saved.inspection = None;
+            }
+            Ok(result)
+        }
+    }
+    let mut bytes = vec![];
+    assert!(
+        retry_to_writer(
+            &env.journal,
+            &reference,
+            &env.canonical.namespace,
+            &WrongResponse(&env.canonical),
+            &crate::app::SystemClock::new(),
+            &OutputSpec::default(),
+            &mut bytes
+        )
+        .is_err()
+    );
+    assert!(bytes.is_empty());
+    assert_eq!(env.snapshot(), before);
+    assert_eq!(
+        env.status().attempt.get(),
+        2,
+        "a response refusal cannot roll back a committed decision"
+    );
+    let CommandResult::BootstrapRecovered(saved) = env.retry(&reference, &mut bytes).unwrap()
+    else {
+        panic!("exact replay")
+    };
+    assert_eq!(saved.inspection, plan.request.inspection);
+    assert_eq!(env.status().attempt.get(), 2);
+}
+
+#[test]
+fn committed_response_loss_and_write_failure_retain_exact_guarded_replay() {
+    for failure in ["response", "write", "flush"] {
+        let env = Env::new();
+        let plan = env.noncreation();
+        let reference = env.publish(&plan);
+        let before = env.snapshot();
+        struct ResponseLoss<'a>(&'a Canonical);
+        impl LocalClient for ResponseLoss<'_> {
+            fn call_with_output(
+                &self,
+                command: Command,
+                _: &OutputSpec,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                self.call(command, budget)
+            }
+            fn call(
+                &self,
+                command: Command,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                let deciding = matches!(command, Command::RecoverBootstrap(_));
+                let result = self.0.call(command, budget)?;
+                if deciding {
+                    Err(ApiError::new(
+                        ErrorCode::HostUnavailable,
+                        "committed response lost",
+                    ))
+                } else {
+                    Ok(result)
+                }
+            }
+        }
+        struct WriteFailure;
+        impl Write for WriteFailure {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("write failed"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                panic!("flush after failed write")
+            }
+        }
+        let failed = match failure {
+            "response" => retry_to_writer(
+                &env.journal,
+                &reference,
+                &env.canonical.namespace,
+                &ResponseLoss(&env.canonical),
+                &crate::app::SystemClock::new(),
+                &OutputSpec::default(),
+                &mut Vec::new(),
+            ),
+            "write" => env.retry(&reference, &mut WriteFailure),
+            "flush" => env.retry(&reference, &mut LostOutput),
+            _ => unreachable!(),
+        };
+        assert!(failed.is_err());
+        assert_eq!(env.snapshot(), before);
+        assert_eq!(env.status().attempt.get(), 2);
+        let CommandResult::BootstrapRecovered(saved) =
+            env.retry(&reference, &mut Vec::new()).unwrap()
+        else {
+            panic!("saved decision")
+        };
+        assert_eq!(saved.inspection, plan.request.inspection);
+        assert_eq!(env.status().attempt.get(), 2);
+    }
 }
