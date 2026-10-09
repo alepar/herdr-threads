@@ -9,3 +9,6 @@ branch: super-auto/hermes-global-enrollment
 base: main
 spec: 2026-10-09-hermes-global-enrollment-design.md
 epic: ht-4ne
+
+approvals:
+- top-split · auto · ht-4ne.1 LEAF, ht-4ne.2 LEAF, ht-4ne.3 LEAF, ht-4ne.4 LEAF
