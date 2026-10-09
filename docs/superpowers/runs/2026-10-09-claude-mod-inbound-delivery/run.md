@@ -25,13 +25,13 @@ stepBackDesign-round-1: patch — 11 findings fixable in place; four clusters (D
 roastDesignExit: converged at round 2 (Should-fix 8 confirmed [converged], 0 Blocking); punch list of 8 applied inline as spec/bead text, no re-roast; iteration-1 escalations (submit atomicity under Esc; $.session.id() in session.end) remain parked
 graph-pass: depth 4→3 · width 2.5→3.3 · applied 1 · parked 0
 codeBuckets:
-  completed: ht-j16.1, ht-j16.3, ht-j16.6, ht-j16.5, ht-j16.7, ht-j16.4, ht-j16.2, ht-j16.10, ht-j16.19, ht-j16.18, ht-j16.22, ht-j16.20, ht-j16.17, ht-j16.21, ht-j16.23, ht-j16.25, ht-j16.24, ht-j16.9, ht-j16.27, ht-j16.26
+  completed: ht-j16.1, ht-j16.3, ht-j16.6, ht-j16.5, ht-j16.7, ht-j16.4, ht-j16.2, ht-j16.10, ht-j16.19, ht-j16.18, ht-j16.22, ht-j16.20, ht-j16.17, ht-j16.21, ht-j16.23, ht-j16.25, ht-j16.24, ht-j16.9, ht-j16.27, ht-j16.26, ht-j16.28, ht-j16.29, ht-j16.30, ht-j16.32, ht-j16.31, ht-j16.33
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (full suite unmeasured; no live evidence for default-on mod) — code-final-review-6.md
-  sweep: SWEEP DEFERRED (caller-owned)
+  review: not ready — code-final-review-8.md; its must-fixes resolved after it: finding 1 fixed at dc5b2f6c, live stress re-run at b562d1e4 (13/14 3/3, reload_mid_turn 2/3 ledger-only), sweep passed @ 11b01cd5
+  sweep: 11b01cd5 · 4029/4029 passed, 43 skipped (matches nextest list) · test time 214 s, wall 359 s incl. build · leak check clean · clippy, fmt, check-default-features clean
   slowness: round 1 (fix re-entry): merge queue peaked at 5 — serial merge lane bottleneck
   worktreesKept:
   processSweep: stopped 0 · survived 0
@@ -60,3 +60,4 @@ postLoopFix: live-stress D1–D3 filed as fix beads ht-j16.28/.29/.30 after loop
 postLoopFix: final-review-7 Must-fix 1+2 (ht-j16.29 regressions: submit inside an open turn; ack without submit) filed as ht-j16.31; Must-fix 3 (D4 names) as ht-j16.32; Must-fix 4 (stale attention submit per session start) as ht-j16.33 — after loop exit instead of the punch list: loss path and spec-required behaviour on the default-on path
 postLoopFix: final-review-8 finding 1 (predecessor batch with an attention block submitted twice; confirmed repro) fixed directly at dc5b2f6c with a delivery test, outside the coordinator; its stress-model and accepted-limit minors go to the punch list
 liveStress: re-run at b562d1e4 (final code SHA): 13/14 scenarios 3/3; reload_mid_turn 2/3 — one extra predecessor_submit ledger entry after a submit resolved just before dispose, one submit and one presentation; leak check clean
+sweepFix: none needed
