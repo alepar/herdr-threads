@@ -1,0 +1,49 @@
+
+ ▐▛███▛█   Claude Code v2.1.295
+▝▜██████▀  Opus 5.5 with medium effort · Claude Max
+ ▝▝   ▝▝   /private/tmp/ht-ms-i1u62r39/work
+
+
+❯ Run sleep 8 with the Bash tool, then reply with the single word done.                                                                                         
+
+  Ran 1 shell command     
+
+⏺ herdr-threads: herdr-threads: delivered 2 message(s)
+
+⏺ done
+
+✻ Churned for 14s · done 6:43 AM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                                                              
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents 

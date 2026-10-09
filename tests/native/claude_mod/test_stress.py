@@ -99,6 +99,11 @@ class Settlement(unittest.TestCase):
         led = [row(1, "acked", ["a"], reason="already_settled")]
         self.assertEqual(stress.check_settled(["a"], {"a": "pending"}, led), [])
 
+    def test_ack_without_a_mod_ledger_ack_is_flagged(self):
+        led = [row(1, "acked", ["a"], reason="settled"), row(2, "acked", ["b"], reason="already_settled")]
+        rc = {"a": "acked", "b": "acked", "c": "acked", "d": "pending"}
+        self.assertEqual(stress.check_mod_settled(["a", "b", "c", "d"], rc, led), ["c acked outside the mod (no ledger ack)"])
+
 
 class Args(unittest.TestCase):
     def test_defaults(self):
@@ -126,6 +131,38 @@ class Versions(unittest.TestCase):
         self.assertFalse(stress.auth_output_usable("Not logged in · Please run /login"))
         self.assertTrue(stress.auth_output_usable("ok"))
         self.assertFalse(stress.auth_output_usable(""))
+
+
+def hook(at, event, blocked=False):
+    return {"at": at, "event": event, "blocked": blocked}
+
+
+class TurnOverlap(unittest.TestCase):
+    def test_intervals_from_prompt_to_stop_with_continuation_and_abort(self):
+        evs = [hook(10, "UserPromptSubmit"), hook(20, "Stop", blocked=True), hook(30, "Stop"),
+               hook(40, "UserPromptSubmit"), hook(45, "UserPromptSubmit"),  # a queued prompt folds in
+               hook(60, "UserPromptSubmit", blocked=True), hook(70, "UserPromptSubmit")]
+        self.assertEqual(stress.turn_intervals(evs, aborts=[50]),
+                         [(10, 30), (40, 50), (70, float("inf"))])
+
+    def test_submit_inside_an_open_turn_is_flagged_and_its_own_turn_is_not(self):
+        evs = [hook(10, "UserPromptSubmit"), hook(30, "Stop"), hook(41, "UserPromptSubmit"), hook(50, "Stop")]
+        self.assertEqual(stress.check_turn_overlap([row(40, "submit", ["m1"])], evs), [])
+        self.assertIn("submit m2 at 20 inside a turn", stress.check_turn_overlap([row(20, "submit", ["m2"])], evs)[0])
+
+    def test_blocked_prompt_opens_no_turn(self):
+        evs = [hook(10, "UserPromptSubmit", blocked=True)]
+        self.assertEqual(stress.check_turn_overlap([row(20, "submit", ["m1"])], evs), [])
+
+
+class MergeLines(unittest.TestCase):
+    def test_rewrites_and_a_reload_reset_merge_without_duplicates(self):
+        rows, seen = [], set()
+        a, b, c = (json.dumps(row(t, "received", ["m%d" % t])) for t in (1, 2, 3))
+        self.assertEqual(stress.merge_lines(rows, seen, a + "\n"), 1)
+        self.assertEqual(stress.merge_lines(rows, seen, a + "\n" + b + "\n"), 1)
+        self.assertEqual(stress.merge_lines(rows, seen, c + "\n" + '{"at": 4, "ki'), 1)  # reload: new file, torn tail
+        self.assertEqual([r["at"] for r in rows], [1, 2, 3])
 
 
 if __name__ == "__main__":
