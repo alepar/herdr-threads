@@ -2405,7 +2405,8 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             &parsed.output.context,
         )?;
     }
-    let own_text_inbox = matches!(&parsed.action, CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
+    let own_text_inbox = parsed.caller_read_default
+        && matches!(&parsed.action, CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
         && parsed.output.format == OutputFormat::Text
         && parsed.presentation != output::Presentation::Machine;
     if !matches!(&parsed.action, CliAction::Wire(_) | CliAction::Retry(_)) || own_text_inbox {
@@ -2456,12 +2457,6 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             parsed.actor,
             &parsed.output.context,
         )?;
-    }
-    if !matches!(&parsed.action, CliAction::Wire(_) | CliAction::Retry(_)) || own_text_inbox {
-        let current = contexts.current().map_err(context_run_error)?;
-        if let Some(context) = initial.or(current.as_ref()) {
-            validate_actor_harness(parsed.actor, context.harness)?;
-        }
     }
     if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
         && own_text_inbox

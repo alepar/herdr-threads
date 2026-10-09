@@ -3184,15 +3184,60 @@ fn actor_prerequisite_public_retry_refuses_before_daemon_state_or_connect() {
 
 #[test]
 fn actor_prerequisite_fresh_mutation_validates_consumed_current_not_initial_seed() {
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("actor-seed-{}", uuid::Uuid::new_v4()));
-    use std::os::unix::fs::DirBuilderExt;
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&root)
-        .unwrap();
+    actor_current_ack_fixture(false, true);
+}
+
+#[test]
+fn actor_prerequisite_human_ack_refuses_current_agent_despite_human_seed() {
+    actor_current_ack_fixture(true, false);
+}
+
+#[test]
+fn actor_prerequisite_agent_ack_uses_current_despite_unused_human_seed() {
+    actor_current_ack_fixture(false, false);
+}
+
+#[test]
+fn actor_prerequisite_human_ack_uses_current_despite_unused_agent_seed() {
+    actor_current_ack_fixture(true, true);
+}
+
+fn actor_fixture_snapshot(
+    root: &std::path::Path,
+) -> std::collections::BTreeMap<std::path::PathBuf, (bool, Vec<u8>)> {
+    fn visit(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        saved: &mut std::collections::BTreeMap<std::path::PathBuf, (bool, Vec<u8>)>,
+    ) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let directory = path.is_dir();
+            saved.insert(
+                path.strip_prefix(root).unwrap().to_path_buf(),
+                (
+                    directory,
+                    if directory {
+                        vec![]
+                    } else {
+                        std::fs::read(&path).unwrap()
+                    },
+                ),
+            );
+            if directory {
+                visit(root, &path, saved);
+            }
+        }
+    }
+    let mut saved = Default::default();
+    visit(root, root, &mut saved);
+    saved
+}
+
+fn actor_current_ack_fixture(human_route: bool, human_current: bool) {
+    use crate::harness::context::{Harness as ContextHarness, Role, SessionReference};
+    let isolation = crate::test_support::isolation::TestIsolation::new("actor-current-ack");
+    let root = isolation.state_root().canonicalize().unwrap();
     let journal = Journal::open(root.join("intents")).unwrap();
     let contexts = crate::harness::context::ContextJournal::open(
         &root,
@@ -3201,42 +3246,209 @@ fn actor_prerequisite_fresh_mutation_validates_consumed_current_not_initial_seed
         std::time::Duration::from_millis(20),
     )
     .unwrap();
-    let human = human_context("pane");
-    contexts.install_reattached(human.clone()).unwrap();
-    let mut seed = human.clone();
-    seed.harness = crate::harness::context::Harness::Codex;
-    struct Never;
-    impl crate::ports::LocalClient for Never {
+    let mut current = human_context("current-pane");
+    if !human_current {
+        current.harness = ContextHarness::Codex;
+    }
+    contexts.install_reattached(current.clone()).unwrap();
+    let mut seed = current.clone();
+    seed.instance = uuid::Uuid::from_u128(9);
+    seed.seat = "unused-seat".into();
+    seed.target = "unused-pane".into();
+    seed.binding_generation = 99;
+    seed.execution = uuid::Uuid::from_u128(3);
+    seed.session = SessionReference::Native("unused-session".into());
+    seed.harness = if human_current {
+        ContextHarness::Codex
+    } else {
+        ContextHarness::Human
+    };
+    // Literal full claim for current, independent of bridge::caller_claim.
+    let expected = CallerClaim {
+        instance: "00000000-0000-0000-0000-000000000001".into(),
+        seat: SeatId::new("seat-1"),
+        binding_generation: 1,
+        role: CallerRole::TopLevel,
+        harness: if human_current {
+            Harness::Human
+        } else {
+            Harness::Codex
+        },
+        native_session: NativeSessionId::new("plugin_context:00000000-0000-0000-0000-000000000002"),
+        execution: ExecutionId::new("00000000-0000-0000-0000-000000000002"),
+        target: HostTargetId::new("current-pane"),
+    };
+    struct Client<'a> {
+        journal: &'a Journal,
+        expected: CallerClaim,
+        calls: std::sync::Mutex<Vec<Command>>,
+    }
+    impl crate::ports::LocalClient for Client<'_> {
         crate::default_output_local_client!();
         fn call(
             &self,
-            _: Command,
+            command: Command,
             _: &crate::protocol::time::CallBudget,
         ) -> Result<CommandResult, crate::protocol::results::ApiError> {
-            panic!("Agent seed hid consumed Human context and reached submission")
+            let Command::Ack(ack) = &command else {
+                panic!("fresh ACK attempted an unrelated effect: {command:?}")
+            };
+            assert_eq!(ack.claim, self.expected);
+            assert_eq!(ack.messages, vec![MessageId::new("message")]);
+            let page = self.journal.page(&Default::default()).unwrap();
+            assert_eq!(page.items.len(), 1, "submit only the one published ACK");
+            let reference = self
+                .journal
+                .resolve_recovery_ref(page.items[0].recovery_ref.as_str())
+                .unwrap();
+            let pending = self.journal.load(&reference).unwrap();
+            assert_eq!(reference.operation, ack.operation);
+            assert_eq!(
+                pending.header.scope,
+                IntentScope::Cooperative {
+                    instance: self.expected.instance.clone(),
+                    seat: SeatId::new("seat-1"),
+                }
+            );
+            let SemanticMutation::Frozen { claim, mutation } = pending.semantic else {
+                panic!("ACK original was not frozen")
+            };
+            assert_eq!(claim, self.expected);
+            assert!(
+                matches!(*mutation, SemanticMutation::Ack { messages } if messages == vec![MessageId::new("message")])
+            );
+            self.calls.lock().unwrap().push(command);
+            Ok(CommandResult::Acknowledged(AckResult {
+                acknowledged: vec![MessageId::new("message")],
+                already_acknowledged: vec![],
+            }))
         }
     }
-    let parsed = crate::cli::commands::parse_argv(["ht", "ack", "message"]).unwrap();
+    let client = Client {
+        journal: &journal,
+        expected,
+        calls: Default::default(),
+    };
+    let parsed = if human_route {
+        crate::cli::commands::parse_argv(["ht", "human", "ack", "message"]).unwrap()
+    } else {
+        crate::cli::commands::parse_argv(["ht", "ack", "message"]).unwrap()
+    };
+    let before = actor_fixture_snapshot(&root);
     let mut output = Vec::new();
-    let error = crate::cli::run_cooperative(
+    let outcome = crate::cli::run_cooperative(
         parsed,
         &journal,
         &contexts,
         Some(&seed),
-        crate::harness::context::Role::TopLevel,
-        &Never,
+        Role::TopLevel,
+        &client,
         &crate::app::SystemClock::new(),
         &mut output,
-    )
-    .unwrap_err();
-    assert!(
-        format!("{error:?}").contains("this command selects a Human context"),
-        "{error:?}"
     );
-    assert_eq!(contexts.current().unwrap().unwrap(), human);
+    if human_route == human_current {
+        assert!(
+            outcome.is_ok(),
+            "unused opposite-harness initial vetoed current: {outcome:?}"
+        );
+        assert_eq!(
+            client.calls.lock().unwrap().len(),
+            1,
+            "one typed submission"
+        );
+        assert!(String::from_utf8(output).unwrap().contains("message"));
+    } else {
+        let error = outcome.unwrap_err();
+        let expected_detail = if human_route {
+            "human namespace cannot act through an agent cooperative selection"
+        } else {
+            "this command selects a Human context"
+        };
+        assert!(format!("{error:?}").contains(expected_detail), "{error:?}");
+        assert!(client.calls.lock().unwrap().is_empty());
+        assert!(output.is_empty());
+        assert_eq!(actor_fixture_snapshot(&root), before);
+    }
+    assert_eq!(contexts.current().unwrap().unwrap(), current);
     assert!(journal.page(&Default::default()).unwrap().items.is_empty());
-    assert!(output.is_empty());
-    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn actor_prerequisite_false_default_plain_inbox_reads_without_acknowledging_human_context() {
+    use crate::protocol::pagination::{Consistency, Page, StopReason};
+    let isolation = crate::test_support::isolation::TestIsolation::new("actor-plain-inbox");
+    let root = isolation.state_root().canonicalize().unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let contexts = crate::harness::context::ContextJournal::open(
+        &root,
+        uuid::Uuid::from_u128(1),
+        "seat-1",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    let human = human_context("current-pane");
+    contexts.install_reattached(human.clone()).unwrap();
+    struct ReadClient(std::sync::Mutex<Vec<Command>>);
+    impl crate::ports::LocalClient for ReadClient {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.call(command, budget)
+        }
+        fn call(
+            &self,
+            command: Command,
+            _: &crate::protocol::time::CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            assert!(
+                matches!(&command, Command::Inbox(query) if query.seat.is_none()),
+                "plain read attempted an accountable/display action: {command:?}"
+            );
+            self.0.lock().unwrap().push(command);
+            Ok(CommandResult::Inbox(Page {
+                items: vec![],
+                next_cursor: None,
+                next_argv: None,
+                high_water_ordinal: 0,
+                scope_revision: None,
+                has_more: false,
+                stop_reason: StopReason::Complete,
+                consistency: Consistency::BoundedLive,
+            }))
+        }
+    }
+    // This parsed public seam shape is non-default and read-only. Normal CLI
+    // resolves its explicit recipient to Some(seat) before run_cooperative;
+    // this control does not claim to test pane-selector resolution.
+    let parsed = crate::cli::commands::parse_argv(["ht", "inbox", "--pane", "w1:p2"]).unwrap();
+    assert!(!parsed.caller_read_default);
+    assert!(
+        matches!(&parsed.action, crate::cli::commands::CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
+    );
+    let client = ReadClient(Default::default());
+    let before = actor_fixture_snapshot(&root);
+    let mut output = Vec::new();
+    let outcome = crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        None,
+        crate::harness::context::Role::TopLevel,
+        &client,
+        &crate::app::SystemClock::new(),
+        &mut output,
+    );
+    assert!(
+        outcome.is_ok(),
+        "plain non-default inbox was incorrectly accountable: {outcome:?}"
+    );
+    assert_eq!(client.0.lock().unwrap().len(), 1);
+    assert_eq!(contexts.current().unwrap().unwrap(), human);
+    assert_eq!(actor_fixture_snapshot(&root), before);
+    assert!(journal.page(&Default::default()).unwrap().items.is_empty());
 }
 
 #[test]
