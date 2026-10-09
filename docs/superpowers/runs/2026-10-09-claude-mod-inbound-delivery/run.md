@@ -9,3 +9,4 @@ idea: build herdr-threads native Claude Code inbound delivery via a herdr-thread
 branch: super-auto/claude-mod-inbound-delivery
 base: main
 spec: 2026-10-09-claude-mod-inbound-delivery-design.md
+epic: ht-j16
