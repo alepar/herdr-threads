@@ -1161,7 +1161,7 @@ def main(argv=None):
             usable, reason, version = preflight(args, procs)
         started = time.time()
         summary = run_live(args, root, procs) if usable else run_fallback(reason)
-        summary.update(sha=sha, claude_version=version, finished=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        summary.update(status="LIVE" if summary["mode"] == "live" else "FALLBACK", sha=sha, claude_version=version, finished=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                        minutes=round((time.time() - started) / 60, 1))
         with open(os.path.join(args.evidence_dir, "summary.json"), "w") as f:
             json.dump(summary, f, indent=1, sort_keys=True)

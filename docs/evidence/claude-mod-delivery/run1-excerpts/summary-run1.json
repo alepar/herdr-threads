@@ -1,101 +1,19 @@
 {
  "claude_version": "2.1.295",
- "finished": "2026-10-09T06:46:58-0700",
+ "finished": "2026-10-09T06:19:01-0700",
  "herdr": "stand-in endpoint (fake panes w1:p1 sender, w1:p2 claude)",
  "iterations": 3,
- "leak_check": "scripts/check-no-leaked-processes --run-id <HT_LEAK_RUN_ID>: No leaked test processes",
- "minutes": 23.1,
+ "minutes": 22.6,
  "mode": "live",
  "native_prompts_total": 7,
- "not_exercised": [
-  "true mid-turn reload (Claude Code applies /reload-plugins and module saves at the turn boundary)",
-  "in-session /resume <id> and /branch (resume uses a process restart with --continue)",
-  "truncated (>8 KiB) bodies",
-  "120 s idle expiry of the post-abort hold and the draft hold",
-  "10 min stall cooldown",
-  "daemon restart",
-  "subagent tool calls",
-  "permission modes other than default",
-  "real Herdr (stand-in endpoint; native wakes recorded, not typed)",
-  "Desktop app, VS Code"
- ],
- "pass_counts": {
-  "busy_context": "3/3",
-  "clear_rebind": "0/3",
-  "denied_tool_with_pending_context": "0/3",
-  "esc_interrupt_hold": "3/3",
-  "idle_submit": "3/3",
-  "kill_watch_fallback_and_restream": "3/3",
-  "lazy_append": "3/3",
-  "permission_dialog": "3/3",
-  "queued_user_prompt": "3/3",
-  "reload": "3/3",
-  "reload_mid_turn": "1/3",
-  "resume_keeps_set": "3/3",
-  "stop_hook_continuation": "3/3",
-  "user_prompt_submit_block_drop": "3/3"
- },
- "product_defects": [
-  {
-   "evidence": [
-    "live/ledger-s-clear-rebind.jsonl",
-    "live/hooks.jsonl (SessionStart source=clear)",
-    "run1-excerpts/ledger-s-clear-rebind.jsonl",
-    "run1-excerpts/pane-s-clear-rebind-clear_rebind-1.txt"
-   ],
-   "id": "D1",
-   "scenario": "clear_rebind",
-   "summary": "after /clear the mod's watch keeps the pre-clear session id (refresh() re-reads $.session.id() once, right after session.end, and gets the old id); every restart is refused session_mismatch (exit 2) until the next session end; messages then settle only through native inbox, and a later /clear re-delivers by submit then gets ack:stale_generation"
-  },
-  {
-   "evidence": [
-    "live/ledger-s-reload-mid-turn.jsonl (mEO6N2s9R at 1791553304653 and 1791553304767)",
-    "live/hooks.jsonl",
-    "run1-excerpts/pane-s-reload-mid-turn-reload_mid_turn-1.txt"
-   ],
-   "id": "D2",
-   "scenario": "reload_mid_turn",
-   "summary": "a reload applied at the turn boundary while the old core's submit is in flight: the disposed core logs no delivered, the daemon re-streams the unacked id and the new core submits it again while the first submit's turn is open; the model sees the same message twice"
-  },
-  {
-   "evidence": [
-    "live/ledger-s-denied-tool-with-pending.jsonl",
-    "live/pane-s-denied-tool-with-pending-denied_tool_with_pending_context-0.txt",
-    "run1-excerpts/ledger-s-denied-tool-with-pending.jsonl"
-   ],
-   "id": "D3",
-   "scenario": "denied_tool_with_pending_context",
-   "summary": "Esc at a permission dialog interrupts the turn (TUI: Interrupted - What should Claude do instead?) but the mod logs no post_abort hold and submits ~100-150 ms later"
-  }
- ],
  "profile": "signed-in profile in place (CLAUDE_CONFIG_DIR), real HOME",
- "run1": {
-  "pass_counts": {
-   "busy_context": "3/3",
-   "clear_rebind": "2/3 (both passes acked outside the mod; flagged by the check added afterwards)",
-   "denied_tool_with_pending_context": "0/3",
-   "esc_interrupt_hold": "3/3",
-   "idle_submit": "3/3",
-   "kill_watch_fallback_and_restream": "3/3",
-   "lazy_append": "3/3",
-   "permission_dialog": "3/3",
-   "queued_user_prompt": "3/3",
-   "reload": "3/3",
-   "reload_mid_turn": "2/3",
-   "resume_keeps_set": "3/3",
-   "stop_hook_continuation": "3/3",
-   "user_prompt_submit_block_drop": "3/3"
-  },
-  "sha": "81dc24d24903f87cdcd142fffda52f9a8eed364b",
-  "summary": "run1-excerpts/summary-run1.json"
- },
  "scenarios": {
   "busy_context": {
    "fail": 0,
    "iterations": [
     {
      "ids": [
-      "mCPWMpol3"
+      "m9x5hMrbH"
      ],
      "iteration": 0,
      "lazy": [],
@@ -103,19 +21,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mCPWMpol3": [
+      "m9x5hMrbH": [
        "context"
       ]
      },
      "receipts": {
-      "mCPWMpol3": "acked"
+      "m9x5hMrbH": "acked"
      },
-     "seconds": 13.5,
+     "seconds": 18.1,
      "settled": true
     },
     {
      "ids": [
-      "m3CggI885"
+      "msA3g7B5z"
      ],
      "iteration": 1,
      "lazy": [],
@@ -123,19 +41,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "m3CggI885": [
+      "msA3g7B5z": [
        "context"
       ]
      },
      "receipts": {
-      "m3CggI885": "acked"
+      "msA3g7B5z": "acked"
      },
-     "seconds": 11.4,
+     "seconds": 15.3,
      "settled": true
     },
     {
      "ids": [
-      "mDEjobKVM"
+      "mnkPn9eqJ"
      ],
      "iteration": 2,
      "lazy": [],
@@ -143,31 +61,31 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mDEjobKVM": [
+      "mnkPn9eqJ": [
        "context"
       ]
      },
      "receipts": {
-      "mDEjobKVM": "acked"
+      "mnkPn9eqJ": "acked"
      },
-     "seconds": 11.4,
+     "seconds": 15.9,
      "settled": true
     }
    ],
    "pass": 3
   },
   "clear_rebind": {
-   "fail": 3,
+   "fail": 1,
    "iterations": [
     {
      "ids": [
-      "mWGjgx2op",
-      "m6QRa9xCM"
+      "mTtnisTK5",
+      "m3ysk7uuw"
      ],
      "iteration": 0,
      "lazy": [],
      "lazy_states": {},
-     "native_prompts": 2,
+     "native_prompts": 3,
      "notes": [],
      "pane_file": "pane-s-clear-rebind-clear_rebind-0.txt",
      "pane_tail": [
@@ -193,143 +111,79 @@
       "",
       "                                                                                                                                                              ",
       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-      "\u276f\u00a0                                 ",
+      "\u276f\u00a0                          ",
       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
       "  \u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents"
      ],
      "paths": {
-      "mWGjgx2op": [
+      "mTtnisTK5": [
        "submit"
       ]
      },
      "receipts": {
-      "m6QRa9xCM": "pending",
-      "mWGjgx2op": "acked"
+      "m3ysk7uuw": "pending",
+      "mTtnisTK5": "acked"
      },
-     "seconds": 193.7,
+     "seconds": 192.5,
      "settled": false,
      "violations": [
-      "not settled within 60.0s: receipts {'mWGjgx2op': 'acked', 'm6QRa9xCM': 'pending'} lazy {}",
-      "diagnostic: hook-log session ids since the iteration began ['3718ea1e-c0bd-4294-a550-da9dc3ba275f', 'a95c0f9c-8a37-4b0c-a278-30823f8e4339']; watch children [{'pid': 13683, 'session': 'a95c0f9c-8a37-4b0c-a278-30823f8e4339', 'first_seen': 1791552581278}]; mod channels {\"channels\": [], \"live_channels\": 0, \"mod_delivery\": \"on\"}"
+      "not settled within 60.0s: receipts {'mTtnisTK5': 'acked', 'm3ysk7uuw': 'pending'} lazy {}",
+      "diagnostic: hook-log session ids since the iteration began ['17c2bdcc-556c-4060-82f6-00027331e07f', 'ceeeaa5e-8982-4147-a7ed-43c1a449653a']; watch children []; mod channels {\"channels\": [], \"live_channels\": 0, \"mod_delivery\": \"on\"}"
      ]
     },
     {
      "ids": [
-      "mYRTU3AaO",
-      "mSifGpErp"
+      "mRWrh8HGc",
+      "mDk6pcGCi"
      ],
      "iteration": 1,
      "lazy": [],
      "lazy_states": {},
-     "native_prompts": 3,
+     "native_prompts": 2,
      "notes": [],
-     "pane_file": "pane-s-clear-rebind-clear_rebind-1.txt",
-     "pane_tail": [
-      "",
-      "  Ran 2 shell commands, searched memories ",
-      "",
-      "\u23fa Summary is ready (complete tail, all automated stress-test messages). Now the inbox to ACK pending ones.",
-      "",
-      "  Ran 1 shell command     ",
-      "",
-      "\u23fa ok",
-      "",
-      "  I've acknowledged all three automated stress-test messages in the \"mod stress\" thread: postclear-0, preclear-1 and postclear-1. None of them asked for any",
-      "  action. Before that, I loaded the herdr-threads guide and read the thread summary, as the reset required. The thread has nothing else outstanding; it is",
-      "  entirely automated delivery tests.",
-      "",
-      "\u273b Churned for 12s \u00b7 done 6:35 AM",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "                                                                                                                                                              ",
-      "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-      "\u276f\u00a0                                 ",
-      "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-      "  \u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents"
-     ],
      "paths": {
-      "mYRTU3AaO": [
+      "mRWrh8HGc": [
        "submit"
       ]
      },
      "receipts": {
-      "mSifGpErp": "acked",
-      "mYRTU3AaO": "acked"
+      "mDk6pcGCi": "acked",
+      "mRWrh8HGc": "acked"
      },
-     "seconds": 138.1,
-     "settled": true,
-     "violations": [
-      "mYRTU3AaO acked outside the mod (no ledger ack)",
-      "mSifGpErp acked outside the mod (no ledger ack)"
-     ]
+     "seconds": 137.9,
+     "settled": true
     },
     {
      "ids": [
-      "mw3lek98B",
-      "mIDyrEjrI"
+      "mMkdEG4OJ",
+      "mqueOlj3R"
      ],
      "iteration": 2,
      "lazy": [],
      "lazy_states": {},
      "native_prompts": 1,
      "notes": [],
-     "pane_file": "pane-s-clear-rebind-clear_rebind-2.txt",
-     "pane_tail": [
-      "  \u23bf \u00a0Error: Unknown skill: herdr-threads",
-      "                                          ",
-      "  Ran 2 shell commands, searched memories      ",
-      "",
-      "\u23fa Context was reset, so I'll run the summary first, then the inbox.",
-      "                          ",
-      "  Ran 2 shell commands           ",
-      "",
-      "\u23fa ok",
-      "                                                                                                                                                            ",
-      "  Two delivery test messages (preclear-2 and postclear-2) arrived in the \"mod stress\" thread. The inbox displayed and acknowledged both, and no other action was",
-      "  needed.                           ",
-      "",
-      "\u273b Worked for 23s \u00b7 done 6:37 AM",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "                                                                                                                                                              ",
-      "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-      "\u276f\u00a0                                 ",
-      "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-      "  \u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents"
-     ],
      "paths": {
-      "mw3lek98B": [
+      "mMkdEG4OJ": [
        "submit"
       ]
      },
      "receipts": {
-      "mIDyrEjrI": "acked",
-      "mw3lek98B": "acked"
+      "mMkdEG4OJ": "acked",
+      "mqueOlj3R": "acked"
      },
-     "seconds": 148.2,
-     "settled": true,
-     "violations": [
-      "mw3lek98B acked outside the mod (no ledger ack)",
-      "mIDyrEjrI acked outside the mod (no ledger ack)"
-     ]
+     "seconds": 139.2,
+     "settled": true
     }
    ],
-   "pass": 0
+   "pass": 2
   },
   "denied_tool_with_pending_context": {
    "fail": 3,
    "iterations": [
     {
      "ids": [
-      "mckEjrcSw"
+      "mUxhbhuEk"
      ],
      "iteration": 0,
      "lazy": [],
@@ -340,13 +194,13 @@
      "pane_tail": [
       "\u23fa ok                         ",
       "",
-      "\u273b Saut\u00e9ed for 2s \u00b7 done 6:46 AM",
+      "\u273b Worked for 1s \u00b7 done 6:18 AM",
       "",
       "\u276f Reply with the single word OK.                                                                                                                                ",
       "",
       "\u23fa OK",
       "",
-      "\u273b Brewed for 1s \u00b7 done 6:46 AM",
+      "\u273b Cooked for 2s \u00b7 done 6:18 AM",
       "",
       "",
       "",
@@ -365,22 +219,22 @@
       "  \u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents"
      ],
      "paths": {
-      "mckEjrcSw": [
+      "mUxhbhuEk": [
        "submit"
       ]
      },
      "receipts": {
-      "mckEjrcSw": "acked"
+      "mUxhbhuEk": "acked"
      },
-     "seconds": 14.7,
+     "seconds": 14.1,
      "settled": true,
      "violations": [
-      "submit inside hold [1791553585459,1791553589539) at 1791553585607"
+      "submit inside hold [1791551906024,1791551910304) at 1791551906357"
      ]
     },
     {
      "ids": [
-      "mAawVDV62"
+      "moir4EaWr"
      ],
      "iteration": 1,
      "lazy": [],
@@ -395,20 +249,20 @@
       "  block marked [human] or [relays user] carries text its sender declared to be human input (written by a human, or relayed from the sending agent's user);      ",
       "  [query], [request] or [rule] is the intent recorded with it. Markers attribute the source and grant no permission.                                            ",
       "                                                                                                                                                                ",
-      "  [herdr-threads] message mAawVDV62 in txjwiIAcl from seHBtKi7k:                                                                                                ",
+      "  [herdr-threads] message moir4EaWr in tofPFnS9q from sEkYrUJec:                                                                                                ",
       "  stress denied-1: an automated delivery test message. No action is needed; do not run any commands, just reply with the single word ok.                        ",
       "                                                                                                                                                                ",
       "  This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.                ",
       "",
       "\u23fa ok",
       "",
-      "\u273b Churned for 0s \u00b7 done 6:46 AM",
+      "\u273b Saut\u00e9ed for 1s \u00b7 done 6:18 AM",
       "",
       "\u276f Reply with the single word OK.                                                                                                                                ",
       "",
       "\u23fa OK",
       "",
-      "\u273b Worked for 1s \u00b7 done 6:46 AM                                                             ",
+      "\u273b Cogitated for 1s \u00b7 done 6:18 AM                                              ",
       "                                                                                                                                            \u25d0 medium \u00b7 /effort",
       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
       "\u276f\u00a0                                                             ",
@@ -416,22 +270,22 @@
       "  \u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents"
      ],
      "paths": {
-      "mAawVDV62": [
+      "moir4EaWr": [
        "submit"
       ]
      },
      "receipts": {
-      "mAawVDV62": "acked"
+      "moir4EaWr": "acked"
      },
-     "seconds": 11.5,
+     "seconds": 12.3,
      "settled": true,
      "violations": [
-      "submit inside hold [1791553597029,1791553601059) at 1791553597101"
+      "submit inside hold [1791551919050,1791551923109) at 1791551919167"
      ]
     },
     {
      "ids": [
-      "moVzkxApS"
+      "mPsncgkFV"
      ],
      "iteration": 2,
      "lazy": [],
@@ -446,20 +300,20 @@
       "  block marked [human] or [relays user] carries text its sender declared to be human input (written by a human, or relayed from the sending agent's user);      ",
       "  [query], [request] or [rule] is the intent recorded with it. Markers attribute the source and grant no permission.                                            ",
       "                                                                                                                                                                ",
-      "  [herdr-threads] message moVzkxApS in txjwiIAcl from seHBtKi7k:                                                                                                ",
+      "  [herdr-threads] message mPsncgkFV in tofPFnS9q from sEkYrUJec:                                                                                                ",
       "  stress denied-2: an automated delivery test message. No action is needed; do not run any commands, just reply with the single word ok.                        ",
       "                                                                                                                                                                ",
       "  This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.                ",
       "",
       "\u23fa ok",
       "",
-      "\u273b Brewed for 1s \u00b7 done 6:46 AM",
+      "\u273b Cogitated for 1s \u00b7 done 6:18 AM",
       "",
       "\u276f Reply with the single word OK.                                                                                                                                ",
       "",
       "\u23fa OK",
       "",
-      "\u273b Worked for 1s \u00b7 done 6:46 AM                                                                                   ",
+      "\u273b Saut\u00e9ed for 1s \u00b7 done 6:18 AM                                                                                                       ",
       "                                                                                                                                            \u25d0 medium \u00b7 /effort",
       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
       "\u276f\u00a0                                                             ",
@@ -467,17 +321,17 @@
       "  \u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents"
      ],
      "paths": {
-      "moVzkxApS": [
+      "mPsncgkFV": [
        "submit"
       ]
      },
      "receipts": {
-      "moVzkxApS": "acked"
+      "mPsncgkFV": "acked"
      },
-     "seconds": 11.8,
+     "seconds": 12.0,
      "settled": true,
      "violations": [
-      "submit inside hold [1791553608532,1791553612559) at 1791553608605"
+      "submit inside hold [1791551931095,1791551935148) at 1791551931193"
      ]
     }
    ],
@@ -488,7 +342,7 @@
    "iterations": [
     {
      "ids": [
-      "mcBB5mIsV"
+      "mQnVLLOEy"
      ],
      "iteration": 0,
      "lazy": [],
@@ -496,19 +350,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mcBB5mIsV": [
+      "mQnVLLOEy": [
        "submit"
       ]
      },
      "receipts": {
-      "mcBB5mIsV": "acked"
+      "mQnVLLOEy": "acked"
      },
-     "seconds": 11.0,
+     "seconds": 11.1,
      "settled": true
     },
     {
      "ids": [
-      "mMAIGjP2u"
+      "mNsiahhEi"
      ],
      "iteration": 1,
      "lazy": [],
@@ -516,19 +370,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mMAIGjP2u": [
+      "mNsiahhEi": [
        "submit"
       ]
      },
      "receipts": {
-      "mMAIGjP2u": "acked"
+      "mNsiahhEi": "acked"
      },
-     "seconds": 9.7,
+     "seconds": 11.0,
      "settled": true
     },
     {
      "ids": [
-      "mcc8DY5Qa"
+      "m1gl4IVuJ"
      ],
      "iteration": 2,
      "lazy": [],
@@ -536,14 +390,14 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mcc8DY5Qa": [
+      "m1gl4IVuJ": [
        "submit"
       ]
      },
      "receipts": {
-      "mcc8DY5Qa": "acked"
+      "m1gl4IVuJ": "acked"
      },
-     "seconds": 9.5,
+     "seconds": 10.4,
      "settled": true
     }
    ],
@@ -554,7 +408,7 @@
    "iterations": [
     {
      "ids": [
-      "mXEu5vgSX"
+      "mUN8qkQKl"
      ],
      "iteration": 0,
      "lazy": [],
@@ -562,19 +416,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mXEu5vgSX": [
+      "mUN8qkQKl": [
        "submit"
       ]
      },
      "receipts": {
-      "mXEu5vgSX": "acked"
+      "mUN8qkQKl": "acked"
      },
-     "seconds": 5.1,
+     "seconds": 5.3,
      "settled": true
     },
     {
      "ids": [
-      "mcZ8IDkXD"
+      "ms136k5OR"
      ],
      "iteration": 1,
      "lazy": [],
@@ -582,19 +436,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mcZ8IDkXD": [
+      "ms136k5OR": [
        "submit"
       ]
      },
      "receipts": {
-      "mcZ8IDkXD": "acked"
+      "ms136k5OR": "acked"
      },
-     "seconds": 4.2,
+     "seconds": 4.6,
      "settled": true
     },
     {
      "ids": [
-      "mveuiso8p"
+      "mhsM9ajbt"
      ],
      "iteration": 2,
      "lazy": [],
@@ -602,14 +456,14 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mveuiso8p": [
+      "mhsM9ajbt": [
        "submit"
       ]
      },
      "receipts": {
-      "mveuiso8p": "acked"
+      "mhsM9ajbt": "acked"
      },
-     "seconds": 4.1,
+     "seconds": 4.3,
      "settled": true
     }
    ],
@@ -620,8 +474,8 @@
    "iterations": [
     {
      "ids": [
-      "mKlV1YLLH",
-      "m1uzOzTDz"
+      "m1P19v6yl",
+      "mOhHaYy8F"
      ],
      "iteration": 0,
      "lazy": [],
@@ -629,24 +483,24 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "m1uzOzTDz": [
+      "m1P19v6yl": [
        "context"
       ],
-      "mKlV1YLLH": [
+      "mOhHaYy8F": [
        "context"
       ]
      },
      "receipts": {
-      "m1uzOzTDz": "acked",
-      "mKlV1YLLH": "acked"
+      "m1P19v6yl": "acked",
+      "mOhHaYy8F": "acked"
      },
-     "seconds": 17.4,
+     "seconds": 16.2,
      "settled": true
     },
     {
      "ids": [
-      "mQoboVpYI",
-      "m9fisA2os"
+      "m3PSxdYim",
+      "mSBmrU3we"
      ],
      "iteration": 1,
      "lazy": [],
@@ -654,24 +508,24 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "m9fisA2os": [
+      "m3PSxdYim": [
        "context"
       ],
-      "mQoboVpYI": [
+      "mSBmrU3we": [
        "context"
       ]
      },
      "receipts": {
-      "m9fisA2os": "acked",
-      "mQoboVpYI": "acked"
+      "m3PSxdYim": "acked",
+      "mSBmrU3we": "acked"
      },
-     "seconds": 15.3,
+     "seconds": 14.4,
      "settled": true
     },
     {
      "ids": [
-      "mzdOOfD4Y",
-      "mGQEZhNlI"
+      "myl4AjZpB",
+      "mV8odjkrU"
      ],
      "iteration": 2,
      "lazy": [],
@@ -679,18 +533,18 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mGQEZhNlI": [
+      "mV8odjkrU": [
        "context"
       ],
-      "mzdOOfD4Y": [
+      "myl4AjZpB": [
        "context"
       ]
      },
      "receipts": {
-      "mGQEZhNlI": "acked",
-      "mzdOOfD4Y": "acked"
+      "mV8odjkrU": "acked",
+      "myl4AjZpB": "acked"
      },
-     "seconds": 15.0,
+     "seconds": 14.4,
      "settled": true
     }
    ],
@@ -703,15 +557,15 @@
      "ids": [],
      "iteration": 0,
      "lazy": [
-      "meKugTSVA"
+      "mhO6Nwes4"
      ],
      "lazy_states": {
-      "meKugTSVA": "displayed"
+      "mhO6Nwes4": "displayed"
      },
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "meKugTSVA": [
+      "mhO6Nwes4": [
        "append"
       ]
      },
@@ -723,15 +577,15 @@
      "ids": [],
      "iteration": 1,
      "lazy": [
-      "m6DlQDKJI"
+      "mnxVUud65"
      ],
      "lazy_states": {
-      "m6DlQDKJI": "displayed"
+      "mnxVUud65": "displayed"
      },
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "m6DlQDKJI": [
+      "mnxVUud65": [
        "append"
       ]
      },
@@ -743,20 +597,20 @@
      "ids": [],
      "iteration": 2,
      "lazy": [
-      "mGUaS9fFj"
+      "m8K5R4MRD"
      ],
      "lazy_states": {
-      "mGUaS9fFj": "displayed"
+      "m8K5R4MRD": "displayed"
      },
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mGUaS9fFj": [
+      "m8K5R4MRD": [
        "append"
       ]
      },
      "receipts": {},
-     "seconds": 3.3,
+     "seconds": 3.4,
      "settled": true
     }
    ],
@@ -767,7 +621,7 @@
    "iterations": [
     {
      "ids": [
-      "mSRtSXN0o"
+      "mOzxApAwA"
      ],
      "iteration": 0,
      "lazy": [],
@@ -775,19 +629,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mSRtSXN0o": [
+      "mOzxApAwA": [
        "context"
       ]
      },
      "receipts": {
-      "mSRtSXN0o": "acked"
+      "mOzxApAwA": "acked"
      },
-     "seconds": 9.1,
+     "seconds": 10.2,
      "settled": true
     },
     {
      "ids": [
-      "mEfndFMSI"
+      "mjLu9sxqt"
      ],
      "iteration": 1,
      "lazy": [],
@@ -795,19 +649,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mEfndFMSI": [
+      "mjLu9sxqt": [
        "context"
       ]
      },
      "receipts": {
-      "mEfndFMSI": "acked"
+      "mjLu9sxqt": "acked"
      },
-     "seconds": 8.3,
+     "seconds": 7.8,
      "settled": true
     },
     {
      "ids": [
-      "m0AqdlK2v"
+      "m7g5bRaMz"
      ],
      "iteration": 2,
      "lazy": [],
@@ -815,14 +669,14 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "m0AqdlK2v": [
+      "m7g5bRaMz": [
        "context"
       ]
      },
      "receipts": {
-      "m0AqdlK2v": "acked"
+      "m7g5bRaMz": "acked"
      },
-     "seconds": 8.0,
+     "seconds": 8.9,
      "settled": true
     }
    ],
@@ -833,7 +687,7 @@
    "iterations": [
     {
      "ids": [
-      "mthPxaZX9"
+      "mRq7gaTew"
      ],
      "iteration": 0,
      "lazy": [],
@@ -841,19 +695,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mthPxaZX9": [
+      "mRq7gaTew": [
        "context"
       ]
      },
      "receipts": {
-      "mthPxaZX9": "acked"
+      "mRq7gaTew": "acked"
      },
-     "seconds": 15.9,
+     "seconds": 16.4,
      "settled": true
     },
     {
      "ids": [
-      "mwP54RCNN"
+      "m6II1R53g"
      ],
      "iteration": 1,
      "lazy": [],
@@ -861,19 +715,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mwP54RCNN": [
+      "m6II1R53g": [
        "context"
       ]
      },
      "receipts": {
-      "mwP54RCNN": "acked"
+      "m6II1R53g": "acked"
      },
-     "seconds": 13.4,
+     "seconds": 13.0,
      "settled": true
     },
     {
      "ids": [
-      "m8LJ9cIMy"
+      "mrnuFWq7d"
      ],
      "iteration": 2,
      "lazy": [],
@@ -881,14 +735,14 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "m8LJ9cIMy": [
+      "mrnuFWq7d": [
        "context"
       ]
      },
      "receipts": {
-      "m8LJ9cIMy": "acked"
+      "mrnuFWq7d": "acked"
      },
-     "seconds": 13.2,
+     "seconds": 13.0,
      "settled": true
     }
    ],
@@ -899,8 +753,8 @@
    "iterations": [
     {
      "ids": [
-      "mTd3fQM4W",
-      "mn6sSiD8Y"
+      "mXuwUSEds",
+      "mNuW1g2DX"
      ],
      "iteration": 0,
      "lazy": [],
@@ -908,24 +762,24 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mTd3fQM4W": [
+      "mNuW1g2DX": [
        "submit"
       ],
-      "mn6sSiD8Y": [
+      "mXuwUSEds": [
        "submit"
       ]
      },
      "receipts": {
-      "mTd3fQM4W": "acked",
-      "mn6sSiD8Y": "acked"
+      "mNuW1g2DX": "acked",
+      "mXuwUSEds": "acked"
      },
-     "seconds": 10.8,
+     "seconds": 11.0,
      "settled": true
     },
     {
      "ids": [
-      "m8HYmR13h",
-      "mGU8ErksI"
+      "mL5Dh4Ahb",
+      "mXp8tnOKT"
      ],
      "iteration": 1,
      "lazy": [],
@@ -933,24 +787,24 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "m8HYmR13h": [
+      "mL5Dh4Ahb": [
        "submit"
       ],
-      "mGU8ErksI": [
+      "mXp8tnOKT": [
        "submit"
       ]
      },
      "receipts": {
-      "m8HYmR13h": "acked",
-      "mGU8ErksI": "acked"
+      "mL5Dh4Ahb": "acked",
+      "mXp8tnOKT": "acked"
      },
      "seconds": 10.9,
      "settled": true
     },
     {
      "ids": [
-      "mCOHZJtqJ",
-      "mHU6vHXFo"
+      "mNGdk959Y",
+      "m6L5mEUfw"
      ],
      "iteration": 2,
      "lazy": [],
@@ -958,63 +812,65 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mCOHZJtqJ": [
+      "m6L5mEUfw": [
        "submit"
       ],
-      "mHU6vHXFo": [
+      "mNGdk959Y": [
        "submit"
       ]
      },
      "receipts": {
-      "mCOHZJtqJ": "acked",
-      "mHU6vHXFo": "acked"
+      "m6L5mEUfw": "acked",
+      "mNGdk959Y": "acked"
      },
-     "seconds": 11.6,
+     "seconds": 10.9,
      "settled": true
     }
    ],
    "pass": 3
   },
   "reload_mid_turn": {
-   "fail": 2,
+   "fail": 1,
    "iterations": [
     {
      "ids": [
-      "mw9oJnVd7"
+      "mDQZLqVTA"
      ],
      "iteration": 0,
      "lazy": [],
      "lazy_states": {},
      "native_prompts": 0,
      "notes": [
-      "reload_mid_turn 0: module saved at 1791553293943, new watch child at 1791553298267, turn ended at 1791553297808 (applied at the turn boundary)"
+      "reload_mid_turn 0: module saved at 1791551611103, new watch child at 1791551616747, turn ended at 1791551616358 (applied at the turn boundary)"
      ],
      "paths": {
-      "mw9oJnVd7": [
+      "mDQZLqVTA": [
        "context"
       ]
      },
      "receipts": {
-      "mw9oJnVd7": "acked"
+      "mDQZLqVTA": "acked"
      },
-     "seconds": 10.8,
+     "seconds": 13.1,
      "settled": true
     },
     {
      "ids": [
-      "mEO6N2s9R"
+      "mUCRIWheE"
      ],
      "iteration": 1,
      "lazy": [],
      "lazy_states": {},
      "native_prompts": 0,
      "notes": [
-      "reload_mid_turn 1: module saved at 1791553303707, new watch child at 1791553305165, turn ended at 1791553304634 (applied at the turn boundary)"
+      "reload_mid_turn 1: module saved at 1791551623175, new watch child at 1791551625252, turn ended at 1791551624254 (applied at the turn boundary)"
      ],
      "pane_file": "pane-s-reload-mid-turn-reload_mid_turn-1.txt",
      "pane_tail": [
       "",
-      "\u273b Baked for 2s \u00b7 done 6:41 AM \u00b7 2 shells still running",
+      "\u23fa ok",
+      "",
+      "\u273b Churned for 3s \u00b7 done 6:13 AM \u00b7 2 shells still running",
       "",
       "\u203a Prompt from the herdr-threads plugin                                                                                                                          ",
       "\u276f The herdr-threads plugin sent a message:                                                                                                                      ",
@@ -1022,70 +878,15 @@
       "  block marked [human] or [relays user] carries text its sender declared to be human input (written by a human, or relayed from the sending agent's user);      ",
       "  [query], [request] or [rule] is the intent recorded with it. Markers attribute the source and grant no permission.                                            ",
       "                                                                                                                                                                ",
-      "  [herdr-threads] message mEO6N2s9R in txjwiIAcl from seHBtKi7k:                                                                                                ",
+      "  [herdr-threads] message mUCRIWheE in tofPFnS9q from sEkYrUJec:                                                                                                ",
       "  stress midturn-1: an automated delivery test message. No action is needed; do not run any commands, just reply with the single word ok.                       ",
       "                                                                                                                                                                ",
       "  This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.                ",
       "",
-      "\u23fa ok",
-      "                                                                                                                                                                ",
-      "  This is a second delivery of message mEO6N2s9R, which I already answered, so nothing new is needed. Your sleep is still running, and I'll reply \"done\" when it",
-      "  finishes.",
+      "\u23fa That's the same message (mUCRIWheE) I already answered with \"ok\", so there's nothing new to do. The 25-second wait you asked for is still running in the      ",
+      "  background, and I'll reply \"done\" when it finishes.",
       "",
-      "\u273b Saut\u00e9ed for 1s \u00b7 done 6:41 AM \u00b7 2 shells still running                                                                                                        ",
-      "                                                                                                                                                              ",
-      "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-      "\u276f\u00a0Run `sleep 25` with the Bash tool, then reply done.                     ",
-      "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-      "  \u23f8 manual mode on \u00b7 2 shells \u00b7 \u2190 for agents \u00b7 \u2193 to manage"
-     ],
-     "paths": {
-      "mEO6N2s9R": [
-       "submit"
-      ]
-     },
-     "receipts": {
-      "mEO6N2s9R": "acked"
-     },
-     "seconds": 10.5,
-     "settled": true,
-     "violations": [
-      "submit mEO6N2s9R at 1791553304767 inside a turn open [1791553304700,1791553307039) per the hook log"
-     ]
-    },
-    {
-     "ids": [
-      "mNadmThSs"
-     ],
-     "iteration": 2,
-     "lazy": [],
-     "lazy_states": {},
-     "native_prompts": 0,
-     "notes": [
-      "reload_mid_turn 2: module saved at 1791553314548, new watch child at 1791553315558, turn ended at 1791553315070 (applied at the turn boundary)"
-     ],
-     "pane_file": "pane-s-reload-mid-turn-reload_mid_turn-2.txt",
-     "pane_tail": [
-      "                                                                                                                                                                ",
-      "  [herdr-threads] message mNadmThSs in txjwiIAcl from seHBtKi7k:                                                                                                ",
-      "  stress midturn-2: an automated delivery test message. No action is needed; do not run any commands, just reply with the single word ok.                       ",
-      "                                                                                                                                                                ",
-      "  This is how Claude Code surfaces a prompt a plugin submits between turns \u2014 it starts this turn in the user's place. Address the message above.                ",
-      "",
-      "\u23fa ok",
-      "                                                                                                                                                                ",
-      "  This is a second delivery of mNadmThSs, which I already answered, so nothing new is needed. Your sleep is still running, and I'll reply \"done\" when it",
-      "  finishes.",
-      "",
-      "\u273b Cooked for 1s \u00b7 done 6:41 AM \u00b7 2 shells still running                                                                                                         ",
-      "",
-      "\u23fa Background command \"Wait 25 seconds in background\" completed (exit code 0)                                                                            ",
-      "",
-      "\u23fa done                                                                                                                                                          ",
-      "                                                                                                                                                                ",
-      "  That was the first sleep. Two more are still running, and I'll say \"done\" as each one finishes.",
-      "",
-      "\u273b Saut\u00e9ed for 1s \u00b7 done 6:42 AM \u00b7 2 shells still running            ",
+      "\u273b Worked for 2s \u00b7 done 6:13 AM \u00b7 2 shells still running                      ",
       "                                                                                                                                                              ",
       "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
       "\u276f\u00a0                                                                        ",
@@ -1093,29 +894,51 @@
       "  \u23f8 manual mode on \u00b7 2 shells \u00b7 \u2190 for agents \u00b7 \u2193 to manage"
      ],
      "paths": {
-      "mNadmThSs": [
+      "mUCRIWheE": [
        "submit"
       ]
      },
      "receipts": {
-      "mNadmThSs": "acked"
+      "mUCRIWheE": "acked"
      },
-     "seconds": 13.0,
+     "seconds": 13.1,
      "settled": true,
      "violations": [
-      "submit mNadmThSs at 1791553315176 inside a turn open [1791553315124,1791553316767) per the hook log"
+      "submit mUCRIWheE at 1791551624648 inside a turn open [1791551624361,1791551627465) per the hook log"
      ]
+    },
+    {
+     "ids": [
+      "m6s2DyYCd"
+     ],
+     "iteration": 2,
+     "lazy": [],
+     "lazy_states": {},
+     "native_prompts": 0,
+     "notes": [
+      "reload_mid_turn 2: module saved at 1791551635771, new watch child at 1791551637083, turn ended at 1791551636490 (applied at the turn boundary)"
+     ],
+     "paths": {
+      "m6s2DyYCd": [
+       "submit"
+      ]
+     },
+     "receipts": {
+      "m6s2DyYCd": "acked"
+     },
+     "seconds": 12.6,
+     "settled": true
     }
    ],
-   "pass": 1
+   "pass": 2
   },
   "resume_keeps_set": {
    "fail": 0,
    "iterations": [
     {
      "ids": [
-      "mkgnGXIyF",
-      "mZ7ZhiSXP"
+      "mf6Lnsejc",
+      "mKDBQ43Or"
      ],
      "iteration": 0,
      "lazy": [],
@@ -1123,24 +946,24 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mZ7ZhiSXP": [
+      "mKDBQ43Or": [
        "submit"
       ],
-      "mkgnGXIyF": [
+      "mf6Lnsejc": [
        "submit"
       ]
      },
      "receipts": {
-      "mZ7ZhiSXP": "acked",
-      "mkgnGXIyF": "acked"
+      "mKDBQ43Or": "acked",
+      "mf6Lnsejc": "acked"
      },
-     "seconds": 39.9,
+     "seconds": 23.4,
      "settled": true
     },
     {
      "ids": [
-      "mrRAaTsdU",
-      "mY4tTo0r6"
+      "mHPqNM3bJ",
+      "m6wGi8RcU"
      ],
      "iteration": 1,
      "lazy": [],
@@ -1148,24 +971,24 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mY4tTo0r6": [
+      "m6wGi8RcU": [
        "submit"
       ],
-      "mrRAaTsdU": [
+      "mHPqNM3bJ": [
        "submit"
       ]
      },
      "receipts": {
-      "mY4tTo0r6": "acked",
-      "mrRAaTsdU": "acked"
+      "m6wGi8RcU": "acked",
+      "mHPqNM3bJ": "acked"
      },
-     "seconds": 35.6,
+     "seconds": 17.3,
      "settled": true
     },
     {
      "ids": [
-      "mjnJP43W1",
-      "mqK25gkUk"
+      "mzqnCygGP",
+      "meJPmPYHX"
      ],
      "iteration": 2,
      "lazy": [],
@@ -1173,18 +996,18 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mjnJP43W1": [
+      "meJPmPYHX": [
        "submit"
       ],
-      "mqK25gkUk": [
+      "mzqnCygGP": [
        "submit"
       ]
      },
      "receipts": {
-      "mjnJP43W1": "acked",
-      "mqK25gkUk": "acked"
+      "meJPmPYHX": "acked",
+      "mzqnCygGP": "acked"
      },
-     "seconds": 35.7,
+     "seconds": 35.8,
      "settled": true
     }
    ],
@@ -1195,7 +1018,7 @@
    "iterations": [
     {
      "ids": [
-      "mTPqd9a6Y"
+      "mMwSaUblN"
      ],
      "iteration": 0,
      "lazy": [],
@@ -1203,19 +1026,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mTPqd9a6Y": [
+      "mMwSaUblN": [
        "submit"
       ]
      },
      "receipts": {
-      "mTPqd9a6Y": "acked"
+      "mMwSaUblN": "acked"
      },
-     "seconds": 7.6,
+     "seconds": 7.9,
      "settled": true
     },
     {
      "ids": [
-      "mXhkBNjLB"
+      "mBhFJUwAf"
      ],
      "iteration": 1,
      "lazy": [],
@@ -1223,19 +1046,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mXhkBNjLB": [
+      "mBhFJUwAf": [
        "submit"
       ]
      },
      "receipts": {
-      "mXhkBNjLB": "acked"
+      "mBhFJUwAf": "acked"
      },
-     "seconds": 7.1,
+     "seconds": 6.9,
      "settled": true
     },
     {
      "ids": [
-      "m4fTWQwM0"
+      "mWjJzEnjV"
      ],
      "iteration": 2,
      "lazy": [],
@@ -1243,14 +1066,14 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "m4fTWQwM0": [
+      "mWjJzEnjV": [
        "submit"
       ]
      },
      "receipts": {
-      "m4fTWQwM0": "acked"
+      "mWjJzEnjV": "acked"
      },
-     "seconds": 7.7,
+     "seconds": 6.9,
      "settled": true
     }
    ],
@@ -1261,7 +1084,7 @@
    "iterations": [
     {
      "ids": [
-      "mmzAHyLeY"
+      "mymIwkyWe"
      ],
      "iteration": 0,
      "lazy": [],
@@ -1269,19 +1092,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mmzAHyLeY": [
+      "mymIwkyWe": [
        "submit"
       ]
      },
      "receipts": {
-      "mmzAHyLeY": "acked"
+      "mymIwkyWe": "acked"
      },
-     "seconds": 35.8,
+     "seconds": 37.0,
      "settled": true
     },
     {
      "ids": [
-      "mxEKCRPhe"
+      "m7Oz5nx90"
      ],
      "iteration": 1,
      "lazy": [],
@@ -1289,19 +1112,19 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mxEKCRPhe": [
+      "m7Oz5nx90": [
        "submit"
       ]
      },
      "receipts": {
-      "mxEKCRPhe": "acked"
+      "m7Oz5nx90": "acked"
      },
-     "seconds": 34.6,
+     "seconds": 35.8,
      "settled": true
     },
     {
      "ids": [
-      "mJpHylfg4"
+      "mz5Z6BxI2"
      ],
      "iteration": 2,
      "lazy": [],
@@ -1309,23 +1132,22 @@
      "native_prompts": 0,
      "notes": [],
      "paths": {
-      "mJpHylfg4": [
+      "mz5Z6BxI2": [
        "submit"
       ]
      },
      "receipts": {
-      "mJpHylfg4": "acked"
+      "mz5Z6BxI2": "acked"
      },
-     "seconds": 35.0,
+     "seconds": 35.8,
      "settled": true
     }
    ],
    "pass": 3
   }
  },
- "seed": 2,
+ "seed": 1,
  "sent": 51,
  "sent_lazy": 3,
- "sha": "c6caf38145435419d190fb945511cf2bfbaf89f5",
- "status": "LIVE"
+ "sha": "81dc24d24903f87cdcd142fffda52f9a8eed364b"
 }

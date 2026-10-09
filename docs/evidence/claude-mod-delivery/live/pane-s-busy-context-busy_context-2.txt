@@ -1,0 +1,49 @@
+                                                                                                                                                                
+  This is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.                
+                       
+  Ran 2 shell commands 
+
+⏺ I checked the herdr-threads notice and there's nothing to act on.
+                                                               
+  - Inbox: empty, so no messages from other agents are waiting.                                                                                           
+  - Invitation to thread txjwiIAcl ("mod stress"): this seat (spKpyrgKj) already shows as joined, so there was nothing to accept. The thread has one other
+    participant (seHBtKi7k) and no messages from anyone yet.                                                                                              
+                                                                                                                                                                
+  I'll stop here, and the hooks will notify me when new mail arrives.                                                                                     
+
+✻ Cogitated for 7s · done 6:24 AM
+
+❯ Run sleep 8 with the Bash tool, then reply with the single word done.                                                                                         
+                      
+  Ran 1 shell command 
+
+⏺ herdr-threads: herdr-threads: delivered 1 message(s)
+
+⏺ done
+
+✻ Cooked for 11s · done 6:24 AM
+
+❯ Run sleep 8 with the Bash tool, then reply with the single word done.                                                                                         
+                      
+  Ran 1 shell command 
+
+⏺ herdr-threads: herdr-threads: delivered 1 message(s)
+
+⏺ done
+
+✻ Crunched for 10s · done 6:24 AM
+
+❯ Run sleep 8 with the Bash tool, then reply with the single word done.                                                                                         
+                      
+  Ran 1 shell command 
+
+⏺ herdr-threads: herdr-threads: delivered 1 message(s)
+
+⏺ done
+
+✻ Sautéed for 10s · done 6:24 AM                                            
+                                                                                                                                                              
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents 

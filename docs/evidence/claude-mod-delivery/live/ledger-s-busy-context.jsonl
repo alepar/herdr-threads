@@ -1,0 +1,13 @@
+{"at": 1791552239824, "ids": ["attention:1"], "kind": "received", "reason": null, "turn": null, "via": null}
+{"at": 1791552244811, "ids": ["attention:1"], "kind": "submit", "reason": null, "turn": null, "via": "submit"}
+{"at": 1791552244908, "ids": ["attention:1"], "kind": "delivered", "reason": null, "turn": "139b2b1b-ee2c-4f56-bf6a-ebfbe42987cc", "via": "submit"}
+{"at": 1791552257089, "ids": ["mCPWMpol3"], "kind": "received", "reason": null, "turn": "cd937a01-95e2-41b8-b8f9-9c5e30cd97e7", "via": null}
+{"at": 1791552263861, "ids": ["mCPWMpol3"], "kind": "delivered", "reason": null, "turn": "cd937a01-95e2-41b8-b8f9-9c5e30cd97e7", "via": "context"}
+{"at": 1791552263894, "ids": ["mCPWMpol3"], "kind": "acked", "reason": "settled", "turn": "cd937a01-95e2-41b8-b8f9-9c5e30cd97e7", "via": "context"}
+{"at": 1791552270566, "ids": ["m3CggI885"], "kind": "received", "reason": null, "turn": "3e266482-17c8-4e6c-a53b-7cf339a06a4a", "via": null}
+{"at": 1791552277272, "ids": ["m3CggI885"], "kind": "delivered", "reason": null, "turn": "3e266482-17c8-4e6c-a53b-7cf339a06a4a", "via": "context"}
+{"at": 1791552277305, "ids": ["m3CggI885"], "kind": "acked", "reason": "settled", "turn": "3e266482-17c8-4e6c-a53b-7cf339a06a4a", "via": "context"}
+{"at": 1791552281999, "ids": ["mDEjobKVM"], "kind": "received", "reason": null, "turn": "007a8b18-172a-470b-b53c-2a9fc9d04c7f", "via": null}
+{"at": 1791552288708, "ids": ["mDEjobKVM"], "kind": "delivered", "reason": null, "turn": "007a8b18-172a-470b-b53c-2a9fc9d04c7f", "via": "context"}
+{"at": 1791552288724, "ids": ["mDEjobKVM"], "kind": "acked", "reason": "settled", "turn": "007a8b18-172a-470b-b53c-2a9fc9d04c7f", "via": "context"}
+{"at": 1791552292398, "ids": [], "kind": "restart", "reason": "exit:1", "turn": null, "via": null}
