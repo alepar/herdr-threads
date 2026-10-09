@@ -1,8 +1,41 @@
 # Claude mod delivery: live stress evidence (ht-j16.9)
 
-Status: LIVE. All 14 scenarios ran in real Claude Code TUI sessions, 3 iterations each. 11 scenarios passed
-every iteration. 3 scenarios failed for product reasons, recorded below as defects D1-D3. The driver was not
-changed to hide any of them.
+Status: LIVE at the final code SHA. The re-run after the D1-D3 fixes passed 13 of 14 scenarios in every
+iteration. `reload_mid_turn` passed 2/3: its one failure is a second `delivered` ledger entry with one submit and
+one presentation (details below). The first run, which found D1-D3, is kept below unchanged.
+
+## Re-run at the final code SHA (after ht-j16.28-.33 and dc5b2f6c)
+
+- Source SHA: `b562d1e4757534323ee500b40e864e2274e145b1` (`super-auto/claude-mod-inbound-delivery`), Claude Code
+  2.1.295, same driver and profile setup as below. Command:
+  `python3 tests/native/claude_mod/stress.py --iterations 3 --settle 60` (no fixed seed). Wall clock 16.0 min.
+  51 require-ACK messages and 3 lazy messages were sent; every one ended acked or `displayed`.
+- [`summary.json`](summary.json) and [`live/`](live/) now hold this re-run. The first run's `live/` files that
+  the D1-D3 sections cite are in git history at `2c3120b1`; [`run1-excerpts/`](run1-excerpts/) is unchanged.
+- Leak check: `scripts/check-no-leaked-processes --run-id $HT_LEAK_RUN_ID` printed "no leaked test processes".
+
+| Scenario | First run (c6caf381) | Re-run (b562d1e4) |
+|---|---|---|
+| clear_rebind (D1) | 0/3 | 3/3 |
+| reload_mid_turn (D2) | 1/3 | 2/3 |
+| denied_tool_with_pending_context (D3) | 0/3 | 3/3 |
+| the other 11 scenarios | 3/3 | 3/3 |
+
+Native wake prompts across the whole re-run: 1.
+
+**The remaining `reload_mid_turn` failure is a ledger entry, not a second delivery.** In iteration 1,
+`mKqWl1pGt` was submitted once (`submit` at 1791559138267). The pre-reload mod recorded it `delivered` and acked
+it (`already_settled`). After the reload, the new mod instance found the predecessor's persisted `submitting`
+record, matched the submitted turn and recorded the id `delivered` again (`predecessor_submit`, 1791559140683);
+its ack came back `already_settled`. The pane (`live/pane-s-reload-mid-turn-reload_mid_turn-1.txt`) shows the
+message once. The driver's "duplicate delivered" check counts ledger entries, so it fails the iteration. The
+cause is that a submit that resolved just before dispose leaves its `submitting` record behind; the successor
+could skip ids its session record already holds as delivered.
+
+## First run (found D1-D3)
+
+Status at that SHA: 11 scenarios passed every iteration. 3 scenarios failed for product reasons, recorded below
+as defects D1-D3. The driver was not changed to hide any of them.
 
 ## Run
 

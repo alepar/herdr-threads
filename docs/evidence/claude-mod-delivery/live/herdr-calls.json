@@ -1,54 +1,6 @@
 [
  {
-  "at": 1791552239633,
-  "method": "agent.prompt",
-  "params": {
-   "target": "w1:p2",
-   "text": "herdr-threads: attention pending; run herdr-threads inbox"
-  }
- },
- {
-  "at": 1791552612502,
-  "method": "agent.prompt",
-  "params": {
-   "target": "w1:p2",
-   "text": "herdr-threads: attention pending; run herdr-threads inbox"
-  }
- },
- {
-  "at": 1791552672780,
-  "method": "agent.prompt",
-  "params": {
-   "target": "w1:p2",
-   "text": "herdr-threads: attention pending; run herdr-threads inbox"
-  }
- },
- {
-  "at": 1791552768280,
-  "method": "agent.prompt",
-  "params": {
-   "target": "w1:p2",
-   "text": "herdr-threads: receipt due in 117s on txjwiIAcl; run herdr-threads inbox"
-  }
- },
- {
-  "at": 1791552769672,
-  "method": "agent.prompt",
-  "params": {
-   "target": "w1:p2",
-   "text": "herdr-threads: attention pending; run herdr-threads inbox"
-  }
- },
- {
-  "at": 1791552884957,
-  "method": "agent.prompt",
-  "params": {
-   "target": "w1:p2",
-   "text": "herdr-threads: attention pending; run herdr-threads inbox"
-  }
- },
- {
-  "at": 1791552922622,
+  "at": 1791558490507,
   "method": "agent.prompt",
   "params": {
    "target": "w1:p2",
