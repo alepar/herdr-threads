@@ -10,6 +10,7 @@ base: main
 spec: 2026-10-09-hermes-global-enrollment-design.md
 epic: ht-4ne
 roastDesignRound: 1
+roast-design: 2026-10-09-hermes-global-enrollment-roast-design-1.md
 
 approvals:
 - top-split · auto · ht-4ne.1 LEAF, ht-4ne.2 LEAF, ht-4ne.3 LEAF, ht-4ne.4 LEAF
