@@ -38,6 +38,8 @@ Background research: `~/Documents/Claude_Code_Mods_Delivery_Research_20261008/re
 | 11 | Worker wedged (busy loop) | Nothing was detected until a hook event arrived. Then a 5 s heartbeat timeout unloaded the mod, with a visible transcript line (`ht-spike was unloaded: it crashed the hooks worker`). The session kept working. The feed child was killed, so no orphan was left, and messages fed while unloaded were lost from this feed. `/reload-plugins` restored delivery. |
 | 12 | `asUser: true` | Rendered as plain text under a `› Prompt from the ht-spike plugin` header, without the "The ht-spike plugin sent a message" frame. |
 | 13 | Loaded via `CLAUDE_CODE_PLUGIN_DIRS` instead of `--plugin-dir` | Works the same. |
+| 14 | User queued a prompt mid-turn, plugin message arrives too | The queued user prompt was folded into the running turn (`ALPHA` then `BRAVO` in one answer). `turn.complete` fired once, and only then did the plugin's turn start. |
+| 15 | Stop hook blocks once (`decision: block`, continuation) | The continuation stayed inside the same turn (`ECHO`, then `DELTA`). `turn.complete` fired only after it, and the plugin's turn started after that. There was no idle gap between the two. |
 | - | Pane identity | `HERDR_PANE_ID` from the pane's environment was readable in every session. |
 
 How a framed submit renders (both the TUI and what Claude reads):
@@ -48,6 +50,18 @@ How a framed submit renders (both the TUI and what Claude reads):
   [herdr-threads] message m1 from alice: Please reply with exactly the word PONG-1 and nothing else.
   This is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.
 ```
+
+## Races at turn boundaries
+
+The send-keys path races because it judges idleness from outside, by looking at the pane. `$.prompt.submit`
+asks the engine, which knows when a turn has really ended. A Stop-hook continuation and a prompt queued
+mid-turn both stayed inside the turn (rows 14 and 15). No transient idle gap appeared, and nothing was
+typed into a running turn. The races that remained are in the mod's own bookkeeping and around interrupts
+(rows 10 and 11). So the mod should:
+
+- Let the engine decide idleness for wake-ups, rather than gating on a flag of its own, except to hold
+  after an aborted turn.
+- Use `context` or `append` while a turn runs. Both are safe at any moment and never start a turn.
 
 ## Design consequences for a real herdr-threads mod
 

@@ -1,0 +1,12 @@
+    0.00s {"kind": "session-start", "pane": "spike-s6", "session": "4d4b8a7f-457a-4456-a91a-9ba4c2415135", "version": "2.1.294"}
+    0.00s {"kind": "feed-started", "feed": "/private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/sessions/s6/feed.jsonl"}
+   11.52s {"kind": "prompt-submit-seen", "origin": {"kind": "composer"}, "text": "Run `sleep 6` in bash then say ECHO."}
+   11.54s {"kind": "turn-start", "turn": "6e7d8b3f-15aa-4ef4-8df0-749922fc6645", "session": "4d4b8a7f-457a-4456-a91a-9ba4c2415135"}
+   14.73s {"kind": "received", "id": "st1", "mode": "submit", "busy": true}
+   22.95s {"kind": "turn-complete", "turn": "6e7d8b3f-15aa-4ef4-8df0-749922fc6645", "aborted": false}
+   22.95s {"kind": "submit-call", "ids": ["st1"], "reason": "turn-complete", "asUser": false}
+   22.97s {"kind": "submit-resolved", "ids": ["st1"], "drop": null}
+   22.97s {"kind": "turn-start", "turn": "426462cb-a16e-4c36-9c67-308bc0eb79a7", "session": "4d4b8a7f-457a-4456-a91a-9ba4c2415135"}
+   24.89s {"kind": "turn-complete", "turn": "426462cb-a16e-4c36-9c67-308bc0eb79a7", "aborted": false}
+   61.58s {"kind": "feed-ended"}
+   61.58s {"kind": "session-end", "reason": "other"}
