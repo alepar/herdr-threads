@@ -21,13 +21,13 @@ roast-design exit: converged at round 2 (Should-fix (3 confirmed) [converged], n
 graph-pass: depth 4→4 · width 1.2→1.2 · applied 0 · parked 0
 
 codeBuckets:
-  completed: ht-4ne.1, ht-4ne.4, ht-4ne.2, ht-4ne.3, ht-4ne.5, ht-4ne.10, ht-4ne.11
+  completed: ht-4ne.1, ht-4ne.4, ht-4ne.2, ht-4ne.3, ht-4ne.5, ht-4ne.10, ht-4ne.11, ht-4ne.12
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (headless `hermes -z`/`chat -q` carry platform=cli, so with the broadened cross-harness retire a nested different-harness CLI replaces another agent's binding and a one-shot allocates a seat — no TRUST-POLICY accepted limit; concurrent start/first-turn UnknownOutcome unexplained; branch unmeasured by full suite)
-  sweep: 2160dd08 — 4464 passed, 1 failed, 0 errors, 44 skipped; failing: integration no_leaks::every_test_spawn_site_is_owned; command: nice cargo nextest run --locked --all-targets --all-features (wall 269s; leak check clean) @ 2160dd08
+  review: not ready (decision needed on nested/headless different-harness binding replacement — no TRUST-POLICY accepted-limit sentence; startup_enrollment_hermes_.* outside the serializing nextest override; branch unmeasured at review time, since measured green)
+  sweep: e89d816e — 4465 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (wall 180s; leak check clean) @ e89d816e
   slowness: round 1: graph-bound — 5 open beads, depth 4, achievable width 2 vs cap 8; edge audit armed now
   worktreesKept:
   processSweep: stopped 0 · survived 0
@@ -43,3 +43,5 @@ scope-filter: 2 in-scope · 2 punch-listed
 fix-beads-round-1: ht-4ne.10 (stale-prelaunch-text cluster + final-review adapter.rs:326), ht-4ne.11 (final-review untested scope: retire re-enroll, stale-hint absence, visible smoke skip); final-review retry item and TRUST-POLICY resume item stay rejected (roast r1 panels); full-suite/lint/leak item → phase 6
 roastCodeExit: converged
 baseAbsorbed: 3264587b → 2160dd08, 0 conflicted files
+sweepFix: 1 failing → ht-4ne.12 · re-run e89d816e — 4465 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features @ e89d816e
+friction: 6 events
