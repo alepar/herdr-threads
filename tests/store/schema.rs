@@ -5150,7 +5150,7 @@ fn recent_activity_writer_rejects_missing_or_null_default() {
 // and incomplete public migration chaining from any supported historical version.
 #[test]
 fn adapter_migration_preserves_all_supported_history_and_rejection_overlay() {
-    for version in 1..=25 {
+    for version in 1..=26 {
         let db = adapter_historical_database(version);
         db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (7,'s',1,'p','b',0,'codex','session','execution','cooperative_top_level',1,1,'term','inc');").unwrap();
         db.execute_batch("INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at) VALUES (90,'s',2,'p','b',0,'codex','deleted','deleted','cooperative_top_level',2,3); DELETE FROM occupant_bindings WHERE ordinal=90;").unwrap();
@@ -5354,6 +5354,7 @@ fn adapter_historical_database(version: usize) -> Connection {
         include_str!("../../migrations/0023_channel_archival.sql"),
         include_str!("../../migrations/0024_harness_contract_diagnostics.sql"),
         include_str!("../../migrations/0025_warning_notice_delivery.sql"),
+        include_str!("../../migrations/0026_lazy_message_delivery.sql"),
     ];
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
@@ -5367,7 +5368,7 @@ fn adapter_historical_database(version: usize) -> Connection {
 
 #[test]
 fn adapter_migration_failure_rolls_back_rebuilt_tables_and_schema_version() {
-    let db = adapter_historical_database(25);
+    let db = adapter_historical_database(26);
     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES (7,'s',1,'p','b',0,'codex','launch:n','launch:e','managed_launch',0); UPDATE sqlite_sequence SET seq=90 WHERE name='occupant_bindings'; CREATE TABLE harness_runtime_identities(collision INTEGER);").unwrap();
     let original: String = db
         .query_row(
@@ -5382,7 +5383,7 @@ fn adapter_migration_failure_rolls_back_rebuilt_tables_and_schema_version() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        25
+        26
     );
     assert_eq!(
         db.query_row(
@@ -6087,15 +6088,15 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         assert_eq!(catalog(&db), catalog(&fresh));
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            67
+            68
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            133
+            135
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            157
+            166
         );
     }
 }
@@ -6214,7 +6215,7 @@ fn absorption_main24_backfills_warning_delivery_before_adapter26() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        26
+        27
     );
     let offered = crate::store::attention::notice_offer_page(&db, "s", 16).unwrap();
     assert_eq!(offered.len(), 1);
@@ -6250,4 +6251,36 @@ fn absorption_main24_backfills_warning_delivery_before_adapter26() {
         crate::store::attention::notice_offer_page(&db, "s", 16).unwrap(),
         offered
     );
+}
+
+// Reconciliation: audited legacy diagnostics must not be silently rebuilt.
+#[test]
+fn adapter_upgrade_rejects_tampered_diagnostics_from_main25_and_lazy26() {
+    for version in [25, 26] {
+        for alteration in [
+            "DROP INDEX harness_contract_diagnostics_recent",
+            "DROP TABLE harness_contract_diagnostics; CREATE TABLE harness_contract_diagnostics(harness TEXT, session_id TEXT, contract_id TEXT, event TEXT, field TEXT, first_seen_at INTEGER, last_seen_at INTEGER)",
+        ] {
+            let db = adapter_historical_database(version);
+            db.execute_batch(alteration).unwrap();
+            assert_eq!(
+                schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+                ErrorCode::IncompatibleSchema
+            );
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, usize>(0))
+                    .unwrap(),
+                version
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name='harness_runtime_identities'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
+    }
 }

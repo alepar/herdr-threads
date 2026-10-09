@@ -4341,9 +4341,10 @@ pub(crate) mod tests {
                 );
             });
             let (result, methods) = cooperative_wake_in(
-                fourth_registry(),
+                fourth_registry_with_composer(true),
                 vec![
                     recheck_exchange(wake_agent(status, Some("fourth-native"), "term_1")),
+                    detection_exchange("fixture empty"),
                     prompt,
                 ],
                 None,
@@ -4352,7 +4353,7 @@ pub(crate) mod tests {
             assert_eq!(result.unwrap(), ports::PromptOutcome::Submitted);
             assert_eq!(
                 *methods.lock().unwrap(),
-                ["pane.get", "agent.get", "agent.prompt"]
+                ["pane.get", "agent.get", "agent.read", "agent.prompt"]
             );
         }
         for (status, kind) in [
@@ -4370,6 +4371,18 @@ pub(crate) mod tests {
             assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
             assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
         }
+        let (result, methods) = cooperative_wake_in(
+            fourth_registry(),
+            vec![recheck_exchange(wake_agent(
+                "idle",
+                Some("fourth-native"),
+                "term_1",
+            ))],
+            None,
+            |target, _| target.bound_harness = Some("fourth".into()),
+        );
+        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
     }
 
     // Kills a composer consumer that ignores its injected registry or switches on legacy IDs.
@@ -4419,7 +4432,6 @@ pub(crate) mod tests {
             cooperative_wake_ready(
                 &wake_agent("idle", Some("fourth-native"), "term_1"),
                 &target,
-                false,
                 fourth_registry(),
             )
             .is_ok(),
@@ -4431,7 +4443,6 @@ pub(crate) mod tests {
                 cooperative_wake_ready(
                     &wake_agent(status, Some("fourth-native"), "term_1"),
                     &target,
-                    false,
                     registry
                 )
                 .is_ok()
@@ -4448,7 +4459,6 @@ pub(crate) mod tests {
                 cooperative_wake_ready(
                     &wake_agent(status, Some(kind), "term_1"),
                     &target,
-                    false,
                     registry
                 )
                 .is_err(),

@@ -532,6 +532,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     }
     verify_existing_v26(conn)?;
     if (1..=26).contains(&version) {
+        verify_existing_v24(conn)?;
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
             .execute_batch(V27)

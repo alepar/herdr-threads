@@ -199,7 +199,7 @@ model open work, and summary closure never changes receipt state or installs glo
   or `managed_launch`) Herdr reports live in another pane (implemented).
 - *Wake*: a wake prompt goes only to a native host kind declared by the bound registered adapter
   (implemented). Recognized aliases do not change the binding or merge seats. A missing composer
-  provider permits ordinary idle/done wake, but soft poke and stash/restore send no keys.
+  provider defers ordinary idle/done wake; soft poke and stash/restore also send no keys.
 - *Poke*: a soft-deadline poke is the fixed reminder
   `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
   submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound
@@ -228,7 +228,7 @@ model open work, and summary closure never changes receipt state or installs glo
     other than a captured empty marker is not known empty and is never stashed. An unreadable composer, a failed read or any other status is
     unknown and skipped. The same reader classifies observations and final native delivery admission.
     Ordinary native wakes also require an empty composer, checked after their final
-    identity/status recheck. A nonempty or unreadable composer refuses delivery before input is sent;
+    identity/status recheck. A missing registered composer provider, nonempty composer or unreadable composer refuses delivery before input is sent;
     pending attention and receipt obligations remain intact and the prior retry ladder is restored.
     Unfocused empty panes may wake immediately. Focused panes require a minute of observed empty
     composer samples, measured with the daemon's monotonic clock. Qualification is process-local,
