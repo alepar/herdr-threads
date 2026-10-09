@@ -259,6 +259,34 @@ Amend TRUST-POLICY.md in the bead that introduces the constants:
 - Changing deadlines.
 - Per-message delivery policy (ht-tqx).
 
+### D12. Coverage amendments (2026-10-09)
+
+These sharpen D2–D8 and govern where they differ.
+
+- **Generation.** "Generation" is the binding generation. A lifecycle check-in (`/clear`, resume) rotates it; a plugin reload does not.
+  - Acks for items delivered under an older generation are refused as stale. Those items re-stream to the new session, whose context no longer holds them.
+  - A reload re-registers under the same generation and re-acks.
+- **Reconnect grace.** When a watch connection drops, the daemon waits 30 s before the native kick. A re-registration of the same generation within that window cancels the kick, and the mod re-acks. Otherwise the kick runs: at-least-once across an unrecovered handoff, never lost (an accepted limit).
+- **Stall handover.** When a channel stalls, the daemon sends `Close{stalled}` and refuses re-registration for that generation for 10 minutes. The native ladder is then the only delivery path.
+  - Items the stream marked truncated never count toward a stall.
+  - A truncated item is shown with `run herdr-threads body <id>`. It settles through the agent's own inbox or ACK.
+- **Operator switch.** The daemon setting `mod_delivery=on|off` is read at registration. Turning it off closes live channels with `Close{disabled}`. `HERDR_THREADS_MOD_DELIVERY=off` remains a per-session override. `setup-status` reports the daemon setting.
+- **`watch` exit codes:**
+
+  | Exit | Meaning | Mod reaction |
+  |---|---|---|
+  | 0, 1 | stopped or other error | restart with backoff |
+  | 2 | refused, retryable | retry with backoff |
+  | 3 | permanent: disabled, no `HERDR_PANE_ID`, unsupported | stop until reload |
+
+  `watch` also exits when its parent dies: it polls `getppid()`, because `$.process.spawn` closes stdin.
+- **Mod startup check.** The mod checks for the APIs it needs before spawning `watch`, and stays inert without them.
+- **Delivered-but-unacked ids.** They persist in `$.store` keyed by session id. Failed acks are retried. A generation change discards the set.
+- **Subagent tool calls never carry context.**
+- **Drafts.** An idle submit waits up to 120 s while the prompt box holds text, then submits. The spike showed a draft is preserved.
+- **Attention items** route like messages and are never acked. They are re-sent once per attention version and after each `watch` (re)start. When no channel is live, the native ladder is their fallback.
+- **Hook digests.** Claude installs only the `SessionStart` and `PreToolUse(Bash)` hooks. Both omit their attention digest while a channel is live.
+
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
