@@ -63,6 +63,15 @@ pub struct DecisionInstant {
     pub monotonic: MonoInstant,
 }
 
+/// Test-support builds only: a process started with this set to `1` (every
+/// child tagged by `test_support::spawn`, so test-spawned CLIs and daemons)
+/// commits with `synchronous=NORMAL`. Hundreds of test daemons each fsyncing
+/// every WAL commit made the suite disk-bound on a loaded machine; a test
+/// cannot observe the difference, which only matters on power loss.
+/// Production builds never compile it and always commit with `FULL`.
+#[cfg(any(test, feature = "test-support"))]
+pub const TEST_RELAXED_DURABILITY_ENV: &str = "HT_TEST_RELAXED_DURABILITY";
+
 impl StoreContext {
     pub fn new(path: PathBuf, clock: Arc<dyn Clock>) -> Self {
         Self {
@@ -74,7 +83,9 @@ impl StoreContext {
             #[cfg(any(test, feature = "test-support"))]
             lane_fault: std::sync::Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
-            relaxed_durability: AtomicBool::new(false),
+            relaxed_durability: AtomicBool::new(
+                std::env::var_os(TEST_RELAXED_DURABILITY_ENV).is_some_and(|v| v == "1"),
+            ),
             #[cfg(test)]
             setup_busy_signal: std::sync::Mutex::new(None),
             #[cfg(test)]
