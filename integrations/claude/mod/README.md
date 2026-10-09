@@ -113,6 +113,12 @@ builds `io` from `$`. Rules (spec D5, D6):
   forgets the delivery so a re-stream is delivered); `retryable`, a non-zero exit or a missing
   line stay and are retried on every new stream line, after `status connected` and every 30 s
   while connected.
+- **Reload.** Before `$.prompt.submit` the mod writes the batch (`sid`, ids, ackable ids) to `$.state`
+  `turns.submitting` and clears it when the submit resolves. A core that loads such a record for its
+  session is busy and never re-submits or attaches those ids. A main `turn.start` whose prompt frames
+  them, or the `turn.complete` of a turn it never saw start, marks them delivered via `submit` (ledger
+  reason `predecessor_submit`) and acks them. 120 s with no open turn, no turn start and an empty
+  prompt box releases them for normal delivery (`predecessor_no_turn`).
 - **Persistence.** `$.store` key `delivered:<session id>` holds `{delivered, unacked,
   attentionVersions}`. `session.end` `clear` discards the key (and the queue); `resume` keeps it
   (a changed session id, as with `/branch`, starts an empty key: an accepted duplicate limit).

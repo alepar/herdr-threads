@@ -114,7 +114,7 @@ function runSchedule(seed: number) {
       const sidNow = core.snapshot().sid
       sidAtCall = sidNow
       if (world.manualSubmit) {
-        return new Promise((res, rej) => world.pendingSubmits.push({ res, rej, ids, sid: sidNow }))
+        return new Promise((res, rej) => world.pendingSubmits.push({ res, rej, ids, sid: sidNow, text }))
       }
       const roll = r.next()
       if (roll < 0.05) return Promise.reject(new Error('submit rejected'))
@@ -269,6 +269,10 @@ function runSchedule(seed: number) {
       pool.push(...m.lingering)
       pool.push(`unknown${r.int(5)}`)
       const id = r.pick(pool)
+      // A predecessor submit this core holds reads a completion of a turn it never saw start as the
+      // submitted turn (rule b); the stress model does not know which one that is, so it waits.
+      const held = core.snapshot().pred
+      if (held && !held.sawStart) return
       const aborted = r.chance(0.35)
       m.lingering = m.lingering.filter((x: string) => x !== id)
       if (id === m.mainOpen) m.mainOpen = null
@@ -366,16 +370,39 @@ function runSchedule(seed: number) {
       c.cb.exit(exit)
     }],
     [2, 'reload', async () => {
-      // a reload while a submit is in flight can deliver twice (accepted limit):
-      // let in-flight work finish first
-      for (let i = 0; i < 20 && (world.pendingSubmits.length || world.pendingReads.length); i++) {
-        for (const release of world.pendingReads.splice(0)) release()
-        settleAll()
-        await flush()
+      // A reload with a submit in flight no longer delivers twice: half the reloads settle every
+      // in-flight submit first, the rest leave them unresolved and the successor holds the ids.
+      if (r.chance(0.5)) {
+        for (let i = 0; i < 20 && (world.pendingSubmits.length || world.pendingReads.length); i++) {
+          for (const release of world.pendingReads.splice(0)) release()
+          settleAll()
+          await flush()
+        }
+        totals.reloads++
+        core.dispose()
+        await newCore()
+        return
       }
+      for (const release of world.pendingReads.splice(0)) release()
+      await flush()
+      // a disposed core's promise never resolves for it
+      const inflight = world.pendingSubmits.splice(0)
       totals.reloads++
       core.dispose()
       await newCore()
+      for (const p of inflight) {
+        // the disposed core's late resolution reaches nobody: it must change no delivery
+        if (r.chance(0.5)) p.res({})
+        // never produced a turn: the ids arrive again through the stream steps
+        if (r.chance(0.3)) continue
+        const held = core.snapshot().pred
+        if (!held || held.ids.join(',') !== p.ids.join(',')) continue
+        // produced a turn whose start the successor sees, with the frame as its prompt
+        for (const id of p.ids) okVia.submit.add(key(p.sid, id))
+        if (m.mainOpen !== null) m.lingering.push(m.mainOpen)
+        m.mainOpen = `t${++tn}`
+        core.onTurnStart({ turnId: m.mainOpen, text: p.text })
+      }
     }],
     [2, 'session end', async () => {
       const reason = r.pick(['clear', 'resume', 'branch'])

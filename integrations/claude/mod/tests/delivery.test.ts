@@ -1112,3 +1112,131 @@ test('register wires session.start to the core and the serialized ledger', async
   expect(last).toContain('"kind":"restart"')
   expect(last).toContain('exit:3')
 })
+
+// ---- reload with a submit in flight (ht-j16.29) ----------------------------
+
+// dispose h.core and load a successor on the same io (shared $.state and $.store), as a plugin reload does
+const reload = async (h: Any) => {
+  h.core.dispose()
+  h.core = createCore(h.io)
+  await h.core.onLoad()
+  await flush()
+  await h.connect()
+}
+
+test('a reload with a submit in flight: the successor does not submit it again and acks it when its turn completes', async () => {
+  const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits.length).toBe(1) // in flight, never resolved: the core is disposed
+  await reload(h)
+  h.line(msg('m1')) // the daemon re-streams the unacked id
+  await h.advance(1000)
+  expect(h.submits.length).toBe(1)
+  h.core.onTurnComplete({ turnId: 'tSubmitted', isAborted: false }) // its turn.start came before the load
+  await flush()
+  expect(h.submits.length).toBe(1)
+  expect(h.ackRuns().length).toBe(1)
+  expect(h.ackRuns()[0].slice(5)).toEqual(['--via', 'submit', 'm1'])
+  expect(h.entries.some((e: Any) => e.kind === 'delivered' && e.reason === 'predecessor_submit')).toBe(true)
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits.length).toBe(1)
+})
+
+test('a successor sees the submitted turn start: the ids are delivered at that turn.start', async () => {
+  const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  h.line(msg('m1'))
+  await flush()
+  await reload(h)
+  h.line(msg('m1'))
+  await h.advance(1000)
+  expect(h.submits.length).toBe(1)
+  h.core.onTurnStart({ turnId: 't9', text: h.submits[0] })
+  await flush()
+  expect(h.ackRuns().length).toBe(1)
+  expect(h.ackRuns()[0].slice(5)).toEqual(['--via', 'submit', 'm1'])
+  h.core.onTurnComplete({ turnId: 't9', isAborted: false })
+  await flush()
+  h.line(msg('m2'))
+  await flush()
+  expect(h.submits.length).toBe(2)
+  expect(h.submits[1]).toContain('message m2 in ')
+  expect(h.submits[1]).not.toContain('message m1 in ')
+})
+
+test('a predecessor submit that never produced a turn is delivered after 120 s idle', async () => {
+  const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  h.line(msg('m1'))
+  await flush()
+  await reload(h)
+  h.line(msg('m1'))
+  await h.advance(119_000)
+  expect(h.submits.length).toBe(1)
+  let held = 119
+  while (h.submits.length < 2 && held < 130) {
+    await h.advance(1000)
+    held++
+  }
+  expect(h.submits.length).toBe(2)
+  expect(held).toBeLessThanOrEqual(121)
+  expect(h.submits[1]).toContain('message m1 in ')
+  expect(h.entries.some((e: Any) => e.kind === 'refused' && e.reason === 'predecessor_no_turn')).toBe(true)
+
+  // a non-empty prompt box keeps the hold, as the post-abort hold does
+  const d = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  d.line(msg('m1'))
+  await flush()
+  await reload(d)
+  d.line(msg('m1'))
+  d.box = 'draft'
+  await d.advance(125_000)
+  await d.advance(60_000)
+  expect(d.submits.length).toBe(1)
+  d.box = ''
+  await d.advance(1000)
+  expect(d.submits.length).toBe(2)
+})
+
+test('a user turn.start that does not name the ids keeps the predecessor hold', async () => {
+  const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  h.line(msg('m1'))
+  await flush()
+  await reload(h)
+  h.line(msg('m1'))
+  await h.advance(100_000)
+  h.core.onTurnStart({ turnId: 'u1', text: 'user typed this' })
+  h.core.onTurnComplete({ turnId: 'u1', isAborted: false })
+  await flush()
+  expect(h.ackRuns().length).toBe(0)
+  expect(h.submits.length).toBe(1)
+  // the hold clock restarted at u1: 100 s later it still holds, 120 s after u1 it ends
+  await h.advance(100_000)
+  expect(h.submits.length).toBe(1)
+  await h.advance(21_000)
+  expect(h.submits.length).toBe(2)
+})
+
+test('a disposed core ignores its late submit resolution', async () => {
+  const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  h.line(msg('m1'))
+  await flush()
+  const before = JSON.stringify(h.stateVal.submitting)
+  expect(h.stateVal.submitting.ids).toEqual(['m1'])
+  h.core.dispose()
+  h.pending[0].res({})
+  await flush()
+  expect(h.ackRuns().length).toBe(0)
+  expect(h.storeMap.get('delivered:s1')).toBeUndefined()
+  expect(JSON.stringify(h.stateVal.submitting)).toBe(before)
+})
+
+test('a resolved submit clears the record, and a drop does too', async () => {
+  const h = await harness({ state: IDLE, submitMode: 'manual' }).boot()
+  h.line(msg('m1'))
+  await flush()
+  expect(h.stateVal.submitting.ids).toEqual(['m1'])
+  h.pending[0].res({})
+  await flush()
+  expect(h.stateVal.submitting).toBe(null)
+})

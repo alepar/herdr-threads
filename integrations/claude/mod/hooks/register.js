@@ -56,7 +56,7 @@ export function createCore(io) {
     disposed: false,
     sid: null,
     rec: emptyRec(),
-    turns: { open: [], assumedBusy: false, abortHoldSince: null },
+    turns: { open: [], assumedBusy: false, abortHoldSince: null, submitting: null },
     loadedAt: 0,
     sawStart: false,
     queue: [],
@@ -64,6 +64,7 @@ export function createCore(io) {
     appendInflight: false,
     submitBackoffUntil: 0,
     appendBackoffUntil: 0,
+    pred: null,
     draftSince: null,
     lastHeld: '',
     child: null,
@@ -89,7 +90,8 @@ export function createCore(io) {
 
   const cmd = (...rest) => [...(io.argv || [io.bin || 'herdr-threads']), ...rest]
   const key = (sid) => `delivered:${sid}`
-  const busy = () => S.turns.open.length > 0 || S.turns.assumedBusy
+  const busy = () => S.turns.open.length > 0 || S.turns.assumedBusy || S.pred != null
+  const predHas = (id) => S.pred != null && S.pred.ids.includes(id)
 
   function ledger(kind, fields = {}) {
     const turn = S.turns.open.length ? S.turns.open[S.turns.open.length - 1] : null
@@ -367,7 +369,7 @@ export function createCore(io) {
     if (S.inert || S.disposed || S.pumping || !S.live) return
     S.pumping = true
     try {
-      const items = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run)
+      const items = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run && !predHas(q.id))
       if (!items.length || S.submitInflight) return
       if (busy()) return
       const ids = items.map((i) => i.id)
@@ -384,13 +386,19 @@ export function createCore(io) {
         if (io.now() - S.draftSince < DRAFT_WAIT_MS) return held('draft', ids)
       }
       S.draftSince = null
-      const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run)
+      const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run && !predHas(q.id))
       if (!batch.length) return
       const gen = S.gen
       for (const it of batch) it.inflight = true
       S.submitInflight = true
       const bids = batch.map((i) => i.id)
       ledger('submit', { ids: bids, via: 'submit' })
+      // Written before the submit so a successor after a reload can hold these ids (spec D5, ht-j16.29).
+      S.turns.submitting = { sid: S.sid, ids: bids, ackable: batch.filter((i) => i.ackable).map((i) => i.id), at: io.now(), turnId: null }
+      persistTurns()
+      await S.stateChain
+      // disposed or session changed during the write: submit nothing, leave the record for a successor
+      if (S.disposed || gen !== S.gen) return
       let p
       try {
         p = Promise.resolve(io.submit(frame(batch)))
@@ -403,6 +411,13 @@ export function createCore(io) {
           (err) => (err && err.apiMissing ? { missing: true } : { drop: `error:${String(err)}` }),
         )
         .then((r) => {
+          // a disposed core touches neither the record, the store nor acks
+          if (S.disposed) return
+          const sub = S.turns.submitting
+          if (sub && sub.ids.length === bids.length && sub.ids.every((id, i) => id === bids[i])) {
+            S.turns.submitting = null
+            persistTurns()
+          }
           // a resolution from before a session change touches nothing
           if (gen !== S.gen) return
           S.submitInflight = false
@@ -459,6 +474,42 @@ export function createCore(io) {
       .then(() => pumpLazy())
   }
 
+  // ---- predecessor submit (reload mid-submit, ht-j16.29) -----------------
+
+  /** Ids of the mod frames in a prompt: only the mod's own header lines start at column 0. */
+  function framedIds(text) {
+    return Array.from(String(text ?? '').matchAll(/^\[herdr-threads\] (?:message|lazy) (\S+) in /gm), (m) => m[1])
+  }
+
+  /** The predecessor's submit produced a turn that carried its ids: mark them delivered via submit and ack. */
+  // why: 'turn_start' (rule a) or 'turn_complete' (rule b); kept for readers only
+  function settlePred(why) {
+    const pred = S.pred
+    if (!pred) return
+    S.pred = null
+    if (pred.sid !== S.sid) return void pump()
+    void why
+    const gone = new Set(pred.ids)
+    for (const id of pred.ids) {
+      S.rec.delivered[id] = 'submit'
+      if (pred.ackable.includes(id)) S.rec.unacked[id] = 'submit'
+    }
+    S.queue = S.queue.filter((q) => !gone.has(q.id))
+    saveRec()
+    ledger('delivered', { ids: pred.ids, via: 'submit', reason: 'predecessor_submit' })
+    void ackIds(pred.ackable)
+    void pump()
+  }
+
+  /** The predecessor's submit produced no turn: its ids are delivered normally when streamed. */
+  function releasePred() {
+    const pred = S.pred
+    if (!pred) return
+    S.pred = null
+    ledger('refused', { ids: pred.ids, reason: 'predecessor_no_turn' })
+    void pump()
+  }
+
   // ---- events ----------------------------------------------------------
 
   function goInert() {
@@ -480,12 +531,20 @@ export function createCore(io) {
         open: recorded.open.slice(),
         assumedBusy: recorded.assumedBusy === true,
         abortHoldSince: recorded.abortHoldSince ?? null,
+        submitting: null,
       }
     } else {
-      S.turns = { open: [], assumedBusy: true, abortHoldSince: null }
+      S.turns = { open: [], assumedBusy: true, abortHoldSince: null, submitting: null }
       persistTurns()
     }
+    const prior = recorded && recorded.submitting
+    const hasPrior = prior && typeof prior === 'object' && prior.sid && Array.isArray(prior.ids) && prior.ids.length > 0
     await loadSession()
+    if (hasPrior) {
+      if (prior.sid === S.sid) S.pred = { ...prior, ackable: Array.isArray(prior.ackable) ? prior.ackable : [], since: io.now(), sawStart: false }
+      // the record now belongs to this core as S.pred
+      persistTurns()
+    }
     startChild()
   }
 
@@ -528,10 +587,22 @@ export function createCore(io) {
     S.sawStart = true
     S.turns.open = [e.turnId]
     persistTurns()
+    const framed = framedIds(e.text)
+    if (S.pred) {
+      S.pred.sawStart = true
+      S.pred.since = io.now()
+      if (S.pred.ids.every((id) => framed.includes(id))) settlePred('turn_start')
+    }
+    const sub = S.turns.submitting
+    if (sub && sub.ids.every((id) => framed.includes(id))) {
+      sub.turnId = e.turnId
+      persistTurns()
+    }
   }
 
   function onTurnComplete(e) {
     if (S.inert || !e || e.agentId) return
+    if (S.pred && (!S.pred.sawStart || S.pred.turnId === e.turnId)) settlePred('turn_complete')
     const i = S.turns.open.indexOf(e.turnId)
     if (i >= 0) S.turns.open = S.turns.open.slice(i + 1)
     S.turns.assumedBusy = false
@@ -546,7 +617,7 @@ export function createCore(io) {
     const answered =
       result && result.result !== undefined && result.deny === undefined && result.isError !== true
     if (!answered || !S.live) return result
-    const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run)
+    const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run && !predHas(q.id))
     if (!batch.length) return result
     void complete(batch, 'context')
     return { ...result, context: [...(result.context ?? []), frame(batch)] }
@@ -613,6 +684,12 @@ export function createCore(io) {
           }
         } catch {}
       }
+      if (S.pred && S.turns.open.length === 0 && now - S.pred.since >= HOLD_IDLE_MS) {
+        try {
+          const box = await io.promptRead()
+          if (box.text === '' && S.pred && S.turns.open.length === 0 && io.now() - S.pred.since >= HOLD_IDLE_MS) releasePred()
+        } catch {}
+      }
       if (S.connectedAt != null && now - S.lastAckRetry >= ACK_RETRY_MS) {
         S.lastAckRetry = now
         retryAcks()
@@ -644,6 +721,7 @@ export function createCore(io) {
       queue: S.queue.map((q) => q.id),
       rec: JSON.parse(JSON.stringify(S.rec)),
       sid: S.sid,
+      pred: S.pred ? { ids: S.pred.ids.slice(), sawStart: S.pred.sawStart } : null,
       inert: S.inert,
       live: S.live,
       stopped: S.stopped,
