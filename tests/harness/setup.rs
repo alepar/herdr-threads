@@ -3413,6 +3413,7 @@ fn hook_install_and_removal_back_up_each_prior_version() {
         [original.to_vec()]
     );
     remove_claude_user(&config, &manifest).unwrap();
+    assert!(backups(&scope).iter().all(|(_, _, mode)| *mode == 0o600));
     let mut saved: Vec<_> = backups(&scope)
         .into_iter()
         .map(|(_, bytes, _)| bytes)
@@ -3421,5 +3422,20 @@ fn hook_install_and_removal_back_up_each_prior_version() {
     let mut expected = vec![original.to_vec(), installed];
     expected.sort();
     assert_eq!(saved, expected);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Kills backing up a file that holds no settings, such as setup's own `{}` placeholder.
+#[test]
+fn user_config_without_settings_is_replaced_without_backup() {
+    let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
+    fs::create_dir(&dir).unwrap();
+    let config = dir.join("settings.json");
+    for empty in [&b""[..], b"{}", b" {\n}\n"] {
+        fs::write(&config, empty).unwrap();
+        write_user_config(&config, empty, b"{\"a\":1}").unwrap();
+        assert_eq!(fs::read(&config).unwrap(), b"{\"a\":1}");
+    }
+    assert!(user_config_backups(&config).is_empty());
     fs::remove_dir_all(dir).unwrap();
 }

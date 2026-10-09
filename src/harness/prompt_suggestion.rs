@@ -276,6 +276,29 @@ mod tests {
         );
     }
 
+    /// Kills a prompt-suggestion disable or revert without keeping the prior version.
+    #[test]
+    fn disable_and_revert_back_up_settings() {
+        use crate::harness::setup::user_config_backups;
+        let d = dir();
+        let (config, manifest) = (d.0.join("settings.json"), d.0.join("m.json"));
+        let original = b"{\"model\":\"x\"}".to_vec();
+        fs::write(&config, &original).unwrap();
+        assert_eq!(
+            disable(&config, &manifest).unwrap(),
+            DisableOutcome::Disabled
+        );
+        let disabled = fs::read(&config).unwrap();
+        assert_eq!(
+            user_config_backups(&config),
+            std::slice::from_ref(&original)
+        );
+        assert_eq!(revert(&config, &manifest).unwrap(), RevertOutcome::Reverted);
+        let mut expected = vec![original, disabled];
+        expected.sort();
+        assert_eq!(user_config_backups(&config), expected);
+    }
+
     #[test]
     fn disable_then_revert_restores_bytes() {
         let d = dir();

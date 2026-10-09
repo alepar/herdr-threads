@@ -1026,7 +1026,8 @@ pub(crate) fn config_bytes(path: &Path) -> Result<Vec<u8>, SetupError> {
 
 /// Replace a user configuration file whose bytes the caller just validated as `current`.
 /// An unchanged result writes nothing; otherwise `current` is first kept as a private sibling
-/// backup (see [`backup_user_config`]). herdr-threads state and manifests use
+/// backup (see [`backup_user_config`]) unless it holds no settings. A backup stays even when
+/// the replacement then fails. herdr-threads state and manifests use
 /// [`write_replacement`] directly and are never backed up.
 pub(crate) fn write_user_config(
     path: &Path,
@@ -1039,8 +1040,20 @@ pub(crate) fn write_user_config(
     if current == bytes {
         return Ok(());
     }
-    backup_user_config(path, current)?;
+    if !holds_no_settings(current) {
+        backup_user_config(path, current)?;
+    }
     write_replacement(path, bytes, false)
+}
+
+/// An empty file or empty JSON object (setup's own placeholder among them) has nothing to keep.
+fn holds_no_settings(current: &[u8]) -> bool {
+    let trimmed: Vec<u8> = current
+        .iter()
+        .copied()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    trimmed.is_empty() || trimmed == b"{}"
 }
 
 /// Keep `current` beside `path` as `<name>.<UTC timestamp>-<uuid>.herdr-threads`: mode 0600,
@@ -1084,6 +1097,23 @@ pub(crate) fn backup_user_config(
         let _ = fs::remove_file(&backup);
     }
     result.map(|()| backup)
+}
+
+/// Test oracle: the retained backups of `config`, as sorted byte contents.
+#[cfg(test)]
+pub(crate) fn user_config_backups(config: &Path) -> Vec<Vec<u8>> {
+    let prefix = format!("{}.", config.file_name().unwrap().to_string_lossy());
+    let mut found: Vec<Vec<u8>> = fs::read_dir(config.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with(&prefix) && name.ends_with(".herdr-threads")
+        })
+        .map(|entry| fs::read(entry.path()).unwrap())
+        .collect();
+    found.sort();
+    found
 }
 
 pub(crate) fn write_replacement(
