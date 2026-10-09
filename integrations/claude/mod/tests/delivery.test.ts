@@ -683,6 +683,83 @@ test('the backoff resets after 60 s connected', async () => {
   expect(h.spawns.length).toBe(n + 1)
 })
 
+test('after /clear a stale session id is corrected before the next watch start', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.line(msg('m0'))
+  await flush()
+  expect(h.submits.length).toBe(1)
+  h.core.onSessionEnd('clear')
+  await h.core.onTick() // the engine still reports the pre-clear id
+  await flush()
+  expect(h.spawns.length).toBe(2)
+  expect(h.child().argv.at(-1)).toBe('s1')
+  h.line(status('refused', 'session_mismatch', 2))
+  h.exit(2)
+  h.sid = 's2' // the engine now reports the new id
+  await h.advance(1000)
+  expect(h.spawns.length).toBe(3)
+  expect(h.child().argv.at(-1)).toBe('s2')
+  expect(h.core.snapshot().sid).toBe('s2')
+  expect(h.core.snapshot().rec.delivered).toEqual({})
+  await h.connect()
+  h.line(msg('m1'))
+  await flush()
+  expect(h.submits.length).toBe(2)
+  expect(h.ackRuns().at(-1)).toContain('s2')
+  expect(h.storeMap.has('delivered:s1')).toBe(false)
+})
+
+test('a changed session id restarts within one tick, not on the ladder; an unchanged one waits', async () => {
+  const fast = await harness({ state: IDLE }).boot()
+  fast.core.onSessionEnd('clear')
+  await fast.core.onTick()
+  fast.line(status('refused', 'session_mismatch', 2))
+  fast.exit(2)
+  const n = fast.spawns.length
+  await fast.advance(500) // id unchanged: still on the 1 s ladder
+  expect(fast.spawns.length).toBe(n)
+  fast.sid = 's2'
+  await fast.advance(1) // changed id: restarts now, well before the ladder step
+  expect(fast.spawns.length).toBe(n + 1)
+  expect(fast.child().argv.at(-1)).toBe('s2')
+})
+
+test('session_mismatch with an unchanged session id follows the backoff ladder', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  for (const ms of [1000, 2000, 5000]) {
+    const n = h.spawns.length
+    h.line(status('refused', 'session_mismatch', 2))
+    h.exit(2)
+    await h.advance(500)
+    expect(h.spawns.length).toBe(n)
+    await h.advance(ms - 500 - 1)
+    expect(h.spawns.length).toBe(n)
+    await h.advance(1)
+    expect(h.spawns.length).toBe(n + 1)
+    expect(h.child().argv.at(-1)).toBe('s1')
+  }
+})
+
+test('a binding_changed close re-reads the session id at the restart and keeps resume semantics', async () => {
+  const h = await harness({
+    state: IDLE,
+    store: { 'delivered:s2': { delivered: { mX: 'submit' }, unacked: {}, attentionVersions: [] } },
+  }).boot()
+  h.core.onSessionEnd('resume')
+  await h.core.onTick() // sid still s1
+  expect(h.child().argv.at(-1)).toBe('s1')
+  h.line(status('closing', 'binding_changed', 0))
+  h.exit(0)
+  h.sid = 's2'
+  await h.advance(1000)
+  expect(h.child().argv.at(-1)).toBe('s2')
+  expect(h.core.snapshot().rec.delivered).toEqual({ mX: 'submit' })
+  await h.connect()
+  h.line(msg('mX'))
+  await flush()
+  expect(h.submits.length).toBe(0)
+})
+
 test('stale callbacks of a replaced child are ignored', async () => {
   const h = await harness({ state: IDLE }).boot()
   const old = h.child()
