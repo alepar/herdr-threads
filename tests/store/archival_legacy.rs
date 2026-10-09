@@ -39,7 +39,13 @@ fn complete_scan(source: &mut Source) -> herdr_threads::archival_legacy::Scan {
     let mut hints = Vec::new();
     loop {
         let mut page = source.scan(|| false).unwrap();
-        hints.append(&mut page.hints);
+        // A page that hits its 10 ms budget after earlier hints carries a
+        // Coverage marker; it is a veto carrier, not a record hint.
+        hints.extend(
+            page.hints
+                .drain(..)
+                .filter(|h| !matches!(h, herdr_threads::archival_legacy::Hint::Coverage { .. })),
+        );
         if !page.pending {
             page.hints = hints;
             return page;
