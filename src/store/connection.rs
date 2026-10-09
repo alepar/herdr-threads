@@ -694,6 +694,10 @@ mod tests;
 pub(super) struct KickHooks {
     pending: AtomicU8,
     sealed: AtomicU8,
+    /// A table of `kicks::MOD_NOTIFY_TABLES` changed in the open / last
+    /// commit; sealed separately from the lane set (spec D2).
+    mod_pending: AtomicBool,
+    mod_sealed: AtomicBool,
     row_changed: AtomicBool,
     /// A row-changing commit has happened since the last `settle_generation`.
     dirty: AtomicBool,
@@ -724,6 +728,11 @@ impl KickHooks {
     /// Takes the sealed set. Called while the writer guard is still held.
     pub(super) fn take_sealed(&self) -> LaneSet {
         LaneSet::from_bits(self.sealed.swap(0, Ordering::SeqCst))
+    }
+
+    /// Takes the sealed mod-notify bit. Called while the writer guard is held.
+    pub(super) fn take_mod_sealed(&self) -> bool {
+        self.mod_sealed.swap(false, Ordering::SeqCst)
     }
 
     /// Publishes the turn's committed changes as a new generation. Called
@@ -762,10 +771,14 @@ impl KickHooks {
         self.row_changed.store(true, Ordering::SeqCst);
         self.pending
             .fetch_or(kicks::lanes_for_table(table).to_bits(), Ordering::SeqCst);
+        if kicks::notifies_mod(table) {
+            self.mod_pending.store(true, Ordering::SeqCst);
+        }
     }
 
     fn on_commit(&self) {
         let pending = self.pending.swap(0, Ordering::SeqCst);
+        let mod_pending = self.mod_pending.swap(false, Ordering::SeqCst);
         if !self.row_changed.swap(false, Ordering::SeqCst) {
             return;
         }
@@ -776,11 +789,15 @@ impl KickHooks {
             .fetch_add(1, Ordering::SeqCst);
         if !kicks::origin_discards_kicks(origin) {
             self.sealed.fetch_or(pending, Ordering::SeqCst);
+            if mod_pending {
+                self.mod_sealed.store(true, Ordering::SeqCst);
+            }
         }
     }
 
     fn on_rollback(&self) {
         self.pending.store(0, Ordering::SeqCst);
+        self.mod_pending.store(false, Ordering::SeqCst);
         self.row_changed.store(false, Ordering::SeqCst);
     }
 }

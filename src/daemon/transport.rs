@@ -1,6 +1,7 @@
 //! Bounded local IPC: ordinary requests are one-shot; registered service sessions persist.
 
 mod service_connection;
+mod watch_connection;
 
 use crate::protocol::{
     authority::PeerIdentity,
@@ -8,6 +9,7 @@ use crate::protocol::{
     results::{ApiError, ErrorCode},
     service::ServiceWireRequest,
     time::{CallBudget, Cancellation, Clock, MonoInstant},
+    watch::{MAX_WATCH_CONNECTIONS, WatchRefusalReason, WatchWireRequest},
     wire::{
         MAX_WIRE_FRAME_BYTES, PROTOCOL_VERSION, WireRequest, WireResponse, encode_wire_response,
     },
@@ -179,6 +181,8 @@ pub(crate) async fn serve_with_gate(
     let instance = instance_uuid.to_string();
     let daemon_boot = listener.boot_id().to_string();
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    // Watch connections have their own admission, outside MAX_CONNECTIONS.
+    let watch_slots = Arc::new(Semaphore::new(MAX_WATCH_CONNECTIONS));
     let search_slots = Arc::new(Semaphore::new(5));
     let active_search = Arc::new(Semaphore::new(1));
     let mut tasks: JoinSet<io::Result<()>> = JoinSet::new();
@@ -204,13 +208,13 @@ pub(crate) async fn serve_with_gate(
         let clock = clock.clone();
         let shutdown = shutdown.clone();
         let search_slots = search_slots.clone();
+        let watch_slots = watch_slots.clone();
         let active_search = active_search.clone();
         let instance = instance.clone();
         let daemon_boot = daemon_boot.clone();
         let service_gate = service_gate.clone();
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
-            let _permit = permit;
             serve_connection(
                 stream,
                 instance,
@@ -222,6 +226,8 @@ pub(crate) async fn serve_with_gate(
                 search_slots,
                 active_search,
                 service_gate,
+                permit,
+                watch_slots,
             )
             .await
         });
@@ -297,7 +303,12 @@ async fn serve_connection(
     search_slots: Arc<Semaphore>,
     active_search: Arc<Semaphore>,
     service_gate: Arc<LiveServiceGate>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    watch_slots: Arc<Semaphore>,
 ) -> io::Result<()> {
+    // The ordinary admission permit lives until this function returns, except
+    // on a watch connection, which hands it back once sniffed.
+    let mut ordinary_permit = Some(permit);
     let uid = stream.peer_cred()?.uid();
     if uid != owner_uid {
         return Err(io::Error::new(
@@ -313,6 +324,30 @@ async fn serve_connection(
             result.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "request expired"))??,
         _ = shutdown.cancelled() => return Ok(()),
     };
+    if let Ok(request) = WatchWireRequest::decode(&frame) {
+        drop(ordinary_permit.take());
+        let Ok(watch_permit) = watch_slots.try_acquire_owned() else {
+            return watch_connection::refuse(
+                stream,
+                &request,
+                &instance,
+                &daemon_boot,
+                WatchRefusalReason::Busy,
+            )
+            .await;
+        };
+        return watch_connection::serve(
+            stream,
+            request,
+            watch_permit,
+            instance,
+            daemon_boot,
+            handler,
+            clock,
+            shutdown,
+        )
+        .await;
+    }
     if let Ok(request) = serde_json::from_slice::<ServiceWireRequest>(&frame) {
         return service_connection::serve_registered(
             stream,

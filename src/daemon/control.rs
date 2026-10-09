@@ -204,6 +204,23 @@ where
             .audit_service_disconnect(boot, generation, peer, budget)
     }
 
+    fn watch_register(
+        &self,
+        request: &crate::protocol::watch::WatchRequest,
+        sink: std::sync::Arc<dyn crate::ports::ModChannelSink>,
+        budget: &CallBudget,
+    ) -> Result<(crate::ports::ModChannelId, u64), crate::protocol::watch::WatchRefusalReason> {
+        self.domain.watch_register(request, sink, budget)
+    }
+
+    fn watch_unregister(
+        &self,
+        channel: crate::ports::ModChannelId,
+        now: crate::protocol::time::UtcMillis,
+    ) {
+        self.domain.watch_unregister(channel, now);
+    }
+
     fn service_operation(
         &self,
         operation: ServiceOperation,

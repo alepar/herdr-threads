@@ -143,6 +143,7 @@ impl DerefMut for WriterTurn<'_> {
 impl Drop for WriterTurn<'_> {
     fn drop(&mut self) {
         let sealed = self.store.hooks.take_sealed();
+        let mod_sealed = self.store.hooks.take_mod_sealed();
         self.store.hooks.settle_generation();
         drop(self.guard.take());
         #[cfg(any(test, feature = "test-support"))]
@@ -151,6 +152,12 @@ impl Drop for WriterTurn<'_> {
             if let Some(pause) = pause {
                 pause();
             }
+        }
+        // The mod worker is notified for every sealed change, whichever lane
+        // committed it (a lane's own warning or catch-up write can change a
+        // seat's attention).
+        if mod_sealed {
+            self.store.kicks.notify_mod();
         }
         let origin = kicks::current_origin();
         let lanes = origin.map_or(sealed, |lane| sealed.without(lane));
@@ -1202,6 +1209,32 @@ fn wake_candidates_page(
         |items, before| wake_page_at(instance, items, before, high_water, StopReason::Bytes),
         "wake candidate page cannot fit",
     )
+}
+
+impl crate::ports::ModStoreReads for SqliteStore {
+    fn mod_seat_view(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        seats::mod_seat_view(&db, &self.instance, seat)
+    }
+
+    fn mod_stall_oldest(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        at_or_before: UtcMillis,
+        body_limit: usize,
+        budget: &CallBudget,
+    ) -> Result<Option<UtcMillis>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        seats::mod_stall_oldest(&db, seat, at_or_before, body_limit)
+    }
 }
 
 impl StorePort for SqliteStore {

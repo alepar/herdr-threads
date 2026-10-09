@@ -410,10 +410,10 @@ fn constants_match_spec() {
 }
 
 #[test]
-fn mod_watch_capability_is_defined_but_not_advertised() {
+fn mod_watch_capability_is_advertised() {
     use crate::protocol::capabilities::{ADVERTISED, MOD_WATCH};
     assert_eq!(MOD_WATCH, "mod.watch_v1");
-    assert!(!ADVERTISED.contains(&MOD_WATCH));
+    assert!(ADVERTISED.contains(&MOD_WATCH));
 }
 
 #[test]

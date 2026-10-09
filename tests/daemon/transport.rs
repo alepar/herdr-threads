@@ -645,6 +645,8 @@ async fn mismatched_kernel_uid_never_reaches_handler() {
         Arc::new(Semaphore::new(5)),
         Arc::new(Semaphore::new(1)),
         Arc::new(LiveServiceGate::new()),
+        Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+        Arc::new(Semaphore::new(1)),
     )
     .await
     .unwrap_err();

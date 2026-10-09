@@ -271,6 +271,72 @@ impl DomainService {
 }
 
 impl LocalService for DomainService {
+    /// Spec D2: decide a mod watch registration against A2 in one read
+    /// transaction (the seat, its target's recovery hold, its open binding),
+    /// then record the channel with the binding's canonical generation. The
+    /// claim only names the seat and the native session it expects; nothing
+    /// the claim says about the generation is trusted. A store read that
+    /// fails is `busy` (retryable): the CLI retries with backoff.
+    fn watch_register(
+        &self,
+        request: &crate::protocol::watch::WatchRequest,
+        sink: Arc<dyn crate::ports::ModChannelSink>,
+        budget: &CallBudget,
+    ) -> Result<(crate::ports::ModChannelId, u64), crate::protocol::watch::WatchRefusalReason> {
+        use crate::protocol::{authority::Harness, watch::WatchRefusalReason as Refusal};
+        let claim = &request.claim;
+        if claim.harness != Harness::Claude || claim.role != CallerRole::TopLevel {
+            return Err(Refusal::NotClaude);
+        }
+        let view = self
+            .store
+            .mod_seat_view(&claim.seat, budget)
+            .map_err(|_| Refusal::Busy)?;
+        let Some(view) = view else {
+            return Err(Refusal::Unresolved);
+        };
+        if view.retired || !view.continuity_resolved {
+            return Err(Refusal::Unresolved);
+        }
+        if view.held {
+            return Err(Refusal::Held);
+        }
+        let Some(binding) = view.binding.as_ref() else {
+            return Err(Refusal::NoBinding);
+        };
+        if binding.harness != Harness::Claude.as_str() {
+            return Err(Refusal::NotClaude);
+        }
+        if binding.provenance != crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE {
+            return Err(Refusal::NoBinding);
+        }
+        if binding.native_session != claim.native_session.as_str() {
+            return Err(Refusal::SessionMismatch);
+        }
+        if claim.instance != self.instance {
+            return Err(Refusal::SessionMismatch);
+        }
+        let channel = self.mod_channels.register(
+            crate::ports::ModChannelRegistration {
+                seat: claim.seat.clone(),
+                binding_generation: binding.generation,
+                native_session: claim.native_session.clone(),
+                harness: Harness::Claude,
+                registered_at: self.clock.utc_now(),
+            },
+            sink,
+        )?;
+        Ok((channel, view.attention_version))
+    }
+
+    fn watch_unregister(
+        &self,
+        channel: crate::ports::ModChannelId,
+        now: crate::protocol::time::UtcMillis,
+    ) {
+        self.mod_channels.unregister(channel, now);
+    }
+
     fn service_control(
         &self,
         _command: Command,
