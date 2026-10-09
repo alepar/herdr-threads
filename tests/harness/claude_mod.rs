@@ -42,6 +42,19 @@ impl Fixture {
             state_dir: &self.state,
             shell_dirs: shell,
             policy,
+            launch: None,
+        })
+        .unwrap()
+    }
+
+    fn install_launch(&self, launch: &[String]) -> InstallOutcome {
+        install(&InstallInput {
+            settings: &self.settings,
+            manifest: &self.manifest,
+            state_dir: &self.state,
+            shell_dirs: &[],
+            policy: &ManagedPolicySources::default(),
+            launch: Some(launch),
         })
         .unwrap()
     }
@@ -109,8 +122,8 @@ fn install_writes_four_files_and_appends_dir() {
     let manifest = recorded(&f.manifest).unwrap().unwrap();
     assert_eq!(manifest.appended, f.dir());
     assert_eq!(manifest.previous, None);
-    assert_eq!(manifest.files_fingerprint, files_fingerprint());
-    assert!(inspect(&f.settings, &f.manifest, &f.state).installed());
+    assert_eq!(manifest.files_fingerprint, files_fingerprint(None));
+    assert!(inspect(&f.settings, &f.manifest, &f.state, None).installed());
 }
 
 #[test]
@@ -168,7 +181,7 @@ fn upgrade_rewrites_changed_files_only() {
     assert_eq!(mtime(&dir.join("hooks/hooks.json")), untouched);
     // Same directory path: the settings value is unchanged.
     assert_eq!(fs::read(&f.settings).unwrap(), settings);
-    assert!(files_current(&dir));
+    assert!(files_current(&dir, None));
 }
 
 #[test]
@@ -392,6 +405,7 @@ fn invalid_value_types_are_refused_without_writes() {
             state_dir: &f.state,
             shell_dirs: &[],
             policy: &ManagedPolicySources::default(),
+            launch: None,
         });
         assert_eq!(result.unwrap_err(), SetupError::Invalid);
         assert_eq!(fs::read(&f.settings).unwrap(), original);
@@ -510,4 +524,141 @@ fn unreadable_dropin_dir_is_unverifiable() {
     if !readable {
         assert_eq!(checked, ManagedPolicy::Unverifiable { source: dir });
     }
+}
+
+fn argv(items: &[&str]) -> Vec<String> {
+    items.iter().map(|item| (*item).to_owned()).collect()
+}
+
+fn prefix(exe: &str) -> Vec<String> {
+    argv(&[
+        exe,
+        "--state-dir",
+        "/state",
+        "--host-endpoint",
+        "/host.sock",
+    ])
+}
+
+#[test]
+fn embedded_register_js_has_exactly_one_launch_marker() {
+    let (_, content) = MOD_FILES
+        .iter()
+        .find(|(path, _)| *path == REGISTER_JS)
+        .unwrap();
+    let markers = content
+        .lines()
+        .filter(|line| line.starts_with(LAUNCH_MARKER))
+        .count();
+    assert_eq!(markers, 1);
+    let launches = content
+        .lines()
+        .filter(|line| line.starts_with(LAUNCH_PREFIX))
+        .count();
+    assert_eq!(
+        launches, 1,
+        "no other line could be mistaken for the launch"
+    );
+}
+
+#[test]
+fn launch_prefix_strips_the_hook_tail() {
+    let hooks = argv(&[
+        "/abs/ht",
+        "--state-dir",
+        "/state",
+        "--host-endpoint",
+        "/host.sock",
+        "hook",
+        "claude",
+    ]);
+    assert_eq!(launch_prefix(&hooks).unwrap(), prefix("/abs/ht"));
+    for bad in [
+        argv(&["/abs/ht", "hook", "codex"]),
+        argv(&["/abs/ht", "watch"]),
+        argv(&["hook", "claude"]),
+        Vec::new(),
+    ] {
+        assert_eq!(
+            launch_prefix(&bad).unwrap_err(),
+            SetupError::Invalid,
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn install_renders_the_launch_into_register_js() {
+    let f = Fixture::new(b"{}");
+    let one = prefix("/abs/one");
+    let other = prefix("/abs/two");
+    assert_eq!(f.install_launch(&one).action, ModAction::Installed);
+    let dir = mod_dir(&f.state);
+    let embedded = MOD_FILES
+        .iter()
+        .find(|(path, _)| *path == REGISTER_JS)
+        .unwrap()
+        .1;
+    let installed = fs::read_to_string(dir.join(REGISTER_JS)).unwrap();
+    let rendered_line = installed
+        .lines()
+        .find(|line| line.starts_with(LAUNCH_PREFIX))
+        .unwrap();
+    assert!(rendered_line.ends_with(LAUNCH_SUFFIX));
+    assert_eq!(installed_launch(&dir), Some(one.clone()));
+    // Every other line is the embedded one.
+    let without = |text: &str, starts: &str| -> Vec<String> {
+        text.lines()
+            .filter(|line| !line.starts_with(starts))
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(
+        without(&installed, LAUNCH_PREFIX),
+        without(embedded, LAUNCH_PREFIX)
+    );
+    assert_eq!(installed.ends_with('\n'), embedded.ends_with('\n'));
+    for (path, content) in MOD_FILES {
+        if path != REGISTER_JS {
+            assert_eq!(fs::read(dir.join(path)).unwrap(), content.as_bytes());
+        }
+    }
+    assert!(files_current(&dir, Some(&one)));
+    assert!(!files_current(&dir, Some(&other)));
+    assert!(!files_current(&dir, None));
+    // A changed prefix rewrites only register.js.
+    let outcome = f.install_launch(&other);
+    assert_eq!(outcome.action, ModAction::Upgraded);
+    assert_eq!(outcome.files_written, [REGISTER_JS]);
+    assert_eq!(installed_launch(&dir), Some(other.clone()));
+    assert!(files_current(&dir, Some(&other)));
+    assert_eq!(f.install_launch(&other).action, ModAction::AlreadyInstalled);
+    assert_ne!(
+        files_fingerprint(Some(&one)),
+        files_fingerprint(Some(&other))
+    );
+}
+
+#[test]
+fn inspect_reports_installed_launch_and_mismatch() {
+    let f = Fixture::new(b"{}");
+    let one = prefix("/abs/one");
+    let other = prefix("/abs/two");
+    let before = inspect(&f.settings, &f.manifest, &f.state, Some(&one));
+    assert_eq!(before.installed_launch, None);
+    assert!(!before.launch_current);
+    f.install_launch(&one);
+    let same = inspect(&f.settings, &f.manifest, &f.state, Some(&one));
+    assert_eq!(same.installed_launch, Some(one.clone()));
+    assert!(same.launch_current && same.installed());
+    let differs = inspect(&f.settings, &f.manifest, &f.state, Some(&other));
+    assert_eq!(differs.installed_launch, Some(one));
+    assert!(!differs.launch_current);
+    assert!(!differs.installed(), "stale launch is not an installed mod");
+    // The unrendered null form reads as no launch.
+    let g = Fixture::new(b"{}");
+    g.plain();
+    let bare = inspect(&g.settings, &g.manifest, &g.state, None);
+    assert_eq!(bare.installed_launch, None);
+    assert!(bare.launch_current);
 }

@@ -1751,12 +1751,15 @@ fn mod_install_step(
         Vec::new()
     };
     let sources = ManagedPolicySources::platform(env.claude_config_dir.as_deref());
+    // The mod launches `watch` exactly the way the hooks run.
+    let launch = claude_mod::launch_prefix(&env.hook_argv(Harness::Claude)?).map_err(error)?;
     let outcome = claude_mod::install(&claude_mod::InstallInput {
         settings,
         manifest: &manifest,
         state_dir: state,
         shell_dirs: &accepted,
         policy: &sources,
+        launch: Some(&launch),
     })
     .map_err(error)?;
     if let Some(advice) = managed_policy_advice(&outcome.policy, outcome.recorded) {
@@ -1808,7 +1811,11 @@ fn mod_status(request: &SetupRequest, env: &SetupEnv, settings: &Path) -> Value 
     let Ok(manifest) = mod_manifest(env, settings) else {
         return json!({"installed": false, "error": "state directory unknown", "note": NOTE});
     };
-    let inspection = claude_mod::inspect(settings, &manifest, state);
+    let expected_launch = env
+        .hook_argv(Harness::Claude)
+        .ok()
+        .and_then(|argv| claude_mod::launch_prefix(&argv).ok());
+    let inspection = claude_mod::inspect(settings, &manifest, state, expected_launch.as_deref());
     let policy = ManagedPolicySources::platform(env.claude_config_dir.as_deref()).check();
     let (version, supported, reason) = claude_version_gate(request, env);
     let mut report = json!({
@@ -1816,6 +1823,8 @@ fn mod_status(request: &SetupRequest, env: &SetupEnv, settings: &Path) -> Value 
         "dir": claude_mod::mod_dir(state).display().to_string(),
         "files_current": inspection.files_current,
         "files_present": inspection.files_present,
+        "launch_current": expected_launch.as_ref().map(|_| inspection.launch_current),
+        "launch": inspection.installed_launch,
         "recorded": inspection.recorded,
         "settings_value_contains_mod_dir": inspection.settings_value_contains_mod_dir,
         "managed_policy": managed_policy_json(&policy),
@@ -1827,6 +1836,12 @@ fn mod_status(request: &SetupRequest, env: &SetupEnv, settings: &Path) -> Value 
     });
     if let Some(reason) = reason {
         report["claude_version_reason"] = json!(reason);
+    }
+    if inspection.files_present && expected_launch.is_some() && !inspection.launch_current {
+        report["launch_note"] = json!(
+            "the mod launches a different herdr-threads invocation than the hooks; \
+             run herdr-threads setup claude"
+        );
     }
     if supported == Some(false) {
         report["claude_version_note"] = json!("mod unsupported, native wake fallback");

@@ -455,6 +455,29 @@ impl Rig {
         command
     }
 
+    /// `argv` exactly as given, with no herdr-threads flag added and an
+    /// environment that names no Herdr instance and has no `herdr-threads`
+    /// on PATH: only the invoking pane, as in a Claude session's shell.
+    fn raw_command(&self, pane: &str, argv: &[String]) -> std::process::Command {
+        let mut command = spawn::command(&argv[0]);
+        command
+            .args(&argv[1..])
+            .env_remove("CLAUDECODE")
+            .env_remove("HERDR_PLUGIN_STATE_DIR")
+            .env_remove("HERDR_SOCKET_PATH")
+            .env_remove("HERDR_SESSION")
+            .env_remove("HERDR_BIN_PATH")
+            .env_remove("XDG_STATE_HOME")
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", pane)
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", self.root.join("home"))
+            .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"))
+            .env("HERDR_THREADS_OFFLINE", "1")
+            .env("NO_COLOR", "1");
+        command
+    }
+
     /// `caller`: (seat, pane) as the cooperative stand-in flags.
     fn cli(&self, caller: Option<(&str, &str)>, args: &[&str]) -> Out {
         let mut all: Vec<&str> = Vec::new();
@@ -1076,6 +1099,126 @@ fn send_attention_drain_ack_settles_with_mod_delivery_provenance() {
             && log.contains("provenance=cooperative_mod_channel"),
         "{log}"
     );
+}
+
+/// ht-j16.20: `setup claude` hands the mod the hooks' invocation. The argv the
+/// installed `register.js` carries, with nothing added, reaches the rig's
+/// daemon (non-default state dir and host endpoint, no `herdr-threads` on
+/// PATH) for both `watch` and `watch ack`.
+#[test]
+fn setup_written_launch_runs_watch_with_no_extra_flags() {
+    let rig = Rig::new();
+    let config = rig.root.join("claude-config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(config.join("settings.json"), b"{}").unwrap();
+    let mut setup = rig.command(None, &["setup", "claude"]);
+    setup.env(
+        herdr_threads::harness::claude_mod::TEST_MANAGED_SETTINGS_ENV,
+        rig.root.join("no-managed-settings.json"),
+    );
+    let out = collect(
+        setup
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn_owned()
+            .unwrap()
+            .wait_with_output()
+            .unwrap(),
+    );
+    assert_eq!(out.code, 0, "setup claude: {}{}", out.stdout, out.stderr);
+    let register =
+        fs::read_to_string(rig.state.join("claude-mod/herdr-threads/hooks/register.js")).unwrap();
+    let line = register
+        .lines()
+        .find(|line| line.starts_with("const LAUNCH = {"))
+        .unwrap_or_else(|| panic!("no rendered launch in the installed register.js"));
+    let json = line
+        .strip_prefix("const LAUNCH = ")
+        .and_then(|rest| rest.split_once(" // herdr-threads:launch"))
+        .map(|(json, _)| json)
+        .unwrap();
+    let launch: Vec<String> = serde_json::from_str::<Value>(json).unwrap()["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(launch[0], BIN);
+    assert_eq!(
+        launch[1..],
+        [
+            "--state-dir",
+            rig.state.to_str().unwrap(),
+            "--host-endpoint",
+            rig.socket.to_str().unwrap()
+        ]
+    );
+    let with = |rest: &[&str]| -> Vec<String> {
+        launch
+            .iter()
+            .cloned()
+            .chain(rest.iter().map(|item| (*item).to_owned()))
+            .collect()
+    };
+
+    // `watch`, as the mod spawns it (the SessionStart check-in may need a retry).
+    let mut watch = (0..80)
+        .find_map(|_| {
+            let mut watch = Watch::spawn(rig.raw_command(
+                PANE_B,
+                &with(&["watch", "--harness", "claude", "--session", SESSION_B]),
+            ));
+            let first = watch.peek_first(STEP);
+            let retry = first
+                .as_ref()
+                .is_some_and(|line| line["kind"] == "status" && line["reason"] == "no_binding");
+            if retry {
+                std::thread::sleep(Duration::from_millis(150));
+                return None;
+            }
+            Some(watch)
+        })
+        .expect("the SessionStart check-in never committed for B");
+    watch.wait_connected();
+    rig.wait_channel(Some("live"));
+
+    // `watch ack`, as the mod runs it.
+    let id = rig.send_ordinary("through the setup-written launch");
+    assert_eq!(
+        watch.wait_item(&id)["body"],
+        "through the setup-written launch"
+    );
+    let mut ack = rig.raw_command(
+        PANE_B,
+        &with(&[
+            "watch",
+            "ack",
+            "--session",
+            SESSION_B,
+            "--via",
+            "context",
+            &id,
+        ]),
+    );
+    let acked = collect(
+        ack.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn_owned()
+            .unwrap()
+            .wait_with_output()
+            .unwrap(),
+    );
+    assert_eq!(acked.code, 0, "{}{}", acked.stdout, acked.stderr);
+    let result: Value = acked
+        .stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|line| line["id"] == id.as_str())
+        .unwrap_or_else(|| panic!("no result line for {id}: {}", acked.stdout));
+    assert_eq!(result["result"], "settled", "{result}");
+    assert_eq!(rig.receipt_state(&id), "acked");
 }
 
 /// Spec D4/D6 lazy rows: streamed as `lazy` (no ACK required), and the
