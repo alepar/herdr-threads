@@ -7,6 +7,10 @@
 
 use super::sweep::{FakeHost, Scratch, pane};
 use serde_json::{Value, json};
+#[path = "../support/lazy_proxy.rs"]
+pub(super) mod lazy_proxy;
+use herdr_threads::daemon::paths::{InstancePaths, RuntimeContext};
+use std::sync::atomic::Ordering;
 use std::{fs, os::unix::fs::DirBuilderExt, path::PathBuf, process::Command};
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
@@ -172,6 +176,8 @@ fn agent_facing_machine_text_is_compact() {
         let mut args = vec!["send", thread.as_str(), "--body", body.as_str()];
         if from.0 == alice_seat && index % 8 == 0 {
             args.extend(["--require-ack", hatter_seat.as_str()]);
+        } else {
+            args.push("--nudge");
         }
         let message = plugin.ok(Some(from), &args)["data"]
             .as_str()
@@ -180,7 +186,7 @@ fn agent_facing_machine_text_is_compact() {
         if index == 2 {
             long_message = message.clone();
         }
-        if args.len() > 4 && index < 10 {
+        if args.contains(&"--require-ack") && index < 10 {
             acked.push(message);
         }
     }
@@ -189,7 +195,26 @@ fn agent_facing_machine_text_is_compact() {
 
     let read = plugin.text(Some(hatter), &["read", &thread, "--recent", "20"]);
     keep("read-recent-20.txt", &read);
-    let inbox = plugin.text(Some(hatter), &["inbox"]);
+    // Retain the legacy compact byte contract on supported wire6 with
+    // pre-lazy capabilities. Current v2 machine bodies are covered separately.
+    let inbox = {
+        let paths = InstancePaths::resolve(
+            &RuntimeContext::explicit(plugin.state.clone(), plugin.host.clone(), None).unwrap(),
+        )
+        .unwrap();
+        let proxy = lazy_proxy::Proxy::new(paths, &root);
+        proxy.mode.store(1, Ordering::SeqCst);
+        let text = plugin.text(Some(hatter), &["inbox"]);
+        let requests = proxy.requests();
+        assert!(requests.iter().any(|q| q["command"]["kind"] == "inbox"));
+        assert!(
+            !requests
+                .iter()
+                .any(|q| q["command"]["kind"] == "inbox_batch_v2")
+        );
+        drop(proxy); // join and restore the daemon before any subsequent read
+        text
+    };
     keep("inbox.txt", &inbox);
     let pending = plugin.text(Some(hatter), &["pending-receipts", "--seat", &hatter_seat]);
     keep("pending-receipts.txt", &pending);

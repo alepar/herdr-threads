@@ -149,6 +149,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     // SQL26 retained rows have no active lane consumer in this composition.
     "lazy_recipients",
     "host_instances",
+    // Passive inbox progress never schedules attention or deadlines.
+    "lazy_recipients",
     "membership_intervals",
     "memberships",
     "messages",

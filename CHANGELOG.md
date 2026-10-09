@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v0.3.1
+
+- **Lazy messages.** Passive messages are delivered by the recipient's text inbox without creating receipt obligations, deadlines, wakes or ACKs. Complete flushed display records separate delivery bookkeeping; partial output and read-only formats do not settle delivery.
+- **Latency improvements.** Reuse bounded idle read-only query connections and allow commit bursts to settle before archival. Latency fixtures retain their existing budgets and use an explicit test-only durability knob; production durability remains unchanged.
+- **CLI routing and safe nudges.** Explicit human invocation routing and draft-aware, active-turn-aware attention guards preserve attribution and avoid submitting over observed input.
+- **Coordinated upgrade.** Upgrade CLI and daemon together for lazy delivery and schema 26.
+
 ## v0.3.0
 
 - **Join discovered threads.** Use `thread list --all --search TEXT`, then `join THREAD` to voluntarily join an active thread without an invitation. Pending invitations still require explicit `accept` or `accept-required`; archived threads require reopening. Rejoining starts a fresh membership interval, and retrying a completed join never restores a membership that was later left.

@@ -7,7 +7,7 @@ use crate::protocol::{
 use crate::view::escape::{Context, escape_for_terminal};
 use std::{
     borrow::Cow,
-    cell::Cell,
+    cell::{Cell, RefCell},
     ffi::OsString,
     io::{self, Write},
 };
@@ -29,6 +29,134 @@ thread_local! {
     static STDOUT_IS_TERMINAL: Cell<bool> = const { Cell::new(false) };
     static HARNESS_MARKED: Cell<bool> = const { Cell::new(false) };
     static HUMAN: Cell<bool> = const { Cell::new(false) };
+    static INBOX: RefCell<Option<InboxInvocation>> = const { RefCell::new(None) };
+}
+
+/// Local continuation hints, captured before an omitted read selector is resolved.
+/// They grant no authority: every executed continuation is resolved normally.
+#[derive(Clone)]
+struct InboxInvocation {
+    actor: super::actor_route::InvocationActor,
+    seat: Option<crate::protocol::ids::SeatId>,
+    own_text: bool,
+    presentation: Presentation,
+    spec: OutputSpec,
+    page: crate::protocol::pagination::PageRequest,
+}
+
+pub(crate) struct InboxInvocationGuard(Option<InboxInvocation>);
+
+impl InboxInvocationGuard {
+    pub(crate) fn enter(
+        parsed: &super::commands::ParsedCli,
+        seat: Option<crate::protocol::ids::SeatId>,
+    ) -> Self {
+        use crate::protocol::commands::Command;
+        let invocation = match &parsed.action {
+            super::commands::CliAction::Wire(
+                Command::Inbox(q) | Command::InboxBatch(q) | Command::InboxBatchV2(q),
+            ) => Some(InboxInvocation {
+                actor: parsed.actor,
+                seat: q
+                    .seat
+                    .clone()
+                    .or(seat)
+                    .or_else(|| parsed.cooperative.as_ref().map(|s| s.seat.clone())),
+                own_text: parsed.caller_read_default
+                    && parsed.output.format == OutputFormat::Text
+                    && parsed.presentation != Presentation::Machine,
+                presentation: parsed.presentation,
+                spec: parsed.output.clone(),
+                page: q.page.clone(),
+            }),
+            _ => None,
+        };
+        Self(INBOX.with(|slot| slot.replace(invocation)))
+    }
+}
+
+impl Drop for InboxInvocationGuard {
+    fn drop(&mut self) {
+        INBOX.with(|slot| slot.replace(self.0.take()));
+    }
+}
+
+fn inbox_continuation(result: &CommandResult) -> CommandResult {
+    let mut result = result.clone();
+    INBOX.with(|slot| {
+        let invocation = slot.borrow();
+        let Some(context) = invocation.as_ref() else {
+            return;
+        };
+        let next = match &mut result {
+            CommandResult::Inbox(p) => &mut p.next_argv,
+            CommandResult::InboxBatch(p) => &mut p.next_argv,
+            CommandResult::InboxBatchV2(p) => &mut p.next_argv,
+            _ => return,
+        };
+        let Some(argv) = next else { return };
+        let mut state = context.spec.context.state_dir.clone();
+        let mut host = context.spec.context.host.clone();
+        let mut seat = context.seat.as_ref().map(|s| s.as_str().to_owned());
+        let mut args = argv.iter().skip(1);
+        let mut rest = Vec::new();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "human" | "--json" | "--human" | "--machine" => {}
+                "--state-dir" => {
+                    if let Some(value) = args.next() {
+                        state.get_or_insert_with(|| value.clone());
+                    }
+                }
+                "--host-endpoint" => {
+                    if let Some(value) = args.next() {
+                        host.get_or_insert_with(|| value.clone());
+                    }
+                }
+                "--seat" => {
+                    if let Some(value) = args.next() {
+                        seat.get_or_insert_with(|| value.clone());
+                    }
+                }
+                "--max-bytes" | "--limit" => {
+                    args.next();
+                }
+                _ => rest.push(arg.clone()),
+            }
+        }
+        let mut normalized = vec![argv[0].clone()];
+        if context.actor == super::actor_route::InvocationActor::Human {
+            normalized.push("human".into());
+        }
+        if let Some(state) = state {
+            normalized.extend(["--state-dir".into(), state]);
+        }
+        if let Some(host) = host {
+            normalized.extend(["--host-endpoint".into(), host]);
+        }
+        if context.spec.format == OutputFormat::Json {
+            normalized.push("--json".into());
+        }
+        match context.presentation {
+            Presentation::Human => normalized.push("--human".into()),
+            Presentation::Machine => normalized.push("--machine".into()),
+            Presentation::Auto => {}
+        }
+        normalized.extend(rest);
+        if !context.own_text
+            && let Some(seat) = seat
+        {
+            normalized.extend(["--seat".into(), seat]);
+        }
+        normalized.extend([
+            "--limit".into(),
+            context.page.limit.to_string(),
+            "--max-bytes".into(),
+            context.page.max_bytes.to_string(),
+        ]);
+        *argv = normalized;
+    });
+    result
 }
 
 /// Environment variables an agent harness sets for the subprocesses of its
@@ -106,6 +234,8 @@ pub fn human_active() -> bool {
 /// The bytes a CLI command emits for `result`: the selected machine encoding,
 /// or the human form when this run selected it and one exists for the kind.
 pub fn emitted_bytes(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, ApiError> {
+    let result = inbox_continuation(result);
+    let result = &result;
     if HUMAN.with(Cell::get)
         && spec.format == OutputFormat::Text
         && let Some(text) = super::human::render(result, spec)
@@ -138,9 +268,9 @@ impl From<ApiError> for OutputError {
 
 /// Write the selected encoding of `result` and return the number of bytes
 /// written. For a machine consumer those are exactly the bytes the shared
-/// encoder measured. For a person at a terminal they are the human rendering
-/// instead, which is not measured: `max_bytes` is enforced on the machine
-/// encoding only, so the human text may be longer or shorter than the budget.
+/// encoder measured. Human inbox output also measures the final rendered bytes
+/// against `max_bytes`. Other human renderers retain the machine-encoding budget
+/// check only, so their final text may be longer or shorter than the budget.
 /// The caller keeps any durable intent pending until this returns
 /// successfully.
 pub fn write_selected<W: Write>(
@@ -149,7 +279,8 @@ pub fn write_selected<W: Write>(
     max_bytes: u32,
     writer: &mut W,
 ) -> Result<usize, OutputError> {
-    let bytes = encode_selected(result, spec)?;
+    let decorated = inbox_continuation(result);
+    let bytes = encode_selected(&decorated, spec)?;
     if bytes.len() > max_bytes as usize {
         return Err(OutputError::Api(
             ApiError::invalid_budget("selected output exceeds byte budget")
@@ -161,9 +292,154 @@ pub fn write_selected<W: Write>(
     } else {
         bytes
     };
+    if matches!(
+        result,
+        CommandResult::Inbox(_) | CommandResult::InboxBatch(_) | CommandResult::InboxBatchV2(_)
+    ) && bytes.len() > max_bytes as usize
+    {
+        return Err(OutputError::Api(
+            ApiError::invalid_budget("selected inbox output exceeds byte budget")
+                .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX)),
+        ));
+    }
     writer.write_all(&bytes).map_err(OutputError::Io)?;
     writer.flush().map_err(OutputError::Io)?;
     Ok(bytes.len())
+}
+
+/// Canonical CLI-only annotation of selected read records. This never changes
+/// the v1 result, saved summary content, or delivery progress.
+#[derive(Default)]
+pub(crate) struct ReadModes {
+    lazy: Vec<crate::protocol::ids::MessageId>,
+}
+
+impl ReadModes {
+    pub(crate) fn lookup<C: crate::ports::LocalClient + ?Sized>(
+        result: &CommandResult,
+        spec: &OutputSpec,
+        client: &C,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<Self, ApiError> {
+        use crate::protocol::{
+            capabilities::MESSAGE_DELIVERY_MODES,
+            commands::{Command, DeliveryMode, MessageDeliveryModesQuery},
+            output::selected_result,
+            results::{MessageContent, MessageKind, SearchHit},
+        };
+        if spec.format != OutputFormat::Text {
+            return Ok(Self::default());
+        }
+        let selected = selected_result(result, spec);
+        let ids: Vec<_> = match &selected {
+            // System events may be canonically published by a manifest before
+            // their physical message rows exist. Delivery mode applies only
+            // to ordinary content, so do not query it for warning/info rows.
+            CommandResult::History(page) => page
+                .items
+                .iter()
+                .filter(|m| m.kind == MessageKind::Ordinary)
+                .map(|m| m.message.clone())
+                .collect(),
+            CommandResult::Message(detail) => match &detail.content {
+                MessageContent::Ordinary { .. } => vec![detail.summary.message.clone()],
+                MessageContent::System { .. } => Vec::new(),
+            },
+            CommandResult::Search(search) => search
+                .matches
+                .items
+                .iter()
+                .filter_map(|hit| match hit {
+                    SearchHit::Body(m) if m.kind == MessageKind::Ordinary => {
+                        Some(m.message.clone())
+                    }
+                    SearchHit::Body(_) | SearchHit::Topic(_) => None,
+                })
+                .collect(),
+            _ => return Ok(Self::default()),
+        };
+        if ids.is_empty() || !client.supports_capability(MESSAGE_DELIVERY_MODES, budget) {
+            return Ok(Self::default());
+        }
+        let mut lazy = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let ids: Vec<_> = ids
+            .into_iter()
+            .filter(|id| seen.insert(id.clone()))
+            .collect();
+        for batch in ids.chunks(100) {
+            let result = match client.call(
+                Command::MessageDeliveryModes(MessageDeliveryModesQuery {
+                    messages: batch.to_vec(),
+                }),
+                budget,
+            ) {
+                // An optional read extension may be unavailable even when a
+                // cached capability list advertises it. Keep the legacy read
+                // rendering; never infer a mode or perform a mutation.
+                Err(error) if error.code == crate::protocol::results::ErrorCode::Unsupported => {
+                    return Ok(Self::default());
+                }
+                result => result?,
+            };
+            let CommandResult::MessageDeliveryModes(modes) = result else {
+                return Err(ApiError::store_corrupt("daemon returned no message modes"));
+            };
+            if modes.len() != batch.len()
+                || modes
+                    .iter()
+                    .zip(batch)
+                    .any(|(mode, id)| &mode.message != id)
+            {
+                return Err(ApiError::store_corrupt(
+                    "daemon returned mismatched message modes",
+                ));
+            }
+            lazy.extend(
+                modes
+                    .into_iter()
+                    .filter(|mode| mode.delivery_mode == DeliveryMode::Lazy)
+                    .map(|mode| mode.message),
+            );
+        }
+        Ok(Self { lazy })
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.lazy.is_empty()
+    }
+
+    /// A service-generated row preceding the unchanged selected encoding.
+    /// Peer text cannot fabricate this column-zero row (body lines are indented,
+    /// and history/search peer fields are escaped by the established encoder).
+    pub(crate) fn annotate(&self, bytes: Vec<u8>) -> Vec<u8> {
+        if self.is_empty() {
+            return bytes;
+        }
+        let mut out = Vec::new();
+        for id in &self.lazy {
+            out.extend_from_slice(format!("[lazy] {}\n", id.as_str()).as_bytes());
+        }
+        out.extend_from_slice(&bytes);
+        out
+    }
+
+    pub(crate) fn write<W: Write + ?Sized>(
+        &self,
+        bytes: Vec<u8>,
+        max_bytes: u32,
+        writer: &mut W,
+    ) -> Result<(), OutputError> {
+        let bytes = self.annotate(bytes);
+        if !self.is_empty() && bytes.len() > max_bytes as usize {
+            return Err(OutputError::Api(
+                ApiError::invalid_budget("annotated read exceeds byte budget")
+                    .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX)),
+            ));
+        }
+        writer.write_all(&bytes).map_err(OutputError::Io)?;
+        writer.flush().map_err(OutputError::Io)
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,43 @@
+{
+  "triage": {
+    "lanes": [],
+    "domains": [
+      "auth",
+      "cli-permission-policy",
+      "filesystem-transactions"
+    ]
+  },
+  "scout:premortem": {
+    "findings": []
+  },
+  "scout:yagni": {
+    "findings": []
+  },
+  "scout:completeness": {
+    "findings": []
+  },
+  "scout:failure-mode": {
+    "findings": []
+  },
+  "scout:feasibility": {
+    "findings": []
+  },
+  "scout:regression": {
+    "findings": []
+  },
+  "scout:domain:auth": {
+    "findings": []
+  },
+  "scout:domain:cli-permission-policy": {
+    "findings": []
+  },
+  "scout:domain:filesystem-transactions": {
+    "findings": []
+  },
+  "reporter": {
+    "verdict": "clean (0 nits) [converged]",
+    "reportMarkdown": "super-roast verdict: clean (0 nits) [converged]\nmode: design        iteration: 2 of 3\nprofile (assumed): Internal production local CLI. Native configuration ownership and durable receipts concern persistent data, so preservation and truthful recovery guarantees remain material.\ninputs: ht-uwd settled permission tree after round1 ownership/native-scope/lock/restart-witness fixes\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 3 resolved \u00b7 0 regressed (0 Blocking) \u00b7 0 punch-listed (open)\ncoverage: scouts 9/9 (premortem, completeness, yagni, failure-mode, feasibility, regression, domain:auth, domain:cli-permission-policy, domain:filesystem-transactions) \u00b7 raw 0 \u2192 deduped 0 \u2192 panel 0 \u00b7 spot 0 \u00b7 promoted 0 \u00b7 judge completion n/a (no panels) \u00b7 remainder-capped: 0\nindependence: same-family (GPT) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\n\n## Prior confirmed findings\n- [Blocking] Decision 3: independent permission ownership; Decision 5: setup, installer and consent \u2014 resolved.\n  Current root design, lines 37 and 47, requires exact historically owned broad-rule narrowing independently of consent for expanded grants. Historical native match scope bounds replacement coverage; ht/absolute/direct expansions remain missing when consent declines. Nested Claude migration, transfer, lifecycle and gateway designs repeat this distinction. The prior missing-consent retention gap is closed in the design.\n- [Blocking] Decision 3: independent permission ownership \u2014 resolved.\n  Current root design, line 37, specifies a stable advisory OwnedConfigWriteGuard shared by all cooperating owned writers across independent processes. Refreshed validation and settings, manifest and recovery publication occur under one guard. Consent precedes acquisition; bounded busy refusal, retained lock inode, path checks and Drop unlock are explicit. The final-check-to-rename race with noncooperating editors is expressly accepted and disclosed, replacing the earlier unbounded race-refusal promise.\n- [Should-fix] Required configurations and verification: ownership matrix \u2014 resolved.\n  Current root design, line 57, requires terminating an isolated writer at each historical transfer durable publication boundary and using a new process for inspect/resume/remove. Witnesses assert persisted ownership proof, no broad-rule restoration, foreign preservation and lock release. Nested Claude migration and transfer designs repeat this requirement. These are design acceptance requirements; this review does not claim implementation tests ran.\n\n## Confirmed findings\n- none\n\n## Not verified (beyond panel cap)\n- none\n\n## Not verified (dedupe failed or judge lost)\n- none\n\n## Beyond remainder cap (count only)\n- none\n\n## Rejected (with reason)\n- Prior rejection retained: universal crash recovery for fresh install/update/remove. Current root design, lines 37 and 57, still bounds automatic historical-transfer recovery and retains honest partial refusal for ordinary lifecycle operations. No current packet supplies materially changed evidence reopening this finding.\n- Prior rejection retained: mandatory pending-transfer discovery at every independent entrypoint. Exact ownership/fingerprint validation and conflicting-state refusal remain the applicable safety boundary. No current packet supplies materially changed evidence reopening this finding.\n- Prior rejection retained: unspecified universal power-loss barriers. Current root design, line 37, explicitly bounds historical recovery to process termination on a functioning filesystem and retains existing file and parent sync ordering. Universal power/storage-failure recovery remains outside the promise.\n\n## Unverified nits (spot-checked)\n- none\n\n## Escalations (need human)\n- none\n\nAll nine scouts returned, including the regression lane, with zero findings. No dedupe or judging was needed and no pipeline coverage was lost. The empty second round supports convergence after the three prior confirmed design gaps were addressed.\n",
+    "confirmedCount": 0,
+    "escalations": []
+  }
+}

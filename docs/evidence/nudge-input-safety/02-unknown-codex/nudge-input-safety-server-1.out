@@ -1,0 +1,5 @@
+herdr server running; you can use any herdr CLI command in another terminal.
+api socket: /private/tmp/htnud-uivllkda/nudge-input-safety.sock
+client socket: /private/tmp/htnud-uivllkda/nudge-input-safety-client.sock
+logs: /private/tmp/htnud-uivllkda/nudge-input-safety-cfg/herdr/herdr-server.log
+did you mean to open the Herdr TUI? run `herdr`; you do not need `herdr server`.

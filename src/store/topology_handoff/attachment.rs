@@ -280,7 +280,8 @@ pub(crate) fn validate_selected_child_phase(
             v.seat == attachment.resolved_seat && v.deadline_millis.is_none()
         }
         PermitMutation::SendMessage(v) => {
-            v.body == identity.payload.handoff.body
+            v.delivery_mode.is_ordinary()
+                && v.body == identity.payload.handoff.body
                 && v.invited_recipients == [attachment.resolved_seat.clone()]
                 && v.deadline_millis.is_none()
                 && !v.relays_user

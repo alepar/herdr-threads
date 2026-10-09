@@ -1,0 +1,17 @@
+{
+  "nudge-clippy-final.log": "655c082df1f3a8a43b2673438995a6620f4203c6a3604c3fca5b60555bb84a56",
+  "nudge-default-features.log": "1ae2ce53f6c4a3265acd385e7e4a21d827a2b5594337d0d9ae68b92a856b30dc",
+  "nudge-host-regressions.log": "01dcaa9f9fa75a80e787e4837862cb4b93a544803ce2bdb2cc3e4c9ccfcd80c9",
+  "nudge-integration-latency-green.log": "7cb9f3200df312f7d574d4aecffa065550edc905174374c945fa7cfecda44765",
+  "nudge-integration-red.log": "5548b80867f2297e2cc36b6922c93258eaa8ffc80d282fc809a1e62e216be2c0",
+  "nudge-integration-sweep-green.log": "a9630f933bbb992b7db2e756c1ce2cbc7b15ae032d92886a5f0c049aff57a1c4",
+  "nudge-integration-trust-green.log": "5ebec0a7b682812656abda6aaa243b0313b8bfe14bf60fab6eee3f7360245d28",
+  "nudge-leaks-final.log": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e",
+  "nudge-observed-draft-red.log": "4cacde02efb8a565b3cb8b90af634c7a652ab9d6bc167e4c62061c3d9f80ca85",
+  "nudge-safety-red-sockets.log": "60265102009ed506480798e9d2944a05fd5d96e550e0dc92e9ae52549e0de9a4",
+  "nudge-safety-stash-red.log": "831cdbb38f6a9fd64432c8418accf8d7121d10b01019a4e44b3abb88d65b32a4",
+  "nudge-scheduler-regressions.log": "81299c5c8cdb76f2712631a9aede10d806dc7c5d9474a84f9c4f4702e1ff82bb",
+  "nudge-status-red.log": "bd9c367a5f4a7eb34d645300ff3e93e1ffccbe571cd2abc04b96d5892f7d475f",
+  "product.patch": "2136dd7e000613d014fe8f3634b26c38ba3980621739870faef24fdfb5b70597",
+  "review.md": "b6600ff4c1440f5c836757a22a3a20f97654923e8b2dc27aaa24f8dc65f36b74"
+}

@@ -17,6 +17,7 @@ pub mod internal;
 pub mod irc;
 pub mod journal;
 pub mod launch;
+pub mod lazy_display;
 pub mod me;
 pub mod output;
 pub mod panes;
@@ -860,8 +861,29 @@ where
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
     W: Write,
 {
+    if matches!(
+        &parsed.action,
+        CliAction::Wire(Command::Inbox(_) | Command::InboxBatch(_) | Command::InboxBatchV2(_))
+    ) {
+        // Pin effective routing even when it came from environment/defaults.
+        parsed
+            .output
+            .context
+            .state_dir
+            .get_or_insert_with(|| context.state_dir.to_string_lossy().into_owned());
+        parsed
+            .output
+            .context
+            .host
+            .get_or_insert_with(|| context.host_endpoint.to_string_lossy().into_owned());
+    }
+    // Capture omission before default_seat resolves the caller read. The second
+    // guard below adds the canonical selected seat while retaining that choice.
+    let _origin_inbox = output::InboxInvocationGuard::enter(&parsed, None);
     let selection = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock)?;
     resolve_recipient_seats(&mut parsed, paths, connection, clock)?;
+    let _inbox =
+        output::InboxInvocationGuard::enter(&parsed, selection.as_ref().map(|s| s.seat.clone()));
     if let Some(selection) = selection {
         let (instance, client) = connection.get()?;
         run_selected(
@@ -904,18 +926,26 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     budget: &dyn Fn() -> CallBudget,
     writer: &mut W,
 ) -> Result<(), RunError> {
-    let max_bytes = command
-        .page()
-        .map_or(crate::protocol::pagination::MAX_PAGE_BYTES, |page| {
-            page.max_bytes
-        });
+    let command = match command {
+        Command::Inbox(query)
+            // A continuation must stay in the protocol that captured it.
+            if query.page.cursor.as_deref().is_none_or(|cursor| {
+                cursor.starts_with(crate::protocol::pagination::INBOX_V2_PREFIX)
+            }) && client
+                .supports_capability(crate::protocol::capabilities::INBOX_BATCH_V2, &budget()) =>
+        {
+            Command::InboxBatchV2(query)
+        }
+        command => command,
+    };
+    let max_bytes = read_byte_bound(&command);
     let participant_thread = match &command {
         Command::Participants(query) => Some(query.thread.clone()),
         Command::Thread(query) => Some(query.thread.clone()),
         _ => None,
     };
     let inbox_seat = match &command {
-        Command::Inbox(query) => query.seat.clone(),
+        Command::Inbox(query) | Command::InboxBatchV2(query) => query.seat.clone(),
         _ => None,
     };
     // Service recovery deliberately accepts only the default wire output.
@@ -925,10 +955,29 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
         command,
         Command::ServiceInspect | Command::ServiceDisconnect(_)
     ) {
-        client.call(command, &budget())?
+        client.call(command.clone(), &budget())?
     } else {
-        client.call_with_output(command, output_spec, &budget())?
+        client.call_with_output(command.clone(), output_spec, &budget())?
     };
+    let topics = match (&result, inbox_seat) {
+        (CommandResult::Inbox(page), Some(seat))
+            if output::human_active()
+                && output_spec.format == OutputFormat::Text
+                && !page.items.is_empty() =>
+        {
+            inbox_topics(seat, output_spec, client, budget)
+        }
+        _ => None,
+    };
+    // Fitting and final rendering must share the exact topic snapshot: the
+    // padded Human topic column is part of the caller's byte budget.
+    let result = match &topics {
+        Some(topics) => human::with_inbox_topics(topics.clone(), || {
+            fit_inbox_read(command.clone(), result, output_spec, client, budget)
+        }),
+        None => fit_inbox_read(command.clone(), result, output_spec, client, budget),
+    }?;
+    let (result, modes) = fit_annotated_read(command, result, output_spec, client, budget)?;
     let peer_hints = if output_spec.format == OutputFormat::Text && peer_locations::active() {
         let location_budget = budget();
         peer_locations::prepare(
@@ -940,16 +989,6 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
         )
     } else {
         peer_locations::Prepared::default()
-    };
-    let topics = match (&result, inbox_seat) {
-        (CommandResult::Inbox(page), Some(seat))
-            if output::human_active()
-                && output_spec.format == OutputFormat::Text
-                && !page.items.is_empty() =>
-        {
-            inbox_topics(seat, output_spec, client, budget)
-        }
-        _ => None,
     };
     match topics {
         Some(topics) => {
@@ -967,11 +1006,183 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
             } else if peer_hints.unavailable && output_spec.format == OutputFormat::Text {
                 bytes.extend_from_slice(b"location unavailable\n");
             }
-            writer.write_all(&bytes)?;
-            writer.flush()?;
+            modes.write(bytes, max_bytes, writer)?;
         }
     };
     Ok(())
+}
+
+fn read_byte_bound(command: &Command) -> u32 {
+    match command {
+        Command::Message(q) => q.body.max_bytes,
+        _ => command
+            .page()
+            .map_or(crate::protocol::pagination::MAX_PAGE_BYTES, |p| p.max_bytes),
+    }
+}
+
+/// Refit server-selected chunks with the final CLI continuation overhead.
+/// Only the effective request bound shrinks; emitted continuations retain the
+/// original limit and byte bound through the invocation guard.
+fn fit_inbox_read<C: LocalClient + ?Sized>(
+    mut command: Command,
+    mut result: CommandResult,
+    spec: &OutputSpec,
+    client: &C,
+    budget: &dyn Fn() -> CallBudget,
+) -> Result<CommandResult, RunError> {
+    if !matches!(
+        command,
+        Command::Inbox(_) | Command::InboxBatch(_) | Command::InboxBatchV2(_)
+    ) {
+        return Ok(result);
+    }
+    let max = read_byte_bound(&command);
+    loop {
+        let bytes = output::emitted_bytes(&result, spec)?;
+        if bytes.len() <= max as usize {
+            return Ok(result);
+        }
+        // Human legacy rows can be much wider than their compact wire
+        // encoding (especially UTF-8 topics). Reserve fewer canonical rows
+        // rather than exhausting the wire byte budget without changing the
+        // selected page. Its continuation remains service-generated.
+        if output::human_active()
+            && let CommandResult::Inbox(page) = &result
+            && page.items.len() > 1
+            && let Command::Inbox(query) = &mut command
+        {
+            let rows =
+                (page.items.len() * max as usize / bytes.len()).clamp(1, page.items.len() - 1);
+            query.page.limit = rows as u16;
+            let retry = client.call_with_output(command.clone(), spec, &budget())?;
+            if retry == result {
+                return Err(ApiError::invalid_budget("inbox refit made no progress")
+                    .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX))
+                    .into());
+            }
+            result = retry;
+            continue;
+        }
+        let current = read_byte_bound(&command);
+        let overflow = u32::try_from(bytes.len() - max as usize).unwrap_or(u32::MAX);
+        let next = current.saturating_sub(overflow.max(current / 4));
+        if next < 256 {
+            return Err(ApiError::invalid_budget(
+                "inbox continuation cannot fit selected byte budget",
+            )
+            .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX))
+            .into());
+        }
+        match &mut command {
+            Command::Inbox(q) | Command::InboxBatch(q) | Command::InboxBatchV2(q) => {
+                q.page.max_bytes = next
+            }
+            _ => unreachable!(),
+        }
+        let retry = client.call_with_output(command.clone(), spec, &budget())?;
+        if retry == result {
+            return Err(ApiError::invalid_budget("inbox refit made no progress").into());
+        }
+        result = retry;
+    }
+}
+
+/// Reserve annotation bytes by reselecting the same read at a smaller bound.
+/// The daemon, rather than the CLI, supplies any body/page continuation: never
+/// trim printed body bytes or synthesize a cursor after selection.
+fn fit_annotated_read<C: LocalClient + ?Sized>(
+    mut command: Command,
+    mut result: CommandResult,
+    spec: &OutputSpec,
+    client: &C,
+    budget: &dyn Fn() -> CallBudget,
+) -> Result<(CommandResult, output::ReadModes), RunError> {
+    let max_bytes = read_byte_bound(&command);
+    loop {
+        let modes = output::ReadModes::lookup(&result, spec, client, &budget())?;
+        if modes.is_empty() {
+            return Ok((result, modes));
+        }
+        let len = modes.annotate(output::emitted_bytes(&result, spec)?).len();
+        if len <= max_bytes as usize {
+            return Ok((result, modes));
+        }
+        let current = read_byte_bound(&command);
+        let overflow = u32::try_from(len - max_bytes as usize).unwrap_or(u32::MAX);
+        let next = current.saturating_sub(overflow.max(current / 4));
+        if next < 256 {
+            return Err(RunError::Api(
+                ApiError::invalid_budget("annotated read exceeds byte budget")
+                    .with_required_minimum_bytes(len.try_into().unwrap_or(u32::MAX)),
+            ));
+        }
+        match &mut command {
+            Command::History(q) => q.page.max_bytes = next,
+            Command::Search(q) => q.page.max_bytes = next,
+            Command::Message(q) => q.body.max_bytes = next,
+            _ => unreachable!("only selected message reads carry lazy markers"),
+        }
+        result = client.call_with_output(command.clone(), spec, &budget())?;
+    }
+}
+
+const INBOX_DISPLAY_PAGE_READ_LIMIT: usize = 8;
+
+fn select_display_inbox_page<C: LocalClient + ?Sized>(
+    mut command: Command,
+    output_spec: &OutputSpec,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(Command, CommandResult), RunError> {
+    let selection_budget = cooperative_budget(clock);
+    let mut result = client.call_with_output(command.clone(), output_spec, &selection_budget)?;
+    // Source pages have their own bounded candidate walk. Retained, settled
+    // history can fill that walk without producing anything to display. Keep
+    // one bounded selection window, then present its actual continuation.
+    for _ in 1..INBOX_DISPLAY_PAGE_READ_LIMIT {
+        let (empty, stop_reason, has_more, next_cursor) = match &result {
+            CommandResult::InboxBatch(page) => (
+                page.items.is_empty(),
+                page.stop_reason,
+                page.has_more,
+                &page.next_cursor,
+            ),
+            CommandResult::InboxBatchV2(page) => (
+                page.items.is_empty(),
+                page.stop_reason,
+                page.has_more,
+                &page.next_cursor,
+            ),
+            _ => break,
+        };
+        if !empty
+            || stop_reason != crate::protocol::pagination::StopReason::Work
+            || !has_more
+            || selection_budget.is_exhausted(clock)
+        {
+            break;
+        }
+        let next = next_cursor.as_ref().ok_or_else(|| {
+            RunError::Api(ApiError::store_corrupt(
+                "inbox work page has no continuation",
+            ))
+        })?;
+        let request = match &mut command {
+            Command::InboxBatch(request) | Command::InboxBatchV2(request) => request,
+            _ => unreachable!("display selection only reads compact inbox batches"),
+        };
+        if request.page.cursor.as_ref() == Some(next) {
+            return Err(RunError::Api(ApiError::store_corrupt(
+                "inbox work continuation did not advance",
+            )));
+        }
+        request.page.cursor = Some(next.clone());
+        result = client.call_with_output(command.clone(), output_spec, &selection_budget)?;
+    }
+    // Byte refitting must reselect this final source page, including any body
+    // offset and frozen high waters in its request cursor, never the first page.
+    Ok((command, result))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -994,12 +1205,9 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
     let claim = crate::harness::bridge::caller_claim(&context).map_err(context_run_error)?;
     let mut request = query.clone();
     request.seat = Some(claim.seat.clone());
-    let supported = match client.call(Command::Capabilities, &cooperative_budget(clock)) {
-        Ok(CommandResult::Capabilities(list)) => list
-            .capabilities
-            .iter()
-            .any(|name| name == crate::protocol::capabilities::INBOX_BATCH),
-        Ok(_) => false,
+    let capabilities = match client.call(Command::Capabilities, &cooperative_budget(clock)) {
+        Ok(CommandResult::Capabilities(list)) => list.capabilities,
+        Ok(_) => Vec::new(),
         Err(error)
             if matches!(
                 error.code,
@@ -1007,20 +1215,59 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
                     | crate::protocol::results::ErrorCode::InvalidRequest
             ) =>
         {
-            false
+            Vec::new()
         }
         Err(error) => return Err(RunError::Api(error)),
     };
+    let v2 = request
+        .page
+        .cursor
+        .as_deref()
+        .is_none_or(|cursor| cursor.starts_with(crate::protocol::pagination::INBOX_V2_PREFIX))
+        && capabilities
+            .iter()
+            .any(|name| name == crate::protocol::capabilities::INBOX_BATCH_V2);
+    let supported = capabilities
+        .iter()
+        .any(|name| name == crate::protocol::capabilities::INBOX_BATCH);
+    if v2 {
+        let (command, result) =
+            select_display_inbox_page(Command::InboxBatchV2(request), output_spec, client, clock)?;
+        let result = fit_inbox_read(command, result, output_spec, client, &|| {
+            cooperative_budget(clock)
+        })?;
+        if !matches!(result, CommandResult::InboxBatchV2(_)) {
+            return Err(RunError::Api(ApiError::store_corrupt(
+                "daemon returned no v2 inbox batch",
+            )));
+        }
+        let candidates = lazy_display::write_page(
+            &result,
+            output_spec,
+            query.page.max_bytes,
+            writer,
+            journal,
+            &claim,
+            lazy_display::DisplaySelection::OwnDefaultText,
+        )?;
+        return lazy_display::settle(
+            candidates,
+            journal,
+            clock.utc_now().0,
+            |command| client.call(command, &cooperative_budget(clock)),
+            output_spec,
+        );
+    }
     if !supported {
         return Err(unsupported(
             "this daemon does not support compact inbox display ACK; upgrade the daemon or use inbox --machine for a read-only view",
         ));
     }
-    let result = client.call_with_output(
-        Command::InboxBatch(request),
-        output_spec,
-        &cooperative_budget(clock),
-    )?;
+    let (command, result) =
+        select_display_inbox_page(Command::InboxBatch(request), output_spec, client, clock)?;
+    let result = fit_inbox_read(command, result, output_spec, client, &|| {
+        cooperative_budget(clock)
+    })?;
     let CommandResult::InboxBatch(page) = &result else {
         return Err(RunError::Api(ApiError::store_corrupt(
             "daemon returned no inbox batch",
@@ -1055,6 +1302,17 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
             }
         }
     }
+    settle_displayed_ack(candidates, claim, output_spec, journal, client, clock)
+}
+
+fn settle_displayed_ack<C: LocalClient + ?Sized>(
+    candidates: Vec<crate::protocol::ids::MessageId>,
+    claim: crate::protocol::authority::CallerClaim,
+    output_spec: &OutputSpec,
+    journal: &journal::Journal,
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
     if candidates.is_empty() {
         return Ok(());
     }
@@ -1617,7 +1875,9 @@ fn caller_need(
         {
             CallerNeed::Selection
         }
-        CliAction::Wire(Command::Inbox(query)) if query.seat.is_none() => {
+        CliAction::Wire(Command::Inbox(query) | Command::InboxBatchV2(query))
+            if query.seat.is_none() =>
+        {
             CallerNeed::SeatDefault { required: true }
         }
         CliAction::Wire(Command::PendingReceipts(query))
@@ -1632,7 +1892,9 @@ fn caller_need(
 
 fn default_seat(action: &mut CliAction, seat: crate::protocol::ids::SeatId) {
     match action {
-        CliAction::Wire(Command::Inbox(query)) => query.seat = Some(seat),
+        CliAction::Wire(Command::Inbox(query) | Command::InboxBatchV2(query)) => {
+            query.seat = Some(seat)
+        }
         CliAction::Wire(Command::PendingReceipts(query)) => query.seat = Some(seat),
         CliAction::Wire(Command::Directory(query)) => query.membership = Some(seat),
         CliAction::Wire(Command::Diagnostics(query)) => query.seat = Some(seat),
@@ -1694,7 +1956,9 @@ where
             CliAction::Mutation(MutationSpec::Invite {
                 seat: recipient, ..
             }) => *recipient = seat,
-            CliAction::Wire(Command::Inbox(query)) => query.seat = Some(seat),
+            CliAction::Wire(Command::Inbox(query) | Command::InboxBatchV2(query)) => {
+                query.seat = Some(seat)
+            }
             CliAction::Wire(Command::PendingReceipts(query)) => query.seat = Some(seat),
             CliAction::Wire(Command::Diagnostics(query)) => query.seat = Some(seat),
             CliAction::Wire(Command::Directory(query)) => query.membership = Some(seat),
@@ -2167,10 +2431,40 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         Capability, LifecycleEvent, bridge,
         context::{EventKind, Role},
     };
-    if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
-        && query.seat.is_none()
+    let seat = if matches!(
+        &parsed.action,
+        CliAction::Wire(Command::Inbox(_) | Command::InboxBatch(_) | Command::InboxBatchV2(_))
+    ) {
+        contexts
+            .current()
+            .map_err(context_run_error)?
+            .as_ref()
+            .map(|c| crate::protocol::ids::SeatId::new(c.seat.clone()))
+    } else {
+        None
+    };
+    let _inbox = output::InboxInvocationGuard::enter(&parsed, seat);
+    let _presentation = output::PresentationGuard::enter(parsed.presentation, &parsed.output);
+    let own_text_inbox = parsed.caller_read_default
+        && matches!(&parsed.action, CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
         && parsed.output.format == OutputFormat::Text
-        && parsed.presentation != output::Presentation::Machine
+        && parsed.presentation != output::Presentation::Machine;
+    if let CliAction::Retry(recovery) = &parsed.action {
+        retry::preflight_original_actor(
+            journal.root(),
+            recovery.as_str(),
+            parsed.actor,
+            &parsed.output.context,
+        )?;
+    }
+    if !matches!(&parsed.action, CliAction::Wire(_) | CliAction::Retry(_)) || own_text_inbox {
+        let current = contexts.current().map_err(context_run_error)?;
+        if let Some(context) = initial.or(current.as_ref()) {
+            validate_actor_harness(parsed.actor, context.harness)?;
+        }
+    }
+    if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
+        && own_text_inbox
         && role == Role::TopLevel
     {
         return run_display_inbox(
@@ -2284,6 +2578,9 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 require_rejection_capability(client, clock)?;
             }
             let semantic = SemanticMutation::freeze(cooperative_semantic(mutation)?, claim)?;
+            if semantic.is_lazy_send() {
+                require_lazy_send_capability(client, clock)?;
+            }
             retry::run_new_api_to_writer_discarding_rejection(
                 journal,
                 scope,
@@ -2369,6 +2666,9 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 if pending.semantic.kind() == crate::protocol::results::IntentKind::Reject {
                     require_rejection_capability(client, clock)?;
                 }
+                if pending.semantic.is_lazy_send() {
+                    require_lazy_send_capability(client, clock)?;
+                }
                 retry::run_retry_api_to_writer(
                     journal,
                     &reference,
@@ -2449,6 +2749,7 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
         },
         MutationSpec::Leave(thread) => SemanticMutation::Leave { thread },
         MutationSpec::Send {
+            delivery_mode,
             thread,
             body,
             require_ack,
@@ -2456,6 +2757,7 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
             relays_user,
             user_intent,
         } => SemanticMutation::SendMessage {
+            delivery_mode,
             thread,
             body,
             invited_recipients: require_ack,
@@ -2738,5 +3040,34 @@ mod topology_contract_retry_tests {
             }
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Refuse unsupported lazy delivery before publishing an intent or replaying it.
+fn require_lazy_send_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    match client.call(Command::Capabilities, &cooperative_budget(clock)) {
+        Ok(CommandResult::Capabilities(list))
+            if list
+                .capabilities
+                .iter()
+                .any(|name| name == crate::protocol::capabilities::LAZY_SEND) =>
+        {
+            Ok(())
+        }
+        Err(error)
+            if !matches!(
+                error.code,
+                crate::protocol::results::ErrorCode::Unsupported
+                    | crate::protocol::results::ErrorCode::InvalidRequest
+            ) =>
+        {
+            Err(RunError::Api(error))
+        }
+        _ => Err(unsupported(
+            "daemon lacks send.lazy_v1; upgrade the daemon before sending lazy messages",
+        )),
     }
 }

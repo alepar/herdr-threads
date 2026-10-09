@@ -1,0 +1,256 @@
+{
+  "verdict": "Should-fix (6 confirmed) [converged]",
+  "confirmedCount": 6,
+  "reporterFailed": false,
+  "enforcement": [
+    "lanes: 3 confirmed entries tagged",
+    "fix-regression: 1 entry tagged",
+    "header: lane-yield inserted",
+    "confirmedCount 6 vs 3 confirmed default routes (overrules account for the gap)"
+  ],
+  "fixRegressions": [
+    {
+      "location": "src/cli/mod.rs:940",
+      "claim": "Legacy human inbox pages can now fail with InvalidBudget instead of displaying a fitted page because their topic column is added after the new fitting pass.",
+      "defaultRoute": "confirmed"
+    }
+  ],
+  "coverage": {
+    "triageDead": false,
+    "scoutsDispatched": 13,
+    "scoutsDead": 0,
+    "unknownLanes": [],
+    "domainsDropped": [],
+    "rawFindings": 3,
+    "dedupedFindings": 3,
+    "dedupeOrphans": 0,
+    "beyondCap": 0,
+    "beyondPanelCap": 0,
+    "dedupeDead": false,
+    "panelCount": 3,
+    "spotCount": 0,
+    "promotedCount": 0,
+    "judgeLost": 0,
+    "spotLost": 0,
+    "laneYield": {
+      "correctness": {
+        "found": 1,
+        "confirmed": 1,
+        "unique": 1,
+        "refuted": 0
+      },
+      "security": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "premortem": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "simplicity-design": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "hot-path-perf": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "concurrency-async": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "regression": {
+        "found": 1,
+        "confirmed": 1,
+        "unique": 1,
+        "refuted": 0
+      },
+      "data-migrations": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "deploy-safety": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "api-contract": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "observability": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "testing": {
+        "found": 0,
+        "confirmed": 0,
+        "unique": 0,
+        "refuted": 0
+      },
+      "hygiene-docs": {
+        "found": 1,
+        "confirmed": 1,
+        "unique": 1,
+        "refuted": 0
+      }
+    },
+    "judgeCompletionPct": 100,
+    "lowCoverage": false,
+    "panelCappedTag": "",
+    "emptyLateRound": false,
+    "convergenceEligible": true
+  },
+  "routeCounts": {
+    "confirmed": 3
+  },
+  "seatAgreement": "seat-agreement: panels 3 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=3) \u00b7 reproduce 3/0/0 \u00b7 refute 3/0/0 \u00b7 ground 3/0/0",
+  "actualRoster": {
+    "triage": {
+      "agent": "/root/audit_triage",
+      "model": "gpt-6.1-sol",
+      "effort": "low"
+    },
+    "dedupe": {
+      "agent": "/root/audit_dedupe",
+      "model": "gpt-6-luna",
+      "effort": "medium"
+    },
+    "scout:correctness": {
+      "agent": "/root/audit_correctness",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:security": {
+      "agent": "/root/audit_security",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:premortem": {
+      "agent": "/root/audit_premortem",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:simplicity-design": {
+      "agent": "/root/audit_simplicity",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:hot-path-perf": {
+      "agent": "/root/audit_perf",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:concurrency-async": {
+      "agent": "/root/audit_concurrency",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:regression": {
+      "agent": "/root/audit_regression",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:data-migrations": {
+      "agent": "/root/audit_migrations",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:deploy-safety": {
+      "agent": "/root/audit_deploy",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:api-contract": {
+      "agent": "/root/audit_api",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:observability": {
+      "agent": "/root/audit_observability",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:testing": {
+      "agent": "/root/audit_testing",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "scout:hygiene-docs": {
+      "agent": "/root/audit_docs",
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "judge:reproduce#0": {
+      "agent": "/root/audit_judge_r0",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "judge:refute#0": {
+      "agent": "/root/audit_judge_f0",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "judge:ground#0": {
+      "agent": "/root/audit_judge_g0",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "judge:reproduce#1": {
+      "agent": "/root/audit_judge_r1",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "judge:refute#1": {
+      "agent": "/root/audit_judge_f1",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "judge:ground#1": {
+      "agent": "/root/audit_judge_g1",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "judge:reproduce#2": {
+      "agent": "/root/audit_judge_r2",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "judge:refute#2": {
+      "agent": "/root/audit_judge_f2",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "judge:ground#2": {
+      "agent": "/root/audit_judge_g2",
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "reporter": {
+      "agent": "/root/audit_reporter",
+      "model": "gpt-6-luna",
+      "effort": "high"
+    }
+  },
+  "sourceSha": "b22e7d1abdd0661520dece8b2f90e8d69a1f7e41",
+  "baseSha": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+  "label": "post-cap audit",
+  "readiness": false
+}

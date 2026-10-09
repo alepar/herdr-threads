@@ -2383,6 +2383,83 @@ fn deadline_during_query_schema_setup_reports_deadline_exceeded() {
 }
 
 #[test]
+fn idle_query_connection_is_reused_under_the_new_calls_budget() {
+    let (context, writer, clock) = seeded_db(50);
+    writer
+        .pragma_update(None, "journal_mode", "DELETE")
+        .unwrap();
+    clock.mono.store(100, Ordering::SeqCst);
+    let budget = |cancellation: &Cancellation| CallBudget {
+        deadline: MonoInstant(200),
+        cancellation: cancellation.clone(),
+    };
+    let first = context
+        .open_query(budget(&Cancellation::default()))
+        .unwrap();
+    let handle = unsafe { first.handle() };
+    drop(first);
+    assert_eq!(context.idle_queries.lock().unwrap().len(), 1);
+    let cancellation = Cancellation::default();
+    let query = context.open_query(budget(&cancellation)).unwrap();
+    assert_eq!(
+        unsafe { query.handle() },
+        handle,
+        "the idle connection is reused"
+    );
+    assert!(context.idle_queries.lock().unwrap().is_empty());
+    assert!(
+        query.execute("UPDATE threads SET topic='x'", []).is_err(),
+        "a reused connection stays query-only"
+    );
+    // The busy handler belongs to this call: cancelling it stops a lock wait.
+    let (busy_tx, busy_rx) = std::sync::mpsc::channel();
+    *query._progress.busy_signal.lock().unwrap() = Some(busy_tx);
+    writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let worker = std::thread::spawn(move || {
+        let error = query
+            .query_row("SELECT count(*) FROM threads", [], |r| r.get::<_, i64>(0))
+            .unwrap_err();
+        query.map_error(error).code
+    });
+    busy_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("query reached SQLite busy handler");
+    cancellation.cancel();
+    assert_eq!(worker.join().unwrap(), ErrorCode::Cancelled);
+    writer.execute_batch("COMMIT").unwrap();
+}
+
+#[test]
+fn query_connection_returns_idle_only_outside_a_transaction_and_under_the_cap() {
+    let (context, _writer, clock) = seeded_db(50);
+    clock.mono.store(100, Ordering::SeqCst);
+    let open = || {
+        context
+            .open_query(CallBudget {
+                deadline: MonoInstant(200),
+                cancellation: Cancellation::default(),
+            })
+            .unwrap()
+    };
+    let in_transaction = open();
+    in_transaction.execute_batch("BEGIN").unwrap();
+    in_transaction
+        .query_row("SELECT count(*) FROM threads", [], |r| r.get::<_, i64>(0))
+        .unwrap();
+    drop(in_transaction);
+    assert!(
+        context.idle_queries.lock().unwrap().is_empty(),
+        "a connection left inside a transaction is closed, not reused"
+    );
+    let held: Vec<_> = (0..IDLE_QUERY_CONNECTIONS + 2).map(|_| open()).collect();
+    drop(held);
+    assert_eq!(
+        context.idle_queries.lock().unwrap().len(),
+        IDLE_QUERY_CONNECTIONS
+    );
+}
+
+#[test]
 fn query_setup_preserves_schema_and_corruption_errors() {
     let (context, writer, clock) = seeded_db(50);
     clock.mono.store(100, Ordering::SeqCst);

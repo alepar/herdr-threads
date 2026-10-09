@@ -1,0 +1,66 @@
+{
+  "binary": {
+    "path": "/Users/alepar/AleCode/herdr-threads/target/coordinator/herdr-093/bin/herdr",
+    "version": "herdr 0.9.3",
+    "sha256": "5173a3e0ae42d5d1ab7ebfa5d5e6329f7c3d23f8e1a3677c7ce3231da2884157",
+    "pinned": false
+  },
+  "draft_agent": {
+    "type": "agent_info",
+    "agent": {
+      "terminal_id": "term_65d4d5afb74931",
+      "name": "nudge-private",
+      "agent": "claude",
+      "terminal_title": "✳ Dummy",
+      "terminal_title_stripped": "Dummy",
+      "agent_status": "idle",
+      "workspace_id": "w1",
+      "tab_id": "w1:t1",
+      "pane_id": "w1:p1",
+      "focused": true,
+      "interactive_ready": true,
+      "state_change_seq": 1,
+      "cwd": "/private/tmp/htnud-c0n0ym1w",
+      "foreground_cwd": "/private/tmp/htnud-c0n0ym1w",
+      "revision": 1
+    }
+  },
+  "draft_screen": {
+    "type": "pane_read",
+    "read": {
+      "pane_id": "w1:p1",
+      "workspace_id": "w1",
+      "tab_id": "w1:t1",
+      "source": "detection",
+      "format": "text",
+      "text": "────────────────────\n❯\n────────────────────\nDUMMY-prefix split my inp\n",
+      "revision": 0,
+      "truncated": false
+    }
+  },
+  "prompt": {
+    "type": "agent_prompted",
+    "agent": {
+      "terminal_id": "term_65d4d5afb74931",
+      "name": "nudge-private",
+      "agent": "claude",
+      "terminal_title": "✳ Dummy",
+      "terminal_title_stripped": "Dummy",
+      "agent_status": "idle",
+      "workspace_id": "w1",
+      "tab_id": "w1:t1",
+      "pane_id": "w1:p1",
+      "focused": true,
+      "interactive_ready": true,
+      "state_change_seq": 1,
+      "cwd": "/private/tmp/htnud-c0n0ym1w",
+      "foreground_cwd": "/private/tmp/htnud-c0n0ym1w",
+      "revision": 1
+    }
+  },
+  "received": [
+    "DUMMY-prefix split my inpherdr-threads: attention pending; run herdr-threads inbox",
+    "ut DUMMY-suffix"
+  ],
+  "verdict": "REPRODUCED: prefix merged and submitted; suffix became separate submission"
+}

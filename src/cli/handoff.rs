@@ -234,6 +234,7 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
     if progress.message.is_none() {
         let result = call(
             SemanticMutation::SendMessage {
+                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 thread,
                 body: plan.body.into(),
                 invited_recipients: vec![plan.recipient.clone()],

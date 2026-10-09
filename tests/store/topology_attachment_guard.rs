@@ -593,3 +593,79 @@ fn topology_attachment_real_create_rolls_back_new_thread_and_both_links_on_late_
 
 #[path = "topology_composition.rs"]
 mod composition;
+
+#[test]
+fn actual_main_linked_phase_preserves_ordinary_and_rejects_lazy_mode() {
+    use crate::protocol::commands::{DeliveryMode, PermitMutation, SendMessage};
+    let (context, mut db, path, id, child) = new_thread_fixture();
+    let create = create_for(&id);
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Cancellation::default(),
+    };
+    let CommandResult::ThreadCreated(thread) = create_thread_in_namespace(
+        &context,
+        &mut db,
+        &budget,
+        &create,
+        create_permit(&create),
+        &id.payload.handoff.namespace,
+    )
+    .unwrap() else {
+        panic!("missing exact canonical thread")
+    };
+    let before = serde_json::to_vec(
+        &topology_handoff::current(&db, &id.payload.handoff.namespace, &id).unwrap(),
+    )
+    .unwrap();
+    let before_child = serde_json::to_vec(&handoff::current(&db, &child).unwrap()).unwrap();
+    let mut send = SendMessage {
+        delivery_mode: DeliveryMode::Ordinary,
+        thread,
+        body: id.payload.handoff.body.clone(),
+        invited_recipients: vec![child.recipient.clone()],
+        deadline_millis: None,
+        operation: id.payload.handoff.keys.send.clone(),
+        claim: id.claim.clone(),
+        relays_user: false,
+        user_intent: None,
+    };
+    topology_handoff::validate_selected_child_phase(
+        &db,
+        &id.payload.handoff.namespace,
+        &PermitMutation::SendMessage(send.clone()),
+        false,
+    )
+    .unwrap();
+    send.delivery_mode = DeliveryMode::Lazy;
+    assert!(
+        crate::protocol::commands::Command::SendMessage(send.clone())
+            .validate()
+            .is_err()
+    );
+    let direct_refusal = topology_handoff::validate_selected_child_phase(
+        &db,
+        &id.payload.handoff.namespace,
+        &PermitMutation::SendMessage(send),
+        false,
+    )
+    .is_err();
+    assert_eq!(
+        serde_json::to_vec(
+            &topology_handoff::current(&db, &id.payload.handoff.namespace, &id).unwrap()
+        )
+        .unwrap(),
+        before
+    );
+    assert_eq!(
+        serde_json::to_vec(&handoff::current(&db, &child).unwrap()).unwrap(),
+        before_child
+    );
+    drop(db);
+    drop(context);
+    std::fs::remove_file(path).unwrap();
+    assert!(
+        direct_refusal,
+        "linked frozen Ordinary phase must reject a changed Lazy mode"
+    );
+}

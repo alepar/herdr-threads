@@ -1,0 +1,20 @@
+[
+  {
+    "claim": "Legacy v1 recipient explicit inbox cannot discover lazy messages and the spec does not explicitly state the compatibility limit.",
+    "location": "Goal and Explicit inbox and delivery progress; legacy compatibility",
+    "category": "premortem",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Goal promises existing participants next explicit inbox; v2 is required, v1 inbox remains actionable-only; history/body discovery is not inbox delivery.",
+    "id": 0
+  },
+  {
+    "claim": "No source fairness rule prevents repeated retained ordinary items from starving lazy content on fresh explicit checks.",
+    "location": "Explicit inbox and delivery progress",
+    "category": "premortem",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "Separate lazy source, bounded output and source-phase continuation are specified, but no reserved lazy selection or scheduling rule across fresh checks.",
+    "id": 1
+  }
+]

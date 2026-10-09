@@ -1,0 +1,44 @@
+{
+  "status": "frozen isolated successor; main integrated/native acceptance and landing pending",
+  "seat": "sv56BR0hH",
+  "pane": "w4:pE4",
+  "branch": "super-auto/lazy-messages",
+  "worktree": "/Users/alepar/AleCode/herdr-threads/.worktrees/lazy-messages",
+  "source": "f0d6902da8952cc3743d5da1e75e135ad6b0966f",
+  "tree": "073a902b627df17a6e83ea99d22b9cb3e5a0d17a",
+  "parents": [
+    "b44a17f8576a58ca73a675c2ab9b457005cba2e4",
+    "d580a211b1e6f808e48eac3377556f0605f1490f"
+  ],
+  "reviewBase": "4f7cad2ddadf0f3e9bf917a36917624821b3be77",
+  "inboxPacketSha256": "375628580c1380ccad8b5e0bc0d1b375eca78ed1ff0e48bac165a03e1eaea9fb",
+  "reviews": {
+    "auditRepair": {
+      "source": "df2ee5c36f80dd794fb1a2c32cf17fbc1e910f9e",
+      "spec": "compliant",
+      "quality": "Approved",
+      "critical": 0,
+      "important": 0
+    },
+    "composition": {
+      "source": "f0d6902da8952cc3743d5da1e75e135ad6b0966f",
+      "spec": "compliant",
+      "quality": "Approved",
+      "critical": 0,
+      "important": 0
+    }
+  },
+  "handoff": "/Users/alepar/AleCode/herdr-threads/.worktrees/lazy-messages/docs/superpowers/runs/2026-10-07-lazy-messages/post-cap-successor-handoff.md",
+  "archive": "/private/tmp/lazy-messages-successor-f0d6902d",
+  "manifestSha256": "8c63af9cfa3f739b51b36d4e1617125beee688ee655d9e3508b48a4e0a77f8d4",
+  "archiveFileCount": 97,
+  "limitations": [
+    "Inherited README tryout JSON assertion449 failed; firstAlice attribution only, both handoff launches completed; laterBob/send/conversation not exercised",
+    "Original invitationGoal/followRPC/proofRetention punch items open",
+    "Worker fullsuite/native/shared acceptance not run; main owns integrated gates/landing",
+    "Eight reads/five seconds bounds selection only; refit/settlement budgets separate"
+  ],
+  "processes": [],
+  "originalCountersUnchanged": true,
+  "coordination": "direct Herdr agent prompt main w4:p1; PSA/lazy/dev threads left"
+}

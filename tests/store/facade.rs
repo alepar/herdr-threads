@@ -1543,6 +1543,7 @@ fn public_facade_creates_invites_sends_accepts_acks_and_archives_with_stable_ids
         panic!()
     };
     let send = SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: thread.clone(),
         body: "hello".into(),
         invited_recipients: vec![SeatId::new("s2")],
@@ -1852,6 +1853,78 @@ fn accept_hints_summary_only_once_the_thread_holds_a_full_chunk() {
     for p in [path, path2] {
         let _ = std::fs::remove_file(p);
     }
+}
+
+// Invalid unaddressed completion remains write-free after handler activation.
+// The observer detects every canonical write.
+#[test]
+fn invalid_inbox_completion_writes_no_state() {
+    use crate::protocol::{
+        authority::ObligationRef, commands::CompleteInboxDelivery, ids::MessageId,
+    };
+    let path = std::env::temp_dir().join(format!("inert-completion-{}.db", uuid::Uuid::new_v4()));
+    let store = SqliteStore::new(
+        StoreContext::new(path.clone(), Arc::new(FixedClock)),
+        "i",
+        StoreSettings::default(),
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let before: i64 = db
+        .query_row("PRAGMA data_version", [], |r| r.get(0))
+        .unwrap();
+    let claim = CallerClaim {
+        instance: "i".into(),
+        seat: SeatId::new("a"),
+        binding_generation: 1,
+        role: crate::protocol::authority::CallerRole::TopLevel,
+        harness: Harness::Codex,
+        native_session: NativeSessionId::new("n"),
+        execution: ExecutionId::new("e"),
+        target: HostTargetId::new("p"),
+    };
+    let completion = CompleteInboxDelivery {
+        messages: vec![MessageId::new("m")],
+        operation: OperationId::new("done"),
+        claim: claim.clone(),
+    };
+    let mutation =
+        PermitMutation::try_from(Command::CompleteInboxDelivery(completion.clone())).unwrap();
+    let request = cooperative_permit_request(&mutation).unwrap();
+    assert_eq!(request.claim, claim);
+    assert_eq!(request.operation, completion.operation);
+    assert_eq!(request.obligation, ObligationRef::CheckIn(SeatId::new("a")));
+    let budget = CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Cancellation::default(),
+    };
+    let permit = MutationPermit::cooperative(
+        claim,
+        completion.operation,
+        request.obligation,
+        request.payload_hash,
+        MonoInstant(0),
+        (0, 0),
+        budget.clone(),
+    );
+    assert_eq!(
+        store.mutate(mutation, permit, &budget).unwrap_err().code,
+        ErrorCode::CallerUnverified
+    );
+    assert_eq!(
+        db.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        before
+    );
+    let operations: i64 = db
+        .query_row("SELECT count(*) FROM operations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(operations, 0);
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", path.display()));
 }
 
 // Catches a missing public join route, fabricated acceptance, duplicate intervals,
@@ -2215,6 +2288,7 @@ fn public_join_send(
     operation: &str,
 ) -> crate::protocol::ids::MessageId {
     let send = SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: accept.thread.clone(),
         body: operation.into(),
         invited_recipients: vec![],
@@ -2518,6 +2592,7 @@ fn public_join_human_claim_records_operator_human_without_changing_binding() {
 fn public_join_invalidates_prepared_send_and_new_send_includes_new_member() {
     let (store, path, accept, _) = join_hint_fixture_inner(0, false);
     let send = SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: accept.thread.clone(),
         body: "prepared".into(),
         invited_recipients: vec![],

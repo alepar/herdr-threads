@@ -145,6 +145,9 @@ impl ArchivalWorker {
         result
     }
 }
+/// How long the lane waits after a commit kick before its next pass.
+pub const KICK_SETTLE: Duration = Duration::from_millis(250);
+
 pub fn start(
     mut worker: ArchivalWorker,
     pacer: Arc<Pacer>,
@@ -170,12 +173,25 @@ pub fn start(
                         false
                     }
                 };
-                if !more
-                    && pacer.wait_blocking(Duration::from_millis(
-                        crate::store::archival::CADENCE_MS as u64,
-                    )) == Wake::Cancelled
-                {
-                    break;
+                if more {
+                    continue;
+                }
+                match pacer.wait_blocking(Duration::from_millis(
+                    crate::store::archival::CADENCE_MS as u64,
+                )) {
+                    Wake::Cancelled => break,
+                    // A send's publication, materialization and wake
+                    // reservation each kick this lane. Archival is never
+                    // urgent and its decisions recheck the canonical revision,
+                    // so let the burst settle instead of taking writer turns
+                    // (and fsyncs) between those commits. Kicks during the
+                    // wait stay latched in the Pacer.
+                    Wake::Kicked => {
+                        if worker.cancellation.wait_blocking(KICK_SETTLE) {
+                            break;
+                        }
+                    }
+                    Wake::Tick | Wake::RetryDue => {}
                 }
             }
         })

@@ -1,0 +1,5 @@
+r1 [Blocking] src/store/queries.rs:5959
+r1 [Should-fix] src/cli/mod.rs:2057; src/store/queries.rs:5959
+r1 [Should-fix] src/protocol/output_compact.rs:77; src/protocol/results.rs:896
+r1 [Should-fix] src/cli/follow.rs:813
+r1 [Nit] src/cli/journal.rs:688

@@ -3469,6 +3469,9 @@ impl FakeHerdr {
                         continue;
                     }
                     "agent.get" => serde_json::json!({"type":"agent_info","agent":agent}),
+                    "agent.read" => serde_json::json!({"type":"pane_read","read":{
+                        "pane_id":"w4:p1","source":request["params"]["source"],
+                        "text":"────────────────────\n❯\n────────────────────\n"}}),
                     "agent.prompt" => {
                         shared_prompts.lock().unwrap().push(
                             request["params"]["text"]
@@ -3601,7 +3604,7 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             assert_eq!(prompts, [crate::notification::policy::MARKER], "{status}");
             assert_eq!(
                 methods,
-                ["pane.get", "agent.get", "agent.prompt"],
+                ["pane.get", "agent.get", "agent.read", "agent.prompt"],
                 "{status}"
             );
             assert_eq!(outcome.as_deref(), Some("submitted"), "{status}");
@@ -3610,9 +3613,9 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             assert_eq!(methods, ["pane.get", "agent.get"], "{status}");
             assert_eq!(outcome.as_deref(), Some("unsafe"), "{status}");
         }
-        assert!(
-            covered,
-            "{status}: the one attempt covers the warning (coalesced)"
+        assert_eq!(
+            covered, expect_prompt,
+            "refused attention remains pending: {status}"
         );
         // Prompt success is transport only: the receipt stays pending.
         let receipt: String = db
@@ -3790,20 +3793,20 @@ fn drive_scripted_wake(
 }
 
 #[test]
-fn unsent_prompt_gets_exactly_one_submit_key_retry_then_verified() {
+fn nudge_safety_held_prompt_is_reported_without_extra_enter() {
     use crate::ports::AgentComposerState::{HoldingPrompt, Submitted};
     let (verification, keys, prompts, _, _) = drive_scripted_wake(vec![HoldingPrompt, Submitted]);
     assert_eq!(
         verification,
         vec![(
             SeatId::new("seat"),
-            crate::scheduler::SubmissionVerification::Retried
+            crate::scheduler::SubmissionVerification::Unsubmitted
         )]
     );
-    assert_eq!((keys, prompts), (1, 1));
     assert_eq!(
-        crate::scheduler::outcome_for_verification(verification[0].1),
-        WakeOutcome::Submitted
+        (keys, prompts),
+        (0, 1),
+        "verification must not submit a new user draft"
     );
 }
 
@@ -3822,7 +3825,7 @@ fn already_submitted_prompt_gets_no_retry() {
 }
 
 #[test]
-fn still_unsent_after_retry_is_reported_not_looped() {
+fn held_prompt_is_reported_not_retried() {
     use crate::ports::AgentComposerState::HoldingPrompt;
     let (verification, keys, prompts, reserves, second_attempts) =
         drive_scripted_wake(vec![HoldingPrompt, HoldingPrompt]);
@@ -3834,7 +3837,7 @@ fn still_unsent_after_retry_is_reported_not_looped() {
         )]
     );
     // One retry only; the second drive pass neither reserves nor re-sends.
-    assert_eq!((keys, prompts, reserves, second_attempts), (1, 1, 1, 0));
+    assert_eq!((keys, prompts, reserves, second_attempts), (0, 1, 1, 0));
     assert_eq!(
         crate::scheduler::outcome_for_verification(verification[0].1),
         WakeOutcome::OutcomeUnknown
@@ -3842,7 +3845,7 @@ fn still_unsent_after_retry_is_reported_not_looped() {
 }
 
 #[test]
-fn unsent_after_retry_completes_the_attempt_as_outcome_unknown() {
+fn held_prompt_completes_the_attempt_as_outcome_unknown() {
     let clock = FakeClock(AtomicU64::new(0));
     let host = FakeNativeHost {
         observation: fresh_observation(),
@@ -3873,7 +3876,7 @@ fn unsent_after_retry_completes_the_attempt_as_outcome_unknown() {
         dispatch.attempt_wake(test_reservation(), &context).unwrap(),
         WakeOutcome::OutcomeUnknown
     );
-    assert_eq!(host.submit_keys.load(Ordering::SeqCst), 1);
+    assert_eq!(host.submit_keys.load(Ordering::SeqCst), 0);
     assert_eq!(
         dispatch.take_verification(&SeatId::new("seat")),
         Some(crate::scheduler::SubmissionVerification::Unsubmitted)
@@ -4256,7 +4259,7 @@ fn refused_warning_wake_is_retried_not_offered() {
 }
 
 #[test]
-fn submit_prompt_error_keeps_todays_mapping() {
+fn pre_submit_prompt_error_restores_ladder_and_backs_off() {
     // Kills: routing a submit_prompt error through the refusal path (the send
     // may have happened, so the ladder must stay advanced and the refusal
     // backoff untouched).
@@ -4347,16 +4350,16 @@ fn submit_prompt_error_keeps_todays_mapping() {
     let row = refusal_row(&context);
     assert_eq!(
         (row.0, row.1, row.2, row.4),
-        (None, 2, 120_000, Some("unavailable".into())),
-        "the existing Unavailable mapping, ladder advanced"
+        (None, 1, 60_000, Some("unavailable".into())),
+        "pre-submit failure preserves prior ladder"
     );
     assert_eq!(
         failing.completions.lock().unwrap()[0].1,
-        WakeOutcome::Unavailable
+        WakeOutcome::Refused(RefusalCause::Unavailable)
     );
     {
         let state = scheduler.wakes.state.lock().unwrap();
-        assert_eq!(refusal_attempts(&state), 0);
+        assert_eq!(refusal_attempts(&state), 1);
     }
     drop(scheduler);
     drop(store);
@@ -5693,7 +5696,7 @@ fn failed_submission_leaves_soft_poked_at_unset() {
 }
 
 #[test]
-fn human_input_with_stash_capability_uses_inert_hook_and_skips() {
+fn human_input_with_stash_capability_skips_without_hook() {
     let clock = Arc::new(FakeClock(AtomicU64::new(0)));
     let store = PokeStore::new(clock, one_seat_due());
     // The default HostPort hook reports Unsupported: the poke is skipped.
@@ -5704,7 +5707,7 @@ fn human_input_with_stash_capability_uses_inert_hook_and_skips() {
     with_scheduler(&store, &host, &STASH, |scheduler| {
         scheduler.drive_pokes(&poke_budget()).unwrap();
     });
-    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
     assert!(host.inner.prompts().is_empty());
     assert!(store.marked.lock().unwrap().is_empty());
 
@@ -5748,7 +5751,59 @@ fn poke_plan_for_tests() -> PokePlan {
 }
 
 #[test]
-fn dispatcher_matrix_decides_submit_stash_or_skip() {
+fn active_attention_is_deferred_even_with_turn_capability_then_idle_delivers() {
+    let clock = FakeClock(AtomicU64::new(0));
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let caps = Declared(PokeCapabilities {
+        composer_stash: NativeSupport::Supported,
+        poke_during_turn: NativeSupport::Supported,
+    });
+    for mode in [PokeMode::PokeOnly, PokeMode::WithWake] {
+        let host = PokeHost::new(HostUiState::ActiveTurn, false);
+        let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+        let attempt = dispatcher
+            .attempt_poke(
+                poke_reservation("seat", "a"),
+                &poke_plan_for_tests(),
+                mode,
+                &caps,
+                &dispatch_context(),
+            )
+            .unwrap();
+        assert!(
+            host.prompts().is_empty(),
+            "{mode:?}: active turn sends no input"
+        );
+        assert!(!attempt.poked);
+        assert_eq!(
+            attempt.outcome,
+            if mode == PokeMode::PokeOnly {
+                WakeOutcome::Unsafe
+            } else {
+                WakeOutcome::Refused(RefusalCause::Unsafe)
+            }
+        );
+        host.set(HostUiState::Idle, false);
+        let attempt = dispatcher
+            .attempt_poke(
+                poke_reservation("seat", "b"),
+                &poke_plan_for_tests(),
+                mode,
+                &caps,
+                &dispatch_context(),
+            )
+            .unwrap();
+        assert_eq!(attempt.outcome, WakeOutcome::Submitted);
+        assert!(attempt.poked);
+        assert_eq!(host.prompts(), [POKE_TEXT]);
+    }
+}
+
+#[test]
+fn nudge_safety_pokes_never_stash_user_input() {
     let clock = FakeClock(AtomicU64::new(0));
     let check = FakeReservationCheck {
         current: true,
@@ -5784,12 +5839,11 @@ fn dispatcher_matrix_decides_submit_stash_or_skip() {
                             &dispatch_context(),
                         )
                         .unwrap();
-                    let supported = |s| s == NativeSupport::Supported;
                     let (submits, stashes) = match (ui, focused) {
                         (_, true) => (false, false),
                         (HostUiState::Idle, _) => (true, false),
-                        (HostUiState::ActiveTurn, _) => (supported(during_turn), false),
-                        (HostUiState::HumanInput, _) => (supported(stash), supported(stash)),
+                        (HostUiState::ActiveTurn, _) => (false, false),
+                        (HostUiState::HumanInput, _) => (false, false),
                         _ => (false, false),
                     };
                     let label =
@@ -5828,7 +5882,7 @@ fn dispatcher_matrix_decides_submit_stash_or_skip() {
 }
 
 #[test]
-fn stash_restore_failure_is_kept_as_a_diagnostic_with_the_typed_text() {
+fn nonempty_composer_skips_before_stash_or_restore() {
     let clock = FakeClock(AtomicU64::new(0));
     let check = FakeReservationCheck {
         current: true,
@@ -5849,11 +5903,12 @@ fn stash_restore_failure_is_kept_as_a_diagnostic_with_the_typed_text() {
             &dispatch_context(),
         )
         .unwrap();
-    // The prompt was accepted; the failed restore does not undo it.
-    assert_eq!(attempt.outcome, WakeOutcome::Submitted);
-    assert!(attempt.poked);
-    let diagnostic = attempt.diagnostic.expect("restore failure kept");
-    assert!(diagnostic.contains("half-typed words"), "{diagnostic}");
+    assert_eq!(attempt.outcome, WakeOutcome::Unsafe);
+    assert!(!attempt.poked);
+    assert!(attempt.diagnostic.is_none());
+    assert!(host.inner.prompts().is_empty());
+    assert!(host.restored.lock().unwrap().is_empty());
+    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
     // A failed stash skips before any prompt.
     let host = StashingHost::new(
         PokeHost::new(HostUiState::HumanInput, false),
@@ -6288,7 +6343,7 @@ fn five_due_seats_send_at_most_four_active_prompts() {
 }
 
 #[test]
-fn active_turn_is_poked_only_where_the_recipe_declares_it() {
+fn active_turn_pokes_defer_receipts_until_idle_even_with_declared_support() {
     let clock = Arc::new(FakeClock(AtomicU64::new(0)));
     let store = PokeStore::new(clock, one_seat_due());
     let host = PokeHost::new(HostUiState::ActiveTurn, false);
@@ -6304,7 +6359,16 @@ fn active_turn_is_poked_only_where_the_recipe_declares_it() {
     with_scheduler(&store, &host, &DURING_TURN, |scheduler| {
         scheduler.drive_pokes(&poke_budget()).unwrap();
     });
-    assert_eq!(host.prompts(), [POKE_TEXT], "declared poke_during_turn");
+    assert!(
+        host.prompts().is_empty(),
+        "historical capability cannot admit active attention"
+    );
+    assert!(store.marked.lock().unwrap().is_empty());
+    host.set(HostUiState::Idle, false);
+    with_scheduler(&store, &host, &DURING_TURN, |scheduler| {
+        scheduler.drive_pokes(&poke_budget()).unwrap();
+    });
+    assert_eq!(host.prompts(), [POKE_TEXT]);
     assert_eq!(store.marked.lock().unwrap().len(), 3);
 }
 
@@ -6470,7 +6534,7 @@ fn cooperative_reservation() -> WakeReservation {
 /// Kills: composer content refusing an ordinary wake, and a skipped poke
 /// that is not confined to the poke.
 #[test]
-fn typed_draft_skips_the_poke_but_not_the_ordinary_wake() {
+fn typed_draft_defers_poke_and_ordinary_wake() {
     let clock = FakeClock(AtomicU64::new(0));
     let check = FakeReservationCheck {
         current: true,
@@ -6487,12 +6551,9 @@ fn typed_draft_skips_the_poke_but_not_the_ordinary_wake() {
         dispatcher
             .attempt_wake(cooperative_reservation(), &dispatch_context())
             .unwrap(),
-        WakeOutcome::Submitted
+        WakeOutcome::Refused(RefusalCause::Unsafe)
     );
-    assert_eq!(
-        *host.prompts.lock().unwrap(),
-        [crate::notification::policy::MARKER]
-    );
+    assert!(host.prompts.lock().unwrap().is_empty());
     assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
 
     // The poke over the same draft: its stash is refused, nothing is sent.
@@ -6510,7 +6571,7 @@ fn typed_draft_skips_the_poke_but_not_the_ordinary_wake() {
     assert_eq!(attempt.outcome, WakeOutcome::Unsafe);
     assert!(!attempt.poked);
     assert!(host.prompts.lock().unwrap().is_empty());
-    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
 
     // Without a declared stash the hook is not consulted: still skipped.
     let host = stash_failed();
@@ -6532,7 +6593,7 @@ fn typed_draft_skips_the_poke_but_not_the_ordinary_wake() {
 /// Kills: a wake that carries a poke typing the poke text into a draft by way
 /// of a stash.
 #[test]
-fn with_wake_over_typed_input_sends_the_plain_marker_without_stash() {
+fn with_wake_over_typed_input_refuses_without_stash() {
     let clock = FakeClock(AtomicU64::new(0));
     let check = FakeReservationCheck {
         current: true,
@@ -6549,12 +6610,9 @@ fn with_wake_over_typed_input_sends_the_plain_marker_without_stash() {
             &dispatch_context(),
         )
         .unwrap();
-    assert_eq!(attempt.outcome, WakeOutcome::Submitted);
+    assert_eq!(attempt.outcome, WakeOutcome::Refused(RefusalCause::Unsafe));
     assert!(!attempt.poked);
-    assert_eq!(
-        *host.prompts.lock().unwrap(),
-        [crate::notification::policy::MARKER]
-    );
+    assert!(host.prompts.lock().unwrap().is_empty());
     assert_eq!(host.stash_calls.load(Ordering::SeqCst), 0);
     assert!(host.restored.lock().unwrap().is_empty());
 }

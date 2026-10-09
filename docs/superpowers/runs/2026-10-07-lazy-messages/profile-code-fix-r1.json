@@ -1,0 +1,1193 @@
+{
+  "version": 1,
+  "epic": "ht-big",
+  "cap": 1,
+  "earlyUnblock": false,
+  "runtimeSlots": null,
+  "invocations": [
+    {
+      "runId": "01a119df-950b-7ee0-b44b-29add6ff901b",
+      "dir": "/Users/alepar/.aisw/profiles/codex/codex-1/sessions/2026/10/07/rollout-2026-10-07T21-57-25-01a119df-950b-7ee0-b44b-29add6ff901b.jsonl",
+      "source": "codex",
+      "start": "2026-10-08T05:01:26.174Z",
+      "end": "2026-10-08T12:55:21.959Z",
+      "agents": 76,
+      "timed": 92,
+      "journal": true
+    }
+  ],
+  "window": {
+    "start": "2026-10-08T05:01:26.174Z",
+    "lastLanding": "2026-10-08T12:55:21.959Z",
+    "end": "2026-10-08T12:55:21.959Z",
+    "graphMs": 28435785,
+    "wallMs": 28435785
+  },
+  "shape": {
+    "beads": 14,
+    "edges": 30,
+    "depth": 8,
+    "width": 1.8,
+    "levels": [
+      3,
+      2,
+      2,
+      2,
+      2,
+      1,
+      1,
+      1
+    ],
+    "criticalPath": [
+      "ht-big.9",
+      "ht-big.2.1",
+      "ht-big.2.2",
+      "ht-big.3",
+      "ht-big.5.1",
+      "ht-big.5.2",
+      "ht-big.7",
+      "ht-big.10"
+    ],
+    "fanOut": [
+      {
+        "id": "ht-big.1",
+        "direct": 5,
+        "transitive": 11
+      },
+      {
+        "id": "ht-big.9",
+        "direct": 2,
+        "transitive": 10
+      },
+      {
+        "id": "ht-big.2.1",
+        "direct": 3,
+        "transitive": 9
+      },
+      {
+        "id": "ht-big.2.2",
+        "direct": 3,
+        "transitive": 6
+      },
+      {
+        "id": "ht-big.3",
+        "direct": 5,
+        "transitive": 5
+      }
+    ],
+    "cycles": []
+  },
+  "cuts": [],
+  "beads": [
+    {
+      "id": "ht-big.1",
+      "n": null,
+      "deps": [],
+      "dependents": [
+        "ht-big.10",
+        "ht-big.4.1",
+        "ht-big.2.1",
+        "ht-big.8",
+        "ht-big.3"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T06:16:53.787Z",
+      "dispatchedAt": "2026-10-08T06:18:18.783Z",
+      "landedAt": "2026-10-08T06:34:35.405Z",
+      "waitMs": 84996,
+      "waitCause": "unexplained",
+      "carriedMs": 0,
+      "implMs": 699034,
+      "implByTool": {
+        "read": 563,
+        "git": 8327,
+        "shell": 1630,
+        "bd": 322,
+        "test": 16431,
+        "poll": 39557,
+        "other": 567,
+        "build": 7750
+      },
+      "implToolMs": 75147,
+      "reviewMs": 87534,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 17997,
+      "laneMs": 134044,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.9",
+      "n": null,
+      "deps": [],
+      "dependents": [
+        "ht-big.10",
+        "ht-big.2.1"
+      ],
+      "attempts": [
+        null,
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T06:16:53.787Z",
+      "dispatchedAt": "2026-10-08T06:41:09.601Z",
+      "landedAt": "2026-10-08T06:51:09.303Z",
+      "waitMs": 1455814,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 9902,
+      "implByTool": {
+        "shell": 87
+      },
+      "implToolMs": 87,
+      "reviewMs": 159227,
+      "fixMs": 144470,
+      "stackWaitMs": 0,
+      "queueWaitMs": 21541,
+      "laneMs": 159544,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 342764,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.2.1",
+      "n": null,
+      "deps": [
+        "ht-big.9",
+        "ht-big.1"
+      ],
+      "dependents": [
+        "ht-big.10",
+        "ht-big.2.2",
+        "ht-big.8"
+      ],
+      "attempts": [
+        null,
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T06:51:09.303Z",
+      "dispatchedAt": "2026-10-08T07:09:59.291Z",
+      "landedAt": "2026-10-08T07:14:24.473Z",
+      "waitMs": 1129988,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 11421,
+      "implByTool": {
+        "shell": 136
+      },
+      "implToolMs": 136,
+      "reviewMs": 98479,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 20818,
+      "laneMs": 111062,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 1028999,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.4.1",
+      "n": null,
+      "deps": [
+        "ht-big.1"
+      ],
+      "dependents": [
+        "ht-big.10",
+        "ht-big.7"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T06:34:35.405Z",
+      "dispatchedAt": "2026-10-08T07:14:46.704Z",
+      "landedAt": "2026-10-08T07:34:33.031Z",
+      "waitMs": 2411299,
+      "waitCause": "slot",
+      "carriedMs": 0,
+      "implMs": 832976,
+      "implByTool": {
+        "shell": 7874,
+        "bd": 437,
+        "read": 714,
+        "other": 1084,
+        "test": 32696,
+        "poll": 49356,
+        "git": 7247
+      },
+      "implToolMs": 99408,
+      "reviewMs": 97139,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 16249,
+      "laneMs": 165329,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.2.2",
+      "n": null,
+      "deps": [
+        "ht-big.2.1"
+      ],
+      "dependents": [
+        "ht-big.10",
+        "ht-big.6",
+        "ht-big.3"
+      ],
+      "attempts": [
+        null,
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T07:14:24.473Z",
+      "dispatchedAt": "2026-10-08T07:45:41.934Z",
+      "landedAt": "2026-10-08T08:00:06.967Z",
+      "waitMs": 1877461,
+      "waitCause": "retry",
+      "carriedMs": 0,
+      "implMs": 602396,
+      "implByTool": {
+        "read": 760,
+        "git": 6124,
+        "test": 9738,
+        "poll": 30381,
+        "other": 431,
+        "build": 3209,
+        "shell": 10499
+      },
+      "implToolMs": 61142,
+      "reviewMs": 111376,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 21101,
+      "laneMs": 101762,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 221304,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.8",
+      "n": null,
+      "deps": [
+        "ht-big.1",
+        "ht-big.2.1"
+      ],
+      "dependents": [
+        "ht-big.10",
+        "ht-big.4.2"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T07:14:24.473Z",
+      "dispatchedAt": "2026-10-08T08:00:40.373Z",
+      "landedAt": "2026-10-08T08:12:48.663Z",
+      "waitMs": 2775900,
+      "waitCause": "unexplained",
+      "carriedMs": 0,
+      "implMs": 507538,
+      "implByTool": {
+        "read": 837,
+        "git": 5844,
+        "shell": 23618,
+        "other": 635,
+        "poll": 36743,
+        "build": 2503
+      },
+      "implToolMs": 70180,
+      "reviewMs": 96215,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 18931,
+      "laneMs": 72408,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.3",
+      "n": null,
+      "deps": [
+        "ht-big.1",
+        "ht-big.2.2"
+      ],
+      "dependents": [
+        "ht-big.10",
+        "ht-big.5.2",
+        "ht-big.5.1",
+        "ht-big.7",
+        "ht-big.6"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T08:00:06.967Z",
+      "dispatchedAt": "2026-10-08T08:13:50.096Z",
+      "landedAt": "2026-10-08T08:59:27.598Z",
+      "waitMs": 823129,
+      "waitCause": "unexplained",
+      "carriedMs": 0,
+      "implMs": 1872207,
+      "implByTool": {
+        "read": 2912,
+        "git": 13079,
+        "shell": 5479,
+        "other": 2169,
+        "test": 33785,
+        "poll": 35825
+      },
+      "implToolMs": 93249,
+      "reviewMs": 143783,
+      "fixMs": 485885,
+      "stackWaitMs": 0,
+      "queueWaitMs": 32560,
+      "laneMs": 97799,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.4.2",
+      "n": null,
+      "deps": [
+        "ht-big.8"
+      ],
+      "dependents": [
+        "ht-big.10",
+        "ht-big.7"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T08:12:48.663Z",
+      "dispatchedAt": "2026-10-08T09:00:13.453Z",
+      "landedAt": "2026-10-08T09:24:22.851Z",
+      "waitMs": 2844790,
+      "waitCause": "unexplained",
+      "carriedMs": 0,
+      "implMs": 1190083,
+      "implByTool": {
+        "read": 2737,
+        "git": 13924,
+        "other": 916,
+        "shell": 73114,
+        "poll": 1729,
+        "build": 25179
+      },
+      "implToolMs": 117599,
+      "reviewMs": 124737,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 15811,
+      "laneMs": 86225,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.5.1",
+      "n": null,
+      "deps": [
+        "ht-big.3"
+      ],
+      "dependents": [
+        "ht-big.10",
+        "ht-big.5.2"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T08:59:27.598Z",
+      "dispatchedAt": "2026-10-08T09:25:17.029Z",
+      "landedAt": "2026-10-08T09:50:50.286Z",
+      "waitMs": 1549431,
+      "waitCause": "unexplained",
+      "carriedMs": 0,
+      "implMs": 1034924,
+      "implByTool": {
+        "read": 2368,
+        "git": 9721,
+        "shell": 10611,
+        "test": 35491,
+        "other": 1614,
+        "poll": 19914,
+        "build": 7654
+      },
+      "implToolMs": 87373,
+      "reviewMs": 88662,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 20394,
+      "laneMs": 354595,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.5.2",
+      "n": null,
+      "deps": [
+        "ht-big.3",
+        "ht-big.5.1"
+      ],
+      "dependents": [
+        "ht-big.10",
+        "ht-big.7"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T09:50:50.286Z",
+      "dispatchedAt": "2026-10-08T09:51:17.018Z",
+      "landedAt": "2026-10-08T10:23:17.585Z",
+      "waitMs": 26732,
+      "waitCause": "none",
+      "carriedMs": 0,
+      "implMs": 1549156,
+      "implByTool": {
+        "read": 5223,
+        "git": 11833,
+        "shell": 14393,
+        "other": 2442,
+        "test": 52575,
+        "poll": 82783
+      },
+      "implToolMs": 169249,
+      "reviewMs": 191319,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 29835,
+      "laneMs": 93908,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.6",
+      "n": null,
+      "deps": [
+        "ht-big.2.2",
+        "ht-big.3"
+      ],
+      "dependents": [
+        "ht-big.10"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T08:59:27.598Z",
+      "dispatchedAt": "2026-10-08T10:23:44.237Z",
+      "landedAt": "2026-10-08T10:41:04.990Z",
+      "waitMs": 5056639,
+      "waitCause": "slot",
+      "carriedMs": 0,
+      "implMs": 792866,
+      "implByTool": {
+        "read": 2559,
+        "git": 7565,
+        "shell": 9879,
+        "other": 660,
+        "test": 39741,
+        "poll": 16157,
+        "build": 9655
+      },
+      "implToolMs": 86216,
+      "reviewMs": 89919,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 14887,
+      "laneMs": 104261,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.7",
+      "n": null,
+      "deps": [
+        "ht-big.4.1",
+        "ht-big.5.2",
+        "ht-big.4.2",
+        "ht-big.3"
+      ],
+      "dependents": [
+        "ht-big.10"
+      ],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T10:23:17.585Z",
+      "dispatchedAt": "2026-10-08T10:41:31.260Z",
+      "landedAt": "2026-10-08T11:22:14.325Z",
+      "waitMs": 1093675,
+      "waitCause": "slot",
+      "carriedMs": 0,
+      "implMs": 1871872,
+      "implByTool": {
+        "read": 2675,
+        "git": 10684,
+        "shell": 31129,
+        "other": 2033,
+        "test": 74600,
+        "poll": 64137,
+        "build": 2381
+      },
+      "implToolMs": 187639,
+      "reviewMs": 107041,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 343790,
+      "laneMs": 227403,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.10",
+      "n": null,
+      "deps": [
+        "ht-big.4.2",
+        "ht-big.8",
+        "ht-big.3",
+        "ht-big.1",
+        "ht-big.7",
+        "ht-big.4.1",
+        "ht-big.2.2",
+        "ht-big.9",
+        "ht-big.5.2",
+        "ht-big.5.1",
+        "ht-big.2.1",
+        "ht-big.6"
+      ],
+      "dependents": [],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T11:22:14.325Z",
+      "dispatchedAt": "2026-10-08T11:22:45.917Z",
+      "landedAt": "2026-10-08T11:50:28.533Z",
+      "waitMs": 31592,
+      "waitCause": "unexplained",
+      "carriedMs": 0,
+      "implMs": 1422894,
+      "implByTool": {
+        "read": 2114,
+        "shell": 74653,
+        "other": 2247,
+        "git": 2562,
+        "poll": 20880,
+        "test": 5515,
+        "build": 7436
+      },
+      "implToolMs": 115407,
+      "reviewMs": 94086,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 15961,
+      "laneMs": 223761,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 0,
+      "stackParents": [],
+      "lateEdges": []
+    },
+    {
+      "id": "ht-big.11",
+      "n": null,
+      "deps": [],
+      "dependents": [],
+      "attempts": [
+        "IMPLEMENTED"
+      ],
+      "landed": true,
+      "readyAt": "2026-10-08T06:16:53.787Z",
+      "dispatchedAt": "2026-10-08T12:22:50.837Z",
+      "landedAt": "2026-10-08T12:55:21.959Z",
+      "waitMs": 21957050,
+      "waitCause": "unexplained",
+      "carriedMs": 0,
+      "implMs": 1555959,
+      "implByTool": {
+        "shell": 4693,
+        "other": 1450,
+        "bd": 426,
+        "read": 1715,
+        "test": 43126,
+        "poll": 5926,
+        "git": 8964,
+        "build": 1193
+      },
+      "implToolMs": 67493,
+      "reviewMs": 144059,
+      "fixMs": 0,
+      "stackWaitMs": 0,
+      "queueWaitMs": 46968,
+      "laneMs": 158676,
+      "seamMs": 0,
+      "blockerMs": 0,
+      "reworkMs": 0,
+      "criticalMs": 23908172,
+      "stackParents": [],
+      "lateEdges": []
+    }
+  ],
+  "criticalPath": {
+    "ms": 28435785,
+    "byCategory": {
+      "other": 1562631,
+      "wait": 24741055,
+      "planning": 273405,
+      "implement": 1555959,
+      "review": 144059,
+      "merge": 158676
+    },
+    "laneContentionMs": 0,
+    "redo": {
+      "stack-conflict": {
+        "ms": 0,
+        "beads": []
+      },
+      "cancelled": {
+        "ms": 0,
+        "beads": []
+      },
+      "retry": {
+        "ms": 0,
+        "beads": []
+      }
+    },
+    "segments": [
+      {
+        "kind": "other",
+        "bead": null,
+        "label": "lazy_design_review",
+        "via": null,
+        "start": "2026-10-08T05:01:26.174Z",
+        "ms": 128783
+      },
+      {
+        "kind": "wait",
+        "bead": null,
+        "label": "previous → lazy_super_design",
+        "via": null,
+        "start": "2026-10-08T05:03:34.957Z",
+        "ms": 2646845
+      },
+      {
+        "kind": "other",
+        "bead": null,
+        "label": "lazy_super_design",
+        "via": "previous",
+        "start": "2026-10-08T05:47:41.802Z",
+        "ms": 1433848
+      },
+      {
+        "kind": "wait",
+        "bead": null,
+        "label": "previous → plan",
+        "via": null,
+        "start": "2026-10-08T06:11:35.650Z",
+        "ms": 44732
+      },
+      {
+        "kind": "planning",
+        "bead": null,
+        "label": "plan",
+        "via": "previous",
+        "start": "2026-10-08T06:12:20.382Z",
+        "ms": 273405
+      },
+      {
+        "kind": "wait",
+        "bead": "ht-big.11",
+        "label": "planned → impl:ht-big.11",
+        "via": null,
+        "start": "2026-10-08T06:16:53.787Z",
+        "ms": 21957050
+      },
+      {
+        "kind": "implement",
+        "bead": "ht-big.11",
+        "label": "impl:ht-big.11",
+        "via": "planned",
+        "start": "2026-10-08T12:22:50.837Z",
+        "ms": 1555959
+      },
+      {
+        "kind": "wait",
+        "bead": "ht-big.11",
+        "label": "chain → review:ht-big.11",
+        "via": null,
+        "start": "2026-10-08T12:48:46.796Z",
+        "ms": 45460
+      },
+      {
+        "kind": "review",
+        "bead": "ht-big.11",
+        "label": "review:ht-big.11",
+        "via": "chain",
+        "start": "2026-10-08T12:49:32.256Z",
+        "ms": 144059
+      },
+      {
+        "kind": "wait",
+        "bead": "ht-big.11",
+        "label": "chain → merge:ht-big.11",
+        "via": null,
+        "start": "2026-10-08T12:51:56.315Z",
+        "ms": 46968
+      },
+      {
+        "kind": "merge",
+        "bead": "ht-big.11",
+        "label": "merge:ht-big.11",
+        "via": "chain",
+        "start": "2026-10-08T12:52:43.283Z",
+        "ms": 158676
+      }
+    ]
+  },
+  "bottleneck": {
+    "bead": "ht-big.11",
+    "ms": 23908172,
+    "share": 0.8407776328313075,
+    "byCategory": {
+      "wait": 22049478,
+      "implement": 1555959,
+      "review": 144059,
+      "merge": 158676
+    },
+    "implByTool": {
+      "shell": 4693,
+      "other": 1450,
+      "bd": 426,
+      "read": 1715,
+      "test": 43126,
+      "poll": 5926,
+      "git": 8964,
+      "build": 1193
+    },
+    "calls": [
+      {
+        "name": "exec",
+        "cat": "git",
+        "what": "git add src/cli/mod.rs src/cli/output.rs src/store/queries.…",
+        "ms": 6816
+      },
+      {
+        "name": "exec",
+        "cat": "test",
+        "what": "python3 - <<'PY'",
+        "test": "cargo test --locked --all-features --test combined lazy_display::",
+        "ms": 5772
+      },
+      {
+        "name": "exec",
+        "cat": "test",
+        "what": "python3 - <<'PY'",
+        "test": "cargo test --locked --all-features --test combined inbox_continuation_context::",
+        "ms": 4988
+      },
+      {
+        "name": "exec",
+        "cat": "test",
+        "what": "python3 - <<'PY'",
+        "test": "cargo test --locked --all-features --test combined inbox_continuation_context::",
+        "ms": 4327
+      },
+      {
+        "name": "exec",
+        "cat": "poll",
+        "what": "HT_LEAK_RUN_ID=$(uuidgen)",
+        "ms": 3919
+      },
+      {
+        "name": "exec",
+        "cat": "test",
+        "what": "python3 - <<'PY'",
+        "test": "cargo test --locked --all-features --lib inbox_",
+        "ms": 3847
+      },
+      {
+        "name": "exec",
+        "cat": "test",
+        "what": "python3 - <<'PY'",
+        "test": "cargo test --locked --all-features --test combined lazy_display::",
+        "ms": 3843
+      },
+      {
+        "name": "exec",
+        "cat": "test",
+        "what": "python3 - <<'PY'",
+        "test": "cargo test --locked --all-features --test combined inbox_continuation_context::",
+        "ms": 3589
+      },
+      {
+        "name": "exec",
+        "cat": "shell",
+        "what": "bash /Users/alepar/.aisw/profiles/codex/codex-1/plugins/cac…",
+        "ms": 3348
+      },
+      {
+        "name": "exec",
+        "cat": "test",
+        "what": "tail -30 .tmp/ht-big.11/green-display.log",
+        "test": "cargo test --locked --all-features --test combined inbox_continuation_context::",
+        "ms": 2946
+      }
+    ]
+  },
+  "lane": {
+    "busyMs": 1810324,
+    "seamMs": 0,
+    "spanMs": 22980598,
+    "merges": 16,
+    "firstTryFailed": 2,
+    "firstTryKnown": 14,
+    "queueWaitMs": 636843,
+    "stackWaitMs": 0,
+    "peakQueue": 1
+  },
+  "runtime": {
+    "slots": null,
+    "peak": 10,
+    "fullMs": 0
+  },
+  "concurrency": {
+    "dispatches": 76,
+    "wallMs": 28230141,
+    "busyMs": 20734997,
+    "byActive": {
+      "0": 7495144,
+      "1": 19927145,
+      "2": 466916,
+      "3": 340936
+    },
+    "peak": 10,
+    "kinds": [
+      {
+        "kind": "lazy",
+        "mapped": false,
+        "ms": 1562631,
+        "n": 2
+      },
+      {
+        "kind": "dev",
+        "mapped": false,
+        "ms": 111392,
+        "n": 1
+      },
+      {
+        "kind": "plan",
+        "mapped": true,
+        "ms": 822190,
+        "n": 3
+      },
+      {
+        "kind": "impl",
+        "mapped": true,
+        "ms": 15546295,
+        "n": 17
+      },
+      {
+        "kind": "review",
+        "mapped": true,
+        "ms": 1633576,
+        "n": 14
+      },
+      {
+        "kind": "fix",
+        "mapped": true,
+        "ms": 630355,
+        "n": 2
+      },
+      {
+        "kind": "final-review",
+        "mapped": true,
+        "ms": 244113,
+        "n": 1
+      },
+      {
+        "kind": "roast",
+        "mapped": false,
+        "ms": 2474022,
+        "n": 34
+      },
+      {
+        "kind": "stepback",
+        "mapped": false,
+        "ms": 39926,
+        "n": 1
+      },
+      {
+        "kind": "scope",
+        "mapped": false,
+        "ms": 23497,
+        "n": 1
+      }
+    ],
+    "coordinatorMergeMs": 1810324
+  },
+  "tests": {
+    "busyMs": 16176650,
+    "testMs": 385703,
+    "pollMs": 497096,
+    "cappedCalls": 0
+  },
+  "slowTests": [
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_config_smoke::",
+      "ms": 40268,
+      "runs": 9,
+      "longestMs": 8873
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_display::",
+      "ms": 32300,
+      "runs": 14,
+      "longestMs": 5772
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_settlement::",
+      "ms": 27792,
+      "runs": 6,
+      "longestMs": 6432
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_attention::",
+      "ms": 23497,
+      "runs": 7,
+      "longestMs": 5259
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_inbox",
+      "ms": 21849,
+      "runs": 7,
+      "longestMs": 5281
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined inbox_continuation_context::",
+      "ms": 20009,
+      "runs": 6,
+      "longestMs": 4988
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_send::",
+      "ms": 14368,
+      "runs": 4,
+      "longestMs": 5961
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test integration wire_compat::",
+      "ms": 11209,
+      "runs": 2,
+      "longestMs": 7752
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_publication::",
+      "ms": 11207,
+      "runs": 10,
+      "longestMs": 1190
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_",
+      "ms": 9561,
+      "runs": 3,
+      "longestMs": 4356
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib human_namespace_",
+      "ms": 8172,
+      "runs": 2,
+      "longestMs": 6216
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test integration wire_compat::fixture_drop_stops_dae…",
+      "ms": 7955,
+      "runs": 2,
+      "longestMs": 5003
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib cli::commands::tests::",
+      "ms": 7691,
+      "runs": 2,
+      "longestMs": 4878
+    },
+    {
+      "cmd": "cargo test --locked --all-features cli::journal",
+      "ms": 7219,
+      "runs": 1,
+      "longestMs": 7219
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_schema::",
+      "ms": 7116,
+      "runs": 6,
+      "longestMs": 1204
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined contracts::",
+      "ms": 6063,
+      "runs": 1,
+      "longestMs": 6063
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib service::dispatch",
+      "ms": 5780,
+      "runs": 2,
+      "longestMs": 3033
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib store::messages::messages_tests",
+      "ms": 5710,
+      "runs": 2,
+      "longestMs": 3278
+    },
+    {
+      "cmd": "cargo test --locked --all-features --lib cli::cooperative_tests",
+      "ms": 5652,
+      "runs": 2,
+      "longestMs": 2915
+    },
+    {
+      "cmd": "cargo test --locked --all-features --test combined lazy_sweep::",
+      "ms": 5515,
+      "runs": 1,
+      "longestMs": 5515
+    }
+  ],
+  "conflicts": [],
+  "simulation": {
+    "asRunMs": 21560450,
+    "actualMs": 28435785,
+    "fit": 0.76,
+    "unlimitedSlotsMs": 16585101,
+    "unlimitedLanesMs": 21560450,
+    "lowerBoundMs": 16344016,
+    "graphChain": [
+      "ht-big.1",
+      "ht-big.2.1",
+      "ht-big.2.2",
+      "ht-big.3",
+      "ht-big.5.1",
+      "ht-big.5.2",
+      "ht-big.7",
+      "ht-big.10"
+    ],
+    "whatIfs": [
+      {
+        "kind": "slots",
+        "target": "unlimited slots",
+        "ms": 16585101,
+        "savingMs": 4975349,
+        "note": "no slot cap"
+      },
+      {
+        "kind": "faster",
+        "target": "faster ht-big.3",
+        "ms": 20624346.5,
+        "savingMs": 936103.5,
+        "note": "its implement time halved"
+      },
+      {
+        "kind": "faster",
+        "target": "faster ht-big.7",
+        "ms": 20624514,
+        "savingMs": 935936,
+        "note": "its implement time halved"
+      },
+      {
+        "kind": "cut",
+        "target": "cut ht-big.2.1 <- ht-big.9",
+        "ms": 21195936,
+        "savingMs": 364514,
+        "note": "payoff if this edge were cut — whether it can be is a design call"
+      },
+      {
+        "kind": "cut",
+        "target": "cut ht-big.10 <- ht-big.7",
+        "ms": 21336689,
+        "savingMs": 223761,
+        "note": "payoff if this edge were cut — whether it can be is a design call"
+      }
+    ],
+    "verdict": "slot-bound"
+  },
+  "unmeasured": [
+    "39 dispatch(es) not named for a bead of ht-big, in the run-level lines only (coordinator-subagents.md names dispatches <kind>_<bead id> on Codex, <kind>:<bead id> on Claude Code)"
+  ],
+  "summary": [
+    "Profile: ht-big · 1 invocation · 2026-10-08T05:01Z → 2026-10-08T12:55Z · wall 7h54m (task graph 7h54m) · agents 76 (timed 76) · beads dispatched 14, landed 14, planned 14",
+    "Profile: shape — 14 beads · 30 edges · depth 8 · width 1.8 · beads per level 3/2/2/2/2/1/1/1 · widest fan-out ht-big.1 (5 direct, 11 transitive dependents)",
+    "Profile: bound — graph lower bound 4h32m along ht-big.1 → ht-big.2.1 → ht-big.2.2 → ht-big.3 → ht-big.5.1 → ht-big.5.2 → ht-big.7 → ht-big.10 (unlimited slots and merge lanes) · model of the run 5h59m (cap 1, one merge lane) vs actual 7h54m (76%) → slot-bound: 1h23m of the 1h27m above the graph's bound is the slot cap",
+    "Profile: critical path — 7h54m = implement 26m · review 2m · merge 3m · planning 5m · other 26m · wait 6h52m",
+    "Profile: critical chain — lazy other 26m → plan planning 5m → ht-big.11 implement+review+merge 31m",
+    "Profile: bottleneck — ht-big.11 — 6h38m on the critical path (84%) · implement 26m · review 2m · merge 3m · wait 6h07m · implement on the path 26m: test 43s · poll 6s · build 1s · git 9s · read 2s · shell 5s · other 1s · model 25m (longest: \"git add src/cli/mod.rs src/cli/output.rs src/store/queries.…\" 7s, \"python3 - <<'PY'\" 6s) · dependents 0",
+    "Profile: waits — ready→start, summed per bead (beads wait at the same time, so not wall time): 11h58m over 13 of 14 landed beads — slot 2h23m (3) · retry 1h14m (3) · unexplained 8h21m (7)",
+    "Profile: rework — 27m of dispatch time in attempts that did not land — ht-big.2.1 17m (?; landed later) · ht-big.9 6m (?; landed later) · ht-big.2.2 4m (?; landed later)",
+    "Profile: tests — implementers and fixers, summed: 6m running tests and 8m polling background runs, 5% of their 4h30m · 0 Bash call(s) ran into the 10-minute tool limit",
+    "Profile: merge lane — busy 30m of 6h23m (8%) · seam reviews and fixes 0s (0% of busy) · 16 merge dispatches, first try not merged for 2 of 14 · queue wait 11m total, peak 1 waiting · stack-parent wait 0s",
+    "Profile: concurrency — 76 dispatches over 7h51m · a dispatch running 5h46m (73%) · dispatches at once: 0 for 27% · 1 for 71% · 2 for 2% · 3+ for 1% of the time · peak 10",
+    "Profile: dispatch time by kind, summed — impl 4h19m (17) · review 27m (14) · plan 14m (3) · fix 11m (2) · final-review 4m (1) · not named for a bead: roast 41m (34) · lazy 26m (2) · dev 2m (1) · stepback 40s (1) · scope 23s (1) · merges run by the coordinator 30m (16)",
+    "Profile: runtime — peak 10 agents at once · slot cap 1",
+    "Profile: what-if — unlimited slots → 4h36m (−1h23m, 23%) — no slot cap",
+    "Profile: what-if — faster ht-big.3 → 5h44m (−16m, 4%) — its implement time halved",
+    "Profile: what-if — faster ht-big.7 → 5h44m (−16m, 4%) — its implement time halved",
+    "Profile: what-if — cut ht-big.2.1 <- ht-big.9 → 5h53m (−6m, 2%) — payoff if this edge were cut — whether it can be is a design call",
+    "Profile: what-if — cut ht-big.10 <- ht-big.7 → 5h56m (−4m, 1%) — payoff if this edge were cut — whether it can be is a design call",
+    "Profile: unmeasured — 39 dispatch(es) not named for a bead of ht-big, in the run-level lines only (coordinator-subagents.md names dispatches <kind>_<bead id> on Codex, <kind>:<bead id> on Claude Code)"
+  ]
+}

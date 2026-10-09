@@ -1120,6 +1120,7 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
         claim: identity.claim.clone(),
     });
     let send = Command::SendMessage(herdr_threads::protocol::commands::SendMessage {
+        delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
         thread: completed.retained.thread.clone(),
         body: identity.payload.handoff.body.clone(),
         invited_recipients: vec![completed.retained.recipient.clone()],
@@ -1406,6 +1407,7 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
         claim: identity.claim.clone(),
     });
     let send = Command::SendMessage(herdr_threads::protocol::commands::SendMessage {
+        delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: identity.payload.handoff.body.clone(),
         invited_recipients: vec![attachment.resolved_seat.clone()],

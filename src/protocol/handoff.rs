@@ -130,7 +130,8 @@ impl DeliveryMutation {
                     && thread_matches(&v.thread)
             }
             DeliveryAction::Send(v) => {
-                v.claim == self.claim
+                v.delivery_mode.is_ordinary()
+                    && v.claim == self.claim
                     && v.operation == keys.send
                     && v.body == self.plan.payload.body
                     && v.invited_recipients == [self.plan.recipient.clone()]

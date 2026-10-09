@@ -132,8 +132,8 @@ struct World {
 }
 impl World {
     fn new() -> Self {
-        let root = PathBuf::from(format!(
-            "/private/tmp/htr-{}",
+        let root = std::env::temp_dir().join(format!(
+            "htr-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -172,8 +172,11 @@ impl World {
         world.json(None, &["daemon", "ensure"]);
         world
     }
-    fn command(&self, actor: Option<(&str, &str, &str)>) -> Command {
+    fn command(&self, actor: Option<(&str, &str, &str)>, human_route: bool) -> Command {
         let mut cmd = crate::scrubbed_command(BIN);
+        if human_route {
+            cmd.arg("human");
+        }
         cmd.arg("--state-dir")
             .arg(&self.state)
             .arg("--host-endpoint")
@@ -203,7 +206,9 @@ impl World {
         cmd
     }
     fn run(&self, actor: Option<(&str, &str, &str)>, args: &[&str], json: bool) -> String {
-        let mut cmd = self.command(actor);
+        let human_route = args.first() == Some(&"human");
+        let args = if human_route { &args[1..] } else { args };
+        let mut cmd = self.command(actor, human_route);
         if json {
             cmd.arg("--json");
         }
@@ -277,7 +282,7 @@ impl World {
 }
 impl Drop for World {
     fn drop(&mut self) {
-        let _ = self.command(None).args(["daemon", "stop"]).output();
+        let _ = self.command(None, false).args(["daemon", "stop"]).output();
     }
 }
 
@@ -290,7 +295,7 @@ struct Follower {
 impl Follower {
     fn start(world: &World) -> Self {
         let mut child = world
-            .command(None)
+            .command(None, false)
             .args(["read", "review", "--follow"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -341,13 +346,14 @@ impl Drop for Follower {
 #[test]
 fn readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundaries() {
     let world = World::new();
-    let human = world.json(None, &["me", "init"])["context"]["seat"]
+    let human = world.json(None, &["human", "me", "init"])["context"]["seat"]
         .as_str()
         .unwrap()
         .to_owned();
     let alice = world.json(
         None,
         &[
+            "human",
             "handoff",
             "--new-thread",
             "--thread-name",
@@ -365,7 +371,7 @@ fn readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundar
     let bob = world.json(
         None,
         &[
-            "handoff", "--thread", "review", "--pane", "bob", "--kind", "codex", "--", BOB,
+            "human", "handoff", "--thread", "review", "--pane", "bob", "--kind", "codex", "--", BOB,
         ],
     );
     for report in [&alice, &bob] {
@@ -439,8 +445,22 @@ fn readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundar
         world.json(Some(actor), &["accept", "review"]);
         world.receipt(message, actor.0, EffectiveReceiptState::Pending);
         let inbox = world.json(Some(actor), &["inbox"]);
-        assert_eq!(inbox["items"][0]["thread"], report["thread"]);
-        assert_eq!(inbox["items"][0]["pending_receipts"], 1);
+        // The advertised v2 inbox carries addressed messages, not the legacy
+        // per-thread pending count. JSON offers an ACK candidate but cannot ACK.
+        assert_eq!(inbox["has_more"], false, "{inbox}");
+        let items = inbox["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{inbox}");
+        let item = &items[0];
+        assert_eq!(item["kind"], "message");
+        assert_eq!(item["thread"], report["thread"]);
+        assert_eq!(item["message"], message);
+        assert_eq!(item["sender"], human);
+        assert_eq!(item["author_role"], "human");
+        assert_eq!(item["body"], body);
+        assert_eq!(item["body_start"], 0);
+        assert_eq!(item["body_end"], body.len());
+        assert_eq!(item["body_len"], body.len());
+        assert_eq!(item["ack_candidate"], message);
         world.receipt(message, actor.0, EffectiveReceiptState::Pending);
         assert!(world.run(Some(actor), &["inbox"], false).contains(body));
         world.receipt(message, actor.0, EffectiveReceiptState::Acknowledged);
@@ -477,6 +497,7 @@ fn readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundar
         .json(
             None,
             &[
+                "human",
                 "send",
                 "review",
                 "--require-ack-pane",
@@ -544,4 +565,5 @@ fn readme_tryout_named_handoffs_and_conversation_obey_launch_and_receipt_boundar
     assert_eq!(world.count("SELECT count(*) FROM threads"), 1);
     assert_eq!(world.count("SELECT count(*) FROM seats"), 3);
     assert_eq!(world.host.starts.lock().unwrap().len(), 2);
+    world.pending_pairs(&[]);
 }

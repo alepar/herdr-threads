@@ -25,9 +25,17 @@ use super::schema;
 pub type LaneFault =
     std::sync::Arc<dyn Fn(Option<crate::service::kicks::Lane>) -> Option<ApiError> + Send + Sync>;
 
+/// Idle read-only query connections kept for reuse. A new connection parses
+/// the whole schema on its first statement (milliseconds of CPU), and one
+/// send's publication, materialization and wake each open query connections.
+const IDLE_QUERY_CONNECTIONS: usize = 4;
+
+type IdleQueries = Arc<std::sync::Mutex<Vec<Connection>>>;
+
 pub struct StoreContext {
     path: PathBuf,
     clock: Arc<dyn Clock>,
+    idle_queries: IdleQueries,
     /// The last writer open's binding-evidence verification result.
     binding_evidence: std::sync::Mutex<Option<crate::ports::BindingEvidenceStartup>>,
     /// Seats whose latest binding still lacked evidence after the last
@@ -60,6 +68,7 @@ impl StoreContext {
         Self {
             path,
             clock,
+            idle_queries: Arc::default(),
             binding_evidence: std::sync::Mutex::new(None),
             binding_evidence_lacking: std::sync::Mutex::new(Vec::new()),
             #[cfg(any(test, feature = "test-support"))]
@@ -231,8 +240,9 @@ impl StoreContext {
         self.binding_evidence.lock().ok().and_then(|slot| *slot)
     }
 
-    /// A dedicated connection, with its own interrupt target and query progress
-    /// and busy callbacks. Both honor the live read-work budget.
+    /// A connection used by one caller at a time, with query progress and busy
+    /// callbacks for this call only. Both honor the live read-work budget. An
+    /// idle connection left by an earlier call is reused when one is kept.
     pub fn open_query(&self, budget: CallBudget) -> Result<QueryConnection, ApiError> {
         self.lane_fault_check()?;
         if let Some(error) = query_budget_error(&budget, self.clock()) {
@@ -246,8 +256,17 @@ impl StoreContext {
             #[cfg(test)]
             end_signal: std::sync::Mutex::new(self.setup_end_signal.lock().unwrap().take()),
         });
-        let conn = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| progress.map_sqlite_error(error))?;
+        let reused = self
+            .idle_queries
+            .lock()
+            .ok()
+            .and_then(|mut idle| idle.pop());
+        let fresh = reused.is_none();
+        let conn = match reused {
+            Some(conn) => conn,
+            None => Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|error| progress.map_sqlite_error(error))?,
+        };
         // Both callbacks borrow the same stable Box allocation. Install the
         // busy callback before any schema or PRAGMA statement can wait on a lock.
         let callback_data = (&*progress as *const QueryProgress).cast_mut().cast();
@@ -268,17 +287,20 @@ impl StoreContext {
                 callback_data,
             );
         }
-        conn.pragma_update(None, "foreign_keys", "ON")
-            .map_err(|error| progress.map_sqlite_error(error))?;
-        conn.pragma_update(None, "query_only", "ON")
-            .map_err(|error| progress.map_sqlite_error(error))?;
+        if fresh {
+            conn.pragma_update(None, "foreign_keys", "ON")
+                .map_err(|error| progress.map_sqlite_error(error))?;
+            conn.pragma_update(None, "query_only", "ON")
+                .map_err(|error| progress.map_sqlite_error(error))?;
+        }
         schema::verify_query_connection(&conn).map_err(|error| progress.map_api_error(error))?;
         if let Some(error) = progress.budget_error() {
             return Err(error);
         }
         Ok(QueryConnection {
-            conn,
+            conn: Some(conn),
             _progress: progress,
+            idle: Arc::clone(&self.idle_queries),
         })
     }
 
@@ -569,8 +591,9 @@ unsafe extern "C" fn check_query_progress(pointer: *mut c_void) -> i32 {
 }
 
 pub struct QueryConnection {
-    conn: Connection,
+    conn: Option<Connection>,
     _progress: Box<QueryProgress>,
+    idle: IdleQueries,
 }
 
 impl QueryConnection {
@@ -588,15 +611,28 @@ impl QueryConnection {
 impl Deref for QueryConnection {
     type Target = Connection;
     fn deref(&self) -> &Connection {
-        &self.conn
+        self.conn
+            .as_ref()
+            .expect("query connection is present until drop")
     }
 }
 
 impl Drop for QueryConnection {
     fn drop(&mut self) {
+        let Some(conn) = self.conn.take() else {
+            return;
+        };
         unsafe {
-            ffi::sqlite3_busy_handler(self.conn.handle(), None, std::ptr::null_mut());
-            ffi::sqlite3_progress_handler(self.conn.handle(), 0, None, std::ptr::null_mut());
+            ffi::sqlite3_busy_handler(conn.handle(), None, std::ptr::null_mut());
+            ffi::sqlite3_progress_handler(conn.handle(), 0, None, std::ptr::null_mut());
+        }
+        // Only a connection with no open transaction goes back, so the next
+        // call starts its own read snapshot.
+        if conn.is_autocommit()
+            && let Ok(mut idle) = self.idle.lock()
+            && idle.len() < IDLE_QUERY_CONNECTIONS
+        {
+            idle.push(conn);
         }
     }
 }

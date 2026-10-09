@@ -411,7 +411,8 @@ fn exact_ack_materializes_one_typed_batch() {
 #[test]
 fn operator_invite_materializes_only_operator_variant() {
     let parsed = parse_argv([
-        "herdr-threads", "human",
+        "herdr-threads",
+        "human",
         "invite",
         "t1",
         "--seat",
@@ -1353,7 +1354,8 @@ fn seat_retire_requires_operator_flag() {
 #[test]
 fn seat_rebind_replace_parses_to_operator_replace() {
     let parsed = parse_argv([
-        "herdr-threads", "human",
+        "herdr-threads",
+        "human",
         "seat",
         "rebind",
         "s1",
@@ -1806,6 +1808,247 @@ fn human_topology_recovery_help_and_errors_use_only_canonical_route() {
     for argv in [vec!["ht","human","_topology-recover","local:1","--attempt","1","--not-created"],vec!["ht","--state-dir","human","handoff","recover","local:1","--attempt","1","--not-created"],vec!["ht","handoff","human","recover","local:1","--attempt","1","--not-created"],vec!["ht","handoff","recover","local:1","--attempt","1","--not-created","--operator"]] { assert!(parse_argv(argv).is_err()); }
     let parsed=parse_argv(["ht","human","--state-dir","human","handoff","recover","local:1","--attempt","1","--not-created"]).unwrap();assert_eq!(parsed.output.context.state_dir.as_deref(),Some("human"));
     let parsed=parse_argv(["ht","handoff","--pane","w1:p2","--thread","t1","--kind","codex","--agent-arg=recover","--","human handoff recover local:1"]).unwrap();let CliAction::Handoff(request)=parsed.action else {panic!("legacy route changed")};assert_eq!(request.body,"human handoff recover local:1");assert_eq!(request.launch.argv,vec!["recover"]);
+}
+
+#[test]
+fn actor_route_immediate_namespace_and_output_are_independent() {
+    for executable in ["herdr-threads", "ht", "/private/a space/ht"] {
+        for args in [vec!["inbox"], vec!["send", "t1", "--body", "human --operator --human"], vec!["ack", "m1"], vec!["accept", "t1"], vec!["join", "t1"], vec!["leave", "t1"], vec!["check-in"], vec!["invite", "t1", "--seat", "s1"], vec!["reject", "t1", "--invitation", "i1", "--reason", "reason"], vec!["accept-required", "t1", "--invitation", "i1", "--requirement", "r1", "--revision", "1"]] {
+            let ordinary = parse_argv(std::iter::once(executable).chain(args.iter().copied())).unwrap();
+            let human = parse_argv([executable, "human"].into_iter().chain(args.iter().copied())).unwrap();
+            assert_eq!(ordinary.action, human.action);
+            assert_eq!(ordinary.actor, crate::cli::actor_route::InvocationActor::Agent);
+            assert_eq!(human.actor, crate::cli::actor_route::InvocationActor::Human);
+        }
+    }
+}
+#[test]
+fn actor_route_legacy_person_operator_forms_require_human() {
+    for args in [vec!["me", "init"], vec!["me", "init", "--operator"], vec!["invite", "t1", "--seat", "s1", "--operator"], vec!["seat", "retire", "s1", "--operator"]] {
+        let error = parse_argv(std::iter::once("ht").chain(args.iter().copied())).unwrap_err();
+        assert!(error.detail.contains("human"), "{}", error.detail);
+        assert!(parse_argv(["ht", "human"].into_iter().chain(args)).is_ok());
+    }
+}
+#[test]
+fn permission_cli_inputs_are_bounded_and_command_scoped() {
+    assert!(parse_argv(["ht", "setup", "--permissions", "--with-permissions", "--permission-installed-binary", "/private/a space/$binary"]).is_ok());
+    assert!(parse_argv(["ht", "setup", "--permission-link-path", "/private/ht"]).is_err());
+}
+
+#[test]
+fn ordinary_catalog_exports_positive_syntax_contract() {
+    let catalog = ordinary_catalog();
+    for prefix in [&["send"][..], &["join"], &["launch"], &["seat", "resolve"], &["service", "inspect"], &["--skill"], &["thread", "rename"], &["--version"], &["--help"]] {
+        assert!(catalog.families.iter().any(|f| f.prefix == prefix), "missing {prefix:?}");
+    }
+    assert!(catalog.output_flags.contains(&"--human"));
+    assert!(catalog.routing_forms.iter().any(|f| f.contains(&RoutingToken::StateDirectory) && f.contains(&RoutingToken::HostEndpoint)));
+}
+#[test]
+fn ordinary_catalog_excludes_person_and_operator_families() {
+    let catalog = ordinary_catalog();
+    assert!(!catalog.families.is_empty());
+    for forbidden in [&["human"][..], &["me"], &["me", "init"], &["seat"], &["seat", "rebind"], &["seat", "retire"], &["service"], &["service", "disconnect"]] {
+        assert!(!catalog.families.iter().any(|f| f.prefix == forbidden));
+    }
+}
+
+#[test]
+fn actor_route_pinned_globals_follow_human() {
+    use crate::cli::actor_route::InvocationActor;
+    let parsed = parse_argv(["ht", "human", "--state-dir", "/private/state", "--host-endpoint", "/private/host.sock", "--json", "me", "init"]).unwrap();
+    assert_eq!(parsed.actor, InvocationActor::Human);
+    assert_eq!(parsed.output.context.state_dir.as_deref(), Some("/private/state"));
+    assert_eq!(parsed.output.context.host.as_deref(), Some("/private/host.sock"));
+    assert_eq!(parsed.output.format, OutputFormat::Json);
+    for prefix in [vec!["--json"], vec!["--state-dir", "/private/a space"], vec!["--state-dir=/private/state", "--host-endpoint=/private/host.sock"]] {
+        let argv = ["ht"].into_iter().chain(prefix.iter().copied()).chain(["human", "me", "init"]);
+        let error = parse_argv(argv).unwrap_err();
+        assert!(error.detail.contains("ht human"), "{}", error.detail);
+        for token in &prefix { assert!(error.detail.contains(token), "{}", error.detail); }
+    }
+    assert!(parse_argv(["ht", "human", "--state-dir", "/private/s", "me", "init", "--state-dir", "/private/s"]).is_ok());
+    assert!(parse_argv(["ht", "human", "--state-dir", "/private/s", "me", "init", "--state-dir", "/private/other"]).unwrap_err().detail.contains("conflicting values"));
+    for args in [vec!["--human", "inbox"], vec!["inbox", "--human"], vec!["human", "--human", "inbox"]] {
+        let parsed = parse_argv(["ht"].into_iter().chain(args)).unwrap();
+        assert_eq!(parsed.presentation, crate::cli::output::Presentation::Human);
+    }
+    for flag in ["--json", "--machine"] {
+        assert!(parse_argv(["ht", "human", flag, "inbox"]).is_ok());
+        assert!(parse_argv(["ht", flag, "inbox"]).is_ok());
+    }
+}
+
+#[test]
+fn actor_route_administrative_and_discovery_matrix() {
+    use crate::cli::actor_route::InvocationActor;
+    let boot = "00000000-0000-4000-8000-000000000001";
+    let admin = ["service", "disconnect", "--expected-boot", boot, "--expected-generation", "7"];
+    assert!(parse_argv(["ht"].into_iter().chain(admin)).unwrap_err().detail.contains("ht human service disconnect"));
+    assert!(matches!(parse_argv(["ht", "human"].into_iter().chain(admin)).unwrap().action, CliAction::Wire(WireCommand::ServiceDisconnect(_))));
+    for args in [vec!["service", "inspect"], vec!["seat", "list"], vec!["seat", "inspect", "s1"], vec!["seat", "resolve", "--pane", "p1"], vec!["read"], vec!["follow"], vec!["launch", "--kind", "codex", "--pane", "p1", "--", "human", "--operator", "--human"]] {
+        assert_eq!(parse_argv(["ht"].into_iter().chain(args)).unwrap().actor, InvocationActor::Agent);
+    }
+    for args in [vec!["seat", "resolve", "--pane", "p1", "--new-seat", "--operator"], vec!["seat", "rebind", "s1", "--pane", "p1", "--operator"], vec!["seat", "rebind", "s1", "--pane", "p1", "--replace", "s2", "--operator"]] {
+        let human = parse_argv(["ht", "human"].into_iter().chain(args.iter().copied())).unwrap();
+        assert_eq!(human.actor, InvocationActor::Human);
+        assert!(parse_argv(["ht"].into_iter().chain(args)).unwrap_err().detail.contains("human"));
+    }
+    for args in [vec!["seat", "rebind", "s1", "--pane", "p1"], vec!["seat", "retire", "s1"]] {
+        let error = parse_argv(["ht"].into_iter().chain(args)).unwrap_err();
+        assert!(error.detail.contains("human") && error.detail.contains("operator"));
+    }
+    assert!(parse_argv(["ht", "--cooperative-harness", "human", "inbox"]).unwrap_err().detail.contains("namespace"));
+    assert!(parse_argv(["ht", "human", "--cooperative-seat", "s1", "--cooperative-target", "p1", "--cooperative-harness", "codex", "--cooperative-role", "top-level", "inbox"]).unwrap_err().detail.contains("cannot be mixed"));
+}
+
+#[test]
+fn actor_route_payload_tokens_never_declare_actor() {
+    use crate::cli::actor_route::InvocationActor;
+    let body = "human --operator --human; ht human me init";
+    assert!(matches!(parse_argv(["ht", "send", "t1", "--body", body]).unwrap().action, CliAction::Mutation(MutationSpec::Send { body: value, .. }) if value == body));
+    for args in [vec!["thread", "create", "--topic", body, "--name", "human"], vec!["search", "human"], vec!["--state-dir", "human", "inbox"], vec!["handoff", "--thread", "t1", "--pane", "p1", "--kind", "codex", "--", body]] {
+        assert_eq!(parse_argv(["ht"].into_iter().chain(args)).unwrap().actor, InvocationActor::Agent);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn actor_route_os_string_identity_is_preserved() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use crate::cli::actor_route::InvocationActor;
+    let opaque = OsString::from_vec(b"ht\xff".to_vec());
+    let parsed = parse_argv([opaque.clone(), "human".into(), "inbox".into()]).unwrap();
+    assert_eq!(parsed.actor, InvocationActor::Human);
+    for argv in [vec![opaque.clone(), OsString::from_vec(b"human\xff".to_vec()), "inbox".into()], vec![opaque.clone(), "send".into(), "t1".into(), "--body".into(), OsString::from_vec(vec![255])]] {
+        assert!(parse_argv(argv).is_err());
+    }
+    let error = parse_argv([opaque, "me".into(), "init".into()]).unwrap_err();
+    assert!(error.detail.contains("opaque argv"));
+    assert!(!error.detail.contains('\u{fffd}'));
+    assert!(matches!(parse_argv_or_informational(["ht"]), Err(ParseFailure::Usage(_))));
+    for argv in [vec!["ht", "--version"], vec!["/private/a space/ht", "--version"], vec!["ht", "human", "--help"]] {
+        assert!(matches!(parse_argv_or_informational(argv), Err(ParseFailure::Informational(_))));
+    }
+    let Err(ParseFailure::Informational(help)) = parse_argv_or_informational(["ht", "human", "--help"]) else { panic!("help") };
+    assert!(help.contains("immediate `human`"));
+}
+
+#[test]
+fn permission_cli_inputs_preserve_installer_spellings() {
+    let binary = "/private/a space/$binary;`literal`'quoted'";
+    for verb in ["setup", "unsetup", "setup-status"] {
+        let parsed = parse_argv(["ht", verb, "--permissions", "--permission-installed-binary", binary, "--permission-link-path", "/private/link", "--permission-alias-path", "/private/alias"]).unwrap();
+        assert!(parsed.permissions.permissions);
+        assert_eq!(parsed.permissions.permission_installed_binary.as_deref(), Some(binary));
+        assert_eq!(parsed.permissions.permission_link_path.as_deref(), Some("/private/link"));
+        assert_eq!(parsed.permissions.permission_alias_path.as_deref(), Some("/private/alias"));
+        assert_eq!(parse_argv(["ht", verb]).unwrap().permissions, PermissionCliInputs::default());
+        for flag in ["--with-permissions", "--without-permissions"] {
+            assert_eq!(parse_argv(["ht", verb, flag]).is_ok(), verb == "setup");
+        }
+    }
+    for flag in ["--with-permissions", "--without-permissions"] {
+        let parsed = parse_argv(["ht", "internal", "installer-integrations", "--confirm-missing", flag, "--permission-installed-binary", binary]).unwrap();
+        assert!(matches!(parsed.action, CliAction::InstallerIntegrations { confirm_missing: true }));
+        assert_eq!(parsed.permissions.with_permissions, flag == "--with-permissions");
+        assert_eq!(parsed.permissions.without_permissions, flag == "--without-permissions");
+        assert_eq!(parsed.permissions.permission_installed_binary.as_deref(), Some(binary));
+    }
+    for args in [vec!["setup", "--with-permissions", "--without-permissions"], vec!["internal", "installer-integrations", "--with-permissions", "--without-permissions"], vec!["inbox", "--permissions"], vec!["setup", "--permission-alias-path", "/private/alias"], vec!["setup", "--permission-installed-binary", "/private/a", "--permission-installed-binary", "/private/a"]] {
+        assert!(parse_argv(["ht"].into_iter().chain(args)).is_err());
+    }
+    for path in ["".into(), "relative".into(), "/private/line\nfeed".into(), "/private/tab\t".into(), format!("/{}", "x".repeat(4096))] {
+        for flag in ["--permission-installed-binary", "--permission-link-path", "--permission-alias-path"] {
+            assert!(parse_argv(["ht", "setup", flag, &path]).is_err(), "{flag}: {path:?}");
+        }
+    }
+    let maximum = format!("/{}", "x".repeat(4095));
+    assert_eq!(parse_argv(["ht", "setup", "--permission-installed-binary", &maximum]).unwrap().permissions.permission_installed_binary, Some(maximum));
+}
+
+#[test]
+fn ordinary_catalog_routing_and_output_forms_parse_without_actor_escalation() {
+    let catalog = ordinary_catalog();
+    for executable in ["ht", "herdr-threads", "/private/a space/herdr-threads"] {
+        for routing in catalog.routing_forms {
+            let pinned: Vec<&str> = routing.iter().map(|token| match token {
+                RoutingToken::Literal(token) => *token,
+                RoutingToken::StateDirectory => "/private/a space/state",
+                RoutingToken::HostEndpoint => "/private/a space/host.sock",
+            }).collect();
+            for flag in catalog.output_flags {
+                for position in catalog.output_positions {
+                    let mut argv = vec![executable];
+                    argv.extend(&pinned);
+                    if *position == OutputPosition::BeforeFamily { argv.push(flag); }
+                    argv.extend(["send", "t1", "--body", "human --operator; ht human me init"]);
+                    if *position == OutputPosition::AfterArguments { argv.push(flag); }
+                    let parsed = parse_argv(argv).unwrap();
+                    assert_eq!(parsed.actor, crate::cli::actor_route::InvocationActor::Agent);
+                    assert!(matches!(parsed.action, CliAction::Mutation(MutationSpec::Send { body, .. }) if body == "human --operator; ht human me init"));
+                }
+            }
+        }
+    }
+    let resolve = catalog.families.iter().find(|f| f.prefix == ["seat", "resolve"]).unwrap();
+    assert_eq!(resolve.human_options, ["--operator", "--new-seat"]);
+    assert_eq!(catalog.families.iter().find(|f| f.prefix == ["invite"]).unwrap().human_options, ["--operator"]);
+}
+
+#[test]
+fn inbox_v2_continuation_validates_without_changing_own_text_action() {
+    use crate::protocol::{ids::{ExecutionId,MessageId,SeatId}, pagination::{InboxBatchV2CursorState as State, InboxBatchV2Source as Source, InboxBatchV2BodyPosition,SeatAttentionCursorState,ReceiptAttentionCursorState}};
+    let state = State {
+        seat: SeatId::new("s"),
+        binding_generation: Some(1),
+        execution: Some(ExecutionId::new("execution")),
+        source: Source::Lazy,
+        lazy_after_ordinal: 0,
+        lazy_high_water_ordinal: 2,
+        publication_decision_high_water: 4,
+        body: Some(InboxBatchV2BodyPosition {
+            message: MessageId::new("m"),
+            offset: 2,
+            body_len: 10,
+        }),
+        attention: SeatAttentionCursorState {
+            invitation_after_seq: 0,
+            invitation_after_ordinal: 0,
+            invitations_done: false,
+            has_pending_invitation: false,
+            invitation_frontier: Some((0, 2)),
+            receipts: Some(ReceiptAttentionCursorState {
+                physical_after: 0,
+                manifest_after: 0,
+                physical_high_water: 2,
+                manifest_high_water: 2,
+                next_manifest: false,
+            }),
+            receipts_done: false,
+            has_pending_receipt: false,
+            receipt_frontier_seq: Some(4),
+            physical_warning_after: 0,
+            physical_warning_high_water: 4,
+            manifest_warning_after: 0,
+            manifest_warning_high_water: 4,
+            next_manifest_warning: false,
+            latest_warning_seq: None,
+            latest_warning_offset: Some(0),
+        },
+    };
+    let raw=state.encode("fixture-instance").unwrap();
+    let parsed=parse_argv(["ht","inbox","--cursor",&raw]).unwrap();
+    let CliAction::Wire(WireCommand::Inbox(query))=parsed.action else {panic!("must retain own Inbox placeholder")};
+    assert!(query.seat.is_none());
+    assert_eq!(query.page.cursor.as_deref(),Some(raw.as_str()));
+    assert!(WireCommand::Inbox(query.clone()).validate().is_err(),"legacy wire still rejects ib2");
+    assert!(WireCommand::InboxBatch(query.clone()).validate().is_err());
+    assert!(WireCommand::InboxBatchV2(query).validate().is_ok());
+    for prefix in [vec!["ht","read","t"],vec!["ht","search","needle"],vec!["ht","seat","list"]] {let mut args=prefix;args.extend(["--cursor",&raw]);assert!(parse_argv(args).is_err(),"non-Inbox route must reject v2 cursor");}
+    for invalid in ["ib2:","ib2:broken!","ib2:A"] {assert!(parse_argv(["ht","inbox","--cursor",invalid]).is_err());}
 }
 
 #[test]

@@ -474,6 +474,7 @@ fn public_delivery_current_recipient_hold_refuses_live_begin_and_send_preparatio
             .is_err()
     );
     request.action = DeliveryAction::Send(herdr_threads::protocol::commands::SendMessage {
+        delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
         thread: request.plan.payload.channel.thread().unwrap().clone(),
         body: request.plan.payload.body.clone(),
         invited_recipients: vec![request.plan.recipient.clone()],
@@ -541,6 +542,7 @@ fn live_cached_replay(phase: &str) {
             })
         } else {
             DeliveryAction::Send(herdr_threads::protocol::commands::SendMessage {
+                delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
                 thread: request.plan.payload.channel.thread().unwrap().clone(),
                 body: request.plan.payload.body.clone(),
                 invited_recipients: vec![request.plan.recipient.clone()],
@@ -645,4 +647,49 @@ fn public_delivery_completed_status_and_keyed_history_bypass_only_live_guards() 
     refresh_delivery(&mut request);
     request.action = DeliveryAction::Status(request.identity());
     assert!(f.call(Command::HandoffDelivery(Box::new(request))).is_err());
+}
+
+#[test]
+fn actual_main_delivery_phase_preserves_ordinary_and_rejects_lazy_mode() {
+    use herdr_threads::protocol::commands::{DeliveryMode, SendMessage};
+    let f = Fixture::new();
+    let mut request = delivery();
+    let mut send = SendMessage {
+        delivery_mode: DeliveryMode::Ordinary,
+        thread: request.plan.payload.channel.thread().unwrap().clone(),
+        body: request.plan.payload.body.clone(),
+        invited_recipients: vec![request.plan.recipient.clone()],
+        deadline_millis: None,
+        operation: request.plan.payload.keys.send.clone(),
+        claim: request.claim.clone(),
+        relays_user: false,
+        user_intent: None,
+    };
+    request.action = DeliveryAction::Send(send.clone());
+    request.validate().unwrap();
+    let ordinary = serde_json::to_vec(&request).unwrap();
+    assert!(!String::from_utf8_lossy(&ordinary).contains("delivery_mode"));
+    let restored: DeliveryMutation = serde_json::from_slice(&ordinary).unwrap();
+    assert_eq!(serde_json::to_vec(&restored).unwrap(), ordinary);
+    restored.validate().unwrap();
+
+    send.delivery_mode = DeliveryMode::Lazy;
+    // This existing lower-level refusal already prevents a Lazy+ACK send.
+    // The direct envelope control below tests exact frozen-phase matching.
+    assert!(Command::SendMessage(send.clone()).validate().is_err());
+    request.action = DeliveryAction::Send(send);
+    let direct_refusal = request.validate().is_err();
+    assert!(f.call(Command::HandoffDelivery(Box::new(request))).is_err());
+    for table in ["send_preparations", "messages", "operations"] {
+        assert_eq!(
+            f.db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+        );
+    }
+    assert!(
+        direct_refusal,
+        "frozen Ordinary delivery phase must reject a changed Lazy mode"
+    );
 }

@@ -1,0 +1,30 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-aa425b885727aee3)
+
+running 3 tests
+
+thread 'scheduler::tests::nudge_safety_held_prompt_is_reported_without_extra_enter' (9474847) panicked at src/scheduler/../../tests/scheduler/dispatch.rs:3796:5:
+assertion `left == right` failed
+  left: [(SeatId("seat"), Retried)]
+ right: [(SeatId("seat"), Unsubmitted)]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'host::native::tests::nudge_safety_refuses_nonempty_or_unreadable_composer' (9474846) panicked at src/host/native.rs:2777:31:
+called `Result::unwrap_err()` on an `Ok` value: OutcomeUnknown
+
+thread 'host::native::tests::nudge_safety_focused_empty_composer_starts_waiting_without_prompt' (9474845) panicked at src/host/native.rs:2792:27:
+called `Result::unwrap_err()` on an `Ok` value: OutcomeUnknown
+test scheduler::tests::nudge_safety_held_prompt_is_reported_without_extra_enter ... FAILED
+test host::native::tests::nudge_safety_focused_empty_composer_starts_waiting_without_prompt ... FAILED
+test host::native::tests::nudge_safety_refuses_nonempty_or_unreadable_composer ... FAILED
+
+failures:
+
+failures:
+    host::native::tests::nudge_safety_focused_empty_composer_starts_waiting_without_prompt
+    host::native::tests::nudge_safety_refuses_nonempty_or_unreadable_composer
+    scheduler::tests::nudge_safety_held_prompt_is_reported_without_extra_enter
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 2655 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--lib`

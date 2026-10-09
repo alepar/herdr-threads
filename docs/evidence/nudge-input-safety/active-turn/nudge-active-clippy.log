@@ -1,0 +1,4 @@
+nice: setpriority: Operation not permitted
+    Blocking waiting for file lock on build directory
+    Checking herdr-threads v0.2.12 (/Users/alepar/AleCode/herdr-threads/.worktrees/nudge-input-safety)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.73s

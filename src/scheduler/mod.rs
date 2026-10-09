@@ -163,7 +163,7 @@ pub struct WakeDriveOutcome {
 }
 
 /// Whether a sent wake prompt was seen submitted (the dispatcher performs the
-/// check and the single submit-key retry).
+/// read-only check; it never presses Enter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SubmissionVerification {
     #[default]
@@ -184,8 +184,8 @@ impl SubmissionVerification {
     }
 }
 
-/// The decision as code (ht-p03.41): a prompt still unsent after the single
-/// submit-key retry was delivered to the pane, so it maps to OutcomeUnknown
+/// A prompt observed still held in the composer was delivered to the pane,
+/// so it maps to OutcomeUnknown without pressing Enter
 /// (keeps the advanced ladder step, never re-sent in a loop); the existing
 /// OutcomeUnknown last_outcome string is stored. 'unsubmitted' lives only in
 /// WakeDriveOutcome::verification and the daemon.log line.
