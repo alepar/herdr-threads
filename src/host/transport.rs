@@ -1,5 +1,6 @@
 //! One bounded audited Herdr API exchange. Dropping this future closes its socket.
 
+use super::compatibility::HostRelease;
 use super::continuity::{
     KernelProcessInfo, LocalEndpointWitness, ProcessInfoProvider, capture_peer_witness_with,
     recheck_witness, socket_identity,
@@ -49,17 +50,14 @@ fn compatible_pong(ping: &Value) -> Result<&Value, ApiError> {
     let pong = ping
         .get("result")
         .ok_or_else(|| error(ErrorCode::Unsupported, "host API ping failed"))?;
-    if pong.get("type").and_then(Value::as_str) != Some("pong")
-        || !super::compatibility::supports_json_api(
-            pong.get("version").and_then(Value::as_str),
-            pong.get("protocol").and_then(Value::as_u64),
-        )
-    {
-        return Err(error(
-            ErrorCode::Unsupported,
-            "host API version or protocol mismatch",
-        ));
+    if pong.get("type").and_then(Value::as_str) != Some("pong") {
+        return Err(error(ErrorCode::Unsupported, "host API ping failed"));
     }
+    super::compatibility::admit(
+        pong.get("version").and_then(Value::as_str),
+        pong.get("protocol").and_then(Value::as_u64),
+    )
+    .map_err(|detail| error(ErrorCode::Unsupported, detail))?;
     Ok(pong)
 }
 
@@ -363,7 +361,7 @@ fn request_inner(
     budget: &CallBudget,
     limit: Duration,
     provider: Option<&dyn ProcessInfoProvider>,
-) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
+) -> Result<(String, Option<LocalEndpointWitness>, HostRelease), ApiError> {
     request_inner_response(
         socket, id, method, params, clock, budget, limit, provider, false,
     )
@@ -380,7 +378,7 @@ fn request_inner_response(
     limit: Duration,
     provider: Option<&dyn ProcessInfoProvider>,
     preserve_start_refusal: bool,
-) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
+) -> Result<(String, Option<LocalEndpointWitness>, HostRelease), ApiError> {
     let started = Instant::now();
     // HostPort is synchronous and may be called from inside a Tokio runtime.
     // Keep this one transport task owned and joined on every return path.
@@ -408,7 +406,21 @@ fn request_inner_response(
                         None,
                     )
                     .await?;
-                    compatible_pong(&ping)?;
+                    if let Some(error) = super::observation::structured_host_error(&ping) {
+                        return Err(error);
+                    }
+                    let pong = ping
+                        .get("result")
+                        .ok_or_else(|| error(ErrorCode::Unsupported, "host API ping failed"))?;
+                    if pong.get("type").and_then(Value::as_str) != Some("pong") {
+                        return Err(error(ErrorCode::Unsupported, "host API ping failed"));
+                    }
+                    // A version floor only: `protocol` is recorded, never gated.
+                    let release = super::compatibility::admit(
+                        pong.get("version").and_then(Value::as_str),
+                        pong.get("protocol").and_then(Value::as_u64),
+                    )
+                    .map_err(|detail| error(ErrorCode::Unsupported, detail))?;
                     let (result, witness) = exchange(
                         socket, id, method, params, clock, budget, started, limit, provider, None,
                     )
@@ -467,7 +479,7 @@ fn request_inner_response(
                         )
                     })?;
                     check(clock, budget, started, limit)?;
-                    Ok((encoded, witness))
+                    Ok((encoded, witness, release))
                 })
             })
             .join()
@@ -484,7 +496,7 @@ pub(crate) fn request_unhinted_start(
     clock: &dyn Clock,
     budget: &CallBudget,
     limit: Duration,
-) -> Result<String, ApiError> {
+) -> Result<(String, HostRelease), ApiError> {
     request_inner_response(
         socket,
         id,
@@ -496,7 +508,7 @@ pub(crate) fn request_unhinted_start(
         None,
         true,
     )
-    .map(|(body, _)| body)
+    .map(|(body, _, release)| (body, release))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -539,6 +551,11 @@ fn guarded_start_inner(
                         )
                         .await?;
                         let pong = compatible_pong(&ping)?;
+                        let release = super::compatibility::admit(
+                            pong.get("version").and_then(Value::as_str),
+                            pong.get("protocol").and_then(Value::as_u64),
+                        )
+                        .map_err(|detail| error(ErrorCode::Unsupported, detail))?;
                         if pong
                             .pointer("/capabilities/agent_start_process_hint_v1")
                             .and_then(Value::as_bool)
@@ -601,7 +618,11 @@ fn guarded_start_inner(
                                 "host API response encoding failed",
                             )
                         })?;
-                        Ok(WitnessedResponse { body, witness })
+                        Ok(WitnessedResponse {
+                            body,
+                            witness,
+                            release,
+                        })
                     })
                 })();
                 result.map_err(|error| NativeLaunchFailure {
@@ -672,6 +693,8 @@ mod tests {
 pub struct WitnessedResponse {
     pub body: String,
     pub witness: super::continuity::LocalEndpointWitness,
+    /// What this call's `ping` reported.
+    pub release: HostRelease,
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -1021,8 +1044,9 @@ pub(crate) fn request(
     clock: &dyn Clock,
     budget: &CallBudget,
     limit: Duration,
-) -> Result<String, ApiError> {
-    request_inner(socket, id, method, params, clock, budget, limit, None).map(|(body, _)| body)
+) -> Result<(String, HostRelease), ApiError> {
+    request_inner(socket, id, method, params, clock, budget, limit, None)
+        .map(|(body, _, release)| (body, release))
 }
 
 /// Each actual stream is checked before sending and after correlated response
@@ -1036,7 +1060,7 @@ pub fn request_witnessed(
     budget: &CallBudget,
     limit: Duration,
 ) -> Result<WitnessedResponse, ApiError> {
-    let (body, witness) = request_inner(
+    let (body, witness, release) = request_inner(
         socket,
         id,
         method,
@@ -1052,7 +1076,11 @@ pub fn request_witnessed(
             "endpoint witness unavailable",
         )
     })?;
-    Ok(WitnessedResponse { body, witness })
+    Ok(WitnessedResponse {
+        body,
+        witness,
+        release,
+    })
 }
 fn witness_error(error_value: super::continuity::CaptureError) -> ApiError {
     let code = if error_value == super::continuity::CaptureError::Unsupported {

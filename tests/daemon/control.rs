@@ -144,6 +144,7 @@ fn retirement_control(
             incarnation_witness: crate::protocol::results::CapabilityState::Unknown,
             safe_prompt: crate::protocol::results::CapabilityState::Unsupported,
             harnesses: Default::default(),
+            release: Default::default(),
         },
     );
     let service = ControlService::new(
@@ -625,6 +626,7 @@ fn production_health_builder_redacts_retirement_failure_and_clears_on_partial_pr
             incarnation_witness: crate::protocol::results::CapabilityState::Unknown,
             safe_prompt: crate::protocol::results::CapabilityState::Unsupported,
             harnesses: Default::default(),
+            release: Default::default(),
         },
     );
     let budget = |clock: &DriverClock, span: u64| CallBudget {
@@ -753,6 +755,7 @@ fn production_health_builder_pins_every_elected_field() {
             incarnation_witness: crate::protocol::results::CapabilityState::Unknown,
             safe_prompt: crate::protocol::results::CapabilityState::Unsupported,
             harnesses: Default::default(),
+            release: Default::default(),
         },
     );
     let budget = CallBudget {
@@ -766,6 +769,7 @@ fn production_health_builder_pins_every_elected_field() {
         schema,
         host,
         host_version,
+        host_release_warning,
         current_execution,
         coherent_enumeration,
         safe_prompt,
@@ -800,6 +804,7 @@ fn production_health_builder_pins_every_elected_field() {
     // never asserted Ready/Supported, and no reconciliation has completed.
     assert_eq!(host, ComponentStatus::Unknown);
     assert_eq!(host_version, None);
+    assert_eq!(host_release_warning, None);
     assert_eq!(current_execution, CapabilityState::Unsupported);
     assert_eq!(coherent_enumeration, CapabilityState::Unknown);
     assert_eq!(last_reconciliation_at, None);
@@ -1050,6 +1055,7 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
             incarnation_witness: crate::protocol::results::CapabilityState::Unknown,
             safe_prompt: crate::protocol::results::CapabilityState::Unsupported,
             harnesses: Arc::clone(&slot),
+            release: Default::default(),
         },
     );
     let budget = CallBudget {

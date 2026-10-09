@@ -6,8 +6,8 @@
 
 - **Harness adapters.** Registered adapters provide harness discovery, setup, managed launch, context delivery and composer policies, including the Hermes integration. Unknown harness metadata grants no authority or optional capabilities.
 - **Recorded runtime evidence.** Bounded, attributed runtime and contract evidence preserves legacy history and reports acceptance limits honestly.
-
-
+- **Herdr 0.9.1 or newer.** The adapter enforces the manifest's `min_herdr_version` floor instead of admitting only 0.9.1 and 0.9.3 with protocol 22, so 0.9.2 and later releases connect. `protocol` is shown in Health and never gates. A release newer than 0.9.3 adds the Health limitation `untested Herdr X.Y.Z; tested 0.9.1-0.9.3` without degrading. A method or params a Herdr release does not accept fail as `unsupported` for that operation only.
+- **Herdr release smoke matrix.** `scripts/herdr-release-smoke` runs an end-to-end smoke (plugin link, daemon, seats in two real panes, thread/invite/accept, a required ACK, a guarded agent start) against every official Herdr release in `tests/herdr-releases.tsv` (0.9.1, 0.9.2, 0.9.3), each checksum-verified in a private Herdr server. The manual `herdr-releases` CI job also fails when GitHub has a newer release the list lacks. A test keeps the adapter's tested range equal to the list.
 - **Lazy messages.** Passive messages are delivered by the recipient's text inbox without creating receipt obligations, deadlines, wakes or ACKs. Complete flushed display records separate delivery bookkeeping; partial output and read-only formats do not settle delivery.
 - **Latency improvements.** Reuse bounded idle read-only query connections and allow commit bursts to settle before archival. Latency fixtures retain their existing budgets and use an explicit test-only durability knob; production durability remains unchanged.
 - **CLI routing and safe nudges.** Explicit human invocation routing and draft-aware, active-turn-aware attention guards preserve attribution and avoid submitting over observed input.

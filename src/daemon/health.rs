@@ -91,6 +91,9 @@ pub struct HealthInputs {
     pub schema: ComponentStatus,
     pub host: ComponentStatus,
     pub host_version: Option<String>,
+    /// "untested Herdr X.Y.Z; ..." for a release newer than the tested
+    /// range: a limitation that does not degrade Health.
+    pub host_release_warning: Option<String>,
     pub current_execution: CapabilityState,
     pub coherent_enumeration: CapabilityState,
     pub safe_prompt: CapabilityState,
@@ -413,6 +416,7 @@ impl HealthInputs {
             schema: ComponentStatus::Unknown,
             host: ComponentStatus::Unknown,
             host_version: None,
+            host_release_warning: None,
             current_execution: CapabilityState::Unknown,
             coherent_enumeration: CapabilityState::Unknown,
             safe_prompt: CapabilityState::Unknown,
@@ -451,6 +455,9 @@ impl HealthInputs {
             .host_version
             .as_deref()
             .map(|value| bounded(value, 128));
+        if let Some(warning) = &self.host_release_warning {
+            push(&mut health.limitations, warning.clone());
+        }
         health.host.current_execution = self.current_execution;
         health.host.coherent_enumeration = self.coherent_enumeration;
         health.host.safe_prompt = self.safe_prompt;

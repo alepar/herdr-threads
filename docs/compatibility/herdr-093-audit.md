@@ -2,6 +2,8 @@
 
 Audited 2026-10-05 against Threads baseline `f04676cb` (0.2.7), on macOS arm64. The bounded change admits exact Herdr `0.9.1` and `0.9.3`, both with protocol `22`, through one predicate shared by transport ping and snapshot normalization. It preserves existing framing, budget, cancellation, endpoint witness, launch readiness and authority checks. It does not qualify arbitrary protocol-22 releases or harness versions.
 
+> **Superseded policy (2026-10-08).** The exact-release predicate described here was replaced by a version floor: the adapter admits Herdr 0.9.1 or newer, ignores `protocol` for admission and warns in Health for releases newer than 0.9.3. This audit's evidence (Threads consumes none of 0.9.2's removed routes) is what makes 0.9.2 admissible. See [Herdr host compatibility](herdr-host.md).
+
 ## Official identities
 
 - [0.9.1 source](https://github.com/herdrdev/herdr/tree/065ef9d6a531c49fb8bee7e818ef837065b21ee9): peeled tag commit `065ef9d6a531c49fb8bee7e818ef837065b21ee9`.

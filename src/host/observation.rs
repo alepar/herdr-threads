@@ -62,6 +62,8 @@ pub fn structured_host_error(value: &Value) -> Option<ApiError> {
         | "version_mismatch"
         | "protocol_mismatch"
         | "agent_process_hint_unsupported" => ErrorCode::Unsupported,
+        // Unsupported operation leaves the host itself admitted.
+        _ if unsupported_operation(host_code, message) => ErrorCode::Unsupported,
         "invalid_request" | "parse_error" | "invalid_json" => ErrorCode::InvalidRequest,
         "agent_pane_busy" | "agent_name_taken" | "agent_blocked" | "target_unsafe" => {
             ErrorCode::TargetUnsafe
@@ -73,14 +75,31 @@ pub fn structured_host_error(value: &Value) -> Option<ApiError> {
         }
         _ => ErrorCode::HostUnavailable,
     };
+    let unsupported = if unsupported_operation(host_code, message) {
+        " (unsupported by this Herdr)"
+    } else {
+        ""
+    };
     Some(ApiError::new(
         code,
         format!(
-            "Herdr {}: {}",
+            "Herdr {}{unsupported}: {}",
             host_code.chars().take(64).collect::<String>(),
             message.chars().take(512).collect::<String>()
         ),
     ))
+}
+
+/// Herdr answers a method it does not serve with `unknown_method` (retired
+/// routes) or with `invalid_request` "unknown variant" (never-known names),
+/// and params it cannot accept with `invalid_params`. The adapter builds
+/// every request itself, so each means this Herdr lacks the operation.
+fn unsupported_operation(host_code: &str, message: &str) -> bool {
+    match host_code {
+        "unknown_method" | "invalid_params" => true,
+        "invalid_request" => message.contains("unknown variant"),
+        _ => false,
+    }
 }
 
 fn envelope(raw: &str, expected_type: &str) -> Result<Value, ApiError> {
@@ -158,14 +177,11 @@ pub fn normalize_snapshot(raw: &str) -> Result<NativeSnapshot, ApiError> {
     let snapshot = result
         .get("snapshot")
         .ok_or_else(|| invalid("missing snapshot"))?;
-    if !super::compatibility::supports_json_api(
+    super::compatibility::admit(
         Some(field(snapshot, "version")?),
         snapshot.get("protocol").and_then(Value::as_u64),
-    ) {
-        return Err(ApiError::unsupported(
-            "unsupported Herdr snapshot version/protocol",
-        ));
-    }
+    )
+    .map_err(ApiError::unsupported)?;
     for collection in ["workspaces", "tabs", "agents", "layouts"] {
         if !snapshot.get(collection).is_some_and(Value::is_array) {
             return Err(invalid(format!("missing snapshot {collection}")));

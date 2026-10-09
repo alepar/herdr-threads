@@ -3001,6 +3001,12 @@ pub trait HostPort: Send + Sync {
     fn incarnation_witness(&self) -> crate::protocol::results::CapabilityState {
         crate::protocol::results::CapabilityState::Unknown
     }
+    /// The Herdr release the adapter last observed, for Health (version,
+    /// diagnostic protocol and an untested-release warning). None until a
+    /// call was answered, and for adapters without a release.
+    fn observed_release(&self) -> Option<crate::host::compatibility::HostRelease> {
+        None
+    }
     /// Adapter-owned static capability to submit a wake prompt only after its
     /// own bounded recheck of the target. Health reports it as `safe_prompt`.
     fn safe_prompt_capability(&self) -> crate::protocol::results::CapabilityState {
