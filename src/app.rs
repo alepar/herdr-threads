@@ -1006,6 +1006,19 @@ impl LaneProbe {
             .expect("registered lane");
         pacer.set_idle_hook(hook);
     }
+    /// Observe each pass start (a wait ending) of the registered worker, with
+    /// the reason the wait ended. The callback must not reenter the Pacer.
+    pub fn set_registered_wake_hook(
+        &self,
+        lane: Lane,
+        hook: Box<dyn Fn(crate::service::pacer::Wake) + Send + Sync>,
+    ) {
+        let registry = self.state().registry.clone();
+        let pacer = registry
+            .and_then(|kicks| kicks.pacer(lane))
+            .expect("registered lane");
+        pacer.set_wake_hook(hook);
+    }
     /// Kicks `lane` through the commit-kick registry, as a store commit does.
     pub fn kick_registered(&self, lane: Lane) {
         let registry = self.state().registry.clone();

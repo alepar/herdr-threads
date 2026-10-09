@@ -1050,12 +1050,18 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
     let receipts = pending_receipts(db, seat_id, None)?;
     let mut warnings = seat_pending_warnings(db, seat_id, &|| Ok(()))?;
     let mut wakes = Vec::with_capacity(warnings.items.len());
-    for item in warnings.items {
+    for item in &warnings.items {
         if warning_wakes_seat(db, seat_id, &item.id)? {
-            wakes.push(item);
+            wakes.push(item.clone());
         }
     }
-    warnings.items = wakes;
+    // A saturated walk can hide an older waking notice (a service notice
+    // behind a full window of other seats' transitions). Narrowing it to
+    // nothing would turn that unknown into "no warning" and skip the
+    // conservative offer probe, so keep the unnarrowed answer instead.
+    if !(wakes.is_empty() && warnings.saturated) {
+        warnings.items = wakes;
+    }
     let latest_warning_seq = warnings.items.first().map(|item| item.key.0);
     Ok(WakeSeatAttention {
         attention: effective::EffectiveSeatAttention {
