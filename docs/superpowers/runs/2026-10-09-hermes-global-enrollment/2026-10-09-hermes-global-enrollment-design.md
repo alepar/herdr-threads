@@ -211,6 +211,26 @@ isolated daemon (never the shared server, never `~/.hermes`). A live run of the 
 is out of scope: a fresh `HERMES_HOME` triggers a source-update dependency sync keyed on the real
 install root (evidence, "Not verified").
 
+### D10. Behaviors settled by the coverage loop
+
+Recorded so the tree and the spec agree (coverage ledger L2–L29):
+- Callback qualification is not launch-bound: the first top-level CLI turn on a bare-enrolled seat
+  passes `QualifiedCallback` admission and gets the lifecycle check-in with context, in the same
+  form as a turn on a launch-created seat. Only the first qualified turn of a session checks in.
+- Guards: a restore-held pane refuses enrollment; a pane whose resolved seat belongs to an earlier
+  session (Claude or an earlier Hermes) reuses that seat through the ordinary resolver, and the next
+  lifecycle check-in replaces the binding (A4). The fallback hits the same guards. The binding's
+  provenance stays `cooperative_top_level`.
+- Pane reuse: Hermes exits and a new Hermes or Claude starts in the same pane → same seat, A4
+  replacement; no binding ends on heuristic evidence.
+- Resume: a resumed Hermes session checks in as `Startup` on a seated pane's seat or enrolls via the
+  fallback in an unseated pane; never C1 cross-pane continuity (D5).
+- Daemon: only the start callback may start the daemon; a concurrent start and first turn leave one
+  seat and one check-in with context.
+- A null witness on a launch-created seat still checks in with context (R10).
+- `ht-4ne.1` changes only setup (writes the new bridge) and setup-status (stale-bridge hint) visibly;
+  setup-status already reports enablement per profile.
+
 ## Requirements for the agy generic top-level witness
 
 Recorded for the agy run (thread `teAfuOE4V`). Hermes needs nothing from it now. If a generic
