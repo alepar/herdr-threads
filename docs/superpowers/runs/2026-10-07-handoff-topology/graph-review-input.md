@@ -121,4 +121,3 @@ audits them — §Parallelism Pass):
   Write the specific leaf→leaf edges the artifacts justify; reserve an epic-level edge for the
   rare case where every leaf genuinely consumes the whole predecessor epic, and say why in the
   dependent epic's description.
-
