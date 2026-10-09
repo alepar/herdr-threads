@@ -6,6 +6,12 @@ export type HerdrThreadsTurns = {
   assumedBusy: boolean
   /** Epoch ms of the last aborted main turn while the post-abort hold is active, else null. */
   abortHoldSince: number | null
+  /**
+   * The batch this instance is submitting, written before `$.prompt.submit` and cleared when it
+   * resolves; a successor after a reload holds these ids until their turn starts or completes (spec D5,
+   * ht-j16.29).
+   */
+  submitting?: { sid: string; ids: string[]; ackable: string[]; at: number; turnId: string | null } | null
 }
 declare module 'claude-code' {
   interface PluginState {
