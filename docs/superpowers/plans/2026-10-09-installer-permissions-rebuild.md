@@ -45,14 +45,12 @@ landed on main (merge-base `3573b9f5`).
    Route every non-private `write_replacement`, `OwnedFile::prepare` creation and `delete_created`
    user-config site through it. Reuse pieces of the old branch's `native_config.rs` only where they
    stay small.
-3. **Permission core.** Transplant `harness/permissions.rs` (inputs/inventory/consent/plan/lock)
-   and the Claude and Codex renderers. Self-granting commands (`setup`, `unsetup`, `doctor fix`,
-   `internal installer-integrations`) move from the ordinary families to a catalog `escalating`
-   list: Claude renders ask rules for them in every finite arrangement (ask wins over the
-   broader `doctor` allow); Codex renders `prompt` prefix rules bare, after output flags and under
-   pinned routing values. An unpinned routing value cannot be an exact Codex argv prefix and stays
-   under the executable allow — an accepted cooperative-model limit. The adapter hook moves to
-   phase 4 with its first consumer.
+3. **Permission core.** (done) Transplant `harness/permissions.rs` (inputs/inventory/consent/plan/
+   lock) and the Claude and Codex renderers. Self-granting commands (`setup`, `unsetup`,
+   `doctor fix`, `internal installer-integrations`) move from the ordinary families to a catalog
+   `escalating` list. The CLI requires an agent to write those words first with every option after
+   them, so one bare Claude ask / Codex prompt rule per command always matches (ask wins over the
+   broader `doctor` allow). Frozen retry replays only from the same caller location.
 4. **Claude component.** Add `HarnessAdapter::permission_policy()` beside `installer_policy()`,
    forwarded through `ErasedAdapter`/`Registration`. Split the allow rule out of the hooks transaction (`DECLARED_RULE`,
    `OwnedPermission` in the hook manifest stay readable for historical state). Migration of the
@@ -60,7 +58,9 @@ landed on main (merge-base `3573b9f5`).
    before/after) → one atomic settings.json write adds the narrow rules and removes the broad rule →
    hook manifest drops its permission record → pending intent cleared. Recovery: settings match
    before or after ⇒ finish the remaining steps; anything else ⇒ refuse with guidance.
-   Pre-existing/foreign rules untouched; historical ownership without consent only narrows.
+   Pre-existing/foreign rules untouched. User decision 2026-10-09: plain hook setup (no consent)
+   still narrows an owned historical broad rule automatically to the bare `herdr-threads` forms plus
+   human/escalating ask rules; new spellings (`ht`, absolute paths) need consent.
 5. **Codex and Hermes.** Codex `CODEX_HOME/rules/herdr-threads.rules`: allow prefix rule for the
    spelling union, prompt rule for `… human`; own manifest; backed writes. Hermes: plugin
    `register(ctx)` adds the `pre_tool_call` approve hook; status reports it as part of the plugin.
