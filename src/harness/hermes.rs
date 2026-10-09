@@ -1341,6 +1341,65 @@ mod adapter_tests {
             EnrollmentPolicy::WitnessedStartAndUnownedTurn
         );
     }
+    /// The envelopes the real bridge emits per D2a row
+    /// (`integrations/hermes/test_bridge.py::test_envelopes_match_rust_fixture`
+    /// pins the same file from the Python side): strict `parse` accepts every
+    /// one and `decode` gives the D2a outcome.
+    #[test]
+    fn bridge_emitted_enrollment_envelopes_parse_and_decode() {
+        let rows: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(
+            include_bytes!("../../tests/fixtures/hermes/enrollment-envelopes.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            rows.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "cli_start",
+                "empty_platform_start",
+                "post_tool",
+                "reset",
+                "top_turn_cli",
+                "top_turn_empty_platform"
+            ]
+        );
+        let at = now();
+        for (row, envelope) in &rows {
+            let mut v = envelope.clone();
+            v["started_at"] = at.into();
+            v["deadline_at"] = (at + 1200).into();
+            v["observation_order"]["observed_at_millis"] = at.into();
+            let input = rebuild(&v);
+            assert!(parse(&input).is_ok(), "{row}: strict parse refused");
+            let e = admit_decode(&input);
+            let witness = e.metadata.enrollment_witness;
+            match row.as_str() {
+                "cli_start" => {
+                    assert!(matches!(e.intent, EventIntent::Enroll), "{row}");
+                    assert_eq!(e.role, EventRole::TopLevel, "{row}");
+                    assert_eq!(witness, Some(EnrollmentWitness::CliPlatform), "{row}");
+                }
+                "top_turn_cli" => {
+                    assert!(matches!(e.intent, EventIntent::QualifiedTurn(_)), "{row}");
+                    assert_eq!(e.role, EventRole::TopLevel, "{row}");
+                    assert_eq!(witness, Some(EnrollmentWitness::CliPlatform), "{row}");
+                }
+                "top_turn_empty_platform" => {
+                    assert!(matches!(e.intent, EventIntent::QualifiedTurn(_)), "{row}");
+                    assert_eq!(witness, None, "{row}");
+                }
+                "empty_platform_start" => {
+                    assert!(matches!(e.intent, EventIntent::Observer), "{row}");
+                    assert_eq!(witness, None, "{row}");
+                }
+                "reset" => {
+                    assert!(matches!(e.intent, EventIntent::DeclaredReset(_)), "{row}");
+                    assert_eq!(witness, None, "{row}");
+                }
+                "post_tool" => assert_eq!(witness, None, "{row}"),
+                other => panic!("unlisted row {other}"),
+            }
+        }
+    }
     #[test]
     fn hermes_enrollment_envelope_d2a_rows_round_trip_and_refusals() {
         use EnrollmentPolicy::{Lifecycle, WitnessedStartAndUnownedTurn as Witnessed};

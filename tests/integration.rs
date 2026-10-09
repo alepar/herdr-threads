@@ -58,6 +58,11 @@ mod herdr_states;
 #[cfg(feature = "test-support")]
 #[path = "integration/hermes_enrollment_smoke.rs"]
 mod hermes_enrollment_smoke;
+/// ht-4ne.5: Hermes global enrollment main flow end to end through the real
+/// binary, plus the registry-wide enrollment policy check.
+#[cfg(feature = "test-support")]
+#[path = "integration/hermes_enrollment_sweep.rs"]
+mod hermes_enrollment_sweep;
 /// ht-p03.1: the isolated named Herdr test-session fixture's self-test.
 #[cfg(feature = "test-support")]
 #[path = "integration/isolated_herdr_fixture.rs"]
