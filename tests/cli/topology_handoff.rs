@@ -2773,6 +2773,151 @@ mod live {
         assert!(s.calls.is_empty(), "{:?}", s.calls);
     }
 
+    // The emitted inspection continuation must be the public read-only
+    // pending-ops command under the exact original pinned routing; the same
+    // public parser the binary uses decides, for both JSON argv and text.
+    fn assert_inspect_is_public_pending_ops(f: &Fixture, json: bool, bytes: &[u8]) {
+        let ns = &f.peer.identity.payload.handoff.namespace;
+        let state = ns.state_dir.to_string_lossy().into_owned();
+        let host = ns.host_endpoint.to_string_lossy().into_owned();
+        assert!(state.contains(' '), "fixture pins a state dir with spaces");
+        let expected: Vec<String> = vec![
+            crate::cli::hook::CLI_ARGV0.into(),
+            "--state-dir".into(),
+            state.clone(),
+            "--host-endpoint".into(),
+            host.clone(),
+            "pending-ops".into(),
+        ];
+        let argv: Vec<String> = if json {
+            let frame: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_else(|e| {
+                panic!("pending report: {e}; {}", String::from_utf8_lossy(bytes))
+            });
+            serde_json::from_value(frame["bootstrap"]["inspect_argv"].clone()).unwrap()
+        } else {
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            let line = text
+                .lines()
+                .find_map(|l| l.strip_prefix("inspect_argv: "))
+                .unwrap_or_else(|| panic!("no inspect_argv line: {text}"));
+            shlex::split(line).unwrap_or_else(|| panic!("unquotable: {line}"))
+        };
+        let parsed = crate::cli::commands::parse_argv(&argv)
+            .unwrap_or_else(|e| panic!("public parser refused inspect_argv {argv:?}: {e:?}"));
+        assert!(
+            matches!(
+                parsed.action,
+                crate::cli::commands::CliAction::PendingOps(_)
+            ),
+            "inspect_argv is not the read-only pending-ops action: {argv:?}"
+        );
+        assert_eq!(
+            parsed.actor,
+            crate::cli::actor_route::InvocationActor::Agent,
+            "inspection needs no human namespace"
+        );
+        assert_eq!(
+            parsed.output.context.state_dir.as_deref(),
+            Some(state.as_str())
+        );
+        assert_eq!(parsed.output.context.host.as_deref(), Some(host.as_str()));
+        assert_eq!(argv, expected);
+    }
+    #[test]
+    fn pending_writer_inspect_argv_parses_as_public_pending_ops() {
+        for json in [true, false] {
+            // Canonical status unknown to this invocation (actual writer, real identity).
+            let f = Fixture::downstream(Fault::None);
+            let mut bytes = vec![];
+            super::super::write_pending_observed(
+                &f.peer.reference,
+                &f.peer.identity,
+                None,
+                None,
+                "creation",
+                &crate::protocol::output::OutputSpec {
+                    format: if json {
+                        crate::protocol::output::OutputFormat::Json
+                    } else {
+                        crate::protocol::output::OutputFormat::Text
+                    },
+                    ..Default::default()
+                },
+                &mut bytes,
+            )
+            .unwrap();
+            assert!(String::from_utf8_lossy(&bytes).contains("status_unknown"));
+            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+
+            // Lost host reply: PossibleCreation without creation evidence.
+            let f = Fixture::new(Fault::HostReply);
+            let mut bytes = vec![];
+            unknown(downstream_format(
+                &f,
+                &mut DownstreamLauncher::default(),
+                json,
+                &mut bytes,
+            ));
+            assert!(String::from_utf8_lossy(&bytes).contains("creation_unknown"));
+            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+            if json {
+                // The human recovery templates carry the same pinned routing.
+                let frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let report = &frame["bootstrap"];
+                let inspect: Vec<String> =
+                    serde_json::from_value(report["inspect_argv"].clone()).unwrap();
+                let human: Vec<String> = serde_json::from_value(
+                    report["conditional_human_recovery"]["created_pane_argv"].clone(),
+                )
+                .unwrap();
+                assert_eq!(human[1], "human");
+                assert_eq!(human[2..6], inspect[1..5]);
+            }
+
+            // Typed zero submission: canonical next attempt Prepared.
+            let f = Fixture::downstream(Fault::NotSubmitted);
+            let mut bytes = vec![];
+            assert!(
+                downstream_format(&f, &mut DownstreamLauncher::default(), json, &mut bytes)
+                    .is_err()
+            );
+            assert_prepared_next_attempt_report(&f, json, &bytes);
+            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+
+            // Attached partial: proven launch refusal after attachment.
+            let f = Fixture::downstream(Fault::None);
+            let mut launcher = DownstreamLauncher {
+                not_submitted: true,
+                ..Default::default()
+            };
+            let mut bytes = vec![];
+            assert!(downstream_format(&f, &mut launcher, json, &mut bytes).is_err());
+            assert_eq!(f.peer.status().state, BootstrapState::Attached);
+            assert!(String::from_utf8_lossy(&bytes).contains("outcome"));
+            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+
+            // Possible start.
+            let f = Fixture::downstream(Fault::None);
+            let mut launcher = DownstreamLauncher {
+                unknown: true,
+                ..Default::default()
+            };
+            let mut bytes = vec![];
+            assert!(downstream_format(&f, &mut launcher, json, &mut bytes).is_err());
+            assert!(String::from_utf8_lossy(&bytes).contains("possible_start"));
+            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+
+            // Completion pending.
+            let f = Fixture::downstream(Fault::CompleteBefore);
+            let mut bytes = vec![];
+            assert!(
+                downstream_format(&f, &mut DownstreamLauncher::default(), json, &mut bytes)
+                    .is_err()
+            );
+            assert!(String::from_utf8_lossy(&bytes).contains("completion_pending"));
+            assert_inspect_is_public_pending_ops(&f, json, &bytes);
+        }
+    }
     struct FailingOutput {
         bytes: Vec<u8>,
         write: bool,
