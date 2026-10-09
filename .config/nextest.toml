@@ -92,6 +92,19 @@ test(/::(composer_settle_returns_unknown_when_cancelled|ctrl_c_during_a_call_ret
 threads-required = "num-test-threads"
 priority = 100
 
+# Registered-resume tests driving the in-process hook with Hermes envelopes:
+# each envelope carries the production 1200 ms callback cap for
+# pre_llm_call, which the hook must meet against a spawned fixture service.
+# At the suite's busy start two missed it ('seat inspect: UnknownOutcome', a
+# lost recovery read; local 88f5c69f qualification). They run alone at the
+# front (about 11 s together); the cap and every assertion are unchanged.
+[[profile.default.overrides]]
+filter = """
+binary_id(herdr-threads) & test(/^cli::hook::tests::registered_resume::(task52_accepted_kind_replay_and_refused_neighbors_preserve_original_eligibility|task52_facade_declared_reset_clear_has_hot_rows_guidance_and_precise_ack|hermes_qualified_turn_reset_and_rotation_never_infer_resume|registered_fourth_nonresume_never_replays_continuity|startup_enrollment_hermes_qualified_unowned_never_resolves)$/)
+"""
+threads-required = "num-test-threads"
+priority = 100
+
 [[profile.default.overrides]]
 filter = "binary(hook_entrypoint)"
 priority = 80
