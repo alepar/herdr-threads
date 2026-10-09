@@ -53,7 +53,7 @@ impl ModChannels for FakeModChannels {
             .push((seat.as_str().to_string(), generation));
         *self.live.lock().unwrap()
     }
-    fn record_ack(&self, _seat: &SeatId, _now: UtcMillis) {
+    fn record_ack(&self, _seat: &SeatId, _generation: u64, _now: UtcMillis) {
         self.acks.fetch_add(1, Ordering::SeqCst);
     }
 }

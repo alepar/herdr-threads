@@ -9,26 +9,22 @@ use crate::{
         watch::{ModChannelEntry, ModChannelState, ModChannelStatus, ModDeliverySetting},
     },
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
 struct FakeModChannels {
-    /// `is_live(seat, generation)` is true for these pairs.
-    live: Mutex<HashSet<(SeatId, u64)>>,
-    /// `status()` lists these seats (any generation, as the poke path asks).
-    any: Mutex<HashSet<SeatId>>,
+    /// `status()` lists these seats, whatever their binding generation.
+    any: Mutex<HashMap<SeatId, u64>>,
     stalled: Mutex<HashSet<SeatId>>,
 }
 impl FakeModChannels {
     fn go_live(&self, seat: &str, generation: u64) {
-        self.live
+        self.any
             .lock()
             .unwrap()
-            .insert((SeatId::new(seat), generation));
-        self.any.lock().unwrap().insert(SeatId::new(seat));
+            .insert(SeatId::new(seat), generation);
     }
     fn remove(&self, seat: &str) {
-        self.live.lock().unwrap().clear();
         self.any.lock().unwrap().remove(&SeatId::new(seat));
         self.stalled.lock().unwrap().remove(&SeatId::new(seat));
     }
@@ -37,12 +33,6 @@ impl FakeModChannels {
     }
 }
 impl ModChannels for FakeModChannels {
-    fn is_live(&self, seat: &SeatId, generation: u64) -> bool {
-        self.live
-            .lock()
-            .unwrap()
-            .contains(&(seat.clone(), generation))
-    }
     fn stalled(&self, seat: &SeatId, _: UtcMillis) -> bool {
         self.stalled.lock().unwrap().contains(seat)
     }
@@ -52,10 +42,10 @@ impl ModChannels for FakeModChannels {
             .lock()
             .unwrap()
             .iter()
-            .map(|seat| ModChannelEntry {
+            .map(|(seat, generation)| ModChannelEntry {
                 seat: seat.clone(),
                 harness: "claude".into(),
-                binding_generation: 1,
+                binding_generation: *generation,
                 connected_since: UtcMillis(0),
                 state: ModChannelState::Live,
             })
@@ -122,21 +112,38 @@ fn wake_not_reserved_while_channel_live_and_ladder_unchanged() {
     assert_eq!(*events.lock().unwrap(), vec!["reserve", "host", "complete"]);
 }
 
-// Kills: gating on the seat alone, so a channel for a stale generation (or
-// another seat) would suppress this seat's native wake.
+// Kills: gating on the candidate's binding generation, so the /clear window
+// (the check-in committed generation 1 -> the candidate; the registry still
+// holds the previous channel at another generation until the worker pass)
+// lets a native prompt through (F1).
 #[test]
-fn wake_reserved_when_channel_live_for_another_generation_only() {
+fn wake_suppressed_when_the_seat_has_a_channel_of_another_generation() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let store = store(&events);
     let notifier = FakeNotifier {
         events: events.clone(),
     };
     let channels = FakeModChannels::default();
-    channels
-        .live
-        .lock()
-        .unwrap()
-        .insert((SeatId::new("seat"), 2));
+    channels.go_live("seat", 2);
+    let mut runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+    runner.mod_channels = &channels;
+    assert_eq!(
+        runner.try_candidate(&due_candidate(), &budget()).unwrap(),
+        None
+    );
+    assert!(events.lock().unwrap().is_empty());
+}
+
+// Kills: gating on any channel at all, so another seat's channel would
+// suppress this seat's native wake.
+#[test]
+fn wake_reserved_when_only_another_seat_has_a_channel() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let store = store(&events);
+    let notifier = FakeNotifier {
+        events: events.clone(),
+    };
+    let channels = FakeModChannels::default();
     channels.go_live("elsewhere", 1);
     let mut runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
     runner.mod_channels = &channels;

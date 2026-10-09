@@ -56,9 +56,7 @@ impl DomainService {
     }
     /// True while the registry holds a live or grace entry for the seat.
     fn seat_has_mod_channel(&self, seat: &crate::protocol::ids::SeatId) -> bool {
-        self.mod_channels
-            .status()
-            .is_some_and(|status| status.channels.iter().any(|c| &c.seat == seat))
+        self.mod_channels.seat_live(seat)
     }
     /// Supplied by the elected runtime, never by a request payload.
     pub fn with_operator_owner(mut self, owner_uid: u32) -> Self {
@@ -236,7 +234,8 @@ impl DomainService {
                 .iter()
                 .any(|item| item.result.counts_as_mod_ack())
         {
-            self.mod_channels.record_ack(&seat, self.clock.utc_now());
+            self.mod_channels
+                .record_ack(&seat, binding.generation, self.clock.utc_now());
         }
         Ok(result)
     }

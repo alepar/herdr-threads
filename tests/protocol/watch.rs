@@ -511,6 +511,7 @@ fn no_mod_channels_is_inert() {
     let channels = crate::ports::NoModChannels;
     let seat = SeatId::new("s1");
     assert!(!channels.is_live(&seat, 1));
+    assert!(!channels.seat_live(&seat));
     assert!(!channels.stalled(&seat, UtcMillis(0)));
     assert!(channels.status().is_none());
     let registration = ModChannelRegistration {
@@ -527,8 +528,8 @@ fn no_mod_channels_is_inert() {
         WatchRefusalReason::Disabled
     );
     channels.notify(&seat, 1);
-    channels.record_attention_push(&seat, UtcMillis(0));
-    channels.record_ack(&seat, UtcMillis(0));
+    channels.record_attention_push(&seat, 1, UtcMillis(0));
+    channels.record_ack(&seat, 1, UtcMillis(0));
     channels.unregister(crate::ports::ModChannelId(1), UtcMillis(0));
     channels.close(&seat, WatchCloseReason::Stopping, UtcMillis(0));
 }

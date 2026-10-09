@@ -49,6 +49,17 @@ struct FakeStore {
     receipts: Mutex<Vec<(UtcMillis, usize)>>,
     stall_calls: Mutex<Vec<(UtcMillis, usize)>>,
     fail_views: AtomicBool,
+    /// Runs once inside the next store read, before it returns: a commit or
+    /// registration landing between a judgement's snapshot and its close.
+    on_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+impl FakeStore {
+    fn run_hook(&self) {
+        let hook = self.on_read.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
 }
 impl ModStoreReads for FakeStore {
     fn mod_seat_view(
@@ -59,7 +70,9 @@ impl ModStoreReads for FakeStore {
         if self.fail_views.load(Ordering::SeqCst) {
             return Err(ApiError::new(ErrorCode::StoreBusy, "busy".to_owned()));
         }
-        Ok(self.views.lock().unwrap().get(seat).cloned().flatten())
+        let view = self.views.lock().unwrap().get(seat).cloned().flatten();
+        self.run_hook();
+        Ok(view)
     }
     fn mod_stall_oldest(
         &self,
@@ -72,14 +85,16 @@ impl ModStoreReads for FakeStore {
             .lock()
             .unwrap()
             .push((at_or_before, body_limit));
-        Ok(self
+        let oldest = self
             .receipts
             .lock()
             .unwrap()
             .iter()
             .filter(|(at, len)| *at <= at_or_before && *len <= body_limit)
             .map(|(at, _)| *at)
-            .min())
+            .min();
+        self.run_hook();
+        Ok(oldest)
     }
 }
 
@@ -152,6 +167,24 @@ impl Fixture {
             sink.clone(),
         )?;
         Ok((id, sink))
+    }
+    /// Installs the hook that registers `seat` at `generation` during the
+    /// next store read (the sink it uses is returned).
+    fn register_during_next_read(&self, seat_name: &str, generation: u64) -> Arc<RecordingSink> {
+        let sink = Arc::new(RecordingSink::default());
+        let registry = Arc::clone(&self.registry);
+        let registration = ModChannelRegistration {
+            seat: seat(seat_name),
+            binding_generation: generation,
+            native_session: NativeSessionId::new("native"),
+            harness: Harness::Claude,
+            registered_at: self.now(),
+        };
+        let hook_sink = sink.clone();
+        *self.store.on_read.lock().unwrap() = Some(Box::new(move || {
+            registry.register(registration, hook_sink).unwrap();
+        }));
+        sink
     }
     fn set_view(&self, seat: &str, view: Option<ModSeatView>) {
         self.store
@@ -391,7 +424,7 @@ fn stall_setup(
             .push((UtcMillis(registered.0 - age), body_len));
     }
     if pushed {
-        f.registry.record_attention_push(&seat("a"), registered);
+        f.registry.record_attention_push(&seat("a"), 1, registered);
     }
     f.advance(ack_age);
     let now = f.now();
@@ -409,7 +442,7 @@ fn stalled_requires_old_ack_old_receipt_published_before_last_push() {
     assert!(!f.registry.stalled(&seat("a"), now));
     // Recent ack (registration) -> not stalled.
     let (f, now) = stall_setup(over, true, Some(0), 10);
-    f.registry.record_ack(&seat("a"), f.now());
+    f.registry.record_ack(&seat("a"), 1, f.now());
     assert!(!f.registry.stalled(&seat("a"), now));
     // No Attention ever pushed -> not stalled.
     let (f, now) = stall_setup(over, false, Some(0), 10);
@@ -427,7 +460,7 @@ fn stalled_requires_old_ack_old_receipt_published_before_last_push() {
     f.advance(over);
     let now = f.now();
     f.registry
-        .record_attention_push(&seat("a"), UtcMillis(now.0 - 500));
+        .record_attention_push(&seat("a"), 1, UtcMillis(now.0 - 500));
     f.store
         .receipts
         .lock()
@@ -482,7 +515,7 @@ fn stall_close_pushes_close_stalled_to_the_channel() {
     let registered = f.now();
     let (_, sink) = f.register("a", 1);
     f.store.receipts.lock().unwrap().push((registered, 10));
-    f.registry.record_attention_push(&seat("a"), registered);
+    f.registry.record_attention_push(&seat("a"), 1, registered);
     f.advance(over);
     f.registry.sweep(f.now());
     assert_eq!(
@@ -498,7 +531,7 @@ fn record_ack_resets_stall_clock() {
     let over = MOD_STALL_AFTER_MS as i64 + 1;
     let (f, now) = stall_setup(over, true, Some(0), 10);
     assert!(f.registry.stalled(&seat("a"), now));
-    f.registry.record_ack(&seat("a"), now);
+    f.registry.record_ack(&seat("a"), 1, now);
     assert!(!f.registry.stalled(&seat("a"), now));
     f.advance(MOD_STALL_AFTER_MS as i64 - 1);
     assert!(!f.registry.stalled(&seat("a"), f.now()));
@@ -1111,4 +1144,123 @@ fn worker_pushes_on_the_observer_and_closes_stopping_on_cancel() {
     );
     assert!(!f.registry.is_live(&seat("a"), 1));
     assert_eq!(f.kicks(), 1, "stopping removes the entry and kicks");
+}
+
+#[test]
+fn seat_live_counts_every_unexpired_entry_whatever_its_generation() {
+    let f = fixture();
+    let (_, _sink) = f.register("a", 1);
+    assert!(f.registry.seat_live(&seat("a")));
+    assert!(!f.registry.seat_live(&seat("b")));
+    f.registry.unregister(ModChannelId(1), f.now());
+    assert!(f.registry.seat_live(&seat("a")), "reconnect grace");
+    f.registry
+        .close(&seat("a"), WatchCloseReason::BindingChanged, f.now());
+    assert!(f.registry.seat_live(&seat("a")), "rebind grace");
+    f.register("a", 2);
+    assert!(f.registry.seat_live(&seat("a")), "live at generation 2");
+}
+
+#[test]
+fn seat_live_ignores_an_expired_grace_before_the_sweep() {
+    let f = fixture();
+    let (id, _sink) = f.register("a", 1);
+    f.registry.unregister(id, f.now());
+    f.advance(MOD_RECONNECT_GRACE_MS as i64 + 1);
+    assert!(!f.registry.seat_live(&seat("a")), "expired reconnect grace");
+    let f = fixture();
+    f.register("a", 1);
+    f.registry
+        .close(&seat("a"), WatchCloseReason::BindingChanged, f.now());
+    f.advance(MOD_REBIND_GRACE_MS as i64 + 1);
+    assert!(!f.registry.seat_live(&seat("a")), "expired rebind grace");
+}
+
+#[test]
+fn registration_landing_between_pass_snapshot_and_close_survives() {
+    type Mutate = fn(&mut ModSeatView);
+    let cases: [(&str, Mutate); 3] = [
+        ("binding moved", |v| {
+            v.binding.as_mut().unwrap().generation = 2
+        }),
+        ("retired", |v| v.retired = true),
+        ("unresolved", |v| v.continuity_resolved = false),
+    ];
+    for (name, mutate) in cases {
+        let f = fixture();
+        let (_, old_sink) = f.register("a", 1);
+        let mut v = view("a", 2, pending(1));
+        mutate(&mut v);
+        f.set_view("a", Some(v));
+        let new_sink = f.register_during_next_read("a", 2);
+        f.registry.pass(f.now()).unwrap();
+        assert!(
+            new_sink.frames().is_empty(),
+            "{name}: no Close for the new channel"
+        );
+        assert_eq!(
+            old_sink.frames(),
+            vec![WatchFrame::Close {
+                reason: WatchCloseReason::Replaced
+            }],
+            "{name}"
+        );
+        assert!(f.registry.is_live(&seat("a"), 2), "{name}");
+        assert_eq!(
+            f.registry.status().unwrap().channels[0].state,
+            ModChannelState::Live,
+            "{name}"
+        );
+        assert_eq!(f.kicks(), 0, "{name}");
+    }
+}
+
+#[test]
+fn registration_landing_during_the_stall_read_is_not_closed_and_arms_no_cooldown() {
+    let over = MOD_STALL_AFTER_MS as i64 + 1;
+    let (f, now) = stall_setup(over, true, Some(0), 10);
+    let new_sink = f.register_during_next_read("a", 1);
+    f.registry.sweep(now);
+    assert!(new_sink.frames().is_empty(), "no Close{{stalled}}");
+    assert!(f.registry.is_live(&seat("a"), 1));
+    assert_eq!(f.kicks(), 0);
+    f.registry
+        .close(&seat("a"), WatchCloseReason::Retired, f.now());
+    f.try_register("a", 1).expect("no cooldown was armed");
+}
+
+#[test]
+fn ack_landing_during_the_stall_read_prevents_the_stall_close() {
+    let over = MOD_STALL_AFTER_MS as i64 + 1;
+    let (f, now) = stall_setup(over, true, Some(0), 10);
+    let registry = Arc::clone(&f.registry);
+    *f.store.on_read.lock().unwrap() = Some(Box::new(move || {
+        registry.record_ack(&seat("a"), 1, now);
+    }));
+    f.registry.sweep(now);
+    assert!(f.registry.is_live(&seat("a"), 1));
+    assert_eq!(f.kicks(), 0);
+    f.try_register("a", 1).expect("no cooldown was armed");
+}
+
+#[test]
+fn record_ack_and_attention_push_for_another_generation_are_ignored() {
+    let over = MOD_STALL_AFTER_MS as i64 + 1;
+    let (f, now) = stall_setup(over, true, Some(0), 10);
+    assert!(f.registry.stalled(&seat("a"), now));
+    f.registry.record_ack(&seat("a"), 2, now);
+    assert!(
+        f.registry.stalled(&seat("a"), now),
+        "an ack for another generation does not reset the stall clock"
+    );
+    // A channel that never saw a push is not stalled; a push for another
+    // generation must not arm the predicate.
+    let f = fixture();
+    f.register("a", 1);
+    f.store.receipts.lock().unwrap().push((f.now(), 10));
+    f.advance(over);
+    f.registry.record_attention_push(&seat("a"), 2, f.now());
+    assert!(!f.registry.stalled(&seat("a"), f.now()));
+    f.registry.record_attention_push(&seat("a"), 1, f.now());
+    assert!(f.registry.stalled(&seat("a"), f.now()));
 }

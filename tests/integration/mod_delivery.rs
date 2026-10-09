@@ -852,13 +852,6 @@ impl Rig {
         ]);
     }
 
-    /// Herdr reports `session` for B's pane with agent status `status`.
-    fn set_session_b_status(&self, session: &str, status: &str) {
-        let mut b = claude(PANE_B, "term-b", session);
-        b["agent_status"] = json!(status);
-        self.host.set_panes(vec![pane(PANE_A, "term-a"), b]);
-    }
-
     /// B's agent runs a turn after a native prompt: Herdr shows it working,
     /// then idle again, which the observation lane must see before the next
     /// wake is allowed.
@@ -1727,11 +1720,7 @@ fn clear_within_rebind_grace_emits_no_session_start_digest_and_no_native_kick() 
     let id = rig.send_ordinary("pending across /clear");
     watch.wait_item(&id);
     let mark = rig.host.mark();
-    // Herdr shows the cleared pane busy until the registry has the rebind
-    // grace: between the check-in's commit and the mod worker's next pass the
-    // old-generation channel does not yet count as live for the wake lane
-    // (bead ht-j16 follow-up), and this test is about the grace itself.
-    rig.set_session_b_status("SB2", "working");
+    rig.set_session_b("SB2");
     let started = rig.session_start_hook(PANE_B, "SB2", "clear");
     assert!(
         !started.stdout.contains(DIGEST_MARK),
@@ -1739,7 +1728,6 @@ fn clear_within_rebind_grace_emits_no_session_start_digest_and_no_native_kick() 
         started.stdout
     );
     rig.wait_channel(Some("rebind_grace"));
-    rig.set_session_b_status("SB2", "idle");
     rig.assert_no_prompt(mark);
     rig.advance(31_000);
     rig.wait_channel(None);
