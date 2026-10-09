@@ -1918,3 +1918,71 @@ fn recipients_backfill_covers_existing_warnings() {
     assert_eq!(ids(&run.digest.warnings), ["w1"]);
     assert_eq!(run.digest.warnings.count, 1);
 }
+
+// Kills narrowing a saturated warning window to nothing: a full window of
+// newer transitions about another seat must not hide an older unoffered
+// service notice for this seat (ht-pb7 review). The wake keeps the
+// conservative unnarrowed answer, and the offer probe saturates true. The
+// unsaturated control kills a fallback that ignores saturation.
+#[test]
+fn saturated_other_seat_transitions_do_not_hide_an_older_waking_notice() {
+    let db = empty();
+    db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    db.execute_batch("\
+        INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0);\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t6','i','f','g',0,0);\
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t6','s',1,1),('t6','o',1,1);\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset,author_kind,author_service_id) VALUES ('n0','i','t6',1,'warn','{}',0,20,1,'programmatic','svc');\
+        INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES ('np0','n0',20,1);\
+    ").unwrap();
+    let transitions = |from: i64, to: i64| {
+        db.execute_batch("BEGIN").unwrap();
+        for n in from..to {
+            let (id, seq) = (format!("w{n}"), 21 + n);
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES (?1,'i','t6',?2,'warn','{}',0,?3,1)", params![id, n + 2, seq]).unwrap();
+            db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t6',?1,'o',?1,?2)", params![id, seq]).unwrap();
+            db.execute(
+                "INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES (?1,'s',?2)",
+                params![id, seq],
+            )
+            .unwrap();
+        }
+        db.execute_batch("COMMIT").unwrap();
+    };
+    // Unsaturated, all informational: other seats' transitions never wake s.
+    transitions(0, 3);
+    assert_eq!(wake_attention(&db, "s").attention.latest_warning_seq, None);
+    assert!(!seat_has_pending_wake_notices(&db, "s").unwrap());
+    // The older service notice is delivered to s (projected before them).
+    db.execute(
+        "INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('n0','s',1)",
+        [],
+    )
+    .unwrap();
+    // Keep the notice older than every transition: below them by ordinal,
+    // above the unoffered frontier (0).
+    db.execute_batch(
+        "UPDATE digest_programmatic_warnings SET ordinal=ordinal+10 WHERE warning_id!='n0';\
+         UPDATE digest_programmatic_warnings SET ordinal=1 WHERE warning_id='n0';",
+    )
+    .unwrap();
+    assert_eq!(
+        wake_attention(&db, "s").attention.latest_warning_seq,
+        Some(20)
+    );
+    // Saturated: a full window of newer transitions hides the service notice.
+    transitions(3, WINDOW as i64);
+    assert!(
+        seat_pending_warnings(&db, "s", &no_budget)
+            .unwrap()
+            .saturated,
+        "the fixture saturates the notice walk"
+    );
+    let wake = wake_attention(&db, "s");
+    assert!(
+        wake.attention.latest_warning_seq.is_some(),
+        "a saturated window must stay conservative: {:?}",
+        wake.attention
+    );
+    assert!(seat_has_pending_wake_notices(&db, "s").unwrap());
+}

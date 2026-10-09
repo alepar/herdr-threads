@@ -2276,11 +2276,10 @@ fn send_commit_wake_under_100ms_with_all_five_lanes() {
     }
 }
 
-/// 6,000 completed jobs younger than the 24 h retention age do not slow a
-/// send's wake attempt (discovery stays flat in settled history), retention
-/// then deletes them once they age, in more than one bounded batch, keeps the
-/// `preparation_cleanup` marker row, and the send is still attempted in under
-/// 100 ms afterwards. The flat-cost counters themselves are the store tests
+/// 6,000 completed jobs younger than the 24 h retention age are left alone;
+/// retention deletes them once they age, in more than one bounded batch, and
+/// keeps the `preparation_cleanup` marker row. The 100 ms send checks under
+/// and after this history are `send_stays_under_100ms_with_and_after_settled_history`. The flat-cost counters themselves are the store tests
 /// `work_discovery_is_flat_in_completed_jobs`,
 /// `wake_discovery_is_flat_in_settled_history` and
 /// `observation_walk_is_flat_in_retired_seats_and_superseded_generations`
@@ -2288,8 +2287,7 @@ fn send_commit_wake_under_100ms_with_all_five_lanes() {
 /// daemon.
 /// Kills: a retention pass that deletes in one unbounded transaction (fewer
 /// than ceil(6000/batch) retention commits), one that prunes the kept marker
-/// kind, a discovery path that follows settled history (the send under 6,000
-/// settled rows would exceed 100 ms), and superseded snapshot generations that
+/// kind, and superseded snapshot generations that
 /// accumulate.
 #[test]
 fn retention_keeps_tables_bounded_while_discovery_stays_flat() {
@@ -2308,11 +2306,8 @@ fn retention_keeps_tables_bounded_while_discovery_stays_flat() {
     .unwrap();
     let hist = || count(&db, "SELECT count(*) FROM work_jobs WHERE id LIKE 'hist%'");
     assert_eq!(hist(), HISTORY as i64);
-    let latency = scene.send_to_wake_attempt(0, "with history");
-    assert!(
-        latency < Duration::from_millis(100),
-        "send under {HISTORY} settled jobs: commit to wake attempt took {latency:?}"
-    );
+    // The 100 ms send checks under and after this history are
+    // `send_stays_under_100ms_with_and_after_settled_history`, which runs alone.
     // Recent completions are not yet prunable: retention leaves them alone.
     s.probe.kick_registered(Lane::Retention);
     std::thread::sleep(Duration::from_millis(500));
@@ -2354,11 +2349,9 @@ fn retention_keeps_tables_bounded_while_discovery_stays_flat() {
         1,
         "preparation_cleanup completions are never pruned"
     );
-    let latency = scene.send_to_wake_attempt(1, "after retention");
-    assert!(
-        latency < Duration::from_millis(100),
-        "send after the drain: commit to wake attempt took {latency:?}"
-    );
+    // A send after the drain (its latency is asserted in the split-out test)
+    // also gives the observation lane a chance to publish below.
+    scene.send_to_wake_attempt(1, "after retention");
     // Snapshot generations stay bounded: the observation lane publishes a new
     // one every 5 s (kicks do not publish sooner) and retention keeps the
     // active, the previous and the in-flight stage only. One publication after
@@ -2380,6 +2373,50 @@ fn retention_keeps_tables_bounded_while_discovery_stays_flat() {
     assert!(
         generations <= 6,
         "{generations} snapshot generations survive retention"
+    );
+}
+
+/// The latency half of `retention_keeps_tables_bounded_while_discovery_stays_flat`:
+/// a send under 6,000 settled jobs, and another after retention drains them,
+/// are each attempted under 100 ms from commit. Split out so it can run alone
+/// (`.config/nextest.toml`): beside the suite's process-heavy tests the first
+/// send measured 333 ms. Kills: a discovery path that follows settled history.
+#[test]
+fn send_stays_under_100ms_with_and_after_settled_history() {
+    let Some(scene) = Scene::new("sweep_retention_latency", 2) else {
+        return;
+    };
+    let s = scene.session();
+    let db = s.db();
+    const HISTORY: u64 = 6_000;
+    seed_completed_jobs(&db, HISTORY, now_ms());
+    let hist = || count(&db, "SELECT count(*) FROM work_jobs WHERE id LIKE 'hist%'");
+    assert_eq!(hist(), HISTORY as i64);
+    let latency = scene.send_to_wake_attempt(0, "with history");
+    assert!(
+        latency < Duration::from_millis(100),
+        "send under {HISTORY} settled jobs: commit to wake attempt took {latency:?}"
+    );
+    s.db()
+        .execute(
+            "UPDATE work_jobs SET completed_at = 0 WHERE id LIKE 'hist%'",
+            [],
+        )
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(60);
+    while hist() > 0 {
+        assert!(
+            Instant::now() < until,
+            "retention left {} of {HISTORY} jobs after 60 s",
+            hist()
+        );
+        s.probe.kick_registered(Lane::Retention);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let latency = scene.send_to_wake_attempt(1, "after retention");
+    assert!(
+        latency < Duration::from_millis(100),
+        "send after the drain: commit to wake attempt took {latency:?}"
     );
 }
 

@@ -2119,7 +2119,13 @@ impl PaneCall<'_> {
 }
 
 /// Own budget of the hot-thread read behind the recovery text.
+#[cfg(not(test))]
 const RECOVERY_READ_BUDGET: Duration = Duration::from_secs(2);
+/// Unit tests assert the recovery text's content, not this budget; on a
+/// loaded machine the fixture service missed 2 s and the hook (correctly)
+/// failed open without it. Still capped by the hook's own deadline.
+#[cfg(test)]
+const RECOVERY_READ_BUDGET: Duration = Duration::from_secs(10);
 
 /// Recovery text keys on the event kind regardless of harness, and only on a
 /// top-level event: subagent events (including summary workers) never get it.
