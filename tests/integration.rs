@@ -65,6 +65,11 @@ mod lanes_latency;
 /// ht-4is.6.7: read-only latency under a multi-agent party with a slow host.
 #[path = "integration/latency.rs"]
 mod latency;
+/// ht-j16.10: the Claude mod delivery flows end to end (real `watch` CLI, scripted
+/// mod driver, injected daemon clock, stand-in Herdr).
+#[cfg(feature = "test-support")]
+#[path = "integration/mod_delivery.rs"]
+mod mod_delivery;
 /// ht-p03.131: no test-spawned process outlives its run (panic, SIGTERM, SIGKILL).
 #[cfg(feature = "test-support")]
 #[path = "integration/no_leaks.rs"]

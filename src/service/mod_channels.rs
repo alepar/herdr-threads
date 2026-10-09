@@ -400,9 +400,10 @@ impl ModChannels for ModChannelRegistry {
             id
         };
         (self.log)(&format!(
-            "mod channel registered seat={} generation={} provenance=cooperative_mod_channel",
+            "mod channel registered seat={} generation={} provenance={}",
             registration.seat.as_str(),
-            registration.binding_generation
+            registration.binding_generation,
+            crate::protocol::authority::COOPERATIVE_MOD_CHANNEL_PROVENANCE
         ));
         self.dirty.store(true, Ordering::SeqCst);
         self.wake_worker();
