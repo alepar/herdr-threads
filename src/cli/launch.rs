@@ -808,6 +808,7 @@ fn execute_guarded_inner(
         harness: request.harness,
         harness_binary: request.harness_binary.clone(),
         prompt_suggestions: Default::default(),
+        hooks_only: false,
     };
     let (observed, _contract) =
         setup::observe(&setup_request, parts.env).map_err(setup::refuse_executable)?;

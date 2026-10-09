@@ -39,7 +39,9 @@ use super::{RunError, hook};
 use crate::{
     daemon::paths::{RuntimeContext, ensure_owned_state_root, ensure_private_dir, instance_dir},
     harness::{
-        claude, codex, codex_config,
+        claude,
+        claude_mod::{self, ManagedPolicy, ManagedPolicySources},
+        codex, codex_config,
         context::Harness,
         prompt_suggestion::{self, SuggestionState},
         recipe,
@@ -155,6 +157,9 @@ pub struct SetupRequest {
     pub harness_binary: Option<String>,
     /// `setup claude` only: what to do about Claude's prompt suggestions.
     pub prompt_suggestions: PromptSuggestionPolicy,
+    /// `setup claude --hooks-only`: install or keep the hooks, and remove the
+    /// delivery mod's `CLAUDE_CODE_PLUGIN_DIRS` path and files.
+    pub hooks_only: bool,
 }
 
 /// `setup claude`: whether to set Claude's [`claude::PROMPT_SUGGESTION_SETTING`]
@@ -669,6 +674,7 @@ pub fn execute_all(
             harness,
             harness_binary: None,
             prompt_suggestions,
+            hooks_only: false,
         };
         match execute(&request, env) {
             Ok(mut report) => {
@@ -782,6 +788,9 @@ pub fn render_all_text(report: &Value) -> String {
         };
         out.push_str(&format!("{name}: {line}\n"));
         if let Some(line) = prompt_suggestion_line(&inner["prompt_suggestions"]) {
+            out.push_str(&format!("{name}: {line}\n"));
+        }
+        if let Some(line) = mod_line(&inner["mod"]) {
             out.push_str(&format!("{name}: {line}\n"));
         }
         if let Some(status) = inner["foreground"]["status"].as_str() {
@@ -1325,6 +1334,27 @@ pub fn claude_paths(env: &SetupEnv) -> Result<(PathBuf, PathBuf), RunError> {
     Ok((settings, manifest))
 }
 
+/// The installed hooks are recorded, complete and run this executable's
+/// command: a re-run changes nothing.
+fn hooks_current(env: &SetupEnv, settings: &Path, manifest: &Path) -> bool {
+    let Ok(argv) = env.hook_argv(Harness::Claude) else {
+        return false;
+    };
+    let Ok(expected) = shell_command(&argv) else {
+        return false;
+    };
+    inspect_user_settings_for(
+        SettingsKind::ClaudeUser,
+        settings,
+        manifest,
+        NativeObservation::Unknown,
+        Some(&argv),
+    )
+    .is_ok_and(|inspection| inspection.installed)
+        && recorded_command(manifest)
+            .is_some_and(|recorded| recorded.starts_with(&format!("{expected} # ")))
+}
+
 fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
     let settings = env.claude_settings()?;
     env.hook_argv(Harness::Claude)?;
@@ -1333,13 +1363,31 @@ fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunEr
     let manifest = claude_manifest(env, &settings)?;
     let mut file = OwnedFile::new(settings.clone(), manifest.clone(), b"{}");
     let mut warnings = Vec::new();
-    let (installed, already, adopted) = install_settings(
+    // The hook installer's byte-exact restore needs the file as it left it.
+    // When it is about to rewrite the hooks, take the mod's settings entry
+    // out first (the files stay) and put it back afterwards.
+    let mod_lifted = if hooks_current(env, &settings, &manifest) {
+        false
+    } else {
+        let lifted = claude_mod::lift(&settings, &mod_manifest(env, &settings)?)
+            .map_err(|error| mod_error(error, &settings))?;
+        lifted.is_some()
+    };
+    let (installed, already, adopted) = match install_settings(
         SettingsKind::ClaudeUser,
         request.verb,
         env,
         &mut file,
         &mut warnings,
-    )?;
+    ) {
+        Ok(installed) => installed,
+        Err(error) => {
+            if mod_lifted {
+                let _ = mod_install_step(request, env, &settings, &mut Vec::new());
+            }
+            return Err(error);
+        }
+    };
     let allow_rule = inspect_user_settings(
         SettingsKind::ClaudeUser,
         &settings,
@@ -1351,6 +1399,7 @@ fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunEr
     let command = shared_command(&installed.owned).unwrap_or_default();
     let prompt_suggestions =
         prompt_suggestion_step(request.prompt_suggestions, env, &settings, &mut warnings)?;
+    let delivery_mod = mod_install_step(request, env, &settings, &mut warnings)?;
     Ok(json!({
         "action": if adopted { "adopted" } else if already { "already_installed" } else { "installed" },
         "adopted": installed.adopted.then(|| installed.installation_id.clone()),
@@ -1366,6 +1415,7 @@ fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunEr
         "allow_rule": allow_rule_json(allow_rule.as_ref()),
         "harness_version": observation_json(&Ok((observed, None))),
         "prompt_suggestions": prompt_suggestions,
+        "mod": delivery_mod,
         "observed": "unknown",
         "note": "installed is not observed: run `herdr-threads doctor` for native evidence. \
                  Claude sessions that run with another CLAUDE_CONFIG_DIR, or with \
@@ -1548,6 +1598,314 @@ fn prompt_suggestion_line(value: &Value) -> Option<String> {
     })
 }
 
+// ------------------------------------------------------------ delivery mod
+
+/// Where setup records that it wrote the delivery mod's settings entry.
+pub fn mod_manifest(env: &SetupEnv, settings: &Path) -> Result<PathBuf, RunError> {
+    Ok(manifest_path(env.state_dir()?, "claude-mod", settings))
+}
+
+fn mod_error(error: SetupError, settings: &Path) -> RunError {
+    let settings = settings.display();
+    match error {
+        SetupError::Invalid => invalid(format!(
+            "{settings} is not a JSON object, its `env.{}` is not a string, or the delivery mod \
+             record or directory is a symlink or damaged; the delivery mod was not changed",
+            claude::PLUGIN_DIRS_ENV
+        )),
+        SetupError::TooLarge => invalid(format!(
+            "{settings} or the delivery mod record exceeds the setup size bound; the delivery \
+             mod was not changed"
+        )),
+        SetupError::Conflict => api(
+            ErrorCode::Conflict,
+            format!(
+                "{settings} changed while setup edited `env.{}`, or the delivery mod record \
+                 names another file; the delivery mod was not changed. Re-run the command",
+                claude::PLUGIN_DIRS_ENV
+            ),
+        ),
+        SetupError::Io => failed(format!(
+            "could not read or replace {settings}, the delivery mod record or the mod files"
+        )),
+    }
+}
+
+/// The directories of the shell's own `CLAUDE_CODE_PLUGIN_DIRS`.
+fn shell_plugin_dirs() -> Vec<String> {
+    std::env::var(claude::PLUGIN_DIRS_ENV)
+        .map(|value| claude_mod::shell_dirs(&value))
+        .unwrap_or_default()
+}
+
+/// Ask whether to carry the shell's plugin directories into the settings
+/// value (a settings `env` value replaces the shell value). Yes by default:
+/// declining would silently drop them from Claude sessions.
+pub fn ask_include_shell_dirs<R: io::BufRead, W: Write>(
+    dirs: &[String],
+    input: &mut R,
+    out: &mut W,
+) -> io::Result<bool> {
+    write!(
+        out,
+        "{} is set in this shell ({}). A settings `env` value replaces the shell value in \
+         Claude sessions: include those directories in the value setup writes? [Y/n] ",
+        claude::PLUGIN_DIRS_ENV,
+        dirs.join(":")
+    )?;
+    out.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    Ok(!matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "n" | "no"
+    ))
+}
+
+fn managed_policy_json(policy: &ManagedPolicy) -> Value {
+    match policy {
+        ManagedPolicy::None => json!({"state": "none"}),
+        ManagedPolicy::DisableSideloadFlags { source } => json!({
+            "state": "disable_side_load_flags",
+            "source": source.display().to_string(),
+        }),
+    }
+}
+
+fn managed_policy_warning(source: &str, written: bool) -> String {
+    let tail = if written {
+        "Claude Code will refuse to start with the path setup wrote earlier: run \
+         `herdr-threads setup claude --hooks-only` to remove it"
+    } else {
+        "the delivery mod was not installed (hooks only; native wake is the fallback)"
+    };
+    format!(
+        "managed settings ({source}) set {}: Claude Code refuses {}; {tail}",
+        claude::DISABLE_SIDELOAD_FLAGS_KEY,
+        claude::PLUGIN_DIRS_ENV
+    )
+}
+
+/// `setup claude`, after the hooks and the prompt suggestion: write the
+/// delivery mod and its settings entry (or, with `--hooks-only`, remove
+/// them).
+fn mod_install_step(
+    request: &SetupRequest,
+    env: &SetupEnv,
+    settings: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Value, RunError> {
+    let state = env.state_dir()?;
+    let manifest = mod_manifest(env, settings)?;
+    let error = |e| mod_error(e, settings);
+    let dir = claude_mod::mod_dir(state).display().to_string();
+    if request.hooks_only {
+        let outcome = claude_mod::revert(settings, &manifest, state).map_err(error)?;
+        return Ok(json!({
+            "action": "removed_hooks_only",
+            "settings_entry": outcome.as_str(),
+            "dir": dir,
+            "note": "hooks only: the delivery mod is not installed; native wake is the fallback",
+        }));
+    }
+    let shell = shell_plugin_dirs();
+    let accepted = if shell.is_empty() || !interactive() {
+        // Non-interactive: include them, so they are not silently lost.
+        shell.clone()
+    } else if ask_include_shell_dirs(&shell, &mut io::stdin().lock(), &mut io::stderr())? {
+        shell.clone()
+    } else {
+        Vec::new()
+    };
+    let sources = ManagedPolicySources::platform(env.claude_config_dir.as_deref());
+    let outcome = claude_mod::install(&claude_mod::InstallInput {
+        settings,
+        manifest: &manifest,
+        state_dir: state,
+        shell_dirs: &accepted,
+        policy: &sources,
+    })
+    .map_err(error)?;
+    if let ManagedPolicy::DisableSideloadFlags { source } = &outcome.policy {
+        warnings.push(managed_policy_warning(
+            &source.display().to_string(),
+            outcome.recorded,
+        ));
+    }
+    let shell_report = if shell.is_empty() {
+        Value::Null
+    } else {
+        let value = std::env::var(claude::PLUGIN_DIRS_ENV).unwrap_or_default();
+        let settings_value = claude_mod::settings_value(settings).unwrap_or_default();
+        let kept = claude_mod::shell_dirs(&settings_value);
+        let lost: Vec<&String> = shell.iter().filter(|dir| !kept.contains(dir)).collect();
+        if outcome.action != claude_mod::ModAction::SkippedManagedPolicy {
+            warnings.push(format!(
+                "{} is set in this shell ({value}); a settings `env` value replaces it in \
+                 Claude sessions. {}",
+                claude::PLUGIN_DIRS_ENV,
+                if lost.is_empty() {
+                    "Its directories are in the value setup wrote"
+                } else {
+                    "Its directories were not added to the settings value"
+                }
+            ));
+        }
+        json!({
+            "value": value,
+            "copied": outcome.copied_from_shell,
+            "all_in_settings_value": lost.is_empty(),
+        })
+    };
+    Ok(json!({
+        "action": outcome.action.as_str(),
+        "dir": dir,
+        "files_written": outcome.files_written,
+        "settings_value": claude_mod::settings_value(settings),
+        "managed_policy": managed_policy_json(&outcome.policy),
+        "shell_env": shell_report,
+        "note": "an install does not prove any session loaded the mod",
+    }))
+}
+
+/// `setup-status`'s `mod` object (spec D8): install state, managed policy,
+/// shell value, version gate and the daemon's channel status.
+fn mod_status(request: &SetupRequest, env: &SetupEnv, settings: &Path) -> Value {
+    const NOTE: &str = "an install does not prove any session loaded the mod";
+    let Ok(state) = env.state_dir() else {
+        return json!({"installed": false, "error": "state directory unknown", "note": NOTE});
+    };
+    let Ok(manifest) = mod_manifest(env, settings) else {
+        return json!({"installed": false, "error": "state directory unknown", "note": NOTE});
+    };
+    let inspection = claude_mod::inspect(settings, &manifest, state);
+    let policy = ManagedPolicySources::platform(env.claude_config_dir.as_deref()).check();
+    let version = observe(request, env)
+        .ok()
+        .and_then(|(observed, _)| observed.version);
+    let supported = version.as_deref().and_then(claude_mod::version_supported);
+    let mut report = json!({
+        "installed": inspection.installed(),
+        "dir": claude_mod::mod_dir(state).display().to_string(),
+        "files_current": inspection.files_current,
+        "files_present": inspection.files_present,
+        "recorded": inspection.recorded,
+        "settings_value_contains_mod_dir": inspection.settings_value_contains_mod_dir,
+        "managed_policy": managed_policy_json(&policy),
+        "shell_env": std::env::var(claude::PLUGIN_DIRS_ENV).ok(),
+        "claude_version": version,
+        "claude_version_supported": supported,
+        "daemon": mod_daemon_status(env),
+        "note": NOTE,
+    });
+    if supported == Some(false) {
+        report["claude_version_note"] = json!("mod unsupported, native wake fallback");
+    }
+    if let Ok(setting) = std::env::var(crate::protocol::watch::MOD_DELIVERY_ENV)
+        && setting.trim().eq_ignore_ascii_case("off")
+    {
+        // This process's own environment, not the daemon-side switch.
+        report["session_override"] = json!("off");
+    }
+    if let ManagedPolicy::DisableSideloadFlags { source } = &policy {
+        report["advice"] = json!(managed_policy_warning(
+            &source.display().to_string(),
+            inspection.settings_value_contains_mod_dir || inspection.recorded,
+        ));
+    }
+    report
+}
+
+const CHANNEL_STATUS_UNAVAILABLE: &str = "channel status unavailable";
+
+/// The daemon's mod channel status, read only from a daemon that is already
+/// running (never started here).
+fn mod_daemon_status(env: &SetupEnv) -> Value {
+    let unavailable = |why: &str| json!({"status": CHANNEL_STATUS_UNAVAILABLE, "reason": why});
+    let (Ok(state), Ok(host)) = (env.state_dir(), env.host_endpoint()) else {
+        return unavailable("the Herdr instance could not be resolved");
+    };
+    let Ok(context) = RuntimeContext::explicit(state.to_path_buf(), host, None) else {
+        return unavailable("the Herdr instance could not be resolved");
+    };
+    let Ok(paths) = crate::daemon::paths::InstancePaths::resolve_read_only(&context) else {
+        return unavailable("the daemon's paths could not be resolved");
+    };
+    match super::doctor::probe_daemon(&paths) {
+        Ok(super::doctor::Daemon::Reachable(_, Ok(report))) => match report.mod_channels {
+            Some(status) => json!({
+                "status": "reachable",
+                "mod_delivery": status.mod_delivery,
+                "live_channels": status.live_channels,
+                "channels": status.channels.iter().map(|channel| json!({
+                    "seat": channel.seat,
+                    "harness": channel.harness,
+                    "state": channel.state,
+                })).collect::<Vec<_>>(),
+            }),
+            None => unavailable("the daemon keeps no channel registry"),
+        },
+        Ok(super::doctor::Daemon::Reachable(_, Err(why))) => unavailable(&why),
+        Ok(super::doctor::Daemon::NotRunning) => unavailable("no daemon is running"),
+        Ok(super::doctor::Daemon::Unreachable(why)) => unavailable(&why),
+        Err(why) => unavailable(&why),
+    }
+}
+
+/// One `mod:` summary line for the per-harness text report.
+fn mod_line(value: &Value) -> Option<String> {
+    if let Some(outcome) = value.as_str() {
+        return Some(format!("mod: {outcome}"));
+    }
+    let object = value.as_object()?;
+    if let Some(action) = object.get("action").and_then(Value::as_str) {
+        let mut line = format!("mod: {action}");
+        if let Some(source) = value["managed_policy"]["source"].as_str() {
+            line.push_str(&format!(" (managed policy {})", scalar(&json!(source))));
+        }
+        return Some(line);
+    }
+    let installed = if value["installed"] == true {
+        "installed"
+    } else {
+        "not installed"
+    };
+    let mut line = format!("mod: {installed}");
+    if let Some(source) = value["managed_policy"]["source"].as_str() {
+        line.push_str(&format!(
+            "; managed policy {} blocks it",
+            scalar(&json!(source))
+        ));
+    }
+    match value["claude_version_supported"].as_bool() {
+        Some(true) => line.push_str("; claude >= 2.1.287"),
+        Some(false) => line.push_str("; mod unsupported, native wake fallback"),
+        None => line.push_str("; claude version not observed"),
+    }
+    line.push_str(&format!(
+        "; daemon: {}",
+        scalar(&json!(
+            value["daemon"]["status"]
+                .as_str()
+                .map(|status| if status == "reachable" {
+                    format!(
+                        "mod_delivery {}, {} live channel(s)",
+                        scalar(&value["daemon"]["mod_delivery"]),
+                        scalar(&value["daemon"]["live_channels"])
+                    )
+                } else {
+                    status.to_owned()
+                })
+                .unwrap_or_default()
+        ))
+    ));
+    if value["session_override"] == "off" {
+        line.push_str("; session override HERDR_THREADS_MOD_DELIVERY=off");
+    }
+    line.push_str("; an install does not prove any session loaded the mod");
+    Some(line)
+}
+
 fn instance_json(env: &SetupEnv) -> Value {
     json!({
         "state_dir": env.state_dir.as_ref().map(|p| p.display().to_string()),
@@ -1559,7 +1917,12 @@ fn instance_json(env: &SetupEnv) -> Value {
 fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
     let (settings, manifest) = claude_paths(env)?;
     let kind = SettingsKind::ClaudeUser;
-    // First, so the hook removal below can still restore the file byte for byte.
+    // The mod edit first, then the prompt suggestion, then the hooks: each
+    // later step can still restore the file byte for byte (install order is
+    // the reverse).
+    let mod_reverted =
+        claude_mod::revert(&settings, &mod_manifest(env, &settings)?, env.state_dir()?)
+            .map_err(|error| mod_error(error, &settings))?;
     let reverted =
         prompt_suggestion::revert(&settings, &prompt_suggestion_manifest(env, &settings)?)
             .map_err(|error| prompt_suggestion_error(error, &settings))?;
@@ -1569,6 +1932,7 @@ fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
         "settings": settings.display().to_string(),
         "manifest": manifest.display().to_string(),
         "prompt_suggestions": reverted.as_str(),
+        "mod": mod_reverted.as_str(),
     });
     let mut recorded = read_settings_manifest(&manifest)
         .map_err(|e| settings_error(e, SetupVerb::Remove, kind, &settings, &manifest))?;
@@ -1690,6 +2054,7 @@ fn claude_status(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         &settings,
         std::env::var_os(claude::PROMPT_SUGGESTION_ENV),
     );
+    report["mod"] = mod_status(request, env, &settings);
     Ok(report)
 }
 
@@ -2588,6 +2953,31 @@ mod tests {
         assert_eq!(scalar(&Value::Null), "none");
         assert_eq!(scalar(&json!(3)), "3");
         assert_eq!(scalar(&json!("plain")), "plain");
+    }
+
+    /// The shell-directories question defaults to yes (declining would drop
+    /// them from Claude sessions) and only an explicit no leaves them out.
+    #[test]
+    fn shell_dirs_question_defaults_to_include() {
+        let dirs = vec!["/s1".to_owned(), "/s2".to_owned()];
+        for (answer, include) in [
+            ("\n", true),
+            ("y\n", true),
+            ("yes\n", true),
+            ("n\n", false),
+            ("No\n", false),
+            ("", true),
+        ] {
+            let mut out = Vec::new();
+            let got =
+                ask_include_shell_dirs(&dirs, &mut io::Cursor::new(answer), &mut out).unwrap();
+            assert_eq!(got, include, "{answer:?}");
+            let asked = String::from_utf8(out).unwrap();
+            assert!(
+                asked.contains("/s1:/s2") && asked.contains("[Y/n]"),
+                "{asked}"
+            );
+        }
     }
 
     fn env(state: Option<&str>) -> SetupEnv {

@@ -161,6 +161,7 @@ fn execute<F: FnMut(&str) -> io::Result<bool>>(
                             harness,
                             harness_binary: None,
                             prompt_suggestions: PromptSuggestionPolicy::Keep,
+                            hooks_only: false,
                         },
                         env,
                     )?;

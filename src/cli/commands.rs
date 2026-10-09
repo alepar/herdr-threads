@@ -1540,6 +1540,11 @@ struct SetupArgs {
     /// asking or advising.
     #[arg(long)]
     keep_prompt_suggestions: bool,
+    /// setup (claude): install or keep the hooks but not the delivery mod;
+    /// removes the mod's `CLAUDE_CODE_PLUGIN_DIRS` path and files if setup
+    /// wrote them (for example under managed policy that forbids the key).
+    #[arg(long)]
+    hooks_only: bool,
 }
 
 #[derive(Args)]
@@ -1618,6 +1623,13 @@ fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAct
              `setup claude` only (unsetup reverts what setup set)",
         ));
     }
+    if args.hooks_only
+        && (verb != super::setup::SetupVerb::Install || args.harness.as_deref() != Some("claude"))
+    {
+        return Err(invalid(
+            "--hooks-only applies to `setup claude` only (unsetup removes the mod with the hooks)",
+        ));
+    }
     let Some(harness) = args.harness else {
         if args.harness_binary.is_some() {
             return Err(invalid(
@@ -1641,6 +1653,7 @@ fn setup_action(verb: super::setup::SetupVerb, args: SetupArgs) -> Result<CliAct
         harness,
         harness_binary: args.harness_binary,
         prompt_suggestions,
+        hooks_only: args.hooks_only,
     }))
 }
 

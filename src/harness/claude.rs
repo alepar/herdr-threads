@@ -628,6 +628,31 @@ pub const PROMPT_SUGGESTION_SETTING: &str = "promptSuggestionEnabled";
 /// (Claude Code settings reference); reported by doctor when set.
 pub const PROMPT_SUGGESTION_ENV: &str = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION";
 
+/// The Claude Code environment variable (set through settings `env`) that
+/// lists extra plugin directories to load, `:`-separated. `setup claude`
+/// appends the delivery mod directory to it
+/// ([`crate::harness::claude_mod`], spec D8).
+pub const PLUGIN_DIRS_ENV: &str = "CLAUDE_CODE_PLUGIN_DIRS";
+
+/// The oldest Claude Code that loads the delivery mod (spec D8); older
+/// versions keep hooks plus the native wake fallback.
+pub const MOD_MIN_VERSION: (u32, u32, u32) = (2, 1, 287);
+
+/// The managed-settings key that makes Claude Code refuse
+/// [`PLUGIN_DIRS_ENV`] (and other side-loading flags).
+pub const DISABLE_SIDELOAD_FLAGS_KEY: &str = "disableSideloadFlags";
+
+/// Claude Code's documented managed settings file on macOS.
+pub const MANAGED_SETTINGS_MACOS: &str =
+    "/Library/Application Support/ClaudeCode/managed-settings.json";
+
+/// Claude Code's documented managed settings file on Linux.
+pub const MANAGED_SETTINGS_LINUX: &str = "/etc/claude-code/managed-settings.json";
+
+/// Server-delivered managed settings, cached under the Claude config dir.
+/// Best effort: the cache file name is not documented by Claude Code.
+pub const SERVER_MANAGED_SETTINGS_CACHE: &str = "remote-settings.json";
+
 /// A conservative model of how Claude Code matches one `Bash(...)` allow rule
 /// against a whole Bash command: the pattern is the text inside `Bash(` `)`,
 /// `*` matches any run of characters, and the match is against the entire
