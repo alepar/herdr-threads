@@ -1183,10 +1183,42 @@ fn lapsed_reservation_fetch_is_honoured_while_free() {
     let work = fx.summary(fx.caller_b());
     let jobs = tickets(&work);
     let by_index = |index: usize| jobs.iter().find(|t| t.index == index).unwrap().clone();
-    let lapse = work["data"]["jobs"][0]["lease_until"].as_u64().unwrap();
-    wait_until("the reservation to lapse", Duration::from_secs(90), || {
-        utc_ms() > lapse + 500
-    });
+    // Only the expired reservation state matters to this CLI/daemon case.
+    // The real-store clock tests cover the 60 s transition. Backdate both
+    // timestamps in this private fixture, retaining the reservation duration,
+    // owner and token; every fetch and competing lease still uses the daemon.
+    let mut db = rusqlite::Connection::open(fx.world.instance_dir.join("threads.sqlite3")).unwrap();
+    db.busy_timeout(Duration::from_secs(5)).unwrap();
+    // Take the writer lock before reading: a deferred read transaction cannot
+    // upgrade while a daemon writer is active, even with the busy timeout.
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let expired_at = utc_ms() as i64 - 1;
+    for ticket in &jobs {
+        let (reserved_at, lease_until, fetched_at): (i64, i64, Option<i64>) = tx
+            .query_row(
+                "SELECT reserved_at,lease_until,fetched_at FROM summary_jobs WHERE id=?1",
+                [&ticket.job],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(fetched_at, None, "the fixture must be unfetched");
+        assert_eq!(lease_until - reserved_at, 60_000);
+        let shift = lease_until - expired_at;
+        assert!(shift > 0, "the initial reservation must still be live");
+        assert_eq!(
+            tx.execute(
+                "UPDATE summary_jobs SET reserved_at=reserved_at-?1,lease_until=lease_until-?1 \
+                 WHERE id=?2 AND fetched_at IS NULL",
+                rusqlite::params![shift, ticket.job],
+            )
+            .unwrap(),
+            1
+        );
+    }
+    tx.commit().unwrap();
+    drop(db);
     // Free and lapsed: honoured, and the lease starts now.
     let honoured = fx.fetch(fx.caller_b(), &by_index(0));
     assert_eq!(honoured["status"], "bundle", "{honoured}");
@@ -1196,8 +1228,7 @@ fn lapsed_reservation_fetch_is_honoured_while_free() {
     let theirs = fx.summary(fx.caller_c());
     assert_eq!(theirs["status"], "work", "{theirs}");
     let c_jobs = tickets(&theirs);
-    // The overdue warning the stalled receipt earned during the wait is a
-    // thread message too, so a seventh chunk may have filled meanwhile.
+    // A warning appended by the running daemon can fill another chunk.
     let indexes: Vec<usize> = c_jobs.iter().map(|t| t.index).collect();
     assert!(
         indexes.starts_with(&[1, 2, 3, 4, 5]) && !indexes.contains(&0),

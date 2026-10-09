@@ -1312,6 +1312,20 @@ fn signal_writer_lock_wait(count: i32) -> bool {
 }
 
 #[test]
+fn relaxed_commit_durability_is_a_per_context_test_hook() {
+    let path = db_path();
+    let synchronous = |db: &Connection| {
+        db.query_row("PRAGMA synchronous", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    let relaxed = StoreContext::new(path.clone(), Arc::new(FixedClock));
+    relaxed.relax_commit_durability();
+    assert_eq!(synchronous(&relaxed.open_writer().unwrap()), 1, "NORMAL");
+    let durable = StoreContext::new(path, Arc::new(FixedClock));
+    assert_eq!(synchronous(&durable.open_writer().unwrap()), 2, "FULL");
+}
+
+#[test]
 fn fresh_database_has_durable_settings_constraints_and_read_only_queries() {
     let path = db_path();
     let store = StoreContext::new(path.clone(), Arc::new(FixedClock));
