@@ -2350,7 +2350,7 @@ fn retention_keeps_tables_bounded_while_discovery_stays_flat() {
         "preparation_cleanup completions are never pruned"
     );
     // A send after the drain (its latency is asserted in the split-out test)
-    // also gives the observation lane a change to publish below.
+    // also gives the observation lane a chance to publish below.
     scene.send_to_wake_attempt(1, "after retention");
     // Snapshot generations stay bounded: the observation lane publishes a new
     // one every 5 s (kicks do not publish sooner) and retention keeps the
