@@ -1,6 +1,6 @@
 # super-auto report — 2026-10-09-claude-mod-inbound-delivery
 
-status: completed with 0 unresolved Blocking, 2 escalations [degraded: coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage, sweep: not at tip — b7a408c0 — 4032 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (150 s; leak check clean; also 4032/4032 at 573841ed, the same code; loaded runs at earlier tips hit flakes ht-wur/ht-uy3 in untouched tests) @ b7a408c0]
+status: completed with 0 unresolved Blocking, 2 escalations [degraded: coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage]
 metrics: sent — upstream-feedback-draft.md, delivered to the superpowers workspace agent tab (wB:p8)
 
 Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 3793cf88 after absorbing main at 53b6df93). Goal and spec: [design](2026-10-09-claude-mod-inbound-delivery-design.md).
@@ -25,7 +25,7 @@ Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 3793cf88 
 
 ## Verification
 
-- Sweep: 4032 passed, 0 failed, 43 skipped @ b7a408c0, the exact tip (150 s, budget 5 min); also @ 573841ed (same code, 260 s); leak check clean; clippy, fmt, check-default-features clean. Loaded runs at earlier tips each failed one different untouched test that passed alone: flakes ht-wur, ht-uy3 — run.md `codeBuckets.sweep`
+- Sweep: 4437 passed, 0 failed @ e5fad2d2 (main's merged tree plus this evidence; 243 s, budget 5 min; leak check clean); earlier 4032/4032 @ b7a408c0 and @ 573841ed. Loaded runs at earlier tips each failed one different untouched test that passed alone: flakes ht-wur, ht-uy3 — run.md `codeBuckets.sweep`
 - Mod JS tests: 84/84 (`scripts/test-claude-mod`) at 73a75cbf — code-final-review-9.md
 - Live stress at 573841ed (final code SHA): 14/14 scenarios 3/3, 51 ACK + 3 lazy messages all settled — [evidence README](../../../evidence/claude-mod-delivery/README.md); earlier: first run found D1-D3, b562d1e4 13/14, 73a75cbf reload/clear/idle 3/3 — run.md `liveStress`
 - Closing whole-epic review at b7a408c0: ready, no must-fix; escalation triage (1 open for a human, 1 resolved, 2 accepted limits) — [code-final-review-11.md](code-final-review-11.md)

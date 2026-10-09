@@ -30,7 +30,7 @@ codeBuckets:
   parked:
   stalled: false
   review: ready (closing whole-epic review code-final-review-11.md at b7a408c0; review 10's one defect ht-j16.34 fixed at 2945d1ee)
-  sweep: b7a408c0 — 4032 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (150 s; leak check clean; also 4032/4032 at 573841ed, the same code; loaded runs at earlier tips hit flakes ht-wur/ht-uy3 in untouched tests) @ b7a408c0
+  sweep: e5fad2d2 — 4437 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (243 s; leak check clean; main's merged tree plus the submit-race evidence; earlier 4032/4032 at b7a408c0) @ e5fad2d2
   slowness: round 1 (fix re-entry): merge queue peaked at 5 — serial merge lane bottleneck
   worktreesKept:
   processSweep: stopped 0 · survived 0
