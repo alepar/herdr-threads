@@ -1420,3 +1420,186 @@ fn watch_ack_error_prints_nothing_and_exits_1() {
     assert_eq!(exit, 1);
     assert_eq!(ack_lines(&out), vec![settled("m1")]);
 }
+
+// ---- watch ack chunking (daemon batch limit) ----
+
+fn many_ids(count: usize) -> Vec<String> {
+    (1..=count).map(|n| format!("m{n}")).collect()
+}
+
+fn ack_request_for(ids: &[String]) -> WatchAckRequest {
+    WatchAckRequest {
+        session: "sess-1".into(),
+        via: ModDeliveryVia::Context,
+        messages: ids.iter().map(|id| MessageId::new(id.as_str())).collect(),
+    }
+}
+
+/// Answers like the daemon: a batch over `MAX_BATCH_ITEMS` is rejected whole,
+/// anything else settles. `fail` decides per call number (0-based) whether
+/// the call fails with the given error instead.
+fn limit_enforcing(fail: impl Fn(usize) -> Option<ApiError> + Send + Sync + 'static) -> FakeClient {
+    let seen = std::sync::atomic::AtomicUsize::new(0);
+    FakeClient::new(move |command| {
+        let Command::AckModDelivered(ack) = command else {
+            panic!("{command:?}");
+        };
+        let call = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if ack.messages.len() > crate::protocol::commands::MAX_BATCH_ITEMS {
+            return Err(ApiError::invalid_request("too many messages in one batch"));
+        }
+        if let Some(error) = fail(call) {
+            return Err(error);
+        }
+        Ok(CommandResult::ModDeliveryAcked(ModAckReport {
+            results: ack.messages.iter().map(|id| settled(id.as_str())).collect(),
+        }))
+    })
+}
+
+fn sent_acks(client: &FakeClient) -> Vec<AckModDelivered> {
+    client
+        .calls()
+        .into_iter()
+        .map(|command| {
+            let Command::AckModDelivered(ack) = command else {
+                panic!("{command:?}");
+            };
+            ack
+        })
+        .collect()
+}
+
+#[test]
+fn watch_ack_over_the_batch_limit_sends_chunks_and_settles_every_id() {
+    let ids = many_ids(250);
+    let client = limit_enforcing(|_| None);
+    let mut out = Vec::new();
+    let exit = run_ack_lines(
+        &client,
+        &clock(),
+        &ack_request_for(&ids),
+        claim(),
+        None,
+        &mut out,
+    );
+    assert_eq!(exit, 0);
+    let got = ack_lines(&out);
+    assert_eq!(got.len(), 250);
+    assert!(
+        got.iter()
+            .zip(&ids)
+            .all(|(item, id)| item == &settled(id.as_str())),
+        "one settled line per id, in request order"
+    );
+    let sent = sent_acks(&client);
+    assert_eq!(
+        sent.iter()
+            .map(|ack| ack.messages.len())
+            .collect::<Vec<_>>(),
+        [100, 100, 50]
+    );
+    let operations: HashSet<&str> = sent.iter().map(|ack| ack.operation.as_str()).collect();
+    assert_eq!(operations.len(), 3, "each chunk has its own operation id");
+    assert!(
+        sent.iter()
+            .all(|ack| ack.via == ModDeliveryVia::Context && ack.claim == claim())
+    );
+}
+
+#[test]
+fn exactly_the_batch_limit_is_one_call() {
+    let ids = many_ids(100);
+    let client = limit_enforcing(|_| None);
+    let mut out = Vec::new();
+    let exit = run_ack_lines(
+        &client,
+        &clock(),
+        &ack_request_for(&ids),
+        claim(),
+        None,
+        &mut out,
+    );
+    assert_eq!(exit, 0);
+    assert_eq!(ack_lines(&out).len(), 100);
+    assert_eq!(sent_acks(&client).len(), 1);
+}
+
+#[test]
+fn one_over_is_two_calls() {
+    let ids = many_ids(101);
+    let client = limit_enforcing(|_| None);
+    let mut out = Vec::new();
+    let exit = run_ack_lines(
+        &client,
+        &clock(),
+        &ack_request_for(&ids),
+        claim(),
+        None,
+        &mut out,
+    );
+    assert_eq!(exit, 0);
+    assert_eq!(ack_lines(&out).len(), 101);
+    assert_eq!(
+        sent_acks(&client)
+            .iter()
+            .map(|ack| ack.messages.len())
+            .collect::<Vec<_>>(),
+        [100, 1]
+    );
+}
+
+#[test]
+fn a_failed_chunk_marks_only_its_ids_retryable() {
+    for (error, reason) in [
+        (
+            ApiError::host_unavailable("daemon went away"),
+            ModAckReason::Unreachable,
+        ),
+        (ApiError::store_busy("locked"), ModAckReason::Busy),
+        (ApiError::service_busy("queue full"), ModAckReason::Busy),
+    ] {
+        let ids = many_ids(250);
+        let failure = error.clone();
+        let client = limit_enforcing(move |call| (call == 1).then(|| failure.clone()));
+        let mut out = Vec::new();
+        let exit = run_ack_lines(
+            &client,
+            &clock(),
+            &ack_request_for(&ids),
+            claim(),
+            None,
+            &mut out,
+        );
+        assert_eq!(exit, 0, "{error:?}: every id has a line");
+        let got = ack_lines(&out);
+        assert_eq!(got.len(), 250);
+        for (n, item) in got.iter().enumerate() {
+            assert_eq!(item.id.as_str(), ids[n]);
+            if (100..200).contains(&n) {
+                assert_eq!(item.result, ModAckOutcome::Retryable, "{:?}", item.id);
+                assert_eq!(item.reason, Some(reason), "{:?}", item.id);
+            } else {
+                assert_eq!(item, &settled(&ids[n]));
+            }
+        }
+    }
+}
+
+#[test]
+fn every_chunk_failing_prints_nothing_and_exits_1() {
+    let ids = many_ids(150);
+    let client = limit_enforcing(|_| Some(ApiError::host_unavailable("daemon went away")));
+    let mut out = Vec::new();
+    let exit = run_ack_lines(
+        &client,
+        &clock(),
+        &ack_request_for(&ids),
+        claim(),
+        None,
+        &mut out,
+    );
+    assert_eq!(exit, 1);
+    assert!(out.is_empty());
+    assert_eq!(sent_acks(&client).len(), 2);
+}
