@@ -3083,21 +3083,32 @@ pub trait ModChannels: Send + Sync {
         _now: UtcMillis,
     ) {
     }
-    /// True from registration until the stream ends **and through reconnect
-    /// grace**; during a rebind grace true for every generation of the seat
-    /// (so the SessionStart check-in that rotated the generation omits its
-    /// digest). Consumers: wake dispatcher (`attempt`, `can_reserve_poke`),
-    /// Claude SessionStart/PreToolUse(Bash) check-in result
-    /// (`mod_channel_live`), `AckModDelivered`.
+    /// Authorization of `AckModDelivered` only (spec D6, TRUST-POLICY A5): true
+    /// from registration until the stream ends **and through reconnect
+    /// grace**, for the channel's own binding generation; during a rebind
+    /// grace true for every generation of the seat. It is not "is the mod
+    /// handling this seat": that is [`Self::seat_live`].
     fn is_live(&self, _seat: &SeatId, _binding_generation: u64) -> bool {
         false
     }
+    /// "Is the mod handling this seat" (spec D7): any registry entry for the
+    /// seat whose grace has not expired, Live, ReconnectGrace and RebindGrace
+    /// alike, whatever its binding generation. Consumers: the wake candidate
+    /// path and pokes (scheduler `mod_suppressed`) and the Claude hook digest
+    /// flag (`mod_channel_live`). The default answers from `status()`.
+    fn seat_live(&self, seat: &SeatId) -> bool {
+        self.status()
+            .is_some_and(|status| status.channels.iter().any(|entry| &entry.seat == seat))
+    }
     /// Push `Attention{version}` to the seat's channel (call sites per spec D2).
     fn notify(&self, _seat: &SeatId, _attention_version: u64) {}
-    /// An Attention frame was pushed to the seat's channel at `now`.
-    fn record_attention_push(&self, _seat: &SeatId, _now: UtcMillis) {}
+    /// An Attention frame was pushed to the seat's channel at `now`. Counts
+    /// only for the entry of `binding_generation`, in Live or ReconnectGrace.
+    fn record_attention_push(&self, _seat: &SeatId, _binding_generation: u64, _now: UtcMillis) {}
     /// A mod ack landed for the seat (only `settled`/`already_settled` count).
-    fn record_ack(&self, _seat: &SeatId, _now: UtcMillis) {}
+    /// Counts only for the entry of `binding_generation` (the generation the
+    /// ack was decided against), in Live or ReconnectGrace.
+    fn record_ack(&self, _seat: &SeatId, _binding_generation: u64, _now: UtcMillis) {}
     /// Spec D7 predicate: the channel is live; its last mod ack or
     /// registration is older than `MOD_STALL_AFTER_MS`; and some ordinary,
     /// non-truncated pending receipt for the seat, published at or before the

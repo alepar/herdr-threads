@@ -287,7 +287,7 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
                 .into_iter()
                 .filter(|due| {
                     !due.receipts.is_empty()
-                        && !mod_suppressed(self.wakes.mod_channels, &due.seat, None, utc)
+                        && !mod_suppressed(self.wakes.mod_channels, &due.seat, utc)
                         && poke_admissible(&state, &due.seat, now)
                 })
                 .take(usize::from(POKE_SEAT_LIMIT))
@@ -602,22 +602,13 @@ pub struct WakeRunner<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> {
 
 static NO_MOD_CHANNELS: NoModChannels = NoModChannels;
 
-/// Spec D7: a live mod channel (grace included) replaces native wake and poke
-/// for its seat; a stalled one does not (ht-j16.2 then hands it over).
-/// `generation: None` asks whether any channel exists for the seat.
-fn mod_suppressed(
-    channels: &dyn ModChannels,
-    seat: &SeatId,
-    generation: Option<u64>,
-    now: UtcMillis,
-) -> bool {
-    let live = match generation {
-        Some(generation) => channels.is_live(seat, generation),
-        None => channels
-            .status()
-            .is_some_and(|status| status.channels.iter().any(|entry| &entry.seat == seat)),
-    };
-    live && !channels.stalled(seat, now)
+/// Spec D7: a mod channel for the seat (any unexpired registry entry, grace
+/// included, whatever its binding generation) replaces native wake and poke;
+/// a stalled one does not (ht-j16.2 then hands it over). The question is
+/// per seat: the `/clear` window between the check-in commit and the worker
+/// pass holds a channel of the previous generation.
+fn mod_suppressed(channels: &dyn ModChannels, seat: &SeatId, now: UtcMillis) -> bool {
+    channels.seat_live(seat) && !channels.stalled(seat, now)
 }
 
 #[derive(Clone)]
@@ -712,7 +703,6 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         if mod_suppressed(
             self.mod_channels,
             &candidate.seat,
-            candidate.binding_generation,
             self.store.clock().utc_now(),
         ) {
             return Ok(None);
@@ -943,7 +933,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             .state
             .lock()
             .map_err(|_| error(ErrorCode::StoreCorrupt, "wake state lock poisoned"))?;
-        if mod_suppressed(self.mod_channels, &seat, None, self.store.clock().utc_now())
+        if mod_suppressed(self.mod_channels, &seat, self.store.clock().utc_now())
             || !poke_admissible(&state, &seat, self.store.clock().monotonic_now())
         {
             return Ok(None);

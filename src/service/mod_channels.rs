@@ -78,6 +78,15 @@ struct Entry {
     last_fingerprint: Option<ModFingerprint>,
 }
 
+/// What an unlocked judgement saw: a close that follows a store read only
+/// acts on the very entry it judged.
+#[derive(Clone, Copy)]
+struct Judged {
+    channel: ModChannelId,
+    /// `last_ack_or_registration` the stall judgement saw, when it was one.
+    ack: Option<UtcMillis>,
+}
+
 struct State {
     entries: HashMap<SeatId, Entry>,
     /// `(seat, binding generation)` -> refused until.
@@ -236,8 +245,16 @@ impl ModChannelRegistry {
             .map(|(seat, _)| seat.clone())
             .collect();
         for seat in candidates {
-            if self.stalled(&seat, now) {
-                self.close(&seat, WatchCloseReason::Stalled, now);
+            if let Some((channel, judged_ack)) = self.stalled_judgement(&seat, now) {
+                self.close_inner(
+                    &seat,
+                    Some(Judged {
+                        channel,
+                        ack: Some(judged_ack),
+                    }),
+                    WatchCloseReason::Stalled,
+                    now,
+                );
             }
         }
     }
@@ -247,7 +264,7 @@ impl ModChannelRegistry {
     /// pushes Attention where the seat's fingerprint changed. A store error is
     /// returned after every seat was tried.
     pub fn pass(&self, now: UtcMillis) -> Result<(), ApiError> {
-        let seats: Vec<(SeatId, u64, String)> = self
+        let seats: Vec<(SeatId, ModChannelId, u64, String)> = self
             .lock()
             .entries
             .iter()
@@ -257,11 +274,19 @@ impl ModChannelRegistry {
                     ModChannelState::Live | ModChannelState::ReconnectGrace
                 )
             })
-            .map(|(seat, entry)| (seat.clone(), entry.generation, entry.native_session.clone()))
+            .filter_map(|(seat, entry)| {
+                Some((
+                    seat.clone(),
+                    entry.channel?,
+                    entry.generation,
+                    entry.native_session.clone(),
+                ))
+            })
             .collect();
         let budget = self.call_budget(2_000);
         let mut first_error = None;
-        for (seat, generation, native_session) in seats {
+        for (seat, channel, generation, native_session) in seats {
+            let judged = Some(Judged { channel, ack: None });
             let view = match self.store.mod_seat_view(&seat, &budget) {
                 Ok(view) => view,
                 Err(error) => {
@@ -270,22 +295,22 @@ impl ModChannelRegistry {
                 }
             };
             let Some(view) = view else {
-                self.close(&seat, WatchCloseReason::Unresolved, now);
+                self.close_inner(&seat, judged, WatchCloseReason::Unresolved, now);
                 continue;
             };
             if view.retired {
-                self.close(&seat, WatchCloseReason::Retired, now);
+                self.close_inner(&seat, judged, WatchCloseReason::Retired, now);
                 continue;
             }
             if !view.continuity_resolved {
-                self.close(&seat, WatchCloseReason::Unresolved, now);
+                self.close_inner(&seat, judged, WatchCloseReason::Unresolved, now);
                 continue;
             }
             let binding_holds = view.binding.as_ref().is_some_and(|binding| {
                 binding.generation == generation && binding.native_session == native_session
             });
             if !binding_holds {
-                self.close(&seat, WatchCloseReason::BindingChanged, now);
+                self.close_inner(&seat, judged, WatchCloseReason::BindingChanged, now);
                 continue;
             }
             self.observe_fingerprint(
@@ -297,6 +322,102 @@ impl ModChannelRegistry {
             );
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    /// The body of [`ModChannels::close`]. With `judged`, it returns under the
+    /// lock without acting when the entry is no longer the one judged (a
+    /// registration landed meanwhile; `observe_fingerprint` does the same).
+    fn close_inner(
+        &self,
+        seat: &SeatId,
+        judged: Option<Judged>,
+        reason: WatchCloseReason,
+        now: UtcMillis,
+    ) {
+        let kicked = {
+            let mut state = self.lock();
+            let Some(entry) = state.entries.get_mut(seat) else {
+                return;
+            };
+            if let Some(judged) = judged
+                && (entry.channel != Some(judged.channel)
+                    || judged
+                        .ack
+                        .is_some_and(|ack| entry.last_ack_or_registration != ack))
+            {
+                return;
+            }
+            if let Some(sink) = entry.sink.take() {
+                sink.push(WatchFrame::Close { reason });
+            }
+            match reason {
+                WatchCloseReason::BindingChanged => {
+                    if entry.state != ModChannelState::RebindGrace {
+                        entry.state = ModChannelState::RebindGrace;
+                        entry.grace_until =
+                            Some(UtcMillis(now.0.saturating_add(MOD_REBIND_GRACE_MS as i64)));
+                        entry.channel = None;
+                    }
+                    false
+                }
+                // A newer channel took over: nothing to remove or kick.
+                WatchCloseReason::Replaced => false,
+                _ => {
+                    let generation = entry.generation;
+                    state.entries.remove(seat);
+                    if reason == WatchCloseReason::Stalled {
+                        state.cooldowns.insert(
+                            (seat.clone(), generation),
+                            UtcMillis(now.0.saturating_add(MOD_STALL_COOLDOWN_MS as i64)),
+                        );
+                    }
+                    true
+                }
+            }
+        };
+        if kicked {
+            self.kick(1);
+        }
+    }
+
+    /// The stall predicate (spec D7). When it holds, the channel id and the
+    /// `last_ack_or_registration` it judged, so the close can verify that the
+    /// entry is unchanged.
+    fn stalled_judgement(
+        &self,
+        seat: &SeatId,
+        now: UtcMillis,
+    ) -> Option<(ModChannelId, UtcMillis)> {
+        let (channel, judged_ack, pushed) = {
+            let state = self.lock();
+            let entry = state.entries.get(seat)?;
+            if !matches!(
+                entry.state,
+                ModChannelState::Live | ModChannelState::ReconnectGrace
+            ) {
+                return None;
+            }
+            if now.0.saturating_sub(entry.last_ack_or_registration.0) <= MOD_STALL_AFTER_MS as i64 {
+                return None;
+            }
+            (
+                entry.channel?,
+                entry.last_ack_or_registration,
+                entry.last_attention_push?,
+            )
+        };
+        let budget = self.call_budget(STALL_READ_BUDGET_MS);
+        match self
+            .store
+            .mod_stall_oldest(seat, pushed, WATCH_BODY_LIMIT_BYTES, &budget)
+        {
+            Ok(Some(published))
+                if now.0.saturating_sub(published.0) > MOD_STALL_AFTER_MS as i64 =>
+            {
+                Some((channel, judged_ack))
+            }
+            _ => None,
+        }
     }
 
     /// Pushes Attention when `fingerprint` differs from the last one seen.
@@ -430,42 +551,7 @@ impl ModChannels for ModChannelRegistry {
     }
 
     fn close(&self, seat: &SeatId, reason: WatchCloseReason, now: UtcMillis) {
-        let kicked = {
-            let mut state = self.lock();
-            let Some(entry) = state.entries.get_mut(seat) else {
-                return;
-            };
-            if let Some(sink) = entry.sink.take() {
-                sink.push(WatchFrame::Close { reason });
-            }
-            match reason {
-                WatchCloseReason::BindingChanged => {
-                    if entry.state != ModChannelState::RebindGrace {
-                        entry.state = ModChannelState::RebindGrace;
-                        entry.grace_until =
-                            Some(UtcMillis(now.0.saturating_add(MOD_REBIND_GRACE_MS as i64)));
-                        entry.channel = None;
-                    }
-                    false
-                }
-                // A newer channel took over: nothing to remove or kick.
-                WatchCloseReason::Replaced => false,
-                _ => {
-                    let generation = entry.generation;
-                    state.entries.remove(seat);
-                    if reason == WatchCloseReason::Stalled {
-                        state.cooldowns.insert(
-                            (seat.clone(), generation),
-                            UtcMillis(now.0.saturating_add(MOD_STALL_COOLDOWN_MS as i64)),
-                        );
-                    }
-                    true
-                }
-            }
-        };
-        if kicked {
-            self.kick(1);
-        }
+        self.close_inner(seat, None, reason, now);
     }
 
     fn is_live(&self, seat: &SeatId, binding_generation: u64) -> bool {
@@ -489,46 +575,40 @@ impl ModChannels for ModChannelRegistry {
         self.notify_at(seat, attention_version, self.clock.utc_now());
     }
 
-    fn record_attention_push(&self, seat: &SeatId, now: UtcMillis) {
-        if let Some(entry) = self.lock().entries.get_mut(seat) {
+    fn seat_live(&self, seat: &SeatId) -> bool {
+        let now = self.clock.utc_now();
+        self.lock()
+            .entries
+            .get(seat)
+            .is_some_and(|entry| entry.grace_until.is_none_or(|until| until > now))
+    }
+
+    fn record_attention_push(&self, seat: &SeatId, binding_generation: u64, now: UtcMillis) {
+        if let Some(entry) = self.lock().entries.get_mut(seat)
+            && entry.generation == binding_generation
+            && matches!(
+                entry.state,
+                ModChannelState::Live | ModChannelState::ReconnectGrace
+            )
+        {
             entry.last_attention_push = Some(now);
         }
     }
 
-    fn record_ack(&self, seat: &SeatId, now: UtcMillis) {
-        if let Some(entry) = self.lock().entries.get_mut(seat) {
+    fn record_ack(&self, seat: &SeatId, binding_generation: u64, now: UtcMillis) {
+        if let Some(entry) = self.lock().entries.get_mut(seat)
+            && entry.generation == binding_generation
+            && matches!(
+                entry.state,
+                ModChannelState::Live | ModChannelState::ReconnectGrace
+            )
+        {
             entry.last_ack_or_registration = now;
         }
     }
 
     fn stalled(&self, seat: &SeatId, now: UtcMillis) -> bool {
-        let pushed = {
-            let state = self.lock();
-            let Some(entry) = state.entries.get(seat) else {
-                return false;
-            };
-            if !matches!(
-                entry.state,
-                ModChannelState::Live | ModChannelState::ReconnectGrace
-            ) {
-                return false;
-            }
-            if now.0.saturating_sub(entry.last_ack_or_registration.0) <= MOD_STALL_AFTER_MS as i64 {
-                return false;
-            }
-            match entry.last_attention_push {
-                Some(pushed) => pushed,
-                None => return false,
-            }
-        };
-        let budget = self.call_budget(STALL_READ_BUDGET_MS);
-        match self
-            .store
-            .mod_stall_oldest(seat, pushed, WATCH_BODY_LIMIT_BYTES, &budget)
-        {
-            Ok(Some(published)) => now.0.saturating_sub(published.0) > MOD_STALL_AFTER_MS as i64,
-            Ok(None) | Err(_) => false,
-        }
+        self.stalled_judgement(seat, now).is_some()
     }
 
     fn status(&self) -> Option<ModChannelStatus> {
