@@ -70,3 +70,4 @@ liveStress: targeted re-run at 73a75cbf: reload_mid_turn, reload, clear_rebind, 
 baseAbsorbed: 3793cf88 → 88f5c69f (merge d2e8a84d), 0 conflicted files (main merged 6da43c6c and prepared v0.5.0; the branch now differs from main only by 73a75cbf's mod fix and docs/evidence; clippy, check-default-features, mod tests 84/84, integration mod_delivery+sweep_remaining 41/41 at the merge)
 postLoopFix: whole-epic final review 10 at 8e7eaa41 (not ready: mod attention ignored main's warning_wakes_seat, bystander prompts) filed as ht-j16.34, fixed at 2945d1ee (TRUST-POLICY A7 sentence, spec note, 3 new tests red→green), independent review ready, merged 573841ed
 liveStress: full run at 573841ed (final code SHA): 14/14 scenarios 3/3, 1 native prompt, leak check clean
+baseAbsorbed: 88f5c69f → 6ef444d4 (merge 8d4c759c), 0 conflicted files (docs only: CHANGELOG and evidence README line)
