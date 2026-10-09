@@ -1266,8 +1266,14 @@ mod live {
             .unwrap()
             .unwrap();
         assert!(saved.request.is_none());
-        assert!(saved.creation.is_some());
+        assert!(
+            saved.creation.is_none(),
+            "canonical evidence is not a local receipt"
+        );
+        assert!(saved.possible_creation);
         let before = f.peer.status();
+        assert!(before.creation.is_some());
+        let surviving_bytes = std::fs::read(f.peer.progress()).unwrap();
         let scan = composition_scan(&f);
         assert!(
             scan.coverage.is_some(),
@@ -1275,6 +1281,7 @@ mod live {
         );
         assert_eq!(scan.hints.len(), 1);
         composition_import(&f, &scan).unwrap();
+        assert_eq!(std::fs::read(f.peer.progress()).unwrap(), surviving_bytes);
         assert_eq!(f.peer.status(), before);
         assert_eq!(f.peer.state.lock().unwrap().native_calls, 1);
     }
