@@ -6,14 +6,12 @@
 
 - **Harness adapters.** Registered adapters provide harness discovery, setup, managed launch, context delivery and composer policies, including the Hermes integration. Unknown harness metadata grants no authority or optional capabilities.
 - **Recorded runtime evidence.** Bounded, attributed runtime and contract evidence preserves legacy history and reports acceptance limits honestly.
-- **Coordinated upgrade.** Upgrade CLI and daemon together for schema 27. Existing lazy delivery, public join and receipt provenance remain intact.
 
-## v0.3.1
 
 - **Lazy messages.** Passive messages are delivered by the recipient's text inbox without creating receipt obligations, deadlines, wakes or ACKs. Complete flushed display records separate delivery bookkeeping; partial output and read-only formats do not settle delivery.
 - **Latency improvements.** Reuse bounded idle read-only query connections and allow commit bursts to settle before archival. Latency fixtures retain their existing budgets and use an explicit test-only durability knob; production durability remains unchanged.
 - **CLI routing and safe nudges.** Explicit human invocation routing and draft-aware, active-turn-aware attention guards preserve attribution and avoid submitting over observed input.
-- **Coordinated upgrade.** Upgrade CLI and daemon together for lazy delivery and schema 26.
+- **Coordinated upgrade.** Upgrade CLI and daemon together for lazy delivery and harness adapters (schema migrations 26 and 27). Public join and receipt provenance remain intact.
 
 ## v0.3.0
 
