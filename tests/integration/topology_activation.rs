@@ -81,6 +81,20 @@ impl Drop for PendingDaemon {
         }
     }
 }
+enum HostControl {
+    Endpoint(UnixListener, std::sync::mpsc::SyncSender<()>),
+    AllowStart(std::sync::mpsc::SyncSender<()>),
+    RefusePaneReads(std::sync::mpsc::SyncSender<()>),
+}
+type HostTrace = Arc<std::sync::Mutex<std::collections::VecDeque<String>>>;
+fn trace_host(trace: &HostTrace, event: String) {
+    let mut trace = trace.lock().unwrap();
+    if trace.len() == 128 {
+        trace.pop_front();
+    }
+    trace.push_back(event);
+}
+
 struct Fixture {
     root: PathBuf,
     context: RuntimeContext,
@@ -92,6 +106,8 @@ struct Fixture {
     effects: Arc<AtomicUsize>,
     creates: Arc<AtomicUsize>,
     starts: Arc<AtomicUsize>,
+    host_control: std::sync::mpsc::Sender<HostControl>,
+    host_trace: HostTrace,
     host_stop: Arc<AtomicBool>,
     host: Option<JoinHandle<()>>,
     stop: Cancellation,
@@ -105,6 +121,13 @@ impl Fixture {
         Self::with_refusal(guarded, false)
     }
     fn with_refusal(guarded: bool, refuse_start: bool) -> Self {
+        Self::with_creation_reply_loss(guarded, refuse_start, false)
+    }
+    fn with_creation_reply_loss(
+        guarded: bool,
+        refuse_start: bool,
+        lose_create_reply: bool,
+    ) -> Self {
         let root = PathBuf::from("/private/tmp").join(format!("ht-a-{}", Uuid::new_v4()));
         fs::DirBuilder::new()
             .recursive(true)
@@ -126,10 +149,32 @@ impl Fixture {
             creates.clone(),
             starts.clone(),
         );
+        let (host_control, controls) = std::sync::mpsc::channel::<HostControl>();
+        let host_trace = HostTrace::default();
+        let trace = host_trace.clone();
         let host = std::thread::spawn(move || {
+            let mut listener = listener;
+            let mut refuse_start = refuse_start;
+            let mut refuse_pane_reads = false;
             let mut created = false;
             let mut agent = None;
             while !stop_host.load(Ordering::Acquire) {
+                if let Ok(control) = controls.try_recv() {
+                    match control {
+                        HostControl::Endpoint(replacement, ready) => {
+                            listener = replacement;
+                            let _ = ready.send(());
+                        }
+                        HostControl::AllowStart(ready) => {
+                            refuse_start = false;
+                            let _ = ready.send(());
+                        }
+                        HostControl::RefusePaneReads(ready) => {
+                            refuse_pane_reads = true;
+                            let _ = ready.send(());
+                        }
+                    }
+                }
                 let (mut stream, _) = match listener.accept() {
                     Ok(v) => v,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -138,14 +183,19 @@ impl Fixture {
                     }
                     Err(e) => panic!("owned host accept: {e}"),
                 };
+                // macOS accepted sockets inherit the listener's O_NONBLOCK.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
                 let mut line = String::new();
-                if BufReader::new(&mut stream).read_line(&mut line).is_err() {
+                let read = BufReader::new(&mut stream).read_line(&mut line);
+                trace_host(&trace, format!("request read: {read:?}"));
+                if read.is_err() {
                     continue;
                 }
                 let request: Value = serde_json::from_str(&line).unwrap();
+                trace_host(&trace, format!("method: {}", request["method"]));
                 let result = match request["method"].as_str().unwrap() {
                     "ping" => json!({"type":"pong","version":"0.9.1","protocol":22}),
                     "session.snapshot" => {
@@ -161,6 +211,9 @@ impl Fixture {
                     }
                     "pane.get" => {
                         reads.fetch_add(1, Ordering::Relaxed);
+                        if refuse_pane_reads {
+                            continue;
+                        }
                         let target = request["params"]["pane_id"].as_str().unwrap();
                         json!({"type":"pane_info","pane":scripted_pane(target, target == "w4:p3" && agent.is_some())})
                     }
@@ -168,6 +221,11 @@ impl Fixture {
                         native_effects.fetch_add(1, Ordering::Relaxed);
                         create_count.fetch_add(1, Ordering::Relaxed);
                         created = true;
+                        if lose_create_reply {
+                            // The real typed create boundary has submitted once.
+                            // EOF loses its correlated answer without undoing the pane.
+                            continue;
+                        }
                         json!({"type":"tab_created","tab":{"tab_id":"w4:t2","workspace_id":"w4"},"root_pane":scripted_pane("w4:p3", false)})
                     }
                     "agent.start" => {
@@ -189,7 +247,8 @@ impl Fixture {
                     }
                     _ => json!({"type":"agent_info","agent":agent}),
                 };
-                let _ = writeln!(stream, "{}", json!({"id":request["id"],"result":result}));
+                let wrote = writeln!(stream, "{}", json!({"id":request["id"],"result":result}));
+                trace_host(&trace, format!("response write: {wrote:?}"));
             }
         });
         let mut pending_host = PendingHost {
@@ -357,6 +416,8 @@ impl Fixture {
             effects,
             creates,
             starts,
+            host_control,
+            host_trace,
             host_stop,
             host: pending_host.host.take(),
             stop,
@@ -382,6 +443,14 @@ impl Fixture {
         )
     }
     fn cli(&self, args: &[&str], actor: bool) -> std::process::Output {
+        self.cli_with_pane(args, actor, None)
+    }
+    fn cli_with_pane(
+        &self,
+        args: &[&str],
+        actor: bool,
+        pane: Option<&str>,
+    ) -> std::process::Output {
         let mut cmd = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"));
         if actor {
             cmd.arg("human");
@@ -395,7 +464,40 @@ impl Fixture {
             .env("HOME", self.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("CODEX_HOME", self.root.join("codex"));
+        if let Some(pane) = pane {
+            cmd.env("HERDR_PANE_ID", pane);
+        }
         spawn::tag(&mut cmd).output().unwrap()
+    }
+    fn rotate_owned_endpoint(&self) {
+        use std::os::unix::fs::MetadataExt;
+        let old = fs::metadata(&self.context.host_endpoint).unwrap().ino();
+        fs::rename(&self.context.host_endpoint, self.root.join("previous.sock")).unwrap();
+        let listener = UnixListener::bind(&self.context.host_endpoint).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        assert_ne!(
+            fs::metadata(&self.context.host_endpoint).unwrap().ino(),
+            old
+        );
+        let (ready, acknowledged) = std::sync::mpsc::sync_channel(0);
+        self.host_control
+            .send(HostControl::Endpoint(listener, ready))
+            .unwrap();
+        acknowledged.recv_timeout(Duration::from_secs(3)).unwrap();
+    }
+    fn allow_owned_start(&self) {
+        let (ready, acknowledged) = std::sync::mpsc::sync_channel(0);
+        self.host_control
+            .send(HostControl::AllowStart(ready))
+            .unwrap();
+        acknowledged.recv_timeout(Duration::from_secs(3)).unwrap();
+    }
+    fn refuse_owned_pane_reads(&self) {
+        let (ready, acknowledged) = std::sync::mpsc::sync_channel(0);
+        self.host_control
+            .send(HostControl::RefusePaneReads(ready))
+            .unwrap();
+        acknowledged.recv_timeout(Duration::from_secs(3)).unwrap();
     }
     fn unconfigured_domain(&self) -> herdr_threads::service::dispatch::DomainService {
         let store = Arc::new(
@@ -493,6 +595,18 @@ impl Drop for Fixture {
         self.host_stop.store(true, Ordering::Release);
         if let Some(host) = self.host.take() {
             let _ = host.join();
+        }
+        if std::thread::panicking()
+            && let Ok(bytes) = fs::read(herdr_threads::daemon::logs::daemon_log_path(&self.paths))
+        {
+            let tail = &bytes[bytes.len().saturating_sub(16 * 1024)..];
+            eprintln!(
+                "owned public-chain failure: {}",
+                String::from_utf8_lossy(tail)
+            );
+        }
+        if std::thread::panicking() {
+            eprintln!("owned host trace: {:?}", self.host_trace.lock().unwrap());
         }
         let _ = fs::remove_dir_all(&self.root);
     }
@@ -1376,4 +1490,392 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
     );
     assert_eq!(f.creates.load(Ordering::Relaxed), 1);
     assert_eq!(f.starts.load(Ordering::Relaxed), 1);
+}
+
+fn public_unknown_created_pane_agent_retry_chain(retain_request: bool) {
+    use herdr_threads::{
+        cli::journal::{Journal, OriginalActor, classify_original_actor},
+        protocol::{handoff::BootstrapIdentity, results::IntentKind},
+    };
+    let f = Fixture::with_creation_reply_loss(true, true, true);
+    let setup = f.cli(
+        &["setup", "codex", "--harness-binary", "/usr/bin/true"],
+        true,
+    );
+    assert!(
+        setup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+    let unknown = f.cli(
+        &[
+            "--cooperative-seat",
+            "sender",
+            "--cooperative-target",
+            "w4:p1",
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+            "handoff",
+            "--new-tab",
+            "Peer",
+            "--new-thread",
+            "--kind",
+            "codex",
+            "--harness-binary",
+            "/usr/bin/true",
+            "--agent-arg=--model",
+            "--agent-arg=frozen recovery model",
+            "--",
+            "frozen public recovery work",
+        ],
+        false,
+    );
+    assert!(!unknown.status.success());
+    assert!(unknown.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("outcome_unknown"),
+        "{}",
+        String::from_utf8_lossy(&unknown.stderr)
+    );
+    assert_eq!(f.creates.load(Ordering::Relaxed), 1);
+    assert_eq!(f.starts.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        f.db()
+            .query_row("SELECT state FROM bootstrap_handoffs", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "possible_creation"
+    );
+    assert_eq!(
+        f.db()
+            .query_row("SELECT current_attempt FROM bootstrap_handoffs", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap(),
+        1
+    );
+    let directory = f.paths.instance_dir.join("intents");
+    let journal = Journal::open(&directory).unwrap();
+    let pending = journal.page(&Default::default()).unwrap();
+    let local = pending
+        .items
+        .iter()
+        .find(|v| v.kind == IntentKind::HandoffBootstrap)
+        .unwrap();
+    let recovery = local.recovery_ref.as_str();
+    let reference = journal.resolve_recovery_ref(recovery).unwrap();
+    let original_path = directory.join(format!(
+        "{:020}-{}.intent",
+        reference.ordinal,
+        reference.operation.as_str()
+    ));
+    let original = fs::read(&original_path).unwrap();
+    let frozen = journal.load(&reference).unwrap();
+    assert_eq!(
+        classify_original_actor(&frozen.header.scope, &frozen.semantic).unwrap(),
+        OriginalActor::Agent
+    );
+    let identity_bytes: Vec<u8> = f
+        .db()
+        .query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let identity: BootstrapIdentity = serde_json::from_slice(&identity_bytes).unwrap();
+    assert_eq!(
+        identity.claim.harness,
+        herdr_threads::protocol::authority::Harness::Codex
+    );
+    assert_eq!(identity.payload.handoff.body, "frozen public recovery work");
+    assert_eq!(
+        identity.payload.launch.argv,
+        ["--model", "frozen recovery model"]
+    );
+    let progress_path =
+        directory.join(format!("handoff-{}.progress", reference.operation.as_str()));
+    let mut progress: Value = serde_json::from_slice(&fs::read(&progress_path).unwrap()).unwrap();
+    assert_eq!(progress["possible_creation"], true);
+    assert!(progress["creation"].is_null());
+    let original_request = progress["request"].clone();
+    assert!(
+        original_request.is_object(),
+        "actual producer must retain the submitted request"
+    );
+    if !retain_request {
+        // A request-less valid progress record carries no invented local receipt.
+        // Keep all fields from the real producer and change only its Option value.
+        use std::os::unix::fs::OpenOptionsExt;
+        progress["request"] = Value::Null;
+        let temp = directory.join(".owned-request-absent");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)
+            .unwrap();
+        file.write_all(&serde_json::to_vec(&progress).unwrap())
+            .unwrap();
+        file.sync_all().unwrap();
+        fs::rename(temp, &progress_path).unwrap();
+        fs::File::open(&directory).unwrap().sync_all().unwrap();
+    }
+    let saved_progress = fs::read(&progress_path).unwrap();
+    let before_recovery_operations: Vec<(String, String, Vec<u8>, String)> = f.db()
+        .prepare("SELECT actor_scope,operation_key,digest,result_json FROM operations ORDER BY actor_scope,operation_key")
+        .unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap().map(Result::unwrap).collect();
+    let journal_snapshot = || {
+        let mut files: Vec<_> = fs::read_dir(&directory)
+            .unwrap()
+            .map(|e| {
+                let path = e.unwrap().path();
+                (
+                    path.file_name().unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                )
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    let before_wrong_actor = journal_snapshot();
+    let wrong_human_retry = f.cli(&["retry", recovery], true);
+    assert!(!wrong_human_retry.status.success());
+    assert!(wrong_human_retry.stdout.is_empty());
+    assert_eq!(journal_snapshot(), before_wrong_actor);
+    let wrong_root_assertion = f.cli(
+        &[
+            "handoff",
+            "recover",
+            recovery,
+            "--attempt",
+            "1",
+            "--created-pane",
+            "w4:p3",
+        ],
+        false,
+    );
+    assert!(!wrong_root_assertion.status.success());
+    assert!(wrong_root_assertion.stdout.is_empty());
+    assert_eq!(journal_snapshot(), before_wrong_actor);
+    assert_eq!(f.creates.load(Ordering::Relaxed), 1);
+    assert_eq!(f.starts.load(Ordering::Relaxed), 0);
+    f.rotate_owned_endpoint();
+    let recovered = f.cli(
+        &[
+            "handoff",
+            "recover",
+            recovery,
+            "--attempt",
+            "1",
+            "--created-pane",
+            "w4:p3",
+        ],
+        true,
+    );
+    assert!(
+        recovered.status.success(),
+        "human inspection: {} {}",
+        String::from_utf8_lossy(&recovered.stdout),
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    assert_eq!(fs::read(&original_path).unwrap(), original);
+    assert_eq!(fs::read(&progress_path).unwrap(), saved_progress);
+    assert_eq!(
+        f.db()
+            .query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| r
+                .get::<_, Vec<u8>>(0))
+            .unwrap(),
+        identity_bytes
+    );
+    assert_eq!(
+        f.db()
+            .query_row("SELECT state FROM bootstrap_handoffs", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "created"
+    );
+    assert_eq!(
+        f.db()
+            .query_row("SELECT count(*) FROM threads", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let after_recovery_operations: Vec<(String, String, Vec<u8>, String)> = f.db()
+        .prepare("SELECT actor_scope,operation_key,digest,result_json FROM operations ORDER BY actor_scope,operation_key")
+        .unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap().map(Result::unwrap).collect();
+    assert_eq!(
+        after_recovery_operations, before_recovery_operations,
+        "Human recovery preserves all preexisting decisions and stages no child work"
+    );
+    let created: herdr_threads::ports::CreatedTab = serde_json::from_slice(
+        &f.db()
+            .query_row("SELECT creation_json FROM bootstrap_attempts", [], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(created.root_pane.as_str(), "w4:p3");
+    assert_ne!(
+        serde_json::to_value(&created.witness).unwrap()["socket"],
+        original_request["expected_witness"]["socket"]
+    );
+    if retain_request {
+        assert_eq!(
+            serde_json::to_value(&created.correlation).unwrap(),
+            original_request["correlation"]
+        );
+    }
+    assert_eq!(f.creates.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        f.starts.load(Ordering::Relaxed),
+        0,
+        "Human recovery cannot launch"
+    );
+    let first = f.cli_with_pane(&["retry", recovery], false, Some("w4:p1"));
+    assert!(
+        !first.status.success(),
+        "the owned native peer confirms a pre-start refusal"
+    );
+    assert_eq!(
+        f.starts.load(Ordering::Relaxed),
+        1,
+        "first public retry stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(f.creates.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        f.db()
+            .query_row("SELECT state FROM bootstrap_handoffs", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "attached"
+    );
+    assert_eq!(fs::read(&original_path).unwrap(), original);
+    let retained: Value = serde_json::from_slice(&fs::read(&progress_path).unwrap()).unwrap();
+    assert_eq!(
+        retained["request"],
+        if retain_request {
+            original_request
+        } else {
+            Value::Null
+        }
+    );
+    assert!(
+        retained["creation"].is_null(),
+        "fresh operator evidence cannot fabricate a local native submission receipt"
+    );
+    let operations = || {
+        f.db().prepare("SELECT operation_key,digest,result_json FROM operations WHERE actor_scope='seat:sender' ORDER BY operation_key").unwrap().query_map([], |r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,String>(2)?))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+    };
+    let staged = operations();
+    for key in [
+        &identity.payload.handoff.keys.create,
+        &identity.payload.handoff.keys.invite,
+        &identity.payload.handoff.keys.send,
+    ] {
+        assert_eq!(staged.iter().filter(|v| v.0 == key.as_str()).count(), 1);
+    }
+    let staged_thread_count: i64 = f
+        .db()
+        .query_row("SELECT count(*) FROM threads", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(staged_thread_count, 1);
+    f.allow_owned_start();
+    let second = f.cli_with_pane(&["retry", recovery], false, Some("w4:p1"));
+    assert!(
+        second.status.success(),
+        "second OriginalAgent public launcher retry: {} {}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let frame: Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(frame["handoff"]["outcome"], "started");
+    assert_eq!(frame["handoff"]["attempt"], 1);
+    assert_eq!(f.creates.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        f.starts.load(Ordering::Relaxed),
+        2,
+        "one refused submission and one successful start"
+    );
+    assert!(journal.load(&reference).is_err());
+    assert!(!progress_path.exists());
+    let completed_bytes: Vec<u8> = f
+        .db()
+        .query_row("SELECT completed_json FROM bootstrap_reports", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let completed: herdr_threads::protocol::handoff::CompletedBootstrapResult =
+        serde_json::from_slice(&completed_bytes).unwrap();
+    assert_eq!(completed.identity, identity);
+    assert_eq!(completed.attachment.created, created);
+    assert_eq!(completed.attachment.attempt.get(), 1);
+    assert_eq!(completed.attachment.handoff.claim, identity.claim);
+    let terminal = directory.join(format!(
+        "bootstrap-{:020}-{}.terminal",
+        reference.ordinal,
+        reference.operation.as_str()
+    ));
+    let terminal_value: Value = serde_json::from_slice(&fs::read(terminal).unwrap()).unwrap();
+    assert_eq!(
+        terminal_value["original"].as_str().unwrap().as_bytes(),
+        original
+    );
+    let completed_operations = operations();
+    for row in staged {
+        assert!(
+            completed_operations.contains(&row),
+            "exact child decision retained"
+        );
+    }
+    f.db()
+        .execute(
+            "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='sender' AND ended_at IS NULL",
+            [],
+        )
+        .unwrap();
+    f.refuse_owned_pane_reads();
+    let historical = f.cli(&["retry", recovery], false);
+    assert!(
+        historical.status.success(),
+        "{}",
+        String::from_utf8_lossy(&historical.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&historical.stdout).unwrap(),
+        frame
+    );
+    assert_eq!(f.creates.load(Ordering::Relaxed), 1);
+    assert_eq!(f.starts.load(Ordering::Relaxed), 2);
+    assert_eq!(operations(), completed_operations);
+    assert_eq!(
+        f.db()
+            .query_row("SELECT completed_json FROM bootstrap_reports", [], |r| r
+                .get::<_, Vec<u8>>(0))
+            .unwrap(),
+        completed_bytes
+    );
+    assert_eq!(
+        f.db()
+            .query_row("SELECT count(*) FROM threads", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        staged_thread_count
+    );
+}
+
+#[test]
+fn elected_public_unknown_created_pane_retains_request_through_second_agent_retry() {
+    let _serial = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
+    public_unknown_created_pane_agent_retry_chain(true);
+}
+
+#[test]
+fn elected_public_unknown_created_pane_without_request_uses_fresh_inspection() {
+    let _serial = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
+    public_unknown_created_pane_agent_retry_chain(false);
 }

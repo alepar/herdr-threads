@@ -35,10 +35,6 @@ use herdr_threads::{
 use serde_json::{Value, json};
 use std::{
     fs,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -68,33 +64,16 @@ impl Scene {
     fn send_to_wake_attempt(&self, recipient: usize, body: &str) -> Duration {
         let s = self.session();
         s.wait_commits_quiet("wake", Duration::from_millis(1500));
-        let baseline = s.commits("wake");
-        let stop = Arc::new(AtomicBool::new(false));
-        let attempted_at: Arc<Mutex<Option<Instant>>> = Arc::default();
-        let poller = {
-            let (probe, stop, slot) = (
-                s.probe.clone(),
-                Arc::clone(&stop),
-                Arc::clone(&attempted_at),
-            );
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::SeqCst) {
-                    if probe.commit_counts().get("wake").copied().unwrap_or(0) > baseline {
-                        *slot.lock().unwrap() = Some(Instant::now());
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            })
-        };
+        // Timestamp on the committing writer, so observer scheduling does not
+        // count against the send-to-wake budget.
+        let attempted_at = s.probe.next_commit_instant(Lane::Wakes);
         let sent_after = Instant::now();
-        self.0.send(recipient, body, &[]);
+        let sent = self.0.send(recipient, body, &[]);
+        let message = sent.as_str().expect("sent message ID");
         let until = Instant::now() + Duration::from_secs(3);
         while attempted_at.lock().unwrap().is_none() && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(1));
         }
-        stop.store(true, Ordering::SeqCst);
-        poller.join().unwrap();
         let kicks: Vec<_> = s
             .probe
             .kick_log()
@@ -118,7 +97,12 @@ impl Scene {
                     && *origin == Some(Lane::Deadlines)),
             "the deadline lane's materialization kicks the wake lane: {kicks:?}"
         );
-        attempted.saturating_duration_since(*committed_at)
+        let latency = attempted.saturating_duration_since(*committed_at);
+        // Settle this round's attention so its wake retry cannot occupy the
+        // single wake lane during a later round's measurement.
+        let (caller, _) = &self.0.recipients[recipient];
+        s.ok(Some(caller), &["ack", message]);
+        latency
     }
 }
 

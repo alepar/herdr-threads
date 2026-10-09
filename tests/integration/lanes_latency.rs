@@ -72,6 +72,9 @@ impl Session {
         let host: Arc<dyn HostPort> =
             Arc::new(NativeCli::new(herdr.socket_path(), Arc::clone(&clock)));
         let probe = LaneProbe::default();
+        // Lane budgets measure the commit chain, not fsync on a disk the
+        // rest of the suite shares (production commits stay FULL).
+        probe.relax_commit_durability();
         let stop = Cancellation::default();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let (daemon_stop, daemon_probe) = (stop.clone(), probe.clone());
@@ -147,18 +150,24 @@ impl Session {
         pane["pane"]["pane_id"].as_str().unwrap().to_owned()
     }
 
-    pub(crate) fn run_stand_in(&self, pane: &str) {
+    fn run_stand_ins(&self, panes: &[&str]) {
         let script = self.stand_in.to_string_lossy().into_owned();
-        self.herdr_api(&["pane", "run", pane, &script]);
+        // Launch every occupant before waiting for Herdr's idle classifier.
+        // Their settling windows overlap; each still has to report idle.
+        for pane in panes {
+            self.herdr_api(&["pane", "run", pane, &script]);
+        }
         wait_until(
             "Herdr to report the stand-in agent idle",
             Duration::from_secs(30),
             || {
-                self.herdr_try(&["agent", "get", pane])
-                    .is_some_and(|agent| {
-                        agent["agent"]["agent"] == "claude"
-                            && agent["agent"]["agent_status"] == "idle"
-                    })
+                panes.iter().all(|pane| {
+                    self.herdr_try(&["agent", "get", pane])
+                        .is_some_and(|agent| {
+                            agent["agent"]["agent"] == "claude"
+                                && agent["agent"]["agent_status"] == "idle"
+                        })
+                })
             },
         );
     }
@@ -892,8 +901,13 @@ fn herdr_stopped_freezes_wake_lane() {
         || unresolved() == SEATS as i64 + 1,
     );
     assert!(!s.probe.host_down(), "an answered capture ends the freeze");
+    let recipient_panes: Vec<_> = scene
+        .recipients
+        .iter()
+        .map(|(caller, _)| caller.pane.as_str())
+        .collect();
+    s.run_stand_ins(&recipient_panes);
     for (caller, _) in &scene.recipients {
-        s.run_stand_in(&caller.pane);
         // First contact after the Herdr restart: the published boot is the
         // old one, so the rebind waits for the lane capture it asks for.
         s.ok(

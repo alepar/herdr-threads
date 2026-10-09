@@ -1824,6 +1824,60 @@ mod live {
             }
         }
     }
+    struct CompositionContender<'a> {
+        turn: Option<crate::service::fair_writer::WriterGuard<'a>>,
+        thread: Option<std::thread::JoinHandle<std::time::Duration>>,
+    }
+    impl CompositionContender<'_> {
+        #[cfg(target_os = "macos")]
+        fn finish(mut self) -> std::time::Duration {
+            self.turn.take();
+            self.thread.take().unwrap().join().unwrap()
+        }
+    }
+    impl Drop for CompositionContender<'_> {
+        fn drop(&mut self) {
+            // Release admission before joining, including unwind from a failed
+            // deciding pass. Ignore a second panic while unwinding.
+            self.turn.take();
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+    #[test]
+    fn composition_foreground_contender_is_joined_when_deciding_pass_unwinds() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let writer = Arc::new(crate::service::fair_writer::FairWriter::new(8));
+        let clock = Arc::new(crate::app::SystemClock::new());
+        let budget = super::super::super::cooperative_budget(clock.as_ref());
+        let turn = writer.enter_background(&budget, clock.as_ref()).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let writer = writer.clone();
+            let clock = clock.clone();
+            let done = done.clone();
+            std::thread::spawn(move || {
+                let started = std::time::Instant::now();
+                let budget = super::super::super::cooperative_budget(clock.as_ref());
+                let _turn = writer.enter_foreground(&budget, clock.as_ref()).unwrap();
+                done.store(true, Ordering::Release);
+                started.elapsed()
+            })
+        };
+        let contender = CompositionContender {
+            turn: Some(turn),
+            thread: Some(thread),
+        };
+        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _owned = contender;
+            panic!("owned deciding failure");
+        }));
+        assert!(error.is_err());
+        assert!(done.load(Ordering::Acquire));
+        assert_eq!(writer.waiting(), (0, 0));
+        assert!(writer.enter_foreground(&budget, clock.as_ref()).is_ok());
+    }
     #[test]
     #[cfg(target_os = "macos")]
     fn composition_maximum_legal_escaped_serializer_memory_and_budgets() {
@@ -1929,12 +1983,15 @@ mod live {
                     start.elapsed()
                 })
             };
+            let contender = CompositionContender {
+                turn: Some(turn),
+                thread: Some(contender),
+            };
             waiting.recv().unwrap();
             let deciding_start = std::time::Instant::now();
             composition_pass(&store, &scan).unwrap();
             maximum_deciding = maximum_deciding.max(deciding_start.elapsed());
-            drop(turn);
-            maximum_foreground = maximum_foreground.max(contender.join().unwrap());
+            maximum_foreground = maximum_foreground.max(contender.finish());
             pages += 1;
             if !scan.pending {
                 assert!(scan.coverage.is_some());
