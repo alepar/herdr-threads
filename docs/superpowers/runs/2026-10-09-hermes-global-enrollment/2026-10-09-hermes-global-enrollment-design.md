@@ -69,12 +69,14 @@ Hermes requirements for that witness are recorded below so the agy design can ta
 at the first turn of a new session, before the first model call, inside the 4.5 s lifecycle cap,
 so it can start the daemon and do a fresh target read. The fallback covers a timed-out or skipped
 start (stale timeout observation, daemon start slower than the cap) without a session-long gap. The
-fallback never calls `ensure_running`: with the daemon down it stays quiet for that turn (today's
-behavior) and the next turn tries again; the start callback is the only enrollment path that may start
-the daemon.
-*Considered:* `pre_llm_call` only, discarded because 1.2 s cannot reliably cover
-`ensure_running` plus `ResolveSeat` plus check-in, so the first turn of a cold machine would
-silently stay unseated; `on_session_start` only, discarded because one missed callback would
+fallback runs on the existing qualified-turn path unchanged, including its deadline-bounded
+`ensure_running` (`hook.rs:1471-1486`, already run for every top-level Hermes turn today, launched
+seats included): within the 1.2 s turn cap a cold daemon may not come up in time, so that turn stays
+quiet, the detached start continues, and a later turn enrolls. The start callback is the primary path
+because its 4.5 s cap usually covers daemon start, resolve and target read in one go. (Redesigned
+after design roast round 1; step-back record `…-roast-design-1-step-back.md`.)
+*Considered:* `pre_llm_call` only, discarded because 1.2 s cannot reliably cover a cold daemon start
+plus `ResolveSeat` plus check-in on the first turn, so the first turn would often stay unseated; `on_session_start` only, discarded because one missed callback would
 leave the whole session without a seat until `/new`; reading Herdr's `pane.agent_session` as an
 enrollment trigger, discarded because it is a Herdr-plugin claim herdr-threads does not own, is
 absent when the user did not install Herdr's integration, and Herdr's agent fields may only
@@ -97,24 +99,60 @@ through an agent-to-agent lifecycle check-in (A4); waiting for the agy generic w
 because Hermes's evidence is already in-band and the agy design is unsettled (thread `teAfuOE4V`,
 no reply at spec time); Herdr's `agent_session.session_start_source`, discarded per D1.
 
+**Accepted limit, CLI side agents (roast round 1).** Hermes's `/background` command starts a side
+agent with `platform="cli"`, its own `session_id` and no parent (`hermes_cli/cli_commands_mixin.py:1980-1986`,
+`side_agent=True`), and Hermes passes no `side_agent` flag to plugin hooks (`agent/turn_context.py:761-771`
+`pre_llm_call` kwargs; `agent/conversation_loop.py:833-835` `on_session_start` kwargs). The platform
+witness therefore cannot tell it from the foreground session. What it can do under this design: its
+start enrolls the pane's already-resolved seat (resolver no-op, no new seat) and its first turn
+checks in, replacing the foreground binding (A4); the foreground's next turn checks in again. That
+binding ping-pong and the side agent's first-turn context (notices offered into the side agent) are
+**pre-existing**: the same happens today on a launch-created seat, because check-in eligibility, not
+enrollment, admits the side agent's turns. Considered: a bridge-side "foreground lock" (only the first
+CLI session per bridge process, re-armed by `on_session_reset(new_session)`) discarded because the
+witness gates only enrollment, so the lock would not stop the check-in replacement, and Hermes rotates
+the foreground `session_id` on context compression without any plugin hook
+(`agent/conversation_compression.py:1706-1714` calls only the context engine), which the lock would
+misread. Recorded as an accepted limit in TRUST-POLICY (ht-4ne.4) with a test row, and a follow-on
+issue for a native side-agent signal.
+
 ### D2a. Envelope and policy contract (pinned)
 
-The bridge envelope's `role_association` object gains one field, `enrollment_witness`, whose
-value is the string `"cli_platform"` or JSON `null`; it is always present (strict parse,
-byte-identical decode, `hermes.rs` `parse`/`decode`) when the bridge sends it. For version skew, an
-envelope with the field **absent** is accepted and decoded exactly as `null` (an older installed
-bridge keeps today's launch-only behavior instead of being refused; re-running `setup hermes` installs
-the new bridge, and the user docs say so). The bridge sets it to `"cli_platform"`
-exactly when the native callback's `platform` is the string `"cli"`, and to `null` otherwise.
+Today the bridge builds a `role_association` object only for `pre_llm_call` and `post_tool_call`
+(`integrations/hermes/__init__.py:516-519`) with exactly the keys `role`, `provenance`, `session_id`,
+`turn_id` (non-empty `turn_id` equal to the envelope's), and Rust refuses any non-null association on
+other callbacks (`src/harness/hermes.rs:521-550`). The contract changes exactly as follows
+(round-1 roast fix):
+
+- Wherever the bridge sends a `role_association` object, the object gains one key,
+  `enrollment_witness`, valued `"cli_platform"` or JSON `null`; the new bridge always sends it.
+- A platform-`"cli"` `on_session_start` now carries a `role_association` object (it carried `null`
+  before): `{role: "top", provenance: "cli_session_start", session_id: <the envelope session id>,
+  turn_id: null, enrollment_witness: "cli_platform"}`. `turn_id: null` is valid **only** with
+  provenance `cli_session_start` (Hermes passes no turn to `on_session_start`:
+  `agent/conversation_loop.py:833-835` sends `session_id`, `model`, `platform`).
+- Every other `on_session_start` (platform `""`; Hermes coerces a missing platform to `""`) and every
+  `on_session_reset` keep `role_association: null`, as today; they cannot carry a witness.
+- Version skew, old bridge → new binary: an association without `enrollment_witness` decodes exactly
+  as `enrollment_witness: null`, and a `null` association on `on_session_start` stays today's
+  observer, so an older installed bridge keeps launch-only behavior instead of being refused
+  (re-running `setup hermes` installs the new bridge; the user docs say so). New bridge → older
+  binary would be refused by the old strict parse; the bridge spawns the absolute executable pinned in
+  `bridge_config.json` by the setup that installed it, so this needs a binary downgrade at that path
+  and is not supported.
+- The bridge sets the witness to `"cli_platform"` exactly when the native callback's `platform` is the
+  string `"cli"`, and to `null` otherwise.
+
 Per callback:
 
-| Callback | `role` | `provenance` | `enrollment_witness` |
-|---|---|---|---|
-| `on_session_start`, platform `"cli"` | `"top"` | `"cli_session_start"` (new) | `"cli_platform"` |
-| `on_session_start`, platform `None` or `""` | `"unknown"` | as today | `null` |
-| `pre_llm_call`, no parent | `"top"` | `"explicit_parent"` | `"cli_platform"` iff platform `"cli"`, else `null` |
-| `pre_llm_call`, parented (child) | answered locally by the bridge, never forwarded (as today) | | |
-| `post_tool_call`, `on_session_reset` | as today | as today | `null` |
+| Callback | `role_association` |
+|---|---|
+| `on_session_start`, platform `"cli"` | `{role: "top", provenance: "cli_session_start", session_id, turn_id: null, enrollment_witness: "cli_platform"}` (new) |
+| `on_session_start`, any other platform | `null` (as today) |
+| `pre_llm_call`, no parent | today's object + `enrollment_witness`: `"cli_platform"` iff platform `"cli"`, else `null` |
+| `pre_llm_call`, parented (child) | answered locally by the bridge, never forwarded (as today) |
+| `post_tool_call` | today's object + `enrollment_witness: null` |
+| `on_session_reset` | `null` (as today) |
 
 Rust side: `enum EnrollmentPolicy { Lifecycle, WitnessedStartAndUnownedTurn }` returned by
 `HarnessAdapter::enrollment_policy()` (default `Lifecycle`; Hermes
@@ -123,8 +161,10 @@ returned by `DecodedEvent::enrollment(policy)`. `Lifecycle` is today's rule (top
 `Lifecycle(Startup|Clear|Resume)` with context delivery, can check in). `SessionStart` is
 `EventIntent::Enroll` with role top-level and witness `cli_platform`. `UnownedTurn` is a
 top-level `QualifiedTurn` with witness `cli_platform`, honored only after `find_seat` returns
-`Unowned`. A witness on any other callback, or `cli_session_start` with a `null` witness, is a
-strict-parse refusal, and so is `role: "child"` with a non-null witness.
+`Unowned`. Refusals (strict parse): a non-null witness on `post_tool_call` or on `role: "child"`;
+`cli_session_start` on any callback but `on_session_start`, or with a witness other than
+`"cli_platform"`, or with a non-null `turn_id`; `turn_id: null` with any other provenance; a non-null association on `on_session_reset` or a non-`cli_session_start` association on
+`on_session_start`.
 
 ### D3. Enrollment without check-in at session start
 
@@ -225,9 +265,12 @@ Recorded so the tree and the spec agree (coverage ledger L2–L29):
   replacement; no binding ends on heuristic evidence.
 - Resume: a resumed Hermes session checks in as `Startup` on a seated pane's seat or enrolls via the
   fallback in an unseated pane; never C1 cross-pane continuity (D5).
-- Daemon: only the start callback may start the daemon; a concurrent start and first turn leave one
+- Daemon: the start callback and the Unowned-turn fallback both use the existing `ensure_running`
+  (redesign, roast round 1); a concurrent start and first turn leave one
   seat and one check-in with context.
 - A null witness on a launch-created seat still checks in with context (R10).
+- CLI side agents (`/background`): a second concurrent CLI session on the same bridge enrolls no new
+  seat (resolver reuse) and its turns check in as on a launch-created seat today (accepted limit, D2).
 - `ht-4ne.1` changes only setup (writes the new bridge) and setup-status (stale-bridge hint) visibly;
   setup-status already reports enablement per profile.
 
