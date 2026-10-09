@@ -1,0 +1,44 @@
+    0.00s {"kind": "session-start", "pane": "spike-s1", "session": "dda5018e-8537-44c9-b379-fe6c0a67e979", "version": "2.1.294"}
+   11.28s {"kind": "session-start", "pane": "spike-s1", "session": "dda5018e-8537-44c9-b379-fe6c0a67e979", "version": "2.1.294"}
+   11.28s {"kind": "feed-started", "feed": "/private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/sessions/s1/feed.jsonl"}
+   18.93s {"kind": "prompt-submit-seen", "origin": {"kind": "composer"}, "text": "Run the bash command: touch spike-perm.txt   then tell me the word DONE."}
+   18.94s {"kind": "turn-start", "turn": "07902d9f-ec57-447e-aed4-8e54fbba7307", "session": "dda5018e-8537-44c9-b379-fe6c0a67e979"}
+   32.84s {"kind": "received", "id": "m3c", "mode": "context", "busy": true}
+   32.87s {"kind": "received", "id": "m3s", "mode": "submit", "busy": true}
+   32.87s {"kind": "submit-call", "ids": ["m3s"], "reason": "forced", "asUser": false}
+   41.31s {"kind": "context-attached", "ids": ["m3c"], "tool": "Bash"}
+   45.65s {"kind": "turn-complete", "turn": "07902d9f-ec57-447e-aed4-8e54fbba7307", "aborted": false}
+   45.66s {"kind": "submit-resolved", "ids": ["m3s"], "drop": null}
+   45.67s {"kind": "turn-start", "turn": "185fdab5-375d-4775-871b-fc9c2e8311e3", "session": "dda5018e-8537-44c9-b379-fe6c0a67e979"}
+   46.84s {"kind": "turn-complete", "turn": "185fdab5-375d-4775-871b-fc9c2e8311e3", "aborted": false}
+   64.44s {"kind": "prompt-submit-seen", "origin": {"kind": "composer"}, "text": "Run `sleep 8` in bash, then run `sleep 2`, then reply DONE plus any tokens a message asked you to include."}
+   64.46s {"kind": "turn-start", "turn": "a083a010-67eb-4e71-b653-a3ef7625a3ce", "session": "dda5018e-8537-44c9-b379-fe6c0a67e979"}
+   68.63s {"kind": "received", "id": "m4a", "mode": "append", "busy": true}
+   68.64s {"kind": "append-resolved", "id": "m4a", "busy": true, "deny": null}
+   89.35s {"kind": "turn-complete", "turn": "a083a010-67eb-4e71-b653-a3ef7625a3ce", "aborted": false}
+  106.49s {"kind": "received", "id": "m5a", "mode": "append", "busy": false}
+  106.49s {"kind": "append-resolved", "id": "m5a", "busy": false, "deny": null}
+  114.82s {"kind": "prompt-submit-seen", "origin": {"kind": "composer"}, "text": "Without using tools: what secret word were you told most recently, if any?"}
+  114.88s {"kind": "turn-start", "turn": "39c5abd8-66a8-421c-a67f-c69a48eae0a3", "session": "dda5018e-8537-44c9-b379-fe6c0a67e979"}
+  117.16s {"kind": "turn-complete", "turn": "39c5abd8-66a8-421c-a67f-c69a48eae0a3", "aborted": false}
+  130.18s {"kind": "session-end", "reason": "clear"}
+  134.40s {"kind": "received", "id": "m6", "mode": "submit", "busy": false}
+  134.40s {"kind": "submit-call", "ids": ["m6"], "reason": "message", "asUser": false}
+  134.42s {"kind": "submit-resolved", "ids": ["m6"], "drop": null}
+  134.42s {"kind": "turn-start", "turn": "8dff0075-f870-4c4f-ac6e-544f99321193", "session": "7bf3dd2c-fd32-401a-8172-b0cc99f7659d"}
+  138.42s {"kind": "turn-complete", "turn": "8dff0075-f870-4c4f-ac6e-544f99321193", "aborted": false}
+  151.79s {"kind": "session-end", "reason": "resume"}
+  158.05s {"kind": "received", "id": "m7", "mode": "submit", "busy": false}
+  158.05s {"kind": "submit-call", "ids": ["m7"], "reason": "message", "asUser": false}
+  158.07s {"kind": "submit-resolved", "ids": ["m7"], "drop": null}
+  158.07s {"kind": "turn-start", "turn": "7f94edc7-5eae-40d9-80f3-dceecc5f0fd6", "session": "dda5018e-8537-44c9-b379-fe6c0a67e979"}
+  160.60s {"kind": "turn-complete", "turn": "7f94edc7-5eae-40d9-80f3-dceecc5f0fd6", "aborted": false}
+  246.64s {"kind": "session-start", "pane": "spike-s1", "session": "dda5018e-8537-44c9-b379-fe6c0a67e979", "version": "2.1.294"}
+  246.64s {"kind": "feed-started", "feed": "/private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/sessions/s1/feed.jsonl"}
+  403.79s {"kind": "received", "id": "u1", "mode": "submit", "busy": false}
+  403.81s {"kind": "submit-call", "ids": ["u1"], "reason": "message", "asUser": true}
+  403.85s {"kind": "submit-resolved", "ids": ["u1"], "drop": null}
+  403.85s {"kind": "turn-start", "turn": "764f8372-f9eb-41e8-8e0d-aa448e71eaf3", "session": "dda5018e-8537-44c9-b379-fe6c0a67e979"}
+  405.09s {"kind": "turn-complete", "turn": "764f8372-f9eb-41e8-8e0d-aa448e71eaf3", "aborted": false}
+  445.48s {"kind": "feed-ended"}
+  445.48s {"kind": "session-end", "reason": "other"}

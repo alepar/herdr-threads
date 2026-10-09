@@ -1,0 +1,9 @@
+    0.00s {"kind": "session-start", "pane": "spike-s4", "session": "e61b5622-5f86-4e8c-9a39-1aec504ffbfc", "version": "2.1.294"}
+    0.00s {"kind": "feed-started", "feed": "/private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/sessions/s4/feed.jsonl"}
+   11.12s {"kind": "received", "id": "e1", "mode": "submit", "busy": false}
+   11.13s {"kind": "submit-call", "ids": ["e1"], "reason": "message", "asUser": false}
+   11.17s {"kind": "submit-resolved", "ids": ["e1"], "drop": null}
+   11.17s {"kind": "turn-start", "turn": "ec606223-85f3-40eb-a9cd-d33da2fe3092", "session": "e61b5622-5f86-4e8c-9a39-1aec504ffbfc"}
+   13.66s {"kind": "turn-complete", "turn": "ec606223-85f3-40eb-a9cd-d33da2fe3092", "aborted": false}
+   25.87s {"kind": "feed-ended"}
+   25.87s {"kind": "session-end", "reason": "other"}

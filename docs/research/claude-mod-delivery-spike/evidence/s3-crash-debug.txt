@@ -1,0 +1,6 @@
+2026-10-09T05:53:52.876Z [DEBUG] hooks worker: a promise a plugin did not await rejected: ht-spike: $.process.spawn (not awaited): the plugin's environment was unloaded
+2026-10-09T05:55:11.179Z [WARN] hooks worker: the heartbeat verdict names ht-spike (evidence: resumed)
+2026-10-09T05:55:11.179Z [ERROR] hooks worker: no answer to a heartbeat within 5000ms: the hooks worker is wedged (a hook spinning without yielding); respawning
+2026-10-09T05:55:11.179Z [DEBUG] [ht-spike] $.ui.log: ht-spike was unloaded: it crashed the hooks worker
+2026-10-09T05:55:11.181Z [DEBUG] hooks worker: respawning for cc-plugin-agents-md, cc-plugin-telemetry, cc-plugin-diff (no answer to a heartbeat within 5000ms: the hooks worker is wedged (a hook spinning without yielding))
+2026-10-09T05:55:11.185Z [DEBUG] hooks module ht-spike@inline: no answer to a heartbeat within 5000ms: the hooks worker is wedged (a hook spinning without yielding) (during turn.start); passing on

@@ -1,0 +1,19 @@
+    0.00s {"kind": "session-start", "pane": "spike-s2", "session": "15831809-fa72-4f4c-88dc-62a0d4088f77", "version": "2.1.294"}
+    0.00s {"kind": "feed-started", "feed": "/private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/sessions/s2/feed.jsonl"}
+   15.39s {"kind": "received", "id": "b1", "mode": "submit", "busy": false}
+   15.39s {"kind": "submit-call", "ids": ["b1"], "reason": "message", "asUser": false}
+   15.43s {"kind": "submit-resolved", "ids": ["b1"], "drop": null}
+   15.43s {"kind": "turn-start", "turn": "123a993b-b991-4547-9ccd-a26fde60a73f", "session": "15831809-fa72-4f4c-88dc-62a0d4088f77"}
+   19.82s {"kind": "turn-complete", "turn": "123a993b-b991-4547-9ccd-a26fde60a73f", "aborted": false}
+   34.22s {"kind": "prompt-submit-seen", "origin": {"kind": "composer"}, "text": "Run `sleep 20` in bash then say DONE."}
+   34.24s {"kind": "turn-start", "turn": "6e5cc615-aafb-4cb6-a85a-11210c13760e", "session": "15831809-fa72-4f4c-88dc-62a0d4088f77"}
+   39.37s {"kind": "received", "id": "i1", "mode": "submit", "busy": true}
+   39.37s {"kind": "submit-call", "ids": ["i1"], "reason": "forced", "asUser": false}
+   41.52s {"kind": "submit-resolved", "ids": ["i1"], "drop": null}
+   41.52s {"kind": "turn-start", "turn": "4a07faba-6ca8-4446-aa27-5d6c7d5981e0", "session": "15831809-fa72-4f4c-88dc-62a0d4088f77"}
+   41.53s {"kind": "turn-complete", "turn": "6e5cc615-aafb-4cb6-a85a-11210c13760e", "aborted": true}
+   45.02s {"kind": "turn-complete", "turn": "4a07faba-6ca8-4446-aa27-5d6c7d5981e0", "aborted": false}
+   66.00s {"kind": "session-start", "pane": "spike-s2", "session": "15831809-fa72-4f4c-88dc-62a0d4088f77", "version": "2.1.294"}
+   66.00s {"kind": "feed-started", "feed": "/private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/6ac583b8-5b3a-4ce5-9809-728b586f23fc/scratchpad/modspike/sessions/s2/feed.jsonl"}
+  265.16s {"kind": "feed-ended"}
+  265.16s {"kind": "session-end", "reason": "other"}
