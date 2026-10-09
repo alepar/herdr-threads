@@ -65,12 +65,27 @@ fn receipt(w: &World, message: &str, who: usize) -> String {
 //
 // Each case runs two ambient controls (explicit A against a conflicting ambient
 // B, and environment-only A). Each control is its own #[test] (its own process
-// under nextest, so they run in parallel): World setup (a daemon plus ~15 CLI
+// under nextest, so they run in parallel): World setup (a daemon plus ~10 CLI
 // calls, twice) dominates the cost.
 fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool) {
     {
-        let a = World::with_routing_names("state's $` dir", "h' $.sock");
-        let b = World::new();
+        // Agent cases never use the Human seat 2; only Human cases build it.
+        // The two independent worlds (each its own daemon) are built at once.
+        let (a, b) = std::thread::scope(|scope| {
+            let b = scope.spawn(|| {
+                if human {
+                    World::new()
+                } else {
+                    World::agents_only()
+                }
+            });
+            let a = if human {
+                World::with_routing_names("state's $` dir", "h' $.sock")
+            } else {
+                World::agents_only_with_routing_names("state's $` dir", "h' $.sock")
+            };
+            (a, b.join().unwrap())
+        });
         let who = if human { 2 } else { 1 };
         let lazy_a = a.send("original passive body", &[]);
         let ordinary_a = a.send("original ordinary body", &["--require-ack", &a.seats[1]]);

@@ -96,34 +96,35 @@ pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
     }
 }
 
-/// The private Herdr endpoint. One request per accepted connection.
+/// The private Herdr endpoint. One request per accepted connection. Accept
+/// blocks (no polling latency on every host call); Drop wakes it with a
+/// connection of its own after raising `stop`.
 pub(crate) struct FakeHost {
     stop: Arc<AtomicBool>,
+    socket: PathBuf,
     worker: Option<JoinHandle<()>>,
 }
 impl FakeHost {
     pub(crate) fn start(socket: &Path, panes: Vec<Value>) -> Self {
         let listener = UnixListener::bind(socket).unwrap();
-        listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let worker = std::thread::spawn(move || {
-            while !stopped.load(Ordering::SeqCst) {
-                let mut stream = match listener.accept() {
+            loop {
+                let accepted = listener.accept();
+                if stopped.load(Ordering::SeqCst) {
+                    return;
+                }
+                let mut stream = match accepted {
                     Ok((stream, _)) => stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(5));
-                        continue;
-                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(error) => panic!("fake host accept: {error}"),
                 };
-                // macOS accept(2) inherits O_NONBLOCK from the listener.
-                // A client that already hung up makes these fail (EINVAL on
+                // A client that already hung up makes this fail (EINVAL on
                 // macOS); drop that connection instead of killing the fake host.
-                if stream.set_nonblocking(false).is_err()
-                    || stream
-                        .set_read_timeout(Some(Duration::from_secs(10)))
-                        .is_err()
+                if stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .is_err()
                 {
                     continue;
                 }
@@ -140,6 +141,7 @@ impl FakeHost {
         });
         Self {
             stop,
+            socket: socket.to_owned(),
             worker: Some(worker),
         }
     }
@@ -147,7 +149,11 @@ impl FakeHost {
 impl Drop for FakeHost {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(worker) = self.worker.take() {
+        // Wake the blocked accept. If that is impossible, leave the parked
+        // worker to process exit rather than hang the test in join.
+        if UnixStream::connect(&self.socket).is_ok()
+            && let Some(worker) = self.worker.take()
+        {
             let _ = worker.join();
         }
     }
@@ -167,6 +173,17 @@ impl World {
         Self::with_routing_names("state", "h.sock")
     }
     pub(super) fn with_routing_names(state_name: &str, host_name: &str) -> Self {
+        Self::build(state_name, host_name, true)
+    }
+    /// The same world without the Human seat 2: for cases whose callers and
+    /// assertions involve only the agent seats 0 and 1 (`seats` has two entries).
+    pub(super) fn agents_only() -> Self {
+        Self::agents_only_with_routing_names("state", "h.sock")
+    }
+    pub(super) fn agents_only_with_routing_names(state_name: &str, host_name: &str) -> Self {
+        Self::build(state_name, host_name, false)
+    }
+    fn build(state_name: &str, host_name: &str, with_human: bool) -> Self {
         let root = PathBuf::from(format!(
             "/private/tmp/htlc-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..10]
@@ -190,16 +207,20 @@ impl World {
             _scratch: scratch,
         };
         w.ok(None, false, &["daemon", "ensure"]);
-        for n in 1..=4 {
-            let p = format!("w1:p{n}");
-            let v = w.ok(None, false, &["seat", "resolve", "--pane", &p]);
-            w.seats.push(v["data"].as_str().unwrap().into());
+        // Seats 0 (sender), 1 (agent recipient) and, unless agents-only,
+        // 2 (Human). Only the post-join case needs a fourth seat; it adds it
+        // with `add_fourth_seat`.
+        let members: &[usize] = if with_human { &[1, 2] } else { &[1] };
+        for n in 0..=members.len() {
+            w.resolve_seat(n);
         }
-        for n in [0, 1, 3] {
+        for n in [0, 1] {
             w.ok(Some(n), false, &["check-in", "--lifecycle-event", "start"]);
         }
-        // Real immediate argv[1] Human namespace, lawful shell identity.
-        w.ok(Some(2), true, &["me", "init"]);
+        if with_human {
+            // Real immediate argv[1] Human namespace, lawful shell identity.
+            w.ok(Some(2), true, &["me", "init"]);
+        }
         w.thread = w.ok(
             Some(0),
             false,
@@ -208,7 +229,7 @@ impl World {
             .as_str()
             .unwrap()
             .into();
-        for n in [1, 2] {
+        for &n in members {
             w.ok(
                 Some(0),
                 false,
@@ -217,6 +238,17 @@ impl World {
             w.ok(Some(n), n == 2, &["accept", &w.thread]);
         }
         w
+    }
+    fn resolve_seat(&mut self, n: usize) {
+        let p = format!("w1:p{}", n + 1);
+        let v = self.ok(None, false, &["seat", "resolve", "--pane", &p]);
+        assert_eq!(self.seats.len(), n);
+        self.seats.push(v["data"].as_str().unwrap().into());
+    }
+    /// A checked-in agent seat 3 on pane w1:p4 that has not joined the thread.
+    pub(super) fn add_fourth_seat(&mut self) {
+        self.resolve_seat(3);
+        self.ok(Some(3), false, &["check-in", "--lifecycle-event", "start"]);
     }
     fn command(&self, who: Option<usize>, human: bool, args: &[&str]) -> std::process::Command {
         let mut c = spawn::command(BIN);
@@ -391,7 +423,7 @@ use lazy_proxy::{frame, write_frame};
 
 #[test]
 fn lazy_config_default_text_settles() {
-    let w = World::new();
+    let w = World::agents_only();
     let lazy = w.send("complete passive body", &[]);
     let ordinary = w.send("ordinary independent body", &["--require-ack", &w.seats[1]]);
     let out = w.text(1, false, &["inbox"]);
@@ -423,7 +455,7 @@ fn lazy_config_default_text_settles() {
 }
 #[test]
 fn lazy_config_json_machine_explicit_seat_are_readonly() {
-    let w = World::new();
+    let w = World::agents_only();
     let m = w.send("body preserved in each supported mode", &[]);
     let before = w.intents();
     let projections = w.projection_snapshot();
@@ -450,7 +482,7 @@ fn lazy_config_json_machine_explicit_seat_are_readonly() {
 }
 #[test]
 fn lazy_config_current_cli_inbox_v1_daemon_refuses_lazy_before_intent() {
-    let w = World::new();
+    let w = World::agents_only();
     let ordinary = w.send("ordinary legacy fallback", &["--require-ack", &w.seats[1]]);
     let p = Proxy::new(w.paths(), &w.root);
     p.mode.store(1, Ordering::SeqCst);
@@ -526,7 +558,7 @@ fn lazy_config_current_cli_inbox_v1_daemon_refuses_lazy_before_intent() {
 }
 #[test]
 fn lazy_config_inbox_v1_client_current_daemon_ordinary_shapes() {
-    let w = World::new();
+    let w = World::agents_only();
     let lazy = w.send("legacy history gets full passive content", &[]);
     let ordinary = w.send("legacy ordinary item", &["--require-ack", &w.seats[1]]);
     let p = w.paths();
@@ -606,7 +638,9 @@ fn lazy_config_inbox_v1_client_current_daemon_ordinary_shapes() {
 }
 #[test]
 fn lazy_config_postjoin_human_unavailable_restart() {
-    let w = World::new();
+    let mut w = World::new();
+    // The later joiner is a checked-in seat before the message is sent.
+    w.add_fourth_seat();
     let writer = rusqlite::Connection::open(w.paths().database_path).unwrap();
     writer
         .execute(
@@ -653,8 +687,9 @@ fn lazy_config_postjoin_human_unavailable_restart() {
 /// with the same cooperative caller, across a real private daemon restart.
 #[test]
 fn lazy_config_multichunk_restart_printed_continuations() {
-    let w = World::new();
-    let body = "chunk-é-界-".repeat(1700);
+    let w = World::agents_only();
+    // 11.7 KB: more than two 4096-byte pages, so at least two continuations.
+    let body = "chunk-é-界-".repeat(900);
     let m = w.send(&body, &[]);
     let mut out = w.text(1, false, &["inbox", "--max-bytes", "4096"]);
     assert_eq!(w.state(&m, 1), "pending");
@@ -698,7 +733,7 @@ fn lazy_config_multichunk_restart_printed_continuations() {
 }
 #[test]
 fn lazy_config_lost_completion_reply_frozen_retry() {
-    let w = World::new();
+    let w = World::agents_only();
     let m = w.send("lost reply body", &[]);
     let p = Proxy::new(w.paths(), &w.root);
     p.mode.store(2, Ordering::SeqCst);

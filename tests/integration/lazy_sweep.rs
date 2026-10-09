@@ -45,7 +45,7 @@ fn next(text: &str) -> Option<Vec<String>> {
 
 #[test]
 fn lazy_sweep_full_body_mixed_page_then_independent_retry() {
-    let w = World::new();
+    let w = World::agents_only();
     let body = "sweep-é-界-".repeat(950);
     let lazy = w.send(&body, &[]);
     let ordinary_body = "independent ordinary ACK";
@@ -128,7 +128,7 @@ fn lazy_sweep_full_body_mixed_page_then_independent_retry() {
 
 #[test]
 fn lazy_sweep_restart_readonly_then_text_delivery_without_attention() {
-    let w = World::new();
+    let w = World::agents_only();
     let digest = attention(&w);
     let lazy = w.send("restart passive sweep", &[]);
     assert_eq!(attention(&w), digest);
@@ -183,7 +183,7 @@ fn cache(w: &World) -> Vec<Vec<String>> {
 }
 #[test]
 fn lazy_sweep_canonical_markers_summary_cache_and_legacy_reads() {
-    let w = World::new();
+    let w = World::agents_only();
     let lazy = w.send("canonical sweep needle", &[]);
     let ordinary = w.send("ordinary sweep needle", &["--nudge"]);
     // A retained immutable derived-summary fixture makes cache equality nonvacuous.

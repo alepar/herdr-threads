@@ -186,6 +186,16 @@ impl Fixture {
     fn thread(&self, id: &str, name: &str, at: i64, archived: bool) {
         self.db().execute("INSERT INTO threads(id,instance_id,name,topic,goal,created_at,updated_at,archived) VALUES (?1,?2,?3,'private picker fixture','test',?4,?4,?5)", params![id,self.instance,name,at,archived]).unwrap();
     }
+    /// `count` active threads `{prefix}{n:03}` named `channel {n:03}`, created
+    /// at `n`, committed in one transaction (one connection, one commit).
+    fn threads(&self, prefix: &str, count: i64) {
+        let mut db = self.db();
+        let tx = db.transaction().unwrap();
+        for n in 0..count {
+            tx.execute("INSERT INTO threads(id,instance_id,name,topic,goal,created_at,updated_at,archived) VALUES (?1,?2,?3,'private picker fixture','test',?4,?4,0)", params![format!("{prefix}{n:03}"),self.instance,format!("channel {n:03}"),n]).unwrap();
+        }
+        tx.commit().unwrap();
+    }
     fn message(&self, thread: &str, body: &str, seq: i64) {
         let db = self.db();
         db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,?2,?3,?4,'ordinary',?5,?4,?4)", params![format!("m{thread}{seq}"),self.instance,thread,seq,body]).unwrap();
@@ -784,9 +794,7 @@ fn pending_daemon_response_does_not_delay_escape_or_control_c() {
 #[test]
 fn paged_picker_preserves_canonical_selection_on_refresh_and_read_is_read_only() {
     let fixture = Fixture::new();
-    for n in 0..125 {
-        fixture.thread(&format!("tPty{n:03}"), &format!("channel {n:03}"), n, false);
-    }
+    fixture.threads("tPty", 125);
     fixture.thread("tPtyKeeper", "keeper", -1, false);
     fixture.message("tPtyKeeper", "canonical keeper history", 1);
     fixture.obligations("tPtyKeeper");
@@ -815,14 +823,7 @@ fn paged_picker_preserves_canonical_selection_on_refresh_and_read_is_read_only()
 #[test]
 fn enter_during_partial_refresh_keeps_the_selected_late_page_thread() {
     let fixture = Fixture::new();
-    for n in 0..125 {
-        fixture.thread(
-            &format!("tPtyPage{n:03}"),
-            &format!("channel {n:03}"),
-            n,
-            false,
-        );
-    }
+    fixture.threads("tPtyPage", 125);
     fixture.thread("tPtyLate", "late keeper", -1, false);
     fixture.message("tPtyLate", "late canonical history", 1);
     let mut gate = PageGate::new(&fixture);

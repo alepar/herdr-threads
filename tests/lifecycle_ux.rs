@@ -54,7 +54,11 @@ fn run(state: &Path, host: &Path, args: &[&str], cwd: Option<&Path>) -> Output {
 }
 
 /// Like [`run`], with `HERDR_PANE_ID` set to `pane` when one is given (and
-/// always removed otherwise, so an inherited pane never leaks in).
+/// always removed otherwise, so an inherited pane never leaks in). `PATH`
+/// holds only the system directories: no harness executable is on it, so a
+/// command (or a daemon it starts) never probes the invoking user's real
+/// `claude`, `codex` or `hermes` launchers. Tests that need a harness on
+/// PATH use [`run_with_path`].
 fn run_in_pane(
     state: &Path,
     host: &Path,
@@ -78,7 +82,8 @@ fn run_in_pane(
         .env_remove("HERDR_PLUGIN_STATE_DIR")
         .env_remove("HERDR_SOCKET_PATH")
         .env_remove("HERDR_PANE_ID")
-        .env_remove("HERDR_BIN_PATH");
+        .env_remove("HERDR_BIN_PATH")
+        .env("PATH", "/usr/bin:/bin");
     scratch_homes(&mut command, state);
     if let Some(pane) = pane {
         command.env("HERDR_PANE_ID", pane);
@@ -1053,11 +1058,14 @@ fn unsafe_state_root_is_invalid_local_context_for_ensure_and_doctor() {
 #[test]
 fn bare_invocation_prints_usage_with_status_two() {
     let scratch = Scratch::new();
+    // System PATH only: the usage text must not depend on (or wait for) a
+    // real `herdr` or harness launcher on the invoking user's PATH.
     let output = scrubbed_command(BIN)
         .current_dir(&scratch.0)
         .env_remove("HERDR_PLUGIN_STATE_DIR")
         .env_remove("HERDR_SOCKET_PATH")
         .env_remove("HERDR_PANE_ID")
+        .env("PATH", "/usr/bin:/bin")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
@@ -1421,7 +1429,8 @@ fn setup_codex_withholds_new_sandbox_allowances_for_every_available_wrapper() {
                 .arg(&host)
                 .args(["--json", verb, "codex", "--harness-binary", &codex])
                 .env_remove("HERDR_SOCKET_PATH")
-                .env_remove("HERDR_PLUGIN_STATE_DIR");
+                .env_remove("HERDR_PLUGIN_STATE_DIR")
+                .env("PATH", "/usr/bin:/bin");
             scratch_homes(&mut command, &state);
             let out = command.output().unwrap();
             assert_eq!(out.status.code(), Some(0), "{label}: {}", text(&out.stderr));
@@ -1800,6 +1809,7 @@ fn daemon_exits_when_its_killed_test_owner_is_gone() {
         .env_remove("HERDR_SOCKET_PATH")
         .env_remove("HERDR_PANE_ID")
         .env_remove("HERDR_BIN_PATH")
+        .env("PATH", "/usr/bin:/bin")
         .env(OWNER_PID_ENV, owner.id().to_string());
     scratch_homes(&mut command, &state);
     let ensure = command.output().unwrap();
