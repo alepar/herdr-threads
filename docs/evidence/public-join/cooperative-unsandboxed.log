@@ -1,0 +1,46 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-aa425b885727aee3)
+
+running 40 tests
+test cli::cooperative_tests::agent_context_selection_ignores_agent_markers ... ok
+test cli::cooperative_tests::codex_home_alone_is_not_agent_evidence ... ok
+test cli::cooperative_tests::codex_sandbox_marker_is_agent_evidence ... ok
+test cli::cooperative_tests::derive_selection_refuses_human_context_with_agent_marker ... ok
+test cli::cooperative_tests::derive_selection_refuses_human_context_when_herdr_reports_agent ... ok
+test cli::cooperative_tests::herdr_read_error_is_not_agent_evidence ... ok
+test cli::cooperative_tests::explicit_lifecycle_argv_retains_external_identity_and_session_absence ... ok
+test cli::cooperative_tests::foreign_pane_inbox_never_requests_display_ack_caller ... ok
+test cli::cooperative_tests::operator_marked_human_context_is_selected_despite_agent_evidence ... ok
+test cli::cooperative_tests::cooperative_reader_enforces_selected_page_budget_before_writing ... ok
+test cli::cooperative_tests::cooperative_scope_rejects_child_operator_and_wrong_instance ... ok
+test cli::cooperative_tests::model_ack_runner_requires_current_context_and_child_cannot_mutate ... ok
+test cli::cooperative_tests::cli_command_against_previous_protocol_descriptor_is_refused_before_send ... ok
+test cli::cooperative_tests::cooperative_ack_retry_retains_claim_key_after_output_loss_and_restart ... ok
+test cli::cooperative_tests::displayed_ack_keeps_frozen_intent_after_uncertain_submission ... ok
+test cli::cooperative_tests::lifecycle_intent_recovers_original_claim_and_cas_before_context_publication ... ok
+test cli::cooperative_tests::cooperative_retry_without_any_context_is_invalid_request ... ok
+test cli::cooperative_tests::public_join_cli_capability_refusal_precedes_journal_submission ... ok
+test cli::cooperative_tests::scoped_runtime::bounded_runtime_conflict_reports_total_and_omitted_candidates ... ok
+test cli::cooperative_tests::inbox_display_ack_waits_for_complete_write_and_flush ... ok
+test cli::cooperative_tests::required_acceptance_journal_retains_revision_across_recovery ... ok
+test cli::cooperative_tests::scoped_runtime::stale_local_context_is_refused_after_canonical_inbox_mapping_and_never_acks ... ok
+test cli::cooperative_tests::scoped_runtime::absent_qualified_runtime_ids_never_retarget_labels_or_agents ... ok
+test cli::cooperative_tests::recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution ... ok
+test cli::cooperative_tests::scoped_runtime::runtime_workspace_ids_win_and_ordinary_workspace_labels_remain_valid ... ok
+test cli::cooperative_tests::scoped_runtime::direct_runtime_pane_ids_stay_direct_and_qualified_parent_mismatch_is_refused ... ok
+test cli::cooperative_tests::scoped_runtime::thread_names_runtime_cooperative_caller_overrides_inherited_pane ... ok
+test cli::cooperative_tests::selected_service_mapping_rejects_wrong_target_and_repair_hold ... ok
+test cli::cooperative_tests::thread_reads_carry_the_located_caller_for_the_self_marker ... ok
+test cli::cooperative_tests::scoped_runtime::unmapped_canonical_caller_is_refused_without_host_retarget_or_ack ... ok
+test cli::cooperative_tests::scoped_runtime::thread_names_runtime_foreign_read_scope_keeps_actual_caller ... ok
+test cli::cooperative_tests::allocator_lock_wait_is_bounded_before_context_factory ... ok
+test cli::cooperative_tests::scoped_runtime::operator_pane_invite_runtime_freezes_guarded_seat_and_operator_journal ... ok
+test cli::cooperative_tests::scoped_runtime::deliberately_scoped_runtime_reads_preserve_their_filters ... ok
+test cli::cooperative_tests::scoped_runtime::own_canonical_inbox_runtime_remains_display_ack_eligible_and_foreign_inbox_does_not ... ok
+test cli::cooperative_tests::scoped_runtime::omitted_runtime_reads_use_canonical_caller_mapping_without_host_or_allocation ... ok
+test cli::cooperative_tests::scoped_runtime::thread_names_runtime_freezes_utf8_before_read_and_operator_intent ... ok
+test cli::cooperative_tests::selected_first_lifecycle_uses_service_generation_and_persists_context ... ok
+test cli::cooperative_tests::scoped_runtime::explicit_cooperative_runtime_read_default_uses_claimed_seat_without_host_scope ... ok
+test cli::cooperative_tests::completed_predecessor_replays_after_successor_without_a_new_check_in ... ok
+
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 2641 filtered out; finished in 2.18s

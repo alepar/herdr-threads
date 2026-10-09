@@ -1,0 +1,11 @@
+{
+  "command": [
+    "nice",
+    "cargo",
+    "build",
+    "--locked",
+    "--all-features"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 18.492
+}

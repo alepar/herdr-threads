@@ -3132,3 +3132,542 @@ fn actor_prerequisite_lifecycle_guard_uses_its_selected_initial_seed() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+// Catches new/retried join being dispatched to an incompatible daemon, or a
+// fresh refused invocation creating an intent before capability discovery.
+#[test]
+fn public_join_cli_capability_refusal_precedes_journal_submission() {
+    use crate::harness::context::{
+        ContextJournal, Harness as ContextHarness, OccupantContext, Role, SessionReference,
+    };
+    use crate::protocol::{
+        output::OutputSpec,
+        results::{ApiError, CapabilityList, ErrorCode},
+        time::CallBudget,
+    };
+    struct Client {
+        available: bool,
+    }
+    impl crate::ports::LocalClient for Client {
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            assert_eq!(command, Command::Capabilities, "must not submit join");
+            if self.available {
+                Ok(CommandResult::Capabilities(CapabilityList {
+                    capabilities: vec![],
+                }))
+            } else {
+                Err(ApiError::new(ErrorCode::HostUnavailable, "unavailable"))
+            }
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("public-join-cli-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let instance = uuid::Uuid::from_u128(1);
+    let contexts = ContextJournal::open(
+        &root,
+        instance,
+        "seat-test",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    let execution = uuid::Uuid::from_u128(2);
+    contexts
+        .install_reattached(OccupantContext {
+            format_version: 1,
+            instance,
+            seat: "seat-test".into(),
+            target: "w1:p1".into(),
+            harness: ContextHarness::Codex,
+            binding_generation: 1,
+            execution,
+            session: SessionReference::PluginContext(execution),
+            role: Role::TopLevel,
+        })
+        .unwrap();
+    let intents = root.join("intents");
+    let journal = Journal::open(&intents).unwrap();
+    let parsed = crate::cli::commands::parse_argv(["herdr-threads", "join", "thread"]).unwrap();
+    let before: Vec<_> = std::fs::read_dir(&intents)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    for available in [true, false] {
+        let mut output = Vec::new();
+        let error = crate::cli::run_cooperative(
+            parsed.clone(),
+            &journal,
+            &contexts,
+            None,
+            Role::TopLevel,
+            &Client { available },
+            &crate::app::SystemClock::new(),
+            &mut output,
+        )
+        .unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains(if available {
+                "thread.join_v1"
+            } else {
+                "unavailable"
+            }),
+            "{text}"
+        );
+        assert!(output.is_empty());
+        let after: Vec<_> = std::fs::read_dir(&intents)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(after, before);
+    }
+    let claim =
+        crate::harness::bridge::caller_claim(&contexts.current().unwrap().unwrap()).unwrap();
+    let scope = IntentScope::Cooperative {
+        instance: instance.to_string(),
+        seat: SeatId::new("seat-test"),
+    };
+    let reference = journal
+        .record(
+            scope,
+            SemanticMutation::freeze(
+                SemanticMutation::Join {
+                    thread: ThreadId::new("thread"),
+                },
+                claim,
+            )
+            .unwrap(),
+            0,
+        )
+        .unwrap();
+    let recovery = reference.recovery_ref();
+    let parsed = crate::cli::commands::parse_argv(["herdr-threads", "retry", &recovery]).unwrap();
+    let error = crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        None,
+        Role::TopLevel,
+        &Client { available: true },
+        &crate::app::SystemClock::new(),
+        &mut Vec::new(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("thread.join_v1"));
+    assert!(
+        journal.load(&reference).is_ok(),
+        "incompatible retry must retain its intent"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+mod main539_composition {
+    use super::*;
+    use crate::{
+        ports::{LocalClient, LocalService},
+        protocol::{
+            authority::PeerIdentity,
+            time::{CallBudget, Clock},
+        },
+    };
+    use std::sync::Arc;
+
+    struct Client {
+        domain: Box<dyn LocalService>,
+        join_capability: std::sync::atomic::AtomicBool,
+        calls: std::sync::Mutex<Vec<Command>>,
+    }
+    impl LocalClient for Client {
+        crate::default_output_local_client!();
+        fn call(
+            &self,
+            command: Command,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            self.calls.lock().unwrap().push(command.clone());
+            let result = self
+                .domain
+                .handle(command, PeerIdentity::from_kernel(501), budget)?;
+            if let CommandResult::Capabilities(mut capabilities) = result {
+                assert!(
+                    capabilities
+                        .capabilities
+                        .iter()
+                        .any(|s| s == crate::protocol::capabilities::THREAD_JOIN)
+                );
+                assert!(
+                    !capabilities.capabilities.iter().any(
+                        |s| s == crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1
+                    )
+                );
+                if !self
+                    .join_capability
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    capabilities
+                        .capabilities
+                        .retain(|s| s != crate::protocol::capabilities::THREAD_JOIN);
+                }
+                return Ok(CommandResult::Capabilities(capabilities));
+            }
+            Ok(result)
+        }
+    }
+    struct Fixture {
+        client: Client,
+        journal: Journal,
+        contexts: crate::harness::context::ContextJournal,
+        claim: CallerClaim,
+        root: std::path::PathBuf,
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+    impl Fixture {
+        fn new(human: bool) -> Self {
+            use crate::harness::context::{
+                ContextJournal, Harness, OccupantContext, Role, SessionReference,
+            };
+            let root = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("ht-main539-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&root).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let instance = uuid::Uuid::new_v4();
+            let contexts = ContextJournal::open(
+                &root,
+                instance,
+                "seat-test",
+                std::time::Duration::from_millis(20),
+            )
+            .unwrap();
+            contexts
+                .install_reattached(OccupantContext {
+                    format_version: 1,
+                    instance,
+                    seat: "seat-test".into(),
+                    target: "w1:p1".into(),
+                    harness: if human {
+                        Harness::Human
+                    } else {
+                        Harness::Codex
+                    },
+                    binding_generation: 1,
+                    execution: uuid::Uuid::new_v4(),
+                    session: SessionReference::Native("n".into()),
+                    role: Role::TopLevel,
+                })
+                .unwrap();
+            let claim = crate::harness::bridge::caller_claim(&contexts.current().unwrap().unwrap())
+                .unwrap();
+            let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
+            let context =
+                crate::store::connection::StoreContext::new(root.join("state.db"), clock.clone());
+            let db = context.open_writer().unwrap();
+            db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)", [&claim.instance]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,1,1,0)", rusqlite::params![claim.seat.as_str(),claim.instance,claim.target.as_str()]).unwrap();
+            db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,1,?3,'fresh','term','inc','coherent_enumeration',1)", rusqlite::params![claim.instance,claim.target.as_str(),clock.utc_now().0]).unwrap();
+            db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,1,?2,'b',1,?3,?4,?5,?6,?7,'term','inc')", rusqlite::params![claim.seat.as_str(),claim.target.as_str(),if human {"human"} else {"codex"},claim.native_session.as_str(),claim.execution.as_str(),if human {"operator_human"} else {"cooperative_top_level"},clock.utc_now().0]).unwrap();
+            db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t',?1,'topic','goal',0,0)", [&claim.instance]).unwrap();
+            drop(db);
+            let store = Arc::new(
+                crate::store::SqliteStore::new(context, claim.instance.clone(), Default::default())
+                    .unwrap(),
+            );
+            let domain =
+                crate::service::dispatch::DomainService::new(claim.instance.clone(), store, clock)
+                    .with_cooperative_owner(
+                        501,
+                        Arc::new(crate::service::fair_writer::FairWriter::new(8)),
+                    );
+            let boot = uuid::Uuid::new_v4();
+            let domain = crate::daemon::control::ControlService::new(
+                crate::daemon::control::StopController::new(instance, boot, Default::default()),
+                move |_: &CallBudget| crate::daemon::health::HealthInputs::unknown(instance, boot),
+                domain,
+            );
+            let journal = Journal::open(root.join("intents")).unwrap();
+            Self {
+                client: Client {
+                    domain: Box::new(domain),
+                    join_capability: std::sync::atomic::AtomicBool::new(true),
+                    calls: Default::default(),
+                },
+                journal,
+                contexts,
+                claim,
+                root,
+            }
+        }
+        fn record_join(&self) -> crate::cli::journal::IntentRef {
+            self.journal
+                .record(
+                    IntentScope::Cooperative {
+                        instance: self.claim.instance.clone(),
+                        seat: self.claim.seat.clone(),
+                    },
+                    SemanticMutation::freeze(
+                        SemanticMutation::Join {
+                            thread: ThreadId::new("t"),
+                        },
+                        self.claim.clone(),
+                    )
+                    .unwrap(),
+                    0,
+                )
+                .unwrap()
+        }
+        fn run(&self, argv: Vec<String>, output: &mut Vec<u8>) -> Result<(), crate::cli::RunError> {
+            crate::cli::run_cooperative(
+                crate::cli::commands::parse_argv(argv).unwrap(),
+                &self.journal,
+                &self.contexts,
+                None,
+                crate::harness::context::Role::TopLevel,
+                &self.client,
+                &crate::app::SystemClock::new(),
+                output,
+            )
+        }
+    }
+    #[test]
+    fn fresh_agent_and_human_join_capability_refusal_precedes_publication() {
+        for human in [false, true] {
+            let f = Fixture::new(human);
+            f.client
+                .join_capability
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            let before: Vec<_> = std::fs::read_dir(f.journal.root())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            let mut argv = vec!["ht".to_owned()];
+            if human {
+                argv.push("human".into());
+            }
+            argv.extend(["join".into(), "t".into()]);
+            let mut output = Vec::new();
+            assert!(
+                f.run(argv, &mut output)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("thread.join_v1")
+            );
+            assert!(output.is_empty());
+            assert_eq!(*f.client.calls.lock().unwrap(), vec![Command::Capabilities]);
+            let after: Vec<_> = std::fs::read_dir(f.journal.root())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(before, after);
+        }
+    }
+    #[test]
+    fn original_human_join_refuses_root_then_exact_human_and_agent_replays_complete() {
+        for human in [true, false] {
+            let f = Fixture::new(human);
+            let reference = f.record_join();
+            let path = f.journal.root().join(format!(
+                "{:020}-{}.intent",
+                reference.ordinal,
+                reference.operation.as_str()
+            ));
+            let before = std::fs::read(&path).unwrap();
+            if human {
+                let mut output = Vec::new();
+                let error = f
+                    .run(
+                        vec!["ht".into(), "retry".into(), reference.recovery_ref()],
+                        &mut output,
+                    )
+                    .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("person/operator retry requires immediate human namespace")
+                );
+                assert!(f.client.calls.lock().unwrap().is_empty());
+                assert!(output.is_empty());
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+            }
+            let mut argv = vec!["ht".into()];
+            if human {
+                argv.push("human".into());
+            }
+            argv.extend(["retry".into(), reference.recovery_ref()]);
+            let mut output = Vec::new();
+            f.run(argv, &mut output).unwrap();
+            assert!(!output.is_empty());
+            assert!(f.journal.load(&reference).is_err());
+            assert!(
+                matches!(&f.client.calls.lock().unwrap()[..],[Command::Capabilities,Command::Join(v)] if v.claim==f.claim && v.operation==reference.operation)
+            );
+        }
+    }
+    #[test]
+    fn public_root_human_join_retry_refuses_before_context_transport_and_cleanup() {
+        use crate::daemon::paths::{InstancePaths, RuntimeContext};
+        let f = Fixture::new(true);
+        let runtime = RuntimeContext::explicit(
+            f.root.join("isolated-state"),
+            f.root.join("absent-host.sock"),
+            None,
+        )
+        .unwrap();
+        let paths = InstancePaths::resolve(&runtime).unwrap();
+        let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+        let reference = journal
+            .record(
+                IntentScope::Cooperative {
+                    instance: f.claim.instance.clone(),
+                    seat: f.claim.seat.clone(),
+                },
+                SemanticMutation::freeze(
+                    SemanticMutation::Join {
+                        thread: ThreadId::new("t"),
+                    },
+                    f.claim.clone(),
+                )
+                .unwrap(),
+                0,
+            )
+            .unwrap();
+        let snapshot = || {
+            let mut rows: Vec<_> = std::fs::read_dir(journal.root())
+                .unwrap()
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    (
+                        path.file_name().unwrap().to_owned(),
+                        std::fs::read(path).unwrap(),
+                    )
+                })
+                .collect();
+            rows.sort();
+            rows
+        };
+        let before = snapshot();
+        let mut output = Vec::new();
+        let error = crate::cli::run_in_pane(
+            vec![
+                "ht".into(),
+                "--state-dir".into(),
+                runtime.state_dir.display().to_string(),
+                "--host-endpoint".into(),
+                runtime.host_endpoint.display().to_string(),
+                "retry".into(),
+                reference.recovery_ref(),
+            ],
+            None,
+            &mut output,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:?}")
+                .contains("person/operator retry requires immediate human namespace"),
+            "{error:?}"
+        );
+        assert!(output.is_empty());
+        assert_eq!(snapshot(), before);
+        assert!(!paths.descriptor_path.exists());
+        assert!(!paths.database_path.exists());
+        assert!(!paths.instance_dir.join("contexts").exists());
+    }
+
+    #[test]
+    fn joined_result_is_refused_by_handoff_invitation_stage_and_durable_retry() {
+        let f = Fixture::new(false);
+        let invite = SemanticMutation::Invite {
+            thread: ThreadId::new("t"),
+            seat: SeatId::new("recipient"),
+            deadline_millis: None,
+        };
+        let reference = f
+            .journal
+            .record(
+                IntentScope::Cooperative {
+                    instance: f.claim.instance.clone(),
+                    seat: f.claim.seat.clone(),
+                },
+                SemanticMutation::freeze(invite.clone(), f.claim.clone()).unwrap(),
+                0,
+            )
+            .unwrap();
+        let mut output = Vec::new();
+        let failure = retry::run_retry_api_to_writer(
+            &f.journal,
+            &reference,
+            &IntentScope::Cooperative {
+                instance: f.claim.instance.clone(),
+                seat: f.claim.seat.clone(),
+            },
+            || Ok(f.claim.clone()),
+            |_| Ok(CommandResult::Joined(ThreadId::new("t"))),
+            &Default::default(),
+            &mut output,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(failure, retry::RetryFailure::Local(ref e) if e.to_string().contains("unexpected mutation result"))
+        );
+        assert!(output.is_empty());
+        assert!(f.journal.load(&reference).is_ok());
+        let channel = crate::protocol::handoff::HandoffChannel::Existing {
+            thread: ThreadId::new("t"),
+        };
+        let create = OperationId::new("create");
+        let send = OperationId::new("send");
+        let recipient = SeatId::new("recipient");
+        let mut progress = crate::cli::handoff::StagedWork::default();
+        let mut phase = "unset";
+        let error = crate::cli::handoff::stage_work(
+            crate::cli::handoff::Staging {
+                channel: &channel,
+                body: "work",
+                recipient: &recipient,
+                create_key: &create,
+                invite_key: &reference.operation,
+                send_key: &send,
+                skip_joined: false,
+            },
+            &mut progress,
+            &mut phase,
+            &|semantic, key| {
+                assert_eq!(semantic, invite);
+                assert_eq!(key, &reference.operation);
+                Ok(CommandResult::Joined(ThreadId::new("t")))
+            },
+            &mut |_| Ok(()),
+            &f.client,
+            &crate::app::SystemClock::new(),
+        )
+        .unwrap_err();
+        assert_eq!(phase, "invite");
+        assert!(error.to_string().contains("unexpected invite result"));
+        assert!(progress.invitation.is_none());
+        assert!(progress.message.is_none());
+        assert!(f.client.calls.lock().unwrap().is_empty());
+    }
+}

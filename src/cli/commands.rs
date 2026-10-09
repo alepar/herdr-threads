@@ -279,6 +279,7 @@ pub enum MutationSpec {
         deadline_millis: Option<u64>,
         operator: bool,
     },
+    Join(ThreadId),
     Accept(ThreadId),
     Reject {
         thread: ThreadId,
@@ -399,6 +400,11 @@ impl MutationSpec {
                 thread,
                 invitation,
                 reason,
+                operation,
+                claim: claim.unwrap(),
+            }),
+            Self::Join(thread) => WireCommand::Join(Join {
+                thread,
                 operation,
                 claim: claim.unwrap(),
             }),
@@ -557,6 +563,9 @@ enum Top {
         #[command(flatten)]
         page: PageArgs,
     },
+    /// Join an active thread without an invitation (THREAD is a name or ID).
+    /// Pending invitations require accept or accept-required instead.
+    Join { thread: String },
     /// Accept an invitation to a thread.
     Accept { thread: String },
     /// Reject an exact ordinary invitation with an explicit reason.
@@ -1747,6 +1756,7 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
                 | ThreadSub::Participants { thread, .. },
         } => Some(thread.clone()),
         Top::Participants { thread, .. }
+        | Top::Join { thread }
         | Top::Accept { thread }
         | Top::Reject { thread, .. }
         | Top::AcceptRequired { thread, .. }
@@ -1858,6 +1868,7 @@ fn parse_cli(mut cli: Cli) -> Result<ParsedCli, ApiError> {
                 caller: None,
             }))
         }
+        Top::Join { thread } => CliAction::Mutation(MutationSpec::Join(thread_id(thread)?)),
         Top::Accept { thread } => CliAction::Mutation(MutationSpec::Accept(thread_id(thread)?)),
         Top::Reject {
             thread,

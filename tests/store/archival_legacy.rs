@@ -1842,3 +1842,39 @@ fn archival_legacy_modern_header_rejects_nonjournal_reference() {
         }
     }
 }
+
+#[test]
+fn archival_legacy_main539_join_intent_vetoes_without_authorizing_or_rewriting() {
+    use herdr_threads::cli::journal::{IntentScope, Journal, SemanticMutation};
+    let (_dir, paths, mut source) = source();
+    let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+    let id = super::handoff_fences::identity();
+    let reference = journal
+        .record(
+            IntentScope::Cooperative {
+                instance: "i".into(),
+                seat: id.claim.seat.clone(),
+            },
+            SemanticMutation::freeze(
+                SemanticMutation::Join {
+                    thread: herdr_threads::protocol::ids::ThreadId::new("t"),
+                },
+                id.claim,
+            )
+            .unwrap(),
+            0,
+        )
+        .unwrap();
+    let path = paths.instance_dir.join("intents").join(format!(
+        "{:020}-{}.intent",
+        reference.ordinal,
+        reference.operation.as_str()
+    ));
+    let before = std::fs::read(&path).unwrap();
+    let scan = complete_scan(&mut source);
+    assert!(scan.coverage.is_none());
+    assert!(scan.hints.is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    journal.complete(&reference).unwrap();
+    assert!(complete_scan(&mut source).coverage.is_some());
+}

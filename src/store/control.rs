@@ -390,6 +390,121 @@ fn bump_member_directory(
     )
 }
 
+/// Voluntary self-enrollment, distinct from invitation or requirement consent.
+pub fn join(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    command: &crate::protocol::commands::Join,
+    mut permit: MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    let caller = permit.seat_for_replay_scope().clone();
+    let scope = format!("seat:{}", caller.as_str());
+    let cooperative = permit.cooperative_metadata();
+    let digest = cooperative_payload_hash("join", command)?;
+    let obligation = ObligationRef::Control(command.thread.clone());
+    schema::execute_accountable_transaction(
+        context,
+        conn,
+        budget,
+        cooperative,
+        &scope,
+        command.operation.as_str(),
+        digest,
+        |tx| {
+            let instance = validate_actor(tx, &caller, command.claim.target.as_str())?;
+            let archived: Option<bool> = tx
+                .query_row(
+                    "SELECT archived FROM threads WHERE id=?1 AND instance_id=?2",
+                    params![command.thread.as_str(), instance],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            match archived {
+                None => {
+                    return Err(api_error(
+                        ErrorCode::NotFound,
+                        "thread not found in caller instance",
+                    ));
+                }
+                Some(true) => {
+                    return Err(api_error(
+                        ErrorCode::Conflict,
+                        "thread is archived; ask a joined member or service owner to reopen it",
+                    ));
+                }
+                Some(false) => {}
+            }
+            if let Some(required) =
+                super::service_substrate::current_requirement(tx, &command.thread, &caller)?
+                && required.state == crate::protocol::service::RequirementState::Pending
+            {
+                return Err(api_error(
+                    ErrorCode::MembershipRequired,
+                    "pending required invitation; reread thread participants and use accept-required with its exact revision",
+                ));
+            }
+            let pending: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=i.id))",
+                params![command.thread.as_str(), caller.as_str()], |r| r.get(0),
+            ).map_err(store_error)?;
+            if pending {
+                return Err(api_error(
+                    ErrorCode::Conflict,
+                    "pending invitation; use accept THREAD or reject its exact invitation before joining",
+                ));
+            }
+            Ok(())
+        },
+        |tx, decision| {
+            let actor = decide_accountable(
+                tx,
+                decision,
+                &mut permit,
+                &command.claim,
+                &caller,
+                &command.operation,
+                &obligation,
+                &digest,
+            )?;
+            if joined_in_thread(tx, &command.thread, &caller)? {
+                return Ok(CommandResult::Joined(command.thread.clone()));
+            }
+            let episode =
+                super::service_controls::next_invitation_episode(tx, &command.thread, &caller)?;
+            let instance = &command.claim.instance;
+            let seq = schema::next_decision_seq(tx, instance)?;
+            tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state,joined_at) VALUES (?1,?2,?3,'joined','joined',?4) ON CONFLICT(thread_id,seat_id) DO UPDATE SET episode=excluded.episode,state='joined',voluntary_state='joined',joined_at=excluded.joined_at,left_at=NULL",
+                params![command.thread.as_str(),caller.as_str(),episode,decision.utc.0]).map_err(store_error)?;
+            tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
+                params![command.thread.as_str(),caller.as_str(),episode,seq as i64]).map_err(store_error)?;
+            let payload = serde_json::json!({"action":"join", "seat":caller.as_str(),
+                "generation":actor.binding_generation,"observation":actor.provenance})
+            .to_string();
+            schema::append_attributed_event_once_with_decision_seq(
+                tx,
+                EventInput {
+                    thread: &command.thread,
+                    key: &format!("join:{}:{}", command.operation.as_str(), caller.as_str()),
+                    kind: "info",
+                    payload_json: &payload,
+                    decision_at: decision.utc,
+                    source_message: None,
+                    source_invitation: None,
+                },
+                seq,
+                crate::protocol::service::EventAuthor::Native(caller.clone()),
+            )?;
+            schema::bump_membership_revision(tx, &command.thread)?;
+            schema::bump_filter_revision(tx, instance, "directory", "all")?;
+            bump_member_directory(tx, instance, &caller)?;
+            schema::bump_filter_revision(tx, instance, "inbox", caller.as_str())?;
+            Ok(CommandResult::Joined(command.thread.clone()))
+        },
+    )
+}
+
 pub fn accept(
     context: &StoreContext,
     conn: &mut Connection,

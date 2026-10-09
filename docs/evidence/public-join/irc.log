@@ -1,0 +1,24 @@
+nice: setpriority: Operation not permitted
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-aa425b885727aee3)
+
+running 17 tests
+test cli::irc::tests::agent_nick_escapes_host_names_bounds_each_component_and_keeps_full_legacy_id ... ok
+test cli::irc::tests::programmatic_authors_use_their_label ... ok
+test cli::irc::tests::public_join_is_visible_in_human_read_and_follow ... ok
+test cli::irc::tests::peer_text_cannot_drive_the_terminal ... ok
+test cli::irc::tests::follow_lines_mark_human_and_relayed_messages ... ok
+test cli::irc::tests::clipped_previews_use_the_full_body_from_the_lookup ... ok
+test cli::irc::tests::colors_are_only_emitted_when_selected ... ok
+test cli::irc::tests::pages_render_oldest_first_with_a_continuation ... ok
+test cli::irc::tests::unknown_seats_fall_back_to_the_short_seat_id ... ok
+test cli::irc::tests::relative_nick_long_parents_keep_pane_component ... ok
+test cli::irc::tests::long_bodies_wrap_under_the_message_column_and_keep_line_breaks ... ok
+test cli::irc::tests::agent_harness_is_never_appended_to_display_names ... ok
+test cli::irc::tests::clock_is_hours_and_minutes ... ok
+test cli::irc::tests::relative_nick_expanded_escaped_parents_reserve_pane_budget ... ok
+test cli::irc::tests::very_long_bodies_fold_with_a_hint ... ok
+test cli::irc::tests::system_events_are_notice_lines_with_nicks ... ok
+test cli::irc::tests::user_intent_irc_markers_are_independent ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 2664 filtered out; finished in 0.00s

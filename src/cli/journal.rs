@@ -149,6 +149,9 @@ pub enum SemanticMutation {
         seat: SeatId,
         deadline_millis: Option<u64>,
     },
+    Join {
+        thread: ThreadId,
+    },
     Accept {
         thread: ThreadId,
     },
@@ -446,6 +449,7 @@ impl SemanticMutation {
             Self::CheckIn => IntentKind::CheckIn,
             Self::CreateThread { .. } => IntentKind::CreateThread,
             Self::Invite { .. } => IntentKind::Invite,
+            Self::Join { .. } => IntentKind::Join,
             Self::Accept { .. } => IntentKind::Accept,
             Self::Reject { .. } => IntentKind::Reject,
             Self::AcceptRequired { .. } => IntentKind::Accept,
@@ -470,6 +474,7 @@ impl SemanticMutation {
             Self::HandoffDelivery(plan) => plan.payload.channel.thread(),
             Self::Frozen { mutation, .. } => mutation.thread(),
             Self::Invite { thread, .. }
+            | Self::Join { thread }
             | Self::Accept { thread }
             | Self::AcceptRequired { thread, .. }
             | Self::Reject { thread, .. }
@@ -570,6 +575,11 @@ impl SemanticMutation {
                 thread: thread.clone(),
                 invitation: invitation.clone(),
                 reason: reason.clone(),
+                operation,
+                claim: native()?,
+            }),
+            Self::Join { thread } => Command::Join(Join {
+                thread: thread.clone(),
                 operation,
                 claim: native()?,
             }),
