@@ -1,9 +1,9 @@
 # super-auto report — 2026-10-09-claude-mod-inbound-delivery
 
 status: completed with 0 unresolved Blocking, 4 escalations [degraded: coverage widened in round 2 (12 → 19 findings, 100% novel); round-2 fixes are not re-reviewed by coverage, final review: not ready (code-final-review-8.md; its two must-fixes were resolved after it, unreviewed by a further final review: finding 1 fixed at dc5b2f6c, live stress re-run at b562d1e4 13/14 3/3 with reload_mid_turn 2/3 ledger-only; post-cap audit clean)]
-metrics: pending (upstream-feedback not yet run)
+metrics: parked draft — upstream-feedback-draft.md (5 defects, 3 design questions; not sent)
 
-Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 90066db1; 211 files, +29039/−204). Goal and spec: [design](2026-10-09-claude-mod-inbound-delivery-design.md).
+Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 3793cf88 after absorbing main at 53b6df93). Goal and spec: [design](2026-10-09-claude-mod-inbound-delivery-design.md).
 
 ## Implemented
 
@@ -23,7 +23,7 @@ Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 90066db1;
 
 ## Verification
 
-- Sweep: 4029 passed, 0 failed, 43 skipped @ 11b01cd5; test time 214 s (budget 5 min); leak check clean; clippy, fmt, check-default-features clean — run.md `codeBuckets.sweep`
+- Sweep: 4029 passed, 0 failed, 43 skipped @ 53b6df93 (167 s, budget 5 min); leak check clean; clippy and check-default-features clean; also passed @ 11b01cd5 before the last main merge. A loaded run at 53b6df93 failed 2 untouched hermes runtime tests, which passed alone and in the quiet re-run: flake ht-uy3 — run.md `codeBuckets.sweep`, `sweepFix`
 - Mod JS tests: 83/83 (`scripts/test-claude-mod`) at dc5b2f6c — run.md `postLoopFix`
 - Live stress at b562d1e4 (final code SHA), 3 iterations: 13/14 scenarios 3/3; `reload_mid_turn` 2/3 — [evidence README](../../../evidence/claude-mod-delivery/README.md), run.md `liveStress`
 - Post-cap audit roast (bd8e6661 → 23fb8208 + merge 81dbb244 resolution): clean (1 nit) [converged] — [report](2026-10-09-claude-mod-inbound-delivery-roast-pr-post-cap-audit.md)
@@ -53,6 +53,7 @@ Branch `super-auto/claude-mod-inbound-delivery` → `main` (merge-base 90066db1;
 - Base merge 3d10e3bb → 81dbb244 had 11 conflicts, including a behavioural port of setup D8 into main's Claude setup backend — run.md `baseAbsorbed`; covered by the post-cap audit
 - Signed-in Claude profile is Keychain-bound to its path: copies are signed out, so the first ht-j16.9 run fell back to unit level — run.md `postLoopFix`
 - PR roast 1 left the integration worktree detached; later roasts ran in separate detached worktrees — friction.md
+- Base merge 90066db1 → 3793cf88 (53b6df93): 0 conflicts; main's warning-wake changes do not touch mod suppression; not roast-reviewed (mechanical, clean auto-merge) — run.md `baseAbsorbed`
 - Slowness: merge queue peaked at 5 in fix re-entry round 1 — run.md `codeBuckets.slowness`
 
 ## Entrypoints

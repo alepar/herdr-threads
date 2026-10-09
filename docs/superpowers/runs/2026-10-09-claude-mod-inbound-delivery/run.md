@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-claude-mod-inbound-delivery
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: report
+phase: finish
 codeMechanism: Workflow
 resumeChange: 2026-10-09 · "Goal set: finish super-auto work, prepare integration branch ready for merge into main, notify /herdr tab 'main' for merging and release cutting" · phase 7 prepares the branch (sweep at tip, base absorbed) and hands the merge and release to the Herdr tab 'main' instead of merging locally
 
@@ -32,7 +32,7 @@ codeBuckets:
   parked:
   stalled: false
   review: not ready (code-final-review-8.md; its two must-fixes were resolved after it, unreviewed by a further final review: finding 1 fixed at dc5b2f6c, live stress re-run at b562d1e4 13/14 3/3 with reload_mid_turn 2/3 ledger-only; post-cap audit clean)
-  sweep: 11b01cd5 — 4029 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (test time 214 s, wall 359 s incl. build; leak check clean; matches nextest list) @ 11b01cd5
+  sweep: 53b6df93 — 4029 passed, 0 failed, 0 errors, 43 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (167 s; leak check clean; clippy and check-default-features clean; first run at this SHA under load failed 2 hermes runtime capture tests that pass 3/3 alone and are outside this branch, filed as ht-uy3) @ 53b6df93
   slowness: round 1 (fix re-entry): merge queue peaked at 5 — serial merge lane bottleneck
   worktreesKept:
   processSweep: stopped 0 · survived 0
@@ -61,5 +61,7 @@ postLoopFix: live-stress D1–D3 filed as fix beads ht-j16.28/.29/.30 after loop
 postLoopFix: final-review-7 Must-fix 1+2 (ht-j16.29 regressions: submit inside an open turn; ack without submit) filed as ht-j16.31; Must-fix 3 (D4 names) as ht-j16.32; Must-fix 4 (stale attention submit per session start) as ht-j16.33 — after loop exit instead of the punch list: loss path and spec-required behaviour on the default-on path
 postLoopFix: final-review-8 finding 1 (predecessor batch with an attention block submitted twice; confirmed repro) fixed directly at dc5b2f6c with a delivery test, outside the coordinator; its stress-model and accepted-limit minors go to the punch list
 liveStress: re-run at b562d1e4 (final code SHA): 13/14 scenarios 3/3; reload_mid_turn 2/3 — one extra predecessor_submit ledger entry after a submit resolved just before dispose, one submit and one presentation; leak check clean
-sweepFix: none needed
+sweepFix: none needed (11b01cd5 passed; at 53b6df93 the 2 load failures in untouched hermes tests did not reproduce alone or in a quiet full re-run — flake ht-uy3, no fix bead)
 friction: 6 events
+baseAbsorbed: 90066db1 → 3793cf88 (merge 53b6df93), 0 conflicted files (warning-wake candidate refinement, pacer wake hook, test schedule; no overlap with mod suppression code)
+feedback: parked draft upstream-feedback-draft.md (not sent; destination superpowers workspace agent tab, needs the user's yes)
