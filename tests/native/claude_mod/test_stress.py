@@ -99,6 +99,11 @@ class Settlement(unittest.TestCase):
         led = [row(1, "acked", ["a"], reason="already_settled")]
         self.assertEqual(stress.check_settled(["a"], {"a": "pending"}, led), [])
 
+    def test_ack_without_a_mod_ledger_ack_is_flagged(self):
+        led = [row(1, "acked", ["a"], reason="settled"), row(2, "acked", ["b"], reason="already_settled")]
+        rc = {"a": "acked", "b": "acked", "c": "acked", "d": "pending"}
+        self.assertEqual(stress.check_mod_settled(["a", "b", "c", "d"], rc, led), ["c acked outside the mod (no ledger ack)"])
+
 
 class Args(unittest.TestCase):
     def test_defaults(self):

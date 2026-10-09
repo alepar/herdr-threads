@@ -138,6 +138,15 @@ def check_settled(sent, receipts, entries):
     return out
 
 
+def check_mod_settled(ids, receipts, entries):
+    """Every id the daemon holds acked was settled by the mod (a ledger `acked`), not by another
+    path such as the model running `herdr-threads inbox` while the mod's channel was down."""
+    by_mod = {i for e in entries if e.get("kind") == "acked" and e.get("reason") in ("settled", "already_settled")
+              for i in e.get("ids") or []}
+    return ["%s acked outside the mod (no ledger ack)" % i for i in ids
+            if receipts.get(i) == "acked" and i not in by_mod]
+
+
 def turn_intervals(hook_events, aborts=()):
     """Main-turn intervals seen from outside, from the scenario hook log.
 
@@ -1040,6 +1049,7 @@ def run_live(args, root, procs):
                 v += check_turn_overlap(led, L.hook_events(), L.aborts)
                 rc = L.receipts(ids)
                 v += check_settled(ids, rc, led)
+                v += check_mod_settled(ids, rc, led)
                 v = [x for x in v if x not in reported]
                 reported.update(v)
                 if not ok:
