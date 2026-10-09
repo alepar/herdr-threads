@@ -7,7 +7,9 @@
 //! isolated daemon/state dir; assertions read the daemon's database. No model, no
 //! installed Hermes, never `~/.hermes` or the shared Herdr server.
 use herdr_threads::test_support::{
-    isolated_herdr::IsolatedHerdr, isolation::scrub_env, spawn::SpawnOwned,
+    isolated_herdr::IsolatedHerdr,
+    isolation::scrub_env,
+    spawn::{self, SpawnOwned},
 };
 use serde_json::{Value, json};
 use std::{
@@ -162,7 +164,8 @@ impl Smoke {
     }
 
     fn cli(&self) -> Command {
-        let mut command = self.base(Command::new(BIN));
+        let mut command = self.base(spawn::command(BIN));
+        spawn::tag(&mut command);
         command
             .arg("--json")
             .arg("--state-dir")
@@ -344,7 +347,7 @@ impl Smoke {
 
     /// `herdr-threads hook hermes` fed one envelope directly (configuration 7).
     fn hook(&self, pane: &str, envelope: &Value) -> (i32, Vec<u8>, Vec<u8>) {
-        let mut command = self.base(Command::new(BIN));
+        let mut command = self.base(spawn::command(BIN));
         command
             .arg("--state-dir")
             .arg(&self.state)
