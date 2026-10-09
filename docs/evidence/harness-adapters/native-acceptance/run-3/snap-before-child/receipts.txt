@@ -1,0 +1,2 @@
+message_id | seat_id | state | ack_generation | ack_observation | acked_at
+mkgnib6JR | sOyZueIIm | acked | 3 | {"action_provenance":"cooperative_inbox_display","binding_generation":3,"decided_at":1791491694352,"execution":"2ff2d8a1-d7aa-4270-aba1-68cc8762428e","harness":"hermes","host_boot":"herdr-server:pid=28317:start=1791491591.213607:uid=501","observed_at":1791491694352,"provenance":"cooperative_top_level","session":"20261008_133346_b76595","target_generation":1} | 1791491694352

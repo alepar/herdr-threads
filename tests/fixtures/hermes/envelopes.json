@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "callback": "pre_llm_call",
+  "platform": "cli",
+  "session_id": "fixture-session",
+  "parent_session_id": "",
+  "task_id": "fixture-task",
+  "turn_id": "fixture-turn",
+  "tool_call_id": null,
+  "api_request_id": null,
+  "event_id": "fixture-event",
+  "observation_order": {
+    "process_nonce": "12345678-1234-4567-8234-123456789abc",
+    "sequence": 1,
+    "observed_at_millis": 1000,
+    "callback_budget_millis": 1200
+  },
+  "started_at": 1000,
+  "deadline_at": 2200,
+  "reset_reason": null,
+  "runtime_identity": {
+    "key": "build:fee44d8d736b099dbcc0ea8d94b5c9e414a28e602349e871c972bd27d0ff9fa6",
+    "release_version": null,
+    "source": "git",
+    "base_version": "0.21.5",
+    "derived_version": "0.21.5+1.g1234567",
+    "commit": "1234567890abcdef1234567890abcdef12345678",
+    "dirty": false,
+    "distance": 1
+  },
+  "identity_unavailable_reason": null,
+  "shape": {
+    "platform": {
+      "presence": "present",
+      "type": "string"
+    },
+    "session_id": {
+      "presence": "present",
+      "type": "string"
+    },
+    "parent_session_id": {
+      "presence": "present",
+      "type": "string"
+    },
+    "task_id": {
+      "presence": "present",
+      "type": "string"
+    },
+    "turn_id": {
+      "presence": "present",
+      "type": "string"
+    },
+    "tool_call_id": {
+      "presence": "missing",
+      "type": "absent"
+    },
+    "api_request_id": {
+      "presence": "missing",
+      "type": "absent"
+    }
+  },
+  "bridge_schema_contract_id": "3f599002572f0efc",
+  "startup_capture": {
+    "identity_provenance": "startup_captured_identity",
+    "api_contract": "initialized_plugin_context_schema1",
+    "interpreter": "/fixture/python3",
+    "module_origins": {
+      "hermes_bootstrap": "/fixture/native/hermes_bootstrap.py",
+      "hermes_constants": "/fixture/native/hermes_constants.py",
+      "hermes_cli.profiles": "/fixture/native/hermes_cli/profiles.py",
+      "hermes_cli.version_info": "/fixture/native/hermes_cli/version_info.py",
+      "hermes_cli.config": "/fixture/native/hermes_cli/config.py",
+      "hermes_cli.plugins": "/fixture/native/hermes_cli/plugins.py"
+    },
+    "profile": "default",
+    "lexical_home": "/fixture/home",
+    "physical_home": "/fixture/home"
+  },
+  "timeout_observation": {
+    "quality": "ok",
+    "fallback_kind": null,
+    "provenance": "official_effective_config_observation",
+    "timeout_seconds": 30.0,
+    "age_seconds": 0.0,
+    "generation": 1
+  },
+  "role_association": {
+    "role": "top",
+    "provenance": "explicit_parent",
+    "session_id": "fixture-session",
+    "turn_id": "fixture-turn"
+  }
+}

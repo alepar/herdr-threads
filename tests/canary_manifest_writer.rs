@@ -17,6 +17,7 @@ fn root() -> &'static Path {
 fn python(args: &[&std::ffi::OsStr]) -> Option<Output> {
     let mut cmd = command("python3");
     cmd.args(args);
+    cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
@@ -113,4 +114,74 @@ fn writer_over_the_all_pass_case_records_the_binarys_contracts() {
         };
         assert_eq!(row["contract_id"], *want, "{row}");
     }
+}
+
+#[test]
+fn runtime_writer_roundtrips_through_the_real_rust_reader() {
+    let dir = scratch("runtime");
+    let script = r#"
+import importlib.util,json,pathlib,sys
+root,binary,directory=sys.argv[1:]
+spec=importlib.util.spec_from_file_location('writer',pathlib.Path(root)/'scripts/canary/manifest.py')
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+a=next(a for a in m.discovery(binary)['adapters'] if a['id']=='claude')
+w=pathlib.Path(directory)/'work/claude-try1';w.mkdir(parents=True)
+i={'key':'release:2.1.288','release_version':'2.1.288','source':'npm','base_version':None,'derived_version':None,'commit':None,'dirty':False,'distance':None}
+r={'schema_version':1,'harness':'claude','attempt':'try1','identity':i,'evidence_stage':'no_model','outcome':'complete','reason':None,'domains':[{'domain':c['domain'],'origin':c['origin'],'contract_id':c['id'],'successful_milestones':c['required_milestones'],'violations':[],'outcome':'compatible'} for c in a['contracts']]}
+(w/'result.json').write_text(json.dumps(r))
+index={'schema_version':1,'attempts':[{'harness':'claude','attempt':'try1','identity_key':i['key'],'evidence_stage':'no_model','result_path':'work/claude-try1/result.json','capture_paths':[]}]}
+p=pathlib.Path(directory)/'artifact-index.json';p.write_text(json.dumps(index))
+results=m.indexed_results(p,{'schema_version':1,'adapters':[a]})
+b={'schema_version':2,'generated_at':None,'rows':[],'contracts':{}}
+print(m.render(m.add_runtime(b,b,{'schema_version':1,'adapters':[a]},results,'2026-10-02T06:00:00Z')),end='')
+"#;
+    let Some(out) = python(&[
+        "-c".as_ref(),
+        script.as_ref(),
+        root().as_os_str(),
+        BIN.as_ref(),
+        dir.as_os_str(),
+    ]) else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed = herdr_threads::harness::manifest::parse(&out.stdout).unwrap();
+    let rows = parsed.runtime_rows();
+    assert!(
+        !rows.is_empty(),
+        "actual Claude discovery has required domains"
+    );
+    let registration = herdr_threads::harness::registry::builtins()
+        .registrations()
+        .iter()
+        .find(|r| r.metadata().id == "claude")
+        .unwrap();
+    for row in rows {
+        let descriptor = registration
+            .contracts()
+            .iter()
+            .find(|d| d.domain_id == row.domain)
+            .unwrap();
+        assert!(
+            parsed
+                .runtime_row("claude", &row.identity, descriptor)
+                .is_some()
+        );
+        assert_eq!(row.last_seen_at, 1_790_920_800_000);
+        assert_eq!(
+            row.evidence_stage,
+            herdr_threads::harness::manifest::RuntimeStage::NoModel
+        );
+        assert_eq!(row.identity.key, "release:2.1.288");
+    }
+    assert!(
+        parsed.rows.is_empty(),
+        "runtime identities never enter semver rows"
+    );
 }

@@ -5,6 +5,401 @@
 
 use super::*;
 
+struct CurrentHealthDoctorClock(std::sync::atomic::AtomicI64);
+impl Clock for CurrentHealthDoctorClock {
+    fn utc_now(&self) -> crate::protocol::time::UtcMillis {
+        crate::protocol::time::UtcMillis(self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(1)
+    }
+}
+
+struct CurrentHealthDoctorClient(crate::daemon::harness_states::HarnessStatesProvider);
+impl LocalClient for CurrentHealthDoctorClient {
+    fn call(
+        &self,
+        command: Command,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        let result = match command {
+            Command::Capabilities => {
+                CommandResult::Capabilities(crate::protocol::results::CapabilityList {
+                    capabilities: vec![crate::protocol::capabilities::HARNESS_HEALTH_V2.into()],
+                })
+            }
+            Command::HarnessHealthV2 => CommandResult::HarnessHealthV2(self.0.report_v2(budget)?),
+            _ => panic!("unexpected current health doctor command"),
+        };
+        // Exercise the same strict result decoding as the wire client.
+        Ok(serde_json::from_slice(&serde_json::to_vec(&result).unwrap()).unwrap())
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &crate::protocol::output::OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        self.call(command, budget)
+    }
+}
+
+// Real Store -> cached producer -> negotiated doctor consumer -> JSON/text.
+// Historical runtime evidence remains broken and labeled all-scopes; retained
+// old scoped failures cannot be rendered as current limitations.
+#[test]
+fn doctor_current_diagnostics_are_bounded_and_expired_history_is_all_scopes() {
+    use crate::{
+        daemon::harness_states::{HarnessStatesProvider, embedded_source},
+        ports::StorePort,
+        store::{
+            SqliteStore, StoreSettings,
+            connection::StoreContext,
+            harness_evidence::{DiagnosticRecord, EvidenceOutcome, EvidenceRecordV2},
+        },
+        test_support::isolation::TestIsolation,
+    };
+    let iso = TestIsolation::new("doctor-current-health");
+    let clock = Arc::new(CurrentHealthDoctorClock(std::sync::atomic::AtomicI64::new(
+        1_000_000_000,
+    )));
+    let store = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let budget = CallBudget {
+        deadline: MonoInstant(1_000_000),
+        cancellation: Default::default(),
+    };
+    store
+        .record_contract_diagnostic(
+            &DiagnosticRecord {
+                harness: "claude",
+                session_id: "expired",
+                contract_id: "0123456789abcdef",
+                event: "PreToolUse",
+                field: "expired_scoped_failure",
+            },
+            &budget,
+        )
+        .unwrap();
+    let descriptor = &crate::harness::registry::builtins().registrations()[0].contracts()[0];
+    let identity =
+        crate::harness::runtime::RuntimeIdentity::stable_release("9.0.0", "fixture").unwrap();
+    store
+        .record_harness_evidence_v2(
+            &EvidenceRecordV2 {
+                identity: &identity,
+                descriptor,
+                event: "PreToolUse",
+                outcome: &EvidenceOutcome::Violation {
+                    field: "historical_runtime_failure".into(),
+                },
+                qualified: true,
+            },
+            &budget,
+        )
+        .unwrap();
+    clock
+        .0
+        .fetch_add(48 * 60 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    let client = CurrentHealthDoctorClient(
+        HarnessStatesProvider::new(
+            store.clone(),
+            embedded_source(),
+            clock.clone(),
+            Box::new(|_| None),
+            None,
+        )
+        .with_observations(Box::new(|| {
+            Ok([(
+                "claude".into(),
+                DaemonObservation {
+                    status: crate::daemon::health::HarnessStatus::PresentUnqualified {
+                        detail: "qualification unavailable".into(),
+                    },
+                    ..Default::default()
+                },
+            )]
+            .into())
+        })),
+    );
+    let consume = || {
+        let rich = daemon_details(&client, &budget)
+            .rich
+            .expect("actual advertised doctor health");
+        json!({"adapter_order":["claude"],"harness_health_v2":rich})
+    };
+    let history = consume();
+    let entry = &history["harness_health_v2"]["harnesses"]["claude"];
+    assert_eq!(entry["limitations"], json!(["qualification unavailable"]));
+    assert_eq!(entry["runtime_evidence"][0]["state"], "broken");
+    assert_eq!(entry["runtime_evidence"][0]["in_health_window"], false);
+    assert_eq!(
+        entry["runtime_evidence"][0]["scope"]["kind"],
+        "runtime_evidence_all_scopes"
+    );
+    assert!(client.0.health_lines(&budget).unwrap().is_empty());
+    let text = render_debug_text(&history);
+    assert!(
+        text.contains("claude daemon_default: installation present"),
+        "{text}"
+    );
+    assert!(
+        text.contains("runtime_evidence_all_scopes broken:"),
+        "{text}"
+    );
+    assert!(!text.contains("expired_scoped_failure"), "{text}");
+    for index in 0..17 {
+        clock.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        store
+            .record_contract_diagnostic(
+                &DiagnosticRecord {
+                    harness: "claude",
+                    session_id: &format!("fresh-{index:02}"),
+                    contract_id: "0123456789abcdef",
+                    event: "PreToolUse",
+                    field: &format!("fresh_{index:02}"),
+                },
+                &budget,
+            )
+            .unwrap();
+        if index == 15 {
+            let sixteen = consume();
+            let limitations = sixteen["harness_health_v2"]["harnesses"]["claude"]["limitations"]
+                .as_array()
+                .unwrap();
+            assert_eq!(
+                limitations.len(),
+                16,
+                "status plus sixteen diagnostics share the complete cap"
+            );
+            assert!(limitations[0].as_str().unwrap().contains("fresh_15"));
+            assert!(limitations[15].as_str().unwrap().contains("fresh_00"));
+            let text = render_debug_text(&sixteen);
+            assert_eq!(text.matches("contract input failure").count(), 16, "{text}");
+            assert!(
+                text.contains("qualification unavailable")
+                    && !text.contains("expired_scoped_failure"),
+                "{text}"
+            );
+        }
+    }
+    let current = consume();
+    let limitations = current["harness_health_v2"]["harnesses"]["claude"]["limitations"]
+        .as_array()
+        .unwrap();
+    assert_eq!(limitations.len(), 16);
+    assert!(limitations[0].as_str().unwrap().contains("fresh_16"));
+    assert!(limitations[15].as_str().unwrap().contains("fresh_01"));
+    let text = render_debug_text(&current);
+    assert_eq!(text.matches("contract input failure").count(), 16, "{text}");
+    assert!(
+        !text.contains("expired_scoped_failure") && !text.contains("fresh_00"),
+        "{text}"
+    );
+    assert!(
+        text.contains("qualification unavailable")
+            && text.contains("runtime_evidence_all_scopes broken:"),
+        "{text}"
+    );
+    assert!(client.0.health_lines(&budget).unwrap()[0].contains("fresh_16"));
+    assert_eq!(
+        store.contract_diagnostics("claude", &budget).unwrap().len(),
+        18,
+        "history must remain retained independently of public caps"
+    );
+}
+
+struct DoctorClock(std::sync::atomic::AtomicU64);
+impl Clock for DoctorClock {
+    fn utc_now(&self) -> crate::protocol::time::UtcMillis {
+        crate::protocol::time::UtcMillis(0)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+#[derive(Clone, Copy)]
+enum DoctorMode {
+    Rich,
+    Absent,
+    Wrong,
+    Failed,
+    Timeout,
+    CapabilityFailure,
+}
+struct DoctorClient {
+    mode: DoctorMode,
+    clock: Arc<DoctorClock>,
+    calls: std::sync::Mutex<Vec<(String, u64)>>,
+}
+impl LocalClient for DoctorClient {
+    fn call(
+        &self,
+        command: Command,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((format!("{command:?}"), budget.deadline.0));
+        self.clock
+            .0
+            .fetch_add(600, std::sync::atomic::Ordering::SeqCst);
+        match command {
+            Command::Capabilities => {
+                if matches!(self.mode, DoctorMode::CapabilityFailure) {
+                    return Err(crate::protocol::results::ApiError::new(
+                        ErrorCode::HostUnavailable,
+                        "fixture capabilities unavailable",
+                    ));
+                }
+                let capabilities = if matches!(self.mode, DoctorMode::Absent) {
+                    vec![crate::protocol::capabilities::HARNESS_STATES.into()]
+                } else {
+                    vec![crate::protocol::capabilities::HARNESS_HEALTH_V2.into()]
+                };
+                Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList { capabilities },
+                ))
+            }
+            Command::HarnessHealthV2 => match self.mode {
+                DoctorMode::Wrong => Ok(CommandResult::HarnessStates(HarnessStatesReport {
+                    harnesses: vec![],
+                    mod_channels: None,
+                })),
+                DoctorMode::Failed => Err(crate::protocol::results::ApiError::new(
+                    ErrorCode::HostUnavailable,
+                    "fixture v2 unavailable",
+                )),
+                DoctorMode::Timeout => Err(crate::protocol::results::ApiError::new(
+                    ErrorCode::DeadlineExceeded,
+                    "fixture v2 deadline elapsed",
+                )),
+                _ => Ok(CommandResult::HarnessHealthV2(
+                    crate::protocol::results::HarnessHealthV2Report {
+                        harnesses: Default::default(),
+                    },
+                )),
+            },
+            Command::HarnessStates => Ok(CommandResult::HarnessStates(HarnessStatesReport {
+                harnesses: vec![],
+                mod_channels: None,
+            })),
+            _ => panic!("unexpected doctor request"),
+        }
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &crate::protocol::output::OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        self.call(command, budget)
+    }
+}
+
+/// Kills legacy-only negotiation and per-request fresh budgets.
+#[test]
+fn doctor_negotiates_rich_health_once_with_decreasing_budget() {
+    let clock = Arc::new(DoctorClock(std::sync::atomic::AtomicU64::new(100)));
+    let client = DoctorClient {
+        mode: DoctorMode::Rich,
+        clock: Arc::clone(&clock),
+        calls: Default::default(),
+    };
+    let erased: Arc<dyn Clock> = clock;
+    let budget = CallBudget {
+        deadline: MonoInstant(erased.monotonic_now().0 + HEALTH_BUDGET_MS),
+        cancellation: Default::default(),
+    };
+    let details = daemon_details(&client, &budget);
+    assert!(details.rich.is_ok());
+    assert_eq!(
+        *client.calls.lock().unwrap(),
+        vec![
+            ("Capabilities".into(), 2100),
+            ("HarnessHealthV2".into(), 2100)
+        ]
+    );
+}
+
+/// Advertised failures stay unavailable with their cause; only absent capability
+/// uses the labeled legacy projection, never a fabricated complete rich report.
+#[test]
+fn doctor_v2_absent_wrong_failed_and_timeout_remain_explicit() {
+    for (mode, expected, calls) in [
+        (
+            DoctorMode::Absent,
+            "does not advertise harness.health_v2",
+            vec!["Capabilities", "HarnessStates"],
+        ),
+        (
+            DoctorMode::Wrong,
+            "returned another result",
+            vec!["Capabilities", "HarnessHealthV2"],
+        ),
+        (
+            DoctorMode::Failed,
+            "fixture v2 unavailable",
+            vec!["Capabilities", "HarnessHealthV2"],
+        ),
+        (
+            DoctorMode::Timeout,
+            "deadline elapsed",
+            vec!["Capabilities", "HarnessHealthV2"],
+        ),
+        (
+            DoctorMode::CapabilityFailure,
+            "fixture capabilities unavailable",
+            vec!["Capabilities"],
+        ),
+    ] {
+        let clock = Arc::new(DoctorClock(std::sync::atomic::AtomicU64::new(100)));
+        let client = DoctorClient {
+            mode,
+            clock,
+            calls: Default::default(),
+        };
+        let budget = CallBudget {
+            deadline: MonoInstant(2100),
+            cancellation: Default::default(),
+        };
+        let details = daemon_details(&client, &budget);
+        assert!(
+            details
+                .rich
+                .as_ref()
+                .err()
+                .is_some_and(|why| why.contains(expected))
+        );
+        assert_eq!(
+            client
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            calls
+        );
+        assert!(
+            client
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, deadline)| *deadline == 2100)
+        );
+        assert_eq!(details.states.is_ok(), matches!(mode, DoctorMode::Absent));
+    }
+}
+
 /// Kills: a renamed serde string, a reordered or dropped variant, and a
 /// string that drifts from the Codex labels the evidence file stores.
 #[test]
@@ -534,4 +929,493 @@ fn doctor_json_carries_harness_states_or_the_reason() {
         text.contains("harness states unavailable: the daemon is not running\n"),
         "{text}"
     );
+}
+
+use crate::harness::adapter::*;
+struct ProfileDoctorAdapter {
+    requests: std::sync::Mutex<Vec<ResolvedSetupScope>>,
+    setup_deadlines: std::sync::Mutex<Vec<u64>>,
+    safe: bool,
+    captured_scope: Option<ResolvedSetupScope>,
+}
+impl HarnessAdapter for ProfileDoctorAdapter {
+    type Admission = ();
+    fn metadata(&self) -> &'static AdapterMetadata {
+        static META: AdapterMetadata = AdapterMetadata {
+            id: "fourth",
+            display_label: "Fourth",
+            context_spelling: "Fourth",
+            context_aliases: &[],
+            executable: ExecutableLookup::Unsupported,
+            host_kinds: &[],
+            setup_scopes: &[SetupScopeKind::ConfigRoot, SetupScopeKind::Profile],
+            runtime_sources: &[],
+            budget: EventBudgetPolicy {
+                lifecycle_ms: 5000,
+                observer_ms: 1500,
+            },
+        };
+        &META
+    }
+    fn contracts(&self) -> &'static [ContractDescriptor] {
+        &[]
+    }
+    fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+        panic!("doctor status must not use mutating installation observer")
+    }
+    fn admit(&self, _: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<()> {
+        panic!("no native admission")
+    }
+    fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
+        panic!("no version inference")
+    }
+    fn classify(&self, _: &HookInput) -> ContractObservation {
+        panic!("no callback")
+    }
+    fn decode(&self, _: &(), _: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+        panic!("no callback")
+    }
+    fn encode(
+        &self,
+        _: &(),
+        _: &DecodedEvent,
+        _: &NeutralOffer,
+    ) -> Result<EncodedOutput, EncodeFailure> {
+        panic!("no callback")
+    }
+    fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+        panic!("no attribution")
+    }
+    fn resolve_setup_scope(
+        &self,
+        scope: &SetupScopeRequest,
+        env: &SetupEnvironment,
+    ) -> Result<ResolvedSetupScope, SetupFailure> {
+        let root = env.config_roots["fourth"].clone();
+        Ok(match scope {
+            SetupScopeRequest::Default => ResolvedSetupScope::ConfigRoot(root),
+            SetupScopeRequest::Profile(name) => ResolvedSetupScope::Profile {
+                name: name.clone(),
+                home: root.join(name),
+            },
+        })
+    }
+    fn status(&self, request: &StatusRequest, _: &CallBudget) -> SetupStatus {
+        self.requests.lock().unwrap().push(request.scope.clone());
+        let root = profile_root(&request.scope);
+        SetupStatus::Detailed(Box::new(LocalSetupStatus {
+            scope: request.scope.clone(),
+            installed: root.join("owned").exists(),
+            enabled: Some(false),
+            admitted: Some(true),
+            observed: None,
+            configured_hook: None,
+            fingerprint: None,
+            diagnostics: vec![SetupDiagnostic::new(
+                "manual_enable",
+                DiagnosticSeverity::Info,
+                "Enable manually; installation does not enable native callbacks",
+            )],
+            repairs: vec![LocalRepair::InstallOwned, LocalRepair::RemoveOwned],
+            projection: json!({"installed": root.join("owned").exists(), "frozen_input": request.environment.declared["PROFILE_INPUT"].to_string_lossy()}),
+        }))
+    }
+    fn doctor_projection(
+        &self,
+        request: &StatusRequest,
+        _: &Value,
+        budget: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        let status = self.captured_scope.as_ref().map(|scope| {
+            let SetupStatus::Detailed(mut status) = self.status(request, budget) else {
+                unreachable!("profile fixture always returns detailed status")
+            };
+            status.scope = scope.clone();
+            SetupStatus::Detailed(status)
+        });
+        Some(DoctorProjection {
+            status,
+            hooks: json!({"owned": profile_root(&request.scope).join("owned").exists(), "captured_profile": self.captured_scope.as_ref().map(|scope| match scope { ResolvedSetupScope::Profile { name, .. } => name.as_str(), _ => "default" })}),
+            limitations: vec![],
+            manual_repairs: vec![
+                json!({"action": "native enablement", "outcome": "manual", "detail": "Enable manually"}),
+            ],
+            safe_repairs: if self.safe && !profile_root(&request.scope).join("owned").exists() {
+                vec![LocalRepair::InstallOwned]
+            } else {
+                vec![]
+            },
+            repair_options: Default::default(),
+        })
+    }
+    fn setup(
+        &self,
+        request: &SetupRequest,
+        budget: &CallBudget,
+    ) -> Result<SetupOutcome, SetupFailure> {
+        self.setup_deadlines.lock().unwrap().push(budget.deadline.0);
+        let root = profile_root(&request.scope);
+        std::fs::create_dir_all(root).map_err(SetupFailure::Io)?;
+        std::fs::write(
+            root.join("owned"),
+            request.environment.declared["PROFILE_INPUT"].as_encoded_bytes(),
+        )
+        .map_err(SetupFailure::Io)?;
+        Ok(SetupOutcome {
+            actions: vec![SetupAction::InstalledOwned],
+            diagnostic: String::new(),
+            diagnostics: vec![],
+            projection: json!({"action": "installed"}),
+        })
+    }
+    fn unsetup(&self, _: &UnsetupRequest, _: &CallBudget) -> Result<RemovalOutcome, SetupFailure> {
+        panic!("doctor must never remove")
+    }
+}
+fn profile_root(scope: &ResolvedSetupScope) -> &std::path::Path {
+    match scope {
+        ResolvedSetupScope::ConfigRoot(root) => root,
+        ResolvedSetupScope::Profile { home, .. } => home,
+    }
+}
+
+/// Kills accepting a profile then inspecting the default, dropping frozen input,
+/// authorizing repair from status operations alone, unsafe-state writes or enabling
+/// callbacks just because aggregate evidence/owned files are present.
+#[test]
+fn doctor_actual_registered_profile_status_and_safe_owned_repair() {
+    use crate::harness::registry::{Registration, Registry};
+    let case = PathCase::new("registered-profile");
+    let adapter = Box::leak(Box::new(ProfileDoctorAdapter {
+        requests: Default::default(),
+        setup_deadlines: Default::default(),
+        safe: true,
+        captured_scope: None,
+    }));
+    let registry = Registry::new(Box::leak(
+        vec![
+            Registration::new(adapter),
+            Registration::new(&crate::harness::claude::ClaudeAdapter),
+        ]
+        .into_boxed_slice(),
+    ))
+    .unwrap();
+    let state = case.dir.join("state");
+    let host = case.dir.join("herdr.sock");
+    let parsed = super::super::commands::parse_argv_in_registry(
+        [
+            std::ffi::OsString::from("herdr-threads"),
+            "doctor".into(),
+            "--json".into(),
+            "--harness".into(),
+            "fourth".into(),
+            "--profile".into(),
+            "work".into(),
+            "--state-dir".into(),
+            state.clone().into_os_string(),
+            "--host-endpoint".into(),
+            host.clone().into_os_string(),
+        ],
+        &registry,
+    )
+    .unwrap();
+    let environment = SetupEnvironment {
+        config_roots: [("fourth".into(), case.dir.join("profiles"))]
+            .into_iter()
+            .collect(),
+        declared: [("PROFILE_INPUT".into(), "frozen-value".into())]
+            .into_iter()
+            .collect(),
+        path: Some("/no-native-doctor-path".into()),
+        state_dir: Some(state),
+        host_endpoint: Some(host),
+        executable: PathBuf::from("/isolated/herdr-threads"),
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    assert!(matches!(
+        run_registered(&parsed, &registry, Some(&environment), &mut out),
+        Err(RunError::Exit(exit::EXIT_UNAVAILABLE))
+    ));
+    let mut doc: Value = serde_json::from_slice::<Value>(&out).unwrap()["doctor"].clone();
+    assert_eq!(doc["adapter_order"], json!(["fourth"]));
+    assert_eq!(doc["local_harnesses"]["fourth"]["scope"]["profile"], "work");
+    assert_eq!(doc["local_harnesses"]["fourth"]["enabled"], false);
+    assert_eq!(doc["local_harnesses"]["fourth"]["observed"], Value::Null);
+    assert!(doc["hooks"]["claude"].is_null());
+    let scope = SetupScopeRequest::Profile("work".into());
+    doc["daemon"]["state"] = json!("healthy");
+    // All-scopes evidence does not alter selected-profile local axes.
+    doc["harness_health_v2"] = json!({"harnesses": {"fourth": {"runtime_evidence": [{"scope": {"kind": "runtime_evidence_all_scopes"}, "state": "working"}]}}});
+    let owned = collect_local(&mut doc, &registry, Some("fourth"), &scope, &environment);
+    assert_eq!(doc["local_harnesses"]["fourth"]["observed"], Value::Null);
+    assert_eq!(doc["local_harnesses"]["fourth"]["enabled"], false);
+    let repairs = apply_owned_repairs(&doc, owned, &environment);
+    assert_eq!(repairs[0]["action"], "setup fourth");
+    assert_eq!(repairs[0]["outcome"], "attempted");
+    assert_eq!(
+        std::fs::read(case.dir.join("profiles/work/owned")).unwrap(),
+        b"frozen-value"
+    );
+    assert!(!case.dir.join("profiles/owned").exists());
+    let owned = collect_local(&mut doc, &registry, Some("fourth"), &scope, &environment);
+    assert!(
+        owned.is_empty(),
+        "installed owned files are not automatically rewritten"
+    );
+    assert_eq!(doc["local_harnesses"]["fourth"]["enabled"], false);
+    assert!(doc["local_harnesses"]["fourth"]["manual_repairs"][0]["detail"] == "Enable manually");
+    std::fs::remove_file(case.dir.join("profiles/work/owned")).unwrap();
+    let owned = collect_local(&mut doc, &registry, Some("fourth"), &scope, &environment);
+    doc["state_dir"]["safe"] = json!(false);
+    assert!(apply_owned_repairs(&doc, owned, &environment).is_empty());
+    assert!(!case.dir.join("profiles/work/owned").exists());
+    assert!(
+        adapter
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|scope| matches!(scope, ResolvedSetupScope::Profile {name, ..} if name == "work"))
+    );
+    assert_eq!(adapter.setup_deadlines.lock().unwrap().len(), 1);
+    let manual = Box::leak(Box::new(ProfileDoctorAdapter {
+        requests: Default::default(),
+        setup_deadlines: Default::default(),
+        safe: false,
+        captured_scope: None,
+    }));
+    let registry = Registry::new(Box::leak(
+        vec![Registration::new(manual)].into_boxed_slice(),
+    ))
+    .unwrap();
+    assert!(
+        collect_local(&mut doc, &registry, Some("fourth"), &scope, &environment).is_empty(),
+        "setup status operations do not authorize doctor repair"
+    );
+}
+
+/// Kills using rejected captured hooks to authorize writes in the selected profile.
+#[test]
+fn doctor_actual_fix_discards_wrong_scope_capture_and_owned_repair() {
+    use crate::harness::registry::{Registration, Registry};
+    // Matched capture is a positive control through the same actual doctor fix route.
+    for captured_profile in ["work", "foreign"] {
+        let case = PathCase::new(&format!("captured-scope-{captured_profile}"));
+        let profiles = case.dir.join("profiles");
+        let adapter = Box::leak(Box::new(ProfileDoctorAdapter {
+            requests: Default::default(),
+            setup_deadlines: Default::default(),
+            safe: true,
+            captured_scope: Some(ResolvedSetupScope::Profile {
+                name: captured_profile.into(),
+                home: profiles.join(captured_profile),
+            }),
+        }));
+        let registry = Registry::new(Box::leak(
+            vec![Registration::new(adapter)].into_boxed_slice(),
+        ))
+        .unwrap();
+        let state = case.dir.join("state");
+        let host = case.dir.join("herdr.sock");
+        let parsed = super::super::commands::parse_argv_in_registry(
+            [
+                std::ffi::OsString::from("herdr-threads"),
+                "doctor".into(),
+                "--json".into(),
+                "--harness".into(),
+                "fourth".into(),
+                "--profile".into(),
+                "work".into(),
+                "--state-dir".into(),
+                state.clone().into_os_string(),
+                "--host-endpoint".into(),
+                host.clone().into_os_string(),
+                "fix".into(),
+            ],
+            &registry,
+        )
+        .unwrap();
+        let environment = SetupEnvironment {
+            config_roots: [("fourth".into(), profiles.clone())].into_iter().collect(),
+            declared: [("PROFILE_INPUT".into(), "frozen-value".into())]
+                .into_iter()
+                .collect(),
+            path: Some("/no-native-doctor-path".into()),
+            state_dir: Some(state),
+            host_endpoint: Some(host),
+            executable: PathBuf::from("/isolated/herdr-threads"),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        assert!(matches!(
+            run_registered(&parsed, &registry, Some(&environment), &mut out),
+            Err(RunError::Exit(exit::EXIT_UNAVAILABLE))
+        ));
+        let doc = &serde_json::from_slice::<Value>(&out).unwrap()["doctor"];
+        let measured = (
+            doc["hooks"]["fourth"]["captured_profile"].as_str(),
+            profiles.join("work/owned").exists(),
+            adapter.setup_deadlines.lock().unwrap().len(),
+        );
+        assert_eq!(
+            measured,
+            if captured_profile == "work" {
+                (Some("work"), true, 1)
+            } else {
+                (None, false, 0)
+            },
+            "capture={captured_profile}: {doc}"
+        );
+        assert_eq!(doc["local_harnesses"]["fourth"]["scope"]["profile"], "work");
+        if captured_profile == "foreign" {
+            assert_eq!(doc["local_harnesses"]["fourth"]["installed"], Value::Null);
+            assert_eq!(
+                doc["local_harnesses"]["fourth"]["diagnostics"][0]["text"],
+                "adapter returned status for a different local scope"
+            );
+            assert!(
+                doc["repairs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row["action"] != "setup fourth")
+            );
+        }
+        assert!(!profiles.join("foreign/owned").exists());
+    }
+}
+
+/// Kills bypassing the adapter's declared setup options at automatic repair.
+#[test]
+fn doctor_owned_repair_refuses_undeclared_options_before_writes() {
+    use crate::harness::registry::{Registration, Registry};
+    let case = PathCase::new("repair-options");
+    let adapter = Box::leak(Box::new(ProfileDoctorAdapter {
+        requests: Default::default(),
+        setup_deadlines: Default::default(),
+        safe: true,
+        captured_scope: None,
+    }));
+    let registry = Registry::new(Box::leak(
+        vec![Registration::new(adapter)].into_boxed_slice(),
+    ))
+    .unwrap();
+    let environment = SetupEnvironment {
+        executable: PathBuf::from("/isolated/herdr-threads"),
+        declared: [("PROFILE_INPUT".into(), "frozen-value".into())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    let report = json!({"context": {"ok": true}, "state_dir": {"safe": true}, "daemon": {"state": "healthy"}});
+    let owned = vec![OwnedRepair {
+        registration: &registry.registrations()[0],
+        scope: ResolvedSetupScope::ConfigRoot(case.dir.clone()),
+        options: [("undeclared".into(), true)].into_iter().collect(),
+    }];
+    let outcomes = apply_owned_repairs(&report, owned, &environment);
+    assert_eq!(outcomes[0]["outcome"], "failed");
+    assert!(!case.dir.join("owned").exists());
+    assert!(adapter.setup_deadlines.lock().unwrap().is_empty());
+}
+
+/// Operational doctor projects executable availability without invoking diagnostic flags.
+#[test]
+fn absorption_doctor_concrete_projection_invokes_no_diagnostic_flags() {
+    let case = PathCase::new("single-capture");
+    let count = case.dir.join("count");
+    let binary = case.dir.join("claude");
+    std::fs::write(
+        &binary,
+        format!(
+            "#!/bin/sh\nprintf 'x\\n' >> '{}'\nprintf '2.1.286 (Claude Code)\\n'\n",
+            count.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let state = case.dir.join("state");
+    let host = case.dir.join("herdr.sock");
+    let registry = crate::harness::registry::builtins();
+    let parsed = super::super::commands::parse_argv_in_registry(
+        [
+            std::ffi::OsString::from("herdr-threads"),
+            "doctor".into(),
+            "--json".into(),
+            "--harness".into(),
+            "claude".into(),
+            "--state-dir".into(),
+            state.clone().into_os_string(),
+            "--host-endpoint".into(),
+            host.clone().into_os_string(),
+        ],
+        registry,
+    )
+    .unwrap();
+    let environment = SetupEnvironment {
+        config_roots: [("claude".into(), case.dir.join("config"))]
+            .into_iter()
+            .collect(),
+        path: Some(case.dir.clone().into_os_string()),
+        state_dir: Some(state),
+        host_endpoint: Some(host),
+        executable: PathBuf::from("/isolated/herdr-threads"),
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    let _ = run_registered(&parsed, registry, Some(&environment), &mut out);
+    assert!(!count.exists(), "doctor invoked diagnostic flags");
+    let doc: Value = serde_json::from_slice::<Value>(&out).unwrap()["doctor"].clone();
+    assert_eq!(
+        doc["hooks"]["claude"]["installed"]["admission"],
+        "contract_declared"
+    );
+    assert_eq!(doc["local_harnesses"]["claude"]["admitted"], true);
+}
+
+/// Kills a legacy native observation retaining its five-second deadline instead
+/// of the decreasing doctor observation budget. The version helper owns/reaps sleep.
+#[test]
+fn doctor_local_native_capture_is_clamped_to_shared_doctor_deadline() {
+    let case = PathCase::new("bounded-capture");
+    let binary = case.dir.join("claude");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\n/bin/sleep 3\nprintf '2.1.286 (Claude Code)\\n'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let state = case.dir.join("state");
+    let host = case.dir.join("herdr.sock");
+    let registry = crate::harness::registry::builtins();
+    let parsed = super::super::commands::parse_argv_in_registry(
+        [
+            std::ffi::OsString::from("herdr-threads"),
+            "doctor".into(),
+            "--json".into(),
+            "--harness".into(),
+            "claude".into(),
+            "--state-dir".into(),
+            state.clone().into_os_string(),
+            "--host-endpoint".into(),
+            host.clone().into_os_string(),
+        ],
+        registry,
+    )
+    .unwrap();
+    let environment = SetupEnvironment {
+        config_roots: [("claude".into(), case.dir.join("config"))]
+            .into_iter()
+            .collect(),
+        path: Some(case.dir.clone().into_os_string()),
+        state_dir: Some(state),
+        host_endpoint: Some(host),
+        executable: PathBuf::from("/isolated/herdr-threads"),
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    let _ = run_registered(&parsed, registry, Some(&environment), &mut out);
+    let doc: Value = serde_json::from_slice::<Value>(&out).unwrap()["doctor"].clone();
+    assert_eq!(doc["hooks"]["claude"]["installed"]["version"], Value::Null);
 }

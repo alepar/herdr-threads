@@ -1,0 +1,18 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.3 (<TASK14_WORKTREE>)
+warning: unused import: `config_bytes`
+ --> src/harness/hermes/assets.rs:3:41
+  |
+3 | use crate::harness::setup::{SetupError, config_bytes, fingerprint, write_replacement};
+  |                                         ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `herdr-threads` (lib test) generated 1 warning (run `cargo fix --lib -p herdr-threads --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.50s
+     Running unittests src/lib.rs (<INTEGRATION_TARGET>/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
+
+running 1 test
+test harness::hermes::assets::tests::stages_completed_bridge_and_six_settings_in_observed_home ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2688 filtered out; finished in 0.09s

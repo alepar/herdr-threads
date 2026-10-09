@@ -4,7 +4,9 @@ use super::continuity::LocalEndpointWitness;
 use super::observation::{
     NativePane, NativeSnapshot, normalize_pane, normalize_snapshot, structured_host_error,
 };
+use crate::harness::adapter::ComposerPolicy;
 use crate::harness::composer::{self, ComposerRead};
+use crate::harness::registry::{self, Registry};
 use crate::ports::{
     self, ComposerStash, CorrelatedStartup, EnumerationEvidence, EvidenceKind, ExecutionEvidence,
     HostCallContext, HostObservation, HostPort, HostSnapshot, HostUiState, IncarnationEvidence,
@@ -29,7 +31,11 @@ use std::{
 
 static CALL_ID: AtomicU64 = AtomicU64::new(1);
 /// Herdr `agent.start` errors that are checked before anything is typed.
-const CONFIRMED_PRESTART_REFUSALS: [&str; 2] = ["agent_pane_busy", "agent_name_taken"];
+const CONFIRMED_PRESTART_REFUSALS: [&str; 3] = [
+    "agent_pane_busy",
+    "agent_name_taken",
+    "agent_process_hint_unsupported",
+];
 /// Interval between bounded readiness polls after a submitted start.
 const START_POLL_MILLIS: u64 = 250;
 /// Polling time before a started-but-undetected agent is checked for an early
@@ -38,8 +44,6 @@ const START_POLL_MILLIS: u64 = 250;
 const EARLY_EXIT_CHECK_MILLIS: u64 = 1_000;
 /// Lines of the pane read for the early-exit check and quoted in its refusal.
 const EARLY_EXIT_PANE_LINES: usize = 12;
-/// Herdr agent kinds a wake prompt may reach.
-const WAKE_AGENTS: [&str; 2] = ["claude", "codex"];
 /// Herdr agent statuses that mean the agent awaits input.
 const WAKE_READY_STATUSES: [&str; 2] = ["idle", "done"];
 /// Ceiling of the fresh agent recheck immediately before a wake prompt.
@@ -50,9 +54,6 @@ const PROMPT_SUBMIT_MILLIS: u64 = 2_000;
 const MIN_PROMPT_MILLIS: u64 = 250;
 /// Ceiling of one composer read or composer key/text send.
 const COMPOSER_CALL_MILLIS: u64 = 750;
-/// The key that deletes the composer's text one row or line at a time
-/// (poke spike Q3).
-const COMPOSER_CLEAR_KEY: &str = "ctrl+u";
 /// Clears beyond one per composer line before a stash gives up.
 const COMPOSER_CLEAR_SLACK: usize = 2;
 /// Settle time before the composer is read back after a send, so the harness
@@ -72,12 +73,16 @@ struct EmptyComposerWindow {
 }
 
 pub struct NativeCli {
+    registry: &'static Registry,
     socket: PathBuf,
     clock: Arc<dyn Clock>,
     epoch: AtomicU64,
     /// Observation order within one (boot, epoch). Never reused by this adapter.
     sequence: AtomicU64,
     empty_windows: Mutex<HashMap<SeatId, EmptyComposerWindow>>,
+    /// What the last answered `ping` reported, for Health: the admitted
+    /// release, or None before any answer or after one the floor refused.
+    release: Mutex<Option<super::compatibility::HostRelease>>,
 }
 
 /// Server-process incarnation bound to the actual response connections of one
@@ -177,16 +182,38 @@ impl NativeCli {
                 "native start cancelled before submission",
             ));
         }
-        let kind = match request.harness {
-            Harness::Codex => "codex",
-            Harness::Claude => "claude",
-            Harness::Human => {
-                return Err(before_start(
-                    ErrorCode::InvalidRequest,
-                    "a human occupant is never launched",
-                ));
-            }
+        let Harness::Agent(id) = request.harness else {
+            return Err(before_start(
+                ErrorCode::InvalidRequest,
+                "a human occupant is never launched",
+            ));
         };
+        let registration = self.registry.by_id(id).map_err(|_| {
+            before_start(
+                ErrorCode::UnsupportedHarness,
+                "native start adapter is unregistered",
+            )
+        })?;
+        let policy = registration.launch_policy().ok_or_else(|| {
+            before_start(ErrorCode::UnsupportedHarness, "native start is unsupported")
+        })?;
+        if request.process_hint != policy.requires_process_hint() {
+            return Err(before_start(
+                ErrorCode::InvalidRequest,
+                "native request mode differs from registered launch policy",
+            ));
+        }
+        let kinds = policy.expected_host_kinds();
+        let kind = kinds
+            .iter()
+            .copied()
+            .find(|kind| registration.metadata().host_kinds.contains(kind))
+            .ok_or_else(|| {
+                before_start(
+                    ErrorCode::UnsupportedHarness,
+                    "native start has no registered host kind",
+                )
+            })?;
         // The readable name first; when Herdr refuses it as taken by another
         // live agent (checked before anything is typed), one retry with a
         // short seat suffix. Never more than these two submissions.
@@ -222,18 +249,69 @@ impl NativeCli {
             args.extend(request.argv.iter().map(String::as_str));
             let submitted_at_mono = self.clock.monotonic_now();
             let started = Instant::now();
-            let refusal = match self.run(&args, &context.budget, Duration::from_millis(remaining)) {
-                // Herdr checks both before it types anything into the pane
-                // (live 2026-09-30: an occupied pane and a seat whose agent
-                // still runs were refused with the pane unchanged).
-                Err(error)
-                    if error.code == ErrorCode::TargetUnsafe
-                        && CONFIRMED_PRESTART_REFUSALS
-                            .iter()
-                            .any(|code| error.detail.starts_with(&format!("Herdr {code}:"))) =>
-                {
-                    error
+            let response = if request.process_hint {
+                if !self.socket.is_absolute() {
+                    return Err(before_start(
+                        ErrorCode::InvalidRequest,
+                        "host API endpoint must be absolute",
+                    ));
                 }
+                let validate = |_: &serde_json::Value, witness: &LocalEndpointWitness| {
+                    self.check_epoch(current_epoch)?;
+                    let incarnation = ServerIncarnation::from_witness(witness)?;
+                    if incarnation.identity != request.expected_incarnation
+                        || incarnation.boot != preflight.host_boot
+                        || context.expected_boot.as_ref() != Some(&incarnation.boot)
+                        || context.expected_epoch != Some(self.epoch())
+                    {
+                        return Err(error(
+                            ErrorCode::StaleHostObservation,
+                            "native start peer incarnation or epoch changed",
+                        ));
+                    }
+                    Ok(())
+                };
+                let id = format!("threads-{}", CALL_ID.fetch_add(1, Ordering::Relaxed));
+                let response = super::transport::request_guarded_start(
+                    &self.socket,
+                    &id,
+                    serde_json::json!({"name":name,"kind":kind,"pane_id":request.target.as_str(),"args":request.argv,"timeout_ms":remaining,"process_hint":true}),
+                    self.clock.as_ref(),
+                    &context.budget,
+                    Duration::from_millis(remaining),
+                    &validate,
+                    &|release| self.record_release(release),
+                );
+                if response.as_ref().is_err_and(|failure| {
+                    matches!(
+                        failure.error.code,
+                        ErrorCode::Cancelled
+                            | ErrorCode::DeadlineExceeded
+                            | ErrorCode::HostUnavailable
+                            | ErrorCode::StaleHostObservation
+                    )
+                }) {
+                    self.epoch.fetch_add(1, Ordering::AcqRel);
+                }
+                match response {
+                    Ok(response) => Ok(response.body),
+                    Err(failure) if failure.submission == ports::NativeSubmission::NotSubmitted => {
+                        return Err(failure);
+                    }
+                    Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
+                }
+            } else {
+                self.dispatch(
+                    &args,
+                    &context.budget,
+                    Duration::from_millis(remaining),
+                    false,
+                    true,
+                    true,
+                )
+                .map(|(body, _)| body)
+            };
+            let (refusal, name_taken) = match response {
                 Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
                 Ok(raw) => {
                     let parsed: serde_json::Value = match serde_json::from_str(&raw) {
@@ -243,20 +321,16 @@ impl NativeCli {
                     let Some(host_error) = structured_host_error(&parsed) else {
                         break (name, parsed, remaining, started, submitted_at_mono);
                     };
-                    if !parsed
+                    let code = parsed
                         .pointer("/error/code")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|code| CONFIRMED_PRESTART_REFUSALS.contains(&code))
-                    {
+                        .and_then(serde_json::Value::as_str);
+                    if !code.is_some_and(|code| CONFIRMED_PRESTART_REFUSALS.contains(&code)) {
                         return Ok(NativeLaunchOutcome::OutcomeUnknown);
                     }
-                    host_error
+                    (host_error, code == Some("agent_name_taken"))
                 }
             };
-            if refusal.detail.starts_with("Herdr agent_name_taken:")
-                && name != retry_name
-                && !context.budget.cancellation.is_cancelled()
-            {
+            if name_taken && name != retry_name && !context.budget.cancellation.is_cancelled() {
                 name = retry_name.clone();
                 continue;
             }
@@ -272,6 +346,19 @@ impl NativeCli {
         };
         let returned_args = result.get("argv").and_then(serde_json::Value::as_array);
         let args_match = returned_args.is_some_and(|values| {
+            if request.process_hint {
+                let crate::harness::adapter::ExecutableLookup::Path(executable) =
+                    registration.metadata().executable
+                else {
+                    return false;
+                };
+                return values.len() == request.argv.len() + 1
+                    && values.first().and_then(serde_json::Value::as_str) == Some(executable)
+                    && values[1..]
+                        .iter()
+                        .zip(&request.argv)
+                        .all(|(actual, expected)| actual.as_str() == Some(expected));
+            }
             values.len() >= request.argv.len()
                 && values[values.len() - request.argv.len()..]
                     .iter()
@@ -312,18 +399,26 @@ impl NativeCli {
             let status = current
                 .get("agent_status")
                 .and_then(serde_json::Value::as_str);
+            if request.process_hint && status == Some("blocked") {
+                return Ok(NativeLaunchOutcome::OutcomeUnknown);
+            }
             let ready = (current
                 .get("interactive_ready")
                 .and_then(serde_json::Value::as_bool)
                 == Some(true)
                 || matches!(status, Some("working" | "done")))
                 // Herdr reports the detected agent label as `agent`.
-                && current.get("agent").and_then(serde_json::Value::as_str) == Some(kind);
+                && current.get("agent").and_then(serde_json::Value::as_str) .is_some_and(|kind| kinds.contains(&kind) && registration.metadata().host_kinds.contains(&kind));
             // Herdr keeps `launch_pending` set until the agent is first
             // interactive_ready, so an agent already working on its initial
             // prompt (live demo: working, launch_pending true) is started too.
             let working = matches!(status, Some("working" | "done"))
-                && current.get("agent").and_then(serde_json::Value::as_str) == Some(kind);
+                && current
+                    .get("agent")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|kind| {
+                        kinds.contains(&kind) && registration.metadata().host_kinds.contains(&kind)
+                    });
             if (ready && !pending) || working {
                 break;
             }
@@ -359,7 +454,30 @@ impl NativeCli {
             let left = Duration::from_millis(remaining).saturating_sub(started.elapsed());
             let limit = left.min(Duration::from_millis(750));
             // Stays fenced: a failure here is the launch's `OutcomeUnknown` outcome.
-            let polled = match self.run(&["agent", "get", name.as_str()], &context.budget, limit) {
+            let response = if request.process_hint {
+                self.run_witnessed(&["agent", "get", name.as_str()], &context.budget, limit)
+                    .and_then(|(body, witness)| {
+                        let incarnation = witness
+                            .as_ref()
+                            .map(ServerIncarnation::from_witness)
+                            .transpose()?;
+                        self.check_boot(context, incarnation.as_ref())?;
+                        if incarnation
+                            .as_ref()
+                            .map(|incarnation| &incarnation.identity)
+                            != Some(&request.expected_incarnation)
+                        {
+                            return Err(error(
+                                ErrorCode::StaleHostObservation,
+                                "native startup polling peer changed",
+                            ));
+                        }
+                        Ok(body)
+                    })
+            } else {
+                self.run(&["agent", "get", name.as_str()], &context.budget, limit)
+            };
+            let polled = match response {
                 Ok(raw) => raw,
                 Err(_) => return Ok(NativeLaunchOutcome::OutcomeUnknown),
             };
@@ -391,6 +509,7 @@ impl NativeCli {
         observed.observed_at_mono = self.clock.monotonic_now();
         observed.completed_at_mono = observed.observed_at_mono;
         let correlation = CorrelatedStartup {
+            process_hint: request.process_hint,
             seat: request.seat.clone(),
             agent_name: name,
             harness: request.harness,
@@ -449,12 +568,22 @@ impl NativeCli {
 
     /// `socket` is the explicit automation API endpoint, resolved by the caller.
     pub fn new(socket: PathBuf, clock: Arc<dyn Clock>) -> Self {
+        Self::with_registry(socket, clock, registry::builtins())
+    }
+
+    pub fn with_registry(
+        socket: PathBuf,
+        clock: Arc<dyn Clock>,
+        registry: &'static Registry,
+    ) -> Self {
         Self {
+            registry,
             socket,
             clock,
             epoch: AtomicU64::new(1),
             sequence: AtomicU64::new(1),
             empty_windows: Mutex::new(HashMap::new()),
+            release: Mutex::new(None),
         }
     }
 
@@ -547,6 +676,7 @@ impl NativeCli {
             Duration::from_secs(2),
             cfg!(target_os = "macos"),
             false,
+            false,
         )?;
         let incarnation = witness
             .as_ref()
@@ -637,7 +767,7 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
     ) -> Result<String, ApiError> {
-        self.dispatch(args, budget, limit, false, true)
+        self.dispatch(args, budget, limit, false, true, false)
             .map(|(body, _)| body)
     }
 
@@ -649,7 +779,7 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
     ) -> Result<String, ApiError> {
-        self.dispatch(args, budget, limit, false, false)
+        self.dispatch(args, budget, limit, false, false, false)
             .map(|(body, _)| body)
     }
 
@@ -662,7 +792,14 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
     ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
-        self.dispatch(args, budget, limit, cfg!(target_os = "macos"), true)
+        self.dispatch(args, budget, limit, cfg!(target_os = "macos"), true, false)
+    }
+
+    /// `None` (a ping refused by the floor) clears the observation.
+    fn record_release(&self, release: Option<super::compatibility::HostRelease>) {
+        if let Ok(mut slot) = self.release.lock() {
+            *slot = release;
+        }
     }
 
     fn dispatch(
@@ -672,6 +809,7 @@ impl NativeCli {
         limit: Duration,
         witnessed: bool,
         fenced: bool,
+        preserve_start_refusal: bool,
     ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
         if !self.socket.is_absolute() {
             return Err(error(
@@ -755,8 +893,12 @@ impl NativeCli {
             }
         };
         let id = format!("ht-{}", CALL_ID.fetch_add(1, Ordering::Relaxed));
+        // Every answered ping updates the observed release, even when the
+        // operation after it fails (an operation this Herdr no longer serves
+        // is exactly when Health must show the newer release).
+        let observe = |release| self.record_release(release);
         let outcome = if witnessed {
-            super::transport::request_witnessed(
+            super::transport::request_witnessed_observed(
                 &self.socket,
                 &id,
                 method,
@@ -764,8 +906,20 @@ impl NativeCli {
                 self.clock.as_ref(),
                 budget,
                 limit,
+                &observe,
             )
             .map(|response| (response.body, Some(response.witness)))
+        } else if method == "agent.start" && preserve_start_refusal {
+            super::transport::request_unhinted_start(
+                &self.socket,
+                &id,
+                params,
+                self.clock.as_ref(),
+                budget,
+                limit,
+                &observe,
+            )
+            .map(|body| (body, None))
         } else {
             super::transport::request(
                 &self.socket,
@@ -775,6 +929,7 @@ impl NativeCli {
                 self.clock.as_ref(),
                 budget,
                 limit,
+                &observe,
             )
             .map(|body| (body, None))
         };
@@ -885,13 +1040,13 @@ impl HostPort for NativeCli {
         context: &HostCallContext,
     ) -> Result<ports::ComposerObservation, ApiError> {
         let started = Instant::now();
-        let observation = self.observe_target(target, context, true)?;
+        let (observation, composer) = self.observe_target_with_composer(target, context, true)?;
         // Composer I/O happens after pane.get's first fence. A concurrent host
         // failure or cancellation during that read must not earn idle evidence.
         self.check_epoch(observation.epoch)?;
         self.check_context(context)?;
         self.check_after_parse_unfenced(&context.budget, started, Duration::from_secs(5))?;
-        Ok(ports::ComposerObservation(observation))
+        Ok(ports::ComposerObservation(observation, composer))
     }
 
     /// Herdr 0.9.1 builds `session.snapshot` in one `&self` call on its
@@ -1011,6 +1166,18 @@ impl HostPort for NativeCli {
         text: &str,
         context: &HostCallContext,
     ) -> Result<ports::PromptOutcome, ApiError> {
+        if target
+            .bound_harness
+            .as_deref()
+            .and_then(|id| self.registry.agent(id).ok())
+            .and_then(|id| self.composer_policy(Harness::Agent(id)))
+            .is_none()
+        {
+            return Err(error(
+                ErrorCode::UnsupportedHarness,
+                "soft poke unsupported: no composer policy",
+            ));
+        }
         self.submit_prompt_mode(target, text, context)
     }
 
@@ -1027,9 +1194,19 @@ impl HostPort for NativeCli {
         context: &HostCallContext,
     ) -> Result<ComposerStash, ApiError> {
         self.composer_fence(target, context, "composer stash")?;
-        let Some(harness) = target.bound_harness.as_deref().and_then(bound_harness) else {
+        let Some(harness) = target
+            .bound_harness
+            .as_deref()
+            .and_then(|id| self.registry.agent(id).ok())
+            .map(Harness::Agent)
+        else {
             return Ok(ComposerStash::Failed("no bound harness".into()));
         };
+        if self.composer_policy(harness).is_none() {
+            return Ok(ComposerStash::Failed(
+                "composer stash unsupported: no composer policy".into(),
+            ));
+        }
         let first = match self.read_composer(&target.target, harness, context) {
             Ok(read) => read,
             Err(failure) if composer_call_aborts(&failure) => return Err(failure),
@@ -1065,8 +1242,26 @@ impl HostPort for NativeCli {
             return Ok(());
         }
         self.composer_fence(target, context, "composer restore")?;
+        let policy = target
+            .bound_harness
+            .as_deref()
+            .and_then(|id| self.registry.agent(id).ok())
+            .and_then(|id| self.composer_policy(Harness::Agent(id)))
+            .ok_or_else(|| {
+                error(
+                    ErrorCode::UnsupportedHarness,
+                    "composer restore unsupported: no composer policy",
+                )
+            })?;
+        let restored = policy.restore_text(saved);
+        if restored != saved {
+            return Err(error(
+                ErrorCode::TargetUnsafe,
+                "composer restore changed saved text",
+            ));
+        }
         self.composer_call(
-            &["pane", "send-text", target.target.as_str(), saved],
+            &["pane", "send-text", target.target.as_str(), &restored],
             context,
         )
         .map(|_| ())
@@ -1114,6 +1309,18 @@ impl HostPort for NativeCli {
         target: &SafeWakeTarget,
         context: &HostCallContext,
     ) -> Result<(), ApiError> {
+        if target
+            .bound_harness
+            .as_deref()
+            .and_then(|id| self.registry.agent(id).ok())
+            .and_then(|id| self.composer_policy(Harness::Agent(id)))
+            .is_none()
+        {
+            return Err(error(
+                ErrorCode::UnsupportedHarness,
+                "submit key unsupported: no composer policy",
+            ));
+        }
         let refuse = |detail: &str| {
             error(
                 ErrorCode::TargetUnsafe,
@@ -1215,6 +1422,10 @@ impl HostPort for NativeCli {
         }
     }
 
+    fn observed_release(&self) -> Option<super::compatibility::HostRelease> {
+        self.release.lock().ok().and_then(|slot| slot.clone())
+    }
+
     fn incarnation_witness(&self) -> crate::protocol::results::CapabilityState {
         // The kernel peer PID/start-time witness exists only on macOS; other
         // platforms report Unknown incarnation on every read.
@@ -1233,6 +1444,7 @@ impl HostPort for NativeCli {
 fn cooperative_wake_ready(
     agent: &serde_json::Value,
     target: &SafeWakeTarget,
+    registry: &Registry,
 ) -> Result<(), String> {
     let text = |name: &str| agent.get(name).and_then(serde_json::Value::as_str);
     if text("pane_id") != Some(target.target.as_str())
@@ -1241,14 +1453,27 @@ fn cooperative_wake_ready(
         return Err("agent is not in the target terminal".into());
     }
     let kind = text("agent");
-    if !kind.is_some_and(|kind| WAKE_AGENTS.contains(&kind)) {
+    if kind.is_none_or(|kind| registry.by_host_kind(kind).is_none()) {
         return Err(format!(
             "no recognized harness agent (agent {})",
             kind.unwrap_or("none").chars().take(32).collect::<String>()
         ));
     }
     match target.bound_harness.as_deref() {
-        Some(bound) if kind != Some(bound) => {
+        Some(bound)
+            if !registry
+                .agent(bound)
+                .ok()
+                .and_then(|id| registry.by_id(id).ok())
+                .is_some_and(|registration| {
+                    kind.is_some_and(|kind| {
+                        registration.metadata().host_kinds.contains(&kind)
+                            && registration
+                                .launch_policy()
+                                .is_none_or(|policy| policy.expected_host_kinds().contains(&kind))
+                    })
+                }) =>
+        {
             return Err(format!(
                 "agent kind {} differs from the bound harness {bound}",
                 kind.unwrap_or("none").chars().take(32).collect::<String>()
@@ -1397,13 +1622,14 @@ impl NativeCli {
             .ok()
             .and_then(|value| value.pointer("/result/agent").cloned())
             .ok_or_else(|| refuse("unreadable agent recheck"))?;
-        if let Err(detail) = cooperative_wake_ready(&agent, target) {
+        if let Err(detail) = cooperative_wake_ready(&agent, target, self.registry) {
             return Err(refuse(&detail));
         }
         let harness = target
             .bound_harness
             .as_deref()
-            .and_then(bound_harness)
+            .and_then(|id| self.registry.agent(id).ok())
+            .map(Harness::Agent)
             .ok_or_else(|| refuse("no bound harness for composer read"))?;
         let focused = agent
             .get("focused")
@@ -1438,11 +1664,15 @@ impl NativeCli {
             Ok(response) => response,
             // Herdr answers these before typing anything (a blocked agent is
             // rejected "before any input is sent"; a missing agent or pane
-            // has nowhere to type); an invalid request never left us.
+            // has nowhere to type); an invalid request never left us, and a
+            // Herdr that does not serve or accept the method typed nothing.
             Err(failure)
                 if matches!(
                     failure.code,
-                    ErrorCode::TargetUnsafe | ErrorCode::NotFound | ErrorCode::InvalidRequest
+                    ErrorCode::TargetUnsafe
+                        | ErrorCode::NotFound
+                        | ErrorCode::InvalidRequest
+                        | ErrorCode::Unsupported
                 ) =>
             {
                 return Err(refuse(&failure.detail));
@@ -1512,6 +1742,16 @@ impl NativeCli {
         context: &HostCallContext,
         composer_ui: bool,
     ) -> Result<HostObservation, ApiError> {
+        self.observe_target_with_composer(target, context, composer_ui)
+            .map(|(observation, _)| observation)
+    }
+
+    fn observe_target_with_composer(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+        composer_ui: bool,
+    ) -> Result<(HostObservation, Option<ports::RegisteredComposerEvidence>), ApiError> {
         self.check_context(context)?;
         let epoch = self.epoch();
         let started = self.clock.monotonic_now();
@@ -1524,10 +1764,10 @@ impl NativeCli {
         self.check_boot(context, incarnation.as_ref())?;
         // Herdr's `agent_status` is not a composer: an idle agent may hold
         // typed text, so a poke's UI state also needs the composer read.
-        let ui = if composer_ui {
+        let (ui, composer) = if composer_ui {
             self.observed_ui(&pane, context)
         } else {
-            status_ui(&pane)
+            (status_ui(&pane, self.registry), None)
         };
         let reset_empty = !matches!(pane.status.as_str(), "idle" | "done")
             || (composer_ui && ui != HostUiState::Idle);
@@ -1545,25 +1785,62 @@ impl NativeCli {
         if reset_empty || !observation.focused {
             self.reset_empty_windows(target);
         }
-        Ok(observation)
+        Ok((observation, composer))
     }
 
     /// The UI state a pane shows: Herdr's agent status plus, for an idle,
     /// done or working claude/codex agent, a composer read. A failed or
     /// timed-out read never fails the observation; it yields `Unknown`.
-    fn observed_ui(&self, pane: &NativePane, context: &HostCallContext) -> HostUiState {
-        let Some(harness) = pane.agent.as_deref().and_then(bound_harness) else {
-            return HostUiState::Unknown;
+    fn observed_ui(
+        &self,
+        pane: &NativePane,
+        context: &HostCallContext,
+    ) -> (HostUiState, Option<ports::RegisteredComposerEvidence>) {
+        // The bounded transport supplies the string; exact immutable registry
+        // membership determines which declared alias may select a parser.
+        let Some(kind) = pane.agent.as_deref() else {
+            return (HostUiState::Unknown, None);
+        };
+        let Some(parser) = self
+            .registry
+            .by_host_kind(kind)
+            .and_then(|r| self.registry.agent(r.metadata().id).ok())
+        else {
+            return (HostUiState::Unknown, None);
         };
         let status = pane.status.as_str();
         match status {
-            "blocked" => composer::observed_ui(Some(status), None),
+            "blocked" => (composer::observed_ui(Some(status), None), None),
             "idle" | "done" | "working" => {
-                let read = self.read_composer(&pane.target, harness, context).ok();
-                composer::observed_ui(Some(status), read.as_ref())
+                if self.composer_policy(Harness::Agent(parser)).is_none() {
+                    return (HostUiState::Unknown, None);
+                }
+                let read = self
+                    .read_composer(&pane.target, Harness::Agent(parser), context)
+                    .ok();
+                let ui = composer::observed_ui(Some(status), read.as_ref());
+                let evidence = read.as_ref().map(|read| ports::RegisteredComposerEvidence {
+                    parser,
+                    reported_host_kind: kind.into(),
+                    classification: match read {
+                        ComposerRead::Empty => ports::ComposerClassification::Empty,
+                        ComposerRead::Text(_) => ports::ComposerClassification::Text,
+                        ComposerRead::Unsafe { .. } => ports::ComposerClassification::Unsafe,
+                        ComposerRead::Unreadable => ports::ComposerClassification::Unreadable,
+                    },
+                    basis: ports::ComposerEvidenceBasis::RegisteredHostKindComposerRead,
+                });
+                (ui, evidence)
             }
-            _ => HostUiState::Unknown,
+            _ => (HostUiState::Unknown, None),
         }
+    }
+
+    fn composer_policy(&self, harness: Harness) -> Option<&dyn ComposerPolicy> {
+        let Harness::Agent(id) = harness else {
+            return None;
+        };
+        self.registry.by_id(id).ok()?.composer_policy()
     }
 
     /// One bounded `agent read --source detection`, composer-parsed. The pane
@@ -1593,6 +1870,9 @@ impl NativeCli {
         harness: Harness,
         context: &HostCallContext,
     ) -> Result<ComposerRead, ApiError> {
+        if self.composer_policy(harness).is_none() {
+            return Ok(ComposerRead::Unreadable);
+        }
         let limit = composer_limit(self, context)?;
         let started = Instant::now();
         let raw = self.run_unfenced(
@@ -1615,7 +1895,12 @@ impl NativeCli {
         let text = text("text")
             .ok_or_else(|| error(ErrorCode::InvalidRequest, "composer read has no text"))?;
         self.check_after_parse_unfenced(&context.budget, started, limit)?;
-        Ok(composer::read_composer(harness, text, None))
+        Ok(composer::read_composer_in(
+            self.registry,
+            harness,
+            text,
+            None,
+        ))
     }
 
     /// Clears the composer with a bounded `ctrl+u` loop until a read shows it
@@ -1628,16 +1913,22 @@ impl NativeCli {
         text: String,
         context: &HostCallContext,
     ) -> Result<ComposerStash, ApiError> {
+        let Some(policy) = self.composer_policy(harness) else {
+            return Ok(ComposerStash::Failed(
+                "composer stash unsupported: no composer policy".into(),
+            ));
+        };
+        let clear_key = policy.clear_key();
+        if clear_key != "ctrl+u" {
+            return Ok(ComposerStash::Failed(
+                "composer clear key unsupported".into(),
+            ));
+        }
         let attempts = text.lines().count() + COMPOSER_CLEAR_SLACK;
         for _ in 0..attempts {
             let cleared = self
                 .composer_call(
-                    &[
-                        "pane",
-                        "send-keys",
-                        target.target.as_str(),
-                        COMPOSER_CLEAR_KEY,
-                    ],
+                    &["pane", "send-keys", target.target.as_str(), clear_key],
                     context,
                 )
                 .and_then(|_| self.read_composer(&target.target, harness, context));
@@ -1818,22 +2109,18 @@ impl NativeCli {
     }
 }
 
-/// The harness a Herdr agent kind or a seat's bound harness names, when its
-/// composer is readable.
-fn bound_harness(kind: &str) -> Option<Harness> {
-    match kind {
-        "claude" => Some(Harness::Claude),
-        "codex" => Some(Harness::Codex),
-        _ => None,
-    }
-}
-
 /// The bound for one composer call: the ceiling or what the budget has left.
 /// The UI state Herdr's `agent_status` alone shows: an open approval or
 /// question is `blocked`; everything else is `Unknown`, as on every ordinary
 /// wake before the composer reader existed.
-fn status_ui(pane: &NativePane) -> HostUiState {
-    if pane.agent.as_deref().and_then(bound_harness).is_some() && pane.status == "blocked" {
+fn status_ui(pane: &NativePane, registry: &Registry) -> HostUiState {
+    if pane
+        .agent
+        .as_deref()
+        .and_then(|kind| registry.by_host_kind(kind))
+        .is_some()
+        && pane.status == "blocked"
+    {
         HostUiState::ApprovalOrQuestion
     } else {
         HostUiState::Unknown
@@ -1962,7 +2249,7 @@ fn composer_state_from_read(raw: Option<&str>) -> ports::AgentComposerState {
 mod wake_submission_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::ports::ConfiguredHook;
     use crate::protocol::time::{Cancellation, MonoInstant, UtcMillis};
@@ -1996,6 +2283,8 @@ mod tests {
         F: FnOnce(&mut UnixStream, Value) + Send + 'static,
     {
         let socket = std::env::temp_dir().join(format!("ht-start-{}", uuid::Uuid::new_v4()));
+        // Reserve one byte for the Unix address terminator.
+        assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
         let listener = UnixListener::bind(&socket).unwrap();
         let worker = thread::spawn(move || {
             let (mut ping, _) = listener.accept().unwrap();
@@ -2020,6 +2309,7 @@ mod tests {
         let boot = HostBootId::new("proven-boot");
         let terminal = TerminalId::new("term_1");
         let request = NativeLaunchRequest {
+            process_hint: false,
             seat: SeatId::new("seat_1"),
             target: target.clone(),
             harness: Harness::Codex,
@@ -2068,6 +2358,781 @@ mod tests {
         };
         (request, context, observation)
     }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) struct HintSocketFixture {
+        cli: NativeCli,
+        socket: PathBuf,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        frames: Arc<std::sync::Mutex<Vec<Value>>>,
+        received: Arc<std::sync::atomic::AtomicUsize>,
+        worker: Option<thread::JoinHandle<()>>,
+        listener: Arc<std::sync::Mutex<Option<UnixListener>>>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl HintSocketFixture {
+        pub(crate) fn new<F>(mut response: F) -> Self
+        where
+            F: FnMut(&mut UnixStream, &Value) + Send + 'static,
+        {
+            use std::io::{BufRead, BufReader};
+            let socket = std::env::temp_dir().join(format!("hint-{}", uuid::Uuid::new_v4()));
+            // Reserve one byte for the Unix address terminator.
+            assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
+            let listener = UnixListener::bind(&socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let listener = Arc::new(std::sync::Mutex::new(Some(listener)));
+            let worker_listener = listener.clone();
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let frames = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let received = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let worker_stop = stop.clone();
+            let worker_frames = frames.clone();
+            let worker_received = received.clone();
+            let worker = thread::spawn(move || {
+                while !worker_stop.load(Ordering::Acquire) {
+                    let connection = worker_listener
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(UnixListener::accept);
+                    let Some(connection) = connection else {
+                        thread::sleep(Duration::from_millis(2));
+                        continue;
+                    };
+                    let (mut stream, _) = match connection {
+                        Ok(connection) => connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                            continue;
+                        }
+                        Err(error) => panic!("owned hint fixture accept: {error}"),
+                    };
+                    // macOS accept inherits the listener's O_NONBLOCK flag.
+                    // Keep accept stop-aware, but bound each accepted read.
+                    stream.set_nonblocking(false).unwrap();
+                    if stream
+                        .set_read_timeout(Some(Duration::from_millis(100)))
+                        .is_err()
+                        || stream
+                            .set_write_timeout(Some(Duration::from_millis(100)))
+                            .is_err()
+                    {
+                        continue;
+                    }
+                    let mut line = String::new();
+                    let read = BufReader::new(&mut stream).read_line(&mut line);
+                    worker_received.fetch_add(line.len(), Ordering::AcqRel);
+                    match read {
+                        Ok(0) => continue,
+                        Ok(_) => {}
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) =>
+                        {
+                            continue;
+                        }
+                        Err(error) => panic!("owned hint fixture read: {error}"),
+                    }
+                    let wire: Value = serde_json::from_str(&line).unwrap();
+                    worker_frames.lock().unwrap().push(wire.clone());
+                    response(&mut stream, &wire);
+                }
+            });
+            let cli = NativeCli::new(socket.clone(), Arc::new(TestClock(Instant::now())));
+            cli.epoch.store(3, Ordering::Release);
+            Self {
+                cli,
+                socket,
+                stop,
+                frames,
+                received,
+                worker: Some(worker),
+                listener,
+            }
+        }
+
+        pub(crate) fn endpoint(&self) -> &std::path::Path {
+            &self.socket
+        }
+
+        pub(crate) fn rebind(&self) {
+            let mut listener = self.listener.lock().unwrap();
+            fs::remove_file(&self.socket).unwrap();
+            let replacement = UnixListener::bind(&self.socket).unwrap();
+            replacement.set_nonblocking(true).unwrap();
+            *listener = Some(replacement);
+        }
+
+        pub(crate) fn stop_listening(&self) {
+            self.listener.lock().unwrap().take();
+        }
+
+        fn bind_preflight(
+            &self,
+            request: &mut NativeLaunchRequest,
+            context: &mut HostCallContext,
+            observation: &mut HostObservation,
+        ) {
+            let (_, witness) = self
+                .cli
+                .run_witnessed(
+                    &["pane", "get", request.target.as_str()],
+                    &context.budget,
+                    Duration::from_millis(750),
+                )
+                .unwrap();
+            let incarnation = ServerIncarnation::from_witness(&witness.unwrap()).unwrap();
+            request.expected_incarnation = incarnation.identity.clone();
+            context.expected_boot = Some(incarnation.boot.clone());
+            observation.host_boot = incarnation.boot;
+            observation.incarnation = IncarnationEvidence::Verified {
+                identity: incarnation.identity,
+                evidence_kind: EvidenceKind::NativeCurrentTarget,
+            };
+        }
+
+        pub(crate) fn finish(self) -> Vec<Value> {
+            self.finish_with_bytes().0
+        }
+
+        pub(crate) fn finish_with_bytes(mut self) -> (Vec<Value>, usize) {
+            self.close();
+            (
+                self.frames.lock().unwrap().clone(),
+                self.received.load(Ordering::Acquire),
+            )
+        }
+
+        fn close(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(worker) = self.worker.take() {
+                let joined = worker.join();
+                let removed = fs::remove_file(&self.socket);
+                if !thread::panicking() {
+                    joined.unwrap();
+                    if let Err(error) = removed {
+                        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for HintSocketFixture {
+        fn drop(&mut self) {
+            self.close();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_old_host_receives_zero_start_frames() {
+        for capabilities in [
+            None,
+            Some(json!({})),
+            Some(json!({"agent_start_process_hint_v1":false})),
+            Some(json!({"agent_start_process_hint_v1":null})),
+            Some(json!({"agent_start_process_hint_v1":"true"})),
+            Some(json!({"agent_start_process_hint_v1":1})),
+            Some(json!({"agent_start_process_hint":true})),
+        ] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(true);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = true;
+            let name = request.agent_name();
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                let result = match wire["method"].as_str().unwrap() {
+                    "ping" => {
+                        let mut pong = json!({"type":"pong","version":"0.9.1","protocol":22});
+                        if let Some(capabilities) = &capabilities {
+                            pong["capabilities"] = capabilities.clone();
+                        }
+                        pong
+                    }
+                    "pane.get" => json!({"type":"pane_info"}),
+                    "agent.start" => started(name.clone()),
+                    other => panic!("unexpected fixture operation: {other}"),
+                };
+                answer(stream, wire, result);
+            });
+            fixture.cli.registry = registry;
+            fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            let frames = fixture.finish();
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                0,
+                "unsupported host received a start frame"
+            );
+            let failure =
+                result.expect_err("missing feature capability must refuse before submission");
+            assert_eq!(failure.error.code, ErrorCode::Unsupported);
+            assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_default_route_omits_field() {
+        let (mut request, mut context, mut observation) = launch_fixture();
+        let registry = crate::harness::launch::tests::process_hint_registry(false);
+        request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+        let name = request.agent_name();
+        let mut fixture = HintSocketFixture::new(move |stream, wire| {
+            let result = match wire["method"].as_str().unwrap() {
+                "ping" => json!({"type":"pong","version":"0.9.1","protocol":22}),
+                "pane.get" => json!({"type":"pane_info"}),
+                "agent.start" => {
+                    assert!(wire["params"].get("process_hint").is_none());
+                    started(name.clone())
+                }
+                other => panic!("unexpected fixture operation: {other}"),
+            };
+            answer(stream, wire, result);
+        });
+        fixture.cli.registry = registry;
+        fixture.bind_preflight(&mut request, &mut context, &mut observation);
+        let result = fixture
+            .cli
+            .guarded_start_with_evidence(&request, &context, &observation);
+        let frames = fixture.finish();
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame["method"] == "agent.start")
+                .count(),
+            1
+        );
+        let NativeLaunchOutcome::ObservedStartup { correlation, .. } = result.unwrap() else {
+            panic!("default startup not observed")
+        };
+        assert!(!correlation.process_hint);
+        assert!(correlation.matches_request(&request, &context));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_policy_mode_mismatch_is_not_submitted() {
+        for required in [false, true] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(required);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = !required;
+            let name = request.agent_name();
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                let result = match wire["method"].as_str().unwrap() {
+                    "ping" => {
+                        json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                    }
+                    "pane.get" => json!({"type":"pane_info"}),
+                    "agent.start" => started(name.clone()),
+                    other => panic!("unexpected fixture operation: {other}"),
+                };
+                answer(stream, wire, result);
+            });
+            fixture.cli.registry = registry;
+            fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            let frames = fixture.finish();
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                0,
+                "policy/request mode mismatch reached the host"
+            );
+            let failure = result.expect_err("request mode must match the selected launch policy");
+            assert_eq!(failure.error.code, ErrorCode::InvalidRequest);
+            assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_actual_peer_must_match_preflight_before_start_write() {
+        let (mut request, mut context, mut observation) = launch_fixture();
+        let registry = crate::harness::launch::tests::process_hint_registry(true);
+        request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+        request.process_hint = true;
+        let name = request.agent_name();
+        let mut fixture = HintSocketFixture::new(move |stream, wire| {
+            let result = match wire["method"].as_str().unwrap() {
+                "ping" => {
+                    json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                }
+                "pane.get" => json!({"type":"pane_info"}),
+                "agent.start" => started(name.clone()),
+                other => panic!("unexpected fixture operation: {other}"),
+            };
+            answer(stream, wire, result);
+        });
+        fixture.cli.registry = registry;
+        fixture.bind_preflight(&mut request, &mut context, &mut observation);
+        // Internally consistent recorded fences still cannot authorize a
+        // different actual server peer on the submission stream.
+        let different = HostBootId::new("different-recorded-server");
+        request.expected_incarnation = different.as_str().to_owned();
+        observation.host_boot = different.clone();
+        observation.incarnation = IncarnationEvidence::Verified {
+            identity: different.as_str().to_owned(),
+            evidence_kind: EvidenceKind::NativeCurrentTarget,
+        };
+        context.expected_boot = Some(different);
+        let result = fixture
+            .cli
+            .guarded_start_with_evidence(&request, &context, &observation);
+        let frames = fixture.finish();
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame["method"] == "agent.start")
+                .count(),
+            0,
+            "actual peer mismatch received a start frame"
+        );
+        let failure =
+            result.expect_err("actual peer must match the recorded preflight before writing");
+        assert_eq!(failure.error.code, ErrorCode::StaleHostObservation);
+        assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_native_start_preserves_argv_and_ready_working_correlation() {
+        for readiness in ["ready", "working", "pending"] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(true);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = true;
+            request.argv = vec!["space arg".into(), "apostrophe's arg".into()];
+            let name = request.agent_name();
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                let mut ready = started(name.clone());
+                ready["argv"] = json!(["codex", "space arg", "apostrophe's arg"]);
+                let result = match wire["method"].as_str().unwrap() {
+                    "ping" => {
+                        json!({"type":"pong","version":"0.9.3","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                    }
+                    "pane.get" => json!({"type":"pane_info"}),
+                    "agent.start" => {
+                        assert_eq!(wire["params"]["process_hint"], true);
+                        assert_eq!(
+                            wire["params"]["args"],
+                            json!(["space arg", "apostrophe's arg"])
+                        );
+                        assert_eq!(wire["params"]["name"], name);
+                        assert_eq!(wire["params"]["pane_id"], "w4:p1");
+                        assert_eq!(wire["params"]["kind"], "codex");
+                        assert!(wire["params"]["timeout_ms"].as_u64().unwrap() <= 10_000);
+                        if readiness == "working" {
+                            ready["agent"]["interactive_ready"] = json!(false);
+                            ready["agent"]["agent_status"] = json!("working");
+                            ready["agent"]["launch_pending"] = json!(true);
+                        } else if readiness == "pending" {
+                            ready["agent"].as_object_mut().unwrap().remove("agent");
+                            ready["agent"]["interactive_ready"] = json!(false);
+                            ready["agent"]["launch_pending"] = json!(true);
+                        }
+                        ready
+                    }
+                    "agent.get" => {
+                        assert_eq!(wire["params"]["target"], name);
+                        json!({"type":"agent_info","agent":ready["agent"]})
+                    }
+                    other => panic!("unexpected fixture operation: {other}"),
+                };
+                answer(stream, wire, result);
+            });
+            fixture.cli.registry = registry;
+            fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            let frames = fixture.finish();
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                1
+            );
+            let NativeLaunchOutcome::ObservedStartup { correlation, .. } = result.unwrap() else {
+                panic!("startup was not correlated: {readiness}")
+            };
+            assert!(
+                correlation.process_hint,
+                "requested mode was lost in native startup correlation"
+            );
+            assert!(correlation.matches_request(&request, &context));
+            assert_eq!(correlation.argv, ["space arg", "apostrophe's arg"]);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn task48_default_and_required_native_start_preserve_empty_correlation() {
+        let mut observations = vec![];
+        for required in [false, true] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(required);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = required;
+            request.argv = vec!["before".into(), "".into(), "after".into(), "".into()];
+            let name = request.agent_name();
+            let argv = request.argv.clone();
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                let response = match wire["method"].as_str().unwrap() {
+                    "ping" => {
+                        json!({"type":"pong","version":"0.9.3","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                    }
+                    "pane.get" => json!({"type":"pane_info"}),
+                    "agent.start" => {
+                        assert_eq!(wire["params"]["args"], json!(argv));
+                        assert_eq!(
+                            wire["params"]["process_hint"],
+                            if required { json!(true) } else { Value::Null }
+                        );
+                        let mut response = started(name.clone());
+                        response["argv"] = json!([vec!["codex".to_owned()], argv.clone()].concat());
+                        response
+                    }
+                    other => panic!("unexpected Task48 synthetic socket operation: {other}"),
+                };
+                answer(stream, wire, response);
+            });
+            fixture.cli.registry = registry;
+            if required {
+                fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            }
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            let frames = fixture.finish();
+            eprintln!(
+                "task48 actual NativeCli required={required}: result={result:?} methods={:?}",
+                frames
+                    .iter()
+                    .map(|frame| frame["method"].clone())
+                    .collect::<Vec<_>>()
+            );
+            observations.push((request, context, result, frames));
+        }
+        // Both real consumers are reached at BASE before either expected-success assertion.
+        for (request, context, result, frames) in observations {
+            let NativeLaunchOutcome::ObservedStartup { correlation, .. } =
+                result.expect("actual NativeCli must admit lossless bounded empty data")
+            else {
+                panic!("empty data startup was not correlated");
+            };
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                1
+            );
+            assert_eq!(correlation.argv, request.argv);
+            assert!(correlation.matches_request(&request, &context));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_retry_renegotiates_and_unknown_write_is_possible() {
+        for case in [
+            "lost-capability",
+            "kept-capability",
+            "unsupported",
+            "lookalike",
+            "malformed",
+            "eof",
+            "wrong-argv",
+            "wrong-executable",
+            "wrong-kind",
+            "wrong-name",
+            "wrong-terminal",
+            "blocked",
+        ] {
+            let (mut request, mut context, mut observation) = launch_fixture();
+            let registry = crate::harness::launch::tests::process_hint_registry(true);
+            request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+            request.process_hint = true;
+            let names = request.agent_name_candidates();
+            let expected_names = names.clone();
+            let mut pings = 0;
+            let mut starts = 0;
+            let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                match wire["method"].as_str().unwrap() {
+                    "ping" => {
+                        pings += 1;
+                        let supported = !(case == "lost-capability" && pings == 3);
+                        answer(
+                            stream,
+                            wire,
+                            json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":supported}}),
+                        );
+                    }
+                    "pane.get" => answer(stream, wire, json!({"type":"pane_info"})),
+                    "agent.start" => {
+                        assert_eq!(wire["params"]["process_hint"], true);
+                        assert_eq!(wire["params"]["name"], names[starts]);
+                        starts += 1;
+                        if matches!(case, "lost-capability" | "kept-capability") && starts == 1 {
+                            writeln!(stream, "{}", json!({"id":wire["id"],"error":{"code":"agent_name_taken","message":"taken before typing"}})).unwrap();
+                            return;
+                        }
+                        if matches!(case, "unsupported" | "lookalike") {
+                            let code = if case == "unsupported" {
+                                "agent_process_hint_unsupported"
+                            } else {
+                                "agent_process_hint_unsupported_other"
+                            };
+                            writeln!(stream, "{}", json!({"id":wire["id"],"error":{"code":code,"message":"agent_process_hint_unsupported"}})).unwrap();
+                            return;
+                        }
+                        if case == "malformed" {
+                            writeln!(stream, "{{invalid").unwrap();
+                            return;
+                        }
+                        if case == "eof" {
+                            return;
+                        }
+                        let mut result = started(names[starts - 1].clone());
+                        match case {
+                            "wrong-argv" => {
+                                result["argv"] = json!([
+                                    "unexpected",
+                                    "codex",
+                                    "--no-daemon",
+                                    "--model",
+                                    "test model"
+                                ])
+                            }
+                            "wrong-executable" => result["argv"][0] = json!("other"),
+                            "wrong-kind" => {
+                                result["agent"]["agent"] = json!("claude");
+                                result["agent"]["agent_status"] = json!("blocked");
+                            }
+                            "wrong-name" => result["agent"]["name"] = json!("other-name"),
+                            "wrong-terminal" => {
+                                result["agent"]["terminal_id"] = json!("other-terminal")
+                            }
+                            "blocked" => result["agent"]["agent_status"] = json!("blocked"),
+                            _ => {}
+                        }
+                        answer(stream, wire, result);
+                    }
+                    other => panic!("unexpected fixture operation: {other}"),
+                }
+            });
+            fixture.cli.registry = registry;
+            fixture.bind_preflight(&mut request, &mut context, &mut observation);
+            let result = fixture
+                .cli
+                .guarded_start_with_evidence(&request, &context, &observation);
+            let frames = fixture.finish();
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "agent.start")
+                    .count(),
+                if case == "kept-capability" { 2 } else { 1 },
+                "{case} retried without confirmed name refusal"
+            );
+            if matches!(case, "lost-capability" | "unsupported") {
+                let failure = result.expect_err(case);
+                assert_eq!(failure.error.code, ErrorCode::Unsupported, "{case}");
+                assert_eq!(
+                    failure.submission,
+                    ports::NativeSubmission::NotSubmitted,
+                    "{case}"
+                );
+            } else if case == "kept-capability" {
+                let NativeLaunchOutcome::ObservedStartup { correlation, .. } = result.unwrap()
+                else {
+                    panic!("confirmed retry was not correlated")
+                };
+                assert_eq!(correlation.agent_name, expected_names[1]);
+                assert!(correlation.matches_request(&request, &context));
+            } else {
+                assert_eq!(
+                    result.unwrap(),
+                    NativeLaunchOutcome::OutcomeUnknown,
+                    "{case} fabricated accepted startup"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_hint_invalid_native_argv_is_not_submitted_in_either_mode() {
+        for required in [false, true] {
+            for argv in [
+                vec!["a\0b".into()],
+                vec!["a\nb".into()],
+                vec!["a\rb".into()],
+                vec!["arg".into(); 65],
+                vec!["x".repeat(NativeLaunchRequest::MAX_ARG_BYTES + 1)],
+                vec![
+                    "x".repeat(NativeLaunchRequest::MAX_ARG_BYTES),
+                    "x".repeat(NativeLaunchRequest::MAX_ARG_BYTES),
+                    "x".into(),
+                ],
+            ] {
+                let (mut request, mut context, mut observation) = launch_fixture();
+                let registry = crate::harness::launch::tests::process_hint_registry(required);
+                request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+                request.process_hint = required;
+                let mut fixture = HintSocketFixture::new(|stream, wire| {
+                    let result = if wire["method"] == "ping" {
+                        json!({"type":"pong","version":"0.9.1","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                    } else {
+                        json!({"type":"pane_info"})
+                    };
+                    answer(stream, wire, result);
+                });
+                fixture.cli.registry = registry;
+                fixture.bind_preflight(&mut request, &mut context, &mut observation);
+                request.argv = argv;
+                let result =
+                    fixture
+                        .cli
+                        .guarded_start_with_evidence(&request, &context, &observation);
+                let frames = fixture.finish();
+                assert_eq!(
+                    frames
+                        .iter()
+                        .filter(|frame| frame["method"] == "agent.start")
+                        .count(),
+                    0
+                );
+                let failure = result.unwrap_err();
+                assert_eq!(failure.error.code, ErrorCode::InvalidRequest);
+                assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn task48_empty_return_mismatches_and_prewrite_internal_mode_budget_fences() {
+        for required in [false, true] {
+            for case in [
+                "missing-argv",
+                "drop-empty",
+                "reorder-empty",
+                "wrong-name",
+                "wrong-terminal",
+                "internal",
+                "mode",
+                "cancelled",
+                "expired",
+                "generation",
+                "incarnation",
+            ] {
+                let (mut request, mut context, mut observation) = launch_fixture();
+                let registry = crate::harness::launch::tests::process_hint_registry(required);
+                request.harness = Harness::Agent(registry.agent("hinted").unwrap());
+                request.process_hint = required;
+                request.argv = vec!["before".into(), "".into(), "after".into()];
+                let name = request.agent_name();
+                let mut fixture = HintSocketFixture::new(move |stream, wire| {
+                    let response = match wire["method"].as_str().unwrap() {
+                        "ping" => {
+                            json!({"type":"pong","version":"0.9.3","protocol":22,"capabilities":{"agent_start_process_hint_v1":true}})
+                        }
+                        "pane.get" => json!({"type":"pane_info"}),
+                        "agent.start" => {
+                            let mut response = started(name.clone());
+                            response["argv"] = json!(["codex", "before", "", "after"]);
+                            match case {
+                                "missing-argv" => {
+                                    response.as_object_mut().unwrap().remove("argv");
+                                }
+                                "drop-empty" => {
+                                    response["argv"] = json!(["codex", "before", "after"])
+                                }
+                                "reorder-empty" => {
+                                    response["argv"] = json!(["codex", "", "before", "after"])
+                                }
+                                "wrong-name" => response["agent"]["name"] = json!("foreign"),
+                                "wrong-terminal" => {
+                                    response["agent"]["terminal_id"] = json!("foreign")
+                                }
+                                _ => panic!("prewrite-invalid case submitted agent.start: {case}"),
+                            }
+                            response
+                        }
+                        other => panic!("unexpected Task48 correlation operation: {other}"),
+                    };
+                    answer(stream, wire, response);
+                });
+                fixture.cli.registry = registry;
+                if required {
+                    fixture.bind_preflight(&mut request, &mut context, &mut observation);
+                }
+                let prewrite = matches!(
+                    case,
+                    "internal" | "mode" | "cancelled" | "expired" | "generation" | "incarnation"
+                );
+                match case {
+                    "internal" => request.configured_hook.fingerprint.clear(),
+                    "mode" => request.process_hint = !required,
+                    "cancelled" => context.budget.cancellation.cancel(),
+                    "expired" => context.budget.deadline = MonoInstant(0),
+                    "generation" => request.expected_generation += 1,
+                    "incarnation" => request.expected_incarnation.push_str("-changed"),
+                    _ => {}
+                }
+                let result =
+                    fixture
+                        .cli
+                        .guarded_start_with_evidence(&request, &context, &observation);
+                let frames = fixture.finish();
+                assert!(
+                    !matches!(result, Ok(NativeLaunchOutcome::ObservedStartup { .. })),
+                    "{case} required={required} fabricated startup"
+                );
+                if prewrite {
+                    assert_eq!(
+                        frames
+                            .iter()
+                            .filter(|frame| frame["method"] == "agent.start")
+                            .count(),
+                        0,
+                        "{case} required={required}"
+                    );
+                    assert_eq!(
+                        result.unwrap_err().submission,
+                        ports::NativeSubmission::NotSubmitted
+                    );
+                } else {
+                    assert_eq!(
+                        frames
+                            .iter()
+                            .filter(|frame| frame["method"] == "agent.start")
+                            .count(),
+                        1
+                    );
+                }
+            }
+        }
+    }
+
     fn started(name: String) -> Value {
         // The live Herdr 0.9.1 `agent.start` success shape (captured
         // 2026-09-30 with a stand-in executable): `agent` names the detected
@@ -2367,10 +3432,80 @@ mod tests {
         worker.join().unwrap();
         fs::remove_file(socket).unwrap();
     }
+    #[test]
+    fn process_hint_exact_unsupported_response_is_not_submitted() {
+        let (request, context, observation) = launch_fixture();
+        let (socket, cli, worker) = fixture(|stream, wire| {
+            assert_eq!(wire["method"], "agent.start");
+            writeln!(
+                stream,
+                "{}",
+                json!({"id":wire["id"],"error":{
+                    "code":"agent_process_hint_unsupported","message":"unsupported shell"
+                }})
+            )
+            .unwrap();
+        });
+        let result = cli.guarded_start_with_evidence(&request, &context, &observation);
+        worker.join().unwrap();
+        fs::remove_file(socket).unwrap();
+        let failure = result.expect_err("exact unsupported start is a confirmed refusal");
+        assert_eq!(failure.error.code, ErrorCode::Unsupported);
+        assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
+    }
+
+    #[test]
+    fn process_hint_ordinary_run_keeps_structured_start_error_behavior() {
+        for code in [
+            "agent_pane_busy",
+            "agent_name_taken",
+            "agent_process_hint_unsupported",
+        ] {
+            let (socket, cli, worker) = fixture(move |stream, wire| {
+                writeln!(
+                    stream,
+                    "{}",
+                    json!({"id":wire["id"],"error":{"code":code,"message":"confirmed refusal"}})
+                )
+                .unwrap();
+            });
+            let budget = pane_agent_context().budget;
+            let result = cli.run(
+                &[
+                    "agent",
+                    "start",
+                    "worker",
+                    "--kind",
+                    "codex",
+                    "--pane",
+                    "w4:p1",
+                    "--timeout",
+                    "10000",
+                    "--",
+                ],
+                &budget,
+                Duration::from_secs(1),
+            );
+            worker.join().unwrap();
+            fs::remove_file(socket).unwrap();
+            assert_eq!(
+                result
+                    .expect_err("ordinary run must retain mapped structured errors")
+                    .code,
+                if code == "agent_process_hint_unsupported" {
+                    ErrorCode::Unsupported
+                } else {
+                    ErrorCode::TargetUnsafe
+                }
+            );
+        }
+    }
     type Exchange = Box<dyn FnOnce(&mut UnixStream, Value) + Send>;
     /// Serves one ping+operation exchange per entry of `responses`.
     fn serve_sequence(responses: Vec<Exchange>) -> (PathBuf, NativeCli, thread::JoinHandle<()>) {
         let socket = std::env::temp_dir().join(format!("ht-start-{}", uuid::Uuid::new_v4()));
+        // Reserve one byte for the Unix address terminator.
+        assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
         let listener = UnixListener::bind(&socket).unwrap();
         let worker = thread::spawn(move || {
             for response in responses {
@@ -2816,6 +3951,17 @@ mod tests {
         Result<ports::PromptOutcome, ApiError>,
         Arc<std::sync::Mutex<Vec<String>>>,
     ) {
+        cooperative_wake_in(registry::builtins(), rest, slot, tamper)
+    }
+    fn cooperative_wake_in(
+        registry: &'static Registry,
+        rest: Vec<Exchange>,
+        slot: Option<CliSlot>,
+        tamper: impl FnOnce(&mut SafeWakeTarget, &mut HostCallContext),
+    ) -> (
+        Result<ports::PromptOutcome, ApiError>,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
         let methods = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut exchanges = vec![pane_exchange()];
         exchanges.extend(rest);
@@ -2833,6 +3979,8 @@ mod tests {
             })
             .collect();
         let (socket, cli, worker) = serve_sequence(exchanges);
+        let mut cli = cli;
+        cli.registry = registry;
         let cli = Arc::new(cli);
         if let Some(slot) = slot {
             assert!(slot.set(Arc::clone(&cli)).is_ok());
@@ -3068,6 +4216,323 @@ mod tests {
         fs::remove_file(socket).unwrap();
     }
 
+    use crate::harness::adapter::*;
+    struct FourthAdapter(bool, bool);
+    impl HarnessAdapter for FourthAdapter {
+        type Admission = crate::harness::operational::ClaudeContract;
+        fn metadata(&self) -> &'static AdapterMetadata {
+            static META: AdapterMetadata = AdapterMetadata {
+                id: "fourth",
+                display_label: "Fourth",
+                context_spelling: "Fourth",
+                context_aliases: &[],
+                executable: ExecutableLookup::Unsupported,
+                host_kinds: &["fourth-native"],
+                setup_scopes: &[],
+                budget: EventBudgetPolicy {
+                    lifecycle_ms: 5,
+                    observer_ms: 2,
+                },
+                runtime_sources: &[],
+            };
+            static THIRD: AdapterMetadata = AdapterMetadata {
+                id: "third",
+                display_label: "Third",
+                context_spelling: "Third",
+                context_aliases: &[],
+                executable: ExecutableLookup::Unsupported,
+                host_kinds: &["third-native"],
+                setup_scopes: &[],
+                budget: EventBudgetPolicy {
+                    lifecycle_ms: 5,
+                    observer_ms: 2,
+                },
+                runtime_sources: &[],
+            };
+            if self.0 { &THIRD } else { &META }
+        }
+        fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
+            self.1.then_some(&FixtureComposer)
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            &[]
+        }
+        fn observe_install(
+            &self,
+            env: &InstallEnvironment,
+            budget: &CallBudget,
+        ) -> InstallObservation {
+            crate::harness::claude::ClaudeAdapter.observe_install(env, budget)
+        }
+        fn admit(
+            &self,
+            request: &AdmissionRequest,
+            budget: &CallBudget,
+        ) -> AdmissionDecision<Self::Admission> {
+            crate::harness::claude::ClaudeAdapter.admit(request, budget)
+        }
+        fn version_ladder(&self, identity: &RuntimeIdentity) -> Ladder {
+            crate::harness::claude::ClaudeAdapter.version_ladder(identity)
+        }
+        fn classify(&self, input: &HookInput) -> ContractObservation {
+            crate::harness::claude::ClaudeAdapter.classify(input)
+        }
+        fn decode(
+            &self,
+            admitted: &Self::Admission,
+            input: &HookInput,
+        ) -> Result<DecodedEvent, DecodeFailure> {
+            crate::harness::claude::ClaudeAdapter.decode(admitted, input)
+        }
+        fn encode(
+            &self,
+            admitted: &Self::Admission,
+            event: &DecodedEvent,
+            offer: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            crate::harness::claude::ClaudeAdapter.encode(admitted, event, offer)
+        }
+        fn attribute_runtime(&self, input: &HookInput, budget: &CallBudget) -> RuntimeAttribution {
+            crate::harness::claude::ClaudeAdapter.attribute_runtime(input, budget)
+        }
+        fn setup(
+            &self,
+            request: &SetupRequest,
+            budget: &CallBudget,
+        ) -> Result<SetupOutcome, SetupFailure> {
+            crate::harness::claude::ClaudeAdapter.setup(request, budget)
+        }
+        fn status(&self, request: &StatusRequest, budget: &CallBudget) -> SetupStatus {
+            crate::harness::claude::ClaudeAdapter.status(request, budget)
+        }
+        fn unsetup(
+            &self,
+            request: &UnsetupRequest,
+            budget: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            crate::harness::claude::ClaudeAdapter.unsetup(request, budget)
+        }
+    }
+    struct FixtureComposer;
+    impl ComposerPolicy for FixtureComposer {
+        fn capabilities(&self, _: Option<&str>) -> crate::harness::recipe::PokeCapabilities {
+            crate::harness::recipe::PokeCapabilities::NONE
+        }
+        fn read(&self, text: &str, _: Option<u16>) -> ComposerRead {
+            match text {
+                "fixture empty" => ComposerRead::Empty,
+                "fixture draft: unfinished" => ComposerRead::Text("unfinished".into()),
+                _ => ComposerRead::Unreadable,
+            }
+        }
+        fn clear_key(&self) -> &'static str {
+            "ctrl+u"
+        }
+        fn restore_text(&self, saved: &str) -> String {
+            saved.into()
+        }
+    }
+    fn fourth_registry() -> &'static Registry {
+        fourth_registry_with_composer(false)
+    }
+    fn fourth_registry_with_composer(composer: bool) -> &'static Registry {
+        let fourth = Box::leak(Box::new(FourthAdapter(false, composer)));
+        Box::leak(Box::new(
+            Registry::new(Box::leak(
+                vec![
+                    registry::Registration::new(&crate::harness::claude::ClaudeAdapter),
+                    registry::Registration::new(&crate::harness::codex::CodexAdapter),
+                    registry::Registration::new(&FourthAdapter(true, false)),
+                    registry::Registration::new(fourth),
+                ]
+                .into_boxed_slice(),
+            ))
+            .unwrap(),
+        ))
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn injected_registry_alias_reaches_actual_wake_submission_and_refuses_busy_or_mismatch() {
+        for status in ["idle", "done"] {
+            let prompt = Box::new(|stream: &mut UnixStream, request: Value| {
+                assert_eq!(request["method"], "agent.prompt");
+                assert_eq!(
+                    request["params"],
+                    json!({"target":"w4:p1","text":"wake marker"})
+                );
+                answer(
+                    stream,
+                    &request,
+                    json!({"type":"agent_prompted","agent":wake_agent("idle", Some("fourth-native"), "term_1")}),
+                );
+            });
+            let (result, methods) = cooperative_wake_in(
+                fourth_registry_with_composer(true),
+                vec![
+                    recheck_exchange(wake_agent(status, Some("fourth-native"), "term_1")),
+                    detection_exchange("fixture empty"),
+                    prompt,
+                ],
+                None,
+                |target, _| target.bound_harness = Some("fourth".into()),
+            );
+            assert_eq!(result.unwrap(), ports::PromptOutcome::Submitted);
+            assert_eq!(
+                *methods.lock().unwrap(),
+                ["pane.get", "agent.get", "agent.read", "agent.prompt"]
+            );
+        }
+        for (status, kind) in [
+            ("working", "fourth-native"),
+            ("blocked", "fourth-native"),
+            ("idle", "claude"),
+            ("idle", "unknown"),
+        ] {
+            let (result, methods) = cooperative_wake_in(
+                fourth_registry(),
+                vec![recheck_exchange(wake_agent(status, Some(kind), "term_1"))],
+                None,
+                |target, _| target.bound_harness = Some("fourth".into()),
+            );
+            assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+            assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
+        }
+        let (result, methods) = cooperative_wake_in(
+            fourth_registry(),
+            vec![recheck_exchange(wake_agent(
+                "idle",
+                Some("fourth-native"),
+                "term_1",
+            ))],
+            None,
+            |target, _| target.bound_harness = Some("fourth".into()),
+        );
+        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+        assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
+    }
+
+    // Kills a composer consumer that ignores its injected registry or switches on legacy IDs.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn injected_fourth_composer_reads_clears_and_restores_without_submitting_a_draft() {
+        let (saved, methods) = poke_session_in(
+            fourth_registry_with_composer(true),
+            vec![
+                detection_exchange("fixture draft: unfinished"),
+                clear_exchange(),
+                detection_exchange("fixture empty"),
+                retype_exchange("unfinished", true),
+            ],
+            |cli, target, context| {
+                let mut target = target.clone();
+                target.bound_harness = Some("fourth".into());
+                let ComposerStash::Saved(saved) = cli.stash_composer(&target, context).unwrap()
+                else {
+                    panic!("the injected composer's draft must be saved");
+                };
+                assert_eq!(saved, "unfinished");
+                cli.restore_composer(&target, &saved, context).unwrap();
+                saved
+            },
+        );
+        assert_eq!(saved, "unfinished");
+        assert_eq!(
+            methods,
+            [
+                "pane.get",
+                "agent.read",
+                "pane.send_keys",
+                "agent.read",
+                "pane.send_text"
+            ]
+        );
+    }
+
+    // Catches a hard-coded host-kind list: a registered fourth adapter's
+    // native alias must reach the real wake recheck, without changing the binding.
+    #[test]
+    fn registry_host_kind_and_absent_composer_preserve_wake_fences_and_send_no_keys() {
+        let mut target = composer_target();
+        target.bound_harness = Some("fourth".into());
+        assert!(
+            cooperative_wake_ready(
+                &wake_agent("idle", Some("fourth-native"), "term_1"),
+                &target,
+                fourth_registry(),
+            )
+            .is_ok(),
+            "a registered native alias must match its bound adapter ID"
+        );
+        let registry = fourth_registry();
+        for status in ["done", "idle"] {
+            assert!(
+                cooperative_wake_ready(
+                    &wake_agent(status, Some("fourth-native"), "term_1"),
+                    &target,
+                    registry
+                )
+                .is_ok()
+            );
+        }
+        for (status, kind) in [
+            ("working", "fourth-native"),
+            ("blocked", "fourth-native"),
+            ("unknown", "fourth-native"),
+            ("idle", "unknown"),
+            ("idle", "claude"),
+        ] {
+            assert!(
+                cooperative_wake_ready(
+                    &wake_agent(status, Some(kind), "term_1"),
+                    &target,
+                    registry
+                )
+                .is_err(),
+                "{status}/{kind}"
+            );
+        }
+        let cli = NativeCli::with_registry(
+            PathBuf::from("/missing/no-keys.sock"),
+            Arc::new(TestClock(Instant::now())),
+            registry,
+        );
+        cli.epoch.store(3, Ordering::Release);
+        let context = composer_context(&TestClock(Instant::now()));
+        assert_eq!(
+            cli.read_composer(
+                &target.target,
+                Harness::Agent(registry.agent("fourth").unwrap()),
+                &context
+            )
+            .unwrap(),
+            ComposerRead::Unreadable
+        );
+        assert_eq!(
+            cli.submit_prompt_during_turn(&target, "poke", &context)
+                .unwrap_err()
+                .code,
+            ErrorCode::UnsupportedHarness
+        );
+        assert_eq!(
+            cli.send_submit_key(&target, &context).unwrap_err().code,
+            ErrorCode::UnsupportedHarness
+        );
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(
+                cli.stash_composer(&target, &context).unwrap(),
+                ComposerStash::Failed("composer stash unsupported: no composer policy".into())
+            );
+            assert_eq!(
+                cli.restore_composer(&target, "saved draft", &context)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::UnsupportedHarness
+            );
+        }
+    }
+
     /// Idle and done agents of a recognized harness are prompted only after
     /// a fresh recheck, and `Submitted` is transport submission only.
     #[cfg(target_os = "macos")]
@@ -3294,6 +4759,23 @@ mod tests {
             recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
             detection_exchange(claude_screen(&[""])),
             blocked,
+        ]);
+        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+
+        // A Herdr that does not serve the method typed nothing either.
+        let unserved: Exchange = Box::new(|stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "agent.prompt");
+            writeln!(
+                stream,
+                "{}",
+                json!({"id":request["id"],"error":{"code":"unknown_method","message":"unknown method: agent.prompt"}})
+            )
+            .unwrap();
+        });
+        let (result, _) = cooperative_wake(vec![
+            recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+            detection_exchange(claude_screen(&[""])),
+            unserved,
         ]);
         assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
 
@@ -3689,6 +5171,14 @@ mod tests {
         rest: Vec<Exchange>,
         act: impl FnOnce(&NativeCli, &SafeWakeTarget, &HostCallContext) -> T,
     ) -> (T, Vec<String>) {
+        poke_session_in(registry::builtins(), rest, act)
+    }
+    #[cfg(target_os = "macos")]
+    fn poke_session_in<T>(
+        registry: &'static Registry,
+        rest: Vec<Exchange>,
+        act: impl FnOnce(&NativeCli, &SafeWakeTarget, &HostCallContext) -> T,
+    ) -> (T, Vec<String>) {
         let methods = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut exchanges = vec![pane_exchange()];
         exchanges.extend(rest);
@@ -3705,7 +5195,8 @@ mod tests {
                 }) as Exchange
             })
             .collect();
-        let (socket, cli, worker) = serve_sequence(exchanges);
+        let (socket, mut cli, worker) = serve_sequence(exchanges);
+        cli.registry = registry;
         let base = HostCallContext {
             budget: CallBudget {
                 deadline: MonoInstant(10_000),
@@ -4054,6 +5545,27 @@ mod tests {
                 cli.observe_current_target_for_archival(&HostTargetId::new("w4:p1"), &context);
             worker.join().unwrap();
             fs::remove_file(socket).unwrap();
+            if let Ok(sample) = &result {
+                assert!(sample.0.occupant.is_none());
+                assert_eq!(sample.0.execution, ExecutionEvidence::Unknown);
+                let evidence = sample
+                    .1
+                    .as_ref()
+                    .expect("same validated composer read retains parser evidence");
+                assert_eq!(
+                    evidence.parser,
+                    registry::builtins().agent("claude").unwrap()
+                );
+                assert_eq!(evidence.reported_host_kind, "claude");
+                assert_eq!(
+                    evidence.classification,
+                    if mode == "idle" {
+                        ports::ComposerClassification::Empty
+                    } else {
+                        ports::ComposerClassification::Unsafe
+                    }
+                );
+            }
             match mode {
                 "idle" => assert_eq!(result.unwrap().0.ui, HostUiState::Idle),
                 "draft" => assert_eq!(result.unwrap().0.ui, HostUiState::HumanInput),

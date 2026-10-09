@@ -29,15 +29,6 @@ use crate::{ports::HostUiState, protocol::authority::Harness};
 
 /// A row this close to the pane width may be a soft wrap (findings Q2).
 const WRAP_MARGIN: usize = 12;
-/// The shortest run of `─` taken for Claude's composer rule.
-const MIN_RULE: usize = 10;
-const CLAUDE_PROMPT: &str = "❯";
-const CODEX_PROMPT: &str = "›";
-/// Claude's empty-composer placeholder rows, exact text. Only a captured
-/// placeholder may be listed: `docs/evidence/poke-spike/findings.md` (Q2 table)
-/// records `Try "how do I log an error?"`.
-const CLAUDE_PLACEHOLDERS: &[&str] = &["Try \"how do I log an error?\""];
-const CODEX_EMPTY: &str = "Ask Codex to do anything";
 /// Why Claude composer text is never `Text`.
 pub const CLAUDE_NOT_KNOWN_EMPTY: &str = "Claude composer text may be a prompt suggestion";
 
@@ -59,46 +50,51 @@ pub enum ComposerRead {
 /// so its length stands in when the width is unknown. Codex has no rule: an
 /// unknown width makes typed text `Unsafe`.
 pub fn read_composer(harness: Harness, detection: &str, pane_width: Option<u16>) -> ComposerRead {
-    // Claude draws the gap after `❯` as a no-break space (captures).
-    let detection = detection.replace('\u{a0}', " ");
-    let raw: Vec<&str> = detection.lines().collect();
-    let lines: Vec<&str> = raw.iter().map(|line| line.trim_end()).collect();
-    let (rows, body, width, empty): (Vec<String>, Range<usize>, Option<usize>, bool) = match harness
-    {
-        Harness::Claude => match claude_rows(&lines) {
-            Some((rows, body, rule)) => match claude_empty(&rows) {
-                Some(empty) => (
-                    rows,
-                    body,
-                    pane_width.map(usize::from).or(Some(rule)),
-                    empty,
-                ),
-                None => return ComposerRead::Unreadable,
-            },
-            None => return ComposerRead::Unreadable,
-        },
-        Harness::Codex => match codex_rows(&lines) {
-            Some((rows, body)) => {
-                let empty = rows.len() == 1 && rows[0] == CODEX_EMPTY;
-                (rows, body, pane_width.map(usize::from), empty)
-            }
-            None => return ComposerRead::Unreadable,
-        },
-        Harness::Human => return ComposerRead::Unreadable,
+    read_composer_in(
+        crate::harness::registry::builtins(),
+        harness,
+        detection,
+        pane_width,
+    )
+}
+
+pub fn read_composer_in(
+    registry: &crate::harness::registry::Registry,
+    harness: Harness,
+    detection: &str,
+    pane_width: Option<u16>,
+) -> ComposerRead {
+    let Harness::Agent(id) = harness else {
+        return ComposerRead::Unreadable;
     };
+    registry
+        .by_id(id)
+        .ok()
+        .and_then(|registration| registration.composer_policy())
+        .map_or(ComposerRead::Unreadable, |policy| {
+            policy.read(detection, pane_width)
+        })
+}
+
+/// Shared conservative width, whitespace and lossy-placeholder safety checks.
+pub(crate) fn validate_rows(
+    raw: &[&str],
+    lines: &[&str],
+    rows: Vec<String>,
+    mut body: Range<usize>,
+    width: Option<usize>,
+    empty: bool,
+    prefix: &str,
+) -> ComposerRead {
     if empty {
         return ComposerRead::Empty;
     }
-    let prefix = match harness {
-        Harness::Codex => CODEX_PROMPT,
-        _ => CLAUDE_PROMPT,
-    };
     // The first row's prompt glyph and following space are not typed text.
     let text = rows.join("\n");
     if text.is_empty() {
         return ComposerRead::Empty;
     }
-    let trailing_whitespace = body.clone().any(|index| {
+    let trailing_whitespace = body.any(|index| {
         let trimmed = lines[index];
         raw[index] != trimmed && !trimmed.is_empty() && trimmed != prefix
     });
@@ -147,20 +143,8 @@ pub fn read_composer(harness: Harness, detection: &str, pane_width: Option<u16>)
             reason: "composer row within 12 columns of the pane width (soft wrap)",
         };
     }
-    // Claude draws a prompt suggestion in the composer after a turn, and the
-    // detection text cannot tell it from a typed draft (ht-jf3). Without captured
-    // styling, any Claude text that is not a known empty marker is not known
-    // empty: never stashed, so a poke over it is skipped. Ordinary wakes do not
-    // consult the composer (TRUST-POLICY A4).
-    if harness == Harness::Claude {
-        return ComposerRead::Unsafe {
-            text,
-            reason: CLAUDE_NOT_KNOWN_EMPTY,
-        };
-    }
     ComposerRead::Text(text)
 }
-
 /// Display columns of a composer row, `None` when a character's rendered
 /// width cannot be determined: a control character, or an emoji variation
 /// selector (U+FE0F) or zero-width joiner (U+200D), whose sequences render
@@ -173,75 +157,6 @@ fn display_width(row: &str) -> Option<usize> {
             c => c.width_cjk(),
         })
         .sum()
-}
-
-fn is_rule(line: &str) -> bool {
-    line.chars().count() >= MIN_RULE && line.chars().all(|c| c == '─')
-}
-
-/// The composer's rows (prompt glyph and indent removed), the line range of
-/// its body, and the rule width.
-fn claude_rows(lines: &[&str]) -> Option<(Vec<String>, Range<usize>, usize)> {
-    let mut rules = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| is_rule(line))
-        .map(|(index, _)| index)
-        .rev();
-    let bottom = rules.next()?;
-    let top = rules.next()?;
-    let body = &lines[top + 1..bottom];
-    let first = body.first()?;
-    let first = if *first == CLAUDE_PROMPT {
-        String::new()
-    } else {
-        first.strip_prefix("❯ ")?.to_owned()
-    };
-    let mut rows = vec![first];
-    for line in &body[1..] {
-        rows.push(line.strip_prefix("  ")?.to_owned());
-    }
-    // Trailing empty continuation rows are padding, not typed text.
-    while rows.len() > 1 && rows.last().is_some_and(String::is_empty) {
-        rows.pop();
-    }
-    let rule = lines[bottom].chars().count();
-    Some((rows, top + 1..bottom, rule))
-}
-
-/// `Some(true)`: empty; `Some(false)`: typed text; `None`: a placeholder-shaped
-/// row that is not a captured placeholder, so emptiness cannot be decided.
-fn claude_empty(rows: &[String]) -> Option<bool> {
-    match rows {
-        [only] if only.is_empty() || CLAUDE_PLACEHOLDERS.contains(&only.as_str()) => Some(true),
-        [only] if only.starts_with("Try \"") => None,
-        _ => Some(false),
-    }
-}
-
-/// The rows of the last `› ` composer: its first row and two-space rows until
-/// a blank row.
-fn codex_rows(lines: &[&str]) -> Option<(Vec<String>, Range<usize>)> {
-    let start = lines
-        .iter()
-        .rposition(|line| line.strip_prefix("› ").is_some() || *line == CODEX_PROMPT)?;
-    let first = lines[start]
-        .strip_prefix("› ")
-        .unwrap_or_default()
-        .to_owned();
-    let mut rows = vec![first];
-    let mut end = start + 1;
-    for line in &lines[start + 1..] {
-        if line.is_empty() {
-            break;
-        }
-        match line.strip_prefix("  ") {
-            Some(row) => rows.push(row.to_owned()),
-            None => break,
-        }
-        end += 1;
-    }
-    Some((rows, start..end))
 }
 
 /// The UI state a pane shows, from Herdr's `agent_status` and a composer read
@@ -264,6 +179,33 @@ pub fn observed_ui(agent_status: Option<&str>, composer: Option<&ComposerRead>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Catches absent concrete composer dispatch despite a captured legacy grammar.
+    #[test]
+    fn concrete_composer_providers_preserve_captured_empty_markers() {
+        let registry = crate::harness::registry::builtins();
+        for (id, screen) in [
+            (
+                "claude",
+                include_str!(
+                    "../../docs/evidence/poke-spike/captures/claude-q1-empty.read-detection.txt"
+                ),
+            ),
+            (
+                "codex",
+                include_str!(
+                    "../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt"
+                ),
+            ),
+        ] {
+            let provider = registry
+                .by_id(registry.agent(id).unwrap())
+                .unwrap()
+                .composer_policy()
+                .unwrap_or_else(|| panic!("{id} must own its composer grammar"));
+            assert_eq!(provider.read(screen, None), ComposerRead::Empty, "{id}");
+        }
+    }
 
     macro_rules! capture {
         ($name:literal) => {

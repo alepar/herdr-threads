@@ -1,0 +1,92 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "attempts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "attempts": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "harness",
+          "attempt",
+          "identity_key",
+          "evidence_stage",
+          "result_path",
+          "capture_paths"
+        ],
+        "properties": {
+          "harness": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]*$(?![\\s\\S])"
+          },
+          "attempt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$(?![\\s\\S])"
+          },
+          "identity_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^(release:(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})|build:[a-f0-9]{64})$(?![\\s\\S])"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence_stage": {
+            "enum": [
+              "source_captured",
+              "no_model",
+              "live"
+            ]
+          },
+          "result_path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$(?![\\s\\S])"
+          },
+          "capture_paths": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$(?![\\s\\S])"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "herdr-threads/canary/artifact_index_schema.json",
+  "title": "Adapter artifact index schema 1",
+  "x-max-bytes": 262144,
+  "x-consumer-validation": [
+    "Require unique harness/attempt pairs and join each result by exact harness, attempt, identity_key and evidence_stage, never filename inference.",
+    "Require each result/capture path within its caller-issued attempt directory, and reject traversal or symlink escape using filesystem validation.",
+    "Compare identity_key to the canonical result identity key (or null); reject ambiguous or mismatched joins.",
+    "Retain domain/origin/stage metadata in indexed captures; captures and model-free replay never establish model-backed PASS.",
+    "Enforce the encoded byte cap in addition to structural limits."
+  ]
+}

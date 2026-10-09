@@ -1,0 +1,2 @@
+message_id|seat_id|state|ack_generation|ack_observation|acked_at
+myL70qYID|s3nPSfn5E|acked|3|{"action_provenance":"cooperative_inbox_display","binding_generation":3,"decided_at":1791488274738,"execution":"fcd2f9ec-f407-4faa-a05e-e1fceaba6ea4","harness":"hermes","host_boot":"herdr-server:pid=24658:start=1791487995.211417:uid=501","observed_at":1791488274738,"provenance":"cooperative_top_level","session":"20261008_123622_4576ef","target_generation":1}|1791488274738

@@ -86,14 +86,11 @@ fn swapping_the_binary_reobserves_on_the_next_tick() {
     wait_until("the first pass", || pacer.idle_events() >= 1);
     assert!(
         matches!(
-            slot.lock().unwrap().claude,
-            HarnessStatus::Cooperative {
-                live_unverified: false,
-                ..
-            }
+            slot.lock().unwrap().status("claude"),
+            HarnessStatus::ContractDeclared { .. }
         ),
         "{:?}",
-        slot.lock().unwrap().claude
+        slot.lock().unwrap().status("claude")
     );
 
     // Unchanged binary, next tick: no change line.
@@ -113,12 +110,12 @@ fn swapping_the_binary_reobserves_on_the_next_tick() {
     let _ = std::fs::remove_dir_all(&staging);
     advance(&pacer);
     wait_until("the third pass", || pacer.idle_events() >= 3);
-    let observed = slot.lock().unwrap().claude.clone();
-    let HarnessStatus::Cooperative { detail, .. } = &observed else {
-        panic!("the swapped wrapper must remain cooperative: {observed:?}");
+    let observed = slot.lock().unwrap().status("claude").clone();
+    let HarnessStatus::ContractDeclared { detail } = &observed else {
+        panic!("the swapped binary must be re-observed as optimistic: {observed:?}");
     };
     assert!(detail.contains("contract_declared"), "{detail}");
-    assert_eq!(slot.lock().unwrap().claude_version, None);
+    assert_eq!(slot.lock().unwrap().detected_version("claude"), None);
     let lines = lines.lock().unwrap();
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(
@@ -150,7 +147,7 @@ fn cancelling_the_lane_preserves_the_previous_observation() {
     let previous = observer.pass(&Cancellation::default());
     let cancel = Cancellation::default();
     cancel.cancel();
-    assert_eq!(observer.pass(&cancel), HarnessObservations::default());
+    assert_eq!(observer.pass(&cancel), previous);
     assert_eq!(observer.pass(&Cancellation::default()), previous);
 }
 
@@ -181,14 +178,14 @@ fn task3_versionless_daemon_observes_failing_wrappers_without_probes() {
     );
     let observed = observer.pass(&Cancellation::default());
     assert!(!marker.exists(), "daemon invoked a diagnostic wrapper");
-    for status in [&observed.claude, &observed.codex] {
+    for status in [observed.status("claude"), observed.status("codex")] {
         assert!(
-            matches!(status, HarnessStatus::Cooperative { .. }),
+            matches!(status, HarnessStatus::ContractDeclared { .. }),
             "{status:?}"
         );
     }
-    assert_eq!(observed.claude_version, None);
-    assert_eq!(observed.codex_version, None);
+    assert_eq!(observed.detected_version("claude"), None);
+    assert_eq!(observed.detected_version("codex"), None);
     let source = crate::app::ObservedPokeCapabilities::new(Arc::new(Mutex::new(observed)));
     for harness in [
         crate::protocol::authority::Harness::Claude,

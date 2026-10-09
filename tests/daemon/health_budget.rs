@@ -281,3 +281,28 @@ fn pointer_class_prefers_corrupt_then_unavailable() {
     assert_ne!(corrupt, unavailable);
     assert_eq!(last_line(with_corrupt), Some(corrupt));
 }
+
+/// An untested newer Herdr is one limitation line next to the version; it is
+/// a warning, not a degradation. Kills: dropping the line, or degrading on it.
+#[test]
+fn untested_herdr_release_warns_without_degrading() {
+    let release = crate::host::compatibility::admit(Some("0.10.0"), Some(23)).unwrap();
+    let mut inputs = ready_inputs();
+    inputs.host_version = Some(release.summary());
+    inputs.host_release_warning = release.warning();
+    let health = inputs.assemble();
+    assert_eq!(health.state, HealthState::Healthy);
+    assert_eq!(health.host.version.as_deref(), Some("0.10.0 (protocol 23)"));
+    let warnings: Vec<_> = health
+        .limitations
+        .iter()
+        .filter(|line| line.starts_with("untested Herdr"))
+        .collect();
+    assert_eq!(warnings, ["untested Herdr 0.10.0; tested 0.9.1-0.9.3"]);
+
+    let tested = crate::host::compatibility::admit(Some("0.9.2"), Some(22)).unwrap();
+    let mut inputs = ready_inputs();
+    inputs.host_release_warning = tested.warning();
+    let health = inputs.assemble();
+    assert!(!health.limitations.iter().any(|line| line.contains("Herdr")));
+}

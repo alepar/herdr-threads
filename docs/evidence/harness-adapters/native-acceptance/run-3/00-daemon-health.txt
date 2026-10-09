@@ -1,0 +1,22 @@
+health
+boot_id: "fd7654ba-a1f1-4313-9fa2-fcf346fb6aa8"
+database: {"detail":null,"state":"ready"}
+harness: {"claude":"unsupported","codex":"unsupported"}
+held_targets: null
+host: {"coherent_enumeration":"unknown","current_execution":"unsupported","reachability":"unknown","receipt_registration":"unsupported","safe_prompt":"supported","version":null}
+host_timeouts: null
+instance_id: "2615a893-74ff-4eb0-881f-aaff2feb5185"
+last_reconciliation_at: null
+last_scheduler_tick_at: 1791491592498
+limitations: []
+notes: ["harness claude not installed: no executable `claude` on the daemon's PATH","harness codex not installed: no executable `codex` on the daemon's PATH","harness hermes: hermes executable present; callback qualification unavailable; runtime metadata, enablement and native behavior unobserved","harness synthetic_fourth not installed: synthetic fourth: no explicit fixture binary directory","wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes or synthetic_fourth agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"]
+protocol_version: 6
+queue_depth: null
+queue_rejections: null
+retirement_degraded: null
+retirement_pending: null
+schema: {"detail":null,"state":"ready"}
+settings: {"invitation_default_ms":300000,"minimum_wake_delay_ms":30000,"receipt_default_ms":300000,"wake_batch_delay_ms":180000}
+software_version: "0.2.12"
+state: "degraded"
+unresolved_seats: 0

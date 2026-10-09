@@ -1656,9 +1656,11 @@ fn register(
     }
 }
 fn boundary(cj: &ContextJournal, client: &Mailbox, coalesce: bool) -> ToolBoundary {
+    let mut event = tool_event();
+    event.harness = cj.current().unwrap().unwrap().harness;
     let boundary = tool_boundary_check_in(
         cj,
-        &tool_event(),
+        &event,
         client,
         &Clock,
         &Default::default(),
@@ -1679,25 +1681,35 @@ fn tool_call(cj: &ContextJournal, client: &Mailbox) -> Vec<u8> {
 // notice page remains. Deliver each page, then coalesce again without token edits.
 #[test]
 fn late_notice_projection_and_remaining_pages_survive_tool_coalescing() {
-    let (_root, j, cj, seed, event) = fixture();
-    let client = Mailbox::with(&[], &[]);
-    register(&j, &cj, &event, &seed, &client);
-    assert!(tool_call(&cj, &client).is_empty());
-    let execution = cj.current().unwrap().unwrap().execution;
-    let mark = cj.attention_mark(execution).unwrap();
-    *client.pending_notices.lock().unwrap() = 17;
-    let first = boundary(&cj, &client, true);
-    assert!(first.summary.unwrap().contains("offered notices:"));
-    assert_eq!(*client.pending_notices.lock().unwrap(), 1);
-    assert_eq!(cj.attention_mark(execution), Some(mark));
-    assert!(
-        boundary(&cj, &client, true)
-            .summary
-            .unwrap()
-            .contains("offered notices:")
-    );
-    assert_eq!(*client.pending_notices.lock().unwrap(), 0);
-    assert!(tool_call(&cj, &client).is_empty());
+    for registration in crate::harness::registry::builtins().registrations() {
+        let (root, j, cj, mut seed, mut event) = fixture();
+        let harness = Harness::from(crate::harness::registry::OccupantHarness::Agent(
+            crate::harness::registry::builtins()
+                .agent(registration.metadata().id)
+                .unwrap(),
+        ));
+        seed.harness = harness;
+        event.harness = harness;
+        let client = Mailbox::with(&[], &[]);
+        register(&j, &cj, &event, &seed, &client);
+        assert!(tool_call(&cj, &client).is_empty());
+        let execution = cj.current().unwrap().unwrap().execution;
+        let mark = cj.attention_mark(execution).unwrap();
+        *client.pending_notices.lock().unwrap() = 17;
+        let first = boundary(&cj, &client, true);
+        assert!(first.summary.unwrap().contains("offered notices:"));
+        assert_eq!(*client.pending_notices.lock().unwrap(), 1);
+        assert_eq!(cj.attention_mark(execution), Some(mark));
+        assert!(
+            boundary(&cj, &client, true)
+                .summary
+                .unwrap()
+                .contains("offered notices:")
+        );
+        assert_eq!(*client.pending_notices.lock().unwrap(), 0);
+        assert!(tool_call(&cj, &client).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 // Race, tool-boundary path: message B arrives after the CheckIn answered the
@@ -2010,10 +2022,496 @@ fn read_hot_threads_asks_for_the_seat_and_validates_the_answer() {
     );
 }
 
+// Break caught: treating every qualified turn as Startup rotates a registered execution.
+#[test]
+fn qualified_turn_replay_restart_and_stale_order_keep_exact_operation_execution() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("opaque-native/session".into());
+    let turn = QualifiedTurn {
+        session: "opaque-native/session".into(),
+        event_key: event.event_id.clone(),
+        reset: None,
+        ordering: Some(ObservationOrder {
+            process_nonce: uuid::Uuid::from_u128(3),
+            sequence: 9,
+            observed_at_millis: 1,
+            callback_budget_millis: 1000,
+        }),
+    };
+    let first = prepare_qualified_turn(&journal, &contexts, &event, &turn, Some(&seed), 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.mode, CheckInMode::Lifecycle);
+    assert!(
+        contexts
+            .dispatch(&event.event_id, &mut |_: &PendingCheckIn| Err(
+                ContextError::Dispatch("response lost".into())
+            ))
+            .is_err()
+    );
+    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    assert_eq!(
+        prepare_qualified_turn(&journal, &reopened, &event, &turn, Some(&seed), 2)
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    let response = reopened
+        .dispatch(&event.event_id, &mut |request: &PendingCheckIn| {
+            let mut context = request.context.clone();
+            context.binding_generation = 1;
+            Ok(CheckInResponse {
+                context,
+                historical: false,
+                output: b"immutable offer".to_vec(),
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        prepare_qualified_turn(&journal, &reopened, &event, &turn, Some(&seed), 3)
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    event.event_id = "next-turn".into();
+    let turn = QualifiedTurn {
+        event_key: event.event_id.clone(),
+        ordering: Some(ObservationOrder {
+            process_nonce: uuid::Uuid::from_u128(4),
+            sequence: 1,
+            observed_at_millis: 4,
+            callback_budget_millis: 1000,
+        }),
+        ..turn
+    };
+    let next = prepare_qualified_turn(&journal, &reopened, &event, &turn, None, 4)
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.mode, CheckInMode::Current);
+    assert_eq!(next.context.execution, response.context.execution);
+    complete_turn(&reopened, &next);
+    event.event_id = "old-nonce-late".into();
+    let stale = QualifiedTurn {
+        event_key: event.event_id.clone(),
+        ordering: Some(ObservationOrder {
+            process_nonce: uuid::Uuid::from_u128(3),
+            sequence: 8,
+            observed_at_millis: 5,
+            callback_budget_millis: 1000,
+        }),
+        ..turn
+    };
+    assert_eq!(
+        prepare_qualified_turn(&journal, &reopened, &event, &stale, None, 5),
+        Err(ContextError::Conflict)
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn turn(event: &LifecycleEvent, nonce: u128, sequence: u64, at: i64, budget: u32) -> QualifiedTurn {
+    QualifiedTurn {
+        session: event.native_session.clone().unwrap(),
+        event_key: event.event_id.clone(),
+        reset: None,
+        ordering: Some(ObservationOrder {
+            process_nonce: uuid::Uuid::from_u128(nonce),
+            sequence,
+            observed_at_millis: at,
+            callback_budget_millis: budget,
+        }),
+    }
+}
+fn complete_turn(contexts: &ContextJournal, request: &PendingCheckIn) -> CheckInResponse {
+    contexts
+        .dispatch(&request.event_id, &mut |p: &PendingCheckIn| {
+            let mut context = p.context.clone();
+            if p.mode == CheckInMode::Lifecycle {
+                context.binding_generation += 1;
+            }
+            Ok(CheckInResponse {
+                context,
+                historical: false,
+                output: b"frozen offer".to_vec(),
+            })
+        })
+        .unwrap()
+}
+// Break caught: an unseen lower entry sequence may mutate after a newer callback.
+#[test]
+fn qualified_turn_known_stale_order_is_refused_before_intent_or_context_write() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("opaque/not-sortable-z".into());
+    let first = prepare_qualified_turn(
+        &journal,
+        &contexts,
+        &event,
+        &turn(&event, 3, 9, 1000, 1000),
+        Some(&seed),
+        1000,
+    )
+    .unwrap()
+    .unwrap();
+    complete_turn(&contexts, &first);
+    let bytes = fs::read(root.join("context.json")).unwrap();
+    event.event_id = "unseen-late".into();
+    assert_eq!(
+        prepare_qualified_turn(
+            &journal,
+            &contexts,
+            &event,
+            &turn(&event, 3, 8, 1000, 1000),
+            None,
+            1001
+        ),
+        Err(ContextError::Conflict)
+    );
+    assert_eq!(fs::read(root.join("context.json")).unwrap(), bytes);
+    fs::remove_dir_all(root).unwrap();
+}
+// Break caught: malformed/future or expired callbacks may allocate an immutable operation.
+#[test]
+fn qualified_turn_deadline_refusal_leaves_no_request_or_watermark() {
+    for (at, budget, now, error) in [
+        (1000, 100, 1100, ContextError::Conflict),
+        (1001, 100, 1000, ContextError::Invalid),
+        (1000, 0, 1000, ContextError::Invalid),
+        (1000, 5001, 1000, ContextError::Invalid),
+    ] {
+        let (root, journal, contexts, seed, mut event) = fixture();
+        event.native_session = Some("native".into());
+        assert_eq!(
+            prepare_qualified_turn(
+                &journal,
+                &contexts,
+                &event,
+                &turn(&event, 3, 1, at, budget),
+                Some(&seed),
+                now
+            ),
+            Err(error)
+        );
+        assert!(contexts.pending().unwrap().is_none());
+        assert!(!root.join("context.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+// Break caught: an explicit new-session reset is refused or silently represented as Resume.
+#[test]
+fn qualified_turn_reset_requires_matching_prior_session_and_order_then_clears() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("old".into());
+    let first = prepare_qualified_turn(
+        &journal,
+        &contexts,
+        &event,
+        &turn(&event, 3, 1, 1000, 1000),
+        Some(&seed),
+        1000,
+    )
+    .unwrap()
+    .unwrap();
+    let response = complete_turn(&contexts, &first);
+    event.event_id = "reset".into();
+    event.native_session = Some("new".into());
+    let mut reset = turn(&event, 3, 2, 1000, 1000);
+    reset.reset = Some(ResetObservation {
+        previous_session: "old".into(),
+    });
+    let request = prepare_qualified_turn(&journal, &contexts, &event, &reset, None, 1001)
+        .unwrap()
+        .unwrap();
+    assert_eq!(request.mode, CheckInMode::Lifecycle);
+    assert_ne!(request.context.execution, response.context.execution);
+    assert_eq!(
+        request.context.session,
+        SessionReference::Native("new".into())
+    );
+    assert_eq!(request.expected_generation, Some(1));
+    complete_turn(&contexts, &request);
+    let bytes = fs::read(root.join("context.json")).unwrap();
+    event.event_id = "mismatched-no-proof".into();
+    event.native_session = Some("history-unknown".into());
+    assert_eq!(
+        prepare_qualified_turn(
+            &journal,
+            &contexts,
+            &event,
+            &QualifiedTurn {
+                session: "history-unknown".into(),
+                event_key: event.event_id.clone(),
+                reset: None,
+                ordering: None
+            },
+            None,
+            1002
+        ),
+        Err(ContextError::Conflict)
+    );
+    assert_eq!(fs::read(root.join("context.json")).unwrap(), bytes);
+    fs::remove_dir_all(root).unwrap();
+}
+
+// Break caught: retiring an obsolete current hint makes immutable completed replay unavailable.
+#[test]
+fn qualified_turn_replays_completed_after_hint_retirement_before_selecting_startup() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("same".into());
+    let observation = turn(&event, 3, 1, 1000, 1000);
+    let first =
+        prepare_qualified_turn(&journal, &contexts, &event, &observation, Some(&seed), 1000)
+            .unwrap()
+            .unwrap();
+    let response = complete_turn(&contexts, &first);
+    assert!(contexts.retire_current(&response.context).unwrap());
+    assert_eq!(
+        prepare_qualified_turn(&journal, &contexts, &event, &observation, None, 9000)
+            .unwrap()
+            .unwrap(),
+        first
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+// Break caught: the transport or startup overview extends a short observed callback budget.
+#[test]
+fn qualified_turn_dispatch_and_overview_are_clamped_to_observation_deadline() {
+    struct Bounded(Transport);
+    impl crate::ports::LocalClient for Bounded {
+        crate::default_output_local_client!();
+        fn call(
+            &self,
+            command: Command,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError>
+        {
+            assert!(
+                budget.deadline.0 <= 200,
+                "extended callback deadline: {}",
+                budget.deadline.0
+            );
+            crate::ports::LocalClient::call(&self.0, command, budget)
+        }
+    }
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("same".into());
+    let observation = turn(&event, 3, 1, 100, 100);
+    let mut output = Vec::new();
+    run_qualified_hook_event_reporting_notices(
+        &journal,
+        &contexts,
+        &event,
+        &observation,
+        Some(&seed),
+        100,
+        &Bounded(Transport::new()),
+        &Clock,
+        &Default::default(),
+        &mut output,
+        &mut None,
+        None,
+    )
+    .unwrap();
+    assert!(!output.is_empty());
+    assert!(contexts.current().unwrap().is_some());
+    fs::remove_dir_all(root).unwrap();
+}
+
+// Break caught: an output flush failure removes the pending intent or re-checks in on retry.
+#[test]
+fn qualified_turn_flush_loss_retains_exact_response_and_operation() {
+    struct Broken;
+    impl std::io::Write for Broken {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("same".into());
+    let observation = turn(&event, 3, 1, 100, 1000);
+    let client = Transport::new();
+    assert!(
+        run_qualified_hook_event_reporting_notices(
+            &journal,
+            &contexts,
+            &event,
+            &observation,
+            Some(&seed),
+            100,
+            &client,
+            &Clock,
+            &Default::default(),
+            &mut Broken,
+            &mut None,
+            None,
+        )
+        .is_err()
+    );
+    let cached = contexts
+        .completed_for_event(&event.event_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(journal.page(&Default::default()).unwrap().items.len(), 1);
+    drop(contexts);
+    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    let mut output = Vec::new();
+    run_qualified_hook_event_reporting_notices(
+        &journal,
+        &reopened,
+        &event,
+        &observation,
+        Some(&seed),
+        101,
+        &client,
+        &Clock,
+        &Default::default(),
+        &mut output,
+        &mut None,
+        None,
+    )
+    .unwrap();
+    assert!(!output.is_empty());
+    assert_eq!(
+        reopened
+            .completed_for_event(&event.event_id)
+            .unwrap()
+            .unwrap(),
+        cached
+    );
+    assert_eq!(
+        client
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| matches!(c, Command::CheckIn(_)))
+            .count(),
+        1
+    );
+    assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+// Break caught: restarting callback processes grows routing state without its bounded history scope.
+#[test]
+fn qualified_turn_watermarks_are_durable_and_bounded_across_many_nonces() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("same".into());
+    for nonce in 1..=35 {
+        event.event_id = format!("entry-{nonce}");
+        let request = prepare_qualified_turn(
+            &journal,
+            &contexts,
+            &event,
+            &turn(&event, nonce, 1, 1000, 1000),
+            Some(&seed),
+            1000,
+        )
+        .unwrap()
+        .unwrap();
+        contexts.abandon_pending(&request.event_id).unwrap();
+    }
+    let state: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("context.json")).unwrap()).unwrap();
+    assert_eq!(
+        state["observation_watermarks"].as_array().unwrap().len(),
+        32
+    );
+    drop(contexts);
+    let reopened = ContextJournal::open(&root, seed.instance, "seat", CONTEXT_LOCK_WAIT).unwrap();
+    event.event_id = "retained-stale".into();
+    assert_eq!(
+        prepare_qualified_turn(
+            &journal,
+            &reopened,
+            &event,
+            &turn(&event, 35, 1, 1000, 1000),
+            Some(&seed),
+            1001
+        ),
+        Err(ContextError::Conflict)
+    );
+    assert!(reopened.pending().unwrap().is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+// Break caught: an authoritative historical Current result is delivered while its rejected hint remains active.
+#[test]
+fn qualified_turn_historical_current_retires_only_rejected_hint_and_keeps_exact_history() {
+    let (root, journal, contexts, seed, mut event) = fixture();
+    event.native_session = Some("same".into());
+    let first = prepare_qualified_turn(
+        &journal,
+        &contexts,
+        &event,
+        &turn(&event, 3, 1, 100, 1000),
+        Some(&seed),
+        100,
+    )
+    .unwrap()
+    .unwrap();
+    complete_turn(&contexts, &first);
+    event.event_id = "historical-current".into();
+    let mut client = Transport::new();
+    client.historical = true;
+    let mut output = Vec::new();
+    assert!(matches!(
+        run_qualified_hook_event_reporting_notices(
+            &journal,
+            &contexts,
+            &event,
+            &turn(&event, 3, 2, 100, 1000),
+            None,
+            100,
+            &client,
+            &Clock,
+            &Default::default(),
+            &mut output,
+            &mut None,
+            None,
+        ),
+        Err(BridgeError::Context(ContextError::LifecycleRequired))
+    ));
+    assert!(output.is_empty());
+    assert!(contexts.current().unwrap().is_none());
+    let historical = contexts
+        .completed_for_event(&event.event_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(historical.0.mode, CheckInMode::Current);
+    assert!(historical.1.historical);
+    assert!(contexts.pending().unwrap().is_none());
+    assert_eq!(
+        prepare_qualified_turn(
+            &journal,
+            &contexts,
+            &event,
+            &turn(&event, 3, 2, 100, 1000),
+            None,
+            100
+        )
+        .unwrap()
+        .unwrap(),
+        historical.0
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
 // Saved selectors may be shortened only with the recipient's flag-free proof
 // AND an exact canonical match of both saved selectors to this hook's target.
 #[test]
 fn cached_pinned_continuations_use_verified_recipient_presentation_without_changing_cache() {
+    cached_pinned_continuations_preserve_cache(false);
+}
+
+// Qualified turns must receive exactly the same recipient routing without mutating replay.
+#[test]
+fn qualified_cached_continuations_keep_recipient_routing_and_immutable_replay() {
+    cached_pinned_continuations_preserve_cache(true);
+}
+
+fn cached_pinned_continuations_preserve_cache(qualified: bool) {
     use crate::{
         cli::instance::InstanceInputs,
         protocol::{
@@ -2065,7 +2563,13 @@ fn cached_pinned_continuations_use_verified_recipient_presentation_without_chang
             Ok(result)
         }
     }
-    let (root, j, cj, seed, event) = fixture();
+    let (root, j, cj, seed, mut event) = fixture();
+    let observation = if qualified {
+        event.native_session = Some("qualified-session".into());
+        Some(turn(&event, 9, 1, 0, 1000))
+    } else {
+        None
+    };
     let state = root.join("state");
     fs::create_dir(&state).unwrap();
     let endpoint = root.join("host.sock");
@@ -2076,21 +2580,42 @@ fn cached_pinned_continuations_use_verified_recipient_presentation_without_chang
     let client = PinnedTransport {
         inner: Transport::new(),
     };
-    run_event(
-        &j,
-        &cj,
-        &event,
-        Some(&seed),
-        1,
-        &client,
-        &Clock,
-        &OutputSpec {
-            context: target.clone(),
-            ..OutputSpec::default()
-        },
-        &mut Vec::new(),
-    )
-    .unwrap();
+    if let Some(observation) = &observation {
+        run_qualified_hook_event_reporting_notices(
+            &j,
+            &cj,
+            &event,
+            observation,
+            Some(&seed),
+            1,
+            &client,
+            &Clock,
+            &OutputSpec {
+                context: target.clone(),
+                ..OutputSpec::default()
+            },
+            &mut Vec::new(),
+            &mut None,
+            None,
+        )
+        .unwrap();
+    } else {
+        run_event(
+            &j,
+            &cj,
+            &event,
+            Some(&seed),
+            1,
+            &client,
+            &Clock,
+            &OutputSpec {
+                context: target.clone(),
+                ..OutputSpec::default()
+            },
+            &mut Vec::new(),
+        )
+        .unwrap();
+    }
     let saved = cj
         .dispatch(&event.event_id, &mut |_: &PendingCheckIn| {
             panic!("saved request must not replay")
@@ -2120,24 +2645,45 @@ fn cached_pinned_continuations_use_verified_recipient_presentation_without_chang
         (&other_state, &pane, false),
     ] {
         let mut output = Vec::new();
-        run_hook_event_reporting_notices(
-            &j,
-            &cj,
-            &event,
-            Some(&seed),
-            2,
-            &client,
-            &Clock,
-            &OutputSpec::default(),
-            OverviewReason::None,
-            &mut output,
-            &mut None,
-            Some(&RecipientRouting {
-                target: current,
-                pane: recipient,
-            }),
-        )
-        .unwrap();
+        if let Some(observation) = &observation {
+            run_qualified_hook_event_reporting_notices(
+                &j,
+                &cj,
+                &event,
+                observation,
+                Some(&seed),
+                2,
+                &client,
+                &Clock,
+                &OutputSpec::default(),
+                &mut output,
+                &mut None,
+                Some(&RecipientRouting {
+                    target: current,
+                    pane: recipient,
+                }),
+            )
+            .unwrap();
+        } else {
+            run_hook_event_reporting_notices(
+                &j,
+                &cj,
+                &event,
+                Some(&seed),
+                2,
+                &client,
+                &Clock,
+                &OutputSpec::default(),
+                OverviewReason::None,
+                &mut output,
+                &mut None,
+                Some(&RecipientRouting {
+                    target: current,
+                    pane: recipient,
+                }),
+            )
+            .unwrap();
+        }
         let text = String::from_utf8(output).unwrap();
         assert_eq!(text.matches("saved-cursor").count(), 4);
         if concise {
@@ -2200,4 +2746,102 @@ fn tool_boundary_quiet_and_mark_unchanged_while_mod_channel_live() {
     assert!(back.summary.unwrap().contains("receipts=1 [A@t1]"));
     assert!(tool_call(&cj, &client).is_empty(), "then coalesced");
     fs::remove_dir_all(root).unwrap();
+}
+
+// Capability absence uses only the legacy read. Advertised malformed/error/foreign
+// answers fail open to a Current offer without granting a coalescing mark or enrollment.
+#[test]
+fn notice_delivery_negotiation_negative_paths_preserve_marks_and_tool_authority() {
+    struct Client<'a> {
+        mailbox: &'a Mailbox,
+        mode: u8,
+    }
+    impl crate::ports::LocalClient for Client<'_> {
+        crate::default_output_local_client!();
+        fn supports_capability(&self, name: &str, _: &crate::protocol::time::CallBudget) -> bool {
+            self.mode != 0 && name == crate::protocol::capabilities::ATTENTION_NOTICE_DELIVERY
+        }
+        fn call(
+            &self,
+            command: Command,
+            budget: &crate::protocol::time::CallBudget,
+        ) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError>
+        {
+            use crate::protocol::results::{ApiError, CommandResult as R};
+            if matches!(&command, Command::AttentionDigestDelivery(_)) {
+                assert_ne!(self.mode, 0);
+                return match self.mode {
+                    1 => Ok(R::Directory(empty())),
+                    2 => {
+                        let mut digest = self.mailbox.digest();
+                        digest.seat = crate::protocol::ids::SeatId::new("foreign-seat");
+                        Ok(R::AttentionDigestDelivery {
+                            digest,
+                            notices_pending: true,
+                        })
+                    }
+                    3 => Err(ApiError::store_corrupt("injected delivery error")),
+                    _ => unreachable!(),
+                };
+            }
+            crate::ports::LocalClient::call(self.mailbox, command, budget)
+        }
+    }
+    for mode in 0..=3 {
+        let (root, journal, contexts, seed, event) = fixture();
+        let mailbox = Mailbox::with(&[], &[]);
+        register(&journal, &contexts, &event, &seed, &mailbox);
+        let saved = contexts.current().unwrap().unwrap();
+        let mark = contexts.attention_mark(saved.execution);
+        let client = Client {
+            mailbox: &mailbox,
+            mode,
+        };
+        let before = mailbox.calls.lock().unwrap().len();
+        let result = tool_boundary_check_in(
+            &contexts,
+            &tool_event(),
+            &client,
+            &Clock,
+            &Default::default(),
+            &budget(),
+            true,
+        )
+        .unwrap();
+        if mode == 0 {
+            assert!(result.text.is_empty());
+            assert_eq!(&mailbox.calls.lock().unwrap()[before..], &["digest"]);
+        } else {
+            assert!(result.mark.is_none());
+            assert!(result.digest.is_none());
+            assert_eq!(&mailbox.calls.lock().unwrap()[before..], &["check_in"]);
+        }
+        assert_eq!(contexts.current().unwrap().unwrap(), saved);
+        assert_eq!(contexts.attention_mark(saved.execution), mark);
+        assert!(contexts.pending().unwrap().is_none());
+        assert!(journal.page(&Default::default()).unwrap().items.is_empty());
+        for (kind, role) in [
+            (EventKind::Startup, Role::TopLevel),
+            (EventKind::Tool, Role::Subagent),
+        ] {
+            let mut invalid = tool_event();
+            invalid.kind = kind;
+            invalid.role = role;
+            let before = mailbox.calls.lock().unwrap().len();
+            assert!(
+                tool_boundary_check_in(
+                    &contexts,
+                    &invalid,
+                    &client,
+                    &Clock,
+                    &Default::default(),
+                    &budget(),
+                    true
+                )
+                .is_err()
+            );
+            assert_eq!(mailbox.calls.lock().unwrap().len(), before);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }

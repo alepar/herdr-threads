@@ -1854,6 +1854,63 @@ pub fn verify_codex_base(plan: &CodexSetupPlan, current: &[EventGroups]) -> Resu
     }
 }
 
+/// Validate local selectors before any adapter resolver or filesystem write.
+pub fn validate_local_request(
+    registration: Option<&super::registry::Registration>,
+    install: bool,
+    scope: &super::adapter::SetupScopeRequest,
+    options: &super::adapter::SetupOptions,
+) -> Result<(), super::adapter::SetupFailure> {
+    use super::adapter::*;
+    if let SetupScopeRequest::Profile(name) = scope {
+        let registration = registration.ok_or_else(|| {
+            SetupFailure::Invalid("--profile requires an explicitly selected adapter".into())
+        })?;
+        if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+            return Err(SetupFailure::Invalid("invalid profile name".into()));
+        }
+        if !registration
+            .metadata()
+            .setup_scopes
+            .iter()
+            .any(|scope| matches!(scope, SetupScopeKind::Profile))
+        {
+            return Err(SetupFailure::Invalid(format!(
+                "{}: named profile is unsupported",
+                registration.metadata().id
+            )));
+        }
+    }
+    for (name, enabled) in options {
+        if !install {
+            return Err(SetupFailure::Invalid(
+                "adapter options apply to setup only".into(),
+            ));
+        }
+        let descriptor = registration
+            .and_then(|registration| {
+                registration
+                    .setup_options()
+                    .iter()
+                    .find(|option| option.name == name)
+            })
+            .ok_or_else(|| SetupFailure::Invalid(format!("undeclared adapter option: {name}")))?;
+        if !enabled {
+            continue;
+        }
+        if descriptor
+            .conflicts
+            .iter()
+            .any(|name| options.get(*name) == Some(&true))
+        {
+            return Err(SetupFailure::Invalid(format!(
+                "conflicting adapter option: {name}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod adoption_tests {
     use super::*;
@@ -1932,5 +1989,947 @@ mod adoption_tests {
         )
         .unwrap();
         assert!(adoptable(&other).is_none());
+    }
+}
+
+/// Shared legacy-format transactions and compatibility projections.
+pub(crate) mod legacy {
+    use crate::cli::{
+        RunError, hook,
+        setup::{PromptSuggestionPolicy, SetupEnv, SetupRequest, SetupVerb},
+    };
+    use crate::{
+        daemon::paths::{ensure_owned_state_root, ensure_private_dir},
+        harness::{
+            claude,
+            context::Harness,
+            setup::{
+                self as lib, NativeObservation, SettingsKind, SetupError, adopt_user_settings,
+                adoptable_user_settings, inspect_user_settings, inspect_user_settings_for,
+                install_user_settings, read_settings_manifest, shared_command, shell_command,
+            },
+        },
+        protocol::results::{ApiError, ErrorCode},
+    };
+    use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
+    use std::{
+        fs,
+        io::{self, Write},
+        path::{Path, PathBuf},
+    };
+    pub(crate) fn legacy_request(
+        harness: Harness,
+        verb: SetupVerb,
+        native_binary: Option<&Path>,
+        prompt_suggestions: PromptSuggestionPolicy,
+    ) -> Result<SetupRequest, crate::harness::adapter::SetupFailure> {
+        Ok(SetupRequest {
+            scope: Default::default(),
+            harness,
+            verb,
+            harness_binary: native_binary
+                .map(|p| {
+                    p.to_str().map(str::to_owned).ok_or_else(|| {
+                        crate::harness::adapter::SetupFailure::Invalid(
+                            "native binary path is not UTF-8".into(),
+                        )
+                    })
+                })
+                .transpose()?,
+            prompt_suggestions,
+            hooks_only: false,
+        })
+    }
+    fn installer_failure(detail: impl Into<String>) -> crate::cli::RunError {
+        crate::cli::RunError::Io(std::io::Error::other(detail.into()))
+    }
+    pub(crate) fn installer_hooks_installed(
+        env: &SetupEnv,
+        harness: Harness,
+    ) -> Result<bool, crate::cli::RunError> {
+        use crate::{
+            cli::{installer_skill::read_optional, setup},
+            harness::{
+                codex_config,
+                setup::{self as owned, NativeObservation, SettingsKind},
+            },
+        };
+        let (kind, path, manifest) = match harness {
+            Harness::Claude => {
+                let (path, manifest) = setup::claude_paths(env)?;
+                (SettingsKind::ClaudeUser, path, manifest)
+            }
+            Harness::Codex => {
+                let paths = setup::codex_paths(env)?;
+                let allowance = codex_config::inspect(&paths.config, &paths.config_manifest)
+                    .map_err(|error| {
+                        installer_failure(format!("invalid Codex allowance ownership: {error:?}"))
+                    })?;
+                if allowance.recorded.as_ref().is_some_and(|manifest| {
+                    manifest.phase != owned::InstallPhase::Installed || !allowance.present
+                }) {
+                    return Err(installer_failure(
+                        "recorded Codex allowance is partial or edited; preserved",
+                    ));
+                }
+                (SettingsKind::CodexUser, paths.hooks, paths.hooks_manifest)
+            }
+            Harness::Human => return Err(installer_failure("human panes have no hooks")),
+            _ => return Err(installer_failure("installer policy unavailable")),
+        };
+        let bytes = read_optional(&path)?;
+        let argv = env.hook_argv(harness)?;
+        let recorded = owned::read_settings_manifest(&manifest).map_err(|error| {
+            installer_failure(format!("invalid hook ownership manifest: {error:?}"))
+        })?;
+        if let Some(recorded) = recorded {
+            let current = bytes.as_deref().unwrap_or_default();
+            let ownership = (|| -> Result<(), super::SetupError> {
+                if recorded.phase != owned::InstallPhase::Installed
+                    || !super::manifest_matches(kind, &recorded, &path)?
+                    || !super::recorded_ownership_valid(&recorded)
+                    || super::shared_command(&recorded.owned).as_deref()
+                        != Some(super::owned_command(&argv, &recorded.installation_id)?.as_str())
+                {
+                    return Err(super::SetupError::Conflict);
+                }
+                super::uninstall_json(current, &recorded.owned)?;
+                if kind.manages_permission()
+                    && recorded
+                        .permission
+                        .as_ref()
+                        .is_some_and(super::permission_current)
+                    && super::allow_count(&super::root(current)?, super::DECLARED_RULE)? == 0
+                {
+                    return Err(super::SetupError::Conflict);
+                }
+                Ok(())
+            })();
+            ownership.map_err(|error| {
+                installer_failure(format!(
+                    "recorded hooks are partial or edited; preserved: {error:?}"
+                ))
+            })?;
+            // Ownership of an older declaration permits a canonical upgrade; it grants no readiness.
+            return Ok(true);
+        }
+        let inspection = owned::inspect_user_settings_for(
+            kind,
+            &path,
+            &manifest,
+            NativeObservation::Unknown,
+            Some(&argv),
+        )
+        .map_err(|error| {
+            installer_failure(format!("hook ownership inspection failed: {error:?}"))
+        })?;
+        if inspection.installed {
+            return Ok(true);
+        }
+        if let Some(bytes) = bytes {
+            let value: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| installer_failure("invalid hook settings; preserved"))?;
+            if !value.is_object() {
+                return Err(installer_failure(
+                    "hook settings are not an object; preserved",
+                ));
+            }
+            if let Some(hooks) = value.get("hooks") {
+                let map = hooks
+                    .as_object()
+                    .ok_or_else(|| installer_failure("invalid hooks map; preserved"))?;
+                if map.values().any(|groups| !groups.is_array()) {
+                    return Err(installer_failure("invalid hook groups; preserved"));
+                }
+            }
+            // This conservative conflict check grants no ownership; canonical setup handles all writes.
+            if value.get("hooks").is_some_and(foreign_hooks) {
+                return Err(installer_failure(
+                    "unowned or partial herdr-threads hooks; preserved (use setup-status to inspect)",
+                ));
+            }
+        }
+        Ok(false)
+    }
+
+    fn foreign_hooks(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => object.iter().any(|(key, value)| {
+                (key == "command" && value.as_str().is_some_and(|s| s.contains("herdr-threads")))
+                    || foreign_hooks(value)
+            }),
+            Value::Array(array) => array.iter().any(foreign_hooks),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn scoped_legacy_environment(
+        harness: Harness,
+        scope: &crate::harness::adapter::ResolvedSetupScope,
+        snapshot: &crate::harness::adapter::SetupEnvironment,
+    ) -> Result<SetupEnv, crate::harness::adapter::SetupFailure> {
+        let crate::harness::adapter::ResolvedSetupScope::ConfigRoot(root) = scope else {
+            return Err(crate::harness::adapter::SetupFailure::Invalid(format!(
+                "{}: named profile is unsupported",
+                harness.as_str()
+            )));
+        };
+        let mut env = SetupEnv::from_snapshot(snapshot);
+        match harness {
+            Harness::Claude => env.claude_config_dir = Some(root.clone()),
+            Harness::Codex => env.codex_home = Some(root.clone()),
+            _ => {}
+        }
+        Ok(env)
+    }
+    pub(crate) fn legacy_diagnostics(
+        projection: &Value,
+    ) -> Vec<crate::harness::adapter::SetupDiagnostic> {
+        use crate::harness::adapter::{DiagnosticSeverity, SetupDiagnostic};
+        let mut diagnostics: Vec<_> = projection["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(16)
+            .filter_map(Value::as_str)
+            .map(|text| {
+                SetupDiagnostic::new("legacy_setup_warning", DiagnosticSeverity::Warning, text)
+            })
+            .collect();
+        if let Some(text) = projection["prompt_suggestions"]["note"].as_str() {
+            diagnostics.push(SetupDiagnostic::new(
+                "prompt_suggestions_advice",
+                DiagnosticSeverity::Info,
+                text,
+            ));
+        }
+        if let Some(text) = projection["trust"]["note"].as_str() {
+            diagnostics.push(SetupDiagnostic::new(
+                "native_trust_manual",
+                DiagnosticSeverity::Info,
+                text,
+            ));
+        }
+        diagnostics
+    }
+
+    pub(crate) fn legacy_adapter_setup(
+        harness: Harness,
+        request: &crate::harness::adapter::SetupRequest,
+        install: fn(&SetupRequest, &SetupEnv) -> Result<Value, RunError>,
+        prompt_suggestions: PromptSuggestionPolicy,
+    ) -> Result<crate::harness::adapter::SetupOutcome, crate::harness::adapter::SetupFailure> {
+        let mut env = scoped_legacy_environment(harness, &request.scope, &request.environment)?;
+        env.executable = request.executable.clone();
+        let mut legacy = legacy_request(
+            harness,
+            SetupVerb::Install,
+            request.native_binary.as_deref(),
+            prompt_suggestions,
+        )?;
+        // Only an adapter that declares the option (Claude) can receive it.
+        legacy.hooks_only = request
+            .options
+            .get(crate::harness::claude::setup::HOOKS_ONLY_OPTION)
+            == Some(&true);
+        harness_binary(&legacy, &env).map_err(adapter_failure)?;
+        if let Some(leftover) = env.instance_source["state_dir_leftover"].as_str() {
+            return Err(adapter_failure(invalid(format!(
+                "{leftover}; nothing was changed"
+            ))));
+        }
+        let mut projection = install(&legacy, &env).map_err(adapter_failure)?;
+        crate::cli::setup::foreground::attach(&mut projection, harness, &env);
+        let actions = vec![match projection["action"].as_str() {
+            Some("installed") => crate::harness::adapter::SetupAction::InstalledOwned,
+            Some("adopted") => crate::harness::adapter::SetupAction::AdoptedOwned,
+            _ => crate::harness::adapter::SetupAction::Unchanged,
+        }];
+        let diagnostics = legacy_diagnostics(&projection);
+        Ok(crate::harness::adapter::SetupOutcome {
+            actions,
+            diagnostic: String::new(),
+            diagnostics,
+            projection,
+        })
+    }
+    pub(crate) fn legacy_adapter_unsetup(
+        harness: Harness,
+        request: &crate::harness::adapter::UnsetupRequest,
+        remove: fn(&SetupEnv) -> Result<Value, RunError>,
+    ) -> Result<crate::harness::adapter::RemovalOutcome, crate::harness::adapter::SetupFailure>
+    {
+        let env = scoped_legacy_environment(harness, &request.scope, &request.environment)?;
+        let projection = remove(&env).map_err(adapter_failure)?;
+        let actions = vec![if projection["action"] == "removed" {
+            crate::harness::adapter::SetupAction::RemovedOwned
+        } else {
+            crate::harness::adapter::SetupAction::Unchanged
+        }];
+        let diagnostics = legacy_diagnostics(&projection);
+        Ok(crate::harness::adapter::RemovalOutcome {
+            actions,
+            diagnostic: String::new(),
+            residue: vec![],
+            diagnostics,
+            projection,
+        })
+    }
+    pub(crate) fn legacy_adapter_status(
+        harness: Harness,
+        request: &crate::harness::adapter::StatusRequest,
+        status: impl FnOnce(&SetupRequest, &SetupEnv) -> Result<Value, RunError>,
+    ) -> crate::harness::adapter::SetupStatus {
+        use crate::harness::adapter::*;
+        let result = (|| {
+            let env = scoped_legacy_environment(harness, &request.scope, &request.environment)?;
+            let legacy = legacy_request(
+                harness,
+                SetupVerb::Status,
+                request.native_binary.as_deref(),
+                PromptSuggestionPolicy::Ask,
+            )?;
+            harness_binary(&legacy, &env).map_err(adapter_failure)?;
+            let mut projection = status(&legacy, &env).map_err(adapter_failure)?;
+            crate::cli::setup::foreground::attach(&mut projection, harness, &env);
+            let configured_hook = user_inspection(harness, &env)
+                .ok()
+                .and_then(|(_, inspection)| inspection.configured_hook);
+            let fingerprint = configured_hook
+                .as_ref()
+                .map(|hook| hook.fingerprint.clone());
+            Ok(LocalSetupStatus {
+                scope: request.scope.clone(),
+                installed: projection["installed"].as_bool().unwrap_or(false),
+                enabled: None,
+                admitted: projection["harness_version"]["admission"]
+                    .as_str()
+                    .map(|admission| admission == "contract_declared"),
+                observed: None,
+                configured_hook,
+                fingerprint,
+                diagnostics: {
+                    let mut diagnostics = legacy_diagnostics(&projection);
+                    diagnostics.push(SetupDiagnostic::new(
+                "native_enablement_unknown",
+                DiagnosticSeverity::Info,
+                "Native enablement and runtime observation are separate from local installation",
+                ));
+                    diagnostics
+                },
+                repairs: vec![
+                    LocalRepair::InstallOwned,
+                    LocalRepair::RepairOwned,
+                    LocalRepair::RemoveOwned,
+                ],
+                projection,
+            })
+        })();
+        match result {
+            Ok(status) => SetupStatus::Detailed(Box::new(status)),
+            Err(error) => SetupStatus::Failed(error),
+        }
+    }
+    pub(crate) fn harness_binary(
+        request: &SetupRequest,
+        env: &SetupEnv,
+    ) -> Result<Option<PathBuf>, RunError> {
+        match &request.harness_binary {
+            Some(binary) => {
+                let binary = PathBuf::from(binary);
+                if !binary.is_absolute() {
+                    return Err(invalid("--harness-binary must be an absolute path"));
+                }
+                Ok(Some(binary))
+            }
+            None => Ok(hook::resolve_on_path(
+                harness_name(request.harness),
+                env.path.as_deref(),
+            )),
+        }
+    }
+
+    /// An accepted installed-version observation.
+    #[derive(Debug, Clone)]
+    pub(crate) struct Observed {
+        pub(crate) binary: PathBuf,
+        pub(crate) version: Option<String>,
+        pub(crate) recipe: &'static str,
+    }
+
+    pub(crate) fn observation_json(
+        result: &Result<(Observed, Option<crate::harness::operational::CodexContract>), String>,
+    ) -> Value {
+        match result {
+            Ok((observed, _)) => json!({
+                "admission": "contract_declared",
+                "binary": observed.binary.display().to_string(),
+                "version": observed.version,
+                "recipe": observed.recipe,
+            }),
+            Err(refusal) => json!({"admission":"unavailable", "version":null, "refusal":refusal}),
+        }
+    }
+
+    pub(crate) fn refuse_executable(refusal: String) -> RunError {
+        api(ErrorCode::UnsupportedHarness, refusal)
+    }
+
+    // ------------------------------------------------------------ owned files
+
+    /// Private manifest path for one legacy settings file.
+    pub fn manifest_path(state_dir: &Path, kind: &str, file: &Path) -> PathBuf {
+        let digest = format!("{:x}", Sha256::digest(file.as_os_str().as_encoded_bytes()));
+        state_dir
+            .join("setup")
+            .join(format!("{kind}-{}.json", &digest[..32]))
+    }
+
+    /// Records files (and their directory) setup created, so unsetup can delete
+    /// exactly those when they are back to their created state. Kept beside the
+    /// manifest.
+    pub(crate) fn created_marker_path(manifest: &Path) -> PathBuf {
+        manifest.with_extension("created.json")
+    }
+
+    /// One file setup may create: its path, the bytes it is created with, and
+    /// whether this invocation created it or its directory.
+    pub(crate) struct OwnedFile {
+        path: PathBuf,
+        manifest: PathBuf,
+        initial: &'static [u8],
+        created_dir: bool,
+        pub(crate) created_file: bool,
+    }
+
+    impl OwnedFile {
+        pub(crate) fn new(path: PathBuf, manifest: PathBuf, initial: &'static [u8]) -> Self {
+            Self {
+                path,
+                manifest,
+                initial,
+                created_dir: false,
+                created_file: false,
+            }
+        }
+
+        /// Create the file (and one missing directory level) with its initial
+        /// bytes when absent. A non-directory parent refuses.
+        pub(crate) fn prepare(&mut self) -> Result<(), RunError> {
+            let dir = self.path.parent().expect("owned file parent");
+            match fs::symlink_metadata(dir) {
+                Ok(meta) if !meta.is_dir() && !fs::metadata(dir).is_ok_and(|m| m.is_dir()) => {
+                    return Err(invalid(format!(
+                        "{} exists but is not a directory",
+                        dir.display()
+                    )));
+                }
+                Ok(_) => (),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    fs::create_dir(dir).map_err(|error| {
+                        invalid(format!("could not create {}: {error}", dir.display()))
+                    })?;
+                    self.created_dir = true;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            match fs::symlink_metadata(&self.path) {
+                Ok(_) => (),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&self.path)?
+                        .write_all(self.initial)?;
+                    self.created_file = true;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            Ok(())
+        }
+
+        /// Undo what [`prepare`](Self::prepare) created, unless a manifest now
+        /// refers to it (a recorded preparation resumes).
+        pub(crate) fn undo(&self) {
+            if self.manifest.exists() {
+                return;
+            }
+            if self.created_file && fs::read(&self.path).is_ok_and(|b| b == self.initial) {
+                let _ = fs::remove_file(&self.path);
+            }
+            if self.created_dir
+                && let Some(dir) = self.path.parent()
+            {
+                let _ = fs::remove_dir(dir);
+            }
+        }
+
+        /// Record what was created; a warning when the record cannot be kept.
+        pub(crate) fn record(&self, warnings: &mut Vec<String>) {
+            if !(self.created_file || self.created_dir) {
+                return;
+            }
+            let marker =
+                json!({"settings_created": self.created_file, "dir_created": self.created_dir});
+            let result = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode_private()
+                .open(created_marker_path(&self.manifest))
+                .and_then(|mut file| file.write_all(marker.to_string().as_bytes()));
+            if result.is_err() {
+                warnings.push(format!(
+                    "could not record that setup created {}; unsetup will leave it",
+                    self.path.display()
+                ));
+            }
+        }
+    }
+
+    /// After removal: delete a file setup created once it is back to its
+    /// created bytes (and its directory when setup created it and it is empty).
+    pub(crate) fn delete_created(path: &Path, manifest: &Path, initial: &[u8]) -> bool {
+        let marker_path = created_marker_path(manifest);
+        let mut deleted = false;
+        if let Ok(bytes) = fs::read(&marker_path) {
+            let marker: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            if marker["settings_created"] == json!(true)
+                && fs::read(path).is_ok_and(|b| b == initial)
+                && fs::remove_file(path).is_ok()
+            {
+                deleted = true;
+                if marker["dir_created"] == json!(true)
+                    && let Some(dir) = path.parent()
+                {
+                    // Only an empty directory is removed.
+                    let _ = fs::remove_dir(dir);
+                }
+            }
+            let _ = fs::remove_file(&marker_path);
+        }
+        deleted
+    }
+
+    pub(crate) trait PrivateMode {
+        fn mode_private(&mut self) -> &mut Self;
+    }
+    impl PrivateMode for fs::OpenOptions {
+        fn mode_private(&mut self) -> &mut Self {
+            use std::os::unix::fs::OpenOptionsExt;
+            self.mode(0o600)
+        }
+    }
+
+    /// The state directory, made ready to hold setup manifests.
+    pub(crate) fn prepare_state(env: &SetupEnv) -> Result<&Path, RunError> {
+        let state = env.state_dir()?;
+        // A detected state directory follows Herdr's plugin state layout, whose
+        // parents Herdr creates on the plugin's first action: create them if
+        // setup runs first. An explicit one must already have its parent.
+        if env.instance_source["state_dir"]
+            .as_str()
+            .is_some_and(|source| source.starts_with("herdr plugin list"))
+            && let Some(parent) = state.parent()
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)?;
+        }
+        ensure_owned_state_root(state)?;
+        ensure_private_dir(&state.join("setup"))?;
+        Ok(state)
+    }
+
+    pub(crate) fn settings_error(
+        error: SetupError,
+        verb: SetupVerb,
+        kind: SettingsKind,
+        settings: &Path,
+        manifest: &Path,
+    ) -> RunError {
+        let settings = settings.display();
+        let harness = kind.harness();
+        match (error, verb) {
+            (SetupError::Invalid, _) => invalid(format!(
+                "{settings} is not a JSON object with an object `hooks` (and, for Claude, \
+             `permissions` with an array `allow`), or it or the ownership manifest is a symlink \
+             or damaged; nothing was changed"
+            )),
+            (SetupError::TooLarge, _) => invalid(format!(
+                "{settings} or its ownership manifest exceeds the setup size bound; nothing was changed"
+            )),
+            (SetupError::Conflict, SetupVerb::Remove) => api(
+                ErrorCode::Conflict,
+                format!(
+                    "the owned herdr-threads hook groups in {settings} were edited or removed, or the \
+                 file changed during removal; nothing was changed. Restore the groups or remove \
+                 them by hand, then delete the manifest {}",
+                    manifest.display()
+                ),
+            ),
+            (SetupError::Conflict, _) => api(
+                ErrorCode::Conflict,
+                format!(
+                    "refused to install into {settings}: it changed during setup, already holds an \
+                 unowned identical herdr-threads hook, holds an edited owned hook{rule}, or an \
+                 existing installation uses a different hook command (executable, state \
+                 directory or Herdr instance). Run `herdr-threads unsetup {harness}` (or remove \
+                 the unowned hook) and set up again; nothing was changed",
+                    rule = if kind == SettingsKind::ClaudeUser {
+                        format!(
+                            ", lacks the recorded permission allow rule `{}` (removed by hand)",
+                            claude::HERDR_THREADS_ALLOW_RULE
+                        )
+                    } else {
+                        String::new()
+                    }
+                ),
+            ),
+            (SetupError::Io, _) => failed(format!(
+                "could not read or replace {settings} or its ownership manifest; if a manifest was \
+             recorded, re-run the same command to resume"
+            )),
+        }
+    }
+
+    pub(crate) fn adopted_warning(kind: SettingsKind, file: &Path, owner: &str) -> String {
+        format!(
+            "{} already held the herdr-threads hook groups of another setup (owner marker {owner}, \
+         e.g. a copied {}); they were adopted in place and the file was not changed{}. \
+         `herdr-threads unsetup {}` here removes only these groups from this file",
+            file.display(),
+            kind.file_name(),
+            if kind == SettingsKind::CodexUser {
+                ", so Codex's recorded trust for them stays valid"
+            } else {
+                ""
+            },
+            kind.harness()
+        )
+    }
+
+    pub(crate) fn adoption_json(adoption: Option<&lib::Adoption>) -> Value {
+        match adoption {
+            None => Value::Null,
+            Some(adoption) => json!({
+                "owner": adoption.owner,
+                "recorded": adoption.recorded,
+                "note": if adoption.recorded {
+                    "the owned groups carry another setup's owner marker; this file's manifest \
+                     adopted them in place"
+                } else {
+                    "the groups carry another setup's owner marker and match this command exactly \
+                     (a copied hook file); `setup` adopts them without changing the file"
+                },
+            }),
+        }
+    }
+
+    /// With no manifest for this file, adopt another setup's exact groups so `unsetup` can remove
+    /// them; `None` when nothing is adoptable (or the hook command cannot be resolved).
+    pub(crate) fn adopt_for_removal(
+        kind: SettingsKind,
+        env: &SetupEnv,
+        file: &Path,
+        manifest: &Path,
+    ) -> Result<Option<lib::OwnershipManifest>, RunError> {
+        let map = |e| settings_error(e, SetupVerb::Remove, kind, file, manifest);
+        let Ok(argv) = env.hook_argv(match kind {
+            SettingsKind::ClaudeUser => Harness::Claude,
+            SettingsKind::CodexUser => Harness::Codex,
+        }) else {
+            return Ok(None);
+        };
+        // An unreadable or unparsable file has nothing adoptable: unsetup reports not installed.
+        if !matches!(adoptable_user_settings(kind, file, &argv), Ok(Some(_))) {
+            return Ok(None);
+        }
+        prepare_state(env)?;
+        adopt_user_settings(kind, file, manifest, &argv).map_err(map)
+    }
+
+    /// The recorded hook command shared by every owned group: the base command, without the
+    /// `--event <event>` pair each group registers it with.
+    pub(crate) fn recorded_command(manifest: &Path) -> Option<String> {
+        shared_command(&read_settings_manifest(manifest).ok().flatten()?.owned)
+    }
+
+    /// Setup output when a recorded registration without `--event` is rewritten to the per-event form.
+    pub(crate) const EVENT_DOWNGRADE_WARNING: &str = "the hook commands now carry --event; a herdr-threads build \
+     from before per-event registration rejects them, so to downgrade herdr-threads first run \
+     `herdr-threads unsetup <harness>` with this build";
+
+    /// Codex trusts hooks by hash, so rewritten commands need review again.
+    pub(crate) const CODEX_RETRUST_WARNING: &str = "Codex trusts hooks by hash: the rewritten hook commands need \
+     review again (the next interactive `codex` start, or /hooks) before Codex runs them";
+
+    /// Install the owned hook groups into one user-level hook file.
+    pub(crate) fn install_settings(
+        kind: SettingsKind,
+        verb: SetupVerb,
+        env: &SetupEnv,
+        file: &mut OwnedFile,
+        warnings: &mut Vec<String>,
+    ) -> Result<(lib::OwnershipManifest, bool, bool), RunError> {
+        let argv = env.hook_argv(match kind {
+            SettingsKind::ClaudeUser => Harness::Claude,
+            SettingsKind::CodexUser => Harness::Codex,
+        })?;
+        let (path, manifest) = (file.path.clone(), file.manifest.clone());
+        let map = |error| settings_error(error, verb, kind, &path, &manifest);
+        let recorded = read_settings_manifest(&file.manifest).map_err(map)?;
+        let before = recorded
+            .is_some()
+            .then(|| {
+                inspect_user_settings(kind, &file.path, &file.manifest, NativeObservation::Unknown)
+                    .ok()
+            })
+            .flatten();
+        let already = before
+            .as_ref()
+            .is_some_and(|inspection| inspection.installed);
+        let legacy = before
+            .as_ref()
+            .is_some_and(|inspection| inspection.legacy_event_registration);
+        if recorded.is_none() {
+            file.prepare()?;
+        }
+        let base = match &recorded {
+            Some(recorded) => recorded.original_bytes.clone(),
+            None => fs::read(&file.path).map_err(|error| {
+                failed(format!("could not read {}: {error}", file.path.display()))
+            })?,
+        };
+        match install_user_settings(kind, &file.path, &file.manifest, &argv, &base) {
+            Ok(installed) => {
+                file.record(warnings);
+                if legacy {
+                    let harness = kind.harness();
+                    warnings.push(EVENT_DOWNGRADE_WARNING.replace("<harness>", harness));
+                    if kind == SettingsKind::CodexUser {
+                        warnings.push(CODEX_RETRUST_WARNING.to_owned());
+                    }
+                }
+                // Adopted now: this run recorded another setup's groups in place, writing no hook.
+                let adopted = recorded.is_none() && installed.adopted;
+                if adopted {
+                    warnings.push(adopted_warning(
+                        kind,
+                        &file.path,
+                        &installed.installation_id,
+                    ));
+                }
+                Ok((installed, already, adopted))
+            }
+            Err(error) => {
+                file.undo();
+                if error == SetupError::Conflict
+                    && let Some(moved) =
+                        moved_binary_conflict(kind, &path, recorded.as_ref(), &argv)
+                {
+                    return Err(moved);
+                }
+                Err(map(error))
+            }
+        }
+    }
+
+    /// The first word of a hook command built by `shell_command` (single-quoted, an embedded
+    /// quote written `'\''`).
+    pub(crate) fn first_shell_word(command: &str) -> Option<String> {
+        let mut chars = command.strip_prefix('\'')?.chars().peekable();
+        let mut word = String::new();
+        while let Some(c) = chars.next() {
+            if c != '\'' {
+                word.push(c);
+            } else if chars.clone().take(3).eq("\\''".chars()) {
+                chars.nth(2);
+                word.push('\'');
+            } else {
+                return Some(word);
+            }
+        }
+        None
+    }
+
+    /// A re-setup refused because the recorded hook command names another executable than this
+    /// one (the binary was moved, reinstalled elsewhere or run from a copy): the generic conflict
+    /// message lists causes such as hand removal, which misleads here. Names both paths and the fix.
+    pub(crate) fn moved_binary_conflict(
+        kind: SettingsKind,
+        file: &Path,
+        recorded: Option<&lib::OwnershipManifest>,
+        argv: &[String],
+    ) -> Option<RunError> {
+        let recorded_command = recorded?.owned.first()?.group["hooks"][0]["command"].as_str()?;
+        let recorded_exe = first_shell_word(recorded_command)?;
+        let current_exe = argv.first()?;
+        if &recorded_exe == current_exe {
+            return None;
+        }
+        let harness = kind.harness();
+        Some(api(
+            ErrorCode::Conflict,
+            format!(
+                "{} already holds the herdr-threads hooks of an installation that runs \
+             `{recorded_exe}`, but this is `{current_exe}` (the binary moved, or this is another \
+             copy). Run `herdr-threads unsetup {harness}` (from either binary: it removes the \
+             recorded groups whatever executable they name), then `herdr-threads setup \
+             {harness}` from the binary you want to keep; nothing was changed",
+                file.display()
+            ),
+        ))
+    }
+
+    // ------------------------------------------------------------------ claude
+
+    pub(crate) fn instance_json(env: &SetupEnv) -> Value {
+        json!({
+            "state_dir": env.state_dir.as_ref().map(|p| p.display().to_string()),
+            "host_endpoint": env.host_endpoint().ok().map(|p| p.display().to_string()),
+            "source": env.instance_source,
+        })
+    }
+
+    pub(crate) fn settings_status(
+        kind: SettingsKind,
+        env: &SetupEnv,
+        settings: &Path,
+        report: &mut Value,
+    ) -> Result<(), RunError> {
+        let Ok(state) = env.state_dir() else {
+            report["installed"] = json!(false);
+            report["error"] = json!(format!(
+                "state directory unknown: {}",
+                env.instance_source["state_dir_error"]
+                    .as_str()
+                    .unwrap_or("use --state-dir or HERDR_PLUGIN_STATE_DIR")
+            ));
+            return Ok(());
+        };
+        let manifest = manifest_path(state, &format!("{}-user", kind.harness()), settings);
+        report["manifest"] = json!(manifest.display().to_string());
+        let argv = env
+            .hook_argv(match kind {
+                SettingsKind::ClaudeUser => Harness::Claude,
+                SettingsKind::CodexUser => Harness::Codex,
+            })
+            .ok();
+        let inspection = inspect_user_settings_for(
+            kind,
+            settings,
+            &manifest,
+            NativeObservation::Unknown,
+            argv.as_deref(),
+        )
+        .map_err(|e| settings_error(e, SetupVerb::Status, kind, settings, &manifest))?;
+        report["installed"] = json!(inspection.installed);
+        report["adopted"] = adoption_json(inspection.adopted.as_ref());
+        if kind == SettingsKind::ClaudeUser {
+            report["allow_rule"] = claude::setup::allow_rule_json(inspection.allow_rule.as_ref());
+        }
+        report["observed"] = json!("unknown");
+        if let Some(recorded) = read_settings_manifest(&manifest).ok().flatten() {
+            report["recorded_phase"] = json!(match recorded.phase {
+                lib::InstallPhase::Prepared => "prepared",
+                lib::InstallPhase::Installed => "installed",
+            });
+        }
+        if let Some(command) = recorded_command(&manifest) {
+            report["command"] = json!(command);
+        } else if let Some(adoption) = &inspection.adopted
+            && let Some(argv) = &argv
+            && let Ok(command) = shell_command(argv)
+        {
+            report["command"] = json!(format!(
+                "{command} # herdr-threads-owner:{}",
+                adoption.owner
+            ));
+        }
+        if let Ok(argv) = env.hook_argv(match kind {
+            SettingsKind::ClaudeUser => Harness::Claude,
+            SettingsKind::CodexUser => Harness::Codex,
+        }) && let Ok(expected) = shell_command(&argv)
+        {
+            report["current_command_matches"] = json!(
+                report["command"]
+                    .as_str()
+                    .is_some_and(|recorded| recorded.starts_with(&format!("{expected} # ")))
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn user_inspection(
+        harness: Harness,
+        env: &SetupEnv,
+    ) -> Result<(PathBuf, lib::HookInspection), String> {
+        let (kind, file) = match harness {
+            Harness::Claude => (
+                SettingsKind::ClaudeUser,
+                env.claude_settings().map_err(|e| e.to_string())?,
+            ),
+            Harness::Codex => (
+                SettingsKind::CodexUser,
+                env.codex_file("hooks.json").map_err(|e| e.to_string())?,
+            ),
+            Harness::Human => return Err(NO_HUMAN_SETUP.to_owned()),
+            _ => {
+                return Err(format!(
+                    "{}: setup inspection is unsupported",
+                    harness.as_str()
+                ));
+            }
+        };
+        let state = env.state_dir().map_err(|e| e.to_string())?;
+        let manifest = manifest_path(state, &format!("{}-user", kind.harness()), &file);
+        let argv = env.hook_argv(harness).ok();
+        let inspection = inspect_user_settings_for(
+            kind,
+            &file,
+            &manifest,
+            NativeObservation::Unknown,
+            argv.as_deref(),
+        )
+        .map_err(|error| {
+            format!(
+                "the owned {} installation in {} cannot be inspected ({error:?}); run \
+                 `herdr-threads setup-status {}`",
+                kind.harness(),
+                file.display(),
+                kind.harness()
+            )
+        })?;
+        Ok((file, inspection))
+    }
+
+    pub(crate) fn api(code: ErrorCode, detail: impl Into<String>) -> RunError {
+        RunError::Api(ApiError::new(code, detail))
+    }
+
+    pub(crate) fn invalid(detail: impl Into<String>) -> RunError {
+        api(ErrorCode::InvalidRequest, detail)
+    }
+
+    pub(crate) fn failed(detail: impl Into<String>) -> RunError {
+        RunError::Io(io::Error::other(detail.into()))
+    }
+
+    pub(crate) fn adapter_failure(error: RunError) -> crate::harness::adapter::SetupFailure {
+        use crate::harness::adapter::SetupFailure;
+        match error {
+            RunError::Api(e) => SetupFailure::Api(e),
+            RunError::Io(e) => SetupFailure::Io(e),
+            other => SetupFailure::Io(io::Error::other(other.to_string())),
+        }
+    }
+    pub(crate) const NO_HUMAN_SETUP: &str =
+        "setup manages agent hooks only; a person uses `herdr-threads me init`";
+    pub(crate) fn harness_name(harness: Harness) -> &'static str {
+        harness.as_str()
     }
 }

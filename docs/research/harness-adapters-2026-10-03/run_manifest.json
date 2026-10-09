@@ -1,0 +1,140 @@
+{
+  "version": "3.0.0",
+  "query": "How should herdr-threads expose a cohesive harness adapter interface, preserving Claude/Codex behavior and trust, with Hermes as a concrete proof and other harnesses/prior art as counterexamples?",
+  "mode": "deep",
+  "started_at": "2026-10-04T03:52:11.386299+00:00",
+  "finished_at": "2026-10-04T04:03:07.815895+00:00",
+  "assumptions": [
+    "Preliminary source audit, not product support certification.",
+    "Research stored in task worktree per user isolated-work requirement, overriding default Documents location."
+  ],
+  "provider_config": {
+    "primary": "web.run and GitHub contents API",
+    "scholarly": null
+  },
+  "report_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/harness-adapters/docs/research/harness-adapters-2026-10-03",
+  "artifact_paths": {
+    "sources": "sources.jsonl",
+    "evidence": "evidence.jsonl",
+    "claims": "claims.jsonl",
+    "coverage": "coverage.json",
+    "queries": "queries.jsonl",
+    "report": "report.md"
+  },
+  "continuation": null,
+  "retrieval_stop": {
+    "reason": "budget-exhausted",
+    "at": "2026-10-04T04:03:07.815895+00:00",
+    "round": 4,
+    "unresolved_high_priority_facet_ids": [
+      "hermes",
+      "proof"
+    ],
+    "remaining_gaps": [
+      "hermes: exact native/API parity, version floor, bounded runtime attribution, role and resume/reset handling are not qualified by source audit alone.",
+      "proof: fake-adapter and native Hermes acceptance need approved product work; output compatibility and automatic installer strategy remain decisions."
+    ],
+    "basis": "Bounded preliminary research completed disjoint primary-source facets; stop for architecture/scope review, with no claim of retrieval saturation or native PASS."
+  },
+  "reporting": {
+    "output_mode": "markdown",
+    "final_report_path": "report.md",
+    "dossiers": [
+      {
+        "id": "existing",
+        "path": "existing-seams.md",
+        "facet_ids": [
+          "existing",
+          "proof"
+        ],
+        "source_ids": [
+          "88dbd502ca1eaead",
+          "2da7696b21931f12",
+          "d72a9eefa47e1d7c",
+          "ba9c2e5befc15cf7"
+        ],
+        "evidence_ids": [
+          "138e1c6040271eaf",
+          "dfb0a87826c3293c",
+          "28a193378fbdb33e",
+          "26207cee00c45bf3"
+        ],
+        "claim_ids": [
+          "1ab804703aed2ab2",
+          "e582eee719aaf8ee",
+          "5197e801306efa73",
+          "a17d4b5d565df43d"
+        ],
+        "status": "partial"
+      },
+      {
+        "id": "hermes",
+        "path": "hermes.md",
+        "facet_ids": [
+          "hermes"
+        ],
+        "source_ids": [
+          "94c13c730f6c770f",
+          "644e513b6c23e74d",
+          "b9b921665c208b2d",
+          "cc35996af809b8fc",
+          "c21c9f0fbfdd3ca4"
+        ],
+        "evidence_ids": [
+          "c3334ac950b21e2e",
+          "f7140841e89d062d",
+          "5c408b75eb7bd7d4",
+          "5122efb0992416c9",
+          "e0c5982da89e1d68"
+        ],
+        "claim_ids": [
+          "62b5604964fb77d2",
+          "d31028046701d928",
+          "a6d4a1c10114b24c",
+          "5cd785c17eaa3d62",
+          "be4df049c599c695"
+        ],
+        "status": "partial"
+      },
+      {
+        "id": "other",
+        "path": "other-harnesses-and-prior-art.md",
+        "facet_ids": [
+          "other",
+          "prior"
+        ],
+        "source_ids": [
+          "e214abd2fa5d6182",
+          "4c56732288be166a",
+          "fba6670183aa1c1b",
+          "0ffd40e2f15d989d",
+          "ff99c3f9a5934cf3",
+          "cc710ab394c03e9d",
+          "bf2d0b63bdf7f42e",
+          "669ae3a1f59b6450"
+        ],
+        "evidence_ids": [
+          "4a71c6b4dc708da3",
+          "2e3b2a2538e0e2cf",
+          "f86ec0733cb92c26",
+          "43cc31ed3e83e531",
+          "ec91f9309cd6ca88",
+          "7692a2ef05fba5e2",
+          "3841fb3c35f6397e",
+          "d4d0bf99bbf77d05"
+        ],
+        "claim_ids": [
+          "71d0ab9411524a64",
+          "345509fac214c295",
+          "c03040732421aa4e",
+          "a8a728f13458c4a5",
+          "0f1099d2ce56c565",
+          "b77c522bbc2e4fac",
+          "12510b108f9af56e",
+          "c419f45e13aae06a"
+        ],
+        "status": "complete"
+      }
+    ]
+  }
+}

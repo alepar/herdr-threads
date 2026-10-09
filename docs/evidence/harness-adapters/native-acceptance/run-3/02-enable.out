@@ -1,0 +1,3 @@
+✓ Plugin herdr-threads enabled. Takes effect on next session.
+Restart the gateway for the plugin to take effect:
+  hermes gateway restart

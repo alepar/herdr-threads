@@ -19,9 +19,12 @@ pub enum Command {
     /// A hook reports what a payload showed about the harness that sent it
     /// (ht-xoc.4); sent only to a daemon advertising `hook.harness_evidence`.
     HarnessEvidence(HarnessEvidence),
+    /// Strict exact-domain evidence, gated by `hook.harness_evidence_v2`.
+    HarnessEvidenceV2(HarnessEvidenceV2),
     /// Doctor asks for each harness's version verdicts (ht-xoc.5); sent only
     /// to a daemon advertising `harness.states`.
     HarnessStates,
+    HarnessHealthV2,
     Stop(StopRequest),
     ServiceInspect,
     ServiceDisconnect(ServiceDisconnectRequest),
@@ -211,6 +214,101 @@ impl HarnessEvidence {
             .session_id
             .as_ref()
             .is_some_and(|id| id.len() > HARNESS_EVIDENCE_SESSION_BYTES)
+        {
+            return Err(BAD);
+        }
+        Ok(())
+    }
+}
+
+/// Exact domain observation; qualification names are cooperative facts, never authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessEvidenceV2 {
+    pub harness: String,
+    pub domain: String,
+    pub origin: crate::harness::evidence::EvidenceOrigin,
+    pub runtime: Option<crate::harness::runtime::RuntimeIdentity>,
+    pub unavailable_reason: Option<String>,
+    pub contract_id: String,
+    pub event: String,
+    pub outcome: HarnessEvidenceOutcomeV2,
+    pub session_id: Option<String>,
+    pub qualifications: Vec<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HarnessEvidenceOutcomeV2 {
+    Ok,
+    Violation { field: String },
+    Malformed,
+}
+impl<'de> Deserialize<'de> for HarnessEvidenceOutcomeV2 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+        enum Strict {
+            Ok {},
+            Violation { field: String },
+            Malformed {},
+        }
+        Ok(match Strict::deserialize(deserializer)? {
+            Strict::Ok {} => Self::Ok,
+            Strict::Malformed {} => Self::Malformed,
+            Strict::Violation { field } => Self::Violation { field },
+        })
+    }
+}
+impl HarnessEvidenceV2 {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        use crate::harness::{evidence::valid_name, runtime::printable};
+        const BAD: &str = "invalid harness evidence v2";
+        if self.harness.is_empty()
+            || self.harness.len() > 64
+            || !self
+                .harness
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_lowercase)
+            || !self
+                .harness
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+            || !valid_name(&self.domain)
+            || self.contract_id.len() != 16
+            || !self
+                .contract_id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || self.event.len() > 63
+            || !self
+                .event
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+            || !self
+                .event
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || self.session_id.as_ref().is_some_and(|s| !printable(s, 256))
+            || self.qualifications.len() > 8
+            || self.qualifications.iter().any(|q| !valid_name(q))
+            || self
+                .qualifications
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != self.qualifications.len()
+        {
+            return Err(BAD);
+        }
+        match (&self.runtime, &self.unavailable_reason) {
+            (Some(runtime), None) if runtime.validate().is_ok() => {}
+            (None, Some(reason)) if printable(reason, 128) => {}
+            _ => return Err(BAD),
+        }
+        if let HarnessEvidenceOutcomeV2::Violation { field } = &self.outcome
+            && !printable(field, 128)
         {
             return Err(BAD);
         }
@@ -864,6 +962,7 @@ impl Command {
                 Err("invalid hook parse-failure report")
             }
             Self::HarnessEvidence(evidence) => evidence.validate(),
+            Self::HarnessEvidenceV2(evidence) => evidence.validate(),
             Self::History(query) if query.initial.is_some() && query.page.cursor.is_some() => {
                 Err("history selector conflicts with cursor")
             }

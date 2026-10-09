@@ -271,7 +271,9 @@ fn capability_constants_are_stable() {
             "hook.parse_failure_report",
             "service.send_v1",
             "hook.harness_evidence",
+            "hook.harness_evidence_v2",
             "harness.states",
+            "harness.health_v2",
             "seat.managed_launch",
             "inbox.batch_v1",
             "invitation.reject_v1",
@@ -299,7 +301,9 @@ fn every_advertised_capability_has_a_handler() {
             HOOK_PARSE_FAILURE_REPORT => probe_hook_parse_failure_report(),
             SERVICE_SEND_V1 => probe_service_send_v1(),
             HARNESS_EVIDENCE => probe_harness_evidence(),
+            HARNESS_EVIDENCE_V2 => v2_capability_is_negotiated_only_with_recorder(),
             HARNESS_STATES => probe_harness_states(),
+            HARNESS_HEALTH_V2 => health_v2_capability_is_negotiated_only_with_cached_provider(),
             SEAT_MANAGED_LAUNCH => probe_seat_managed_launch(),
             INBOX_BATCH => probe_inbox_batch(),
             INBOX_BATCH_V2 => {
@@ -444,7 +448,7 @@ fn capabilities_reply_round_trips_and_defaults_empty() {
 }
 
 #[test]
-fn this_daemon_advertises_exactly_advertised() {
+fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
     let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
     let result = handler
         .handle(
@@ -456,13 +460,35 @@ fn this_daemon_advertises_exactly_advertised() {
     let CommandResult::Capabilities(advertised) = result else {
         panic!("expected a capabilities result, got {result:?}");
     };
-    assert_eq!(advertised.capabilities, ADVERTISED);
+    assert_eq!(
+        advertised.capabilities,
+        [
+            "history.full_bodies",
+            "hook.parse_failure_report",
+            "service.send_v1",
+            "hook.harness_evidence",
+            "harness.states",
+            "seat.managed_launch",
+            "inbox.batch_v1",
+            "invitation.reject_v1",
+            "thread.join_v1",
+            "participants.locations_v1",
+            "picker.directory_v1",
+            "attention.notice_delivery_v1",
+            "messages.delivery_modes_v1",
+            "send.lazy_v1",
+            "inbox.batch_v2",
+            "mod.watch_v1"
+        ]
+    );
     let caps = Capabilities::from_list(advertised.capabilities);
     assert!(
         !caps.supports(HOOK_PARSE_FAILURE_REPORT)
             || ADVERTISED.contains(&HOOK_PARSE_FAILURE_REPORT)
     );
     assert!(!caps.supports(HISTORY_FULL_BODIES) || ADVERTISED.contains(&HISTORY_FULL_BODIES));
+    assert!(!caps.supports(HARNESS_EVIDENCE_V2));
+    assert!(!caps.supports(HARNESS_HEALTH_V2));
     assert!(!caps.supports("nonexistent.capability"));
 }
 
@@ -820,7 +846,11 @@ fn probe_harness_states() {
         .iter()
         .map(|h| h.harness.as_str())
         .collect();
-    assert_eq!(names, ["claude", "codex"]);
+    assert_eq!(&names[..3], ["claude", "codex", "hermes"]);
+    #[cfg(feature = "test-support")]
+    assert_eq!(&names[3..], ["synthetic_fourth"]);
+    #[cfg(not(feature = "test-support"))]
+    assert_eq!(names.len(), 3);
     let claude = &report.harnesses[0];
     assert_eq!(claude.contract_id.as_deref(), Some("0123456789abcdef"));
     assert_eq!(claude.versions.len(), 1);
@@ -831,6 +861,12 @@ fn probe_harness_states() {
     assert_eq!(claude.detected.as_ref().unwrap().state, "new");
     assert!(report.harnesses[1].versions.is_empty());
     assert!(report.harnesses[1].detected.is_none());
+    let hermes = &report.harnesses[2];
+    assert!(hermes.contract_id.is_none());
+    assert!(hermes.detected.is_none());
+    assert!(hermes.versions.is_empty());
+    assert!(hermes.unattributed.is_none());
+    assert_eq!(hermes.hook_parse_failures, 0);
 }
 
 #[test]
@@ -1095,6 +1131,266 @@ fn probe_participant_locations() {
             .unwrap_err()
             .code,
         ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn v2_capability_is_negotiated_only_with_recorder() {
+    use crate::{
+        daemon::harness_evidence::HarnessEvidenceRecorderV2,
+        harness::adapter::HarnessAdapter,
+        ports::StorePort,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let (instance, boot) = (Uuid::new_v4(), Uuid::new_v4());
+    let make = || {
+        ControlService::new(
+            StopController::new(instance, boot, Cancellation::default()),
+            move |_: &CallBudget| HealthInputs::unknown(instance, boot),
+            NoDomain,
+        )
+    };
+    let bare = make();
+    let CommandResult::Capabilities(caps) = bare
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("capabilities reply")
+    };
+    assert!(
+        !caps
+            .capabilities
+            .iter()
+            .any(|v| v == "hook.harness_evidence_v2")
+    );
+    let iso = TestIsolation::new("v2-cap-handler");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let store = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let handler = make().with_harness_evidence_v2(Arc::new(HarnessEvidenceRecorderV2::new(
+        store.clone(),
+        None,
+        clock,
+    )));
+    let CommandResult::Capabilities(caps) = handler
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("capabilities reply")
+    };
+    assert!(
+        caps.capabilities
+            .iter()
+            .any(|v| v == "hook.harness_evidence_v2")
+    );
+    assert_eq!(
+        caps.capabilities,
+        ADVERTISED
+            .iter()
+            .filter(|name| **name != HARNESS_HEALTH_V2)
+            .copied()
+            .collect::<Vec<_>>()
+    );
+    let d = crate::harness::claude::ClaudeAdapter.contracts()[0];
+    let note = crate::protocol::commands::HarnessEvidenceV2 {
+        harness: "claude".into(),
+        domain: "native_payload".into(),
+        origin: d.origin,
+        runtime: Some(
+            crate::harness::runtime::RuntimeIdentity::stable_release(
+                "2.1.286",
+                "native_transcript",
+            )
+            .unwrap(),
+        ),
+        unavailable_reason: None,
+        contract_id: d.contract_id_v2().unwrap(),
+        event: "SessionStart".into(),
+        outcome: crate::protocol::commands::HarnessEvidenceOutcomeV2::Ok,
+        session_id: None,
+        qualifications: vec![],
+    };
+    assert_eq!(
+        bare.handle(
+            Command::HarnessEvidenceV2(note.clone()),
+            PeerIdentity::from_kernel(501),
+            &budget()
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::Unsupported
+    );
+    assert_eq!(
+        handler
+            .handle(
+                Command::HarnessEvidenceV2(note),
+                PeerIdentity::from_kernel(501),
+                &budget()
+            )
+            .unwrap(),
+        CommandResult::HarnessEvidenceV2Recorded(
+            crate::protocol::results::HarnessEvidenceV2Recorded { verified: false }
+        )
+    );
+    assert_eq!(
+        store
+            .harness_evidence_v2_all("claude", 0, &budget())
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+// Catches advertising v2 without cached observation/store handling or sending it to domain mutation.
+#[test]
+fn health_v2_capability_is_negotiated_only_with_cached_provider() {
+    use crate::{
+        daemon::harness_states::{HarnessStatesProvider, embedded_source},
+        ports::StorePort,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let instance = Uuid::new_v4();
+    let boot = Uuid::new_v4();
+    let bare = daemon_handler(instance, boot);
+    let CommandResult::Capabilities(caps) = bare
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong capability response")
+    };
+    assert!(!caps.capabilities.iter().any(|c| c == "harness.health_v2"));
+    assert_eq!(
+        bare.handle(
+            Command::HarnessHealthV2,
+            PeerIdentity::from_kernel(501),
+            &budget()
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::Unsupported
+    );
+    let iso = TestIsolation::new("health-v2-cap");
+    let clock = Arc::new(FixedClock);
+    let store = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(iso.state_root().join("store.db"), clock.clone()),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let provider = Arc::new(
+        HarnessStatesProvider::new(
+            store as Arc<dyn StorePort>,
+            embedded_source(),
+            clock,
+            Box::new(|_| None),
+            None,
+        )
+        .with_observations(Box::new(|| Ok(Default::default()))),
+    );
+    let handler = ControlService::new(
+        StopController::new(instance, boot, Cancellation::default()),
+        move |_: &CallBudget| HealthInputs::unknown(instance, boot),
+        NoDomain,
+    )
+    .with_harness_health_v2(provider);
+    let CommandResult::Capabilities(caps) = handler
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong capability response")
+    };
+    assert!(
+        caps.capabilities.iter().any(|c| c == "harness.health_v2"),
+        "implemented handler must advertise capability"
+    );
+    let result = handler
+        .handle(
+            Command::HarnessHealthV2,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .expect("v2 must use cached/store handler, never NoDomain");
+    let CommandResult::HarnessHealthV2(report) = &result else {
+        panic!("wrong v2 response")
+    };
+    use crate::protocol::results::{
+        AdmissionState, CallbackObservationState, EnablementState, HarnessHealthScope, HealthAxis,
+        InstallationState,
+    };
+    let names = report
+        .harnesses
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(&names[..3], ["claude", "codex", "hermes"]);
+    #[cfg(feature = "test-support")]
+    assert_eq!(&names[3..], ["synthetic_fourth"]);
+    #[cfg(not(feature = "test-support"))]
+    assert_eq!(names.len(), 3);
+    let hermes = &report.harnesses["hermes"];
+    assert_eq!(hermes.scope, HarnessHealthScope::daemon_default());
+    assert_eq!(
+        hermes.installation,
+        HealthAxis {
+            state: InstallationState::Unknown,
+            detail: None,
+        }
+    );
+    assert_eq!(
+        hermes.enablement,
+        HealthAxis {
+            state: EnablementState::Unknown,
+            detail: None,
+        }
+    );
+    assert_eq!(
+        hermes.admission,
+        HealthAxis {
+            state: AdmissionState::Unknown,
+            detail: None,
+        }
+    );
+    assert_eq!(
+        hermes.callback_observation,
+        HealthAxis {
+            state: CallbackObservationState::Unknown,
+            detail: None,
+        }
+    );
+    assert_eq!(hermes.receipt_basis, "unknown");
+    assert!(hermes.runtime_evidence.is_empty());
+    assert!(hermes.unattributed.is_empty());
+    assert_eq!(hermes.hook_parse_failures, 0);
+    assert!(report.validate().is_ok());
+    assert_eq!(
+        serde_json::from_value::<CommandResult>(serde_json::to_value(&result).unwrap()).unwrap(),
+        result
     );
 }
 

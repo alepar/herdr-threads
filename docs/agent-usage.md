@@ -260,3 +260,20 @@ Where an older workflow copied a seat ID for `invite THREAD --seat SEAT` or `sen
 Outside Herdr, discovery can use an explicit instance (`--state-dir PATH --host-endpoint SOCKET`) and `thread list --recent --all`; use a unique thread name or ID for `read`. For pane selection, provide an exact pane ID or explicit parents, for example `--space project --tab tryout --pane alice`. Accountable writes still need the original pane context or complete cooperative claim. Names and current topology do not rebase a stale lifecycle claim.
 
 Wire protocol 6 rejects older clients/daemons before dispatch; upgrade the CLI and daemon together. Schema 19 adds names and schema 20 adds indexed recent activity. The combined upgrade applies schema 22 for recorded user intent and frozen summary bundles, then schema 23 for canonical handoff fences and quiet-channel archival. Handoff retains private intent/progress files alongside its canonical SQLite fences. Relevant directory changes invalidate recent traversal: rerun the initial query/picker to refresh, rather than treating a partial page as the complete inventory.
+# Hermes experimental integration
+
+Hermes support is implemented and source/synthetic tested; actual native acceptance
+remains unverified. Select the intended profile explicitly for local setup/status,
+enable the plugin manually under native consent, and retain ordinary command approval.
+Default selection means `default`, not the sticky active profile. Bare setup considers
+all detected registered adapters; bare status/unsetup consider all registrations.
+`--profile` requires a named harness. See [Hermes operator and evidence scope](../integrations/hermes/README.md).
+
+The bridge offers bounded context at a qualified top-level `pre_llm_call`; a qualified
+`post_tool_call` only observes metadata. Start/reset notifications alone grant no caller
+authority. Startup-captured runtime/build identity lasts for that bridge lifetime;
+source edits require no restart and do not change its canonical seat. Callback return,
+lifecycle ACK and domain milestones do not prove native/API/model consumption or a
+receipt. Native context enters user-message context, not the system prompt. Unknown
+mode, spill, omitted callback or missing child samples remain unverified. Accept,
+read and ACK as the top-level seat only; child agents keep the existing read-only rules.

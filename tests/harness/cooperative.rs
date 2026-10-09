@@ -380,3 +380,29 @@ fn startup_tells_top_level_agent_how_to_accept_required_membership() {
             .contains("accept-required")
     );
 }
+
+// Break caught: a qualified top-level normalized intent is dropped before generic routing.
+#[test]
+fn qualified_turn_normalized_intent_reaches_context_without_native_resume_claim() {
+    use crate::harness::adapter::{DecodedEvent, EventIntent, EventRole};
+    let event = codex::parse_event_for_version(
+        br#"{"hook_event_name":"SessionStart","session_id":"opaque","source":"startup"}"#,
+        "entry",
+        &pinned(),
+    )
+    .unwrap();
+    let mut decoded = DecodedEvent::from_native(event);
+    decoded.intent = EventIntent::QualifiedTurn(QualifiedTurn {
+        session: "opaque".into(),
+        event_key: "entry".into(),
+        reset: None,
+        ordering: None,
+    });
+    assert!(decoded.can_check_in());
+    assert_eq!(decoded.context_event().unwrap().kind, EventKind::Startup);
+    decoded.role = EventRole::Unknown;
+    assert!(!decoded.can_check_in());
+    assert!(decoded.context_event().is_none());
+    decoded.role = EventRole::Subagent;
+    assert!(!decoded.can_check_in());
+}

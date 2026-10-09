@@ -1574,6 +1574,8 @@ pub struct ConfiguredHook {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeLaunchRequest {
+    /// Required transport mode selected by the registered launch policy.
+    pub process_hint: bool,
     pub seat: SeatId,
     pub target: HostTargetId,
     pub harness: Harness,
@@ -1694,38 +1696,7 @@ impl NativeLaunchRequest {
     pub const MAX_ARGV_BYTES: usize = 32 * 1024;
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.argv.len() > 64 {
-            return Err("invalid native launch request: more than 64 native arguments");
-        }
-        if self
-            .argv
-            .iter()
-            .any(|arg| arg.is_empty() || arg.contains('\0'))
-        {
-            return Err(
-                "invalid native launch request: an empty native argument or one containing NUL",
-            );
-        }
-        // Herdr starts the agent by typing its command line into the pane's
-        // shell, so a line break would submit a truncated command and the start
-        // is never confirmed (observed: outcome_unknown with nothing started).
-        if self
-            .argv
-            .iter()
-            .any(|arg| arg.contains('\n') || arg.contains('\r'))
-        {
-            return Err(
-                "invalid native launch request: a native argument contains a line break; Herdr starts agents through the pane's shell, so pass the prompt on one line (or put it in a file and ask the agent to read it)",
-            );
-        }
-        if self.argv.iter().any(|arg| arg.len() > Self::MAX_ARG_BYTES) {
-            return Err(
-                "invalid native launch request: a native argument is over 16 KiB (put a long prompt in a file and ask the agent to read it)",
-            );
-        }
-        if self.argv.iter().map(String::len).sum::<usize>() > Self::MAX_ARGV_BYTES {
-            return Err("invalid native launch request: native arguments total over 32 KiB");
-        }
+        validate_native_argv(&self.argv)?;
         if self.expected_incarnation.is_empty()
             || self.expected_incarnation.len() > 128
             || self.configured_hook.scope.is_empty()
@@ -1740,11 +1711,69 @@ impl NativeLaunchRequest {
         Ok(())
     }
 }
+/// Exact native argument data boundary; empty elements remain lossless data.
+pub fn validate_native_argv(argv: &[String]) -> Result<(), &'static str> {
+    validate_native_argv_with_reservation(argv, None)
+}
+
+/// Project additional UTF-8 bytes onto one existing opaque argument.
+/// The reservation is never a submitted request or an extra argument.
+pub fn validate_native_argv_with_reserved_bytes(
+    argv: &[String],
+    slot_index: usize,
+    reserved_bytes: usize,
+) -> Result<(), &'static str> {
+    if slot_index >= argv.len() {
+        return Err("invalid native launch request: reserved argument index out of range");
+    }
+    validate_native_argv_with_reservation(argv, Some((slot_index, reserved_bytes)))
+}
+
+fn validate_native_argv_with_reservation(
+    argv: &[String],
+    reserve: Option<(usize, usize)>,
+) -> Result<(), &'static str> {
+    if argv.len() > 64 {
+        return Err("invalid native launch request: more than 64 native arguments");
+    }
+    let mut total = 0usize;
+    for (index, arg) in argv.iter().enumerate() {
+        if arg.contains('\0') {
+            return Err("invalid native launch request: a native argument containing NUL");
+        }
+        if arg.contains('\n') || arg.contains('\r') {
+            return Err(
+                "invalid native launch request: a native argument contains a line break; Herdr starts agents through the pane's shell, so pass the prompt on one line (or put it in a file and ask the agent to read it)",
+            );
+        }
+        let extra = reserve
+            .filter(|(slot, _)| *slot == index)
+            .map_or(0, |(_, bytes)| bytes);
+        let bytes = arg
+            .len()
+            .checked_add(extra)
+            .ok_or("invalid native launch request: native argument byte count overflow")?;
+        if bytes > NativeLaunchRequest::MAX_ARG_BYTES {
+            return Err(
+                "invalid native launch request: a native argument is over 16 KiB (put a long prompt in a file and ask the agent to read it)",
+            );
+        }
+        total = total
+            .checked_add(bytes)
+            .ok_or("invalid native launch request: native argument byte count overflow")?;
+    }
+    if total > NativeLaunchRequest::MAX_ARGV_BYTES {
+        return Err("invalid native launch request: native arguments total over 32 KiB");
+    }
+    Ok(())
+}
 /// A trusted host adapter's correlation of one submitted start request with a
 /// ready `agent_started` response. This is startup evidence only; it proves no
 /// current native execution, registration, receipt, or ACK.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorrelatedStartup {
+    /// Requested transport mode, not evidence of effective child environment.
+    pub process_hint: bool,
     pub seat: SeatId,
     pub agent_name: String,
     pub harness: Harness,
@@ -1765,6 +1794,7 @@ impl CorrelatedStartup {
         context: &HostCallContext,
     ) -> bool {
         self.seat == request.seat
+            && self.process_hint == request.process_hint
             && request.agent_name_candidates().contains(&self.agent_name)
             && self.harness == request.harness
             && self.target == request.target
@@ -2596,6 +2626,49 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     /// work-job transaction (spec D3). Opens no write transaction when no row
     /// qualifies.
     fn prune_retention(&self, budget: &CallBudget) -> Result<PruneProgress, ApiError>;
+    /// Server-resolved v2 observations are advisory and grant no seat/receipt authority.
+    fn record_harness_evidence_v2(
+        &self,
+        record: &crate::store::harness_evidence::EvidenceRecordV2<'_>,
+        budget: &CallBudget,
+    ) -> Result<crate::store::harness_evidence::RecordedV2, ApiError>;
+    fn harness_evidence_v2(
+        &self,
+        harness: &str,
+        identity: &str,
+        domain: &str,
+        origin: crate::harness::evidence::EvidenceOrigin,
+        contract: &str,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::store::harness_evidence::EvidenceRowV2>, ApiError>;
+    /// At most 256 newest rows of one harness, filtered by timestamp.
+    fn harness_evidence_v2_all(
+        &self,
+        harness: &str,
+        since_ms: u64,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::store::harness_evidence::EvidenceRowV2>, ApiError>;
+    /// At most 256 newest rows across harnesses.
+    fn harness_evidence_v2_since(
+        &self,
+        since_ms: u64,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::store::harness_evidence::EvidenceRowV2>, ApiError>;
+    fn record_unattributed_v2(
+        &self,
+        harness: &str,
+        domain: &str,
+        origin: crate::harness::evidence::EvidenceOrigin,
+        reason: &str,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError>;
+    fn last_unattributed_v2(
+        &self,
+        harness: &str,
+        domain: &str,
+        origin: crate::harness::evidence::EvidenceOrigin,
+        budget: &CallBudget,
+    ) -> Result<Option<(String, u64)>, ApiError>;
     /// Records one hook payload's harness evidence (ht-xoc.4): upserts the
     /// (harness, version, contract id) row and applies the outcome.
     fn record_harness_evidence(
@@ -2872,7 +2945,28 @@ pub enum AgentComposerState {
 /// Explicit adapter contract for a current structural observation plus composer
 /// classification. Plain current-target reads and snapshots never imply this.
 #[derive(Debug, Clone)]
-pub struct ComposerObservation(pub HostObservation);
+pub struct ComposerObservation(pub HostObservation, pub Option<RegisteredComposerEvidence>);
+
+/// Parser choice from the same fresh, validated detection read. This is not
+/// occupancy, execution, liveness or caller authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerClassification {
+    Empty,
+    Text,
+    Unsafe,
+    Unreadable,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerEvidenceBasis {
+    RegisteredHostKindComposerRead,
+}
+#[derive(Debug, Clone)]
+pub struct RegisteredComposerEvidence {
+    pub parser: crate::harness::registry::AgentHarnessId,
+    pub reported_host_kind: String,
+    pub classification: ComposerClassification,
+    pub basis: ComposerEvidenceBasis,
+}
 
 pub trait HostPort: Send + Sync {
     /// Adapter-owned, verified support; callers cannot assert a launch capability.
@@ -2986,6 +3080,12 @@ pub trait HostPort: Send + Sync {
     /// publication establishes it.
     fn incarnation_witness(&self) -> crate::protocol::results::CapabilityState {
         crate::protocol::results::CapabilityState::Unknown
+    }
+    /// The Herdr release the adapter last observed, for Health (version,
+    /// diagnostic protocol and an untested-release warning). None until a
+    /// call was answered, and for adapters without a release.
+    fn observed_release(&self) -> Option<crate::host::compatibility::HostRelease> {
+        None
     }
     /// Adapter-owned static capability to submit a wake prompt only after its
     /// own bounded recheck of the target. Health reports it as `safe_prompt`.

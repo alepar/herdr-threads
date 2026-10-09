@@ -2975,6 +2975,7 @@ fn elected_health_control(
             incarnation_witness: crate::protocol::results::CapabilityState::Unknown,
             safe_prompt: crate::protocol::results::CapabilityState::Unsupported,
             harnesses: Default::default(),
+            release: Default::default(),
         },
     );
     ControlService::new(

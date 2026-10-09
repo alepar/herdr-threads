@@ -1,0 +1,2 @@
+ordinal | id | thread_id | seat_id | episode | state | created_decision_seq | created_at | frozen_duration_ms | deadline_at | accepted_at | accepted_actor_seat_id | accepted_generation | accepted_observation | warning_message_id | retired_at | reject_recorded
+1 | i6imZXIcZ | tWNvoblgi | sOyZueIIm | 1 | pending | 4 | 1791491684798 | 300000 | 1791491984798 |  |  |  |  |  |  | 0

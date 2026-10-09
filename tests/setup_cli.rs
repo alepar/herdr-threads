@@ -35,8 +35,8 @@ struct Scratch {
 }
 impl Scratch {
     fn new() -> Self {
-        let root = PathBuf::from(format!(
-            "/private/tmp/htsetup-{}",
+        let root = std::env::temp_dir().join(format!(
+            "htsetup-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -118,6 +118,10 @@ impl Scratch {
             .current_dir(cwd)
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
             .env("HOME", &self.home)
+            .env(
+                "HT_SYNTHETIC_FOURTH_ROOT",
+                self.home.join("synthetic-fourth-fixture"),
+            )
             .env("CLAUDE_CONFIG_DIR", &self.claude_config)
             .env("CODEX_HOME", &self.codex_home)
             // Never the host's managed policy (ht-j16.7).
@@ -438,7 +442,7 @@ fn installed_command_is_the_hook_entrypoint_argv() {
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
     let exe = Path::new(BIN).canonicalize().unwrap();
     let state = s.state.display().to_string();
-    let host = s.host().display().to_string();
+    let host = canonical_host(&s.host()).display().to_string();
     let expected_argv = [
         exe.to_str().unwrap(),
         "--state-dir",
@@ -650,7 +654,7 @@ fn setup_detects_the_herdr_instance_with_the_herdr_cli() {
     assert_eq!(report["instance"]["state_dir"], state.display().to_string());
     assert_eq!(
         report["instance"]["host_endpoint"],
-        socket.display().to_string()
+        canonical_host(&socket).display().to_string()
     );
     assert_eq!(
         report["instance"]["source"]["host_endpoint"],
@@ -663,7 +667,7 @@ fn setup_detects_the_herdr_instance_with_the_herdr_cli() {
             "--state-dir".to_owned(),
             state.display().to_string(),
             "--host-endpoint".to_owned(),
-            socket.display().to_string()
+            canonical_host(&socket).display().to_string()
         ]
     );
     assert!(state.join("setup").is_dir());
@@ -833,13 +837,21 @@ fn tree(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     out
 }
 
+fn canonical_host(host: &Path) -> PathBuf {
+    host.parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap()
+        .join(host.file_name().unwrap())
+}
+
 fn owned_codex_command(s: &Scratch) -> String {
     let exe = Path::new(BIN).canonicalize().unwrap();
     format!(
         "'{}' '--state-dir' '{}' '--host-endpoint' '{}' 'hook' 'codex'",
         exe.display(),
         s.state.display(),
-        s.host().display()
+        canonical_host(&s.host()).display()
     )
 }
 
@@ -896,7 +908,12 @@ fn codex_setup_keeps_existing_user_hooks_in_their_own_layers() {
         serde_json::json!(["SubagentStart"])
     );
     assert_eq!(
-        events(repo.join(".codex").join("config.toml")),
+        events(
+            repo.canonicalize()
+                .unwrap()
+                .join(".codex")
+                .join("config.toml")
+        ),
         serde_json::json!(["SubagentStart"])
     );
 
@@ -1233,6 +1250,57 @@ fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The collection and legacy scalar agree for shipped Codex advice, and
+/// aggregation only extracts its note, retaining native hook information.
+#[test]
+fn aggregate_codex_trust_collection_preserves_scalar_and_text_compatibility() {
+    let s = Scratch::new();
+    s.harness("codex", "wrapper-version-unknown");
+    fs::create_dir_all(&s.codex_home).unwrap();
+    let config = s.codex_home.join("config.toml");
+    fs::write(&config, b"model = \"user choice\"\n").unwrap();
+    let installed = s.run(&["--json", "setup"]);
+    assert_eq!(
+        installed.status.code(),
+        Some(0),
+        "{}",
+        text(&installed.stderr)
+    );
+    let report = json(&installed);
+    assert_eq!(
+        report["trust_reminders"],
+        serde_json::json!([{"harness":"codex", "note":report["trust_reminder"]}])
+    );
+    assert!(
+        report["trust_reminder"]
+            .as_str()
+            .unwrap()
+            .contains("/hooks")
+    );
+    let codex = report["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["harness"] == "codex")
+        .unwrap();
+    assert!(codex["report"]["trust"]["note"].is_null());
+    assert!(codex["report"]["trust"]["hooks"].is_array());
+    let printed = s.run(&["setup"]);
+    assert_eq!(printed.status.code(), Some(0));
+    let stdout = text(&printed.stdout);
+    let expected_line = format!(
+        "codex hook trust: {}\n",
+        report["trust_reminder"].as_str().unwrap()
+    );
+    assert_eq!(stdout.matches(&expected_line).count(), 1, "{stdout}");
+    assert_eq!(stdout.matches("codex hook trust:").count(), 1);
+    assert!(!stdout.contains("codex setup trust:"));
+    assert_eq!(fs::read(&config).unwrap(), b"model = \"user choice\"\n");
+    let status = json(&s.run(&["--json", "setup-status"]));
+    assert_eq!(status["trust_reminders"], serde_json::json!([]));
+    assert!(status["trust_reminder"].is_null());
+}
+
 /// Bare `setup` / `setup-status` / `unsetup` cover every detected harness:
 /// one summary line each, the Codex trust reminder exactly once, idempotent
 /// re-run, and byte-for-byte removal of both. Kills: bare setup handling only
@@ -1281,7 +1349,9 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
         outcomes(&report),
         pairs(&[
             ("claude", "already_installed"),
-            ("codex", "already_installed")
+            ("codex", "already_installed"),
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "skipped")
         ])
     );
     assert!(
@@ -1293,16 +1363,34 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
     assert!(report["harnesses"][1]["report"]["trust"]["note"].is_null());
     assert!(report["harnesses"][1]["report"]["trust"]["hooks"].is_array());
     assert_eq!(report["exit_status"], 0);
+    assert_eq!(
+        report["harnesses"][2]["reason"],
+        "requires explicit harness selection for a profile scope"
+    );
 
     let status = s.run(&["--json", "setup-status"]);
     assert_eq!(status.status.code(), Some(0));
     let status = json(&status);
     assert_eq!(
         outcomes(&status),
-        pairs(&[("claude", "status"), ("codex", "status")])
+        pairs(&[
+            ("claude", "status"),
+            ("codex", "status"),
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "status")
+        ])
     );
-    for entry in status["harnesses"].as_array().unwrap() {
-        assert_eq!(entry["report"]["installed"], true, "{entry}");
+    for entry in status["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["outcome"] == "status")
+    {
+        assert_eq!(
+            entry["report"]["installed"],
+            entry["harness"] != "synthetic_fourth",
+            "{entry}"
+        );
     }
     let status_text = text(&s.run(&["setup-status"]).stdout);
     assert!(
@@ -1327,7 +1415,12 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
     let twice = json(&s.run(&["--json", "unsetup"]));
     assert_eq!(
         outcomes(&twice),
-        pairs(&[("claude", "not_installed"), ("codex", "not_installed")])
+        pairs(&[
+            ("claude", "not_installed"),
+            ("codex", "not_installed"),
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "not_installed")
+        ])
     );
 }
 
@@ -1360,7 +1453,12 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
     let report = json(&s.run(&["--json", "setup"]));
     assert_eq!(
         outcomes(&report),
-        pairs(&[("claude", "skipped"), ("codex", "installed")])
+        pairs(&[
+            ("claude", "skipped"),
+            ("codex", "installed"),
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "skipped")
+        ])
     );
     assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
 
@@ -1369,7 +1467,12 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
     let removed = json(&s.run(&["--json", "unsetup"]));
     assert_eq!(
         outcomes(&removed),
-        pairs(&[("claude", "not_installed"), ("codex", "removed")])
+        pairs(&[
+            ("claude", "not_installed"),
+            ("codex", "removed"),
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "not_installed")
+        ])
     );
     let status = json(&s.run(&["--json", "setup-status"]));
     assert_eq!(status["harnesses"][1]["detected"], false);
@@ -1398,7 +1501,12 @@ fn bare_setup_exits_nonzero_only_for_a_failed_harness() {
     let report = json(&out);
     assert_eq!(
         outcomes(&report),
-        pairs(&[("claude", "failed"), ("codex", "installed")])
+        pairs(&[
+            ("claude", "failed"),
+            ("codex", "installed"),
+            ("hermes", "skipped"),
+            ("synthetic_fourth", "skipped")
+        ])
     );
     assert_eq!(report["exit_status"], 2);
     assert!(
@@ -1541,6 +1649,13 @@ fn copied_codex_hooks_are_adopted_without_changing_bytes() {
     let status = json(&run(&["--json", "setup-status", "codex"]));
     assert_eq!(status["installed"], false, "{status}");
     assert!(status["adopted"].is_null());
+    let doctor = run(&["--json", "doctor"]);
+    let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert_eq!(
+        doctor["doctor"]["hooks"]["codex"]["setup"]["installed"],
+        false
+    );
+    assert!(doctor["doctor"]["hooks"]["codex"]["setup"]["adopted"].is_null());
     let installed = json(&run(&["--json", "setup", "codex"]));
     assert_eq!(installed["action"], "installed", "{installed}");
     assert!(installed["adopted"].is_null());
@@ -1993,7 +2108,10 @@ fn doctor_json_claude_installed_is_the_admission_object() {
         codex["binary"].as_str().unwrap().ends_with("/codex"),
         "{codex}"
     );
-    assert!(codex["evidence"].is_string(), "{codex}");
+    assert!(
+        codex["evidence"].is_null(),
+        "declared contract must not fabricate native evidence: {codex}"
+    );
 }
 
 fn json_doctor(s: &Scratch) -> serde_json::Value {
@@ -2425,6 +2543,221 @@ fn codex_legacy_registration_rerun_warns_about_retrust() {
     assert!(!third.contains("Codex trusts hooks by hash"), "{third}");
 }
 
+/// Scope refusals happen during argument validation, and status is read-only
+/// even when every local native directory and daemon instance is absent.
+#[test]
+fn local_profile_refusals_and_status_leave_native_and_instance_directories_absent() {
+    let s = Scratch::new();
+    for args in [
+        vec!["setup", "--profile", "work"],
+        vec!["setup", "claude", "--profile", "work"],
+        vec!["unsetup", "codex", "--profile", "work"],
+        vec!["doctor", "--profile", "work"],
+        vec!["doctor", "--harness", "codex", "--profile", "work"],
+    ] {
+        let mut command = s.command(&s.root);
+        command
+            .arg("--state-dir")
+            .arg(&s.state)
+            .arg("--host-endpoint")
+            .arg(s.host())
+            .args(args);
+        herdr_threads::test_support::spawn::tag(&mut command);
+        let out = command.output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+        assert!(!s.state.exists());
+        assert!(!s.claude_config.exists());
+        assert!(!s.codex_home.exists());
+    }
+    let mut command = s.command(&s.root);
+    command
+        .arg("--state-dir")
+        .arg(&s.state)
+        .arg("--host-endpoint")
+        .arg(s.host())
+        .args(["--json", "setup-status"]);
+    herdr_threads::test_support::spawn::tag(&mut command);
+    let out = command.output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let report = json(&out);
+    assert_eq!(report["harnesses"][0]["report"]["harness"], "claude");
+    assert_eq!(report["harnesses"][1]["report"]["harness"], "codex");
+    assert_eq!(report["harnesses"][0]["report"]["installed"], false);
+    assert_eq!(report["harnesses"][1]["report"]["installed"], false);
+    assert_eq!(report["harnesses"][0]["report"]["observed"], "unknown");
+    assert_eq!(report["harnesses"][1]["report"]["observed"], "unknown");
+    assert!(!s.state.exists());
+    assert!(!s.claude_config.exists());
+    assert!(!s.codex_home.exists());
+}
+
+/// Catches lost manifest reuse/restoration, silent noninteractive consent writes,
+/// and status that drops the adapter's manual native-trust guidance.
+#[test]
+fn legacy_adapter_backends_reopen_owned_manifests_and_preserve_consent() {
+    use herdr_threads::harness::{adapter::*, registry};
+    use herdr_threads::protocol::time::{CallBudget, MonoInstant};
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    s.codex_with_schemas("0.159.3");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::create_dir(&s.codex_home).unwrap();
+    fs::write(s.settings(), ORIGINAL).unwrap();
+    let original_hooks = b"{\n  \"other\": 42\n}\n";
+    let original_config = b"model = \"mine\"\n";
+    fs::write(s.hooks(), original_hooks).unwrap();
+    fs::write(s.codex_home.join("config.toml"), original_config).unwrap();
+    let environment = SetupEnvironment {
+        home: Some(s.home.clone().into_os_string()),
+        path: Some(s.bin.clone().into_os_string()),
+        cwd: s.root.clone(),
+        executable: PathBuf::from(BIN),
+        state_dir: Some(s.state.clone()),
+        host_endpoint: Some(s.host()),
+        config_roots: [
+            ("claude".into(), s.claude_config.clone()),
+            ("codex".into(), s.codex_home.clone()),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let registry = registry::builtins();
+    for name in ["claude", "codex"] {
+        let registration = registry.by_id(registry.agent(name).unwrap()).unwrap();
+        let scope = registration
+            .resolve_setup_scope(&SetupScopeRequest::Default, &environment)
+            .unwrap();
+        let request = SetupRequest {
+            scope: scope.clone(),
+            executable: environment.executable.clone(),
+            environment: environment.clone(),
+            native_binary: None,
+            options: Default::default(),
+        };
+        let installed = registration.setup(&request, &budget).unwrap();
+        assert_eq!(installed.projection["action"], "installed");
+        assert_eq!(installed.projection["foreground"]["status"], "required");
+        assert_eq!(
+            installed.projection["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|warning| warning
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("Foreground user settings")))
+                .count(),
+            1
+        );
+        assert_eq!(
+            installed
+                .diagnostics
+                .iter()
+                .filter(|d| d.text.starts_with("Foreground user settings"))
+                .count(),
+            1
+        );
+        if name == "claude" {
+            assert_eq!(
+                installed.projection["prompt_suggestions"]["action"],
+                "advised"
+            );
+            let settings: serde_json::Value =
+                serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+            assert!(settings.get("promptSuggestionEnabled").is_none());
+        } else {
+            assert_eq!(installed.projection["trust"]["status"], "review_required");
+            assert!(
+                !fs::read_to_string(s.codex_home.join("config.toml"))
+                    .unwrap()
+                    .contains("hooks.state")
+            );
+        }
+        let before = fs::read(if name == "claude" {
+            s.settings()
+        } else {
+            s.hooks()
+        })
+        .unwrap();
+        let again = registration.setup(&request, &budget).unwrap();
+        assert_eq!(again.projection["action"], "already_installed");
+        assert_eq!(again.projection["command"], installed.projection["command"]);
+        assert_eq!(
+            fs::read(if name == "claude" {
+                s.settings()
+            } else {
+                s.hooks()
+            })
+            .unwrap(),
+            before
+        );
+        let status = registration.status(
+            &StatusRequest {
+                scope: scope.clone(),
+                environment: environment.clone(),
+                native_binary: None,
+            },
+            &budget,
+        );
+        let SetupStatus::Detailed(status) = status else {
+            panic!("adapter did not return detailed local status")
+        };
+        assert_eq!(status.projection["foreground"]["status"], "required");
+        assert_eq!(
+            status
+                .diagnostics
+                .iter()
+                .filter(|d| d.text.starts_with("Foreground user settings"))
+                .count(),
+            1
+        );
+        assert!(status.installed);
+        assert_eq!(
+            status.projection["command"],
+            installed.projection["command"]
+        );
+        if name == "claude" {
+            assert!(
+                status
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == "prompt_suggestions_advice"),
+                "adapter status must retain prompt suggestion guidance"
+            );
+        }
+        if name == "codex" {
+            assert!(
+                status
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == "native_trust_manual"),
+                "adapter status must retain manual native trust guidance: {:?}",
+                status.diagnostics
+            );
+        }
+        fs::remove_file(s.bin.join(name)).unwrap();
+        let removed = registration
+            .unsetup(
+                &UnsetupRequest {
+                    scope,
+                    environment: environment.clone(),
+                },
+                &budget,
+            )
+            .unwrap();
+        assert_eq!(removed.projection["action"], "removed");
+    }
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+    assert_eq!(fs::read(s.hooks()).unwrap(), original_hooks);
+    assert_eq!(
+        fs::read(s.codex_home.join("config.toml")).unwrap(),
+        original_config
+    );
+}
+
 /// Kills operational diagnostic probes and sandbox writes through the public CLI.
 #[test]
 fn versionless_setup_and_status_preserve_foreign_config_without_invoking_wrapper() {
@@ -2561,6 +2894,1008 @@ fn versionless_setup_rejects_unusable_explicit_binary_without_config_changes() {
     }
 }
 
+/// Strict synthetic machine-command/helper fixture; no installed Hermes imports.
+struct HermesScopeFixture {
+    scratch: Scratch,
+    launcher: PathBuf,
+    native_home: PathBuf,
+    calls: PathBuf,
+}
+impl HermesScopeFixture {
+    fn new() -> Self {
+        use herdr_threads::test_support::spawn::SpawnOwned;
+        let scratch = Scratch::new();
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(scratch.state.join("setup"))
+            .unwrap();
+        // Resolve the test interpreter before narrowing PATH to synthetic executables.
+        let mut python = scrubbed_command("python3");
+        python
+            .args(["-c", "import sys;print(sys.executable)"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let output = python.spawn_owned().unwrap().wait_with_output().unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        let interpreter = PathBuf::from(text(&output.stdout).trim())
+            .canonicalize()
+            .unwrap();
+        let root = scratch.root.join("synthetic source");
+        let package = root.join("hermes_cli");
+        let dependencies = scratch.root.join("dependencies/site-packages");
+        let native_home = scratch.root.join("native home with spaces");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&dependencies).unwrap();
+        fs::create_dir_all(native_home.join("profiles/work")).unwrap();
+        let py = |p: &Path| serde_json::to_string(p.to_str().unwrap()).unwrap();
+        for (path, bytes) in [
+            (root.join("hermes_bootstrap.py"),format!("import os,sys\nfrom pathlib import Path\n_root=Path(__file__).resolve().parent\n_pm_repair=False\n_launch_python=None\nsys.path[:]=[str(_root),{},*sys.path[1:]]\nos.environ['PYTHONPATH']=os.pathsep.join(sys.path[:2])\n",py(&dependencies))),
+            (root.join("hermes_constants.py"),"import os\nfrom pathlib import Path\ndef get_hermes_home(): return Path(os.environ['HERMES_HOME'])\n".into()),
+            (package.join("__init__.py"),String::new()),
+            (package.join("profiles.py"),format!("from pathlib import Path\ndef normalize_profile_name(p): return p.strip().lower()\ndef validate_profile_name(p):\n if p not in ('default','work'): raise ValueError('private')\ndef resolve_profile_env(p):\n p=normalize_profile_name(p);validate_profile_name(p)\n root=Path({});home=root if p=='default' else root/'profiles'/p\n if not home.is_dir(): raise FileNotFoundError('private')\n return str(home)\n",py(&native_home))),
+            (package.join("version_info.py"),"from types import SimpleNamespace\ndef get_version_info(): return SimpleNamespace(source='git',base_version='0.21.5',derived_version='0.21.5+1.g1234567',commit='1234567890abcdef1234567890abcdef12345678',dirty=False,distance=1)\n".into()),
+            (package.join("config.py"),"class FailedConfigRead(dict): pass\ndef load_config_readonly(): return {'plugins':{'enabled':['herdr-threads'],'disabled':[]}}\n".into()),
+        ] { fs::write(path,bytes).unwrap(); }
+        for home in [&native_home, native_home.join("profiles/work").as_path()] {
+            fs::write(
+                home.join("config.yaml"),
+                b"plugins:\n  enabled: [herdr-threads]\nother: preserved\n",
+            )
+            .unwrap();
+        }
+        let bootstrap = format!(
+            "import sys,runpy;sys.path.insert(0,{});import hermes_bootstrap;runpy.run_module('trace',run_name='__main__',alter_sys=True)",
+            py(&root)
+        );
+        let launcher = scratch.root.join("selected launcher");
+        let calls = scratch.root.join("selected-launcher-calls.jsonl");
+        fs::write(&launcher,format!("#!{}\nimport json,sys,os\nwith open({},'a') as f: f.write(json.dumps({{'argv':sys.argv[1:],'home':os.environ['HOME'],'path':os.environ.get('PATH'),'native_home':os.environ.get('HERMES_HOME')}})+'\\n')\nprint(json.dumps([{},'-I','-c',{},'--count','--no-report',sys.argv[-3],'--profile',sys.argv[-1]]))\n",interpreter.display(),py(&calls),py(&interpreter),serde_json::to_string(&bootstrap).unwrap())).unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        Self {
+            scratch,
+            launcher,
+            native_home,
+            calls,
+        }
+    }
+    fn run(&self, verb: &str, profile: &str, explicit: bool) -> Output {
+        let mut command = self.scratch.command(&self.scratch.root);
+        command
+            .env("PATH", &self.scratch.bin)
+            .env("HERMES_HOME", &self.native_home)
+            .arg("--state-dir")
+            .arg(&self.scratch.state)
+            .arg("--host-endpoint")
+            .arg(self.scratch.host())
+            .args(["--json", verb, "hermes"]);
+        if profile != "default" {
+            command.args(["--profile", profile]);
+        }
+        if explicit {
+            command.arg("--harness-binary").arg(&self.launcher);
+        }
+        herdr_threads::test_support::spawn::tag(&mut command);
+        command.output().unwrap()
+    }
+    fn selected_home(&self, profile: &str) -> PathBuf {
+        if profile == "default" {
+            self.native_home.clone()
+        } else {
+            self.native_home.join("profiles").join(profile)
+        }
+    }
+}
+
+#[test]
+fn public_hermes_unsetup_uses_recorded_scope_after_launcher_loss() {
+    for profile in ["default", "work"] {
+        let fixture = HermesScopeFixture::new();
+        fs::copy(&fixture.launcher, fixture.scratch.bin.join("hermes")).unwrap();
+        let home = fixture.selected_home(profile);
+        let yaml = fs::read(home.join("config.yaml")).unwrap();
+        let installed = fixture.run("setup", profile, false);
+        assert!(
+            installed.status.success(),
+            "{}{}",
+            text(&installed.stdout),
+            text(&installed.stderr)
+        );
+        assert!(home.join("plugins/herdr-threads/__init__.py").is_file());
+        let calls = fs::read(&fixture.calls).unwrap();
+        fs::remove_file(fixture.scratch.bin.join("hermes")).unwrap();
+        fs::remove_file(&fixture.launcher).unwrap();
+        let removed = fixture.run("unsetup", profile, false);
+        assert!(
+            removed.status.success(),
+            "{}{}",
+            text(&removed.stdout),
+            text(&removed.stderr)
+        );
+        assert!(!home.join("plugins/herdr-threads").exists());
+        assert_eq!(
+            fs::read(&fixture.calls).unwrap(),
+            calls,
+            "removal executed a native/helper discovery"
+        );
+        assert_eq!(fs::read(home.join("config.yaml")).unwrap(), yaml);
+        let unknown = fixture.run("unsetup", "missing", false);
+        assert!(!unknown.status.success());
+        assert_eq!(fs::read(&fixture.calls).unwrap(), calls);
+    }
+}
+
+#[test]
+fn explicit_hermes_binary_and_budget_reach_public_install_and_status() {
+    let fixture = HermesScopeFixture::new();
+    let sentinel = fixture.scratch.root.join("unrelated-launcher-executed");
+    fixture.scratch.harness("hermes", "unrelated");
+    fs::write(
+        fixture.scratch.bin.join("hermes"),
+        format!("#!/bin/sh\n: > '{}'\nexit 77\n", sentinel.display()),
+    )
+    .unwrap();
+    let installed = fixture.run("setup", "work", true);
+    assert!(
+        installed.status.success(),
+        "{}{}",
+        text(&installed.stdout),
+        text(&installed.stderr)
+    );
+    let status = fixture.run("setup-status", "work", true);
+    assert!(
+        status.status.success(),
+        "{}{}",
+        text(&status.stdout),
+        text(&status.stderr)
+    );
+    assert_eq!(json(&status)["installed"], true);
+    assert!(
+        !sentinel.exists(),
+        "scope resolution used unrelated PATH launcher"
+    );
+    let calls: Vec<serde_json::Value> = fs::read_to_string(&fixture.calls)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        calls.len(),
+        4,
+        "resolution and revalidation must use selected launcher"
+    );
+    for call in calls {
+        assert_eq!(call["home"], fixture.scratch.home.to_str().unwrap());
+        assert_eq!(call["path"], fixture.scratch.bin.to_str().unwrap());
+        assert_eq!(call["native_home"], fixture.native_home.to_str().unwrap());
+        assert_eq!(call["argv"].as_array().unwrap().last().unwrap(), "work");
+    }
+    // Existing generic API: a clock that exhausts the caller deadline during
+    // discovery must never reach owned installation with a renewed budget.
+    use herdr_threads::{
+        harness::{adapter::*, registry},
+        protocol::time::*,
+    };
+    struct Advancing(std::sync::atomic::AtomicU64);
+    impl Clock for Advancing {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(
+                self.0
+                    .fetch_add(20_000, std::sync::atomic::Ordering::SeqCst),
+            )
+        }
+    }
+    let environment = SetupEnvironment {
+        clock: std::sync::Arc::new(Advancing(std::sync::atomic::AtomicU64::new(0))),
+        home: Some(fixture.scratch.home.clone().into_os_string()),
+        path: Some(fixture.scratch.bin.clone().into_os_string()),
+        cwd: fixture.scratch.root.clone(),
+        executable: PathBuf::from(BIN),
+        state_dir: Some(fixture.scratch.root.join("deadline-state")),
+        host_endpoint: Some(fixture.scratch.host()),
+        declared: [(
+            "HERMES_HOME".into(),
+            fixture.native_home.clone().into_os_string(),
+        )]
+        .into(),
+        ..Default::default()
+    };
+    let registry = registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let before = fs::read(&fixture.calls).unwrap();
+    let result = herdr_threads::cli::setup::execute_registered(
+        registration,
+        herdr_threads::cli::setup::SetupVerb::Install,
+        &SetupScopeRequest::Default,
+        Some(&fixture.launcher),
+        Default::default(),
+        &environment,
+    );
+    assert!(
+        result.is_err(),
+        "exhausted single caller budget was renewed"
+    );
+    assert!(!fixture.native_home.join("plugins/herdr-threads").exists());
+    assert_eq!(
+        fs::read(&fixture.calls).unwrap(),
+        before,
+        "expired boundary executed launcher"
+    );
+}
+
+#[test]
+fn public_hermes_recorded_scope_preserves_assets_on_lock_alias_and_generation_changes() {
+    use herdr_threads::{
+        harness::{adapter::*, registry},
+        protocol::time::*,
+    };
+    use std::os::{fd::AsRawFd, unix::fs::symlink};
+    let fixture = HermesScopeFixture::new();
+    let alias = fixture.scratch.root.join("native alias with spaces");
+    symlink(&fixture.native_home, &alias).unwrap();
+    let profiles = fixture
+        .scratch
+        .root
+        .join("synthetic source/hermes_cli/profiles.py");
+    let before = fs::read_to_string(&profiles).unwrap();
+    fs::write(
+        &profiles,
+        before.replace(
+            &serde_json::to_string(fixture.native_home.to_str().unwrap()).unwrap(),
+            &serde_json::to_string(alias.to_str().unwrap()).unwrap(),
+        ),
+    )
+    .unwrap();
+    assert!(fixture.run("setup", "work", true).status.success());
+    let home = fixture.selected_home("work");
+    let bridge = home.join("plugins/herdr-threads/__init__.py");
+    let original = fs::read(&bridge).unwrap();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(home.join("plugins/.herdr-threads-operation.lock"))
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    let refused = fixture.run("unsetup", "work", false);
+    drop(lock);
+    assert!(!refused.status.success());
+    assert_eq!(fs::read(&bridge).unwrap(), original);
+    fs::write(&bridge, b"user modification").unwrap();
+    assert!(fixture.run("unsetup", "work", false).status.success());
+    assert_eq!(fs::read(&bridge).unwrap(), b"user modification");
+    fs::write(&bridge, &original).unwrap();
+    let environment = SetupEnvironment {
+        home: Some(fixture.scratch.home.clone().into_os_string()),
+        path: Some(fixture.scratch.bin.clone().into_os_string()),
+        cwd: fixture.scratch.root.clone(),
+        executable: PathBuf::from(BIN),
+        state_dir: Some(fixture.scratch.state.clone()),
+        host_endpoint: Some(fixture.scratch.host()),
+        declared: [(
+            "HERMES_HOME".into(),
+            fixture.native_home.clone().into_os_string(),
+        )]
+        .into(),
+        ..Default::default()
+    };
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let registry = registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let selector = SetupScopeRequest::Profile("work".into());
+    let resolution = registration
+        .resolve_setup_scope_for(
+            &SetupScopeResolutionRequest {
+                operation: SetupScopeOperation::Remove,
+                selector: &selector,
+                native_binary: None,
+                environment: &environment,
+            },
+            &budget,
+        )
+        .unwrap();
+    assert!(fixture.run("setup", "work", true).status.success());
+    let successor = fs::read(home.join("plugins/herdr-threads/bridge_config.json")).unwrap();
+    assert!(
+        registration
+            .unsetup_resolved(
+                &UnsetupRequest {
+                    scope: resolution.scope.clone(),
+                    environment: environment.clone()
+                },
+                &resolution,
+                &budget
+            )
+            .is_err()
+    );
+    assert_eq!(
+        fs::read(home.join("plugins/herdr-threads/bridge_config.json")).unwrap(),
+        successor
+    );
+    let foreign_home = fixture.scratch.root.join("foreign home");
+    fs::create_dir(&foreign_home).unwrap();
+    fs::remove_file(&alias).unwrap();
+    symlink(&foreign_home, &alias).unwrap();
+    let refused = fixture.run("unsetup", "work", false);
+    assert!(!refused.status.success());
+    assert_eq!(fs::read(&bridge).unwrap(), original);
+    fs::remove_file(&alias).unwrap();
+    symlink(&fixture.native_home, &alias).unwrap();
+    let foreign = home.join("plugins/herdr-threads/foreign.txt");
+    fs::write(&foreign, b"foreign preserved").unwrap();
+    assert!(fixture.run("unsetup", "work", false).status.success());
+    assert_eq!(fs::read(&foreign).unwrap(), b"foreign preserved");
+    fs::remove_file(&foreign).unwrap();
+    assert!(
+        fixture.run("unsetup", "work", false).status.success(),
+        "interrupted exact removal did not recover"
+    );
+    assert!(!bridge.parent().unwrap().exists());
+}
+// Task51 exercises concrete public consumers, including the syscall boundary.
+fn task51_command(f: &HermesScopeFixture, verb: &str, json_format: bool) -> Command {
+    let mut command = f.scratch.command(&f.scratch.root);
+    command
+        .env("PATH", &f.scratch.bin)
+        .env("HERMES_HOME", &f.native_home)
+        .arg("--state-dir")
+        .arg(&f.scratch.state)
+        .arg("--host-endpoint")
+        .arg(f.scratch.host());
+    if json_format {
+        command.arg("--json");
+    }
+    command.args([verb, "hermes", "--profile", "work"]);
+    if verb != "unsetup" {
+        command.arg("--harness-binary").arg(&f.launcher);
+    }
+    herdr_threads::test_support::spawn::tag(&mut command);
+    command
+}
+
+fn task51_manifest(f: &HermesScopeFixture) -> PathBuf {
+    // Manifests record the physical home; macOS temp dirs sit under /var.
+    let selected = f.selected_home("work").canonicalize().unwrap();
+    let mut manifests: Vec<_> = fs::read_dir(f.scratch.state.join("setup/hermes"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .filter(|path| {
+            let value: serde_json::Value =
+                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            value["home"].as_str() == selected.to_str()
+        })
+        .collect();
+    assert_eq!(
+        manifests.len(),
+        1,
+        "expected one installed manifest for selected physical home"
+    );
+    manifests.pop().unwrap()
+}
+
+fn task51_installed() -> HermesScopeFixture {
+    let f = HermesScopeFixture::new();
+    let out = f.run("setup", "work", true);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    f
+}
+
+fn task51_public_assertions(
+    out: &Output,
+    json_format: bool,
+    removed: &[&str],
+    residue: &[&str],
+    incomplete: bool,
+) {
+    assert!(
+        out.status.success(),
+        "{}{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    if json_format {
+        let report = json(out);
+        assert_eq!(report["residue"], serde_json::json!(residue));
+        assert_eq!(report["incomplete"], incomplete);
+        assert_eq!(
+            report["manual_argv"],
+            serde_json::json!([
+                "hermes",
+                "--profile",
+                "work",
+                "plugins",
+                "disable",
+                "herdr-threads"
+            ])
+        );
+        let actual = report["removed"]
+            .as_array()
+            .expect("actual completed removals missing");
+        for name in removed {
+            assert!(actual.contains(&serde_json::json!(name)), "{report}");
+        }
+        if removed.is_empty() {
+            assert!(actual.is_empty(), "{report}");
+            assert_eq!(report["actions"], serde_json::json!(["Unchanged"]));
+        } else {
+            assert_eq!(report["actions"], serde_json::json!(["RemovedOwned"]));
+        }
+        let diagnostic = report["diagnostic"].as_str().expect("diagnostic missing");
+        assert!(
+            diagnostic.contains(if incomplete { "incomplete" } else { "removed" }),
+            "{diagnostic}"
+        );
+    } else {
+        let report = text(&out.stdout);
+        assert!(
+            report.contains(&format!("incomplete: {incomplete}")),
+            "{report}"
+        );
+        assert!(
+            report.contains("manual_argv: hermes --profile work plugins disable herdr-threads"),
+            "{report}"
+        );
+        assert!(
+            report.contains(if incomplete { "incomplete" } else { "removed" }),
+            "{report}"
+        );
+        assert!(
+            report.contains(if removed.is_empty() {
+                "actions: Unchanged"
+            } else {
+                "actions: RemovedOwned"
+            }),
+            "{report}"
+        );
+        if removed.is_empty() {
+            assert!(!report.contains("RemovedOwned"), "{report}");
+            assert!(
+                report.lines().any(|line| line.trim_end() == "removed:"),
+                "{report}"
+            );
+        }
+        for name in removed {
+            assert!(report.contains(name), "{report}");
+        }
+        for name in residue {
+            assert!(report.contains(name), "{report}");
+        }
+        assert!(
+            report.lines().any(|line| line.starts_with("residue:")),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn task51_public_hermes_removal_reports_modified_residue_and_no_removal() {
+    for json_format in [true, false] {
+        let f = task51_installed();
+        let dir = f.selected_home("work").join("plugins/herdr-threads");
+        let manifest = task51_manifest(&f);
+        let index = f.scratch.state.join("setup/hermes/selectors-v1.json");
+        let before_manifest = fs::read(&manifest).unwrap();
+        let before_index = fs::read(&index).unwrap();
+        let other: Vec<_> = ["bridge_config.json", "plugin.yaml"]
+            .into_iter()
+            .map(|name| (dir.join(name), fs::read(dir.join(name)).unwrap()))
+            .collect();
+        let user = b"# exact user-owned bridge edit\n";
+        fs::write(dir.join("__init__.py"), user).unwrap();
+        let out = task51_command(&f, "unsetup", json_format).output().unwrap();
+        assert_eq!(fs::read(dir.join("__init__.py")).unwrap(), user);
+        assert_eq!(fs::read(manifest).unwrap(), before_manifest);
+        assert_eq!(fs::read(index).unwrap(), before_index);
+        for (path, bytes) in other {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        task51_public_assertions(&out, json_format, &[], &["__init__.py"], true);
+    }
+}
+
+#[test]
+fn task51_public_hermes_removal_reports_foreign_directory_residue() {
+    for json_format in [true, false] {
+        let f = task51_installed();
+        let dir = f.selected_home("work").join("plugins/herdr-threads");
+        let manifest = task51_manifest(&f);
+        let before_manifest = fs::read(&manifest).unwrap();
+        let index = f.scratch.state.join("setup/hermes/selectors-v1.json");
+        let before_index = fs::read(&index).unwrap();
+        fs::write(dir.join("foreign.txt"), b"foreign exact bytes\n").unwrap();
+        let out = task51_command(&f, "unsetup", json_format).output().unwrap();
+        assert_eq!(
+            fs::read(dir.join("foreign.txt")).unwrap(),
+            b"foreign exact bytes\n"
+        );
+        assert_eq!(fs::read(manifest).unwrap(), before_manifest);
+        assert_eq!(fs::read(index).unwrap(), before_index);
+        for name in ["__init__.py", "bridge_config.json", "plugin.yaml"] {
+            assert!(!dir.join(name).exists());
+        }
+        task51_public_assertions(
+            &out,
+            json_format,
+            &["__init__.py", "bridge_config.json", "plugin.yaml"],
+            &["herdr-threads/"],
+            true,
+        );
+        if json_format {
+            assert!(
+                !json(&out)["removed"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("herdr-threads/"))
+            );
+        } else {
+            assert!(
+                !text(&out.stdout)
+                    .lines()
+                    .find(|l| l.starts_with("removed:"))
+                    .unwrap()
+                    .contains("herdr-threads/")
+            );
+        }
+    }
+}
+
+#[test]
+fn task51_public_hermes_clean_and_absent_removal_reports_actual_actions() {
+    for json_format in [true, false] {
+        let f = task51_installed();
+        let manifest = task51_manifest(&f);
+        let out = task51_command(&f, "unsetup", json_format).output().unwrap();
+        assert!(
+            !f.selected_home("work")
+                .join("plugins/herdr-threads")
+                .exists()
+        );
+        assert!(!manifest.exists());
+        task51_public_assertions(
+            &out,
+            json_format,
+            &[
+                "__init__.py",
+                "bridge_config.json",
+                "plugin.yaml",
+                "herdr-threads/",
+            ],
+            &[],
+            false,
+        );
+        let absent = task51_command(&f, "unsetup", json_format).output().unwrap();
+        assert!(
+            !absent.status.success(),
+            "missing recorded selector must refuse"
+        );
+        assert!(!text(&absent.stdout).contains("RemovedOwned"));
+        assert!(
+            !f.selected_home("work")
+                .join("plugins/herdr-threads")
+                .exists()
+        );
+    }
+    // Existing exact-home legacy facade can report absence without selector guessing.
+    use herdr_threads::harness::{adapter::*, registry};
+    let f = HermesScopeFixture::new();
+    let registry = registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let environment = SetupEnvironment {
+        state_dir: Some(f.scratch.state.clone()),
+        ..Default::default()
+    };
+    let result = registration
+        .unsetup(
+            &UnsetupRequest {
+                scope: ResolvedSetupScope::Profile {
+                    name: "work".into(),
+                    home: f.selected_home("work"),
+                },
+                environment,
+            },
+            &herdr_threads::protocol::time::CallBudget {
+                deadline: herdr_threads::protocol::time::MonoInstant(u64::MAX),
+                cancellation: Default::default(),
+            },
+        )
+        .unwrap();
+    assert!(matches!(
+        result.actions.as_slice(),
+        [SetupAction::Unchanged]
+    ));
+    assert_eq!(result.projection["removed"], serde_json::json!([]));
+    assert!(!f.selected_home("work").join("plugins").exists());
+}
+
+fn task51_snapshot(root: &Path) -> Vec<(PathBuf, u64, u32, Option<Vec<u8>>)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut paths: Vec<_> = fs::read_dir(root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    paths.sort();
+    let mut result = Vec::new();
+    for path in paths {
+        // The selected synthetic launcher logs discovery for status; harness stdout
+        // and stderr are predeclared scaffolding. Never open special files to snapshot.
+        if path
+            .file_name()
+            .is_some_and(|n| n == "selected-launcher-calls.jsonl")
+        {
+            continue;
+        }
+        let m = fs::symlink_metadata(&path).unwrap();
+        let bytes = m.is_file().then(|| fs::read(&path).unwrap());
+        result.push((path.clone(), m.ino(), m.mode(), bytes));
+        if m.is_dir() {
+            result.extend(task51_snapshot(&path));
+        }
+    }
+    result
+}
+
+fn task51_bounded(
+    command: &mut Command,
+    log_root: &Path,
+    label: &str,
+) -> (Option<std::process::ExitStatus>, String, String) {
+    use herdr_threads::test_support::spawn::SpawnOwned;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    // Evidence-root authority comes only from the parent-declared task env.
+    // Ordinary runs keep all logs inside the caller's owned Scratch cleanup.
+    let retained = std::env::var_os("HT_TASK51_CHILD_LOG_ROOT").map(PathBuf::from);
+    let parent = retained.as_deref().unwrap_or(log_root);
+    assert!(parent.is_absolute() && fs::symlink_metadata(parent).unwrap().is_dir());
+    let case = parent.join(format!("{label}-{}", uuid::Uuid::new_v4()));
+    fs::DirBuilder::new().mode(0o700).create(&case).unwrap();
+    let log_root = case.as_path();
+    let exclusive = |path: &Path| {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .unwrap()
+    };
+    let stdout = log_root.join(format!("{label}.stdout"));
+    let stderr = log_root.join(format!("{label}.stderr"));
+    command
+        .stdout(Stdio::from(exclusive(&stdout)))
+        .stderr(Stdio::from(exclusive(&stderr)));
+    if retained.is_some() {
+        task51_limit_child_raw_files(command);
+    }
+    let mut child = command.spawn_owned().unwrap();
+    let pid = child.id();
+    eprintln!("task51 enrolled child pid={pid} consumer={label}");
+    // Record actual OS start identity while the enrolled child exists. A fast
+    // refusal may already have exited; preserve UNKNOWN instead of inventing it.
+    let identity_path = log_root.join(format!("{label}.start-identity"));
+    let mut identity_command = herdr_threads::test_support::spawn::command("/bin/ps");
+    identity_command
+        .args(["-p", &pid.to_string(), "-o", "lstart="])
+        .stdout(Stdio::from(exclusive(&identity_path)))
+        .stderr(Stdio::null());
+    if retained.is_some() {
+        task51_limit_child_raw_files(&mut identity_command);
+    }
+    let mut identity_child = identity_command.spawn_owned().unwrap();
+    let identity_deadline = Instant::now() + Duration::from_millis(500);
+    while identity_child.try_wait().unwrap().is_none() && Instant::now() < identity_deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    identity_child.stop();
+    let identity = fs::read_to_string(&identity_path).unwrap();
+    eprintln!(
+        "task51 enrolled child pid={pid} os_start_identity={}",
+        if identity.trim().is_empty() {
+            "UNKNOWN"
+        } else {
+            identity.trim()
+        }
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    // Immediate RAII protection above; explicitly stop/reap before lock proof even
+    // for a completed leader, so no descendant can retain the generation lock.
+    let reaped = child.stop();
+    assert!(reaped.is_some(), "owned child {pid} was not reaped");
+    assert!(child.try_wait().unwrap().is_some());
+    eprintln!(
+        "task51 child pid={pid} consumer={label} completed={} reaped=true",
+        status.is_some()
+    );
+    eprintln!(
+        "task51 child raw directory={} retained={}",
+        log_root.display(),
+        retained.is_some()
+    );
+    for path in [&stdout, &stderr, &identity_path] {
+        let length = fs::metadata(path).unwrap().len();
+        eprintln!("task51 child raw file={} bytes={length}", path.display());
+        // Reaching the file-size cap is adverse output, retained in full. No
+        // truncated-to-success claim; all children are already stopped/reaped.
+        assert!(
+            retained.is_none() || length < 1_048_576,
+            "retained raw output reached 1MiB cap: {}",
+            path.display()
+        );
+    }
+    (
+        status,
+        text(&fs::read(stdout).unwrap()),
+        text(&fs::read(stderr).unwrap()),
+    )
+}
+
+fn task51_limit_child_raw_files(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // Child-only resource limit, before exec; never mutates the test process.
+    // Existing synthetic writes are below MAX. SIGXFSZ/cap attainment is a
+    // recorded adverse run, not a behavioral RED or permission to trim bytes.
+    unsafe {
+        command.pre_exec(|| {
+            let limit = libc::rlimit {
+                rlim_cur: 1_048_576,
+                rlim_max: 1_048_576,
+            };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[test]
+fn task51_lock_probe_child() {
+    let Some(paths) = std::env::var_os("HT_TASK51_LOCK_PROBE") else {
+        return;
+    };
+    use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
+    for path in std::env::split_paths(&paths) {
+        let before = fs::symlink_metadata(&path).unwrap();
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let held = file.metadata().unwrap();
+        assert_eq!((held.dev(), held.ino()), (before.dev(), before.ino()));
+        assert_eq!(
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0,
+            "held lock after refused consumer: {}",
+            path.display()
+        );
+        assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) }, 0);
+    }
+}
+
+fn task51_locks_released(f: &HermesScopeFixture, log_root: &Path) {
+    let paths = [
+        f.scratch.state.join("setup/hermes/.selectors.lock"),
+        f.selected_home("work")
+            .join("plugins/.herdr-threads-operation.lock"),
+    ];
+    let mut probe = herdr_threads::test_support::spawn::command(std::env::current_exe().unwrap());
+    probe
+        .args([
+            "--exact",
+            "setup_cli::task51_lock_probe_child",
+            "--nocapture",
+        ])
+        .env(
+            "HT_TASK51_LOCK_PROBE",
+            std::env::join_paths(&paths).unwrap(),
+        )
+        .env("HOME", &f.scratch.home)
+        .env("CLAUDE_CONFIG_DIR", &f.scratch.claude_config)
+        .env("CODEX_HOME", &f.scratch.codex_home);
+    let (status, stdout, stderr) = task51_bounded(&mut probe, log_root, "lock-probe");
+    assert!(status.is_some_and(|s| s.success()), "{stdout}{stderr}");
+    assert!(
+        stdout.contains("1 passed"),
+        "lock probe did not execute: {stdout}"
+    );
+}
+
+fn task51_target(f: &HermesScopeFixture, name: &str) -> PathBuf {
+    match name {
+        "index-marker" => f.scratch.state.join("setup/hermes/.selectors.identity"),
+        "index" => f.scratch.state.join("setup/hermes/selectors-v1.json"),
+        "physical-marker" => f
+            .selected_home("work")
+            .join("plugins/.herdr-threads-operation.identity"),
+        "manifest" => task51_manifest(f),
+        "helper" => f.scratch.state.join("setup/hermes-runtime-helper.py"),
+        name => f
+            .selected_home("work")
+            .join("plugins/herdr-threads")
+            .join(name),
+    }
+}
+
+#[test]
+fn task51_owned_consumers_refuse_fifo_without_writes_or_held_locks() {
+    use std::ffi::CString;
+    let mut timeouts = Vec::new();
+    for (name, verb) in [
+        ("index-marker", "unsetup"),
+        ("index", "unsetup"),
+        ("physical-marker", "unsetup"),
+        ("physical-marker", "setup-status"),
+        ("manifest", "unsetup"),
+        ("manifest", "setup-status"),
+        ("__init__.py", "unsetup"),
+        ("__init__.py", "setup-status"),
+        ("bridge_config.json", "unsetup"),
+        ("plugin.yaml", "unsetup"),
+        ("helper", "setup"),
+        ("helper", "setup-status"),
+    ] {
+        let f = task51_installed();
+        let path = task51_target(&f, name);
+        fs::remove_file(&path).unwrap();
+        let c_path = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let before = task51_snapshot(&f.scratch.root);
+        let calls = fs::read(&f.calls).unwrap();
+        let logs = Scratch::new();
+        let label = format!("{name}-{verb}");
+        let (status, stdout, stderr) =
+            task51_bounded(&mut task51_command(&f, verb, true), &logs.root, &label);
+        assert_eq!(
+            task51_snapshot(&f.scratch.root),
+            before,
+            "mutated on {label}"
+        );
+        task51_locks_released(&f, &logs.root);
+        if name == "helper" || verb == "unsetup" {
+            assert_eq!(
+                fs::read(&f.calls).unwrap(),
+                calls,
+                "launcher/helper executed before refusal on {label}"
+            );
+        }
+        match status {
+            None => timeouts.push(label),
+            Some(status) => assert!(
+                !status.success(),
+                "special file accepted: {label}: {stdout}{stderr}"
+            ),
+        }
+    }
+    assert!(
+        timeouts.is_empty(),
+        "bounded-completion failed for no-writer FIFO consumers: {timeouts:?}"
+    );
+}
+
+#[test]
+fn task51_owned_read_regular_and_refusal_neighbors() {
+    use std::os::unix::fs::symlink;
+    // Each metadata policy is exercised through its actual caller, including
+    // helper multi-link acceptance versus selector multi-link refusal.
+    for name in [
+        "index-marker",
+        "index",
+        "physical-marker",
+        "manifest",
+        "__init__.py",
+        "bridge_config.json",
+        "plugin.yaml",
+        "helper",
+    ] {
+        for neighbor in [
+            "regular",
+            "missing",
+            "symlink",
+            "directory",
+            "oversize",
+            "public-mode",
+            "hardlink",
+        ] {
+            let f = task51_installed();
+            let path = task51_target(&f, name);
+            let original = fs::read(&path).unwrap();
+            let spare = f.scratch.root.join("neighbor-original");
+            match neighbor {
+                "regular" => {}
+                "missing" => {
+                    fs::remove_file(&path).unwrap();
+                }
+                "symlink" => {
+                    fs::rename(&path, &spare).unwrap();
+                    symlink(&spare, &path).unwrap();
+                }
+                "directory" => {
+                    fs::remove_file(&path).unwrap();
+                    fs::create_dir(&path).unwrap();
+                }
+                "oversize" => {
+                    fs::write(&path, vec![b'x'; 1_048_577]).unwrap();
+                }
+                "public-mode" => {
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+                }
+                "hardlink" => {
+                    fs::hard_link(&path, &spare).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let verb = if name == "helper" {
+                "setup-status"
+            } else {
+                "unsetup"
+            };
+            let logs = Scratch::new();
+            let label = format!("{name}-{neighbor}");
+            let before = task51_snapshot(&f.scratch.root);
+            let calls = fs::read(&f.calls).unwrap();
+            let (status, stdout, stderr) =
+                task51_bounded(&mut task51_command(&f, verb, true), &logs.root, &label);
+            let status = status.unwrap_or_else(|| panic!("neighbor blocked: {label}"));
+            let selector = name == "index" || name == "index-marker";
+            let physical_marker = name == "physical-marker";
+            let asset = ["__init__.py", "bridge_config.json", "plugin.yaml"].contains(&name);
+            let accepted = neighbor == "regular"
+                || (neighbor == "missing" && (asset || name == "helper"))
+                || (neighbor == "public-mode" && !selector && !physical_marker && name != "helper")
+                || (neighbor == "hardlink" && !selector && !physical_marker);
+            assert_eq!(status.success(), accepted, "{label}: {stdout}{stderr}");
+            task51_locks_released(&f, &logs.root);
+            if !accepted {
+                assert_eq!(
+                    task51_snapshot(&f.scratch.root),
+                    before,
+                    "refusal mutated {label}"
+                );
+                if name == "helper" {
+                    assert_eq!(
+                        fs::read(&f.calls).unwrap(),
+                        calls,
+                        "executed refused helper"
+                    );
+                }
+            }
+            if path.is_file() && (name == "helper" || !accepted) && neighbor != "oversize" {
+                assert_eq!(fs::read(&path).unwrap(), original, "{label}");
+            }
+        }
+    }
+}
+
 /// Foreground settings remain user-owned; setup only inspects and advises.
 #[test]
 fn foreground_setup_and_status_inspect_both_harnesses_without_editing_flags() {
@@ -2664,6 +3999,19 @@ fn foreground_setup_and_status_inspect_both_harnesses_without_editing_flags() {
         let all = s.run(&args);
         assert!(all.status.success());
         for entry in json(&all)["harnesses"].as_array().unwrap() {
+            if !matches!(entry["harness"].as_str(), Some("claude" | "codex")) {
+                assert!(entry["report"]["foreground"].is_null());
+                assert!(
+                    !entry["report"]["warnings"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|warning| warning
+                            .as_str()
+                            .is_some_and(|s| s.starts_with("Foreground user settings")))
+                );
+                continue;
+            }
             assert!(entry["report"]["foreground"].is_object());
             let warnings = entry["report"]["warnings"].as_array().unwrap();
             let mut unique = warnings.iter().map(|v| v.to_string()).collect::<Vec<_>>();
@@ -2882,13 +4230,16 @@ fn setup_claude_hands_the_mod_the_hooks_invocation() {
     .unwrap();
     assert_eq!(rendered["argv"], serde_json::json!(hooks));
     assert!(Path::new(hooks[0].as_str()).is_absolute(), "{hooks:?}");
+    // The hooks name the host endpoint as the runtime context resolves it
+    // (its directory canonicalized).
+    let host = s.root.canonicalize().unwrap().join("host.sock");
     assert_eq!(
         hooks[1..],
         [
             "--state-dir",
             s.state.to_str().unwrap(),
             "--host-endpoint",
-            s.host().to_str().unwrap()
+            host.to_str().unwrap()
         ]
     );
 
@@ -3317,4 +4668,47 @@ fn setup_status_reports_the_claude_version_gate() {
         absent["claude_version_reason"],
         "no claude executable found"
     );
+}
+
+/// Catches malformed fresh handoff options reaching caller/daemon resolution first.
+#[test]
+fn stage_a_handoff_malformed_options_refuse_before_caller_connection() {
+    use herdr_threads::test_support::spawn::SpawnOwned;
+    for (harness, variable) in [
+        ("codex", "HERDR_THREADS_CODEX_OPTS"),
+        ("claude", "HERDR_THREADS_CLAUDE_OPTS"),
+    ] {
+        let s = Scratch::new();
+        let mut command = s.command(&s.root);
+        command
+            .arg("--state-dir")
+            .arg(&s.state)
+            .arg("--host-endpoint")
+            .arg(s.host())
+            .args([
+                "handoff",
+                "--new-thread",
+                "--pane",
+                "w1:p2",
+                "--kind",
+                harness,
+                "--",
+                "durable body",
+            ])
+            .env(variable, "'unterminated")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let output = command.spawn_owned().unwrap().wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let stderr = text(&output.stderr);
+        assert!(
+            stderr.contains(&format!("{variable} has invalid argument quoting")),
+            "{stderr}"
+        );
+        assert!(!s.state.exists());
+        assert!(!s.host().exists());
+        assert!(!s.settings().exists());
+        assert!(!s.hooks().exists());
+    }
 }

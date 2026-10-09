@@ -1,0 +1,120 @@
+{
+  "qualified": {
+    "platform": "cli",
+    "session_id": "session-Ω",
+    "parent_session_id": "",
+    "turn_id": "turn-1",
+    "task_id": "task-1",
+    "user_message": "PRIVATE USER",
+    "conversation_history": [
+      {
+        "content": "PRIVATE HISTORY"
+      }
+    ],
+    "is_first_turn": false,
+    "model": "fixture-model",
+    "sender_id": "sender-1",
+    "telemetry_schema_version": "hermes.observer.v1"
+  },
+  "child": {
+    "platform": "subagent",
+    "session_id": "child",
+    "parent_session_id": "session-Ω",
+    "turn_id": "turn-child",
+    "task_id": "task-child",
+    "user_message": "PRIVATE CHILD USER",
+    "conversation_history": [],
+    "is_first_turn": true,
+    "model": "fixture-model",
+    "sender_id": "",
+    "telemetry_schema_version": "hermes.observer.v1"
+  },
+  "tool": {
+    "session_id": "session-Ω",
+    "turn_id": "turn-1",
+    "tool_call_id": "tool-1",
+    "args": {
+      "secret": "PRIVATE ARG"
+    },
+    "result": "PRIVATE RESULT",
+    "error": "PRIVATE ERROR",
+    "task_id": "task-1",
+    "api_request_id": "request-1",
+    "tool_name": "fixture-tool",
+    "duration_ms": 1,
+    "status": "error",
+    "error_type": "fixture_error",
+    "error_message": "PRIVATE ERROR BODY",
+    "middleware_trace": [
+      {
+        "content": "PRIVATE TRACE"
+      }
+    ],
+    "telemetry_schema_version": "hermes.observer.v1"
+  },
+  "reset": {
+    "session_id": "session-Ω",
+    "reason": "new_session",
+    "history": "PRIVATE RESET",
+    "platform": "cli",
+    "telemetry_schema_version": "hermes.observer.v1"
+  },
+  "bridge_schema": {
+    "schema_version": 1,
+    "harness": "hermes",
+    "discriminator": "callback",
+    "callbacks": [
+      "on_session_reset",
+      "on_session_start",
+      "post_tool_call",
+      "pre_llm_call"
+    ],
+    "fields": {
+      "schema_version": "integer",
+      "callback": "string",
+      "platform": "string_or_null",
+      "session_id": "string_or_null",
+      "parent_session_id": "string_or_null",
+      "task_id": "string_or_null",
+      "turn_id": "string_or_null",
+      "tool_call_id": "string_or_null",
+      "api_request_id": "string_or_null",
+      "event_id": "string",
+      "observation_order": "object",
+      "started_at": "integer",
+      "deadline_at": "integer",
+      "reset_reason": "string_or_null",
+      "runtime_identity": "object_or_null",
+      "identity_unavailable_reason": "string_or_null",
+      "shape": "object",
+      "bridge_schema_contract_id": "string",
+      "startup_capture": "object",
+      "timeout_observation": "object",
+      "role_association": "object_or_null"
+    },
+    "shape_fields": [
+      "api_request_id",
+      "parent_session_id",
+      "platform",
+      "session_id",
+      "task_id",
+      "tool_call_id",
+      "turn_id"
+    ],
+    "presence": [
+      "missing",
+      "present"
+    ],
+    "types": [
+      "absent",
+      "array",
+      "boolean",
+      "null",
+      "number",
+      "object",
+      "other",
+      "string"
+    ]
+  },
+  "bridge_schema_contract_id": "3f599002572f0efc"
+}

@@ -37,6 +37,197 @@ const T0: i64 = 1_000 * HOUR_MS;
 const CONTRACT: &str = "0123456789abcdef";
 const NEW_CONTRACT: &str = "fedcba9876543210";
 
+// These are separate real Store fixtures so overflow cannot hide the expiry
+// regression in RED. Status lines must share the complete wire-vector budget.
+#[test]
+fn health_current_diagnostics_expire_and_cap_after_status_without_losing_rollup() {
+    use crate::harness::adapter::DaemonObservation;
+    use crate::protocol::results::CommandResult;
+    use crate::store::harness_evidence::DiagnosticRecord;
+    let mut failures = Vec::new();
+    for (label, count, status) in [
+        (
+            "seventeen",
+            17,
+            HarnessStatus::NotInstalled("fixture absent".into()),
+        ),
+        (
+            "status-sixteen",
+            16,
+            HarnessStatus::PresentUnqualified {
+                detail: "qualification unavailable".into(),
+            },
+        ),
+        ("expired", 1, HarnessStatus::Supported("listed".into())),
+    ] {
+        let fx = Fx::new(&format!("hhs-current-{label}"));
+        let event = "E".repeat(63);
+        for index in 0..count {
+            let session = format!("session-{index:02}");
+            let field = format!("fresh_{index:02}_{}", "界".repeat(39));
+            fx.store
+                .record_contract_diagnostic(
+                    &DiagnosticRecord {
+                        harness: "claude",
+                        session_id: &session,
+                        contract_id: CONTRACT,
+                        event: &event,
+                        field: &field,
+                    },
+                    &budget(),
+                )
+                .unwrap();
+            fx.advance(1);
+        }
+        if label == "expired" {
+            fx.advance(48 * HOUR_MS);
+        }
+        let provider = fx.provider().with_observations(Box::new(move || {
+            Ok([(
+                "claude".into(),
+                DaemonObservation {
+                    status: status.clone(),
+                    ..Default::default()
+                },
+            )]
+            .into())
+        }));
+        let retained = fx.store.contract_diagnostics("claude", &budget()).unwrap();
+        assert_eq!(
+            retained.len(),
+            count,
+            "current projection must preserve history"
+        );
+        match provider.report_v2(&budget()) {
+            Err(error) => failures.push(format!(
+                "{label}: report_v2 {:?}: {}",
+                error.code, error.detail
+            )),
+            Ok(report) => {
+                let entry = &report.harnesses["claude"];
+                report.validate().unwrap();
+                let result = CommandResult::HarnessHealthV2(report.clone());
+                assert_eq!(
+                    serde_json::from_slice::<CommandResult>(&serde_json::to_vec(&result).unwrap())
+                        .unwrap(),
+                    result
+                );
+                assert!(entry.limitations.len() <= 16);
+                assert!(entry.notes.len() <= 16);
+                if label == "seventeen" {
+                    assert_eq!(
+                        entry.notes,
+                        ["executable not found in the daemon environment"]
+                    );
+                }
+                assert!(
+                    entry
+                        .limitations
+                        .iter()
+                        .chain(&entry.notes)
+                        .all(|s| s.len() <= 256)
+                );
+                if label == "expired" {
+                    if !entry.limitations.is_empty() {
+                        failures.push(format!(
+                            "expired: current limitations contain retained history: {:?}",
+                            entry.limitations
+                        ));
+                    }
+                } else {
+                    assert_eq!(entry.limitations.len(), 16);
+                    assert!(
+                        entry.limitations[0].contains(&format!("fresh_{:02}_", count - 1)),
+                        "newest diagnostic must retain priority"
+                    );
+                    if label == "status-sixteen" {
+                        assert!(
+                            entry.limitations.last().unwrap().contains("fresh_00_"),
+                            "diagnostics retain newest-first priority over status; status is also present on the axes"
+                        );
+                        assert_eq!(
+                            entry.admission.detail.as_deref(),
+                            Some("qualification unavailable")
+                        );
+                    }
+                }
+            }
+        }
+        match provider.health_lines(&budget()) {
+            Err(error) => failures.push(format!(
+                "{label}: legacy Health {:?}: {}",
+                error.code, error.detail
+            )),
+            Ok(lines) => {
+                let mut inputs = ready_inputs();
+                inputs.harness_version_lines = lines.clone();
+                let health = inputs.assemble();
+                health.validate().unwrap();
+                if label == "expired" {
+                    assert!(lines.is_empty());
+                    assert_eq!(health.state, HealthState::Healthy);
+                    assert!(
+                        provider.report(&budget()).unwrap().harnesses[0]
+                            .unattributed
+                            .is_some(),
+                        "history remains explicit and timestamped"
+                    );
+                } else {
+                    assert_eq!(lines.len(), 1);
+                    assert!(lines[0].contains(&format!("fresh_{:02}_", count - 1)));
+                    assert!(lines[0].len() <= 256);
+                    assert_eq!(health.state, HealthState::Degraded);
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn health_current_diagnostic_window_is_inclusive_and_history_stays_retained() {
+    use crate::store::harness_evidence::DiagnosticRecord;
+    let fx = Fx::new("hhs-current-boundary");
+    fx.store
+        .record_contract_diagnostic(
+            &DiagnosticRecord {
+                harness: "claude",
+                session_id: "boundary",
+                contract_id: CONTRACT,
+                event: "PreToolUse",
+                field: "boundary_field",
+            },
+            &budget(),
+        )
+        .unwrap();
+    let provider = fx
+        .provider()
+        .with_observations(Box::new(|| Ok(Default::default())));
+    fx.advance(24 * HOUR_MS);
+    assert!(
+        provider.report_v2(&budget()).unwrap().harnesses["claude"]
+            .limitations
+            .iter()
+            .any(|s| s.contains("boundary_field"))
+    );
+    assert_eq!(provider.health_lines(&budget()).unwrap().len(), 1);
+    fx.advance(1);
+    assert!(
+        !provider.report_v2(&budget()).unwrap().harnesses["claude"]
+            .limitations
+            .iter()
+            .any(|s| s.contains("boundary_field"))
+    );
+    assert!(provider.health_lines(&budget()).unwrap().is_empty());
+    assert_eq!(
+        fx.store
+            .contract_diagnostics("claude", &budget())
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 struct TestClock(AtomicI64);
 impl Clock for TestClock {
     fn utc_now(&self) -> UtcMillis {
@@ -696,66 +887,555 @@ fn failing_evidence_store_shows_the_unavailable_limitation() {
     assert_eq!(harness_version_lines(&ok), vec!["x".to_owned()]);
 }
 
-// Catches loss across daemon/store reopen and success overwriting the first failure.
+// Catches missing v2 provider, cached install becoming profile callback evidence,
+// loss of exact build identity, and stale/local violation verdict promotion.
 #[test]
-fn task3_versionless_violation_survives_reopen_and_success_without_version_rows() {
-    let fx = Fx::new("task3-sticky");
-    let mut note = HarnessEvidence {
-        harness: "codex".into(),
-        version: None,
-        unattributed_reason: Some("runtime metadata unavailable".into()),
-        contract_id: CONTRACT.into(),
-        event: "PreToolUse".into(),
-        outcome: HarnessEvidenceOutcome::Violation {
-            field: "session_id".into(),
+fn health_v2_cached_install_and_exact_runtime_scopes_remain_separate() {
+    use crate::{
+        harness::{
+            registry,
+            runtime::{RuntimeDescriptor, RuntimeIdentity},
         },
-        session_id: Some("session-a".into()),
+        protocol::results::{HarnessHealthScope, RuntimeEvidenceState},
+        store::harness_evidence::{EvidenceOutcome, EvidenceRecordV2},
     };
-    assert!(!fx.recorder.record(&note, &budget()).unwrap());
-    fx.advance(1000);
-    note.event = "PostToolUse".into();
-    note.outcome = HarnessEvidenceOutcome::Violation {
-        field: "tool_input.command".into(),
-    };
-    assert!(!fx.recorder.record(&note, &budget()).unwrap());
-    note.outcome = HarnessEvidenceOutcome::Ok;
-    assert!(!fx.recorder.record(&note, &budget()).unwrap());
-    let reopened = Arc::new(
-        SqliteStore::new(
-            StoreContext::new(fx._iso.state_root().join("store.db"), fx.clock.clone()),
-            "i",
-            StoreSettings::default(),
+    let fx = Fx::new("hhs-v2-exact");
+    let registration = registry::builtins()
+        .by_id(registry::builtins().agent("claude").unwrap())
+        .unwrap();
+    let descriptor = &registration.contracts()[0];
+    let identity = RuntimeIdentity::build(RuntimeDescriptor {
+        release_version: Some("2.1.286".into()),
+        source: "fixture".into(),
+        base_version: Some("2.1.286".into()),
+        derived_version: Some("2.1.286+7.gabcdef0".into()),
+        commit: Some("a".repeat(40)),
+        dirty: Some(false),
+        distance: Some(7),
+    })
+    .unwrap();
+    for event in ["SessionStart", "PreToolUse"] {
+        fx.store
+            .record_harness_evidence_v2(
+                &EvidenceRecordV2 {
+                    identity: &identity,
+                    descriptor,
+                    event,
+                    outcome: &EvidenceOutcome::Ok,
+                    qualified: true,
+                },
+                &budget(),
+            )
+            .unwrap();
+    }
+    let provider = fx.provider().with_observations(Box::new(|| {
+        Ok([(
+            "claude".into(),
+            crate::harness::adapter::DaemonObservation {
+                status: HarnessStatus::Cooperative {
+                    detail: "installed listed".into(),
+                    live_unverified: false,
+                },
+                ..Default::default()
+            },
+        )]
+        .into())
+    }));
+    let report = provider
+        .report_v2(&budget())
+        .expect("implemented rich health provider");
+    let entry = &report.harnesses["claude"];
+    assert_eq!(entry.scope, HarnessHealthScope::daemon_default());
+    assert_eq!(
+        entry.enablement.state,
+        crate::protocol::results::EnablementState::Unknown
+    );
+    assert_eq!(
+        entry.callback_observation.state,
+        crate::protocol::results::CallbackObservationState::Unknown,
+        "aggregate runtime evidence cannot prove default-profile callback"
+    );
+    assert_eq!(entry.runtime_evidence.len(), 1);
+    let row = &entry.runtime_evidence[0];
+    assert_eq!(row.identity, identity);
+    assert_eq!(row.state, RuntimeEvidenceState::Working);
+    assert_eq!(row.scope, HarnessHealthScope::all_runtime_scopes());
+    assert!(
+        row.source.contains("unclassified"),
+        "local milestone success cannot manufacture no_model/live stage"
+    );
+    assert!(
+        provider.report(&budget()).unwrap().harnesses[0]
+            .versions
+            .is_empty(),
+        "build-only rich row leaked into legacy semver collection"
+    );
+    fx.store
+        .record_harness_evidence_v2(
+            &EvidenceRecordV2 {
+                identity: &identity,
+                descriptor,
+                event: "PreToolUse",
+                outcome: &EvidenceOutcome::Violation {
+                    field: "tool_input.command".into(),
+                },
+                qualified: true,
+            },
+            &budget(),
         )
-        .unwrap(),
-    );
-    let provider = HarnessStatesProvider::new(
-        reopened.clone(),
-        crate::daemon::harness_states::embedded_source(),
-        fx.clock.clone(),
-        Box::new(|_| None),
-        None,
-    );
-    assert!(
-        reopened
-            .harness_evidence_all("codex", &budget())
-            .unwrap()
-            .is_empty()
-    );
-    let report = provider.report(&budget()).unwrap();
-    let codex = &report.harnesses[1];
-    assert!(codex.versions.is_empty());
-    assert!(codex.detected.is_none());
-    let reason = &codex.unattributed.as_ref().unwrap().reason;
-    assert!(
-        reason.contains("PreToolUse") && reason.contains("session_id"),
-        "{reason}"
+        .unwrap();
+    assert_eq!(
+        provider.report_v2(&budget()).unwrap().harnesses["claude"].runtime_evidence[0].state,
+        RuntimeEvidenceState::Broken
     );
     let lines = provider.health_lines(&budget()).unwrap();
+    assert_eq!(
+        lines.len(),
+        1,
+        "rich broken runtime must reach actual overall Health lines"
+    );
+    assert!(lines[0].contains(&identity.key));
+    let mut overall = ready_inputs();
+    overall.harness_version_lines = lines;
+    assert_eq!(overall.assemble().state, HealthState::Degraded);
+}
+
+// Catches the public display cap hiding a retained current-window rich violation.
+#[test]
+fn health_v2_broken_twenty_first_row_still_degrades_overall_health() {
+    use crate::{
+        harness::{registry, runtime::RuntimeIdentity},
+        protocol::results::RuntimeEvidenceState,
+        store::harness_evidence::{EvidenceOutcome, EvidenceRecordV2},
+    };
+    let fx = Fx::new("hhs-v2-broken-outside-cap");
+    let registration = registry::builtins()
+        .by_id(registry::builtins().agent("claude").unwrap())
+        .unwrap();
+    let descriptor = &registration.contracts()[0];
+    let broken = RuntimeIdentity::stable_release("9.0.0", "fixture").unwrap();
+    fx.store
+        .record_harness_evidence_v2(
+            &EvidenceRecordV2 {
+                identity: &broken,
+                descriptor,
+                event: "PreToolUse",
+                outcome: &EvidenceOutcome::Violation {
+                    field: "tool_input.command".into(),
+                },
+                qualified: true,
+            },
+            &budget(),
+        )
+        .unwrap();
+    for minor in 1..=20 {
+        fx.advance(1);
+        let identity = RuntimeIdentity::stable_release(&format!("9.{minor}.0"), "fixture").unwrap();
+        fx.store
+            .record_harness_evidence_v2(
+                &EvidenceRecordV2 {
+                    identity: &identity,
+                    descriptor,
+                    event: "PreToolUse",
+                    outcome: &EvidenceOutcome::Ok,
+                    qualified: true,
+                },
+                &budget(),
+            )
+            .unwrap();
+    }
+    let provider = fx
+        .provider()
+        .with_observations(Box::new(|| Ok(Default::default())));
+    let report = provider.report_v2(&budget()).unwrap();
+    let rows = &report.harnesses["claude"].runtime_evidence;
+    assert_eq!(rows.len(), 20, "public report must remain capped");
     assert!(
-        lines
+        rows.iter()
+            .all(|row| row.state != RuntimeEvidenceState::Broken)
+    );
+    assert!(
+        provider.report(&budget()).unwrap().harnesses[0]
+            .versions
+            .is_empty()
+    );
+    let mut overall = ready_inputs();
+    overall.harness_version_lines = provider.health_lines(&budget()).unwrap();
+    let health = overall.assemble();
+    assert_eq!(
+        health.state,
+        HealthState::Degraded,
+        "display truncation must not erase a retained rich violation"
+    );
+    assert!(
+        health
+            .limitations
             .iter()
-            .any(|line| line.contains("PreToolUse") && line.contains("session_id")),
-        "{lines:?}"
+            .any(|line| line.contains("9.0.0") && line.contains("broken"))
+    );
+}
+
+// Catches a generic registered installation failure silently leaving old Health healthy.
+#[test]
+fn generic_cached_install_failure_degrades_overall_health_with_bounded_note() {
+    let mut inputs = ready_inputs();
+    inputs.additional_harnesses = vec![("fourth".into(), HarnessStatus::Refused("x".repeat(2000)))];
+    let health = inputs.assemble();
+    assert_eq!(
+        health.state,
+        HealthState::Degraded,
+        "registered adapter failure cannot be omitted from overall health"
+    );
+    assert!(
+        health
+            .limitations
+            .iter()
+            .any(|line| line.starts_with("harness fourth unsupported: "))
+    );
+    health.validate().unwrap();
+    let mut inputs = ready_inputs();
+    inputs.additional_harnesses = vec![(
+        "fourth".into(),
+        HarnessStatus::NotInstalled("absent".into()),
+    )];
+    let health = inputs.assemble();
+    assert_eq!(health.state, HealthState::Healthy);
+    assert!(
+        health
+            .notes
+            .iter()
+            .any(|line| line.starts_with("harness fourth not installed:"))
+    );
+}
+
+// Catches fixed-pair iteration, native discovery in a health request, cross-domain
+// milestone credit and converting rich-only build metadata into old semver wires.
+#[test]
+fn health_v2_fourth_adapter_is_cached_and_domains_have_no_legacy_projection() {
+    use crate::{
+        app::{AdmissionReobserver, health_v2_observer_tests::counting_with_contracts},
+        harness::{
+            adapter::{ContractDomain, InstallEnvironment},
+            evidence::EvidenceOrigin,
+            registry::{Registration, Registry},
+            runtime::{RuntimeDescriptor, RuntimeIdentity},
+        },
+        protocol::{
+            results::{CommandResult, RuntimeEvidenceState},
+            wire::{PROTOCOL_VERSION, WireResponse},
+        },
+        store::harness_evidence::{EvidenceOutcome, EvidenceRecordV2},
+    };
+    let fx = Fx::new("hhs-v2-fourth");
+    let original = crate::harness::registry::builtins().registrations()[0].contracts()[0];
+    let mut native = original;
+    native.contract = Box::leak(Box::new(crate::harness::contract::HarnessContract {
+        harness: "fourth",
+        ..*original.contract
+    }));
+    native.domain_id = "native_shape";
+    native.origin = EvidenceOrigin::NativeShapeObservation;
+    let mut bridge = native;
+    bridge.domain_id = "bridge_envelope";
+    bridge.origin = EvidenceOrigin::BridgeEnvelope;
+    bridge.domain = ContractDomain::Bridge;
+    let contracts = Box::leak(vec![native, bridge].into_boxed_slice());
+    let adapter = counting_with_contracts("fourth", contracts);
+    let registry = Box::leak(Box::new(
+        Registry::new(Box::leak(
+            vec![Registration::new(adapter)].into_boxed_slice(),
+        ))
+        .unwrap(),
+    ));
+    let observer = AdmissionReobserver::with_registry(
+        registry,
+        InstallEnvironment {
+            clock: fx.clock.clone(),
+            path: None,
+            config_root: None,
+            state_dir: None,
+        },
+        std::time::Duration::from_millis(50),
+        Arc::new(|_| {}),
+    );
+    let cached = observer.pass(&Cancellation::default()).entries;
+    let identity = RuntimeIdentity::build(RuntimeDescriptor {
+        release_version: Some("2.1.286".into()),
+        source: "fixture".into(),
+        base_version: None,
+        derived_version: None,
+        commit: None,
+        dirty: None,
+        distance: None,
+    })
+    .unwrap();
+    for (descriptor, events) in [
+        (&contracts[0], &["SessionStart", "PreToolUse"][..]),
+        (&contracts[1], &["SessionStart"][..]),
+    ] {
+        for event in events {
+            fx.store
+                .record_harness_evidence_v2(
+                    &EvidenceRecordV2 {
+                        identity: &identity,
+                        descriptor,
+                        event,
+                        outcome: &EvidenceOutcome::Ok,
+                        qualified: true,
+                    },
+                    &budget(),
+                )
+                .unwrap();
+        }
+    }
+    let provider = fx
+        .provider()
+        .with_registry(registry)
+        .with_observations(Box::new(move || Ok(cached.clone())));
+    let report = provider.report_v2(&budget()).unwrap();
+    provider.report_v2(&budget()).unwrap();
+    assert_eq!(
+        adapter.calls.load(Ordering::SeqCst),
+        1,
+        "actual health requests must never invoke native observation"
+    );
+    let entry = &report.harnesses["fourth"];
+    let native = entry
+        .runtime_evidence
+        .iter()
+        .find(|r| r.domain == "native_shape")
+        .unwrap();
+    let bridge = entry
+        .runtime_evidence
+        .iter()
+        .find(|r| r.domain == "bridge_envelope")
+        .unwrap();
+    assert_eq!(native.state, RuntimeEvidenceState::Working);
+    assert_eq!(bridge.state, RuntimeEvidenceState::New);
+    assert_eq!(
+        entry.callback_observation.state,
+        crate::protocol::results::CallbackObservationState::Unknown
+    );
+    let legacy = provider.report(&budget()).unwrap();
+    assert_eq!(legacy.harnesses.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&legacy).unwrap(),
+        json!({"harnesses":[{"harness":"fourth","contract_id":null,"detected":null,"versions":[],"unattributed":null,"hook_parse_failures":0}]})
+    );
+    let response = WireResponse {
+        version: PROTOCOL_VERSION,
+        request_id: "fourth".into(),
+        instance: uuid::Uuid::new_v4().to_string(),
+        daemon_boot: uuid::Uuid::new_v4().to_string(),
+        result: Ok(CommandResult::HarnessHealthV2(report)),
+    };
+    assert_eq!(
+        serde_json::from_str::<WireResponse>(&serde_json::to_string(&response).unwrap()).unwrap(),
+        response
+    );
+}
+
+// Catches an unreadable bounded store or poisoned cache being fabricated as empty Working.
+#[test]
+fn health_v2_store_cache_and_expired_budget_fail_explicitly() {
+    let fx = Fx::new("hhs-v2-unavailable");
+    let provider = fx
+        .provider()
+        .with_observations(Box::new(|| Ok(Default::default())));
+    let mut expired = budget();
+    expired.deadline = MonoInstant(1);
+    assert_eq!(
+        provider.report_v2(&expired).unwrap_err().code,
+        crate::protocol::results::ErrorCode::DeadlineExceeded
+    );
+    assert_eq!(
+        provider.health_lines(&expired).unwrap_err().code,
+        crate::protocol::results::ErrorCode::DeadlineExceeded
+    );
+    let cancelled = budget();
+    cancelled.cancellation.cancel();
+    assert_eq!(
+        provider.report_v2(&cancelled).unwrap_err().code,
+        crate::protocol::results::ErrorCode::Cancelled
+    );
+    assert_eq!(
+        provider.health_lines(&cancelled).unwrap_err().code,
+        crate::protocol::results::ErrorCode::Cancelled
+    );
+    let poisoned = fx.provider().with_observations(Box::new(|| {
+        Err(crate::protocol::results::ApiError::new(
+            crate::protocol::results::ErrorCode::StoreBusy,
+            "cached observations unavailable",
+        ))
+    }));
+    assert!(poisoned.report_v2(&budget()).is_err());
+    assert!(poisoned.health_lines(&budget()).is_err());
+    let db = rusqlite::Connection::open(fx._iso.state_root().join("store.db")).unwrap();
+    db.execute_batch("DROP TABLE harness_contract_evidence_v2")
+        .unwrap();
+    assert!(provider.report_v2(&budget()).is_err());
+    assert!(provider.health_lines(&budget()).is_err());
+}
+
+fn health_runtime_manifest(
+    identity: &crate::harness::runtime::RuntimeIdentity,
+    stale: bool,
+    stage: &str,
+) -> Manifest {
+    let descriptor = crate::harness::registry::builtins().registrations()[0].contracts()[0];
+    let contract = if stale {
+        "0000000000000000".into()
+    } else {
+        descriptor.contract_id_v2().unwrap()
+    };
+    let known_broken = stage == "source_captured";
+    manifest::parse(&serde_json::to_vec(&json!({
+        "schema_version":2, "generated_at":null, "latest_release":null, "contracts":{}, "rows":[],
+        "runtime_contracts":{"claude":[{"domain":descriptor.domain_id,"origin":descriptor.origin,"id":contract,
+            "events":descriptor.events.iter().map(|e| json!({"event":e.native_event,"milestone":e.milestone,"always_send":e.always_send})).collect::<Vec<_>>(), "required_milestones":descriptor.required_milestones}]},
+        "runtime_rows":[{"harness":"claude","identity":identity,"domain":descriptor.domain_id,"origin":descriptor.origin,"contract_id":contract,
+            "status":if known_broken {"known_broken"} else {"verified"}, "evidence_stage":stage,"source":"manual", "required_milestones":descriptor.required_milestones,"successful_milestones":if known_broken {vec![]} else {descriptor.required_milestones.to_vec()}, "broken_event":known_broken.then_some("PreToolUse"),"broken_field":known_broken.then_some("tool_name"),"supported_since":null,"issue_url":null,"last_seen_at":T0 as u64}]
+    })).unwrap()).unwrap()
+}
+
+// Catches historical manifest collection being used as an authority, losing stage/source,
+// or promoting exact build release text into recipe/legacy facts.
+#[test]
+fn health_v2_manifest_verdicts_require_current_descriptor_and_keep_evidence_stage() {
+    use crate::{
+        harness::runtime::{RuntimeDescriptor, RuntimeIdentity},
+        protocol::results::RuntimeEvidenceState,
+    };
+    let fx = Fx::new("hhs-v2-manifest");
+    let identity = RuntimeIdentity::build(RuntimeDescriptor {
+        release_version: Some("2.1.286".into()),
+        source: "fixture".into(),
+        base_version: None,
+        derived_version: None,
+        commit: None,
+        dirty: None,
+        distance: None,
+    })
+    .unwrap();
+    let provider = fx
+        .provider()
+        .with_observations(Box::new(|| Ok(Default::default())));
+    for (stage, expected) in [
+        ("source_captured", RuntimeEvidenceState::Broken),
+        ("no_model", RuntimeEvidenceState::Working),
+        ("live", RuntimeEvidenceState::Working),
+    ] {
+        *fx.manifest.lock().unwrap() = Arc::new(health_runtime_manifest(&identity, false, stage));
+        let report = provider.report_v2(&budget()).unwrap();
+        let row = &report.harnesses["claude"].runtime_evidence[0];
+        assert_eq!(row.identity, identity);
+        assert_eq!(row.state, expected);
+        assert_eq!(row.source, format!("manifest manual ({stage})"));
+    }
+    *fx.manifest.lock().unwrap() = Arc::new(health_runtime_manifest(&identity, true, "no_model"));
+    let report = provider.report_v2(&budget()).unwrap();
+    let row = &report.harnesses["claude"].runtime_evidence[0];
+    assert_eq!(
+        row.state,
+        RuntimeEvidenceState::Unavailable,
+        "historical/stale descriptor row cannot be Working"
+    );
+    assert_eq!(row.identity, identity);
+    assert!(
+        provider.report(&budget()).unwrap().harnesses[0]
+            .versions
+            .is_empty()
+    );
+}
+
+// Catches unbounded rollup, time-order reversal and unstable equal-time tie ordering.
+#[test]
+fn health_v2_runtime_rows_are_bounded_newest_then_identity_domain_contract() {
+    use crate::{
+        harness::{registry, runtime::RuntimeIdentity},
+        store::harness_evidence::{EvidenceOutcome, EvidenceRecordV2},
+    };
+    let fx = Fx::new("hhs-v2-cap-rows");
+    let descriptor = &registry::builtins().registrations()[0].contracts()[0];
+    let mut newest = String::new();
+    for patch in 0..25 {
+        let identity =
+            RuntimeIdentity::stable_release(&format!("999.0.{patch}"), "native_transcript")
+                .unwrap();
+        fx.advance(1);
+        fx.store
+            .record_harness_evidence_v2(
+                &EvidenceRecordV2 {
+                    identity: &identity,
+                    descriptor,
+                    event: "SessionStart",
+                    outcome: &EvidenceOutcome::Ok,
+                    qualified: true,
+                },
+                &budget(),
+            )
+            .unwrap();
+        newest = identity.key;
+    }
+    let provider = fx
+        .provider()
+        .with_observations(Box::new(|| Ok(Default::default())));
+    let report = provider.report_v2(&budget()).unwrap();
+    let rows = &report.harnesses["claude"].runtime_evidence;
+    assert_eq!(rows.len(), 20);
+    assert_eq!(rows[0].identity.key, newest);
+    assert_eq!(rows[19].identity.key, "release:999.0.5");
+    for version in ["999.1.1", "999.1.0"] {
+        let identity = RuntimeIdentity::stable_release(version, "native_transcript").unwrap();
+        fx.store
+            .record_harness_evidence_v2(
+                &EvidenceRecordV2 {
+                    identity: &identity,
+                    descriptor,
+                    event: "SessionStart",
+                    outcome: &EvidenceOutcome::Ok,
+                    qualified: true,
+                },
+                &budget(),
+            )
+            .unwrap();
+    }
+    let report = provider.report_v2(&budget()).unwrap();
+    let rows = &report.harnesses["claude"].runtime_evidence;
+    assert_eq!(rows[0].identity.key, "release:999.0.24");
+    assert_eq!(rows[1].identity.key, "release:999.1.0");
+    assert_eq!(rows[2].identity.key, "release:999.1.1");
+}
+
+// Catches a cooperative note inventing runtime recipe admission.
+#[test]
+fn task3_versionless_health_cooperation_does_not_claim_runtime_admission() {
+    let mut inputs = ready_inputs();
+    inputs.claude = HarnessStatus::ContractDeclared {
+        detail: "contract_declared; runtime metadata unavailable".into(),
+    };
+    let health = inputs.assemble();
+    assert_eq!(
+        health.harness.claude,
+        crate::protocol::results::HarnessState::Cooperative
+    );
+    assert_eq!(health.state, HealthState::Healthy);
+    assert!(health.limitations.is_empty());
+    let note = health
+        .notes
+        .iter()
+        .find(|line| line.starts_with("receipt cooperative:"))
+        .unwrap();
+    assert!(note.contains("cooperative_top_level"));
+    assert!(
+        !note.contains("admitted recipe") && !note.contains("admitted:"),
+        "{note}"
+    );
+    assert!(
+        health
+            .notes
+            .iter()
+            .any(|line| line.contains("runtime metadata unavailable"))
     );
 }
 
@@ -838,35 +1518,302 @@ fn task3_versionless_missing_empty_session_and_malformed_never_create_identity()
     );
 }
 
-// Catches a cooperative note inventing runtime recipe admission.
+// Catches loss across daemon/store reopen and success overwriting the first failure.
 #[test]
-fn task3_versionless_health_cooperation_does_not_claim_runtime_admission() {
-    let mut inputs = ready_inputs();
-    inputs.claude = HarnessStatus::Cooperative {
-        detail: "contract_declared; runtime metadata unavailable".into(),
-        live_unverified: false,
+fn task3_versionless_violation_survives_reopen_and_success_without_version_rows() {
+    let fx = Fx::new("task3-sticky");
+    let mut note = HarnessEvidence {
+        harness: "codex".into(),
+        version: None,
+        unattributed_reason: Some("runtime metadata unavailable".into()),
+        contract_id: CONTRACT.into(),
+        event: "PreToolUse".into(),
+        outcome: HarnessEvidenceOutcome::Violation {
+            field: "session_id".into(),
+        },
+        session_id: Some("session-a".into()),
     };
-    let health = inputs.assemble();
-    assert_eq!(
-        health.harness.claude,
-        crate::protocol::results::HarnessState::Cooperative
+    assert!(!fx.recorder.record(&note, &budget()).unwrap());
+    fx.advance(1000);
+    note.event = "PostToolUse".into();
+    note.outcome = HarnessEvidenceOutcome::Violation {
+        field: "tool_input.command".into(),
+    };
+    assert!(!fx.recorder.record(&note, &budget()).unwrap());
+    note.outcome = HarnessEvidenceOutcome::Ok;
+    assert!(!fx.recorder.record(&note, &budget()).unwrap());
+    let reopened = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(fx._iso.state_root().join("store.db"), fx.clock.clone()),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
     );
-    assert_eq!(health.state, HealthState::Healthy);
-    assert!(health.limitations.is_empty());
-    let note = health
-        .notes
-        .iter()
-        .find(|line| line.starts_with("receipt cooperative:"))
+    let provider = HarnessStatesProvider::new(
+        reopened.clone(),
+        crate::daemon::harness_states::embedded_source(),
+        fx.clock.clone(),
+        Box::new(|_| None),
+        None,
+    );
+    assert!(
+        reopened
+            .harness_evidence_all("codex", &budget())
+            .unwrap()
+            .is_empty()
+    );
+    let report = provider.report(&budget()).unwrap();
+    let codex = &report.harnesses[1];
+    assert!(codex.versions.is_empty());
+    assert!(codex.detected.is_none());
+    let reason = &codex.unattributed.as_ref().unwrap().reason;
+    assert!(
+        reason.contains("PreToolUse") && reason.contains("session_id"),
+        "{reason}"
+    );
+    let lines = provider.health_lines(&budget()).unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("PreToolUse") && line.contains("session_id")),
+        "{lines:?}"
+    );
+}
+
+// Actual observer output must stay distinct from historical listed admission.
+#[test]
+fn absorption_observer_to_v2_declares_contract_without_runtime_admission() {
+    use crate::harness::{
+        adapter::{DaemonObservation, InstallEnvironment},
+        registry,
+    };
+    use crate::protocol::results::{AdmissionState, InstallationState};
+    let fx = Fx::new("absorption-declared-projection");
+    let bin = fx._iso.state_root().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for name in ["claude", "codex"] {
+        crate::harness::stub_binaries::write_stub_harness(
+            &bin,
+            name,
+            if name == "claude" {
+                "2.1.286"
+            } else {
+                "0.158.0"
+            },
+        );
+    }
+    let env = InstallEnvironment {
+        path: Some(bin.into_os_string()),
+        config_root: None,
+        state_dir: None,
+        clock: fx.clock.clone(),
+    };
+    let mut cached = std::collections::BTreeMap::new();
+    for name in ["claude", "codex"] {
+        let r = registry::builtins()
+            .by_id(registry::builtins().agent(name).unwrap())
+            .unwrap();
+        cached.insert(name.into(), r.observe_daemon(&env, &budget()));
+    }
+    let report = fx
+        .provider()
+        .with_observations(Box::new(move || Ok(cached.clone())))
+        .report_v2(&budget())
         .unwrap();
-    assert!(note.contains("cooperative_top_level"));
+    for name in ["claude", "codex"] {
+        let entry = &report.harnesses[name];
+        assert_eq!(entry.installation.state, InstallationState::Present);
+        assert_eq!(entry.admission.state, AdmissionState::Unknown);
+        assert!(
+            entry
+                .admission
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("contract_declared"))
+        );
+        assert!(entry.runtime_evidence.is_empty());
+    }
+    let doctor = serde_json::json!({"adapter_order":["claude","codex"],"harness_health_v2":report});
+    let rendered = crate::cli::doctor::render_debug_text(&doctor);
     assert!(
-        !note.contains("admitted recipe") && !note.contains("admitted:"),
-        "{note}"
+        rendered.contains("contract_declared"),
+        "actual doctor text dropped declared contract detail: {rendered}"
     );
+    let legacy = DaemonObservation {
+        status: HarnessStatus::Cooperative {
+            detail: "historical listed".into(),
+            live_unverified: false,
+        },
+        ..Default::default()
+    };
+    let report = fx
+        .provider()
+        .with_observations(Box::new(move || {
+            Ok(std::collections::BTreeMap::from([(
+                "claude".into(),
+                legacy.clone(),
+            )]))
+        }))
+        .report_v2(&budget())
+        .unwrap();
+    assert_eq!(
+        report.harnesses["claude"].admission.state,
+        AdmissionState::Listed
+    );
+}
+
+// Production builtins feed cached consumers; the test-support-only fourth adapter
+// is not a shipped harness and supplies no production installation observation.
+#[test]
+fn hermes_registry_presence_preserves_healthy_legacy_only_health() {
+    use crate::{
+        app::AdmissionReobserver,
+        harness::{adapter::InstallEnvironment, registry},
+        protocol::results::{
+            AdmissionState, CallbackObservationState, EnablementState, InstallationState,
+        },
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new("hermes-registry-presence");
+    let bin = fx._iso.home().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for name in ["claude", "codex"] {
+        crate::harness::stub_binaries::write_stub_harness(&bin, name, "0.0.0");
+    }
+    let observer = AdmissionReobserver::with_registry(
+        registry::builtins(),
+        InstallEnvironment {
+            clock: fx.clock.clone(),
+            path: Some(bin.clone().into_os_string()),
+            config_root: None,
+            state_dir: None,
+        },
+        std::time::Duration::from_millis(50),
+        Arc::new(|_| {}),
+    );
+    let legacy = |cached: &std::collections::BTreeMap<
+        String,
+        crate::harness::adapter::DaemonObservation,
+    >| {
+        let mut inputs = ready_inputs();
+        inputs.instance = uuid::Uuid::from_u128(1);
+        inputs.boot = uuid::Uuid::from_u128(2);
+        inputs.claude = cached["claude"].status.clone();
+        inputs.codex = cached["codex"].status.clone();
+        inputs.additional_harnesses = vec![("hermes".into(), cached["hermes"].status.clone())];
+        inputs.harness_version_lines = fx.provider().health_lines(&budget()).unwrap();
+        inputs.assemble()
+    };
+    let absent = observer.pass(&Cancellation::default()).entries;
+    assert!(matches!(
+        absent["hermes"].status,
+        HarnessStatus::NotInstalled(_)
+    ));
+    let absent_report = fx
+        .provider()
+        .with_observations(Box::new({
+            let cached = absent.clone();
+            move || Ok(cached.clone())
+        }))
+        .report_v2(&budget())
+        .unwrap();
+    assert_eq!(
+        absent_report.harnesses["hermes"].installation.state,
+        InstallationState::NotFound
+    );
+    let absent_health = legacy(&absent);
+    assert_eq!(absent_health.state, HealthState::Healthy);
     assert!(
-        health
+        absent_health
             .notes
             .iter()
-            .any(|line| line.contains("runtime metadata unavailable"))
+            .any(|line| line.starts_with("harness hermes not installed:"))
     );
+    let legacy_bytes = serde_json::to_vec(&absent_health.harness).unwrap();
+    assert_eq!(
+        legacy_bytes,
+        br#"{"codex":"cooperative","claude":"cooperative"}"#
+    );
+
+    let executable = bin.join("hermes");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\n: > \"${0%/*}/executed\"\nexit 91\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let present = observer.pass(&Cancellation::default()).entries;
+    let observed = &present["hermes"];
+    assert!(observed.identity.is_none());
+    assert!(observed.receipt_basis.is_none());
+    assert_eq!(observed.enablement.state, EnablementState::Unknown);
+    assert_eq!(
+        observed.callback_observation.state,
+        CallbackObservationState::Unknown
+    );
+    assert!(!observed.status.reusable());
+    assert_eq!(observed.status.admission_word(), "unqualified");
+    assert_eq!(observed.status.state(), HarnessState::Unsupported);
+    let provider = fx.provider().with_observations(Box::new({
+        let cached = present.clone();
+        move || Ok(cached.clone())
+    }));
+    let report = provider.report_v2(&budget()).unwrap();
+    let entry = &report.harnesses["hermes"];
+    assert_eq!(entry.installation.state, InstallationState::Present);
+    assert_eq!(entry.admission.state, AdmissionState::Unknown);
+    assert_eq!(entry.enablement.state, EnablementState::Unknown);
+    assert_eq!(
+        entry.callback_observation.state,
+        CallbackObservationState::Unknown
+    );
+    assert_eq!(entry.receipt_basis, "unknown");
+    assert!(entry.runtime_evidence.is_empty());
+    assert!(
+        entry
+            .limitations
+            .iter()
+            .any(|line| line.contains("qualification unavailable"))
+    );
+    assert!(entry.admission.detail.as_deref().is_some_and(|d| {
+        d.contains("qualification unavailable") && !d.contains("contract_declared")
+    }));
+    assert!(!bin.join("executed").exists());
+    let present_health = legacy(&present);
+    assert_eq!(present_health.state, HealthState::Healthy);
+    assert_eq!(
+        serde_json::to_vec(&present_health.harness).unwrap(),
+        legacy_bytes
+    );
+    assert_eq!(present_health.limitations, absent_health.limitations);
+    assert!(
+        present_health
+            .notes
+            .iter()
+            .any(|line| line.starts_with("harness hermes:")
+                && line.contains("qualification unavailable"))
+    );
+    let mut unqualified_only = ready_inputs();
+    unqualified_only.claude = HarnessStatus::NotInstalled("fixture absent".into());
+    unqualified_only.codex = HarnessStatus::NotInstalled("fixture absent".into());
+    unqualified_only.additional_harnesses = vec![("hermes".into(), observed.status.clone())];
+    let health = unqualified_only.assemble();
+    assert_eq!(health.state, HealthState::Healthy);
+    assert!(
+        !health
+            .notes
+            .iter()
+            .any(|line| line.starts_with("receipt cooperative:"))
+    );
+    // Cache remains present after the executable disappears; only the next pass
+    // observes the filesystem. Health requests cannot secretly rediscover Hermes.
+    std::fs::remove_file(&executable).unwrap();
+    assert_eq!(provider.report_v2(&budget()).unwrap(), report);
+    assert_eq!(legacy(&present), present_health);
+    assert!(matches!(
+        observer.pass(&Cancellation::default()).entries["hermes"].status,
+        HarnessStatus::NotInstalled(_)
+    ));
+    assert!(!bin.join("executed").exists());
 }

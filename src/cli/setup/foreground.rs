@@ -63,7 +63,7 @@ pub(super) fn inspect(harness: Harness, env: &SetupEnv) -> Value {
             env.codex_home.as_ref().map(|p| p.join("config.toml")),
             CODEX_ADVICE,
         ),
-        Harness::Human => return Value::Null,
+        _ => return Value::Null,
     };
     let mut report = json!({
         "status": "required", "scope": "user", "execution": "unknown",
@@ -119,7 +119,7 @@ pub(super) fn inspect(harness: Harness, env: &SetupEnv) -> Value {
             report["user_config"] = json!("read");
             Ok(())
         }
-        (Harness::Human, _) => unreachable!(),
+        _ => unreachable!(),
     });
     if let Err(error) = result {
         report["status"] = json!("unknown");
@@ -128,7 +128,7 @@ pub(super) fn inspect(harness: Harness, env: &SetupEnv) -> Value {
     report
 }
 
-pub(super) fn attach(report: &mut Value, harness: Harness, env: &SetupEnv) {
+pub(crate) fn attach(report: &mut Value, harness: Harness, env: &SetupEnv) {
     let foreground = inspect(harness, env);
     let warning = format!(
         "Foreground user settings {}. {} {}",

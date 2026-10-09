@@ -176,7 +176,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
 }
 
 fn claude() -> InstalledHarness {
-    InstalledHarness::Claude(crate::harness::operational::ClaudeContract::registered())
+    InstalledHarness::DeclaredClaude(crate::harness::operational::ClaudeContract::registered())
 }
 
 // Rejects a PATH-dependent hook admission and probes of managed wrappers.
@@ -2516,7 +2516,9 @@ mod parse_failure_report {
         };
         let outcome = run_hook(
             &args,
-            &InstalledHarness::Claude(crate::harness::operational::ClaudeContract::registered()),
+            &InstalledHarness::DeclaredClaude(
+                crate::harness::operational::ClaudeContract::registered(),
+            ),
             b"not json",
             &env,
             Instant::now() + Duration::from_millis(500),
@@ -2736,6 +2738,10 @@ mod continuity_gate {
                 instance: self.instance,
                 target: &self.target,
                 deadline: Instant::now() + Duration::from_secs(5),
+                current_deadline: CurrentDeadline {
+                    at: Instant::now() + Duration::from_millis(1500),
+                    watchdog: None,
+                },
                 clock: clock(),
                 retry,
             }
@@ -2807,6 +2813,163 @@ mod continuity_gate {
             role,
             event_id: uuid::Uuid::new_v4().to_string(),
             capability: Capability::ObservedInput,
+        }
+    }
+    // Kills: choosing a lifecycle digest budget for matching Current, or
+    // granting dispatch a fresh budget after the slow pre-dispatch digest.
+    struct SlowDigest {
+        delay: Duration,
+        clock: Arc<dyn Clock>,
+        seen: Mutex<Vec<(bool, u64, u64)>>,
+    }
+    impl LocalClient for SlowDigest {
+        fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+            let digest = matches!(command, Command::AttentionDigest(_));
+            assert!(
+                digest || matches!(command, Command::CheckIn(_)),
+                "{command:?}"
+            );
+            self.seen.lock().unwrap().push((
+                digest,
+                budget.deadline.0,
+                self.clock.monotonic_now().0,
+            ));
+            if digest {
+                std::thread::sleep(self.delay);
+            }
+            Err(rejection(ErrorCode::DeadlineExceeded))
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+    }
+    fn qualified_slow_digest(
+        reset: bool,
+        registered: bool,
+        current_budget_ms: u64,
+    ) -> Vec<(bool, u64, u64)> {
+        let pane = Pane::new();
+        let seat = SeatId::new("saved");
+        let contexts = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat).unwrap();
+        if registered {
+            contexts
+                .install_reattached(OccupantContext {
+                    format_version: 1,
+                    instance: pane.instance,
+                    seat: "saved".into(),
+                    target: pane.target.as_str().into(),
+                    harness: Harness::Claude,
+                    binding_generation: 1,
+                    execution: uuid::Uuid::new_v4(),
+                    session: SessionReference::Native("S-1".into()),
+                    role: Role::TopLevel,
+                })
+                .unwrap();
+        }
+        let ev = event(
+            Harness::Claude,
+            EventKind::Startup,
+            Role::TopLevel,
+            Some(if reset { "S-2" } else { "S-1" }),
+        );
+        let mut call_clock = clock();
+        let turn = crate::harness::context::QualifiedTurn {
+            session: ev.native_session.clone().unwrap(),
+            event_key: ev.event_id.clone(),
+            reset: reset.then(|| crate::harness::context::ResetObservation {
+                previous_session: "S-1".into(),
+            }),
+            ordering: Some(crate::harness::context::ObservationOrder {
+                process_nonce: uuid::Uuid::new_v4(),
+                sequence: 1,
+                observed_at_millis: call_clock.utc_now().0,
+                callback_budget_millis: 5000,
+            }),
+        };
+        let client = SlowDigest {
+            delay: Duration::from_millis(if current_budget_ms < 1500 { 600 } else { 100 }),
+            clock: Arc::clone(&call_clock),
+            seen: Mutex::new(vec![]),
+        };
+        let mut call = pane.call(&client);
+        let watchdog = Arc::new(AtomicU64::new(5000));
+        call.current_deadline = CurrentDeadline {
+            at: Instant::now() + Duration::from_millis(current_budget_ms),
+            watchdog: Some((Arc::clone(&watchdog), current_budget_ms)),
+        };
+        std::mem::swap(&mut call.clock, &mut call_clock);
+        assert!(
+            call.check_in_seat_with_turn(&ev, Some(&turn), &seat, if registered { 1 } else { 0 })
+                .is_err()
+        );
+        assert_eq!(
+            watchdog.load(Ordering::SeqCst),
+            if registered && !reset {
+                current_budget_ms
+            } else {
+                5000
+            },
+            "selected mode did not update process watchdog"
+        );
+        let request = contexts.pending().unwrap().unwrap();
+        assert_eq!(
+            request.mode,
+            if registered && !reset {
+                crate::harness::context::CheckInMode::Current
+            } else {
+                crate::harness::context::CheckInMode::Lifecycle
+            }
+        );
+        assert_eq!(
+            request.context.session,
+            SessionReference::Native(turn.session)
+        );
+        client.seen.into_inner().unwrap()
+    }
+    #[test]
+    fn qualified_current_coordinator_slow_digest_shares_one_tool_deadline() {
+        let seen = qualified_slow_digest(false, true, 1500);
+        assert_eq!(seen.len(), 2);
+        assert!(seen[0].0 && !seen[1].0);
+        assert!(
+            seen[0].1 - seen[0].2 <= 1500,
+            "digest was given lifecycle budget: {seen:?}"
+        );
+        assert!(
+            seen[1].1 <= seen[0].1 + 2,
+            "dispatch extended the digest deadline: {seen:?}"
+        );
+        assert!(
+            seen[1].1 - seen[1].2 < 1450,
+            "slow digest did not consume dispatch budget: {seen:?}"
+        );
+    }
+    // A digest that overruns the enclosing callback deadline must not send
+    // the durable Current request with a newly started transport window.
+    #[test]
+    fn qualified_current_coordinator_expired_digest_never_dispatches() {
+        let seen = qualified_slow_digest(false, true, 500);
+        assert_eq!(seen.len(), 1, "expired callback still dispatched: {seen:?}");
+        assert!(seen[0].0);
+    }
+    #[test]
+    fn qualified_startup_and_clear_coordinator_retain_lifecycle_deadline() {
+        for (reset, registered) in [(false, false), (true, true)] {
+            let seen = qualified_slow_digest(reset, registered, 1500);
+            assert_eq!(seen.len(), 2);
+            assert!(
+                seen[0].1 - seen[0].2 > 4000,
+                "lifecycle budget was shortened: {seen:?}"
+            );
+            assert!(
+                seen[1].1 <= seen[0].1 + 2,
+                "dispatch extended lifecycle deadline: {seen:?}"
+            );
         }
     }
     fn resume(harness: Harness) -> LifecycleEvent {
@@ -3902,7 +4065,7 @@ mod hook_sequence {
     use std::cell::RefCell;
 
     fn claude() -> InstalledHarness {
-        InstalledHarness::Claude(crate::harness::operational::ClaudeContract::registered())
+        InstalledHarness::DeclaredClaude(crate::harness::operational::ClaudeContract::registered())
     }
 
     // Kills: evidence before the probe (the probe's budget is cut, or the
@@ -3972,7 +4135,7 @@ mod hook_sequence {
             TOOL_BUDGET,
             |_| {
                 order.borrow_mut().push("observe");
-                Err("no version".into())
+                Err::<InstalledHarness, _>("no version".into())
             },
             |_| unreachable!("a refused probe never checks in"),
             |_| order.borrow_mut().push("refused"),
@@ -4033,6 +4196,220 @@ fn codex_command_guidance_survives_overflow_without_granting_permissions() {
     ev.harness = Harness::Claude;
     let bytes = encode_native(&ev, standing.as_bytes(), &[], None, None, None, None);
     assert!(!additional_context(&bytes).contains("require_escalated"));
+}
+
+// Catches inert built-in admission/codec dispatch and native output regressions.
+#[test]
+fn hook_adapter_dispatch_keeps_native_output_and_observer_nonconsumption() {
+    use crate::harness::{adapter::*, registry::builtins};
+    let registration = builtins()
+        .by_id(builtins().agent("claude").unwrap())
+        .unwrap();
+    let request = AdmissionRequest {
+        installed: InstallObservation::ExecutableAvailable {
+            binary: "/unused/claude".into(),
+        },
+        input: None,
+        runtime_candidate: None,
+    };
+    let admitted = registration
+        .admit(
+            &request,
+            &budget(Instant::now() + TOOL_BUDGET, &SystemClock::new()),
+        )
+        .unwrap();
+    assert_eq!(admitted.kind(), AdmissionKind::ContractDeclared);
+    let event = registration
+        .decode(
+            &admitted,
+            &HookInput {
+                bytes: CLAUDE_START.to_vec(),
+                registered_event: Some("SessionStart".into()),
+            },
+        )
+        .unwrap();
+    assert!(event.can_check_in());
+    assert_eq!(event.native_session.as_deref(), Some("sess-1"));
+    let output = registration
+        .encode(
+            &admitted,
+            &event,
+            &NeutralOffer {
+                fixed_guidance: "bounded context".into(),
+                peer_data: serde_json::Value::Null,
+                ready_argv: vec![],
+            },
+        )
+        .unwrap();
+    let EncodedOutput::ContextBearing { bytes } = output else {
+        panic!("context must be context bearing")
+    };
+    assert_eq!(bytes, br#"{"hookSpecificOutput":{"additionalContext":"bounded context","hookEventName":"SessionStart"}}"#);
+    let other = builtins()
+        .by_id(builtins().agent("codex").unwrap())
+        .unwrap();
+    assert!(matches!(
+        other.decode(
+            &admitted,
+            &HookInput {
+                bytes: CLAUDE_START.to_vec(),
+                registered_event: None
+            }
+        ),
+        Err(DecodeFailure::RegistrationMismatch)
+    ));
+}
+
+// Catches descriptor/callback budgets extending the global limits and observer
+// bytes being promoted to consumption after a successful codec return.
+#[test]
+fn adapter_budget_caps_and_encoding_delivery_are_conservative() {
+    use crate::harness::{adapter::*, registry::builtins};
+    let registration = builtins()
+        .by_id(builtins().agent("codex").unwrap())
+        .unwrap();
+    assert_eq!(
+        event_budget(registration, true, Some(Duration::from_secs(60))),
+        Duration::from_secs(5)
+    );
+    assert_eq!(
+        event_budget(registration, false, Some(Duration::from_secs(60))),
+        Duration::from_millis(1500)
+    );
+    assert_eq!(
+        event_budget(registration, true, Some(Duration::from_millis(37))),
+        Duration::from_millis(37)
+    );
+    assert_eq!(
+        event_budget(registration, true, Some(Duration::ZERO)),
+        Duration::ZERO
+    );
+    let (bytes, consumes, diagnostic) = output_bytes(Ok(EncodedOutput::ObserverOnly {
+        bytes: b"observed".to_vec(),
+    }));
+    assert_eq!(bytes, b"observed");
+    assert!(!consumes);
+    assert_eq!(diagnostic, None);
+    assert!(!output_bytes(Ok(EncodedOutput::ContextBearing { bytes: vec![] })).1);
+    assert!(
+        output_bytes(Ok(EncodedOutput::ContextBearing {
+            bytes: b"context".to_vec()
+        }))
+        .1
+    );
+    assert!(!output_bytes(Err(EncodeFailure::Invalid("test".into()))).1);
+}
+
+// Catches child output bypassing policy composition and entering canonical work.
+fn child_lifecycle_context(harness: Harness, native_event: &str) -> String {
+    use crate::daemon::ownership::OwnerLock;
+    use crate::protocol::wire::PROTOCOL_VERSION;
+    let root = private_root();
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(root.join("state"))
+        .unwrap();
+    let mut hook_args = args(&root);
+    hook_args.harness = harness;
+    let runtime = RuntimeContext::explicit(
+        hook_args.state_dir.clone().unwrap(),
+        hook_args.host_endpoint.clone().unwrap(),
+        None,
+    )
+    .unwrap();
+    let paths = InstancePaths::resolve(&runtime).unwrap();
+    let lock = OwnerLock::acquire(&paths).unwrap();
+    let listener = lock.bind_socket().unwrap();
+    lock.publish_endpoint(&listener, env!("CARGO_PKG_VERSION"), PROTOCOL_VERSION)
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let listener = {
+        let _guard = runtime.enter();
+        listener.into_async().unwrap()
+    };
+    let installed = match harness {
+        Harness::Claude => claude(),
+        Harness::Codex => {
+            InstalledHarness::Codex(crate::harness::codex::InstalledVersion::pinned_for_test())
+        }
+        _ => unreachable!(),
+    };
+    let payload = serde_json::json!({
+        "hook_event_name": native_event, "session_id": "child-session",
+        "source": "startup", "agent_id": "child", "agent_type": "worker",
+        "turn_id": "child-turn", "cwd": "/tmp", "model": "test",
+        "permission_mode": "default", "transcript_path": null,
+    });
+    let outcome = run_hook(
+        &hook_args,
+        &installed,
+        &serde_json::to_vec(&payload).unwrap(),
+        &herdr(),
+        Instant::now() + LIFECYCLE_BUDGET,
+        clock(),
+        None,
+    );
+    assert_eq!(outcome.diagnostic, None);
+    assert!(outcome.attention.is_none(), "child must not own attention");
+    assert!(
+        runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_millis(1), listener.accept()).await
+            })
+            .is_err(),
+        "child must not connect for canonical work"
+    );
+    let value: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    assert_eq!(value["hookSpecificOutput"]["hookEventName"], native_event);
+    let context = value["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(context.contains("is forbidden to subagents"), "{context}");
+    assert!(context.len() <= MAX_CONTEXT);
+    drop(listener);
+    drop(lock);
+    std::fs::remove_dir_all(root).unwrap();
+    context
+}
+
+#[test]
+fn child_lifecycle_claude_sessionstart_keeps_skill_pointer() {
+    let context = child_lifecycle_context(Harness::Claude, "SessionStart");
+    assert!(
+        context.contains(crate::cli::skill::HOOK_SKILL_HINT),
+        "{context}"
+    );
+    assert!(!context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+}
+
+#[test]
+fn child_lifecycle_codex_sessionstart_keeps_guidance_and_skill_pointer() {
+    let context = child_lifecycle_context(Harness::Codex, "SessionStart");
+    assert!(
+        context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE),
+        "{context}"
+    );
+    assert!(
+        context.contains(crate::cli::skill::HOOK_SKILL_HINT),
+        "{context}"
+    );
+}
+
+#[test]
+fn child_lifecycle_codex_subagentstart_keeps_guidance_without_skill_pointer() {
+    let context = child_lifecycle_context(Harness::Codex, "SubagentStart");
+    assert!(
+        context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE),
+        "{context}"
+    );
+    assert!(
+        !context.contains(crate::cli::skill::HOOK_SKILL_HINT),
+        "{context}"
+    );
 }
 
 // A concise startup must explain the recipient-local proof in the trusted
@@ -4577,6 +4954,10 @@ mod mod_channel_live {
                 instance: self.instance,
                 target: &self.target,
                 deadline: Instant::now() + Duration::from_secs(5),
+                current_deadline: CurrentDeadline {
+                    at: Instant::now() + Duration::from_millis(1500),
+                    watchdog: None,
+                },
                 clock: clock(),
                 retry: Arc::new(Window),
             }
@@ -4730,5 +5111,2728 @@ mod mod_channel_live {
         assert_eq!(daemon.calls(), vec!["digest", "check_in"]);
         let context = stdout(&ev, &done);
         assert!(context.contains("receipts=1 [A@t1]"), "{context}");
+    }
+}
+
+// Generic composition must deliver canonical routing through the registered Hermes
+// codec while preserving the immutable prepared mode and callback attribution.
+#[test]
+fn hermes_codec_keeps_canonical_routing_and_immutable_prepared_kind() {
+    use crate::harness::adapter::{AdmissionRequest, HookInput, InstallObservation};
+    let mut payload: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    payload["started_at"] = now.into();
+    payload["deadline_at"] = (now + 1200).into();
+    payload["observation_order"]["observed_at_millis"] = now.into();
+    let input = HookInput {
+        bytes: serde_json::to_vec(&payload).unwrap(),
+        registered_event: None,
+    };
+    let registry = crate::harness::registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let admitted = registration
+        .admit(
+            &AdmissionRequest {
+                installed: InstallObservation::Unavailable {
+                    diagnostic: "PATH observation is not callback admission".into(),
+                },
+                input: Some(HookInput {
+                    bytes: input.bytes.clone(),
+                    registered_event: None,
+                }),
+                runtime_candidate: None,
+            },
+            &budget,
+        )
+        .unwrap();
+    let decoded = registration.decode(&admitted, &input).unwrap();
+    let event = decoded.context_event().unwrap();
+    let (root, _) = scratch_pane();
+    let target = ContinuationContext {
+        state_dir: Some(root.display().to_string()),
+        host: Some(root.join("herdr.sock").display().to_string()),
+    };
+    let routing =
+        CommandRouting::from_context("00000000-0000-0000-0000-0000000000a1", &target).unwrap();
+    let standing = render_context(Role::TopLevel, &[], true).unwrap();
+    let context = compose_context(
+        &event,
+        &registration.output_policy(),
+        decoded.metadata.skill_pointer,
+        standing.as_bytes(),
+        &[],
+        None,
+        None,
+        None,
+        None,
+        Some(&routing),
+    );
+    let (bytes, consumes, diagnostic) = encode_prepared_result(
+        registration,
+        &admitted,
+        &decoded,
+        Some(EventKind::Clear),
+        context,
+    );
+    assert!(consumes, "{diagnostic:?}");
+    assert_eq!(diagnostic, None);
+    let output: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let context = output["context"].as_str().unwrap();
+    let line = context
+        .lines()
+        .find_map(|line| line.strip_prefix("Hook command routing (JSON data): "))
+        .unwrap();
+    let actual: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(actual["instance"], "00000000-0000-0000-0000-0000000000a1");
+    assert_eq!(actual["state_dir"], routing.state_dir);
+    assert_eq!(actual["host_endpoint"], routing.host_endpoint);
+    assert!(context.contains("No permissions granted."));
+    assert_eq!(output["lifecycle_ack"]["mode"], "clear");
+    assert_eq!(output["lifecycle_ack"]["event_id"], "fixture-event");
+    assert_eq!(output["lifecycle_ack"]["session_id"], "fixture-session");
+    assert!(matches!(
+        decoded.intent,
+        crate::harness::adapter::EventIntent::QualifiedTurn(_)
+    ));
+    assert_eq!(decoded.event_id, "fixture-event");
+    assert_eq!(decoded.native_session.as_deref(), Some("fixture-session"));
+    assert!(bytes.len() <= 8192);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn hermes_structural_success_never_grants_callback_delivery_or_qualification() {
+    use crate::harness::{
+        adapter::{
+            AdmissionRequest, EncodedOutput, EventIntent, HookInput, InstallObservation,
+            NeutralOffer, RuntimeAttribution,
+        },
+        contract::{Classification, Malformed},
+    };
+    let registry = crate::harness::registry::builtins();
+    let registration = registry.by_id(registry.agent("hermes").unwrap()).unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: crate::protocol::time::MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let fixture = || {
+        let mut payload: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        payload["started_at"] = now.into();
+        payload["deadline_at"] = (now + 1200).into();
+        payload["observation_order"]["observed_at_millis"] = now.into();
+        payload
+    };
+    let admit = |input: &HookInput| {
+        registration.admit(
+            &AdmissionRequest {
+                installed: InstallObservation::Unavailable {
+                    diagnostic: "synthetic callback only".into(),
+                },
+                input: Some(HookInput {
+                    bytes: input.bytes.clone(),
+                    registered_event: input.registered_event.clone(),
+                }),
+                runtime_candidate: None,
+            },
+            &budget,
+        )
+    };
+    for callback in ["on_session_start", "on_session_reset", "post_tool_call"] {
+        let mut payload = fixture();
+        payload["callback"] = callback.into();
+        if callback == "post_tool_call" {
+            payload["parent_session_id"] = serde_json::Value::Null;
+            payload["shape"]["parent_session_id"] =
+                serde_json::json!({"presence":"missing","type":"absent"});
+            payload["role_association"]["provenance"] = "qualified_pre_llm_cache".into();
+        } else {
+            payload["role_association"] = serde_json::Value::Null;
+        }
+        if callback == "on_session_reset" {
+            payload["reset_reason"] = "new_session".into();
+        }
+        let input = HookInput {
+            bytes: serde_json::to_vec(&payload).unwrap(),
+            registered_event: Some(callback.into()),
+        };
+        for projection in registration.evidence_observations(&input).unwrap() {
+            assert!(
+                matches!(projection.classification, Classification::Ok { event } if event == callback)
+            );
+        }
+        let handle = admit(&input).unwrap();
+        let decoded = registration.decode(&handle, &input).unwrap();
+        assert!(!decoded.can_check_in());
+        assert!(matches!(
+            decoded.intent,
+            EventIntent::Observer | EventIntent::DeclaredReset(_)
+        ));
+        let output = registration
+            .encode(
+                &handle,
+                &decoded,
+                &NeutralOffer {
+                    fixed_guidance: "must remain unconsumed".into(),
+                    peer_data: serde_json::Value::Null,
+                    ready_argv: Vec::new(),
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(output, EncodedOutput::ObserverOnly { bytes } if bytes == br#"{"context":null,"lifecycle_ack":null}"#)
+        );
+    }
+    for refusal in ["expired", "role", "runtime", "callback_value"] {
+        let mut payload = fixture();
+        match refusal {
+            "expired" => {
+                payload["started_at"] = 1.into();
+                payload["deadline_at"] = 1201.into();
+                payload["observation_order"]["observed_at_millis"] = 1.into();
+            }
+            "role" => payload["role_association"]["role"] = "unsupported".into(),
+            "runtime" => payload["runtime_identity"]["source"] = "unsupported".into(),
+            "callback_value" => payload["reset_reason"] = "unsupported".into(),
+            _ => unreachable!(),
+        }
+        let input = HookInput {
+            bytes: serde_json::to_vec(&payload).unwrap(),
+            registered_event: Some("pre_llm_call".into()),
+        };
+        assert!(admit(&input).is_err(), "{refusal}");
+        assert!(matches!(
+            registration.attribute_runtime(&input, &budget),
+            RuntimeAttribution::Unavailable { .. }
+        ));
+        assert!(
+            matches!(
+                registration.classify(&input).classification,
+                Classification::Ok {
+                    event: "pre_llm_call"
+                }
+            ),
+            "{refusal}"
+        );
+    }
+    for (bytes, expected) in [
+        (b"not json".as_slice(), Malformed::NotJson),
+        (b"[]".as_slice(), Malformed::NotObject),
+        (
+            br#"{"callback":"unknown"}"#.as_slice(),
+            Malformed::UnknownEvent,
+        ),
+    ] {
+        let input = HookInput {
+            bytes: bytes.to_vec(),
+            registered_event: None,
+        };
+        for projection in registration.evidence_observations(&input).unwrap() {
+            assert_eq!(
+                projection.classification,
+                Classification::Malformed(expected)
+            );
+        }
+    }
+    let input = HookInput {
+        bytes: vec![b' '; crate::harness::contract::MAX_PAYLOAD + 1],
+        registered_event: Some("pre_llm_call".into()),
+    };
+    assert_eq!(
+        registration.classify(&input).classification,
+        Classification::Malformed(Malformed::TooLarge)
+    );
+}
+
+#[cfg(feature = "test-support")]
+mod enum_callback {
+    use super::*;
+    use crate::test_support::synthetic_fourth::ADAPTER;
+
+    struct Callback(HookAdmissionPolicy);
+    impl HarnessAdapter for Callback {
+        type Admission = ();
+        fn metadata(&self) -> &'static AdapterMetadata {
+            ADAPTER.metadata()
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            ADAPTER.contracts()
+        }
+        fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+            self.0
+        }
+        fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+            assert_eq!(
+                self.0,
+                HookAdmissionPolicy::InstalledObservation,
+                "enum-only callback must never inspect the installed runtime"
+            );
+            InstallObservation::ExecutableAvailable {
+                binary: "/synthetic/installed-runtime".into(),
+            }
+        }
+        fn admit(&self, request: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<()> {
+            if self.0 == HookAdmissionPolicy::InstalledObservation {
+                assert!(request.input.is_none());
+                assert!(matches!(
+                    request.installed,
+                    InstallObservation::ExecutableAvailable { .. }
+                ));
+                return AdmissionDecision::ContractDeclared {
+                    state: (),
+                    recipe: "synthetic installed observation",
+                };
+            }
+            let Some(input) = &request.input else {
+                return AdmissionDecision::Refused {
+                    diagnostic: "enum-only callback missing callback input".into(),
+                };
+            };
+            assert_eq!(input.registered_event.as_deref(), Some("SyntheticStart"));
+            assert_eq!(input.bytes, payload());
+            assert!(matches!(
+                request.installed,
+                InstallObservation::Unsupported(_)
+            ));
+            assert!(request.runtime_candidate.is_none());
+            AdmissionDecision::ContractDeclared {
+                state: (),
+                recipe: "synthetic callback",
+            }
+        }
+        fn version_ladder(&self, r: &RuntimeIdentity) -> Ladder {
+            ADAPTER.version_ladder(r)
+        }
+        fn classify(&self, i: &HookInput) -> ContractObservation {
+            ADAPTER.classify(i)
+        }
+        fn decode(&self, a: &(), i: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+            ADAPTER.decode(a, i)
+        }
+        fn encode(
+            &self,
+            a: &(),
+            e: &DecodedEvent,
+            o: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            ADAPTER.encode(a, e, o)
+        }
+        fn attribute_runtime(&self, i: &HookInput, b: &CallBudget) -> RuntimeAttribution {
+            ADAPTER.attribute_runtime(i, b)
+        }
+        fn setup(&self, r: &SetupRequest, b: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+            ADAPTER.setup(r, b)
+        }
+        fn status(&self, r: &StatusRequest, b: &CallBudget) -> SetupStatus {
+            ADAPTER.status(r, b)
+        }
+        fn unsetup(
+            &self,
+            r: &UnsetupRequest,
+            b: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            ADAPTER.unsetup(r, b)
+        }
+    }
+    fn payload() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({"event":"SyntheticStart","event_id":"enum-only-event","session_id":"enum-only-session","role":"top_level"})).unwrap()
+    }
+    fn empty<T>() -> crate::protocol::pagination::Page<T> {
+        crate::protocol::pagination::Page {
+            items: vec![],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: crate::protocol::pagination::StopReason::Complete,
+            consistency: crate::protocol::pagination::Consistency::BoundedLive,
+        }
+    }
+    #[derive(Default)]
+    struct Service(Mutex<Vec<Command>>);
+    impl crate::ports::LocalService for Service {
+        fn service_control(
+            &self,
+            _: Command,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &str,
+            _: &str,
+            _: &crate::service::live_gate::LiveServiceGate,
+            _: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            Err(crate::test_support::unserved("no service control"))
+        }
+        fn audit_service_disconnect(
+            &self,
+            _: &str,
+            _: u64,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &CallBudget,
+        ) -> Result<(), ApiError> {
+            Err(crate::test_support::unserved("no service disconnect"))
+        }
+        fn service_operation(
+            &self,
+            _: crate::protocol::service::ServiceOperation,
+            _: &crate::ports::ServiceConnectionAuthority,
+            _: &dyn crate::ports::ServiceAuthorityGate,
+            _: &CallBudget,
+        ) -> Result<crate::protocol::service::ServiceResult, ApiError> {
+            Err(crate::test_support::unserved("no service operation"))
+        }
+        fn handle_with_output(
+            &self,
+            c: Command,
+            p: crate::protocol::authority::PeerIdentity,
+            b: &CallBudget,
+            _: &OutputSpec,
+        ) -> Result<CommandResult, ApiError> {
+            self.handle(c, p, b)
+        }
+        fn handle(
+            &self,
+            c: Command,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            use crate::protocol::results::*;
+            self.0.lock().unwrap().push(c.clone());
+            let summary = || SeatSummary {
+                seat: SeatId::new("callback-seat"),
+                continuity: ContinuityStatus::Resolved,
+                target: Some(HostTargetId::new("w9:p1")),
+                generation: self
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|command| matches!(command, Command::CheckIn(_)))
+                    .count() as u64
+                    + 1,
+                created_at: crate::protocol::time::UtcMillis(0),
+                retired_at: None,
+            };
+            match c {
+                Command::Seats(_) => {
+                    let mut page = empty();
+                    page.items.push(summary());
+                    Ok(CommandResult::Seats(page))
+                }
+                Command::ResolveSeat(command) => {
+                    assert_eq!(command.target.as_str(), "w9:p1");
+                    Ok(CommandResult::SeatResolved(SeatId::new("callback-seat")))
+                }
+                Command::SeatInspect(_) => Ok(CommandResult::SeatInspect(SeatInspection {
+                    summary: summary(),
+                    mapping: MappingStatus {
+                        state: ContinuityStatus::Resolved,
+                        target: Some(HostTargetId::new("w9:p1")),
+                        detail_argv: None,
+                    },
+                    hold: None,
+                    retirement: None,
+                    open_binding: None,
+                    history: empty(),
+                })),
+                Command::Directory(_) => Ok(CommandResult::Directory(empty())),
+                Command::AttentionDigest(_) => {
+                    let mut d = digest(&[], &[]);
+                    d.seat = SeatId::new("callback-seat");
+                    Ok(CommandResult::AttentionDigest(d))
+                }
+                Command::CheckIn(c) => {
+                    assert_eq!(c.claim.harness.as_str(), "synthetic_fourth");
+                    assert_eq!(c.claim.native_session.as_str(), "enum-only-session");
+                    let mut claim = c.claim;
+                    claim.binding_generation = 2;
+                    Ok(CommandResult::CheckedIn(CheckInResult {
+                        seat: claim.seat.clone(),
+                        context: claim,
+                        context_disposition: CheckInContextDisposition::Current,
+                        offered_through: None,
+                        warning_count: 0,
+                        warning_count_has_more: false,
+                        warnings: empty(),
+                        notices: Default::default(),
+                        inbox: empty(),
+                    }))
+                }
+                _ => Err(crate::test_support::unserved(
+                    "unused callback fixture operation",
+                )),
+            }
+        }
+    }
+    struct Server {
+        shutdown: Cancellation,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.shutdown.cancel();
+            self.worker.take().unwrap().join().unwrap();
+        }
+    }
+    #[test]
+    fn qualified_callback_enum_alone_controls_generic_hook_admission() {
+        use crate::daemon::ownership::OwnerLock;
+        let iso = crate::test_support::isolation::TestIsolation::new("enum-callback-consumer");
+        let mut args = args(iso.state_root());
+        args.event = Some("SyntheticStart".into());
+        args.harness = crate::harness::registry::OccupantHarness::Agent(
+            crate::harness::registry::builtins()
+                .agent("synthetic_fourth")
+                .unwrap(),
+        )
+        .into();
+        let context = RuntimeContext::explicit(
+            args.state_dir.clone().unwrap(),
+            args.host_endpoint.clone().unwrap(),
+            None,
+        )
+        .unwrap();
+        let paths = InstancePaths::resolve(&context).unwrap();
+        let owner = OwnerLock::acquire(&paths).unwrap();
+        let instance = owner.instance_uuid();
+        let listener = owner.bind_socket().unwrap();
+        owner
+            .publish_endpoint(
+                &listener,
+                env!("CARGO_PKG_VERSION"),
+                crate::protocol::wire::PROTOCOL_VERSION,
+            )
+            .unwrap();
+        let service = Arc::new(Service::default());
+        let handler = Arc::clone(&service);
+        let shutdown = Cancellation::default();
+        let stopped = shutdown.clone();
+        let worker = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let _ = crate::daemon::transport::serve(
+                    listener.into_async().unwrap(),
+                    instance,
+                    handler,
+                    Arc::new(SystemClock::new()),
+                    crate::daemon::paths::effective_uid(),
+                    stopped,
+                )
+                .await
+                .unwrap();
+            });
+            drop(owner);
+        });
+        let _server = Server {
+            shutdown,
+            worker: Some(worker),
+        };
+        static CALLBACK: Callback = Callback(HookAdmissionPolicy::QualifiedCallback);
+        let registrations = Box::leak(Box::new([Registration::new(&CALLBACK)]));
+        let registry = crate::harness::registry::Registry::new(registrations).unwrap();
+        let registration = registry
+            .by_id(registry.agent("synthetic_fourth").unwrap())
+            .unwrap();
+        let outcome = run_hook_registered(
+            registration,
+            &args,
+            &InstalledHarness::Claude("unrelated-invalid-runtime".into()),
+            &payload(),
+            &herdr(),
+            Instant::now() + LIFECYCLE_BUDGET,
+            Arc::new(SystemClock::new()),
+            None,
+        );
+        assert_eq!(
+            outcome.diagnostic,
+            None,
+            "callback admission must receive input independently of PATH; commands: {:?}",
+            service.0.lock().unwrap()
+        );
+        let value: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+        assert!(
+            value["synthetic_context"]
+                .as_str()
+                .unwrap()
+                .contains("Before using threads")
+        );
+        assert!(
+            outcome.attention.is_some(),
+            "real check-in must produce its offer token"
+        );
+        let calls = service.0.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| matches!(c, Command::CheckIn(_)))
+                .count(),
+            1
+        );
+        assert!(calls.iter().any(|c| matches!(c, Command::SeatInspect(_))));
+        drop(calls);
+        let journal =
+            crate::cli::seat_contexts(&paths, instance, &SeatId::new("callback-seat")).unwrap();
+        let saved = journal.current().unwrap().unwrap();
+        assert_eq!(saved.binding_generation, 2);
+        assert_eq!(saved.harness, args.harness);
+        assert_eq!(
+            saved.session,
+            SessionReference::Native("enum-only-session".into())
+        );
+        assert!(journal.pending().unwrap().is_none());
+        // Exercise the same observation and input projections as the active
+        // process sequence, then replay through the actual generic consumer.
+        let started = Instant::now();
+        let environment = InstallEnvironment {
+            path: None,
+            config_root: None,
+            state_dir: args.state_dir.clone(),
+            clock: Arc::new(SystemClock::new()),
+        };
+        sequence(
+            started,
+            TOOL_BUDGET,
+            |remaining| {
+                Ok(hook_install_observation(
+                    registration,
+                    &environment,
+                    &budget(started + remaining, environment.clock.as_ref()),
+                ))
+            },
+            |observation| {
+                let input = HookInput {
+                    bytes: payload(),
+                    registered_event: args.event.clone(),
+                };
+                let request = hook_admission_request(registration, observation, &input);
+                let handle = registration
+                    .admit(
+                        &request,
+                        &budget(started + TOOL_BUDGET, environment.clock.as_ref()),
+                    )
+                    .unwrap();
+                assert!(matches!(
+                    registration.decode(&handle, &input).unwrap().runtime,
+                    RuntimeAttribution::Unavailable { .. }
+                ));
+                let replay = run_hook_registered(
+                    registration,
+                    &args,
+                    &InstalledHarness::Claude("unrelated-invalid-runtime".into()),
+                    &payload(),
+                    &herdr(),
+                    started + TOOL_BUDGET,
+                    Arc::clone(&environment.clock),
+                    None,
+                );
+                assert_eq!(replay.diagnostic, None);
+                assert!(!replay.stdout.is_empty());
+                started + TOOL_BUDGET
+            },
+            |detail| panic!("enum callback was refused before admission: {detail}"),
+            |_| {},
+        );
+        assert_eq!(journal.current().unwrap(), Some(saved));
+        let outside = run_hook_registered(
+            registration,
+            &args,
+            &claude(),
+            &payload(),
+            &HookEnv {
+                herdr_env: true,
+                pane: None,
+            },
+            Instant::now() + TOOL_BUDGET,
+            clock(),
+            None,
+        );
+        assert!(outside.stdout.is_empty());
+        assert!(outside.attention.is_none());
+        assert!(outside.diagnostic.is_none());
+    }
+    #[test]
+    fn explicit_installed_policy_keeps_observation_and_omits_callback_input() {
+        static INSTALLED: Callback = Callback(HookAdmissionPolicy::InstalledObservation);
+        let registry =
+            crate::harness::registry::Registry::new(Box::leak(Box::new([Registration::new(
+                &INSTALLED,
+            )])))
+            .unwrap();
+        let registration = registry
+            .by_id(registry.agent("synthetic_fourth").unwrap())
+            .unwrap();
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let environment = InstallEnvironment {
+            path: None,
+            config_root: None,
+            state_dir: None,
+            clock: Arc::clone(&clock),
+        };
+        let budget = budget(Instant::now() + TOOL_BUDGET, clock.as_ref());
+        let observation = hook_install_observation(registration, &environment, &budget);
+        assert!(
+            matches!(&observation, InstallObservation::ExecutableAvailable { binary }
+            if binary == Path::new("/synthetic/installed-runtime"))
+        );
+        let request = hook_admission_request(
+            registration,
+            observation,
+            &HookInput {
+                bytes: payload(),
+                registered_event: Some("SyntheticStart".into()),
+            },
+        );
+        assert_eq!(
+            registration.admit(&request, &budget).unwrap().kind(),
+            AdmissionKind::ContractDeclared
+        );
+    }
+}
+
+/// A declared genuine Resume producer, exercising the registered hook all the
+/// way through IPC and context installation. No native runtime is executed.
+#[cfg(feature = "test-support")]
+mod registered_resume {
+    use super::*;
+    use crate::daemon::ownership::{EndpointDescriptor, OwnerLock, read_descriptor};
+    use crate::harness::contract::{
+        Classification, EventClass, EventContract, FieldSpec, HarnessContract, JsonType, classify,
+        field,
+    };
+    use crate::harness::evidence::{AttributionHolding, EvidenceEvent, EvidenceOrigin};
+    use crate::harness::registry::{OccupantHarness, Registry};
+    use crate::protocol::results::*;
+    use crate::test_support::spawn::{OwnedChild, SpawnOwned};
+    use crate::test_support::synthetic_fourth::ADAPTER;
+    use std::sync::OnceLock;
+
+    const FIELDS: &[FieldSpec] = &[
+        field("session_id", JsonType::StringOrNull, false),
+        field("event_id", JsonType::String, true),
+        field("role", JsonType::String, true),
+    ];
+    static CONTRACT: HarnessContract = HarnessContract {
+        harness: "synthetic_fourth",
+        discriminator: "event",
+        events: &[
+            EventContract {
+                event: "SyntheticResume",
+                class: EventClass::Lifecycle,
+                fields: FIELDS,
+            },
+            EventContract {
+                event: "SyntheticStart",
+                class: EventClass::Lifecycle,
+                fields: FIELDS,
+            },
+            EventContract {
+                event: "SyntheticClear",
+                class: EventClass::Lifecycle,
+                fields: FIELDS,
+            },
+            EventContract {
+                event: "SyntheticRestart",
+                class: EventClass::Other,
+                fields: FIELDS,
+            },
+            EventContract {
+                event: "SyntheticCompact",
+                class: EventClass::Other,
+                fields: FIELDS,
+            },
+            EventContract {
+                event: "SyntheticTool",
+                class: EventClass::Tool,
+                fields: FIELDS,
+            },
+            EventContract {
+                event: "SyntheticObserver",
+                class: EventClass::Other,
+                fields: FIELDS,
+            },
+        ],
+    };
+    static CONTRACTS: &[ContractDescriptor] = &[ContractDescriptor {
+        domain_id: "synthetic_resume",
+        origin: EvidenceOrigin::NativePayload,
+        events: &[
+            EvidenceEvent {
+                native_event: "SyntheticResume",
+                milestone: Some("lifecycle"),
+                always_send: true,
+            },
+            EvidenceEvent {
+                native_event: "SyntheticStart",
+                milestone: Some("lifecycle"),
+                always_send: true,
+            },
+            EvidenceEvent {
+                native_event: "SyntheticClear",
+                milestone: Some("lifecycle"),
+                always_send: true,
+            },
+            EvidenceEvent {
+                native_event: "SyntheticRestart",
+                milestone: None,
+                always_send: false,
+            },
+            EvidenceEvent {
+                native_event: "SyntheticCompact",
+                milestone: None,
+                always_send: false,
+            },
+            EvidenceEvent {
+                native_event: "SyntheticTool",
+                milestone: Some("tool"),
+                always_send: false,
+            },
+            EvidenceEvent {
+                native_event: "SyntheticObserver",
+                milestone: None,
+                always_send: false,
+            },
+        ],
+        required_milestones: &["lifecycle", "tool"],
+        qualifications: &[],
+        holding: AttributionHolding::Never,
+        resumed_unavailable_reason: None,
+        domain: ContractDomain::Native,
+        contract: &CONTRACT,
+    }];
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Payload {
+        event: String,
+        session_id: Option<String>,
+        event_id: String,
+        role: String,
+    }
+    struct ResumeAdapter;
+    impl HarnessAdapter for ResumeAdapter {
+        type Admission = ();
+        fn metadata(&self) -> &'static AdapterMetadata {
+            ADAPTER.metadata()
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            CONTRACTS
+        }
+        fn hook_admission_policy(&self) -> HookAdmissionPolicy {
+            HookAdmissionPolicy::RegisteredContract
+        }
+        fn observe_install(&self, e: &InstallEnvironment, b: &CallBudget) -> InstallObservation {
+            ADAPTER.observe_install(e, b)
+        }
+        fn admit(&self, r: &AdmissionRequest, b: &CallBudget) -> AdmissionDecision<()> {
+            ADAPTER.admit(r, b)
+        }
+        fn version_ladder(&self, r: &RuntimeIdentity) -> Ladder {
+            ADAPTER.version_ladder(r)
+        }
+        fn classify(&self, i: &HookInput) -> ContractObservation {
+            ContractObservation {
+                domain: ContractDomain::Native,
+                classification: classify(&CONTRACT, i.registered_event.as_deref(), &i.bytes),
+            }
+        }
+        fn decode(&self, _: &(), i: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+            if !matches!(self.classify(i).classification, Classification::Ok { .. }) {
+                return Err(DecodeFailure::Invalid(
+                    "undeclared resume fixture input".into(),
+                ));
+            }
+            let p: Payload = serde_json::from_slice(&i.bytes)
+                .map_err(|e| DecodeFailure::Invalid(e.to_string()))?;
+            if p.event_id.is_empty()
+                || p.event_id.len() > 256
+                || p.event_id.chars().any(char::is_control)
+            {
+                return Err(DecodeFailure::Invalid(
+                    "invalid fixture event identity".into(),
+                ));
+            }
+            if p.session_id
+                .as_ref()
+                .is_some_and(|s| crate::protocol::ids::NativeSessionId::parse(s.clone()).is_err())
+            {
+                return Err(DecodeFailure::Invalid(
+                    "invalid fixture native session".into(),
+                ));
+            }
+            let role = match p.role.as_str() {
+                "top_level" => EventRole::TopLevel,
+                "child" => EventRole::Subagent,
+                "unknown" => EventRole::Unknown,
+                _ => return Err(DecodeFailure::Invalid("invalid fixture role".into())),
+            };
+            let (intent, source) = match p.event.as_str() {
+                "SyntheticResume" => (EventIntent::Lifecycle(EventKind::Resume), "resume"),
+                "SyntheticStart" => (EventIntent::Lifecycle(EventKind::Startup), "startup"),
+                "SyntheticClear" => (EventIntent::Lifecycle(EventKind::Clear), "clear"),
+                "SyntheticCompact" => (EventIntent::Lifecycle(EventKind::Compact), "compact"),
+                "SyntheticRestart" => (EventIntent::Lifecycle(EventKind::Restart), "restart"),
+                "SyntheticTool" => (EventIntent::Current, "SyntheticTool"),
+                "SyntheticObserver" => (EventIntent::Observer, "SyntheticObserver"),
+                _ => return Err(DecodeFailure::Invalid("invalid fixture event".into())),
+            };
+            let observer = matches!(intent, EventIntent::Observer);
+            Ok(DecodedEvent {
+                harness: registry().agent("synthetic_fourth").unwrap(),
+                role,
+                native_session: p.session_id,
+                event_id: p.event_id,
+                intent,
+                metadata: EventMetadata {
+                    skill_pointer: false,
+                    callback_deadline: None,
+                    context_source: source.into(),
+                    capability: Capability::ContractValidatedInput,
+                    domain: ContractDomain::Native,
+                    native_event: p.event,
+                    shape_fields: vec![],
+                },
+                delivery: if observer {
+                    DeliveryEligibility::ObserverOnly
+                } else {
+                    DeliveryEligibility::Context
+                },
+                runtime: RuntimeAttribution::Unavailable {
+                    diagnostic: "synthetic fixture has no native runtime".into(),
+                },
+            })
+        }
+        fn encode(
+            &self,
+            a: &(),
+            e: &DecodedEvent,
+            o: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            ADAPTER.encode(a, e, o)
+        }
+        fn attribute_runtime(&self, i: &HookInput, b: &CallBudget) -> RuntimeAttribution {
+            ADAPTER.attribute_runtime(i, b)
+        }
+        fn setup(&self, r: &SetupRequest, b: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+            ADAPTER.setup(r, b)
+        }
+        fn status(&self, r: &StatusRequest, b: &CallBudget) -> SetupStatus {
+            ADAPTER.status(r, b)
+        }
+        fn unsetup(
+            &self,
+            r: &UnsetupRequest,
+            b: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            ADAPTER.unsetup(r, b)
+        }
+    }
+    static RESUME: ResumeAdapter = ResumeAdapter;
+    fn registry() -> &'static Registry {
+        static REGISTRY: OnceLock<Registry> = OnceLock::new();
+        REGISTRY.get_or_init(|| {
+            Registry::new(Box::leak(Box::new([Registration::new(&RESUME)]))).unwrap()
+        })
+    }
+    fn registration() -> &'static Registration {
+        registry()
+            .by_id(registry().agent("synthetic_fourth").unwrap())
+            .unwrap()
+    }
+    fn input(event: &str, role: &str, session: Option<&str>) -> HookInput {
+        HookInput {
+            registered_event: Some(event.into()),
+            bytes: serde_json::to_vec(&serde_json::json!({
+                "event":event,"role":role,"session_id":session,"event_id":uuid()
+            }))
+            .unwrap(),
+        }
+    }
+    fn decode(r: &'static Registration, i: &HookInput) -> (AdmittedHandle, DecodedEvent) {
+        let h = r
+            .admit(
+                &hook_admission_request(r, InstallObservation::NotRequested, i),
+                &budget(Instant::now() + LIFECYCLE_BUDGET, clock().as_ref()),
+            )
+            .unwrap();
+        let d = r.decode(&h, i).unwrap();
+        (h, d)
+    }
+    fn empty<T>() -> crate::protocol::pagination::Page<T> {
+        crate::protocol::pagination::Page {
+            items: vec![],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: crate::protocol::pagination::StopReason::Complete,
+            consistency: crate::protocol::pagination::Consistency::BoundedLive,
+        }
+    }
+    struct Service {
+        seen: Mutex<Vec<Command>>,
+        generation: Mutex<u64>,
+        resolved: AtomicBool,
+        transcript: Option<PathBuf>,
+    }
+    impl Service {
+        fn new(resolved: bool) -> Self {
+            Self {
+                seen: Mutex::new(vec![]),
+                generation: Mutex::new(1),
+                resolved: AtomicBool::new(resolved),
+                transcript: None,
+            }
+        }
+        fn requests(&self) -> Vec<crate::protocol::commands::ContinuityCheckIn> {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|c| {
+                    if let Command::ContinuityCheckIn(c) = c {
+                        Some(c.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        fn control(&self, name: &str) -> bool {
+            self.transcript
+                .as_ref()
+                .is_some_and(|path| path.with_file_name(name).exists())
+        }
+        fn summary(&self) -> SeatSummary {
+            SeatSummary {
+                seat: SeatId::new("registered-seat"),
+                continuity: if self.resolved.load(Ordering::SeqCst) {
+                    ContinuityStatus::Resolved
+                } else {
+                    ContinuityStatus::Unresolved
+                },
+                target: Some(HostTargetId::new("w9:p1")),
+                generation: *self.generation.lock().unwrap(),
+                created_at: crate::protocol::time::UtcMillis(0),
+                retired_at: None,
+            }
+        }
+    }
+    impl crate::ports::LocalService for Service {
+        fn service_control(
+            &self,
+            _: Command,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &str,
+            _: &str,
+            _: &crate::service::live_gate::LiveServiceGate,
+            _: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            Err(crate::test_support::unserved("no service control"))
+        }
+        fn audit_service_disconnect(
+            &self,
+            _: &str,
+            _: u64,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &CallBudget,
+        ) -> Result<(), ApiError> {
+            Err(crate::test_support::unserved("no service disconnect"))
+        }
+        fn service_operation(
+            &self,
+            _: crate::protocol::service::ServiceOperation,
+            _: &crate::ports::ServiceConnectionAuthority,
+            _: &dyn crate::ports::ServiceAuthorityGate,
+            _: &CallBudget,
+        ) -> Result<crate::protocol::service::ServiceResult, ApiError> {
+            Err(crate::test_support::unserved("no service operation"))
+        }
+        fn handle_with_output(
+            &self,
+            c: Command,
+            p: crate::protocol::authority::PeerIdentity,
+            b: &CallBudget,
+            _: &OutputSpec,
+        ) -> Result<CommandResult, ApiError> {
+            self.handle(c, p, b)
+        }
+        fn handle(
+            &self,
+            c: Command,
+            _: crate::protocol::authority::PeerIdentity,
+            _: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            eprintln!("registered fixture command: {c:?}");
+            {
+                let mut seen = self.seen.lock().unwrap();
+                seen.push(c.clone());
+                if let Some(path) = &self.transcript {
+                    write_fixture_json(path, &*seen).unwrap();
+                }
+            }
+            match c {
+                Command::Seats(_) => {
+                    let mut page = empty();
+                    if self.resolved.load(Ordering::SeqCst)
+                        || !self.control("enrollment-unowned.json")
+                    {
+                        page.items.push(self.summary());
+                    }
+                    Ok(CommandResult::Seats(page))
+                }
+                Command::ResolveSeat(command) => {
+                    assert_eq!(command.target.as_str(), "w9:p1");
+                    if !self.resolved.load(Ordering::SeqCst)
+                        && !self.control("enrollment-unowned.json")
+                    {
+                        return Err(ApiError::new(
+                            ErrorCode::TargetUnresolved,
+                            "fixture unresolved mapping requires repair",
+                        ));
+                    }
+                    self.resolved.store(true, Ordering::SeqCst);
+                    Ok(CommandResult::SeatResolved(SeatId::new("registered-seat")))
+                }
+                Command::SeatInspect(_) => {
+                    let summary = self.summary();
+                    Ok(CommandResult::SeatInspect(SeatInspection {
+                        mapping: MappingStatus {
+                            state: summary.continuity,
+                            target: summary.target.clone(),
+                            detail_argv: None,
+                        },
+                        summary,
+                        hold: None,
+                        retirement: None,
+                        open_binding: None,
+                        history: empty(),
+                    }))
+                }
+                Command::ContinuityCheckIn(c) => {
+                    c.validate()
+                        .map_err(|e| ApiError::new(ErrorCode::InvalidRequest, e))?;
+                    assert_eq!(c.target.as_str(), "w9:p1");
+                    assert_eq!(c.harness.as_str(), "synthetic_fourth");
+                    assert_eq!(c.native_session.as_str(), "fourth-resume-session");
+                    if self.control("enrollment-no-match.json") {
+                        return Err(ApiError::new(
+                            ErrorCode::NotFound,
+                            "fixture confirmed no continuity match",
+                        ));
+                    }
+                    *self.generation.lock().unwrap() = 7;
+                    self.resolved.store(true, Ordering::SeqCst);
+                    Ok(CommandResult::ContinuityReattached(
+                        ContinuityReattachment {
+                            seat: SeatId::new("registered-seat"),
+                            binding_generation: 7,
+                        },
+                    ))
+                }
+                Command::CheckIn(c) => {
+                    if self.transcript.as_ref().is_some_and(|path| {
+                        path.with_file_name("task52-checkin-failure.json").exists()
+                    }) {
+                        return Err(ApiError::new(
+                            ErrorCode::ReadBudgetExhausted,
+                            "task52 uncertain preparation",
+                        ));
+                    }
+                    let mut claim = c.claim;
+                    if matches!(
+                        c.mode,
+                        crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                    ) {
+                        *self.generation.lock().unwrap() += 1;
+                    }
+                    claim.binding_generation = *self.generation.lock().unwrap();
+                    Ok(CommandResult::CheckedIn(CheckInResult {
+                        seat: claim.seat.clone(),
+                        context: claim,
+                        context_disposition: CheckInContextDisposition::Current,
+                        offered_through: None,
+                        warning_count: 0,
+                        warning_count_has_more: false,
+                        warnings: empty(),
+                        notices: Default::default(),
+                        inbox: empty(),
+                    }))
+                }
+                Command::AttentionDigest(_) => {
+                    let mut d = digest(&[], &[]);
+                    d.seat = SeatId::new("registered-seat");
+                    Ok(CommandResult::AttentionDigest(d))
+                }
+                Command::Directory(_) => {
+                    if self.transcript.as_ref().is_some_and(|path| {
+                        path.with_file_name("task52-directory-failure.json")
+                            .exists()
+                    }) {
+                        return Err(crate::test_support::unserved(
+                            "task52 output preparation failed",
+                        ));
+                    }
+                    Ok(CommandResult::Directory(empty()))
+                }
+                Command::HotThreads(query) => {
+                    assert_eq!(query.seat.as_str(), "registered-seat");
+                    let path = self
+                        .transcript
+                        .as_ref()
+                        .unwrap()
+                        .with_file_name("task52-hot.json");
+                    let hot = read_fixture_json(&path, 4096)
+                        .map_err(|_| crate::test_support::unserved("no scripted hot threads"))?;
+                    Ok(CommandResult::HotThreads(hot))
+                }
+                Command::HookParseFailure(_) => Ok(CommandResult::HookParseFailureRecorded),
+                _ => Err(crate::test_support::unserved(
+                    "unused registered fixture command",
+                )),
+            }
+        }
+    }
+    // Reporting a teardown error must not create another unwind when stderr
+    // itself is unavailable.
+    macro_rules! fixture_diagnostic {
+        ($($arg:tt)*) => {{
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr().lock(), $($arg)*);
+        }};
+    }
+    const WORKER_ROOT_ENV: &str = "HT42_REGISTERED_WORKER_ROOT";
+    const WORKER_TEST: &str =
+        "cli::hook::tests::registered_resume::registered_fixture_worker_process";
+    const SETTLE_LIMIT: Duration = Duration::from_secs(3);
+    const RECOVERY_LIMIT: Duration = Duration::from_millis(250);
+    fn read_fixture_json<T: serde::de::DeserializeOwned>(path: &Path, limit: u64) -> io::Result<T> {
+        use std::io::Read;
+        if !std::fs::symlink_metadata(path)?.file_type().is_file() {
+            return Err(io::Error::other("fixture record is not a regular file"));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(limit + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            return Err(io::Error::other("fixture record exceeds bound"));
+        }
+        serde_json::from_slice(&bytes).map_err(io::Error::other)
+    }
+    fn write_fixture_json(path: &Path, value: &impl serde::Serialize) -> io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
+        if bytes.len() > 1024 * 1024 {
+            return Err(io::Error::other("fixture transcript exceeds bound"));
+        }
+        let temporary = path.with_extension(format!("{}.tmp", uuid()));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        file.write_all(&bytes)?;
+        std::fs::rename(temporary, path)
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct WorkerConfig {
+        instance: uuid::Uuid,
+        resolved: bool,
+        mode: String,
+    }
+    struct FixtureRoot(PathBuf, bool);
+    impl std::ops::Deref for FixtureRoot {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for FixtureRoot {
+        fn drop(&mut self) {
+            if !self.1 {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+    // This entry is inert in ordinary test enumeration. Only an owned exact
+    // child receives its private root via Command.env, never global mutation.
+    #[test]
+    fn registered_fixture_worker_process() {
+        let Some(root) = std::env::var_os(WORKER_ROOT_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let config: WorkerConfig = read_fixture_json(&root.join("worker.json"), 4096).unwrap();
+        let context =
+            RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
+        let paths = InstancePaths::resolve(&context).unwrap();
+        let owner = OwnerLock::acquire(&paths).unwrap();
+        assert_eq!(owner.instance_uuid(), config.instance);
+        assert!(
+            std::fs::symlink_metadata(&paths.socket_path)
+                .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
+        );
+        let bound = owner.bind_socket().unwrap();
+        let descriptor = match owner.publish_endpoint(
+            &bound,
+            env!("CARGO_PKG_VERSION"),
+            crate::protocol::wire::PROTOCOL_VERSION,
+        ) {
+            Ok(d) => d,
+            Err(error) => {
+                owner.remove_failed_bound_publication(&bound).unwrap();
+                panic!("fixture publication: {error}");
+            }
+        };
+        if config.mode == "before-ready" {
+            panic!("injected publication-before-ready failure");
+        }
+        let mut service = Service::new(config.resolved);
+        service.transcript = Some(root.join("transcript.json"));
+        write_fixture_json(service.transcript.as_ref().unwrap(), &Vec::<Command>::new()).unwrap();
+        write_fixture_json(&root.join("ready.json"), &descriptor).unwrap();
+        let stop = Cancellation::default();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let cancellation = stop.clone();
+            let marker = root.join("stop.json");
+            tokio::spawn(async move {
+                loop {
+                    if marker.exists() {
+                        cancellation.cancel();
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            });
+            let outcome = crate::daemon::transport::serve(
+                bound.into_async().unwrap(),
+                config.instance,
+                Arc::new(service),
+                Arc::new(SystemClock::new()),
+                crate::daemon::paths::effective_uid(),
+                stop,
+            )
+            .await
+            .unwrap();
+            if let crate::daemon::transport::ServeOutcome::Incomplete(mut drain) = outcome {
+                tokio::time::timeout(Duration::from_secs(2), drain.wait())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+        });
+        // Keep the actual child-elected owner through serving and injected late
+        // settlement. A process deadline can terminate any still-live work.
+        match config.mode.as_str() {
+            "panic" => panic!("injected actual fixture worker panic"),
+            "late" => std::thread::sleep(Duration::from_millis(80)),
+            "hung" => std::thread::sleep(Duration::from_secs(30)),
+            _ => {}
+        }
+        drop(runtime);
+        drop(owner);
+    }
+    struct Fixture {
+        root: FixtureRoot,
+        paths: InstancePaths,
+        instance: uuid::Uuid,
+        service: Arc<Service>,
+        boot: Option<uuid::Uuid>,
+        proof: Option<EndpointDescriptor>,
+        child: Option<OwnedChild>,
+        settle_limit: Duration,
+    }
+    impl Fixture {
+        fn new(resolved: bool) -> Self {
+            Self::new_mode(resolved, "normal")
+        }
+        fn new_mode(resolved: bool, mode: &str) -> Self {
+            Self::new_mode_with_root(
+                resolved,
+                mode,
+                std::env::temp_dir().join(format!("ht42-{}", uuid())),
+            )
+        }
+        fn new_mode_with_root(resolved: bool, mode: &str, root: PathBuf) -> Self {
+            let root = FixtureRoot(root, false);
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&root.0)
+                .unwrap();
+            let context =
+                RuntimeContext::explicit(root.join("state"), root.join("host.sock"), None).unwrap();
+            let paths = InstancePaths::resolve(&context).unwrap();
+            assert!(
+                std::fs::symlink_metadata(&paths.socket_path)
+                    .is_err_and(|e| e.kind() == io::ErrorKind::NotFound),
+                "refuse preexisting endpoint"
+            );
+            assert!(
+                !paths.descriptor_path.exists(),
+                "refuse preexisting descriptor"
+            );
+            let owner = OwnerLock::acquire(&paths).unwrap();
+            let instance = owner.instance_uuid();
+            drop(owner);
+            let mut f = Self {
+                root,
+                paths,
+                instance,
+                service: Arc::new(Service::new(resolved)),
+                boot: None,
+                proof: None,
+                child: None,
+                settle_limit: SETTLE_LIMIT,
+            };
+            write_fixture_json(
+                &f.root.join("worker.json"),
+                &WorkerConfig {
+                    instance,
+                    resolved,
+                    mode: mode.into(),
+                },
+            )
+            .unwrap();
+            let mut command = crate::test_support::spawn::command(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", WORKER_TEST, "--nocapture", "--test-threads=1"])
+                .env(WORKER_ROOT_ENV, &f.root.0)
+                .env_remove(crate::protocol::time::TEST_TIMEOUT_SCALE_ENV)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::fs::File::create(f.root.join("child.stdout")).unwrap())
+                .stderr(std::fs::File::create(f.root.join("child.stderr")).unwrap());
+            f.child = Some(command.spawn_owned().unwrap());
+            // The child is owned before any fallible readiness/metadata read.
+            let deadline = Instant::now() + SETTLE_LIMIT;
+            loop {
+                if f.root.join("ready.json").exists() {
+                    let ready: EndpointDescriptor =
+                        read_fixture_json(&f.root.join("ready.json"), 4096).unwrap();
+                    let actual = read_descriptor(&f.paths, f.instance).unwrap();
+                    assert_eq!(ready, actual, "fixture readiness descriptor drift");
+                    f.remember_proof(actual).unwrap();
+                    break;
+                }
+                assert!(
+                    f.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+                    "fixture child exited before ready"
+                );
+                assert!(Instant::now() < deadline, "fixture child readiness timeout");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            f
+        }
+        fn remember_proof(&mut self, proof: EndpointDescriptor) -> io::Result<()> {
+            if proof.instance_uuid != self.instance || proof.endpoint != self.paths.socket_path {
+                return Err(io::Error::other("fixture endpoint namespace/path drift"));
+            }
+            if self
+                .proof
+                .as_ref()
+                .is_some_and(|previous| previous != &proof)
+            {
+                return Err(io::Error::other("fixture endpoint boot/inode drift"));
+            }
+            fixture_diagnostic!(
+                "registered fixture endpoint: {} state={} instance={} boot={} device={} inode={}",
+                proof.endpoint.display(),
+                self.paths.instance_dir.display(),
+                self.instance,
+                proof.boot_id,
+                proof.socket_device,
+                proof.socket_inode
+            );
+            self.boot = Some(proof.boot_id);
+            self.proof = Some(proof);
+            Ok(())
+        }
+        fn run(&self, r: &'static Registration, i: &HookInput) -> HookOutcome {
+            let mut a = args(&self.root);
+            a.harness = OccupantHarness::Agent(builtins().agent(r.metadata().id).unwrap()).into();
+            a.event = i.registered_event.clone();
+            let outcome = run_hook_registered(
+                r,
+                &a,
+                &claude(),
+                &i.bytes,
+                &herdr(),
+                Instant::now() + LIFECYCLE_BUDGET,
+                Arc::new(SystemClock::new()),
+                None,
+            );
+            *self.service.seen.lock().unwrap() =
+                read_fixture_json(&self.root.join("transcript.json"), 1024 * 1024).unwrap();
+            outcome
+        }
+        fn saved(&self) -> Option<OccupantContext> {
+            crate::cli::seat_contexts(&self.paths, self.instance, &SeatId::new("registered-seat"))
+                .unwrap()
+                .current()
+                .unwrap()
+        }
+        fn teardown(&mut self) -> Result<(), String> {
+            let mut errors = Vec::new();
+            let mut diagnostics = Vec::new();
+            if let Some(mut child) = self.child.take() {
+                if let Err(error) = write_fixture_json(&self.root.join("stop.json"), &true) {
+                    errors.push(format!("fixture cancellation: {error}"));
+                }
+                let first_deadline = Instant::now() + self.settle_limit;
+                let final_deadline = first_deadline + RECOVERY_LIMIT;
+                let mut late = false;
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            if !status.success() {
+                                errors.push(format!("fixture worker failure: {status}"));
+                            }
+                            break;
+                        }
+                        Err(error) => {
+                            errors.push(format!("fixture child wait: {error}"));
+                            break;
+                        }
+                        Ok(None) => {}
+                    }
+                    if Instant::now() >= first_deadline && !late {
+                        late = true;
+                        errors.push("fixture transport did not settle before deadline".into());
+                    }
+                    if Instant::now() >= final_deadline {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                // stop always terminates the entire owned group, even if its
+                // leader already exited; wait reaps before endpoint election.
+                let reaped = child.stop();
+                fixture_diagnostic!(
+                    "registered fixture child: pid={} reaped={reaped:?} late={late}",
+                    child.id()
+                );
+                // Capture child diagnostics before successful cleanup removes
+                // its private root. Reads remain strictly bounded.
+                for name in ["child.stdout", "child.stderr"] {
+                    use std::io::Read;
+                    if let Ok(file) = std::fs::File::open(self.root.join(name)) {
+                        let mut bytes = Vec::new();
+                        match file.take(65537).read_to_end(&mut bytes) {
+                            Ok(_) if bytes.len() <= 65536 => diagnostics.push(format!(
+                                "registered fixture {name}: {}",
+                                String::from_utf8_lossy(&bytes)
+                            )),
+                            _ => errors
+                                .push(format!("fixture {name} diagnostics exceeds/read bound")),
+                        }
+                    }
+                }
+                if reaped.is_none() {
+                    self.root.1 = true;
+                    return Err(
+                        "fixture child reaping unconfirmed; ownership evidence retained".into(),
+                    );
+                }
+            }
+            let cleanup = (|| -> io::Result<()> {
+                // A child may publish then fail before ready. Only this own
+                // initial private namespace and sole reaped child can have
+                // published here; production validation supplies the proof.
+                if self.paths.descriptor_path.exists() {
+                    let actual = read_descriptor(&self.paths, self.instance)?;
+                    self.remember_proof(actual)?;
+                    let owner = OwnerLock::acquire(&self.paths)?;
+                    if owner.instance_uuid() != self.instance {
+                        return Err(io::Error::other("fixture namespace drift"));
+                    }
+                    let elected = read_descriptor(&self.paths, self.instance)?;
+                    if self.proof.as_ref() != Some(&elected) {
+                        return Err(io::Error::other(
+                            "fixture publication changed during election",
+                        ));
+                    }
+                    owner.remove_owned_endpoint(elected.boot_id)?;
+                }
+                match std::fs::symlink_metadata(&self.paths.socket_path) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                    _ => Err(io::Error::other("owned endpoint survived shutdown")),
+                }
+            })();
+            if let Err(error) = cleanup {
+                self.root.1 = true;
+                errors.push(format!(
+                    "fixture endpoint cleanup refused; root retained {}: {error}",
+                    self.root.0.display()
+                ));
+            } else {
+                fixture_diagnostic!(
+                    "registered fixture cleanup: endpoint absent {}",
+                    self.paths.socket_path.display()
+                );
+            }
+            for diagnostic in diagnostics {
+                fixture_diagnostic!("{diagnostic}");
+            }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            if let Err(error) = self.teardown() {
+                if std::thread::panicking() {
+                    fixture_diagnostic!("registered fixture teardown during unwind: {error}");
+                } else {
+                    panic!("registered fixture teardown: {error}");
+                }
+            }
+        }
+    }
+    // Established before injecting a teardown error: recover only the original
+    // exact endpoint after the finite injected worker has stopped.
+    struct EndpointRecovery {
+        _root: FixtureRoot,
+        paths: InstancePaths,
+        instance: uuid::Uuid,
+        boot: uuid::Uuid,
+        delayed: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for EndpointRecovery {
+        fn drop(&mut self) {
+            if let Some(worker) = self.delayed.take() {
+                let _ = worker.join();
+            }
+            if self.paths.socket_path.exists()
+                && let Ok(owner) = OwnerLock::acquire(&self.paths)
+                && owner.instance_uuid() == self.instance
+            {
+                let outcome = owner.remove_owned_endpoint(self.boot);
+                fixture_diagnostic!("regression recovery: {outcome:?}");
+            }
+            self._root.1 = self.paths.socket_path.exists();
+        }
+    }
+    fn teardown_error_regression(late: bool) {
+        let mut f = Fixture::new_mode(false, if late { "late" } else { "panic" });
+        if late {
+            f.settle_limit = Duration::from_millis(20);
+        }
+        let recovery = EndpointRecovery {
+            _root: FixtureRoot(f.root.0.clone(), true),
+            paths: f.paths.clone(),
+            instance: f.instance,
+            boot: f.boot.unwrap(),
+            delayed: None,
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(f)));
+        assert!(result.is_err(), "worker failure must be reported");
+        assert!(
+            !recovery.paths.socket_path.exists(),
+            "owned endpoint survived reported teardown error"
+        );
+    }
+    #[test]
+    fn registered_fixture_worker_panic_cleans_endpoint_before_reporting() {
+        teardown_error_regression(false);
+    }
+    #[test]
+    fn registered_fixture_late_settlement_cleans_endpoint_before_reporting() {
+        teardown_error_regression(true);
+    }
+    #[test]
+    fn registered_fixture_worker_failure_during_unwind_preserves_original_panic() {
+        let f = Fixture::new_mode(false, "panic");
+        let endpoint = f.paths.socket_path.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _fixture = f;
+            panic!("original test failure");
+        }));
+        let payload = result.unwrap_err();
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"original test failure")
+        );
+        assert!(
+            !endpoint.exists(),
+            "unwinding teardown must finish endpoint cleanup"
+        );
+    }
+    #[test]
+    fn registered_fixture_live_worker_deadline_reaps_before_endpoint_cleanup() {
+        let mut f = Fixture::new_mode(false, "hung");
+        f.settle_limit = Duration::from_millis(20);
+        let error = f.teardown().unwrap_err();
+        assert!(error.contains("did not settle before deadline"));
+        assert!(
+            f.child.is_none(),
+            "owned worker must be reaped before return"
+        );
+        assert!(
+            !f.paths.socket_path.exists(),
+            "deadline cleanup must remove owned endpoint"
+        );
+    }
+    #[test]
+    fn registered_fixture_publication_before_ready_failure_cleans_owned_endpoint() {
+        let root = std::env::temp_dir().join(format!("ht42-{}", uuid()));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Fixture::new_mode_with_root(false, "before-ready", root.clone())
+        }));
+        assert!(
+            result.is_err(),
+            "actual child publication failure must be reported"
+        );
+        assert!(
+            !root.exists(),
+            "successful exact-owner cleanup must remove private root"
+        );
+    }
+    fn enrollment_counts(f: &Fixture) -> (usize, usize) {
+        let seen = f.service.seen.lock().unwrap();
+        (
+            seen.iter()
+                .filter(|c| matches!(c, Command::ResolveSeat(_)))
+                .count(),
+            seen.iter()
+                .filter(|c| matches!(c, Command::CheckIn(_)))
+                .count(),
+        )
+    }
+    fn assert_no_enrollment_intents(f: &Fixture) {
+        let journal =
+            crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        let page = journal
+            .page(&crate::protocol::pagination::PageRequest {
+                cursor: None,
+                limit: 50,
+                max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+            })
+            .unwrap();
+        assert!(
+            page.items.is_empty(),
+            "unexpected durable intents: {:?}",
+            page.items
+        );
+    }
+    /// Actual admitted fourth producer -> canonical socket commands -> context
+    /// journal. Native names differ truthfully from SessionStart. Disabling
+    /// enrollment must fail actual ResolveSeat and installed-context assertions.
+    #[test]
+    fn startup_enrollment_registered_fourth_uses_original_typed_intent() {
+        for event in ["SyntheticStart", "SyntheticClear", "SyntheticResume"] {
+            let f = Fixture::new(false);
+            write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+            write_fixture_json(&f.root.join("enrollment-no-match.json"), &true).unwrap();
+            let i = input(event, "top_level", Some("fourth-resume-session"));
+            let (_, d) = decode(registration(), &i);
+            assert_eq!(d.metadata.native_event, event);
+            let outcome = f.run(registration(), &i);
+            assert_eq!(
+                enrollment_counts(&f),
+                (1, 1),
+                "{event}: diagnostic={:?}; commands={:?}",
+                outcome.diagnostic,
+                f.service.seen.lock().unwrap()
+            );
+            assert_eq!(outcome.diagnostic, None);
+            let saved = f
+                .saved()
+                .expect("ordinary resolver followed by real check-in installs context");
+            assert_eq!(saved.seat, "registered-seat");
+            assert_eq!(saved.target, "w9:p1");
+            assert_eq!(saved.binding_generation, 2);
+            assert_eq!(
+                saved.session,
+                SessionReference::Native("fourth-resume-session".into())
+            );
+            assert_eq!(saved.harness, OccupantHarness::Agent(d.harness).into());
+            let seen = f.service.seen.lock().unwrap();
+            let resolve = seen
+                .iter()
+                .position(|c| matches!(c, Command::ResolveSeat(_)))
+                .unwrap();
+            let check = seen
+                .iter()
+                .position(|c| matches!(c, Command::CheckIn(_)))
+                .unwrap();
+            assert!(resolve < check);
+            for c in &*seen {
+                if let Command::CheckIn(c) = c {
+                    assert_eq!(c.claim.seat.as_str(), "registered-seat");
+                    assert_eq!(c.claim.binding_generation, 1);
+                    assert_eq!(c.claim.harness, OccupantHarness::Agent(d.harness));
+                }
+            }
+            if event == "SyntheticResume" {
+                assert_eq!(
+                    seen.iter()
+                        .filter(|c| matches!(c, Command::ContinuityCheckIn(_)))
+                        .count(),
+                    1
+                );
+                assert!(
+                    seen.iter()
+                        .position(|c| matches!(c, Command::ContinuityCheckIn(_)))
+                        .unwrap()
+                        < resolve
+                );
+            } else {
+                assert!(
+                    !seen
+                        .iter()
+                        .any(|c| matches!(c, Command::ContinuityCheckIn(_)))
+                );
+            }
+            drop(seen);
+            assert_no_enrollment_intents(&f);
+            // Resolved reuse is freshly guarded, not a cached local bypass.
+            let mut next: serde_json::Value = serde_json::from_slice(
+                &input("SyntheticStart", "top_level", Some("fourth-resume-session")).bytes,
+            )
+            .unwrap();
+            next["event_id"] = "fresh-guarded-reuse".into();
+            let next = HookInput {
+                bytes: serde_json::to_vec(&next).unwrap(),
+                registered_event: Some("SyntheticStart".into()),
+            };
+            let reuse = f.run(registration(), &next);
+            assert_eq!(reuse.diagnostic, None);
+            assert_eq!(enrollment_counts(&f), (2, 2));
+            assert_eq!(f.saved().unwrap().seat, saved.seat);
+            assert_no_enrollment_intents(&f);
+        }
+    }
+    /// A registry entry and normalized Startup cannot enroll Hermes. A mutant
+    /// based on context_event mode reaches the forbidden actual ResolveSeat.
+    #[test]
+    fn startup_enrollment_hermes_qualified_unowned_never_resolves() {
+        let r = builtins()
+            .by_id(builtins().agent("hermes").unwrap())
+            .unwrap();
+        for callback in ["pre_llm_call", "on_session_reset", "on_session_start"] {
+            let f = Fixture::new(false);
+            write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+            let role = if callback == "pre_llm_call" {
+                "top"
+            } else {
+                "unknown"
+            };
+            let i = hermes_input(callback, "unowned-native-session", "turn", 1, role);
+            let handle = r
+                .admit(
+                    &hook_admission_request(r, callback_install_observation(r), &i),
+                    &budget(Instant::now() + LIFECYCLE_BUDGET, clock().as_ref()),
+                )
+                .unwrap();
+            let d = r.decode(&handle, &i).unwrap();
+            assert_eq!(d.metadata.native_event, callback);
+            if callback == "pre_llm_call" {
+                assert!(matches!(d.intent, EventIntent::QualifiedTurn(_)));
+                assert_eq!(d.context_event().unwrap().kind, EventKind::Startup);
+            }
+            let outcome = f.run(r, &i);
+            assert_eq!(
+                enrollment_counts(&f),
+                (0, 0),
+                "{callback}: diagnostic={:?}; commands={:?}",
+                outcome.diagnostic,
+                f.service.seen.lock().unwrap()
+            );
+            assert!(f.saved().is_none());
+            assert!(f.service.requests().is_empty());
+            assert!(outcome.attention.is_none());
+            assert_no_enrollment_intents(&f);
+        }
+    }
+    #[test]
+    fn startup_enrollment_fourth_neighbors_refuse_before_resolver() {
+        for (event, role, session) in [
+            ("SyntheticStart", "child", Some("fourth-resume-session")),
+            ("SyntheticStart", "unknown", Some("fourth-resume-session")),
+            ("SyntheticTool", "top_level", Some("fourth-resume-session")),
+            (
+                "SyntheticCompact",
+                "top_level",
+                Some("fourth-resume-session"),
+            ),
+            (
+                "SyntheticRestart",
+                "top_level",
+                Some("fourth-resume-session"),
+            ),
+            (
+                "SyntheticObserver",
+                "top_level",
+                Some("fourth-resume-session"),
+            ),
+            ("SyntheticResume", "top_level", None),
+        ] {
+            let f = Fixture::new(false);
+            write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+            let i = input(event, role, session);
+            let outcome = f.run(registration(), &i);
+            assert_eq!(enrollment_counts(&f), (0, 0), "{event}/{role}");
+            assert!(f.saved().is_none());
+            assert!(outcome.attention.is_none());
+            assert_no_enrollment_intents(&f);
+        }
+        // Actual strict registered-event mismatch stops before canonical I/O.
+        let f = Fixture::new(false);
+        write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+        let mut i = input("SyntheticStart", "top_level", Some("fourth-resume-session"));
+        i.registered_event = Some("SyntheticTool".into());
+        let outcome = f.run(registration(), &i);
+        assert_eq!(enrollment_counts(&f), (0, 0));
+        // Refused payload diagnostics may negotiate capabilities, but no
+        // canonical seat read/mutation or context journal work is permitted.
+        assert!(
+            f.service
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|c| matches!(c, Command::Capabilities))
+        );
+        assert!(f.saved().is_none());
+        assert!(outcome.attention.is_none());
+        assert_no_enrollment_intents(&f);
+    }
+    #[test]
+    fn registered_fourth_genuine_resume_reaches_canonical_request_and_installs_context() {
+        let r = registration();
+        let i = input(
+            "SyntheticResume",
+            "top_level",
+            Some("fourth-resume-session"),
+        );
+        let (_, d) = decode(r, &i);
+        assert!(matches!(
+            d.intent,
+            EventIntent::Lifecycle(EventKind::Resume)
+        ));
+        assert_eq!(d.metadata.context_source, "resume");
+        assert_eq!(d.metadata.native_event, "SyntheticResume");
+        assert_eq!(d.harness, registry().agent("synthetic_fourth").unwrap());
+        assert_eq!(d.context_event().unwrap().kind, EventKind::Resume);
+        eprintln!(
+            "declared fixture decoded: SyntheticResume -> top-level Resume source=resume session=fourth-resume-session"
+        );
+        let f = Fixture::new(false);
+        let outcome = f.run(r, &i);
+        let requests = f.service.requests();
+        assert_eq!(
+            requests.len(),
+            1,
+            "real continuity request missing: diagnostic={:?}; commands={:?}",
+            outcome.diagnostic,
+            f.service.seen.lock().unwrap()
+        );
+        let c = &requests[0];
+        assert_eq!(c.harness, OccupantHarness::Agent(d.harness));
+        assert_eq!(c.source, "resume");
+        assert_eq!(c.native_session.as_str(), "fourth-resume-session");
+        assert_eq!(c.target.as_str(), "w9:p1");
+        assert!(crate::protocol::ids::OperationId::parse(c.operation.as_str()).is_ok());
+        let execution = uuid::Uuid::parse_str(c.execution.as_str()).unwrap();
+        assert!(!execution.is_nil());
+        assert_eq!(Command::ContinuityCheckIn(c.clone()).validate(), Ok(()));
+        let saved = f.saved().expect("canonical reply context installed");
+        assert_eq!(saved.instance, f.instance);
+        assert_eq!(saved.seat, "registered-seat");
+        assert_eq!(saved.binding_generation, 7);
+        assert_eq!(saved.target, "w9:p1");
+        assert_eq!(saved.harness, OccupantHarness::Agent(d.harness).into());
+        assert_eq!(
+            saved.session,
+            SessionReference::Native("fourth-resume-session".into())
+        );
+        assert_eq!(saved.role, Role::TopLevel);
+        assert_eq!(saved.execution, execution);
+        let journal =
+            crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        assert!(
+            journal
+                .pending_continuity(&f.instance.to_string(), &c.target)
+                .unwrap()
+                .is_none()
+        );
+        let calls = f.service.seen.lock().unwrap();
+        assert!(!calls.iter().any(|c|matches!(c,Command::CheckIn(c) if matches!(c.mode,crate::protocol::commands::CheckInMode::Lifecycle { .. }))));
+        assert!(calls.iter().any(|c|matches!(c,Command::CheckIn(c) if c.mode==crate::protocol::commands::CheckInMode::Current)));
+        drop(calls);
+        assert_eq!(outcome.diagnostic, None);
+        let value: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+        assert!(
+            value["synthetic_context"]
+                .as_str()
+                .unwrap()
+                .contains("Before using threads")
+        );
+        assert!(outcome.attention.is_some());
+        eprintln!("installed canonical fixture context: {saved:?}");
+    }
+    #[test]
+    fn registered_fourth_resume_refuses_child_unknown_role_and_observer() {
+        for (event, role) in [
+            ("SyntheticResume", "child"),
+            ("SyntheticResume", "unknown"),
+            ("SyntheticObserver", "top_level"),
+        ] {
+            let r = registration();
+            let i = input(event, role, Some("fourth-resume-session"));
+            let (_, d) = decode(r, &i);
+            assert!(!d.can_check_in());
+            if event == "SyntheticObserver" {
+                assert!(matches!(d.intent, EventIntent::Observer));
+            } else {
+                assert!(matches!(
+                    d.intent,
+                    EventIntent::Lifecycle(EventKind::Resume)
+                ));
+            }
+            let f = Fixture::new(false);
+            let outcome = f.run(r, &i);
+            assert!(f.service.requests().is_empty(), "{event}/{role}");
+            assert!(f.saved().is_none());
+            assert!(outcome.attention.is_none());
+            assert!(
+                !f.service
+                    .seen
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|c| matches!(c, Command::CheckIn(_) | Command::AttentionDigest(_)))
+            );
+            if role == "unknown" {
+                assert!(outcome.stdout.is_empty());
+            } else {
+                let v: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+                if role == "child" {
+                    let text = v["synthetic_context"].as_str().unwrap();
+                    assert!(text.contains("forbidden to subagents"));
+                    assert!(!text.contains("Before using threads"));
+                } else {
+                    assert!(v["synthetic_context"].is_null());
+                }
+            }
+        }
+    }
+    #[test]
+    fn registered_resume_requires_valid_native_session_and_exact_source() {
+        let overlong = "s".repeat(129);
+        for (label, session, decoder_refuses) in [
+            ("absent", None, false),
+            ("empty", Some(""), true),
+            ("overlong", Some(overlong.as_str()), true),
+            ("control", Some("bad\nsession"), true),
+            ("plugin", Some("plugin_context:fake"), false),
+        ] {
+            let r = registration();
+            let i = input("SyntheticResume", "top_level", session);
+            let h = r
+                .admit(
+                    &hook_admission_request(r, InstallObservation::NotRequested, &i),
+                    &budget(Instant::now() + LIFECYCLE_BUDGET, clock().as_ref()),
+                )
+                .unwrap();
+            assert_eq!(r.decode(&h, &i).is_err(), decoder_refuses, "{label}");
+            let f = Fixture::new(false);
+            let outcome = f.run(r, &i);
+            assert!(f.service.requests().is_empty(), "{label}");
+            assert!(f.saved().is_none(), "{label}");
+            assert!(outcome.attention.is_none());
+            assert!(outcome.diagnostic.is_some(), "{label}");
+            eprintln!("invalid session control {label}: {:?}", outcome.diagnostic);
+        }
+        let r = registration();
+        let i = input(
+            "SyntheticResume",
+            "top_level",
+            Some("fourth-resume-session"),
+        );
+        let (h, mut d) = decode(r, &i);
+        // A defective producer's normalized source must not be repaired by core.
+        d.metadata.context_source = "startup".into();
+        let f = Fixture::new(false);
+        let mut a = args(&f.root);
+        a.harness = OccupantHarness::Agent(d.harness).into();
+        let outcome = run_admitted_hook(
+            &a,
+            r,
+            &h,
+            &d,
+            &herdr(),
+            Instant::now() + LIFECYCLE_BUDGET,
+            Arc::new(SystemClock::new()),
+            None,
+        );
+        assert!(f.service.requests().is_empty());
+        assert!(f.saved().is_none());
+        assert!(outcome.attention.is_none());
+        assert!(outcome.diagnostic.is_some());
+        // The same existing wire validator governs journal admission and daemon dispatch.
+        let c = crate::protocol::commands::ContinuityCheckIn {
+            target: HostTargetId::new("w9:p1"),
+            harness: OccupantHarness::Agent(d.harness),
+            native_session: crate::protocol::ids::NativeSessionId::parse("fourth-resume-session")
+                .unwrap(),
+            source: d.metadata.context_source,
+            operation: OperationId::new(uuid()),
+            execution: crate::protocol::ids::ExecutionId::new(uuid()),
+        };
+        assert_eq!(
+            c.validate(),
+            Err("only a resume check-in can reattach a seat")
+        );
+    }
+    #[test]
+    fn continuity_human_and_unknown_identity_have_no_agent_request() {
+        use sha2::{Digest, Sha256};
+        let f = Fixture::new(false);
+        let contexts =
+            crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
+                .unwrap();
+        let sentinel = OccupantContext {
+            format_version: 1,
+            instance: f.instance,
+            seat: "registered-seat".into(),
+            target: "w9:p1".into(),
+            harness: Harness::Claude,
+            binding_generation: 3,
+            execution: uuid::Uuid::new_v4(),
+            session: SessionReference::Native("sentinel".into()),
+            role: Role::TopLevel,
+        };
+        contexts.install_reattached(sentinel.clone()).unwrap();
+        let directory = crate::cli::seat_context_dir(&f.paths, "registered-seat").unwrap();
+        let file = directory.join("context.json");
+        let before = Sha256::digest(std::fs::read(&file).unwrap());
+        let mut a = args(&f.root);
+        a.harness = Harness::Human;
+        let outcome = run_hook(
+            &a,
+            &claude(),
+            CLAUDE_START,
+            &herdr(),
+            Instant::now() + LIFECYCLE_BUDGET,
+            clock(),
+            None,
+        );
+        assert_eq!(
+            outcome.diagnostic.as_deref(),
+            Some("a human occupant has no installed harness")
+        );
+        assert!(outcome.stdout.is_empty());
+        assert!(outcome.attention.is_none());
+        let client = LocalSocketClient::new(
+            f.paths.socket_path.clone(),
+            Arc::new(SystemClock::new()),
+            f.instance,
+            Some(f.boot.unwrap()),
+        );
+        let context =
+            RuntimeContext::explicit(f.root.join("state"), f.root.join("host.sock"), None).unwrap();
+        let target = HostTargetId::new("w9:p1");
+        let call = PaneCall {
+            context: &context,
+            paths: &f.paths,
+            client: &client,
+            instance: f.instance,
+            target: &target,
+            deadline: Instant::now() + LIFECYCLE_BUDGET,
+            current_deadline: CurrentDeadline {
+                at: Instant::now() + TOOL_BUDGET,
+                watchdog: None,
+            },
+            clock: clock(),
+            retry: Arc::new(HookDeadline(Instant::now() + TOOL_BUDGET)),
+        };
+        let ev = LifecycleEvent {
+            harness: Harness::Human,
+            role: Role::TopLevel,
+            kind: EventKind::Resume,
+            native_session: Some("fourth-resume-session".into()),
+            event_id: uuid(),
+            source: "resume".into(),
+            capability: Capability::ObservedInput,
+        };
+        assert!(matches!(
+            call.reattach_by_continuity(&ev, false),
+            Reattach::Declined
+        ));
+        assert!(registry().agent("human").is_err());
+        assert!(registry().agent("unregistered_resume").is_err());
+        assert!(serde_json::from_str::<OccupantHarness>("\"unregistered_resume\"").is_err());
+        assert!(serde_json::from_str::<Harness>("\"UnregisteredResume\"").is_err());
+        assert!(matches!(
+            parse_hook_argv_registered(&os(&["ht", "hook", "human"]), registry()),
+            Some(Err(_))
+        ));
+        assert!(matches!(
+            parse_hook_argv_registered(&os(&["ht", "hook", "unregistered_resume"]), registry()),
+            Some(Err(_))
+        ));
+        let unvalidated = Box::leak(Box::new(Registration::new(&RESUME)));
+        let i = input(
+            "SyntheticResume",
+            "top_level",
+            Some("fourth-resume-session"),
+        );
+        assert!(
+            unvalidated
+                .admit(
+                    &hook_admission_request(unvalidated, InstallObservation::NotRequested, &i),
+                    &budget(Instant::now() + TOOL_BUDGET, clock().as_ref())
+                )
+                .is_err()
+        );
+        let invalid = Registry::new(Box::leak(Box::new([
+            Registration::new(&RESUME),
+            Registration::new(&RESUME),
+        ])));
+        assert!(matches!(
+            invalid,
+            Err(crate::harness::registry::RegistryError::DuplicateId(_))
+        ));
+        assert!(f.service.requests().is_empty());
+        assert!(f.service.seen.lock().unwrap().is_empty());
+        let journal =
+            crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+        assert!(
+            journal
+                .pending_continuity(&f.instance.to_string(), &target)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(contexts.current().unwrap(), Some(sentinel));
+        assert_eq!(Sha256::digest(std::fs::read(file).unwrap()), before);
+    }
+    #[test]
+    fn registered_fourth_nonresume_never_replays_continuity() {
+        use crate::cli::journal::{IntentScope, Journal, SemanticMutation};
+        for (event, kind) in [
+            ("SyntheticStart", EventKind::Startup),
+            ("SyntheticTool", EventKind::Tool),
+            ("SyntheticClear", EventKind::Clear),
+            ("SyntheticCompact", EventKind::Compact),
+        ] {
+            let f = Fixture::new(false);
+            let r = registration();
+            let i = input(event, "top_level", Some("fourth-resume-session"));
+            let (_, d) = decode(r, &i);
+            assert_eq!(d.context_event().unwrap().kind, kind);
+            let target = HostTargetId::new("w9:p1");
+            let journal = Journal::open(f.paths.instance_dir.join("intents")).unwrap();
+            let planted = journal
+                .record(
+                    IntentScope::Continuity {
+                        instance: f.instance.to_string(),
+                        target: target.clone(),
+                    },
+                    SemanticMutation::ContinuityCheckIn {
+                        target: target.clone(),
+                        harness: OccupantHarness::Agent(d.harness),
+                        native_session: crate::protocol::ids::NativeSessionId::parse(
+                            "fourth-resume-session",
+                        )
+                        .unwrap(),
+                        source: "resume".into(),
+                        event_id: "planted-resume".into(),
+                        execution: crate::protocol::ids::ExecutionId::new(uuid()),
+                    },
+                    1,
+                )
+                .unwrap();
+            let outcome = f.run(r, &i);
+            assert!(f.service.requests().is_empty(), "{event}");
+            assert!(f.saved().is_none());
+            assert!(outcome.attention.is_none());
+            assert_eq!(
+                journal
+                    .pending_continuity(&f.instance.to_string(), &target)
+                    .unwrap()
+                    .unwrap()
+                    .header
+                    .reference,
+                planted,
+                "{event}"
+            );
+        }
+        // An eligible ordinary startup still attaches on a resolved pane.
+        let f = Fixture::new(true);
+        let i = input("SyntheticStart", "top_level", Some("fourth-resume-session"));
+        let outcome = f.run(registration(), &i);
+        assert_eq!(outcome.diagnostic, None);
+        assert!(f.saved().is_some());
+        assert!(f.service.requests().is_empty());
+        assert!(f.service.seen.lock().unwrap().iter().any(|c|matches!(c,Command::CheckIn(c) if matches!(c.mode,crate::protocol::commands::CheckInMode::Lifecycle {..}))));
+    }
+    fn hermes_input(
+        callback: &str,
+        session: &str,
+        turn: &str,
+        sequence: u64,
+        role: &str,
+    ) -> HookInput {
+        let mut p: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../fixtures/hermes/envelopes.json")).unwrap();
+        let now = SystemClock::new().utc_now().0;
+        p["started_at"] = now.into();
+        p["deadline_at"] = (now + 1200).into();
+        p["observation_order"]["observed_at_millis"] = now.into();
+        p["observation_order"]["sequence"] = sequence.into();
+        p["callback"] = callback.into();
+        p["session_id"] = session.into();
+        p["turn_id"] = turn.into();
+        p["event_id"] = format!("{callback}-{sequence}").into();
+        if callback == "pre_llm_call" && role != "unknown" {
+            p["role_association"]["session_id"] = session.into();
+            p["role_association"]["turn_id"] = turn.into();
+            p["role_association"]["role"] = role.into();
+            if role == "child" {
+                p["parent_session_id"] = "parent-session".into();
+            }
+        } else {
+            p["role_association"] = serde_json::Value::Null;
+            p["parent_session_id"] = serde_json::Value::Null;
+            p["shape"]["parent_session_id"] =
+                serde_json::json!({"presence":"missing","type":"absent"});
+        }
+        if callback == "on_session_reset" {
+            p["reset_reason"] = "new_session".into();
+        }
+        HookInput {
+            bytes: serde_json::to_vec(&p).unwrap(),
+            registered_event: Some(callback.into()),
+        }
+    }
+    fn task52_registration() -> &'static Registration {
+        builtins()
+            .by_id(builtins().agent("hermes").unwrap())
+            .unwrap()
+    }
+    fn task52_hot_fixture() -> Fixture {
+        let f = Fixture::new(true);
+        write_fixture_json(
+            &f.root.join("task52-hot.json"),
+            &crate::protocol::results::HotThreads {
+                hot: vec![hot_row("task52-hot", "hot \"topic\"\npeer")],
+                overflow: vec![],
+            },
+        )
+        .unwrap();
+        f
+    }
+    fn task52_commands(f: &Fixture) -> (usize, usize) {
+        assert!(f.service.requests().is_empty());
+        let seen = f.service.seen.lock().unwrap();
+        assert!(
+            !seen
+                .iter()
+                .any(|c| matches!(c, Command::Ack(_) | Command::AckDisplayed(_)))
+        );
+        (
+            seen.iter()
+                .filter(|c| matches!(c, Command::CheckIn(_)))
+                .count(),
+            seen.iter()
+                .filter(|c| matches!(c, Command::HotThreads(_)))
+                .count(),
+        )
+    }
+    fn task52_output(outcome: &HookOutcome, mode: &str, input: &HookInput) -> serde_json::Value {
+        assert_eq!(outcome.diagnostic, None);
+        let output: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(&input.bytes).unwrap();
+        assert_eq!(
+            output["lifecycle_ack"],
+            serde_json::json!({
+                "event_id": original["event_id"], "session_id": original["session_id"], "mode": mode
+            })
+        );
+        output
+    }
+    fn task52_clear_input(f: &Fixture) -> HookInput {
+        let r = task52_registration();
+        let start = hermes_input("pre_llm_call", "task52-old", "turn-1", 1, "top");
+        task52_output(&f.run(r, &start), "startup", &start);
+        let saved = f.saved().unwrap();
+        let before = task52_commands(f);
+        let reset = hermes_input("on_session_reset", "task52-new", "reset", 2, "unknown");
+        let observer = f.run(r, &reset);
+        assert!(observer.stdout.is_empty());
+        assert!(observer.attention.is_none());
+        assert_eq!(f.saved(), Some(saved));
+        assert_eq!(task52_commands(f), before);
+        hermes_input("pre_llm_call", "task52-new", "turn-3", 3, "top")
+    }
+    fn task52_assert_recovery(output: &serde_json::Value) {
+        let context = output["context"].as_str().unwrap();
+        assert!(
+            context
+                .lines()
+                .any(|line| line == crate::harness::recovery_instruction()),
+            "{context}"
+        );
+        let (_, data) = split_recovery(context);
+        let row: serde_json::Value = data
+            .iter()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|row| row["thread"] == "task52-hot")
+            .expect("actual escaped hot row missing");
+        assert_eq!(row["topic"], "hot \"topic\"peer");
+        assert_eq!(row["hot"], "pending_receipt");
+    }
+    #[test]
+    fn task52_facade_declared_reset_clear_has_hot_rows_guidance_and_precise_ack() {
+        let f = task52_hot_fixture();
+        let clear = task52_clear_input(&f);
+        let outcome = f.run(task52_registration(), &clear);
+        let output = task52_output(&outcome, "clear", &clear);
+        // BASE passes precise immutable ACK, then fails actual recovery composition.
+        task52_assert_recovery(&output);
+        assert_eq!(task52_commands(&f), (2, 1));
+        let sequence: Vec<_> = f
+            .service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| match c {
+                Command::CheckIn(c) => Some(("check-in", c.claim.harness.as_str().to_owned())),
+                Command::HotThreads(_) => Some(("hot", "hermes".into())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sequence,
+            [
+                ("check-in", "hermes".into()),
+                ("check-in", "hermes".into()),
+                ("hot", "hermes".into())
+            ]
+        );
+        assert!(outcome.attention.is_some());
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.session, SessionReference::Native("task52-new".into()));
+        let contexts =
+            crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
+                .unwrap();
+        assert_eq!(
+            contexts.prepared_kind_for_event("pre_llm_call-3").unwrap(),
+            EventKind::Clear
+        );
+        assert!(contexts.attention_mark(saved.execution).is_none());
+        outcome.attention.unwrap().commit().unwrap();
+        assert!(contexts.attention_mark(saved.execution).is_some());
+    }
+    #[test]
+    fn task52_accepted_kind_replay_and_refused_neighbors_preserve_original_eligibility() {
+        let r = task52_registration();
+        let f = task52_hot_fixture();
+        let clear = task52_clear_input(&f);
+        // Failure after accepted CheckIn keeps its canonical result for replay,
+        // and cannot commit the undelivered attention mark.
+        write_fixture_json(&f.root.join("task52-directory-failure.json"), &true).unwrap();
+        let failed = f.run(r, &clear);
+        assert!(failed.diagnostic.is_some());
+        assert!(failed.attention.is_none());
+        assert_eq!(task52_commands(&f), (2, 0));
+        let saved = f.saved().unwrap();
+        let contexts =
+            crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
+                .unwrap();
+        assert!(contexts.attention_mark(saved.execution).is_none());
+        assert!(
+            contexts
+                .completed_for_event("pre_llm_call-3")
+                .unwrap()
+                .is_some()
+        );
+        std::fs::remove_file(f.root.join("task52-directory-failure.json")).unwrap();
+        let delivered = f.run(r, &clear);
+        task52_assert_recovery(&task52_output(&delivered, "clear", &clear));
+        assert_eq!(task52_commands(&f), (2, 1));
+        assert_eq!(f.saved(), Some(saved.clone()));
+        let replay = f.run(r, &clear);
+        task52_assert_recovery(&task52_output(&replay, "clear", &clear));
+        assert_eq!(task52_commands(&f), (2, 2));
+        assert_eq!(f.saved(), Some(saved));
+        for (session, seq, expected) in [
+            ("task52-new", 4, "current"),
+            ("unknown-rotation", 5, "startup"),
+        ] {
+            let i = hermes_input("pre_llm_call", session, "neighbor", seq, "top");
+            let output = task52_output(&f.run(r, &i), expected, &i);
+            assert!(
+                !output["context"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&crate::harness::recovery_instruction())
+            );
+            assert_eq!(task52_commands(&f).1, 2);
+        }
+        for (callback, role, seq) in [
+            ("on_session_start", "unknown", 6),
+            ("pre_llm_call", "child", 7),
+            ("pre_llm_call", "unknown", 8),
+        ] {
+            let original = f.saved();
+            let before = task52_commands(&f);
+            let i = hermes_input(callback, "unknown-rotation", "excluded", seq, role);
+            let outcome = f.run(r, &i);
+            assert!(outcome.attention.is_none());
+            assert_eq!(f.saved(), original);
+            assert_eq!(task52_commands(&f), before);
+        }
+        let before = task52_commands(&f);
+        let saved = f.saved();
+        let mut tool = hermes_input("pre_llm_call", "unknown-rotation", "neighbor", 9, "top");
+        let mut p: serde_json::Value = serde_json::from_slice(&tool.bytes).unwrap();
+        p["callback"] = "post_tool_call".into();
+        p["role_association"]["provenance"] = "qualified_pre_llm_cache".into();
+        p["parent_session_id"] = serde_json::Value::Null;
+        p["shape"]["parent_session_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+        tool.bytes = serde_json::to_vec(&p).unwrap();
+        tool.registered_event = Some("post_tool_call".into());
+        let outcome = f.run(r, &tool);
+        assert_eq!(outcome.diagnostic, None);
+        assert_eq!(outcome.stdout, br#"{"context":null,"lifecycle_ack":null}"#);
+        assert!(outcome.attention.is_none());
+        let child = HookInput {
+            registered_event: Some("SubagentStart".into()),
+            bytes: serde_json::to_vec(&serde_json::json!({
+                "hook_event_name": "SubagentStart", "session_id": "child-session",
+                "source": "startup", "agent_id": "child", "agent_type": "worker",
+                "turn_id": "child-turn", "cwd": "/tmp", "model": "test",
+                "permission_mode": "default", "transcript_path": null
+            }))
+            .unwrap(),
+        };
+        let outcome = f.run(
+            builtins()
+                .by_id(builtins().agent("claude").unwrap())
+                .unwrap(),
+            &child,
+        );
+        assert!(outcome.attention.is_none());
+        assert!(!String::from_utf8_lossy(&outcome.stdout).contains("task52-hot"));
+        assert_eq!(f.saved(), saved);
+        assert_eq!(task52_commands(&f), before);
+        // Each hint neighbor starts from an otherwise eligible qualified startup.
+        for refusal in ["expired", "wrong-session", "wrong-target", "stale-order"] {
+            let f = task52_hot_fixture();
+            let start = hermes_input("pre_llm_call", "task52-old", "first", 1, "top");
+            task52_output(&f.run(r, &start), "startup", &start);
+            let saved = f.saved().unwrap();
+            let mut reset = hermes_input("on_session_reset", "task52-new", "reset", 2, "unknown");
+            if refusal == "expired" || refusal == "stale-order" {
+                let mut p: serde_json::Value = serde_json::from_slice(&reset.bytes).unwrap();
+                if refusal == "expired" {
+                    p["started_at"] = 1.into();
+                    p["deadline_at"] = 1201.into();
+                    p["observation_order"]["observed_at_millis"] = 1.into();
+                } else {
+                    p["observation_order"]["sequence"] = 1.into();
+                }
+                reset.bytes = serde_json::to_vec(&p).unwrap();
+            }
+            if refusal == "wrong-target" {
+                let mut a = args(&f.root);
+                a.harness = OccupantHarness::Agent(builtins().agent("hermes").unwrap()).into();
+                a.event = reset.registered_event.clone();
+                let outcome = run_hook_registered(
+                    r,
+                    &a,
+                    &claude(),
+                    &reset.bytes,
+                    &HookEnv {
+                        herdr_env: true,
+                        pane: Some("w9:p2".into()),
+                    },
+                    Instant::now() + LIFECYCLE_BUDGET,
+                    Arc::new(SystemClock::new()),
+                    None,
+                );
+                assert!(outcome.attention.is_none());
+            } else {
+                assert!(f.run(r, &reset).attention.is_none());
+            }
+            assert_eq!(f.saved(), Some(saved));
+            let session = if refusal == "wrong-session" {
+                "another-session"
+            } else {
+                "task52-new"
+            };
+            let i = hermes_input("pre_llm_call", session, "next", 3, "top");
+            let output = task52_output(&f.run(r, &i), "startup", &i);
+            assert!(
+                !output["context"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&crate::harness::recovery_instruction()),
+                "{refusal}"
+            );
+            assert_eq!(task52_commands(&f), (2, 0), "{refusal}");
+        }
+        let f = task52_hot_fixture();
+        let clear = task52_clear_input(&f);
+        let before = f.saved();
+        write_fixture_json(&f.root.join("task52-checkin-failure.json"), &true).unwrap();
+        let failed = f.run(r, &clear);
+        assert!(failed.diagnostic.is_some());
+        assert!(failed.attention.is_none());
+        assert_eq!(f.saved(), before);
+        let contexts =
+            crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
+                .unwrap();
+        let pending = contexts.pending().unwrap().unwrap();
+        assert_eq!(
+            contexts.prepared_kind_for_event("pre_llm_call-3").unwrap(),
+            EventKind::Clear
+        );
+        assert_eq!(task52_commands(&f), (2, 0));
+        std::fs::remove_file(f.root.join("task52-checkin-failure.json")).unwrap();
+        let delivered = f.run(r, &clear);
+        task52_assert_recovery(&task52_output(&delivered, "clear", &clear));
+        assert!(contexts.pending().unwrap().is_none());
+        let checks: Vec<_> = f
+            .service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| {
+                if let Command::CheckIn(c) = c {
+                    Some(c.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(checks[1], checks[2]);
+        assert_eq!(
+            checks[2].operation.as_str(),
+            pending.operation_id.to_string()
+        );
+    }
+    #[test]
+    fn hermes_qualified_turn_reset_and_rotation_never_infer_resume() {
+        let r = builtins()
+            .by_id(builtins().agent("hermes").unwrap())
+            .unwrap();
+        let f = Fixture::new(true);
+        let hdecode = |i: &HookInput| {
+            let h = r
+                .admit(
+                    &hook_admission_request(r, callback_install_observation(r), i),
+                    &budget(Instant::now() + TOOL_BUDGET, clock().as_ref()),
+                )
+                .unwrap();
+            r.decode(&h, i).unwrap()
+        };
+        for (session, seq, expected) in [
+            ("fixture-session", 1, "startup"),
+            ("fixture-session", 2, "current"),
+        ] {
+            let i = hermes_input("pre_llm_call", session, &format!("turn-{seq}"), seq, "top");
+            let d = hdecode(&i);
+            assert!(matches!(d.intent, EventIntent::QualifiedTurn(_)));
+            assert_eq!(d.context_event().unwrap().kind, EventKind::Startup);
+            let outcome = f.run(r, &i);
+            assert_eq!(outcome.diagnostic, None);
+            let v: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+            assert_eq!(v["lifecycle_ack"]["mode"], expected);
+            assert!(f.service.requests().is_empty());
+        }
+        let original = f.saved().unwrap();
+        let reset = hermes_input(
+            "on_session_reset",
+            "reset-session",
+            "reset-turn",
+            3,
+            "unknown",
+        );
+        assert!(matches!(
+            hdecode(&reset).intent,
+            EventIntent::DeclaredReset(_)
+        ));
+        let outcome = f.run(r, &reset);
+        assert!(outcome.attention.is_none());
+        assert_eq!(f.saved(), Some(original.clone()));
+        assert!(f.service.requests().is_empty());
+        for (session, seq, expected) in [
+            ("reset-session", 4, "clear"),
+            ("unknown-rotation", 5, "startup"),
+        ] {
+            let i = hermes_input("pre_llm_call", session, &format!("turn-{seq}"), seq, "top");
+            assert!(matches!(hdecode(&i).intent, EventIntent::QualifiedTurn(_)));
+            let outcome = f.run(r, &i);
+            assert_eq!(outcome.diagnostic, None);
+            let v: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+            assert_eq!(v["lifecycle_ack"]["mode"], expected);
+            assert!(f.service.requests().is_empty());
+        }
+        let saved = f.saved().unwrap();
+        assert_eq!(
+            saved.session,
+            SessionReference::Native("unknown-rotation".into())
+        );
+        assert_ne!(saved.execution, original.execution);
+        for (callback, role, seq) in [
+            ("on_session_start", "unknown", 6),
+            ("pre_llm_call", "child", 7),
+            ("pre_llm_call", "unknown", 8),
+        ] {
+            let i = hermes_input(
+                callback,
+                "unknown-rotation",
+                &format!("turn-{seq}"),
+                seq,
+                role,
+            );
+            let handle = r.admit(
+                &hook_admission_request(r, callback_install_observation(r), &i),
+                &budget(Instant::now() + TOOL_BUDGET, clock().as_ref()),
+            );
+            if callback == "pre_llm_call" && role == "unknown" {
+                // Missing parent/association is a genuine admission refusal,
+                // never an invented normalized top-level or Resume event.
+                assert!(handle.is_err());
+            } else {
+                assert!(!r.decode(&handle.unwrap(), &i).unwrap().can_check_in());
+            }
+            let before = f.service.seen.lock().unwrap().len();
+            let outcome = f.run(r, &i);
+            assert!(outcome.attention.is_none());
+            assert_eq!(f.saved(), Some(saved.clone()));
+            assert!(f.service.requests().is_empty());
+            assert!(
+                !f.service.seen.lock().unwrap()[before..]
+                    .iter()
+                    .any(|c| matches!(c, Command::CheckIn(_) | Command::AttentionDigest(_)))
+            );
+        }
     }
 }

@@ -145,6 +145,7 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
 | `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), only on a seat with no open binding, decided against the effective observation (A2). Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, and it starts no availability or receipt timer. |
+| `canonical_binding_composer` | archival sample association only | The daemon associated a fresh registered-parser composer read with an already registered cooperative top-level binding after exact canonical binding, structural, activity and timing validation. The harness/session/execution in the association come from that binding; the host does not attest occupancy or current execution. This value authorizes no seat, binding, membership, receipt or invitation transition. |
 | `daemon_lifecycle` | automatic archive events only | The daemon applied the configured quiet-channel lifecycle policy after complete canonical validation. No actor seat, binding or receipt claim; no membership or continuity change. |
 | `legacy_local_journal_hint` | handoff archival vetoes only | A bounded read-only scan found a pending compound in this instance's intents directory. It can only prevent automatic archival; it authorizes no action and claims no native execution. |
 | `derived_summary` | summary blocks only | The block was written by an agent acting for the seat (the top-level agent or a child summary worker, which the CLI cannot tell apart) under the seat's claim, with the model it declared. Never on receipts, never delivery, and never authority for any state change other than storing that block. Submission validation bounds what a block can claim. |
@@ -191,13 +192,16 @@ model open work, and summary closure never changes receipt state or installs glo
 - *Agent to human*: the daemon refuses a human lifecycle check-in while the open binding is
   `cooperative_top_level` or `managed_launch`, unless the request is `--operator` (implemented). `me init` additionally refuses
   when agent evidence is present: one of the three allowlisted environment markers (`CLAUDECODE`,
-  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), or Herdr reporting a Claude or Codex agent in the
-  pane. Other agent kinds are not evidence, and a failed Herdr read counts as no evidence. `--operator`
+  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), or Herdr reporting a registered adapter's recognized native host kind in the
+  pane. Registry metadata alone never establishes native recognition, continuity or caller authority.
+  Unregistered agent kinds are not evidence, and a failed Herdr read counts as no evidence. `--operator`
   overrides the refusal through a local per-execution mark set only after the daemon accepts the request
   (implemented, best effort, client-side).
 - *Second agent*: `launch` refuses to start an agent for a seat whose bound agent (`cooperative_top_level`
   or `managed_launch`) Herdr reports live in another pane (implemented).
-- *Wake*: a wake prompt goes only to an agent of the bound harness (implemented).
+- *Wake*: a wake prompt goes only to a native host kind declared by the bound registered adapter
+  (implemented). Recognized aliases do not change the binding or merge seats. A missing composer
+  provider defers ordinary idle/done wake; soft poke and stash/restore also send no keys.
 - *Poke*: a soft-deadline poke is the fixed reminder
   `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
   submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound
@@ -237,7 +241,7 @@ model open work, and summary closure never changes receipt state or installs glo
     other than a captured empty marker is not known empty and is never stashed. An unreadable composer, a failed read or any other status is
     unknown and skipped. The same reader classifies observations and final native delivery admission.
     Ordinary native wakes also require an empty composer, checked after their final
-    identity/status recheck. A nonempty or unreadable composer refuses delivery before input is sent;
+    identity/status recheck. A missing registered composer provider, nonempty composer or unreadable composer refuses delivery before input is sent;
     pending attention and receipt obligations remain intact and the prior retry ladder is restored.
     Unfocused empty panes may wake immediately. Focused panes require a minute of observed empty
     composer samples, measured with the daemon's monotonic clock. Qualification is process-local,
@@ -405,12 +409,24 @@ completion it is presentation bookkeeping (no ACK actor, adoption or proof of co
 
 These are decisions, not bugs. Each is safe to rely on only as stated.
 
+- **Bounded advisory evidence suppression.** Negotiated v2 recording remembers resumed creating-CLI
+  lifecycle suppression with a fixed 8-KiB monotonic hash filter, scoped by harness, session, domain,
+  origin and contract. Hold expiry/eviction cannot forget a recorded suppression during that recorder's
+  lifetime. Hash collisions or saturation may withhold lifecycle milestones from unrelated new sessions;
+  they never grant evidence verification, seat continuity or receipt authority. The filter is in memory
+  and starts empty on daemon restart; suppression does not claim durable session history.
+
 - **Global hooks enroll supported top-level Herdr sessions.** A user-level Claude/Codex hook
   enrolls every supported top-level lifecycle session in its Herdr instance, including sessions
   started outside `launch`, subject to the ordinary canonical guards above. Outside Herdr it
   remains silent. No wrapper or global configuration change is made by enrollment. The actual
   pane environment must come from the user's foreground harness configuration; enrollment
   cannot infer a different attaching TUI pane or turn a shared-server environment into proof.
+- **Hermes enrolls only through `launch`.** Startup enrollment stays Claude/Codex only. A Hermes
+  session started outside `launch --kind hermes` gets no seat and no context: the bridge's hooks
+  find no resolved seat for the pane, and Herdr does not recognize the bare process as an agent
+  without the guarded launch process hint. Delegated Hermes children are answered locally with the
+  subagent restriction and never reach the daemon.
 - **Foreground harness execution is user managed.** Hooks and tools must inherit the TUI
   pane's `HERDR_PANE_ID`. A shared harness server started in another pane can instead supply
   its own pane environment; herdr-threads does not recover the attaching TUI pane from
@@ -434,6 +450,14 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   a registration, availability, receipt or authority for any accountable action, and replaced by the agent's
   first lifecycle check-in. Launch forms without captured hook evidence are refused (implemented for
   `codex resume`).
+- **Process hints are cooperative recognition input.** A registered launch policy may require Herdr's
+  narrow `process_hint` mode, advertised by each compatible start negotiation and fenced to the actual
+  local server peer before submission. The request and startup correlation record the requested mode,
+  not an effective child environment or proof of native execution. Same-user processes can inherit or
+  imitate recognition hints; platform support, environment readability and descendant coverage can
+  prevent recognition. Hints add no registration, receipt, continuity or caller authority and no new
+  provenance (A1–A3, C1); arbitrary environment overrides remain refused. A possibly submitted start
+  with an uncertain response remains unknown, without a safe fallback or inferred binding.
 - **A launch binding can outlive its agent.** Like any binding (Unseen exits), a `managed_launch` binding
   whose agent exits before checking in stays until a check-in replaces it or the seat is unresolved or
   retired; a later `launch` into the seat then records nothing (the seat already has an open binding) and a
@@ -482,7 +506,7 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   Claude placeholder exactly reads as empty the same way. A Claude placeholder that was never captured reads
   as unknown, so native attention remains deferred until the placeholder is captured and listed or
   the composer becomes recognizably empty; hard-deadline warnings remain pending.
-- **Conservative archival liveness.** Repeated composer-aware idle observations use a 60-second cadence
+- **Conservative archival liveness.** Joined-agent archival qualifies against the exact existing cooperative binding and fresh structure plus empty composer evidence from its registered parser. The reported host kind selects that parser and must agree with the bound harness; it is not occupancy or current-execution attestation. Unseen exits and same-user imitated recognition remain the cooperative model's accepted limits. A shell/unrecognized kind, absent provider, unreadable composer or changed canonical binding cannot qualify. Archival does not establish liveness, availability, execution or receipt authority. Repeated composer-aware idle observations use a 60-second cadence
   with a maximum 120-second gap and fresh evidence window. Boot changes, outages, clock discontinuities
   and missed observations restart qualification. Partial/malformed/inaccessible legacy journal coverage
   vetoes cleanup. Every published noncompound intent, even a valid Send or ACK, also vetoes

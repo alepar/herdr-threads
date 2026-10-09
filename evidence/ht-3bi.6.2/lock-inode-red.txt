@@ -1,0 +1,25 @@
+nice: setpriority: Operation not permitted
+   Compiling herdr-threads v0.2.3 (<TASK14_WORKTREE>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.72s
+     Running unittests src/lib.rs (<INTEGRATION_TARGET>/debug/deps/herdr_threads-1c2d7f4b9aaa457a)
+
+running 1 test
+test harness::hermes::assets::tests::replaced_lock_inode_refuses_existing_manifest_generation ... FAILED
+
+failures:
+
+---- harness::hermes::assets::tests::replaced_lock_inode_refuses_existing_manifest_generation stdout ----
+
+thread 'harness::hermes::assets::tests::replaced_lock_inode_refuses_existing_manifest_generation' (61735563) panicked at src/harness/hermes/assets.rs:651:9:
+assertion `left == right` failed
+  left: Ok(())
+ right: Err(Conflict)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    harness::hermes::assets::tests::replaced_lock_inode_refuses_existing_manifest_generation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2695 filtered out; finished in 0.17s
+
+error: test failed, to rerun pass `--lib`

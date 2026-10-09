@@ -44,6 +44,11 @@ mod harness_version_evidence;
 #[cfg(feature = "test-support")]
 #[path = "integration/herdr_down_log.rs"]
 mod herdr_down_log;
+/// End-to-end smoke against one official Herdr release; run per release by
+/// `scripts/herdr-release-smoke`.
+#[cfg(feature = "test-support")]
+#[path = "integration/herdr_release_smoke.rs"]
+mod herdr_release_smoke;
 /// ht-p03.10: never-started and stale-socket Herdr report "server not running".
 #[cfg(feature = "test-support")]
 #[path = "integration/herdr_states.rs"]
@@ -125,3 +130,8 @@ mod channel_activation;
 #[cfg(feature = "test-support")]
 #[path = "integration/readme_tryout.rs"]
 mod readme_tryout;
+
+/// Registry values through real executable/canonical consumers; synthetic host/callbacks.
+#[cfg(feature = "test-support")]
+#[path = "integration/harness_adapter_wiring.rs"]
+mod harness_adapter_wiring;

@@ -18,7 +18,7 @@ def newest_failing(block):
 
 def suggested_action(block):
     """The §D8 suggested_action for a `break` block (None otherwise)."""
-    if block.get("status") != "break" or not block.get("first_bad"):
+    if block.get("candidate_kind") == "exact_build" or block.get("status") != "break" or not block.get("first_bad"):
         return None
     fb = block["first_bad"]
     hi = newest_failing(block) or fb
@@ -74,7 +74,15 @@ def render_summary(report):
     for h in report["harnesses"]:
         out += [f"## {h['harness']} ({h['package']}) — verdict: {h['status']}", "",
                 f"verified_max {h['verified_max']}; candidates: {', '.join(h['candidates']) or 'none'}", ""]
-        if h["status"] == "break":
+        if h.get("evidence_stage"):
+            out += [f"evidence stage: {h['evidence_stage']}", ""]
+        if h.get("candidate_kind") == "exact_build":
+            identity = h.get("identity") or {}
+            out += [f"exact runtime: {identity.get('key') or 'unattributed'}; "
+                    f"release version: {identity.get('release_version')}", ""]
+        if h.get("reason"):
+            out += [f"reason: {h['reason']}", ""]
+        if h["status"] == "break" and h.get("candidate_kind") != "exact_build":
             out += [f"first bad: {h['first_bad']}, last good: {h['last_good']}", ""]
         if h["status"] == "known_broken_persists":
             out += ["The failure persists above a declared known_broken range; nothing to file.", ""]
@@ -101,7 +109,7 @@ def render_summary(report):
         if h["suggested_action"]:
             sa = h["suggested_action"]
             out += [f"suggested action: {sa['text']}", "", "```", sa["known_broken_snippet"], "```", ""]
-        if h["status"] == "inconclusive":
+        if h["status"] == "inconclusive" and not h.get("reason"):
             out += ["Observed results contradict monotonicity; every probe is listed above.", ""]
         if h["assumes_monotone"]:
             out += ["Assumes a monotone break (versions never probed are not checked).", ""]

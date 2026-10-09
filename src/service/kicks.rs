@@ -137,7 +137,10 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "filter_revisions",
     // Advisory diagnostics do not alter canonical state or schedule work.
     "harness_contract_diagnostics",
+    "harness_contract_evidence_v2",
+    "harness_runtime_identities",
     "harness_unattributed",
+    "harness_unattributed_v2",
     "harness_version_evidence",
     "host_instances",
     // Passive inbox progress never schedules attention or deadlines.

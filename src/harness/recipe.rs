@@ -43,22 +43,16 @@ pub fn poke_capabilities(
     harness: crate::protocol::authority::Harness,
     installed: Option<&str>,
 ) -> PokeCapabilities {
-    use crate::protocol::authority::Harness;
-    let Some(installed) = installed else {
+    let crate::protocol::authority::Harness::Agent(id) = harness else {
         return PokeCapabilities::NONE;
     };
-    match harness {
-        Harness::Claude => super::claude::recipe_for(installed).map(|recipe| PokeCapabilities {
-            composer_stash: recipe.profile.composer_stash,
-            poke_during_turn: recipe.profile.poke_during_turn,
-        }),
-        Harness::Codex => super::codex::recipe_for(installed).map(|recipe| PokeCapabilities {
-            composer_stash: recipe.profile.composer_stash,
-            poke_during_turn: recipe.profile.poke_during_turn,
-        }),
-        Harness::Human => return PokeCapabilities::NONE,
-    }
-    .unwrap_or(PokeCapabilities::NONE)
+    super::registry::builtins()
+        .by_id(id)
+        .ok()
+        .and_then(|registration| registration.composer_policy())
+        .map_or(PokeCapabilities::NONE, |policy| {
+            policy.capabilities(installed)
+        })
 }
 
 /// A canonical installed-harness version.
