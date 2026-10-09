@@ -25,10 +25,11 @@ final-status-level = "slow"
 
 # Start the longest tests first, so they overlap the rest of the run instead
 # of trailing it: the failpoints check's two release builds, then the tests
-# that wait in real time for most of a minute (and the long chains).
+# that wait in real time for most of a minute (and the long chains). Only the
+# all-slot send chain below starts before them.
 [[profile.default.overrides]]
 filter = "binary(package) & test(=manifest::failpoints_are_compiled_out_of_release_builds)"
-priority = 100
+priority = 95
 
 [[profile.default.overrides]]
 filter = """
@@ -44,10 +45,14 @@ priority = 90
 
 # The send chain asserts commit-to-wake under 100 ms for three sends; beside
 # the full suite's process-heavy tests it missed that budget (120-260 ms) while
-# it measures ~15-25 ms alone or under synthetic CPU load. It runs alone.
+# it measures ~15-25 ms alone or under synthetic CPU load. It runs alone, and
+# first: queued at its group's priority it waited for every running test to
+# finish, and while the minute-long clock-wait tests drained, nextest held every
+# lower-priority test back (hosted 37897716203: 1-4 of 7 slots busy for ~50 s).
 [[profile.default.overrides]]
 filter = "binary(integration) & test(=sweep_remaining::send_commit_wake_under_100ms_with_all_five_lanes)"
 threads-required = "num-test-threads"
+priority = 100
 
 [[profile.default.overrides]]
 filter = "binary(hook_entrypoint)"
