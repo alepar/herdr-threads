@@ -26,6 +26,7 @@ pub struct DomainService {
     current_target: Option<Arc<OrdinaryIdentity>>,
     operator_owner_uid: Option<u32>,
     cooperative_runtime: Option<(u32, Arc<FairWriter>)>,
+    mod_channels: Arc<dyn crate::ports::ModChannels>,
 }
 
 impl DomainService {
@@ -38,7 +39,16 @@ impl DomainService {
             current_target: None,
             operator_owner_uid: None,
             cooperative_runtime: None,
+            mod_channels: Arc::new(crate::ports::NoModChannels),
         }
+    }
+    /// The shared registry of live mod delivery channels (spec D2).
+    pub fn with_mod_channels(mut self, channels: Arc<dyn crate::ports::ModChannels>) -> Self {
+        self.mod_channels = channels;
+        self
+    }
+    pub fn mod_channels(&self) -> &Arc<dyn crate::ports::ModChannels> {
+        &self.mod_channels
     }
     /// Supplied by the elected runtime, never by a request payload.
     pub fn with_operator_owner(mut self, owner_uid: u32) -> Self {
@@ -257,6 +267,11 @@ impl LocalService for DomainService {
             Command::OperationStatus(_) => Err(error(
                 ErrorCode::Unauthorized,
                 "verified operation scope required",
+            )),
+            // Spec D6: decided by ht-j16.3 against A2; inert until then.
+            Command::AckModDelivered(_) => Err(error(
+                ErrorCode::Unsupported,
+                "mod delivery ack is not served by this daemon",
             )),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
@@ -488,6 +503,53 @@ mod operator_tests {
                 .unwrap(),
             0
         );
+        drop(domain);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn domain_refuses_ack_mod_delivered_unsupported() {
+        use crate::protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            commands::AckModDelivered,
+            ids::{ExecutionId, MessageId, NativeSessionId, SeatId},
+            watch::ModDeliveryVia,
+        };
+        let path = std::env::temp_dir().join(format!("mod-ack-{}.db", uuid::Uuid::new_v4()));
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let store = Arc::new(
+            SqliteStore::new(
+                StoreContext::new(path.clone(), clock.clone()),
+                "i",
+                StoreSettings::default(),
+            )
+            .unwrap(),
+        );
+        let domain = DomainService::new("i".into(), store, clock.clone()).with_operator_owner(501);
+        let result = domain.handle(
+            Command::AckModDelivered(AckModDelivered {
+                via: ModDeliveryVia::Context,
+                messages: vec![MessageId::new("m1")],
+                operation: OperationId::new("op"),
+                claim: CallerClaim {
+                    instance: "i".into(),
+                    seat: SeatId::new("s1"),
+                    binding_generation: 1,
+                    role: CallerRole::TopLevel,
+                    harness: Harness::Claude,
+                    native_session: NativeSessionId::new("n1"),
+                    execution: ExecutionId::new("e1"),
+                    target: HostTargetId::new("p"),
+                },
+            }),
+            PeerIdentity::from_kernel(501),
+            &CallBudget {
+                deadline: MonoInstant(clock.monotonic_now().0 + 1000),
+                cancellation: Cancellation::default(),
+            },
+        );
+        assert_eq!(result.unwrap_err().code, ErrorCode::Unsupported);
+        assert!(domain.mod_channels().status().is_none());
         drop(domain);
         let _ = std::fs::remove_file(path);
     }

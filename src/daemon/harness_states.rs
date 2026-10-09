@@ -142,7 +142,10 @@ impl HarnessStatesProvider {
                 )
             }));
         }
-        Ok(HarnessStatesReport { harnesses })
+        Ok(HarnessStatesReport {
+            harnesses,
+            mod_channels: None,
+        })
     }
 }
 

@@ -74,6 +74,7 @@ pub enum CommandResult {
     RequiredAccepted(RequiredMembership),
     MessageSent(MessageId),
     Acknowledged(AckResult),
+    ModDeliveryAcked(crate::protocol::watch::ModAckReport),
     Left(ThreadId),
     TopicChanged(ThreadId),
     ThreadNameChanged(ThreadId),
@@ -336,6 +337,10 @@ pub const HARNESS_STATE_VERSIONS: usize = 20;
 #[serde(deny_unknown_fields)]
 pub struct HarnessStatesReport {
     pub harnesses: Vec<HarnessStateReport>,
+    /// Live mod delivery channels and the daemon `mod_delivery` setting (spec D2
+    /// status read, for setup-status). `None`: this daemon keeps no registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mod_channels: Option<crate::protocol::watch::ModChannelStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

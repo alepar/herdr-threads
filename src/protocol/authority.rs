@@ -56,6 +56,13 @@ impl Harness {
 
 /// An agent's cooperative top-level claim (not native attestation).
 pub const COOPERATIVE_TOP_LEVEL_PROVENANCE: &str = "cooperative_top_level";
+/// TRUST-POLICY A3: the pane's top-level Claude session, through the bundled
+/// mod's `watch` child, opened a delivery channel for the current binding
+/// generation. Channel registrations only; never on bindings or receipts.
+pub const COOPERATIVE_MOD_CHANNEL_PROVENANCE: &str = "cooperative_mod_channel";
+/// TRUST-POLICY A3: receipt action observation (and lazy completion claim)
+/// for an item the mod reported delivered (spec D6). Not proof of reading.
+pub const COOPERATIVE_MOD_DELIVERY_PROVENANCE: &str = "cooperative_mod_delivery";
 
 /// Herdr agent kinds that count as agent evidence in a pane (TRUST-POLICY A4):
 /// the harnesses this plugin supports. Any other detected kind is not

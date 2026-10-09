@@ -139,6 +139,8 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 |---|---|---|
 | `cooperative_top_level` | bindings, receipts | The pane's top-level agent claimed the action through its hook-registered check-in. Prompted, not proven: a disobedient child is indistinguishable. |
 | `cooperative_inbox_display` | receipt action observation | The selected top-level agent's text `inbox` command fully wrote and flushed a bounded page before claiming that its listed complete messages were displayed. It is a cooperative output claim, not proof that the model consumed the text. The receipt retains the binding's `cooperative_top_level` provenance separately. JSON, machine, foreign-seat and other read commands do not make this claim. |
+| `cooperative_mod_channel` | mod channel registrations only (process-local) | The pane's top-level Claude session, through the bundled herdr-threads mod's `watch` child, opened a delivery channel for the seat's current binding generation. The daemon decides it against A2 (seat resolved and not held, open `cooperative_top_level` binding with harness `claude`, native session equal to the claim's, no stall cooldown, `mod_delivery` on). It grants nothing but receiving deliveries and making `cooperative_mod_delivery` claims for that binding generation. Never on bindings or receipts. |
+| `cooperative_mod_delivery` | receipt action observation; lazy completion claim | The mod reported that a delivery path's predicate held (spec D6): for an ordinary message, that its full body entered the model's context through the mod (an answered tool result carrying the mod's context, or a `$.prompt.submit` that resolved without `drop`); for a lazy row, that it was appended to the transcript (`$.session.append` resolved without `deny`). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's `cooperative_top_level` provenance separately. A truncated item never carries it. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
@@ -213,6 +215,17 @@ model open work, and summary closure never changes receipt state or installs glo
   `soft_poked_at`, which is set only when the host accepts the prompt; the hard-deadline warning stays the
   backstop. When an ordinary wake is due for the same seat, one prompt goes out with the poke text, and only
   when the poke itself is eligible and needs no stash.
+- *Mod channel*: while a mod channel is live for a seat (from registration until its stream ends, through a
+  30 s reconnect grace after a drop, and through a 30 s seat-level rebind grace after `Close{binding_changed}`),
+  no native wake prompt or poke goes to that seat and the Claude check-in results omit the attention digest
+  and ready commands; pending attention stays pending and deadlines and hard-deadline warnings keep running,
+  reaching the agent through the mod. A grace that expires, or a `Close` for `retired`, `unresolved`,
+  `stalled`, `disabled` or `stopping`, removes the channel and kicks the wake lane. *Stall handover*: a
+  channel is stalled when its last mod ACK (or its registration) is more than 10 minutes old and an ordinary,
+  non-truncated pending receipt for the seat, published at or before the last pushed attention frame, is
+  itself more than 10 minutes old; the daemon closes it (`stalled`) and refuses re-registration of that
+  binding generation for 10 minutes, so the native ladder with its composer guards is the only delivery path
+  during the cooldown (contract; implemented by ht-j16.2 and ht-j16.4).
   - *Idle is read, not assumed.* Herdr's `agent_status` does not show typed input, so the adapter also reads
     the composer (`agent read --source detection`). The state is idle only when `agent_status` is `idle` or
     `done` and the composer is empty; composer text is typed input (human input); a `working` status with an
@@ -261,6 +274,8 @@ model open work, and summary closure never changes receipt state or installs glo
 |---|---|
 | ACK, accept, reject an ordinary invitation, send, leave, archive, reopen | the seat's current binding (top-level agent or declared human) |
 | display ACK after text inbox output | the current top-level agent binding, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
+| open a mod delivery channel (`watch`) | the pane's top-level Claude session through its mod, for the current `cooperative_top_level` binding with the matching native session; recorded as `cooperative_mod_channel`; it grants no other row |
+| mod delivery ACK (`watch ack`) | the current top-level Claude binding with a live channel (grace included) for its binding generation, or, on resume, for ids delivered under the immediately previous generation of the same native session; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
 | check in | the pane's top-level agent (hook) or a human via `me init` |
 | record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup, on a seat with no open binding; it grants no row above |
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
@@ -370,7 +385,7 @@ Already addressed rows survive leaving, retirement and archival, with no transfe
 Unpublished rows are invisible and may be discarded in bounded cleanup; published progress is retained.
 Lazy delivery creates no receipt, deadline, ACK evidence, attention, wake, poke or automatic adoption.
 
-Only the caller's default text inbox may claim completion after complete contiguous body output has
+Only the caller's default text inbox, or the bundled Claude mod as below, may claim completion after complete contiguous body output has
 been written and flushed. The completion handler validates the current top-level or human canonical
 caller (A2) and exact published addressed message IDs in its deciding transaction; declared subagents
 cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
@@ -380,6 +395,11 @@ instruction adoption, task completion or proof of model consumption. Partial out
 bindings cannot manufacture complete display. Frozen completion retries preserve their original full
 caller claim, harness and intent scope through submission and local cleanup. These same-user cooperative
 limits are deliberate; no adversarial execution verification is added.
+
+The bundled Claude mod is a second completion source: it completes lazy rows it appended to the transcript
+(`watch ack --via append`), decided by the daemon against A2 under the same checks as the mod delivery ACK
+(A5) and recorded with the `cooperative_mod_delivery` claim "appended to the transcript". Like inbox
+completion it is presentation bookkeeping (no ACK actor, adoption or proof of consumption).
 
 ## Accepted limits
 
@@ -476,6 +496,19 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   or stale cursor; scope, direction and order are still compared exactly). Send-preparation ids are drawn from
   62^8 ≈ 2^47.6; reuse of a retired id has probability about (retired ids) × 2^-47.6 and is harmless once
   nothing references it.
+- **Mod delivery claims are cooperative.** A same-user process could run `herdr-threads watch ack` and settle
+  receipts as `cooperative_mod_delivery`; the daemon checks the canonical binding, its generation and a live
+  channel, not the process.
+- **Engine-reported idleness is trusted.** The mod takes busy and idle from Claude Code's turn events; the
+  post-abort hold bounds the known Esc takeover.
+- **A remote mods kill switch returns seats to native wake.** A mod that never loads looks like no channel.
+- **An unrecovered handoff is at-least-once.** An item the mod delivered whose ACK did not land before the
+  channel dropped stays pending; the mod re-ACKs it after re-registering (same generation, or on resume the
+  immediately previous generation of the same native session), and otherwise the agent may see it again
+  through `inbox` or the native wake. Never lost. `/branch` keeps the transcript under a new session id, so
+  items delivered but not ACKed before a branch may be delivered again.
+- **An outer mod could strip context.** A mod wrapping `tool.call` outside herdr-threads' hook could remove
+  the attached context after the herdr-threads hook returned; the receipt is already settled.
 
 ## Decision record
 
@@ -518,6 +551,15 @@ daemon opens an unregistered `managed_launch` binding (A3) on a seat with no ope
 harness the wake recheck compares and nothing a caller can claim. Rejected: waking a resolved but unbound
 seat whose pane Herdr reports as an idle agent (Herdr's agent field may only suggest, C1/C5); documenting
 lost-prompt recovery as unsupported on Codex 0.159.3 and later.
+
+### Mod delivery is the receipt (2026-10-09, ht-j16)
+
+The 2026-10 direction forbids blanket read or delivery auto-ACK. In this run the user approved an exception for
+the bundled Claude mod: "we already judged delivery is the receipt". Precedent: `cooperative_inbox_display`. The
+claim is "the full body entered the model's context through the mod", not proof of reading; truncated items
+settle only through `body`, `inbox` or `ack`. Rejected: reusing `cooperative_inbox_display` (a different
+action); an explicit agent ACK after mod delivery (keeps the tool-call overhead the goal removes); delivering
+only the marker.
 
 ### Residual trust-edge findings (bucket B5)
 
