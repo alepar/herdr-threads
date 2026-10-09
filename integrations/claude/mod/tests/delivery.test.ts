@@ -590,6 +590,31 @@ test('delivered-but-unacked ids in $.store are re-acked, not delivered again', a
   expect(h.core.snapshot().rec.unacked).toEqual({})
 })
 
+test('acks are capped at 100 ids per watch ack invocation', async () => {
+  const idsOf = (run: string[]) => run.slice(run.indexOf('--via') + 2)
+  // one submit delivers 150 messages; they are acked in runs of 100 and 50
+  const h = await harness({ state: IDLE }).boot()
+  const ids = Array.from({ length: 150 }, (_, n) => `m${n + 1}`)
+  for (const id of ids) h.line(msg(id))
+  await flush()
+  const runs = h.ackRuns()
+  expect(runs.map((r: string[]) => idsOf(r).length)).toEqual([100, 50])
+  expect(runs.flatMap(idsOf)).toEqual(ids)
+  expect(Object.keys(h.core.snapshot().rec.unacked)).toEqual([])
+  // a stored backlog of 230 unacked ids is retried in runs of 100, 100 and 30
+  const stored = Array.from({ length: 230 }, (_, n) => `s${n + 1}`)
+  const unacked = Object.fromEntries(stored.map((id) => [id, 'context']))
+  const r = await harness({
+    state: IDLE,
+    store: { 'delivered:s1': { delivered: { ...unacked }, unacked, attentionVersions: [] } },
+  }).boot()
+  r.line(connected)
+  await flush()
+  expect(r.ackRuns().map((x: string[]) => idsOf(x).length)).toEqual([100, 100, 30])
+  expect(r.ackRuns().flatMap(idsOf)).toEqual(stored)
+  expect(Object.keys(r.core.snapshot().rec.unacked)).toEqual([])
+})
+
 test('child exit 0/1/2 restart with backoff 1, 2, 5, 10, 30, 30 s; exit 3 stops until reload', async () => {
   const h = await harness({ state: IDLE }).boot()
   const ladder = [1, 2, 5, 10, 30, 30]

@@ -11,6 +11,7 @@ const HOLD_IDLE_MS = 120000
 const DRAFT_WAIT_MS = 120000
 const DROP_BACKOFF_MS = 30000
 const ACK_RETRY_MS = 30000
+const ACK_BATCH_MAX = 100 // MAX_BATCH_ITEMS in src/protocol/commands.rs
 const CONNECTED_RESET_MS = 60000
 const LEDGER_CAP = 2000
 
@@ -234,10 +235,12 @@ export function createCore(io) {
     const rec = S.rec
     const jobs = []
     for (const via of Object.keys(groups)) {
-      const list = groups[via]
-      const job = S.ackChain.then(() => doAck(via, list, sid, rec))
-      S.ackChain = job.catch(() => {})
-      jobs.push(job)
+      for (let at = 0; at < groups[via].length; at += ACK_BATCH_MAX) {
+        const chunk = groups[via].slice(at, at + ACK_BATCH_MAX)
+        const job = S.ackChain.then(() => doAck(via, chunk, sid, rec))
+        S.ackChain = job.catch(() => {})
+        jobs.push(job)
+      }
     }
     return Promise.all(jobs).then(() => {})
   }

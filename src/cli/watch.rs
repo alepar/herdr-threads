@@ -748,8 +748,13 @@ fn hint_path(paths: &crate::daemon::paths::InstancePaths, seat: &SeatId) -> Path
 }
 
 /// Report mod deliveries (spec D6): one `ModAckItem` JSON line per id and exit
-/// 0 iff every id has one. Any error prints nothing and exits 1 (the mod then
-/// treats every id as retryable). Hinted-truncated ids are refused locally.
+/// 0 iff every id has one. Hinted-truncated ids are refused locally; the rest
+/// go to the daemon in calls of at most `MAX_BATCH_ITEMS` ids (the daemon
+/// rejects a larger batch whole), each with its own operation id. A chunk
+/// whose call fails makes only its own ids `retryable` (`busy` for a busy
+/// daemon, else `unreachable`); when every chunk failed nothing is printed and
+/// the exit is 1 (the mod then treats every id as retryable). Output order:
+/// locally refused ids, then each chunk's lines in request order.
 fn run_ack_lines(
     client: &dyn LocalClient,
     clock: &dyn Clock,
@@ -777,24 +782,47 @@ fn run_ack_lines(
             reason: Some(ModAckReason::Truncated),
         })
         .collect();
-    if !remote.is_empty() {
+    let mut failed_chunks = 0usize;
+    let mut chunk_count = 0usize;
+    for chunk in remote.chunks(crate::protocol::commands::MAX_BATCH_ITEMS) {
+        chunk_count += 1;
         let result = client.call(
             Command::AckModDelivered(AckModDelivered {
                 via: request.via,
-                messages: remote.clone(),
+                messages: chunk.to_vec(),
                 operation: OperationId::new(uuid::Uuid::new_v4().to_string()),
-                claim,
+                claim: claim.clone(),
             }),
             &cooperative_budget(clock),
         );
-        let Ok(CommandResult::ModDeliveryAcked(report)) = result else {
-            return 1;
-        };
-        for id in &remote {
-            if let Some(item) = report.results.iter().find(|item| &item.id == id) {
-                lines.push(item.clone());
+        match result {
+            Ok(CommandResult::ModDeliveryAcked(report)) => {
+                for id in chunk {
+                    if let Some(item) = report.results.iter().find(|item| &item.id == id) {
+                        lines.push(item.clone());
+                    }
+                }
+            }
+            other => {
+                failed_chunks += 1;
+                let reason = match other {
+                    Err(error)
+                        if matches!(error.code, ErrorCode::StoreBusy | ErrorCode::ServiceBusy) =>
+                    {
+                        ModAckReason::Busy
+                    }
+                    _ => ModAckReason::Unreachable,
+                };
+                lines.extend(chunk.iter().map(|id| ModAckItem {
+                    id: id.clone(),
+                    result: ModAckOutcome::Retryable,
+                    reason: Some(reason),
+                }));
             }
         }
+    }
+    if chunk_count > 0 && failed_chunks == chunk_count {
+        return 1;
     }
     let complete = requested
         .iter()
