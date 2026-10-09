@@ -6699,7 +6699,7 @@ fn cooperative_registered_poke_identity_reaches_capability_source() {
             calls: Mutex::new(Vec::new()),
             declared: DURING_TURN.0,
         };
-        let host = RegisteredPokeHost::new(HostUiState::ActiveTurn);
+        let host = RegisteredPokeHost::new(HostUiState::Idle);
         let clock = FakeClock(AtomicU64::new(0));
         let check = FakeReservationCheck {
             current: true,
@@ -6720,9 +6720,10 @@ fn cooperative_registered_poke_identity_reaches_capability_source() {
             )
             .unwrap();
         let calls = caps.calls.lock().unwrap().clone();
-        let submitted = host.during_turn.lock().unwrap().clone();
+        let submitted = host.submissions.lock().unwrap().clone();
+        assert!(host.during_turn.lock().unwrap().is_empty());
         eprintln!(
-            "registered-poke case={bound} source={calls:?} outcome={:?} poked={} during_turn={}",
+            "registered-poke case={bound} source={calls:?} outcome={:?} poked={} ordinary_submit={}",
             attempt.outcome,
             attempt.poked,
             submitted.len()
@@ -6757,7 +6758,7 @@ fn cooperative_registered_poke_identity_reaches_capability_source() {
         assert_eq!(attempt.outcome, WakeOutcome::Submitted, "{bound}");
         assert!(attempt.poked, "{bound}");
         assert_eq!(prompts, [POKE_TEXT], "{bound}");
-        assert_eq!(submitted.len(), 1, "{bound}: during-turn submission");
+        assert_eq!(submitted.len(), 1, "{bound}: idle submission");
         assert_eq!(submitted[0].0.bound_harness.as_deref(), Some(bound));
         assert_eq!(submitted[0].1, POKE_TEXT);
         assert_eq!(submitted[0].2.budget.deadline, MonoInstant(2_000));
@@ -6805,6 +6806,24 @@ fn cooperative_registered_poke_none_stays_conservative() {
             (
                 HostUiState::ActiveTurn,
                 PokeMode::PokeOnly,
+                DURING_TURN.0,
+                WakeOutcome::Unsafe,
+                false,
+                None,
+                false,
+            ),
+            (
+                HostUiState::ActiveTurn,
+                PokeMode::WithWake,
+                DURING_TURN.0,
+                WakeOutcome::Refused(RefusalCause::Unsafe),
+                false,
+                None,
+                false,
+            ),
+            (
+                HostUiState::ActiveTurn,
+                PokeMode::PokeOnly,
                 PokeCapabilities::NONE,
                 WakeOutcome::Unsafe,
                 false,
@@ -6833,28 +6852,28 @@ fn cooperative_registered_poke_none_stays_conservative() {
                 HostUiState::HumanInput,
                 PokeMode::WithWake,
                 PokeCapabilities::NONE,
-                WakeOutcome::Submitted,
+                WakeOutcome::Refused(RefusalCause::Unsafe),
                 false,
-                Some(crate::notification::policy::MARKER),
+                None,
                 false,
             ),
             (
                 HostUiState::HumanInput,
                 PokeMode::WithWake,
                 STASH.0,
-                WakeOutcome::Submitted,
+                WakeOutcome::Refused(RefusalCause::Unsafe),
                 false,
-                Some(crate::notification::policy::MARKER),
+                None,
                 false,
             ),
             (
                 HostUiState::HumanInput,
                 PokeMode::PokeOnly,
                 STASH.0,
-                WakeOutcome::Submitted,
-                true,
-                Some(POKE_TEXT),
-                true,
+                WakeOutcome::Unsafe,
+                false,
+                None,
+                false,
             ),
         ] {
             let host = RegisteredPokeHost::new(ui);
@@ -6874,7 +6893,14 @@ fn cooperative_registered_poke_none_stays_conservative() {
                 (outcome, poked),
                 "{bound} {ui:?} {mode:?}"
             );
-            assert_eq!(*caps.calls.lock().unwrap(), [caps.selected]);
+            assert_eq!(
+                *caps.calls.lock().unwrap(),
+                if ui == HostUiState::Idle {
+                    vec![caps.selected]
+                } else {
+                    vec![]
+                }
+            );
             assert_eq!(
                 *host.inner.prompts.lock().unwrap(),
                 prompt.into_iter().map(str::to_owned).collect::<Vec<_>>()
@@ -6892,6 +6918,7 @@ fn cooperative_registered_poke_none_stays_conservative() {
                 }
             );
             assert_eq!(host.submit_keys.load(Ordering::SeqCst), 0);
+            assert!(host.during_turn.lock().unwrap().is_empty());
             for (target, text, _) in host.submissions.lock().unwrap().iter() {
                 assert_eq!(target.bound_harness.as_deref(), Some(bound));
                 assert_eq!(Some(text.as_str()), prompt);
@@ -6952,9 +6979,9 @@ fn cooperative_poke_invalid_identity_never_calls_capability_source() {
     }
     // Registered-basis evidence uses the observed occupant, even when the
     // injected target carries a different bound hint.
-    let mut host = RegisteredPokeHost::new(HostUiState::ActiveTurn);
+    let mut host = RegisteredPokeHost::new(HostUiState::Idle);
     host.inner.observation = fresh_observation();
-    host.inner.observation.ui = HostUiState::ActiveTurn;
+    host.inner.observation.ui = HostUiState::Idle;
     let mut target = host
         .inner
         .safe_wake_target(&SeatId::new("seat"), &host.inner.observation)
@@ -7212,7 +7239,7 @@ fn cooperative_registered_poke_preserves_fences_and_budget() {
                 &caps,
                 &context,
             );
-            if case == "current error" && mode == PokeMode::PokeOnly || case == "rejected send" {
+            if (case == "current error" || case == "rejected send") && mode == PokeMode::PokeOnly {
                 assert_eq!(
                     result.unwrap_err().code,
                     if case == "rejected send" {
@@ -7231,6 +7258,7 @@ fn cooperative_registered_poke_preserves_fences_and_budget() {
                     "current error" => WakeOutcome::Refused(RefusalCause::Unavailable),
                     "decreasing" => WakeOutcome::Submitted,
                     "unknown send" => WakeOutcome::OutcomeUnknown,
+                    "rejected send" => WakeOutcome::Refused(RefusalCause::Unsafe),
                     _ => unreachable!(),
                 };
                 let expected = if mode == PokeMode::WithWake && plain == WakeOutcome::TimedOut {

@@ -420,9 +420,13 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "seat.managed_launch",
             "inbox.batch_v1",
             "invitation.reject_v1",
+            "thread.join_v1",
             "participants.locations_v1",
             "picker.directory_v1",
-            "attention.notice_delivery_v1"
+            "attention.notice_delivery_v1",
+            "messages.delivery_modes_v1",
+            "send.lazy_v1",
+            "inbox.batch_v2"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);

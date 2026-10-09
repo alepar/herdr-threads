@@ -2048,7 +2048,7 @@ fn registry_selectors_preserve_legacy_argv_and_never_default_unknown_to_claude()
         );
     }
     assert!(matches!(
-        parse_argv(["herdr-threads", "me", "init"]).unwrap().action,
+        parse_argv(["herdr-threads", "human", "me", "init"]).unwrap().action,
         CliAction::MeInit { operator: false }
     ));
 }
