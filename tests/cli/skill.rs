@@ -163,6 +163,7 @@ fn skill_file_is_a_well_formed_concise_guide() {
         "send THREAD --body",
         "herdr-threads <command> --help",
         "Ready commands (run exactly as written, in this pane):",
+        "Delegated children (platform `subagent`) never enroll",
     ] {
         assert!(SKILL_MD.contains(needle), "{needle}");
     }
