@@ -1919,7 +1919,7 @@ pub(crate) fn seat_context_dir(paths: &InstancePaths, seat: &str) -> Result<Path
 }
 
 const CALLER_HELP: &str = "run it inside the agent's own Herdr pane (HERDR_PANE_ID) after that \
-     seat's lifecycle check-in (a person runs `herdr-threads me init` once in their own pane), or pass --cooperative-seat SEAT --cooperative-target PANE \
+     seat's lifecycle check-in (a person runs `herdr-threads human me init` once in their own pane), or pass --cooperative-seat SEAT --cooperative-target PANE \
      --cooperative-harness HARNESS --cooperative-role top-level; choose a registered agent harness. Operator repair uses the \
      explicit --operator forms and cannot send, accept, ACK or check in";
 
@@ -2219,7 +2219,7 @@ fn caller_not_located(detail: &str) -> RunError {
 fn no_seat_for_pane(pane: &crate::protocol::ids::HostTargetId) -> RunError {
     caller_not_located(&format!(
         "no resolved seat is mapped to pane {}; use `seat list`, `seat resolve --pane {0}` or \
-         operator repair, then check in (a person in their own pane: `herdr-threads me init`); \
+         operator repair, then check in (a person in their own pane: `herdr-threads human me init`); \
          reads may pass --seat SEAT",
         pane.as_str()
     ))
@@ -2354,7 +2354,7 @@ where
                 caller_not_located(&format!(
                     "seat {} on pane {} has no lifecycle check-in context yet; the launch driver \
                      or hook runs `check-in --lifecycle-event ID` with --cooperative-* selection; \
-                     a person in their own pane runs `herdr-threads me init`",
+                     a person in their own pane runs `herdr-threads human me init`",
                     seat.as_str(),
                     pane.as_str()
                 ))

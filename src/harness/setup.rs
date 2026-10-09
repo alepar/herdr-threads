@@ -2928,7 +2928,7 @@ pub(crate) mod legacy {
         }
     }
     pub(crate) const NO_HUMAN_SETUP: &str =
-        "setup manages agent hooks only; a person uses `herdr-threads me init`";
+        "setup manages agent hooks only; a person uses `herdr-threads human me init`";
     pub(crate) fn harness_name(harness: Harness) -> &'static str {
         harness.as_str()
     }

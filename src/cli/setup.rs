@@ -179,7 +179,7 @@ pub enum PromptSuggestionPolicy {
 
 /// A person's pane identity (`me init`) has no hooks to set up.
 const NO_HUMAN_SETUP: &str =
-    "setup manages agent hooks only; a person uses `herdr-threads me init`";
+    "setup manages agent hooks only; a person uses `herdr-threads human me init`";
 
 fn harness_name(harness: Harness) -> &'static str {
     harness.as_str()
