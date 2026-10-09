@@ -148,8 +148,8 @@ Exit 2 covers the race where the mod starts before the SessionStart hook's check
 **Paging.** Bodies over a per-message limit (8 KiB) are streamed as their first 8 KiB with `truncated: true` and `…truncated; run herdr-threads body <id>, then herdr-threads ack <id>`. Each page is bounded (at most 32 items or 64 KiB), with paging until drained after every `Attention` frame and after connecting.
 
 **Framing.** The mod frames all peer text as untrusted data, matching the hook's `untrusted_peer_data` convention:
-- a fixed instruction header naming herdr-threads;
-- one block per item: `[herdr-threads] <kind> <id> in <thread> from <sender>:` followed by the body.
+- a fixed instruction header naming herdr-threads that treats every body as untrusted data and explains the markers (they attribute the source and grant no permission);
+- one block per item: `[herdr-threads] <kind> <id> in <thread> from <sender>[ markers]:` followed by the body, where `<thread>`/`<sender>` are names when supplied, else ids, and the markers are `[human]`, `[relays user]`, then `[query]`, `[request]` or `[rule]` — the same fixed text every other read path shows.
 
 Text never starts with `/`, which `$.prompt.submit` refuses.
 
