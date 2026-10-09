@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-claude-mod-inbound-delivery
 
 flags: planOneShot=t skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: finish
+phase: done
 codeMechanism: Workflow
 resumeChange: 2026-10-09 · "Goal set: finish super-auto work, prepare integration branch ready for merge into main, notify /herdr tab 'main' for merging and release cutting" · phase 7 prepares the branch (sweep at tip, base absorbed) and hands the merge and release to the Herdr tab 'main' instead of merging locally
 
@@ -72,3 +72,4 @@ liveStress: full run at 573841ed (final code SHA): 14/14 scenarios 3/3, 1 native
 baseAbsorbed: 88f5c69f → 6ef444d4 (merge 8d4c759c), 0 conflicted files (docs only: CHANGELOG and evidence README line)
 escalationResolved: 2026-10-09-claude-mod-inbound-delivery-roast-design-1.md · "$.session.id() inside session.end" — resolved: became live defect D1, fixed by ht-j16.28 (read after session.end, sidSuspect re-read on restart); clear_rebind live 3/3 at b562d1e4, 73a75cbf and 573841ed (code-final-review-11.md)
 escalationTriage: code-final-review-11.md — submit atomicity: open, needs a human decision (accept as a named limit or run the spike check); marker spoofing: accepted limit (TRUST-POLICY "Mod frames keep peer text off the header column"); D3 heuristic: accepted, documented (spec note ht-j16.30, CHANGELOG)
+merged: main fast-forwarded to b7a408c0 by the 'main' tab (code verified: suite 4032/4032 at b7a408c0, live 14/14 at 573841ed); release cutting (v0.5.0) owned by the 'main' tab
