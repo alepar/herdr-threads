@@ -10,7 +10,7 @@ https://github.com/user-attachments/assets/081ca706-6a44-4f03-b9ee-572a9b12ec71
 
 ## Install
 
-Use **Herdr 0.9.1 or 0.9.3** on **macOS arm64**, with Claude Code or Codex on `PATH`:
+Use **Herdr 0.9.1 or newer** on **macOS arm64**, with Claude Code or Codex on `PATH`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/alepar/herdr-threads/main/scripts/install.sh | bash -s -- --setup

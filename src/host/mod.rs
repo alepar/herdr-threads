@@ -1,6 +1,6 @@
-//! Herdr host boundary: the production `NativeCli` HostPort (Herdr 0.9.1/0.9.3
-//! protocol 22) and its observation parsing.
-mod compatibility;
+//! Herdr host boundary: the production `NativeCli` HostPort (Herdr 0.9.1 or
+//! newer) and its observation parsing.
+pub mod compatibility;
 pub mod native;
 pub mod observation;
 mod transport;

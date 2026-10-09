@@ -128,6 +128,18 @@ pub(crate) struct ElectedHostEvidence {
     /// The installed `claude` and `codex` observed on the daemon's `PATH`
     /// at boot; Unknown until the bounded background observation completes.
     pub(crate) harnesses: Arc<Mutex<HarnessObservations>>,
+    /// The adapter, read on each Health for the Herdr release it last saw.
+    pub(crate) release: HostReleaseSource,
+}
+
+/// Where Health reads the observed Herdr release; the default has none.
+#[derive(Default)]
+pub(crate) struct HostReleaseSource(Option<Arc<dyn HostPort>>);
+
+impl HostReleaseSource {
+    fn observed(&self) -> Option<crate::host::compatibility::HostRelease> {
+        self.0.as_ref().and_then(|host| host.observed_release())
+    }
 }
 
 /// The daemon's boot observation of each installed harness.
@@ -224,6 +236,10 @@ impl ElectedHealth {
         inputs.current_execution = CapabilityState::Unsupported;
         inputs.safe_prompt = self.host.safe_prompt;
         inputs.receipt_registration = CapabilityState::Unsupported;
+        if let Some(release) = self.host.release.observed() {
+            inputs.host_version = Some(release.summary());
+            inputs.host_release_warning = release.warning();
+        }
         // Each lane reports only its typed redacted status (class and code,
         // no free text, no seat/attempt identity); exact detail stays in the
         // lane's private diagnostics and durable inspect rows.
@@ -1414,6 +1430,7 @@ where
                     incarnation_witness,
                     safe_prompt,
                     harnesses,
+                    release: HostReleaseSource(Some(Arc::clone(&host))),
                 },
             );
             let log_path = factory_log_path.clone();

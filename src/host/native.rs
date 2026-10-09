@@ -78,6 +78,8 @@ pub struct NativeCli {
     /// Observation order within one (boot, epoch). Never reused by this adapter.
     sequence: AtomicU64,
     empty_windows: Mutex<HashMap<SeatId, EmptyComposerWindow>>,
+    /// What the last answered `ping` reported, for Health.
+    release: Mutex<Option<super::compatibility::HostRelease>>,
 }
 
 /// Server-process incarnation bound to the actual response connections of one
@@ -455,6 +457,7 @@ impl NativeCli {
             epoch: AtomicU64::new(1),
             sequence: AtomicU64::new(1),
             empty_windows: Mutex::new(HashMap::new()),
+            release: Mutex::new(None),
         }
     }
 
@@ -665,6 +668,12 @@ impl NativeCli {
         self.dispatch(args, budget, limit, cfg!(target_os = "macos"), true)
     }
 
+    fn record_release(&self, release: super::compatibility::HostRelease) {
+        if let Ok(mut slot) = self.release.lock() {
+            *slot = Some(release);
+        }
+    }
+
     fn dispatch(
         &self,
         args: &[&str],
@@ -765,7 +774,10 @@ impl NativeCli {
                 budget,
                 limit,
             )
-            .map(|response| (response.body, Some(response.witness)))
+            .map(|response| {
+                self.record_release(response.release);
+                (response.body, Some(response.witness))
+            })
         } else {
             super::transport::request(
                 &self.socket,
@@ -776,7 +788,10 @@ impl NativeCli {
                 budget,
                 limit,
             )
-            .map(|body| (body, None))
+            .map(|(body, release)| {
+                self.record_release(release);
+                (body, None)
+            })
         };
         if fenced
             && outcome.as_ref().is_err_and(|error| {
@@ -1215,6 +1230,10 @@ impl HostPort for NativeCli {
         }
     }
 
+    fn observed_release(&self) -> Option<super::compatibility::HostRelease> {
+        self.release.lock().ok().and_then(|slot| slot.clone())
+    }
+
     fn incarnation_witness(&self) -> crate::protocol::results::CapabilityState {
         // The kernel peer PID/start-time witness exists only on macOS; other
         // platforms report Unknown incarnation on every read.
@@ -1438,11 +1457,15 @@ impl NativeCli {
             Ok(response) => response,
             // Herdr answers these before typing anything (a blocked agent is
             // rejected "before any input is sent"; a missing agent or pane
-            // has nowhere to type); an invalid request never left us.
+            // has nowhere to type); an invalid request never left us, and a
+            // Herdr that does not serve or accept the method typed nothing.
             Err(failure)
                 if matches!(
                     failure.code,
-                    ErrorCode::TargetUnsafe | ErrorCode::NotFound | ErrorCode::InvalidRequest
+                    ErrorCode::TargetUnsafe
+                        | ErrorCode::NotFound
+                        | ErrorCode::InvalidRequest
+                        | ErrorCode::Unsupported
                 ) =>
             {
                 return Err(refuse(&failure.detail));
@@ -3294,6 +3317,23 @@ mod tests {
             recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
             detection_exchange(claude_screen(&[""])),
             blocked,
+        ]);
+        assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
+
+        // A Herdr that does not serve the method typed nothing either.
+        let unserved: Exchange = Box::new(|stream: &mut UnixStream, request: Value| {
+            assert_eq!(request["method"], "agent.prompt");
+            writeln!(
+                stream,
+                "{}",
+                json!({"id":request["id"],"error":{"code":"unknown_method","message":"unknown method: agent.prompt"}})
+            )
+            .unwrap();
+        });
+        let (result, _) = cooperative_wake(vec![
+            recheck_exchange(wake_agent("idle", Some("claude"), "term_1")),
+            detection_exchange(claude_screen(&[""])),
+            unserved,
         ]);
         assert_eq!(result.unwrap_err().code, ErrorCode::TargetUnsafe);
 

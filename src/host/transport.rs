@@ -1,5 +1,6 @@
 //! One bounded audited Herdr API exchange. Dropping this future closes its socket.
 
+use super::compatibility::HostRelease;
 use super::continuity::{
     KernelProcessInfo, LocalEndpointWitness, ProcessInfoProvider, capture_peer_witness_with,
     recheck_witness, socket_identity,
@@ -313,7 +314,7 @@ fn request_inner(
     budget: &CallBudget,
     limit: Duration,
     provider: Option<&dyn ProcessInfoProvider>,
-) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
+) -> Result<(String, Option<LocalEndpointWitness>, HostRelease), ApiError> {
     let started = Instant::now();
     // HostPort is synchronous and may be called from inside a Tokio runtime.
     // Keep this one transport task owned and joined on every return path.
@@ -346,17 +347,15 @@ fn request_inner(
                     let pong = ping
                         .get("result")
                         .ok_or_else(|| error(ErrorCode::Unsupported, "host API ping failed"))?;
-                    if pong.get("type").and_then(Value::as_str) != Some("pong")
-                        || !super::compatibility::supports_json_api(
-                            pong.get("version").and_then(Value::as_str),
-                            pong.get("protocol").and_then(Value::as_u64),
-                        )
-                    {
-                        return Err(error(
-                            ErrorCode::Unsupported,
-                            "host API version or protocol mismatch",
-                        ));
+                    if pong.get("type").and_then(Value::as_str) != Some("pong") {
+                        return Err(error(ErrorCode::Unsupported, "host API ping failed"));
                     }
+                    // A version floor only: `protocol` is recorded, never gated.
+                    let release = super::compatibility::admit(
+                        pong.get("version").and_then(Value::as_str),
+                        pong.get("protocol").and_then(Value::as_u64),
+                    )
+                    .map_err(|detail| error(ErrorCode::Unsupported, detail))?;
                     let (result, witness) = exchange(
                         socket, id, method, params, clock, budget, started, limit, provider,
                     )
@@ -406,7 +405,7 @@ fn request_inner(
                         )
                     })?;
                     check(clock, budget, started, limit)?;
-                    Ok((encoded, witness))
+                    Ok((encoded, witness, release))
                 })
             })
             .join()
@@ -439,6 +438,8 @@ mod tests {
 pub struct WitnessedResponse {
     pub body: String,
     pub witness: super::continuity::LocalEndpointWitness,
+    /// What this call's `ping` reported.
+    pub release: HostRelease,
 }
 /// Existing callers retain their original transport and capability behavior.
 pub(crate) fn request(
@@ -449,8 +450,9 @@ pub(crate) fn request(
     clock: &dyn Clock,
     budget: &CallBudget,
     limit: Duration,
-) -> Result<String, ApiError> {
-    request_inner(socket, id, method, params, clock, budget, limit, None).map(|(body, _)| body)
+) -> Result<(String, HostRelease), ApiError> {
+    request_inner(socket, id, method, params, clock, budget, limit, None)
+        .map(|(body, _, release)| (body, release))
 }
 
 /// Each actual stream is checked before sending and after correlated response
@@ -464,7 +466,7 @@ pub fn request_witnessed(
     budget: &CallBudget,
     limit: Duration,
 ) -> Result<WitnessedResponse, ApiError> {
-    let (body, witness) = request_inner(
+    let (body, witness, release) = request_inner(
         socket,
         id,
         method,
@@ -480,7 +482,11 @@ pub fn request_witnessed(
             "endpoint witness unavailable",
         )
     })?;
-    Ok(WitnessedResponse { body, witness })
+    Ok(WitnessedResponse {
+        body,
+        witness,
+        release,
+    })
 }
 fn witness_error(error_value: super::continuity::CaptureError) -> ApiError {
     let code = if error_value == super::continuity::CaptureError::Unsupported {
