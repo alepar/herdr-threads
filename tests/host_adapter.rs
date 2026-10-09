@@ -1421,3 +1421,105 @@ fn missing_pane_is_typed_not_found_without_epoch_advance() {
     assert_eq!(error.code, ErrorCode::NotFound);
     assert_eq!(cli.epoch(), epoch);
 }
+
+type Operation = Box<dyn FnOnce(&mut UnixStream, Value) + Send>;
+
+/// One accepted connection pair per entry: the ping answered with `pong`,
+/// then (when `Some`) one operation connection handled by the closure. `None`
+/// expects no operation connection (a refused ping).
+fn serve_sequence(calls: Vec<(Value, Option<Operation>)>) -> (PathBuf, thread::JoinHandle<()>) {
+    let path = socket_path();
+    let listener = UnixListener::bind(&path).unwrap();
+    let handle = thread::spawn(move || {
+        for (pong, operation) in calls {
+            let (mut ping, _) = listener.accept().unwrap();
+            let request = read_request(&mut ping);
+            assert_eq!(request["method"], "ping");
+            respond(&mut ping, &request, pong);
+            drop(ping);
+            if let Some(operation) = operation {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                operation(&mut stream, request);
+            }
+        }
+    });
+    (path, handle)
+}
+
+fn pong(version: &str, protocol: u64) -> Value {
+    json!({"type":"pong","version":version,"protocol":protocol})
+}
+
+fn unserved(code: &'static str) -> Operation {
+    Box::new(move |stream, request| respond_error(stream, &request, code, "not served here"))
+}
+
+/// Kills: publishing the release only with a successful operation. An
+/// answered newer ping is observed (with its warning) although the operation
+/// after it is unsupported or its connection fails.
+#[test]
+fn answered_ping_is_observed_even_when_the_operation_fails() {
+    let dropped: Operation = Box::new(|stream, _| drop(stream.try_clone().unwrap()));
+    for (operation, expected) in [
+        (unserved("unknown_method"), Some(ErrorCode::Unsupported)),
+        (unserved("invalid_params"), Some(ErrorCode::Unsupported)),
+        (dropped, None),
+    ] {
+        let (path, worker) = serve_sequence(vec![(pong("0.10.0", 23), Some(operation))]);
+        let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
+        let error = cli
+            .run(&["api", "snapshot"], &budget(5000), Duration::from_secs(2))
+            .unwrap_err();
+        cleanup(path, worker);
+        if let Some(expected) = expected {
+            assert_eq!(error.code, expected);
+            assert!(error.detail.contains("unsupported by this Herdr"));
+        }
+        let release = cli.observed_release().expect("answered ping observed");
+        assert_eq!(release.summary(), "0.10.0 (protocol 23)");
+        assert_eq!(
+            release.warning().as_deref(),
+            Some("untested Herdr 0.10.0; tested 0.9.1-0.9.3")
+        );
+    }
+}
+
+/// Kills: keeping an earlier release after Herdr changed. A 0.9.3 success
+/// followed by an upgraded 0.10.0 whose operation fails reports 0.10.0; a
+/// later ping the floor refuses clears the observation instead of leaving
+/// the last admitted one.
+#[test]
+fn observed_release_follows_the_latest_answered_ping() {
+    let ok: Operation = Box::new(|stream, request| {
+        respond(stream, &request, json!({"type":"pane_info","pane":pane()}))
+    });
+    let (path, worker) = serve_sequence(vec![
+        (pong("0.9.3", 22), Some(ok)),
+        (pong("0.10.0", 23), Some(unserved("invalid_params"))),
+        (pong("0.9.0", 22), None),
+    ]);
+    let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
+    let first = cli.pane("w4:p1", &budget(5000));
+    let tested = cli.observed_release();
+    let second = cli.pane("w4:p1", &budget(5000));
+    let upgraded = cli.observed_release();
+    let third = cli.pane("w4:p1", &budget(5000));
+    let refused = cli.observed_release();
+    cleanup(path, worker);
+
+    assert_eq!(first.unwrap().terminal_id, "term_1");
+    let tested = tested.unwrap();
+    assert_eq!(tested.summary(), "0.9.3 (protocol 22)");
+    assert_eq!(tested.warning(), None);
+
+    assert_eq!(second.unwrap_err().code, ErrorCode::Unsupported);
+    let upgraded = upgraded.unwrap();
+    assert_eq!(upgraded.summary(), "0.10.0 (protocol 23)");
+    assert!(upgraded.warning().is_some());
+
+    let third = third.unwrap_err();
+    assert_eq!(third.code, ErrorCode::Unsupported);
+    assert!(third.detail.contains("older than the minimum 0.9.1"));
+    assert_eq!(refused, None);
+}

@@ -80,7 +80,8 @@ pub struct NativeCli {
     /// Observation order within one (boot, epoch). Never reused by this adapter.
     sequence: AtomicU64,
     empty_windows: Mutex<HashMap<SeatId, EmptyComposerWindow>>,
-    /// What the last answered `ping` reported, for Health.
+    /// What the last answered `ping` reported, for Health: the admitted
+    /// release, or None before any answer or after one the floor refused.
     release: Mutex<Option<super::compatibility::HostRelease>>,
 }
 
@@ -279,6 +280,7 @@ impl NativeCli {
                     &context.budget,
                     Duration::from_millis(remaining),
                     &validate,
+                    &|release| self.record_release(release),
                 );
                 if response.as_ref().is_err_and(|failure| {
                     matches!(
@@ -292,10 +294,7 @@ impl NativeCli {
                     self.epoch.fetch_add(1, Ordering::AcqRel);
                 }
                 match response {
-                    Ok(response) => {
-                        self.record_release(response.release);
-                        Ok(response.body)
-                    }
+                    Ok(response) => Ok(response.body),
                     Err(failure) if failure.submission == ports::NativeSubmission::NotSubmitted => {
                         return Err(failure);
                     }
@@ -796,9 +795,10 @@ impl NativeCli {
         self.dispatch(args, budget, limit, cfg!(target_os = "macos"), true, false)
     }
 
-    fn record_release(&self, release: super::compatibility::HostRelease) {
+    /// `None` (a ping refused by the floor) clears the observation.
+    fn record_release(&self, release: Option<super::compatibility::HostRelease>) {
         if let Ok(mut slot) = self.release.lock() {
-            *slot = Some(release);
+            *slot = release;
         }
     }
 
@@ -893,8 +893,12 @@ impl NativeCli {
             }
         };
         let id = format!("ht-{}", CALL_ID.fetch_add(1, Ordering::Relaxed));
+        // Every answered ping updates the observed release, even when the
+        // operation after it fails (an operation this Herdr no longer serves
+        // is exactly when Health must show the newer release).
+        let observe = |release| self.record_release(release);
         let outcome = if witnessed {
-            super::transport::request_witnessed(
+            super::transport::request_witnessed_observed(
                 &self.socket,
                 &id,
                 method,
@@ -902,11 +906,9 @@ impl NativeCli {
                 self.clock.as_ref(),
                 budget,
                 limit,
+                &observe,
             )
-            .map(|response| {
-                self.record_release(response.release);
-                (response.body, Some(response.witness))
-            })
+            .map(|response| (response.body, Some(response.witness)))
         } else if method == "agent.start" && preserve_start_refusal {
             super::transport::request_unhinted_start(
                 &self.socket,
@@ -915,11 +917,9 @@ impl NativeCli {
                 self.clock.as_ref(),
                 budget,
                 limit,
+                &observe,
             )
-            .map(|(body, release)| {
-                self.record_release(release);
-                (body, None)
-            })
+            .map(|body| (body, None))
         } else {
             super::transport::request(
                 &self.socket,
@@ -929,11 +929,9 @@ impl NativeCli {
                 self.clock.as_ref(),
                 budget,
                 limit,
+                &observe,
             )
-            .map(|(body, release)| {
-                self.record_release(release);
-                (body, None)
-            })
+            .map(|body| (body, None))
         };
         if fenced
             && outcome.as_ref().is_err_and(|error| {

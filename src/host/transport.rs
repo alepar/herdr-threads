@@ -43,7 +43,7 @@ const CONFIRMED_START_REFUSALS: [&str; 3] = [
     "agent_process_hint_unsupported",
 ];
 
-fn compatible_pong(ping: &Value) -> Result<&Value, ApiError> {
+fn compatible_pong<'a>(ping: &'a Value, observe: &PingObserver<'_>) -> Result<&'a Value, ApiError> {
     if let Some(error) = super::observation::structured_host_error(ping) {
         return Err(error);
     }
@@ -53,11 +53,12 @@ fn compatible_pong(ping: &Value) -> Result<&Value, ApiError> {
     if pong.get("type").and_then(Value::as_str) != Some("pong") {
         return Err(error(ErrorCode::Unsupported, "host API ping failed"));
     }
-    super::compatibility::admit(
+    let admitted = super::compatibility::admit(
         pong.get("version").and_then(Value::as_str),
         pong.get("protocol").and_then(Value::as_u64),
-    )
-    .map_err(|detail| error(ErrorCode::Unsupported, detail))?;
+    );
+    observe(admitted.as_ref().ok().cloned());
+    admitted.map_err(|detail| error(ErrorCode::Unsupported, detail))?;
     Ok(pong)
 }
 
@@ -361,9 +362,10 @@ fn request_inner(
     budget: &CallBudget,
     limit: Duration,
     provider: Option<&dyn ProcessInfoProvider>,
-) -> Result<(String, Option<LocalEndpointWitness>, HostRelease), ApiError> {
+    observe: &PingObserver<'_>,
+) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
     request_inner_response(
-        socket, id, method, params, clock, budget, limit, provider, false,
+        socket, id, method, params, clock, budget, limit, provider, false, observe,
     )
 }
 
@@ -378,7 +380,8 @@ fn request_inner_response(
     limit: Duration,
     provider: Option<&dyn ProcessInfoProvider>,
     preserve_start_refusal: bool,
-) -> Result<(String, Option<LocalEndpointWitness>, HostRelease), ApiError> {
+    observe: &PingObserver<'_>,
+) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
     let started = Instant::now();
     // HostPort is synchronous and may be called from inside a Tokio runtime.
     // Keep this one transport task owned and joined on every return path.
@@ -406,21 +409,7 @@ fn request_inner_response(
                         None,
                     )
                     .await?;
-                    if let Some(error) = super::observation::structured_host_error(&ping) {
-                        return Err(error);
-                    }
-                    let pong = ping
-                        .get("result")
-                        .ok_or_else(|| error(ErrorCode::Unsupported, "host API ping failed"))?;
-                    if pong.get("type").and_then(Value::as_str) != Some("pong") {
-                        return Err(error(ErrorCode::Unsupported, "host API ping failed"));
-                    }
-                    // A version floor only: `protocol` is recorded, never gated.
-                    let release = super::compatibility::admit(
-                        pong.get("version").and_then(Value::as_str),
-                        pong.get("protocol").and_then(Value::as_u64),
-                    )
-                    .map_err(|detail| error(ErrorCode::Unsupported, detail))?;
+                    compatible_pong(&ping, observe)?;
                     let (result, witness) = exchange(
                         socket, id, method, params, clock, budget, started, limit, provider, None,
                     )
@@ -479,7 +468,7 @@ fn request_inner_response(
                         )
                     })?;
                     check(clock, budget, started, limit)?;
-                    Ok((encoded, witness, release))
+                    Ok((encoded, witness))
                 })
             })
             .join()
@@ -489,6 +478,8 @@ fn request_inner_response(
 
 /// Keep exact confirmed start refusals available to the existing unhinted
 /// run/dispatch path. Ordinary request wrappers still map errors as before.
+// Allowed: existing start inputs plus the diagnostic ping observer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn request_unhinted_start(
     socket: &Path,
     id: &str,
@@ -496,7 +487,8 @@ pub(crate) fn request_unhinted_start(
     clock: &dyn Clock,
     budget: &CallBudget,
     limit: Duration,
-) -> Result<(String, HostRelease), ApiError> {
+    observe: &PingObserver<'_>,
+) -> Result<String, ApiError> {
     request_inner_response(
         socket,
         id,
@@ -507,8 +499,9 @@ pub(crate) fn request_unhinted_start(
         limit,
         None,
         true,
+        observe,
     )
-    .map(|(body, _, release)| (body, release))
+    .map(|(body, _)| body)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -521,6 +514,7 @@ fn guarded_start_inner(
     limit: Duration,
     provider: &dyn ProcessInfoProvider,
     validate: &StartValidator<'_>,
+    observe: &PingObserver<'_>,
 ) -> Result<WitnessedResponse, crate::ports::NativeLaunchFailure> {
     use crate::ports::{NativeLaunchFailure, NativeSubmission};
     let started = Instant::now();
@@ -550,12 +544,7 @@ fn guarded_start_inner(
                             None,
                         )
                         .await?;
-                        let pong = compatible_pong(&ping)?;
-                        let release = super::compatibility::admit(
-                            pong.get("version").and_then(Value::as_str),
-                            pong.get("protocol").and_then(Value::as_u64),
-                        )
-                        .map_err(|detail| error(ErrorCode::Unsupported, detail))?;
+                        let pong = compatible_pong(&ping, observe)?;
                         if pong
                             .pointer("/capabilities/agent_start_process_hint_v1")
                             .and_then(Value::as_bool)
@@ -618,11 +607,7 @@ fn guarded_start_inner(
                                 "host API response encoding failed",
                             )
                         })?;
-                        Ok(WitnessedResponse {
-                            body,
-                            witness,
-                            release,
-                        })
+                        Ok(WitnessedResponse { body, witness })
                     })
                 })();
                 result.map_err(|error| NativeLaunchFailure {
@@ -647,6 +632,8 @@ fn guarded_start_inner(
 
 /// Required-mode start: each actual ping negotiates capability, and the
 /// connected operation peer is fenced before polling the first write.
+// Allowed: existing guarded-start inputs plus the diagnostic ping observer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn request_guarded_start(
     socket: &Path,
     id: &str,
@@ -655,6 +642,7 @@ pub(crate) fn request_guarded_start(
     budget: &CallBudget,
     limit: Duration,
     validate: &StartValidator<'_>,
+    observe: &PingObserver<'_>,
 ) -> Result<WitnessedResponse, crate::ports::NativeLaunchFailure> {
     guarded_start_inner(
         socket,
@@ -665,6 +653,7 @@ pub(crate) fn request_guarded_start(
         limit,
         &KernelProcessInfo,
         validate,
+        observe,
     )
 }
 
@@ -693,9 +682,14 @@ mod tests {
 pub struct WitnessedResponse {
     pub body: String,
     pub witness: super::continuity::LocalEndpointWitness,
-    /// What this call's `ping` reported.
-    pub release: HostRelease,
 }
+
+/// Called once per call whose `ping` Herdr answered with a `pong`, before the
+/// operation is sent and whatever the operation's outcome: `Some` for an
+/// admitted release, `None` for one refused by the floor (or without a
+/// readable version), so a stale earlier release is never kept. Not called
+/// when the ping itself was not answered.
+pub(crate) type PingObserver<'a> = dyn Fn(Option<HostRelease>) + Sync + 'a;
 
 #[cfg(all(test, target_os = "macos"))]
 mod process_hint_tests {
@@ -838,6 +832,7 @@ mod process_hint_tests {
                 Duration::from_secs(30),
                 &provider,
                 &validate,
+                &|_| {},
             );
             let (frames, received) = fixture.finish_with_bytes();
             assert_eq!(
@@ -892,6 +887,7 @@ mod process_hint_tests {
                 &budget,
                 Duration::from_secs(30),
                 &|_, _| Ok(()),
+                &|_| {},
             );
             let (frames, received) = fixture.finish_with_bytes();
             assert_no_partial_bytes(&frames, received);
@@ -909,6 +905,90 @@ mod process_hint_tests {
                 let failure = result.unwrap_err();
                 assert_eq!(failure.error.code, ErrorCode::Unsupported);
                 assert_eq!(failure.submission, NativeSubmission::NotSubmitted);
+            }
+        }
+    }
+
+    #[test]
+    fn guarded_and_unhinted_starts_publish_ping_before_operation_or_capability_refusal() {
+        for guarded in [false, true] {
+            for (version, capability) in [("0.10.0", true), ("0.10.0", false), ("0.9.0", true)] {
+                let observed = std::sync::Mutex::new(Some(
+                    super::super::compatibility::admit(Some("0.9.3"), Some(22)).unwrap(),
+                ));
+                let mut advert = pong();
+                advert["version"] = json!(version);
+                advert["protocol"] = json!(29);
+                advert["capabilities"]["agent_start_process_hint_v1"] = json!(capability);
+                let fixture = HintSocketFixture::new(move |stream, wire| {
+                    let response = if wire["method"] == "ping" {
+                        json!({"id": wire["id"], "result": advert})
+                    } else {
+                        json!({"id": wire["id"], "error": {"code": "unknown_method", "message": "unsupported start"}})
+                    };
+                    writeln!(stream, "{response}").unwrap();
+                });
+                let clock = HintClock(Arc::new(AtomicU64::new(0)));
+                let budget = CallBudget {
+                    deadline: MonoInstant(2000),
+                    cancellation: Cancellation::default(),
+                };
+                let observe = |release| *observed.lock().unwrap() = release;
+                let submitted = version != "0.9.0" && (!guarded || capability);
+                if guarded {
+                    let failure = request_guarded_start(
+                        fixture.endpoint(),
+                        "observed-start",
+                        params(),
+                        &clock,
+                        &budget,
+                        Duration::from_secs(30),
+                        &|_, _| Ok(()),
+                        &observe,
+                    )
+                    .unwrap_err();
+                    assert_eq!(failure.error.code, ErrorCode::Unsupported);
+                    assert_eq!(
+                        failure.submission,
+                        if submitted {
+                            NativeSubmission::Possible
+                        } else {
+                            NativeSubmission::NotSubmitted
+                        }
+                    );
+                } else {
+                    let failure = request_unhinted_start(
+                        fixture.endpoint(),
+                        "observed-start",
+                        params(),
+                        &clock,
+                        &budget,
+                        Duration::from_secs(30),
+                        &observe,
+                    )
+                    .unwrap_err();
+                    assert_eq!(failure.code, ErrorCode::Unsupported);
+                }
+                let (frames, received) = fixture.finish_with_bytes();
+                assert_no_partial_bytes(&frames, received);
+                assert_eq!(
+                    frames
+                        .iter()
+                        .filter(|frame| frame["method"] == "agent.start")
+                        .count(),
+                    usize::from(submitted)
+                );
+                let release = observed.into_inner().unwrap();
+                if version == "0.9.0" {
+                    assert!(
+                        release.is_none(),
+                        "refused pong must clear the earlier release"
+                    );
+                } else {
+                    let release = release.unwrap();
+                    assert!(release.summary().contains("0.10.0"));
+                    assert!(release.warning().is_some());
+                }
             }
         }
     }
@@ -932,6 +1012,7 @@ mod process_hint_tests {
             &budget,
             Duration::from_secs(30),
             &|_, _| Ok(()),
+            &|_| {},
         );
         let (frames, received) = fixture.finish_with_bytes();
         assert_no_partial_bytes(&frames, received);
@@ -1009,6 +1090,7 @@ mod process_hint_tests {
                 Duration::from_secs(30),
                 &provider,
                 &|_, _| Ok(()),
+                &|_| {},
             );
             let (frames, received) = fixture.finish_with_bytes();
             assert_eq!(
@@ -1037,6 +1119,8 @@ mod process_hint_tests {
     }
 }
 /// Existing callers retain their original transport and capability behavior.
+// Allowed: request_inner's inputs plus the ping observer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn request(
     socket: &Path,
     id: &str,
@@ -1045,9 +1129,12 @@ pub(crate) fn request(
     clock: &dyn Clock,
     budget: &CallBudget,
     limit: Duration,
-) -> Result<(String, HostRelease), ApiError> {
-    request_inner(socket, id, method, params, clock, budget, limit, None)
-        .map(|(body, _, release)| (body, release))
+    observe: &PingObserver<'_>,
+) -> Result<String, ApiError> {
+    request_inner(
+        socket, id, method, params, clock, budget, limit, None, observe,
+    )
+    .map(|(body, _)| body)
 }
 
 /// Each actual stream is checked before sending and after correlated response
@@ -1061,7 +1148,23 @@ pub fn request_witnessed(
     budget: &CallBudget,
     limit: Duration,
 ) -> Result<WitnessedResponse, ApiError> {
-    let (body, witness, release) = request_inner(
+    request_witnessed_observed(socket, id, method, params, clock, budget, limit, &|_| {})
+}
+
+/// `request_witnessed` that also reports the answered ping to `observe`.
+// Allowed: request_witnessed's inputs plus the ping observer.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn request_witnessed_observed(
+    socket: &Path,
+    id: &str,
+    method: &str,
+    params: Value,
+    clock: &dyn Clock,
+    budget: &CallBudget,
+    limit: Duration,
+    observe: &PingObserver<'_>,
+) -> Result<WitnessedResponse, ApiError> {
+    let (body, witness) = request_inner(
         socket,
         id,
         method,
@@ -1070,6 +1173,7 @@ pub fn request_witnessed(
         budget,
         limit,
         Some(&KernelProcessInfo),
+        observe,
     )?;
     let witness = witness.ok_or_else(|| {
         error(
@@ -1077,11 +1181,7 @@ pub fn request_witnessed(
             "endpoint witness unavailable",
         )
     })?;
-    Ok(WitnessedResponse {
-        body,
-        witness,
-        release,
-    })
+    Ok(WitnessedResponse { body, witness })
 }
 fn witness_error(error_value: super::continuity::CaptureError) -> ApiError {
     let code = if error_value == super::continuity::CaptureError::Unsupported {

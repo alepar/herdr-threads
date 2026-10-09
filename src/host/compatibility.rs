@@ -48,25 +48,29 @@ impl Version {
         }
     }
 
-    /// Parses `MAJOR.MINOR.PATCH`, with an optional leading `v`, `-prerelease`
-    /// and `+build` (ignored). Anything else is `None`.
+    /// Parses a strict SemVer 2.0.0 string: `MAJOR.MINOR.PATCH` without
+    /// leading zeroes, then optional `-PRERELEASE` and `+BUILD`, each a
+    /// nonempty dot-separated list of nonempty `[0-9A-Za-z-]` identifiers
+    /// (numeric prerelease identifiers without leading zeroes). Anything else,
+    /// a leading `v` or surrounding whitespace included, is `None`: Herdr
+    /// reports its Cargo package version, which is always valid semver.
     pub fn parse(text: &str) -> Option<Self> {
-        let text = text.trim();
-        let text = text.strip_prefix('v').unwrap_or(text);
-        let text = text.split_once('+').map_or(text, |(core, _)| core);
+        let (text, build) = match text.split_once('+') {
+            Some((text, build)) => (text, Some(build)),
+            None => (text, None),
+        };
+        if build.is_some_and(|build| !identifiers(build, false)) {
+            return None;
+        }
         let (core, prerelease) = match text.split_once('-') {
-            Some((core, pre)) if !pre.is_empty() => (core, true),
-            Some(_) => return None,
-            None => (text, false),
+            Some((core, pre)) => (core, Some(pre)),
+            None => (text, None),
         };
+        if prerelease.is_some_and(|pre| !identifiers(pre, true)) {
+            return None;
+        }
         let mut parts = core.split('.');
-        let mut number = || -> Option<u64> {
-            let part = parts.next()?;
-            if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            part.parse().ok()
-        };
+        let mut number = || parts.next().and_then(numeric);
         let (major, minor, patch) = (number()?, number()?, number()?);
         if parts.next().is_some() {
             return None;
@@ -75,7 +79,7 @@ impl Version {
             major,
             minor,
             patch,
-            prerelease,
+            prerelease: prerelease.is_some(),
         })
     }
 
@@ -84,6 +88,27 @@ impl Version {
     }
 }
 
+/// A semver numeric identifier: digits, no leading zero unless exactly `0`.
+fn numeric(part: &str) -> Option<u64> {
+    let digits = !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    (digits && (part == "0" || !part.starts_with('0')))
+        .then(|| part.parse().ok())
+        .flatten()
+}
+
+/// Dot-separated nonempty `[0-9A-Za-z-]` identifiers; with `prerelease`, an
+/// all-digit identifier must also be a valid numeric identifier.
+fn identifiers(list: &str, prerelease: bool) -> bool {
+    list.split('.').all(|id| {
+        let charset = !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+        let all_digits = id.bytes().all(|b| b.is_ascii_digit());
+        charset && !(prerelease && all_digits && numeric(id).is_none())
+    })
+}
+
+/// Orders by release, a prerelease below its release. Prereleases of the
+/// same release compare equal: the floor and tested range are stable
+/// releases, so their relative order is never needed.
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> Ordering {
         self.release()
@@ -217,14 +242,58 @@ mod tests {
     #[test]
     fn parses_semver_forms() {
         assert_eq!(Version::parse("0.9.2"), Some(Version::new(0, 9, 2)));
-        assert_eq!(Version::parse("v1.10.0"), Some(Version::new(1, 10, 0)));
-        assert_eq!(
-            Version::parse("0.9.4+abc").map(Version::release),
-            Some((0, 9, 4))
-        );
-        assert!(Version::parse("0.9.4-rc.1").unwrap().prerelease);
-        for bad in ["", "0.9", "0.9.1.2", "0.9.x", "0.9.-1", "0.9.1-", "x"] {
-            assert_eq!(Version::parse(bad), None, "{bad}");
+        assert_eq!(Version::parse("1.10.0"), Some(Version::new(1, 10, 0)));
+        for valid in [
+            "0.9.4+abc",
+            "0.9.4+build.007",
+            "0.9.4+exp.sha.5114f85",
+            "10.20.30",
+        ] {
+            assert!(
+                Version::parse(valid).is_some_and(|v| !v.prerelease),
+                "{valid}"
+            );
+        }
+        for prerelease in [
+            "0.9.4-rc.1",
+            "0.9.4-alpha-1",
+            "0.9.4-0",
+            "0.9.4-x.7.z.92+b.1",
+        ] {
+            assert!(
+                Version::parse(prerelease).is_some_and(|v| v.prerelease),
+                "{prerelease}"
+            );
+        }
+        for bad in [
+            "",
+            "0.9",
+            "0.9.1.2",
+            "0.9.x",
+            "0.9.-1",
+            "0.9.1-",
+            "x",
+            // Malformed build metadata.
+            "0.9.1+",
+            "0.9.1+bad+build",
+            "0.9.1+a..b",
+            "0.9.1+a_b",
+            // Leading zeroes in the core or a numeric prerelease identifier.
+            "00.9.1",
+            "0.09.1",
+            "0.9.01",
+            "0.9.2-01",
+            // Malformed prerelease identifiers.
+            "0.9.2-!",
+            "0.9.2-rc..1",
+            "0.9.2-rc.",
+            "0.9.2-+b",
+            // Not semver: a `v` prefix or surrounding whitespace.
+            "v0.9.1",
+            " 0.9.1",
+            "0.9.1\n",
+        ] {
+            assert_eq!(Version::parse(bad), None, "{bad:?}");
         }
         assert!(Version::parse("0.9.1-rc1").unwrap() < MIN_HERDR_VERSION);
         assert!(Version::parse("0.10.0").unwrap() > Version::new(0, 9, 3));
@@ -266,5 +335,14 @@ mod tests {
         }
         assert!(admit(None, Some(22)).is_err());
         assert!(admit(Some("dev"), Some(22)).is_err());
+        // Main review: malformed semver must not be admitted (three of these
+        // were once classified Tested).
+        for malformed in ["0.9.1+", "0.9.1+bad+build", "00.9.1", "0.9.2-!"] {
+            let refusal = admit(Some(malformed), Some(22)).unwrap_err();
+            assert!(
+                refusal.contains("unparseable version"),
+                "{malformed}: {refusal}"
+            );
+        }
     }
 }
