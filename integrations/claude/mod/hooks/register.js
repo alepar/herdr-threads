@@ -75,6 +75,8 @@ export function createCore(io) {
     restartAt: null,
     backoffIdx: 0,
     pendingRefresh: null,
+    endReason: null,
+    sidSuspect: false,
     gen: 0,
     ticking: false,
     pumping: false,
@@ -196,6 +198,7 @@ export function createCore(io) {
     if (S.inert || !o || typeof o !== 'object' || typeof o.id !== 'string') return
     if (o.kind === 'status') {
       if (o.state === 'connected') {
+        S.sidSuspect = false
         S.connectedAt = io.now()
         S.lastAckRetry = io.now()
         S.live = true
@@ -203,6 +206,11 @@ export function createCore(io) {
         void pumpLazy()
         void pump()
       } else if (o.state === 'closing' || o.state === 'refused') {
+        if (
+          (o.state === 'refused' && o.reason === 'session_mismatch') ||
+          (o.state === 'closing' && o.reason === 'binding_changed')
+        )
+          S.sidSuspect = true
         dropQueued(`${o.state}:${o.reason ?? ''}`)
       }
       return
@@ -493,6 +501,28 @@ export function createCore(io) {
     S.rec = rec && typeof rec === 'object' ? { ...emptyRec(), ...rec } : emptyRec()
   }
 
+  /** Re-reads the engine's session id; adopts a changed one per the last session.end reason. */
+  async function syncSession() {
+    let sid
+    try {
+      sid = await io.sessionId()
+    } catch {
+      return false
+    }
+    if (!sid || sid === S.sid) return false
+    const reason = S.endReason
+    S.endReason = null
+    S.sid = sid
+    let rec = null
+    try {
+      rec = reason === 'clear' ? null : await io.store.get(key(sid))
+    } catch {}
+    S.rec = rec && typeof rec === 'object' ? { ...emptyRec(), ...rec } : emptyRec()
+    S.acking = new Set()
+    S.sidSuspect = false
+    return true
+  }
+
   function onTurnStart(e) {
     if (S.inert || !e || e.agentId) return
     S.sawStart = true
@@ -534,6 +564,7 @@ export function createCore(io) {
     S.restartAt = null
     S.backoffIdx = 0
     S.pendingRefresh = reason
+    S.endReason = reason
     if (reason === 'clear') {
       const old = S.sid
       S.rec = emptyRec()
@@ -544,21 +575,8 @@ export function createCore(io) {
   }
 
   async function refresh() {
-    const reason = S.pendingRefresh
     S.pendingRefresh = null
-    const prev = S.sid
-    try {
-      const sid = await io.sessionId()
-      if (sid !== prev) {
-        S.sid = sid
-        let rec = null
-        try {
-          rec = reason === 'clear' ? null : await io.store.get(key(sid))
-        } catch {}
-        S.rec = rec && typeof rec === 'object' ? { ...emptyRec(), ...rec } : emptyRec()
-        S.acking = new Set()
-      }
-    } catch {}
+    await syncSession()
     startChild()
   }
 
@@ -568,7 +586,15 @@ export function createCore(io) {
     try {
       const now = io.now()
       if (S.pendingRefresh) await refresh()
-      else if (!S.child && !S.stopped && S.restartAt != null && now >= S.restartAt) startChild()
+      else if (!S.child && !S.stopped && S.restartAt != null) {
+        const changed = S.sidSuspect || now >= S.restartAt ? await syncSession() : false
+        if (S.disposed || S.child) {
+          // nothing: disposed or started meanwhile
+        } else if (changed) {
+          S.backoffIdx = 0
+          startChild()
+        } else if (now >= S.restartAt) startChild()
+      }
       if (S.turns.assumedBusy && !S.sawStart && now - S.loadedAt >= ASSUMED_BUSY_IDLE_MS) {
         try {
           await io.promptRead()

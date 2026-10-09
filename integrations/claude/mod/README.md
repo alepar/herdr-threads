@@ -116,10 +116,15 @@ builds `io` from `$`. Rules (spec D5, D6):
 - **Persistence.** `$.store` key `delivered:<session id>` holds `{delivered, unacked,
   attentionVersions}`. `session.end` `clear` discards the key (and the queue); `resume` keeps it
   (a changed session id, as with `/branch`, starts an empty key: an accepted duplicate limit).
-  After a `session.end` handler returns the next tick re-reads `$.session.id()` and restarts
-  `watch`. Attention items are delivered once per watch run (re-sent after each restart).
+  Every `watch` restart re-reads `$.session.id()` first. The engine can still report the old id
+  right after a `session.end` handler returns (2.1.295 after `/clear`). A changed id is adopted
+  with the reason of the last `session.end`: `clear` starts an empty record, `resume` loads the
+  new key. Attention items are delivered once per watch run (re-sent after each restart).
 - **Child.** Exit 0/1 restart after 1, 2, 5, 10, 30 s (reset after 60 s connected); exit 2
   retries on the same ladder; exit 3 stops until reload. A ledger `restart` line records each.
+  A `refused` `session_mismatch` or a `closing` `binding_changed` makes each tick re-read the
+  session id while no child runs. A changed id restarts at once with the ladder reset; an
+  unchanged one waits for the ladder.
 - **Ledger.** `HERDR_THREADS_MOD_LEDGER=<file>`: the in-memory tail (2000 lines) is rewritten
   through one serialized promise chain, since `$.fs` has no append.
 
