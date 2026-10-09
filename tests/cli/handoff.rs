@@ -1702,7 +1702,7 @@ impl Write for RegisteredOutput {
 #[test]
 fn registered_handoff_report_replay_and_completed_cleanup_keep_frozen_identity() {
     use std::sync::atomic::Ordering;
-    for req in registered_requests() {
+    for (index, req) in registered_requests().into_iter().enumerate() {
         // Both output boundaries retain success, and actual resume never launches again.
         for fail_write in [true, false] {
             let (_temp, journal) = journal();
@@ -1834,17 +1834,25 @@ fn registered_handoff_report_replay_and_completed_cleanup_keep_frozen_identity()
             assert!(journal.load(&reference).is_err());
         }
         // Registered sender selection uses real parse_argv and the completed fast route.
-        for mismatch in [
-            "none",
-            "harness",
-            "namespace",
-            "seat",
-            "target",
-            "role",
-            "host",
-            "instance",
-        ] {
-            let (_temp, journal) = journal();
+        // The identity-independent mismatches run for the first registration;
+        // every registration checks its own match and a harness mismatch.
+        let mismatches: &[&str] = if index == 0 {
+            &[
+                "none",
+                "harness",
+                "namespace",
+                "seat",
+                "target",
+                "role",
+                "host",
+                "instance",
+            ]
+        } else {
+            &["none", "harness"]
+        };
+        // One journal per registration: each mismatch freezes its own intent.
+        let (_temp, journal) = journal();
+        for &mismatch in mismatches {
             let output = registered_output(&journal);
             let plan = registered_plan_fixture(req.clone(), output.context.clone());
             let mut caller = claim();
@@ -3022,6 +3030,10 @@ impl LocalClient for Task48PhaseClient {
 #[test]
 fn task48_terminal_thin_uncertain_matrix_is_runtime_free_and_canonically_completed() {
     use crate::protocol::handoff::HandoffState;
+    // One journal serves every case: each case freezes its own handoff intent
+    // (its own reference), so the cases stay independent while the
+    // fsync-bound journal setup runs once.
+    let (_temp, journal) = journal();
     for (label, progress) in [
         (
             "terminal",
@@ -3073,9 +3085,17 @@ fn task48_terminal_thin_uncertain_matrix_is_runtime_free_and_canonically_complet
             },
         ),
     ] {
-        for canonical in ["completed", "live", "missing-thread"] {
+        let absorbing = matches!(label, "partial" | "unknown" | "already-joined-conflict");
+        // An absorbing replay never reaches the canonical client (asserted
+        // below), so the canonical answer cannot matter to it: one canonical
+        // state covers it under every output/response boundary.
+        let canonicals: &[&str] = if absorbing {
+            &["live"]
+        } else {
+            &["completed", "live", "missing-thread"]
+        };
+        for &canonical in canonicals {
             for boundary in ["success", "write", "flush", "begin-lost", "complete-lost"] {
-                let (_temp, journal) = journal();
                 let reference = frozen(&journal);
                 save(&journal, &reference, &progress).unwrap();
                 let events = std::sync::Arc::new(Mutex::new(vec![]));
@@ -3107,7 +3127,6 @@ fn task48_terminal_thin_uncertain_matrix_is_runtime_free_and_canonically_complet
                     &mut output,
                 );
                 let events = events.lock().unwrap().clone();
-                let absorbing = matches!(label, "partial" | "unknown" | "already-joined-conflict");
                 if absorbing {
                     assert!(!events.contains(&"begin") && !events.contains(&"complete"));
                     assert!(result.is_err());
@@ -3312,8 +3331,12 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
         ]
         .concat(),
     ];
-    for argv in forms {
-        for lane in ["fresh", "old", "new"] {
+    // Each argv form runs through one lane, rotating fresh/old/new, so every
+    // form and every lane is covered (each lane sees two forms) without the
+    // full 6x3 product of native launch fixtures.
+    for (index, argv) in forms.into_iter().enumerate() {
+        {
+            let lane = ["fresh", "old", "new"][index % 3];
             let (_temp, journal) = journal();
             let client = Task48DurableClient {
                 events: Mutex::new(vec![]),

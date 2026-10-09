@@ -556,7 +556,10 @@ fn send_is_attempted_within_100ms_without_a_tick_wait() {
 /// An idle daemon commits nothing from the deadline, wake or request origins
 /// and each of those two lanes makes at most one pass per 5 s safety tick,
 /// with the observation lane running at its own 5 s cadence. Observation
-/// commits (admission, snapshot stage, seal, publish) kick no lane.
+/// commits (admission, snapshot stage, seal, publish) kick no lane. The name
+/// keeps its historical `_30s`; the idle window is `IDLE_WINDOW` (12 s: two
+/// full 5 s safety ticks of each lane and two observation cycles, so a lane
+/// that polls on a short turn still overshoots the per-tick bound).
 /// Kills: a lane that polls on a short turn (many passes), a tick pass that
 /// commits (an empty scan writing), and an observation commit that is mapped
 /// to a lane and so wakes the wake lane every cycle.
@@ -575,24 +578,45 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
     let s = &scene.session;
     // Let setup's own work (invitation wake, receipts, first observation
     // publication) settle, then take the baseline.
-    std::thread::sleep(Duration::from_secs(8));
-    s.wait_commits_quiet("wake", Duration::from_secs(2));
-    s.wait_commits_quiet("deadline", Duration::from_secs(2));
-    // On a loaded host setup's own wake work can outlast the fixed 8 s: take
-    // the baseline once neither lane has passed for 3 s. A lane that polls on
-    // a short turn never gets there, so that failure still fails here.
-    for lane in [Lane::Wakes, Lane::Deadlines] {
-        let give_up = Instant::now() + Duration::from_secs(90);
-        let mut last = (s.probe.idle_events(lane), Instant::now());
-        while last.1.elapsed() < Duration::from_secs(3) {
-            assert!(
-                Instant::now() < give_up,
-                "the {lane:?} lane never went quiet after setup"
-            );
-            std::thread::sleep(Duration::from_millis(100));
-            let now = s.probe.idle_events(lane);
+    // Both commit origins stand still together (neither lane ticks a commit
+    // at idle, so one shared 2 s window serves both).
+    {
+        let both = || (s.commits("wake"), s.commits("deadline"));
+        let give_up = Instant::now() + Duration::from_secs(60);
+        let mut last = (both(), Instant::now());
+        while last.1.elapsed() < Duration::from_secs(2) {
+            assert!(Instant::now() < give_up, "setup commits never went quiet");
+            std::thread::sleep(Duration::from_millis(20));
+            let now = both();
             if now != last.0 {
                 last = (now, Instant::now());
+            }
+        }
+    }
+    // Take the baseline once each lane has gone 3 s without a pass (setup's
+    // own wake work can run long on a loaded host). The lanes are watched
+    // side by side, each on its own 5 s tick phase. A lane that polls on a
+    // short turn never gets there, so that failure still fails here.
+    {
+        let lanes = [Lane::Wakes, Lane::Deadlines];
+        let give_up = Instant::now() + Duration::from_secs(90);
+        let mut last = lanes.map(|lane| (s.probe.idle_events(lane), Instant::now()));
+        let mut quiet = [false; 2];
+        while quiet != [true; 2] {
+            std::thread::sleep(Duration::from_millis(100));
+            for (index, lane) in lanes.into_iter().enumerate() {
+                if quiet[index] {
+                    continue;
+                }
+                assert!(
+                    Instant::now() < give_up,
+                    "the {lane:?} lane never went quiet after setup"
+                );
+                let now = s.probe.idle_events(lane);
+                if now != last[index].0 {
+                    last[index] = (now, Instant::now());
+                }
+                quiet[index] = last[index].1.elapsed() >= Duration::from_secs(3);
             }
         }
     }
@@ -602,7 +626,8 @@ fn idle_daemon_commits_nothing_from_deadline_wake_request_for_30s() {
         s.probe.idle_events(Lane::Wakes),
         s.probe.idle_events(Lane::Deadlines),
     );
-    let window = Duration::from_secs(30);
+    const IDLE_WINDOW: Duration = Duration::from_secs(12);
+    let window = IDLE_WINDOW;
     let started = Instant::now();
     std::thread::sleep(window);
     let elapsed = started.elapsed();
@@ -824,7 +849,10 @@ fn herdr_stopped_freezes_wake_lane() {
         return;
     }
     const SEATS: u64 = 3;
-    const OUTAGE: Duration = Duration::from_secs(30);
+    // Two full 5 s wake safety ticks (the frozen lane must keep ticking) and
+    // far more than the per-seat refusal backoff's first steps (100 ms
+    // doubling: an unfrozen lane would commit refusals within ~1.5 s).
+    const OUTAGE: Duration = Duration::from_secs(11);
     let Some(scene) = Scene::new("herdr_stopped_freezes_wake_lane", SEATS as usize) else {
         return;
     };

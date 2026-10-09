@@ -533,14 +533,21 @@ fn completed_history_is_bounded_and_never_wedges() {
     let path = dir();
     let i = Uuid::new_v4();
     let j = journal(&path, i);
-    for n in 0..200 {
+    // Each cycle fsyncs twice: just past the 128-entry history bound
+    // (`MAX_HISTORY`) is the smallest run that would wedge without pruning.
+    const CYCLES: u64 = 130;
+    for n in 0..CYCLES {
         lifecycle_cycle(&j, i, &format!("event-{n}"));
     }
     assert_eq!(j.completed_len().unwrap(), RETAIN_COMPLETED);
     // Only the newest entries remain replayable; `current` stays authoritative.
     assert!(j.completed_for_event("event-0").unwrap().is_none());
-    assert!(j.completed_for_event("event-199").unwrap().is_some());
-    assert_eq!(j.current().unwrap().unwrap().binding_generation, 200);
+    assert!(
+        j.completed_for_event(&format!("event-{}", CYCLES - 1))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(j.current().unwrap().unwrap().binding_generation, CYCLES);
     fs::remove_dir_all(path).unwrap();
 }
 

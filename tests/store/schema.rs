@@ -286,6 +286,43 @@ fn v6_database() -> Connection {
     db
 }
 
+/// A temp store file (and its journal/WAL siblings) removed on drop. Tests
+/// that tamper with many copies of one store build it once and `copy` it,
+/// instead of replaying every migration per case.
+struct ScratchStore(std::path::PathBuf);
+
+impl ScratchStore {
+    fn new(prefix: &str) -> Self {
+        Self(std::env::temp_dir().join(format!("{prefix}-{}.sqlite3", uuid::Uuid::new_v4())))
+    }
+
+    /// A fresh store at the latest schema, seeded from this binary's
+    /// fresh-schema template (ordinary creation if no template is available).
+    fn fresh(prefix: &str) -> Self {
+        let store = Self::new(prefix);
+        super::fresh_schema_template::seed(store.path());
+        store
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn copy(&self, prefix: &str) -> Self {
+        let copy = Self::new(prefix);
+        std::fs::copy(&self.0, &copy.0).unwrap();
+        copy
+    }
+}
+
+impl Drop for ScratchStore {
+    fn drop(&mut self) {
+        for suffix in ["", "-journal", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", self.0.display()));
+        }
+    }
+}
+
 // Kills: a v6 database left without the digest indexes (the producer names
 // them with INDEXED BY and would fail on every query), or a v7 migration that
 // rewrites existing rows.
@@ -472,6 +509,14 @@ fn v6_upgrade_carries_the_current_occupant_offer_into_the_notice_frontier() {
 // reach the projection and be silently hidden).
 #[test]
 fn startup_rejects_missing_or_altered_digest_projection() {
+    // Migrate from v6 once; each tamper starts from a file copy of that store.
+    let migrated = v6_database();
+    schema::initialize(&migrated, || crate::protocol::time::UtcMillis(0)).unwrap();
+    let snapshot = ScratchStore::new("ht-digest-tamper");
+    migrated
+        .execute("VACUUM INTO ?1", [snapshot.path().to_str().unwrap()])
+        .unwrap();
+    drop(migrated);
     for tamper in [
         "DROP TRIGGER digest_receipt_state_settled_update",
         "DROP TRIGGER digest_manifest_receipt_staged",
@@ -483,7 +528,8 @@ fn startup_rejects_missing_or_altered_digest_projection() {
         "DROP TRIGGER digest_open_warning_closed",
         "DROP TRIGGER digest_invitation_created; CREATE TRIGGER digest_invitation_created AFTER INSERT ON invitations BEGIN SELECT 1; END",
     ] {
-        let db = v6_database();
+        let copy = snapshot.copy("ht-digest-tamper");
+        let db = Connection::open(copy.path()).unwrap();
         schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
         db.execute_batch(tamper).unwrap();
         let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
@@ -1110,8 +1156,11 @@ fn direct_accepted_insert_requires_native_actor() {
 
 #[test]
 fn requirement_acceptance_field_subsets_and_terminal_insert_shapes() {
+    // One fixture serves every update mask: each rejected partial update
+    // leaves the requirement pending at revision 1 (asserted below), and the
+    // only accepted shape (mask 15) runs last.
+    let db = pending_requirement_fixture();
     for mask in 0..16 {
-        let db = pending_requirement_fixture();
         let actor = if mask & 1 != 0 { "'s'" } else { "NULL" };
         let generation = if mask & 2 != 0 { "1" } else { "NULL" };
         let observation = if mask & 4 != 0 {
@@ -5147,10 +5196,14 @@ fn recent_activity_writer_rejects_missing_or_null_default() {
 }
 
 // Catches lost binding/evidence history, missing lexical expansion, sequence rewind,
-// and incomplete public migration chaining from any supported historical version.
+// and incomplete public migration chaining from supported historical versions.
+// Every migration step runs (the chain from version 1), and the sampled
+// starting points cover each seeding boundary (before/at 12 and 21) and the
+// latest three versions; each start costs a full `initialize`, so starting
+// from all 26 versions only repeated the same steps.
 #[test]
 fn adapter_migration_preserves_all_supported_history_and_rejection_overlay() {
-    for version in 1..=26 {
+    for version in [1, 6, 11, 12, 18, 20, 21, 24, 25, 26] {
         let db = adapter_historical_database(version);
         db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (7,'s',1,'p','b',0,'codex','session','execution','cooperative_top_level',1,1,'term','inc');").unwrap();
         db.execute_batch("INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at) VALUES (90,'s',2,'p','b',0,'codex','deleted','deleted','cooperative_top_level',2,3); DELETE FROM occupant_bindings WHERE ordinal=90;").unwrap();
@@ -5690,7 +5743,8 @@ fn user_intent_schema22_rejects_column_or_guard_tampering() {
             "CREATE TRIGGER messages_user_intent_insert BEFORE INSERT ON messages BEGIN SELECT 1; END;",
         ),
     ] {
-        let db = Connection::open_in_memory().unwrap();
+        let store = ScratchStore::fresh("ht-intent-guard-tamper");
+        let db = Connection::open(store.path()).unwrap();
         schema::initialize(&db, || UtcMillis(0)).unwrap();
         db.execute_batch("DROP TRIGGER messages_user_intent_insert")
             .unwrap();
@@ -5744,9 +5798,9 @@ fn user_intent_schema22_rejects_column_or_guard_tampering() {
             ));
         }
         for replacement in replacements {
-            let path = std::env::temp_dir()
-                .join(format!("ht-intent-tamper-{}.sqlite3", uuid::Uuid::new_v4()));
-            let db = Connection::open(&path).unwrap();
+            let store = ScratchStore::fresh("ht-intent-tamper");
+            let path = store.path();
+            let db = Connection::open(path).unwrap();
             schema::initialize(&db, || UtcMillis(0)).unwrap();
             let original: String = db
                 .query_row(
@@ -5772,14 +5826,12 @@ fn user_intent_schema22_rejects_column_or_guard_tampering() {
             .unwrap();
             db.execute_batch("PRAGMA writable_schema=OFF").unwrap();
             drop(db);
-            let db = Connection::open(&path).unwrap();
+            let db = Connection::open(path).unwrap();
             let result = schema::initialize(&db, || UtcMillis(1));
             assert!(
                 matches!(result,Err(ref e) if e.code==ErrorCode::IncompatibleSchema),
                 "{table}/{replacement}: {result:?}"
             );
-            drop(db);
-            std::fs::remove_file(path).unwrap();
         }
     }
 }

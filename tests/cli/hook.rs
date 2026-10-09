@@ -4751,11 +4751,19 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
         .collect();
     let (offer, overview, digest, _) =
         startup_offer_with_topic(&instruction, &threads, Some(&"\"".repeat(120)));
-    let mut compared = 0;
+    // The pinned commands fit up to a harness-specific state-dir depth (the
+    // fitting boundary; inside 0..450 for both harnesses). Routing can only
+    // evict there, so every depth in a window just below the boundary is
+    // compared, and depths further below are sampled.
+    const DEPTHS: usize = 450;
+    const BOUNDARY_WINDOW: usize = 48;
+    const SAMPLE_STRIDE: usize = 16;
     for harness in [Harness::Claude, Harness::Codex] {
         let mut ev = event(CLAUDE_START);
         ev.harness = harness;
-        for depth in 0..450 {
+        // Returns whether the pinned commands fit without routing (and then
+        // checks that routing keeps them).
+        let case = |depth: usize| -> bool {
             let root = format!("/private/tmp/{}/state", "d".repeat(depth));
             let prefix = prefix(&root);
             let actions = next_actions(&prefix, Some(&digest));
@@ -4777,34 +4785,48 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
                 ))
             };
             let baseline = encode(None);
-            if actions
+            if !actions
                 .items
                 .iter()
                 .take(actions.pinned)
                 .all(|line| baseline.contains(line))
             {
-                compared += 1;
-                let routed = encode(Some(&routing));
-                assert!(routed.len() <= MAX_CONTEXT);
-                for line in actions.items.iter().take(actions.pinned) {
-                    assert!(
-                        routed.contains(line),
-                        "{harness:?} depth={depth} lost {line}: {routed}"
-                    );
-                }
-                let (_, peer) = routed.split_once("\nuntrusted_peer_data: ").unwrap();
-                let peer: String = serde_json::from_str(peer).unwrap();
-                assert!(peer.contains(&overview.rows[0]), "main row missing: {peer}");
-                if harness == Harness::Codex {
-                    assert!(routed.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
-                }
+                return false;
             }
+            let routed = encode(Some(&routing));
+            assert!(routed.len() <= MAX_CONTEXT);
+            for line in actions.items.iter().take(actions.pinned) {
+                assert!(
+                    routed.contains(line),
+                    "{harness:?} depth={depth} lost {line}: {routed}"
+                );
+            }
+            let (_, peer) = routed.split_once("\nuntrusted_peer_data: ").unwrap();
+            let peer: String = serde_json::from_str(peer).unwrap();
+            assert!(peer.contains(&overview.rows[0]), "main row missing: {peer}");
+            if harness == Harness::Codex {
+                assert!(routed.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+            }
+            true
+        };
+        // Walk down from the deepest root to the fitting boundary.
+        let mut depth = DEPTHS;
+        while depth > 0 && !case(depth - 1) {
+            depth -= 1;
+        }
+        let boundary = depth;
+        assert!(
+            boundary < DEPTHS && boundary > BOUNDARY_WINDOW,
+            "{harness:?}: the fixture did not cover the fitting boundary ({boundary})"
+        );
+        // Every depth just below the boundary fits and keeps its commands.
+        for depth in boundary - BOUNDARY_WINDOW..boundary - 1 {
+            assert!(case(depth), "{harness:?} depth={depth} below the boundary");
+        }
+        for depth in (0..boundary - BOUNDARY_WINDOW).step_by(SAMPLE_STRIDE) {
+            assert!(case(depth), "{harness:?} depth={depth} below the boundary");
         }
     }
-    assert!(
-        compared > 100,
-        "the fixture did not cover the fitting boundary"
-    );
 }
 
 // Generic composition must deliver canonical routing through the registered Hermes

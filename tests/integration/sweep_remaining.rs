@@ -16,7 +16,9 @@
 //!
 //! The existing per-seam tests that cover the remaining flows are listed with
 //! their outcomes in `docs/history/remaining-findings-run/integration-sweep-notes.md`.
-use crate::lane_wiring::{Session, kicks_since, wait_lanes_settled, wait_until};
+use crate::lane_wiring::{
+    Session, kicks_since, run_idle_window, settle_setup, wait_lanes_settled, wait_until,
+};
 use crate::lanes_latency;
 use herdr_threads::{
     daemon::{
@@ -2358,11 +2360,22 @@ fn retention_keeps_tables_bounded_while_discovery_stays_flat() {
         "send after the drain: commit to wake attempt took {latency:?}"
     );
     // Snapshot generations stay bounded: the observation lane publishes a new
-    // one every few seconds and retention keeps the active, the previous and
-    // the in-flight stage only.
-    std::thread::sleep(Duration::from_secs(12));
+    // one every 5 s (kicks do not publish sooner) and retention keeps the
+    // active, the previous and the in-flight stage only. One publication after
+    // the drain, then a retention pass, is the end-to-end form; the prune
+    // rules themselves are `tests/store/retention.rs`.
+    let generations = || count(&db, "SELECT count(*) FROM snapshot_generations");
+    let before = generations();
+    wait_until(
+        "an observation publication after the drain",
+        Duration::from_secs(20),
+        || generations() > before,
+    );
+    let retention_from = s.commits("retention");
     s.probe.kick_registered(Lane::Retention);
-    std::thread::sleep(Duration::from_secs(1));
+    wait_until("a retention pass", Duration::from_secs(20), || {
+        s.commits("retention") > retention_from
+    });
     let generations = count(&db, "SELECT count(*) FROM snapshot_generations");
     assert!(
         generations <= 6,
@@ -2370,8 +2383,9 @@ fn retention_keeps_tables_bounded_while_discovery_stays_flat() {
     );
 }
 
-/// The idle bound with a retention backlog. 30 s with all five lanes running
-/// and 3,000 expired jobs to prune: no deadline, wake, request or
+/// The idle bound with a retention backlog. An idle window spanning a wake
+/// safety tick and an observation cadence (`lane_wiring::IDLE_WINDOW`) with
+/// all five lanes running and 3,000 expired jobs to prune: no deadline, wake, request or
 /// admission-observer commit; the wake lane makes at most one pass per 5 s
 /// window; retention drains the backlog; and its prune commits kick no lane.
 /// Kills: a retention prune whose kick wakes the wake or deadline lane (the
@@ -2393,21 +2407,13 @@ fn retention_runs_alongside_the_wake_idle_bound() {
     keep_panics_visible();
     let pane = s.first_pane();
     s.seat(&pane);
-    std::thread::sleep(Duration::from_secs(8));
-    for origin in ["wake", "deadline", "request"] {
-        s.wait_commits_quiet(origin, Duration::from_secs(2));
-    }
+    settle_setup(&s);
     seed_completed_jobs(&s.db(), 3_000, 0);
     let counts = s.probe.commit_counts();
     let kicks_from = s.probe.kick_log().len();
     let wake_from = s.probe.registered_idle_events(Lane::Wakes);
-    let window = Duration::from_secs(30);
-    let started = Instant::now();
-    while started.elapsed() < window {
-        s.probe.kick_registered(Lane::Retention);
-        std::thread::sleep(Duration::from_secs(5));
-    }
-    let elapsed = started.elapsed();
+    let observation_from = counts.get("observation").copied().unwrap_or(0);
+    let elapsed = run_idle_window(&s, wake_from, observation_from);
     let after = s.probe.commit_counts();
     for origin in ["deadline", "wake", "request", "admission-observer"] {
         assert_eq!(
@@ -2485,7 +2491,7 @@ fn lane_failure_surfaces_through_remedy_text_within_the_health_line_budget() {
         for lane in Lane::ALL {
             s.probe.kick_registered(lane);
         }
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(25));
     }
     let (state, lines) = s.health();
     assert_eq!(state, "degraded", "{lines:?}");
@@ -2671,6 +2677,7 @@ fn startup_failure_lane_failure_and_skew_reach_the_operator() {
     assert!(lines.contains(&pointer), "{pointer:?} not in {lines:?}");
     s.probe.heal_lane(lane);
     wait_until("the wake lane to clear", Duration::from_secs(40), || {
+        s.probe.kick_registered(lane);
         s.probe.lane_health(lane).is_none()
     });
 }

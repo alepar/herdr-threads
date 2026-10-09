@@ -527,10 +527,16 @@ fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart(
         ],
     );
     let late = late.as_str().unwrap().to_owned();
-    plugin.ok(Some(top), &["ack", &quiet]);
     let late_deadline = plugin.pending_for(&b, &late).unwrap()["deadline"]
         .as_u64()
         .expect("a joined, registered recipient starts its timer at send");
+    // The quiet ACK lands once the late deadline has passed (still well inside
+    // its own 600 s): its commit kicks the scheduler, which then finds the
+    // late receipt due without waiting for its 5 s safety tick.
+    while utc_ms() <= late_deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    plugin.ok(Some(top), &["ack", &quiet]);
     wait_until(
         "the scheduler's overdue warning",
         Duration::from_secs(40),

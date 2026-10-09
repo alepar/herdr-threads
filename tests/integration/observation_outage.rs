@@ -5,7 +5,6 @@
 //! dropped so the store's per-origin commit counter and kick sink are
 //! readable. Herdr is stopped and restarted under the running lane.
 use herdr_threads::{
-    app::SystemClock,
     host::native::NativeCli,
     identity::repair::OrdinaryIdentity,
     ports::StorePort,
@@ -52,10 +51,6 @@ struct Lane5 {
 }
 
 impl Lane5 {
-    fn start(herdr: &IsolatedHerdr) -> Self {
-        Self::start_with_clock(herdr, Arc::new(SystemClock::new()))
-    }
-
     fn start_with_clock(herdr: &IsolatedHerdr, clock: Arc<dyn Clock>) -> Self {
         let scratch = herdr.root().join("lane-state");
         std::fs::create_dir_all(&scratch).unwrap();
@@ -252,53 +247,80 @@ fn herdr_stopped_costs_one_commit_per_backoff_step() {
     assert_eq!(lane.invalidation_revision(), revision);
 }
 
+/// Kills: a backoff that survives the restart (attempts or a pending retry
+/// after the first publish) and a lane that, once healthy again, comes back
+/// on anything but its 5 s cadence (earlier or never). The lane runs on a
+/// stepped clock, so the cadence is checked to the millisecond without
+/// waiting 5 s of real time per cycle.
 #[test]
 fn herdr_restart_resets_backoff_to_5s_cadence() {
     let Some(herdr) = IsolatedHerdr::new("herdr_restart_resets_backoff_to_5s_cadence") else {
         return;
     };
     herdr.start();
-    let lane = Lane5::start(&herdr);
+    let clock = Arc::new(StepClock(AtomicU64::new(10_000)));
+    let lane = Lane5::start_with_clock(&herdr, clock.clone());
+    let waiting = || lane.pacer.idle_events() == lane.pacer.wakes() + 1;
     lane.wait("the first publication", Duration::from_secs(20), &|| {
-        lane.commits() >= 3 && lane.pacer.attempts() == 0 && lane.pacer.idle_events() >= 1
+        lane.commits() >= 3
+            && lane.pacer.attempts() == 0
+            && lane.pacer.idle_events() >= 1
+            && waiting()
     });
+    // Steps the clock to `at` and waits for the one pass that wakes.
+    let step_to = |at: u64, what: &str| {
+        let idle = lane.pacer.idle_events();
+        clock.0.store(at, Ordering::SeqCst);
+        lane.pacer.clock_advanced();
+        lane.wait(what, Duration::from_secs(30), &|| {
+            lane.pacer.idle_events() > idle && waiting()
+        });
+    };
 
     herdr.stop();
-    lane.wait("three failed captures", Duration::from_secs(30), &|| {
-        lane.pacer.attempts() >= 3
-    });
+    step_to(clock.monotonic_now().0 + 5_000, "the first failed capture");
+    while lane.pacer.attempts() < 3 {
+        let due = lane.pacer.next_retry_at().expect("retry pending").0;
+        step_to(due, "a failed retry");
+    }
     assert!(lane.health().contains("retrying (attempt "));
 
     herdr.restart();
-    lane.wait(
-        "the first publish after restart to reset the backoff",
-        Duration::from_secs(40),
-        &|| lane.pacer.attempts() == 0 && lane.status.retry().is_none(),
-    );
-    assert_eq!(lane.health(), "", "a publish clears the retry state");
-
-    // Back on the 5 s cadence: consecutive cycles are about 5 s apart.
-    let mut cycles = Vec::new();
-    let mut seen = lane.commits();
-    let started = Instant::now();
-    while cycles.len() < 2 {
+    // Retries come due on the backoff schedule until one publishes.
+    let restarted = Instant::now();
+    while lane.pacer.attempts() > 0 || lane.status.retry().is_some() {
         assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "no steady cadence after restart: {cycles:?}"
+            restarted.elapsed() < Duration::from_secs(40),
+            "no publish after the restart; health: {:?}",
+            lane.health()
         );
-        std::thread::sleep(Duration::from_millis(10));
-        let now = lane.commits();
-        if now != seen {
-            cycles.push(Instant::now());
-            // Skip the cycle's own remaining commits.
-            std::thread::sleep(Duration::from_millis(500));
-            seen = lane.commits();
-        }
+        let due = lane
+            .pacer
+            .next_retry_at()
+            .map_or(clock.monotonic_now().0 + 5_000, |at| at.0);
+        step_to(due, "a retry after the restart");
     }
-    let gap = cycles[1].duration_since(cycles[0]);
-    assert!(
-        (Duration::from_millis(4_000)..=Duration::from_millis(7_000)).contains(&gap),
-        "cycle gap after restart is the 5 s cadence, got {gap:?}"
-    );
-    assert_eq!(lane.pacer.attempts(), 0);
+    assert_eq!(lane.health(), "", "a publish clears the retry state");
+    assert_eq!(lane.pacer.next_retry_at(), None, "no backoff left");
+
+    // Back on the 5 s cadence: no pass a millisecond early, one at 5 s that
+    // captures (commits) again, twice over.
+    for cycle in 0..2 {
+        let rested = clock.monotonic_now().0;
+        let (idle, commits) = (lane.pacer.idle_events(), lane.commits());
+        clock.0.store(rested + 4_999, Ordering::SeqCst);
+        lane.pacer.clock_advanced();
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            lane.pacer.idle_events(),
+            idle,
+            "cycle {cycle}: a pass before the 5 s cadence"
+        );
+        step_to(rested + 5_000, "the 5 s cadence pass");
+        assert!(
+            lane.commits() > commits,
+            "cycle {cycle}: the cadence pass captured nothing"
+        );
+        assert_eq!(lane.pacer.attempts(), 0, "cycle {cycle}");
+    }
 }
