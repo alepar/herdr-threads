@@ -2220,9 +2220,9 @@ pub(crate) mod health_v2_observer_tests {
             crate::daemon::health::COOPERATIVE_WAKE_LINE
         );
         let expected = if cfg!(feature = "test-support") {
-            "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes or synthetic_fourth agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
+            "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes, agy or synthetic_fourth agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
         } else {
-            "wake cooperative: prompts only Herdr's detected idle/done claude, codex or hermes agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
+            "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes or agy agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
         };
         assert_eq!(
             crate::daemon::health::cooperative_wake_line_for(builtins),

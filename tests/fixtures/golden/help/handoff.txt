@@ -35,7 +35,7 @@ Options:
       --pane <PANE>
           Exact pane ID, label or live agent name in the selected tab. Omitted parents inherit the live caller; outside Herdr supply parents or a pane ID. Qualify duplicate names with --space/--tab or use an ID; conflicts never pick a pane
       --cooperative-harness <COOPERATIVE_HARNESS>
-          Agent harness making the cooperative call [possible values: claude, codex, hermes, synthetic_fourth]
+          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
       --new-thread
           
       --cooperative-role <COOPERATIVE_ROLE>
@@ -49,7 +49,7 @@ Options:
       --goal <GOAL>
           
       --kind <KIND>
-          [possible values: claude, codex, hermes, synthetic_fourth]
+          [possible values: claude, codex, hermes, agy, synthetic_fourth]
       --harness-binary <HARNESS_BINARY>
           
       --name <NAME>
@@ -61,8 +61,8 @@ Options:
 
 Choose exactly one channel: --new-thread or --thread ID_OR_NAME.
 Choose one target mode:
-  --pane PANE --kind claude|codex|hermes|synthetic_fourth launches in an existing explicit pane;
-  --new-tab LABEL --kind claude|codex|hermes|synthetic_fourth creates a tab and launches there;
+  --pane PANE --kind claude|codex|hermes|agy|synthetic_fourth launches in an existing explicit pane;
+  --new-tab LABEL --kind claude|codex|hermes|agy|synthetic_fourth creates a tab and launches there;
   --existing with exactly one --seat SEAT or --pane PANE delivers durable work
     to an existing canonical seat without launching or restarting its session.
 New modes require an original top-level Agent and the guarded daemon capability.

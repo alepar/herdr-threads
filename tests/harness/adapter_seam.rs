@@ -298,7 +298,8 @@ fn adapter_seam_registry_lists_markers_in_registry_order_and_splits_guards() {
             "CLAUDECODE",
             "CODEX_THREAD_ID",
             "CODEX_SANDBOX",
-            "CODEX_SANDBOX_NETWORK_DISABLED"
+            "CODEX_SANDBOX_NETWORK_DISABLED",
+            "ANTIGRAVITY_AGENT"
         ]
     );
     let guards: Vec<_> = names(registry.person_guard_markers());
@@ -307,7 +308,8 @@ fn adapter_seam_registry_lists_markers_in_registry_order_and_splits_guards() {
         [
             "CLAUDECODE",
             "CODEX_SANDBOX",
-            "CODEX_SANDBOX_NETWORK_DISABLED"
+            "CODEX_SANDBOX_NETWORK_DISABLED",
+            "ANTIGRAVITY_AGENT"
         ]
     );
     // CODEX_THREAD_ID is output evidence only; widening A4 to it would change behaviour.
@@ -489,7 +491,7 @@ fn adapter_seam_builtin_me_init_help_names_the_guard_markers_only() {
     let me = crate::cli::help::me_init_help();
     assert!(
         me.contains(
-            "agent markers (CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED) or a registered agent harness reported by Herdr are present"
+            "agent markers (CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED, ANTIGRAVITY_AGENT) or a registered agent harness reported by Herdr are present"
         ),
         "{me}"
     );

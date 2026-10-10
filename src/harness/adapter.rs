@@ -1416,7 +1416,10 @@ mod tests {
                 },
                 &budget,
             );
-            if matches!(registration.metadata().id, "hermes" | "synthetic_fourth") {
+            if matches!(
+                registration.metadata().id,
+                "hermes" | "synthetic_fourth" | "agy"
+            ) {
                 assert!(matches!(status, SetupStatus::Failed(_)));
             } else {
                 assert!(matches!(status, SetupStatus::Detailed(_)));
@@ -1459,6 +1462,13 @@ mod tests {
                 "hermes" => {
                     assert!(registration.composer_policy().is_none());
                     assert!(registration.canary_strategy().is_some());
+                }
+                "agy" => {
+                    assert_eq!(
+                        registration.composer_policy().unwrap().capabilities(None),
+                        crate::harness::recipe::PokeCapabilities::NONE
+                    );
+                    assert!(registration.canary_strategy().is_none());
                 }
                 "synthetic_fourth" => {
                     assert!(registration.composer_policy().is_none());
