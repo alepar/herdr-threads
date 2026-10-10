@@ -5,7 +5,7 @@ resumeChange: 2026-10-09 · "let's /super-auto this. Fully autonomouns from now,
 resumeChange: 2026-10-10 · "I think this is way too much text… marks everything as 'untrusted'… I want that corrected… create a new bead task under our epic and handle it ourselves" · added leaf for compact cooperative framing (R17) after the Claude re-fit; supersedes R9 byte-identity for the mod's model-visible frame text only
 resumeChange: 2026-10-10 · "the nudge should probably say something minimal, like 'wake up' and then let hook inject the actual message" · added leaf for adapter-declared minimal wake text (R18): agy and Claude mod wake with 'wake up', bodies injected at turn start
 resumeChange: 2026-10-10 · "also let's add to AGENTS.md that when designing comms, we strive to design the protocols to be token efficient as much as possible" · folded into ht-poh.13: AGENTS.md 'Token-efficient communication' rule (no dedicated token-efficiency research found in ~/Documents)
-phase: fix-loop
+phase: report
 codeMechanism: Workflow
 
 spec: 2026-10-09-agy-harness-adapter-design.md
@@ -27,13 +27,15 @@ baseAbsorbed: f3431b31 → d342add2, 14 conflicted files (main v0.6.0 absorbed m
 
 baseAbsorbed: 7c40c83c → cc885360, 1 conflicted files (main v0.6.1/v0.6.2 after the fix loop exited; SKILL.md resolved, mechanical)
 
+friction: 6 events
+
 codeBuckets:
-  completed: ht-poh.1, ht-poh.7, ht-poh.9, ht-poh.8, ht-poh.2.1–2.8, ht-poh.3.1–3.7, ht-poh.4.1–4.8, ht-poh.5, ht-poh.6.1–6.8, ht-poh.11, ht-poh.14, ht-poh.16, ht-poh.17, ht-poh.18, ht-poh.22, ht-poh.25, ht-poh.28, ht-poh.30, ht-poh.31, ht-poh.35, ht-poh.36, ht-poh.37 (ht-poh.27 closed as superseded)
+  completed: every task bead in the tree (root ht-poh closed, stopReason root-closed); ht-poh.13 and ht-poh.27 closed as superseded
   escalated: none (ht-poh.13 superseded by ht-poh.41 after the human ran the golden generator; gate ht-poh.19 released)
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (invocation 7 final review: no Critical/Important defect; missing evidence — full suite, final-SHA gate + live smoke, R13 report; flaky ht-01s; two unclassified flakes) — code-final-review-7.md
+  review: not ready (invocation 8 final review: no Critical; Important S1 agy informational notices only at lifecycle check-ins; unmeasured branch; flaky ht-01s + two unclassified flakes) — code-final-review-8.md
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: round 1 allowlist hot-file cap raised to 4; round 2 graph-bound, edge audit armed; audit 1 left ht-poh.5 <- ht-poh.4.5 drop for an operator (parked)
   worktreesKept: task-ht-poh.13 — uncommitted partial R17 work (BLOCKED-AUTH), task-ht-poh.4.5 — unmerged (blocked on agy binary, since resolved)
