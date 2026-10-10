@@ -549,6 +549,9 @@ fn preflight_original_intent(
 ) -> io::Result<(super::journal::OriginalActor, super::journal::PendingIntent)> {
     let journal = Journal::read_only(root)?;
     let pending = load_original_for_actor(&journal, recovery)?;
+    if let Some((plan, _)) = super::direct_send::plan(&pending.semantic) {
+        super::direct_send::check_namespace(plan, context)?;
+    }
     let original =
         super::journal::classify_original_actor(&pending.header.scope, &pending.semantic)?;
     if original == super::journal::OriginalActor::HumanOrOperator

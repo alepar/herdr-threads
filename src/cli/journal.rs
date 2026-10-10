@@ -109,6 +109,7 @@ pub(crate) fn classify_original_claim(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SemanticMutation {
+    DirectSend(Box<super::direct_send::Plan>),
     Handoff(Box<super::handoff::HandoffPlan>),
     Frozen {
         claim: CallerClaim,
@@ -266,6 +267,7 @@ impl DeliveryPlan {
 impl SemanticMutation {
     pub fn namespace(&self) -> Option<&crate::protocol::handoff::HandoffNamespace> {
         match self {
+            Self::DirectSend(p) => Some(&p.namespace),
             Self::HandoffBootstrap(p) => Some(&p.payload.handoff.namespace),
             Self::HandoffDelivery(p) => Some(&p.payload.namespace),
             Self::OperatorRecoverBootstrap(p) => {
@@ -301,6 +303,7 @@ impl SemanticMutation {
     pub fn is_lazy_send(&self) -> bool {
         match self {
             Self::Frozen { mutation, .. } => mutation.is_lazy_send(),
+            Self::DirectSend(p) => p.request.delivery_mode == DeliveryMode::Lazy,
             Self::SendMessage {
                 delivery_mode: DeliveryMode::Lazy,
                 ..
@@ -325,6 +328,7 @@ impl SemanticMutation {
             return Err(invalid("top-level cooperative context required"));
         }
         match self {
+            Self::DirectSend(plan) => plan.validate(),
             Self::Handoff(plan) => plan.validate(),
             Self::HandoffBootstrap(plan) => plan.validate(),
             Self::HandoffDelivery(plan) => plan.validate(),
@@ -343,6 +347,9 @@ impl SemanticMutation {
                     return Err(invalid("invalid nested cooperative mutation"));
                 }
                 mutation.validate()?;
+                if let Self::DirectSend(plan) = mutation.as_ref() {
+                    plan.validate_claim(self.frozen_claim().unwrap())?;
+                }
                 if mutation
                     .namespace()
                     .is_some_and(|ns| ns.instance != self.frozen_claim().unwrap().instance)
@@ -465,6 +472,7 @@ impl SemanticMutation {
     }
     pub fn kind(&self) -> IntentKind {
         match self {
+            Self::DirectSend(_) => IntentKind::DirectSend,
             Self::Handoff(_) => IntentKind::Handoff,
             Self::HandoffBootstrap(_) => IntentKind::HandoffBootstrap,
             Self::HandoffDelivery(_) => IntentKind::HandoffDelivery,
@@ -497,6 +505,7 @@ impl SemanticMutation {
     }
     pub fn thread(&self) -> Option<&ThreadId> {
         match self {
+            Self::DirectSend(_) => None,
             Self::Handoff(plan) => plan.request.thread.as_ref(),
             Self::HandoffBootstrap(plan) => plan.payload.handoff.channel.thread(),
             Self::HandoffDelivery(plan) => plan.payload.channel.thread(),
@@ -527,6 +536,9 @@ impl SemanticMutation {
                 .ok_or_else(|| invalid("fresh caller claim required"))
         };
         let command = match self {
+            Self::DirectSend(_) => {
+                return Err(invalid("direct send requires compound coordinator"));
+            }
             Self::Handoff(_) => return Err(invalid("handoff requires compound coordinator")),
             Self::HandoffBootstrap(_)
             | Self::HandoffDelivery(_)
@@ -1645,14 +1657,19 @@ impl Journal {
             if header.reference.ordinal != *ordinal {
                 return Err(api(ErrorCode::StoreCorrupt, "intent ordinal mismatch"));
             }
+            let direct = if header.kind == IntentKind::DirectSend {
+                Some(super::direct_send::pending(self, &header.reference).map_err(io_api)?)
+            } else {
+                None
+            };
             let item = LocalIntent {
                 operation: header.reference.operation.clone(),
                 recovery_ref: LocalRecoveryRef::parse(header.reference.recovery_ref())
                     .map_err(|e| api(ErrorCode::StoreCorrupt, e))?,
                 created_at: UtcMillis(header.created_at_millis),
                 kind: header.kind,
-                thread: header.thread,
-                status: IntentStatus::Pending,
+                thread: direct.as_ref().and_then(|v| v.0.clone()).or(header.thread),
+                status: direct.map(|v| v.1).unwrap_or(IntentStatus::Pending),
             };
             let mut candidate = page.clone();
             candidate.items.push(item);
@@ -1765,7 +1782,8 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
                 && request.frozen_claim().is_none()
                 && !matches!(
                     request,
-                    SemanticMutation::ResolveSeat { .. }
+                    SemanticMutation::DirectSend(_)
+                        | SemanticMutation::ResolveSeat { .. }
                         | SemanticMutation::ContinuityCheckIn { .. }
                         | SemanticMutation::CompleteInboxDelivery { .. }
                 )

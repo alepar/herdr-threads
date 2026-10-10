@@ -1,6 +1,7 @@
 //! Typed CLI client, selected renderer and local journal composition.
 pub mod actor_route;
 pub mod commands;
+pub mod direct_send;
 pub mod doctor;
 pub mod exit;
 pub mod follow;
@@ -458,8 +459,27 @@ fn run_parsed_in_pane<W: Write>(
         parsed.output.context.host.as_ref().map(PathBuf::from),
     ))
     .map_err(context_error)?;
+    if matches!(
+        &parsed.action,
+        CliAction::Mutation(MutationSpec::DirectSend(_))
+    ) {
+        parsed.output.context = crate::protocol::output::ContinuationContext {
+            state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
+            host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+        };
+    }
     let original_actor = if let CliAction::Retry(recovery) = &parsed.action {
         let paths = InstancePaths::resolve_read_only(&context)?;
+        let original = retry::load_original_for_actor(
+            &journal::Journal::read_only(paths.instance_dir.join("intents"))?,
+            recovery.as_str(),
+        )?;
+        if direct_send::plan(&original.semantic).is_some() {
+            parsed.output.context = crate::protocol::output::ContinuationContext {
+                state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
+                host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+            };
+        }
         Some(retry::preflight_original_actor(
             paths.instance_dir.join("intents"),
             recovery.as_str(),
@@ -497,7 +517,8 @@ fn run_parsed_in_pane<W: Write>(
         .as_ref()
         .is_some_and(|selector| selector.direct_id().is_none());
     let try_completed = |parsed: &commands::ParsedCli, writer: &mut W| -> Result<bool, RunError> {
-        let (instance, _, client) = connect(&paths, &clock)?;
+        let (instance, _, client) = connect(&paths, &clock)
+            .map_err(|error| direct_send::pre_executor_error(error, parsed, &paths))?;
         let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
         let selected_context = crate::protocol::output::ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
@@ -528,7 +549,7 @@ fn run_parsed_in_pane<W: Write>(
     if historical_retry && try_completed(&parsed, writer)? {
         return Ok(());
     }
-    panes::resolve_cli_targets(
+    let resolved_targets = panes::resolve_cli_targets(
         &mut parsed,
         || host.topology(&budget()),
         || {
@@ -537,7 +558,9 @@ fn run_parsed_in_pane<W: Write>(
                 .map(|pane| host.current_pane(pane, &budget()))
                 .transpose()
         },
-    )?;
+    );
+    resolved_targets
+        .map_err(|error| direct_send::pre_executor_error(error.into(), &parsed, &paths))?;
     // A deferred name now denotes an exact canonical target; terminal replay
     // still precedes every live caller/SeatInspect/binding-generation guard.
     if historical_retry && deferred_locator && try_completed(&parsed, writer)? {
@@ -981,12 +1004,16 @@ where
     // Capture omission before default_seat resolves the caller read. The second
     // guard below adds the canonical selected seat while retaining that choice.
     let _origin_inbox = output::InboxInvocationGuard::enter(&parsed, None);
-    let selection = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock)?;
+    let selected = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock);
+    let selection =
+        selected.map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
     resolve_recipient_seats(&mut parsed, paths, connection, clock)?;
     let _inbox =
         output::InboxInvocationGuard::enter(&parsed, selection.as_ref().map(|s| s.seat.clone()));
     if let Some(selection) = selection {
-        let (instance, client) = connection.get()?;
+        let (instance, client) = connection
+            .get()
+            .map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
         run_selected(
             parsed,
             &selection,
@@ -1570,6 +1597,16 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     };
     if matches!(&parsed.action, CliAction::Summary(_)) {
         return summary::run(parsed, selection, paths, instance, client, clock, writer);
+    }
+    if historical.is_some()
+        && let CliAction::Retry(recovery) = &parsed.action
+    {
+        let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+        let reference = journal.resolve_recovery_ref(recovery.as_str())?;
+        let pending = journal.load(&reference)?;
+        if direct_send::plan(&pending.semantic).is_some() {
+            return direct_send::retry(&journal, &reference, client, clock, &parsed.output, writer);
+        }
     }
     let request = Command::SeatInspect(SeatInspectQuery {
         seat: selection.seat.clone(),
@@ -2732,6 +2769,18 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             )
             .map_err(bridge_run_error)?;
         }
+        CliAction::Mutation(MutationSpec::DirectSend(request)) => {
+            let claim = bridge::caller_claim(&current()?).map_err(context_run_error)?;
+            direct_send::start(
+                request,
+                claim,
+                journal,
+                client,
+                clock,
+                &parsed.output,
+                writer,
+            )?;
+        }
         CliAction::Mutation(mutation) => {
             let context = current()?;
             let claim = bridge::caller_claim(&context).map_err(context_run_error)?;
@@ -2789,6 +2838,16 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 return Err(mapping_error(
                     "retry belongs to a different caller location or role",
                 ));
+            }
+            if direct_send::plan(&pending.semantic).is_some() {
+                return direct_send::retry(
+                    journal,
+                    &reference,
+                    client,
+                    clock,
+                    &parsed.output,
+                    writer,
+                );
             }
             if let SemanticMutation::CooperativeCheckIn {
                 claim,
