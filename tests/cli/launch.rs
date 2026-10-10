@@ -2506,6 +2506,7 @@ fn stage_a_options_declaration_is_optional_and_provider_owned() {
     for (name, expected) in [
         ("claude", Some("HERDR_THREADS_CLAUDE_OPTS")),
         ("codex", Some("HERDR_THREADS_CODEX_OPTS")),
+        ("agy", Some("HERDR_THREADS_AGY_OPTS")),
         ("hermes", None),
     ] {
         let registration = registry.by_id(registry.agent(name).unwrap()).unwrap();
@@ -2522,7 +2523,9 @@ fn stage_a_options_declaration_is_optional_and_provider_owned() {
 fn stage_a_help_lists_registered_options_keys_in_registry_order() {
     let builtin = crate::cli::help::launch_help();
     assert!(
-        builtin.contains("HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS are prepended"),
+        builtin.contains(
+            "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS are prepended"
+        ),
         "{builtin}"
     );
     let (registry, _) = fourth_adapter::registry_with_options(
@@ -2538,15 +2541,24 @@ fn stage_a_help_lists_registered_options_keys_in_registry_order() {
         ),
         "{launch}"
     );
+    // Bootstrap V2 makes every launch-capable adapter a handoff kind, with its options key.
     let handoff = crate::cli::help::handoff_help_in(&registry);
-    assert!(!handoff.contains("FOURTH"), "{handoff}");
-    assert!(handoff.contains("HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS prepend"));
-    assert!(handoff.contains("--pane PANE --kind claude|codex launches"));
-    assert!(handoff.contains("--new-tab LABEL --kind claude|codex creates"));
-    // Hermes and the test-support fourth are registered but not V1 bootstrap targets.
+    assert!(handoff.contains(
+        "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_FOURTH_OPTS prepend"
+    ));
+    assert!(handoff.contains("--pane PANE --kind claude|codex|synthetic_fourth launches"));
+    assert!(handoff.contains("--new-tab LABEL --kind claude|codex|synthetic_fourth creates"));
+    // The builtin handoff help names the V1 pair and every builtin launch-capable adapter,
+    // and the options keys of all of them, agy included, in registry order.
     let builtin = crate::cli::help::handoff_help();
     assert!(
-        !builtin.contains("hermes") && !builtin.contains("synthetic"),
+        builtin.contains("--kind claude|codex|hermes|agy"),
+        "{builtin}"
+    );
+    assert!(
+        builtin.contains(
+            "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS prepend"
+        ),
         "{builtin}"
     );
 }

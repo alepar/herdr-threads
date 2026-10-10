@@ -61,7 +61,7 @@ fitted to Herdr's [a-z][a-z0-9_-]{0,31}. If another live agent holds it, launch
 retries once with -<short seat id> appended.
 
 Arguments after `--` are passed to the agent unchanged and in order. Optional
-HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS are prepended to those arguments;
+HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS are prepended to those arguments;
 unset or empty adds nothing. Use shell-style quotes and escapes; variables and
 commands are never expanded.
 The combined arguments use the same managed-launch guards. The owned configuration
