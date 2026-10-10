@@ -4,3 +4,5 @@
 - 2026-10-10: sandbox blocked Git ref creation; approved scoped git worktree escalation resolved it.
 - 2026-10-10: upstream version lookup failed inside sandbox; approved gh api lookup confirmed 6.4.2-alepar4.20 matches loaded version.
 - 2026-10-10: initial isolated cold optimized test build takes substantially longer than incremental budget; focused test is queued behind baseline build.
+
+- [2026-10-10 code] Concurrent isolated task builds shared one warm target and guidance waited on Cargo artifact lock for several minutes; separate target avoids lock but repeats cold optimized compile.

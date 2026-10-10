@@ -1,0 +1,35 @@
+{
+  "mode": "design",
+  "iteration": 1,
+  "triageDead": false,
+  "domains": [
+    "Transactional event delivery and durable idempotency",
+    "Seat identity, attribution provenance, and membership lifecycle",
+    "Agent invitation policy and CLI guidance"
+  ],
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "scoutNames": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "domain:Transactional event delivery and durable idempotency",
+    "domain:Seat identity, attribution provenance, and membership lifecycle",
+    "domain:Agent invitation policy and CLI guidance"
+  ],
+  "raw": 1,
+  "deduped": 1,
+  "dedupeDead": false,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "panelCount": 1,
+  "spotCount": 0,
+  "promotedCount": 0,
+  "judgesExpected": 3,
+  "judgesCompleted": 3,
+  "judgeCompletionPercent": 100,
+  "independence": "same-family (OpenAI GPT-6) — seat-differentiated panel",
+  "modelTierFallback": "Inherited available OpenAI model used for every role; named Claude tiers unavailable."
+}
