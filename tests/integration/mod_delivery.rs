@@ -2657,3 +2657,8 @@ fn stand_in_host_drop_joins_a_blocked_serving_thread() {
         "the client sees the shut connection"
     );
 }
+
+/// ht-poh.11: the agy adapter's cross-leaf paths on this rig (a child module, so it reuses the
+/// rig's private items).
+#[path = "agy_sweep.rs"]
+mod agy_sweep;
