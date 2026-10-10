@@ -2176,9 +2176,11 @@ pub struct LogicalAttentionFrontier {
     pub invitation: Option<LogicalPublicationKey>,
     pub addressed_receipt: Option<LogicalPublicationKey>,
     pub actionable_warning: Option<LogicalPublicationKey>,
-    /// Greatest pending lazy recipient ordinal, set only for a seat whose
-    /// `wake_on` is `all` (delivery-policy DP8). Ordinals only grow, so a
-    /// larger value is a lazy row the last reservation never covered.
+    /// Greatest publication decision sequence (`send_manifests.decision_seq`)
+    /// of the seat's pending lazy rows, set only for a `wake_on: all` seat
+    /// (delivery-policy DP8). Publication order only grows, so a larger value
+    /// is a lazy row published after the last reservation, even one staged
+    /// earlier.
     pub lazy: Option<i64>,
 }
 impl LogicalAttentionFrontier {
