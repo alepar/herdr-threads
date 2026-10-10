@@ -218,10 +218,28 @@ pub mod synthetic_fourth {
                 "enabled": installed, "observed": "unknown", "runtime": null}),
         })
     }
+    /// Declares the hook-pull delivery policy so daemon and routing tests have a
+    /// non-Claude pull harness: `(HookPull, cooperative_hook_delivery, Native)`.
+    struct FourthDelivery;
+    impl DeliveryPolicy for FourthDelivery {
+        fn mechanism(&self) -> DeliveryMechanism {
+            DeliveryMechanism::HookPull
+        }
+        fn provenance(&self) -> &'static str {
+            crate::protocol::authority::COOPERATIVE_HOOK_DELIVERY_PROVENANCE
+        }
+        fn idle_wake(&self) -> IdleWake {
+            IdleWake::Native
+        }
+    }
+    static DELIVERY: FourthDelivery = FourthDelivery;
     impl HarnessAdapter for Fourth {
         type Admission = ();
         fn metadata(&self) -> &'static AdapterMetadata {
             &METADATA
+        }
+        fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
+            Some(&DELIVERY)
         }
         fn contracts(&self) -> &'static [ContractDescriptor] {
             DOMAINS

@@ -1210,6 +1210,15 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     // `lifecycle_check_in`, where the offered notices still show), so pending
     // ones are still offered here.
     let live = digest.as_ref().is_ok_and(|digest| digest.mod_channel_live);
+    // A hook-pull seat withholds the digest from what it presents at every tool
+    // boundary (delivery-policy DP7) while the coalescing mark works as for any
+    // seat; a failed digest read fails open.
+    let omit = digest.is_ok()
+        && crate::delivery::routing::omit_digest(
+            crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
+            live,
+            crate::delivery::routing::Boundary::Tool,
+        );
     if live && !notices_pending {
         return Ok(ToolBoundary::default());
     }
@@ -1264,7 +1273,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     // The carried notice page rides with the digest summary, which survives
     // the hook's oversize fallback: the offer settles exactly what it shows.
     // A live channel offers the notice page alone: no digest, no summary line.
-    let digest = digest.ok().filter(|digest| !digest.mod_channel_live);
+    let digest = digest.ok().filter(|_| !omit);
     Ok(ToolBoundary {
         text: hook.bytes,
         summary: join_summaries(
@@ -1273,7 +1282,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
         ),
         digest,
         mark,
-        live,
+        live: omit,
     })
 }
 

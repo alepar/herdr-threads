@@ -2486,9 +2486,15 @@ fn lifecycle_check_in(
     // attention, so the digest line, the ready commands and the mark seed are
     // omitted; the offered notices still show. The lifecycle CheckIn itself
     // has already run (enrollment and rotation are unaffected).
-    let mod_live = seeded
+    // A hook-pull harness keeps the lifecycle digest (delivery-policy DP7).
+    let channel_live = seeded
         .as_ref()
         .is_some_and(|(_, digest)| digest.mod_channel_live);
+    let mod_live = crate::delivery::routing::omit_digest(
+        crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
+        channel_live,
+        crate::delivery::routing::Boundary::Lifecycle,
+    );
     let (summary, actions, attention) = if mod_live {
         (bridge::join_summaries(None, notices), None, None)
     } else {

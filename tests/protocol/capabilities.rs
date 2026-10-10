@@ -285,7 +285,8 @@ fn capability_constants_are_stable() {
             "send.lazy_v1",
             "inbox.batch_v2",
             "mod.watch_v1",
-            "seat.wake_on_v1"
+            "seat.wake_on_v1",
+            "delivery.pull_v1"
         ]
     );
 }
@@ -365,6 +366,20 @@ fn every_advertised_capability_has_a_handler() {
                 );
             }
             MOD_WATCH => probe_mod_watch(),
+            DELIVERY_PULL => {
+                // The command decodes and routes to the domain service (served by
+                // `service::delivery_pull`, tested there); this daemon has none.
+                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let command: Command = serde_json::from_value(serde_json::json!({"kind":"delivery_pull","args":{"claim":{"instance":"i","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             SEAT_WAKE_ON_V1 => {
                 // The daemon serves the read: an unknown seat is NotFound (a
                 // daemon without the handler would refuse the command itself).
@@ -498,7 +513,8 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "send.lazy_v1",
             "inbox.batch_v2",
             "mod.watch_v1",
-            "seat.wake_on_v1"
+            "seat.wake_on_v1",
+            "delivery.pull_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);
