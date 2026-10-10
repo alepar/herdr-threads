@@ -855,7 +855,8 @@ fn ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime() {
 #[test]
 fn automatic_contract_public_dispatch_refuses_every_phase_without_effects() {
     use herdr_threads::{cli::journal::IntentScope, protocol::ids::*};
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone());
     let claim = super::handoff_fences::identity().claim;
     let payload = AutomaticHandoffPayload::new(
         super::topology_handoff::namespace(),
@@ -903,4 +904,731 @@ fn automatic_contract_public_dispatch_refuses_every_phase_without_effects() {
             "unsupported automatic contract must not mutate canonical state"
         );
     }
+}
+
+fn automatic_request(f: &Fixture) -> AutomaticDeliveryMutation {
+    use herdr_threads::{cli::journal::IntentScope, protocol::ids::*};
+    f.db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','i','resolved','native','peer-pane',1,1,0)").unwrap();
+    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
+    let claim = super::handoff_fences::identity().claim;
+    AutomaticDeliveryMutation::new(
+        IntentScope::Cooperative {
+            instance: claim.instance.clone(),
+            seat: claim.seat.clone(),
+        },
+        claim,
+        AutomaticOriginal::Delivery(Box::new(
+            AutomaticDeliveryPlan::new(
+                AutomaticHandoffPayload::new(
+                    super::topology_handoff::namespace(),
+                    OperationId::new("automatic-compound"),
+                    "work".into(),
+                )
+                .unwrap(),
+                SeatId::new("peer"),
+            )
+            .unwrap(),
+        )),
+    )
+    .unwrap()
+}
+fn automatic_call(
+    f: &Fixture,
+    request: AutomaticDeliveryMutation,
+) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+    f.call(Command::AutomaticHandoffDelivery(Box::new(request)))
+}
+#[test]
+fn automatic_canonical_ensure_attaches_exact_pair_and_replays_without_reinviting() {
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    assert!(automatic_call(&f, request.ensure()).is_err());
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        automatic_call(&f, request.clone()).unwrap(),
+        CommandResult::SeatResolved(request.plan().recipient.clone())
+    );
+    assert!(
+        matches!(automatic_call(&f,request.begin()).unwrap(), CommandResult::Handoff(ref r) if r.thread.is_none() && r.state==HandoffState::Live)
+    );
+    let result = automatic_call(&f, request.ensure()).unwrap();
+    let AutomaticDeliveryAction::Ensure(raw) = request.ensure().action else {
+        panic!("Ensure phase")
+    };
+    assert_eq!(
+        f.call(Command::EnsureDirectThread(raw)).unwrap_err().code,
+        herdr_threads::protocol::results::ErrorCode::OperationPayloadMismatch
+    );
+    let thread = automatic_selected_thread(&result).unwrap();
+    let attached: String =
+        f.db.query_row(
+            "SELECT thread_id FROM channel_handoff_fences WHERE compound='automatic-compound'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(attached, thread.as_str());
+    let pair: String =
+        f.db.query_row(
+            "SELECT thread_id FROM direct_threads WHERE seat_a='peer' AND seat_b='s'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pair, attached);
+    f.db.execute(
+        "UPDATE memberships SET state='left',left_at=1 WHERE thread_id=?1 AND seat_id='peer'",
+        [thread.as_str()],
+    )
+    .unwrap();
+    assert_eq!(automatic_call(&f, request.ensure()).unwrap(), result);
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+#[test]
+fn automatic_canonical_companion_is_immutable_retained_foreign_keyed_and_audited() {
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    automatic_call(&f, request.begin()).unwrap();
+    assert!(
+        f.db.execute(
+            "INSERT INTO automatic_handoff_companions SELECT * FROM automatic_handoff_companions",
+            []
+        )
+        .is_err()
+    );
+    assert!(
+        f.db.execute(
+            "UPDATE automatic_handoff_keys SET role='send' WHERE role='ensure'",
+            []
+        )
+        .is_err()
+    );
+    assert!(
+        f.db.execute("DELETE FROM automatic_handoff_keys", [])
+            .is_err()
+    );
+    assert!(f.db.execute("INSERT INTO automatic_handoff_keys SELECT instance_id,actor_scope,compound,'another-key',role FROM automatic_handoff_keys WHERE role='ensure'",[]).is_err());
+    assert!(
+        f.db.execute(
+            "UPDATE automatic_handoff_companions SET original_json=x'00'",
+            []
+        )
+        .is_err()
+    );
+    assert!(
+        f.db.execute("DELETE FROM automatic_handoff_companions", [])
+            .is_err()
+    );
+    assert!(f.db.execute("INSERT INTO automatic_handoff_companions SELECT instance_id,actor_scope,'missing',state_dir,host_endpoint,original_json,begin_key,ensure_key,send_key,complete_key FROM automatic_handoff_companions",[]).is_err());
+    f.db.execute_batch("DROP TRIGGER automatic_handoff_immutable")
+        .unwrap();
+    assert!(herdr_threads::store::schema::initialize(&f.db, || f.clock.utc_now()).is_err());
+}
+#[test]
+fn automatic_canonical_namespace_requires_exact_frozen_path_spelling() {
+    use herdr_threads::protocol::results::ErrorCode;
+    for field in ["state", "endpoint"] {
+        let f = Fixture::new();
+        let mut request = automatic_request(&f);
+        let AutomaticOriginal::Delivery(plan) = &mut request.original else {
+            panic!()
+        };
+        match field {
+            "state" => plan.payload.namespace.state_dir = "/state//".into(),
+            _ => plan.payload.namespace.host_endpoint = "/host.sock/".into(),
+        }
+        request.digest = request.original.digest(&request.claim).unwrap();
+        request.validate().unwrap();
+        let prepare = automatic_call(&f, request.clone());
+        let begin = automatic_call(&f, request.begin());
+        assert!(
+            matches!(prepare, Err(ref error) if error.code == ErrorCode::InstanceMismatch),
+            "{field} prepare: {prepare:?}"
+        );
+        assert!(
+            matches!(begin, Err(ref error) if error.code == ErrorCode::InstanceMismatch),
+            "{field} begin: {begin:?}"
+        );
+        for table in [
+            "operations",
+            "channel_handoff_fences",
+            "automatic_handoff_companions",
+            "automatic_handoff_keys",
+            "direct_threads",
+            "invitations",
+        ] {
+            let count: i64 =
+                f.db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                    .unwrap();
+            assert_eq!(count, 0, "{field}: {table}");
+        }
+    }
+}
+#[test]
+fn automatic_canonical_forged_original_namespace_claim_keys_and_payload_have_no_effects() {
+    use herdr_threads::protocol::results::ErrorCode;
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    automatic_call(&f, request.begin()).unwrap();
+    let before =
+        f.db.query_row("SELECT count(*) FROM operations", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap();
+    for change in ["body", "namespace", "claim", "key", "recipient"] {
+        let mut forged = request.clone();
+        let AutomaticOriginal::Delivery(plan) = &mut forged.original else {
+            panic!()
+        };
+        match change {
+            "body" => plan.payload.body = "different".into(),
+            "namespace" => plan.payload.namespace.state_dir = "/other".into(),
+            "claim" => forged.claim.binding_generation += 1,
+            "key" => {
+                plan.payload.keys.ensure =
+                    herdr_threads::protocol::ids::OperationId::new("other-key")
+            }
+            _ => plan.recipient = herdr_threads::protocol::ids::SeatId::new("other-peer"),
+        }
+        forged.digest = forged.original.digest(&forged.claim).unwrap();
+        let error = automatic_call(&f, forged.ensure()).unwrap_err();
+        assert!(
+            matches!(
+                error.code,
+                ErrorCode::OperationPayloadMismatch
+                    | ErrorCode::InstanceMismatch
+                    | ErrorCode::CallerUnverified
+            ),
+            "{change}: {error:?}"
+        );
+        assert_eq!(
+            f.db.query_row("SELECT count(*) FROM operations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            f.db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    let mut bad = request.ensure();
+    if let AutomaticDeliveryAction::Ensure(v) = &mut bad.action {
+        v.operation = herdr_threads::protocol::ids::OperationId::new("forged");
+    }
+    assert!(automatic_call(&f, bad).is_err());
+}
+#[test]
+fn automatic_canonical_attachment_failure_rolls_back_resolver_and_operation() {
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    automatic_call(&f, request.begin()).unwrap();
+    f.db.execute_batch("CREATE TRIGGER deny_automatic_attachment BEFORE UPDATE OF thread_id ON channel_handoff_fences WHEN NEW.compound='automatic-compound' BEGIN SELECT RAISE(ABORT,'attachment failure'); END").unwrap();
+    assert!(automatic_call(&f, request.ensure()).is_err());
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM operations WHERE operation_key=?1",
+            [request.plan().payload.keys.ensure.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn automatic_canonical_refuses_raw_create_invite_even_with_completed_historical_rows() {
+    use herdr_threads::protocol::{
+        commands::{CreateThread, Invite},
+        ids::ThreadId,
+    };
+    use sha2::{Digest, Sha256};
+    for historical in [false, true] {
+        let f = Fixture::new();
+        let request = automatic_request(&f);
+        automatic_call(&f, request.begin()).unwrap();
+        let create = CreateThread {
+            name: None,
+            topic: "forged".into(),
+            goal: "forged".into(),
+            operation: request.plan().payload.keys.ensure.clone(),
+            claim: request.claim.clone(),
+        };
+        let invite = Invite {
+            thread: ThreadId::new("t"),
+            seat: request.plan().recipient.clone(),
+            deadline_millis: None,
+            operation: request.plan().payload.keys.complete.clone(),
+            claim: request.claim.clone(),
+        };
+        if historical {
+            for (key, bytes, result) in [
+                (
+                    create.operation.as_str(),
+                    serde_json::to_vec(&serde_json::to_value(("create_thread", &create)).unwrap())
+                        .unwrap(),
+                    CommandResult::ThreadCreated(ThreadId::new("t")),
+                ),
+                (
+                    invite.operation.as_str(),
+                    serde_json::to_vec(&serde_json::to_value(("invite", &invite)).unwrap())
+                        .unwrap(),
+                    CommandResult::Invitation(herdr_threads::protocol::ids::InvitationId::new(
+                        "historical-invitation",
+                    )),
+                ),
+            ] {
+                let digest = Sha256::digest(bytes);
+                f.db.execute("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES('seat:s',?1,?2,?3,0)",rusqlite::params![key,digest.as_slice(),serde_json::to_string(&result).unwrap()]).unwrap();
+            }
+            f.db.execute(
+                "UPDATE channel_handoff_fences SET thread_id='t',state='completed',completed_at=1",
+                [],
+            )
+            .unwrap();
+        }
+        // The historical fixtures must pass exact ordinary permit issuance;
+        // refusal below must come from canonical automatic-mode admission.
+        for raw in [
+            herdr_threads::protocol::commands::PermitMutation::CreateThread(create.clone()),
+            herdr_threads::protocol::commands::PermitMutation::Invite(invite.clone()),
+        ] {
+            f.store
+                .issue_cooperative_permit(
+                    herdr_threads::store::cooperative_permit_request(&raw).unwrap(),
+                    &CallBudget {
+                        deadline: MonoInstant(f.clock.monotonic_now().0 + 5000),
+                        cancellation: Cancellation::default(),
+                    },
+                )
+                .unwrap();
+        }
+        let before =
+            f.db.query_row("SELECT count(*) FROM operations", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap();
+        for command in [Command::CreateThread(create), Command::Invite(invite)] {
+            let error = f.call(command).unwrap_err();
+            assert_eq!(
+                error.code,
+                herdr_threads::protocol::results::ErrorCode::OperationPayloadMismatch,
+                "{historical}: {error:?}"
+            );
+        }
+        assert_eq!(
+            f.db.query_row("SELECT count(*) FROM operations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+fn automatic_canonical_selected_attachment_cannot_be_retargeted() {
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    automatic_call(&f, request.begin()).unwrap();
+    automatic_call(&f, request.ensure()).unwrap();
+    assert!(
+        f.db.execute(
+            "UPDATE channel_handoff_fences SET thread_id='t' WHERE compound='automatic-compound'",
+            []
+        )
+        .is_err()
+    );
+}
+#[test]
+fn automatic_canonical_ensure_historical_result_must_match_attached_thread() {
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    automatic_call(&f, request.begin()).unwrap();
+    automatic_call(&f, request.ensure()).unwrap();
+    f.db.execute(
+        "UPDATE operations SET result_json=?2 WHERE operation_key=?1",
+        rusqlite::params![
+            request.plan().payload.keys.ensure.as_str(),
+            serde_json::to_string(&CommandResult::ThreadCreated(
+                herdr_threads::protocol::ids::ThreadId::new("t")
+            ))
+            .unwrap()
+        ],
+    )
+    .unwrap();
+    assert!(automatic_call(&f, request.ensure()).is_err());
+}
+#[test]
+fn automatic_canonical_full_outer_original_is_frozen_and_oversize_refuses_before_effects() {
+    use herdr_threads::{
+        cli::launch::LaunchRequest,
+        harness::context::Harness as ContextHarness,
+        protocol::{ids::HostTargetId, output::ContinuationContext},
+    };
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    let mut handoff = request.clone();
+    handoff.original = AutomaticOriginal::Handoff(Box::new(AutomaticHandoffPlan {
+        version: 2,
+        delivery: request.plan().clone(),
+        launch: LaunchRequest {
+            target: HostTargetId::new("peer-pane"),
+            harness: ContextHarness::Codex,
+            harness_binary: None,
+            argv: vec!["--model".into(), "frozen".into()],
+            name: None,
+            pane_label: None,
+        },
+        context: ContinuationContext {
+            state_dir: Some("/state".into()),
+            host: Some("/host.sock".into()),
+        },
+        startup_input: None,
+    }));
+    handoff.digest = handoff.original.digest(&handoff.claim).unwrap();
+    automatic_call(&f, handoff.begin()).unwrap();
+    let mut changed = handoff.clone();
+    let AutomaticOriginal::Handoff(plan) = &mut changed.original else {
+        panic!()
+    };
+    plan.launch.argv[1] = "different".into();
+    changed.digest = changed.original.digest(&changed.claim).unwrap();
+    assert_eq!(
+        automatic_call(&f, changed.ensure()).unwrap_err().code,
+        herdr_threads::protocol::results::ErrorCode::OperationPayloadMismatch
+    );
+    let mut oversized = handoff;
+    let AutomaticOriginal::Handoff(plan) = &mut oversized.original else {
+        panic!()
+    };
+    plan.launch.argv = vec!["\u{1}".repeat(4096); 16];
+    oversized.digest = oversized.original.digest(&oversized.claim).unwrap();
+    oversized.original.validate().unwrap();
+    assert!(oversized.validate().is_err());
+    let before =
+        f.db.query_row("SELECT count(*) FROM operations", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap();
+    assert_eq!(
+        automatic_call(&f, oversized.begin()).unwrap_err().code,
+        herdr_threads::protocol::results::ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM operations", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+struct GenericBootstrap;
+impl herdr_threads::ports::BootstrapStorePort for GenericBootstrap {
+    fn bootstrap_begin_permit(
+        &self,
+        _canonical: &herdr_threads::protocol::handoff::HandoffNamespace,
+        _command: &herdr_threads::protocol::handoff::BeginBootstrap,
+        _budget: &CallBudget,
+    ) -> Result<
+        herdr_threads::protocol::authority::MutationPermit,
+        herdr_threads::protocol::results::ApiError,
+    > {
+        unreachable!("automatic route reached unrelated legacy adapter")
+    }
+    fn bootstrap_prepare_send_step(
+        &self,
+        _canonical: &herdr_threads::protocol::handoff::HandoffNamespace,
+        _command: &herdr_threads::protocol::commands::SendMessage,
+        _admission: herdr_threads::ports::DurableWorkAdmission,
+        _budget: &CallBudget,
+    ) -> Result<
+        herdr_threads::ports::SendPreparationProgress,
+        herdr_threads::protocol::results::ApiError,
+    > {
+        unreachable!("automatic route reached unrelated legacy adapter")
+    }
+    fn delivery_query(
+        &self,
+        _canonical: &herdr_threads::protocol::handoff::HandoffNamespace,
+        _request: &herdr_threads::protocol::handoff::DeliveryMutation,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        unreachable!("automatic route reached unrelated legacy adapter")
+    }
+    fn delivery_mutate(
+        &self,
+        _canonical: &herdr_threads::protocol::handoff::HandoffNamespace,
+        _request: &herdr_threads::protocol::handoff::DeliveryMutation,
+        _permit: herdr_threads::protocol::authority::MutationPermit,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        unreachable!("automatic route reached unrelated legacy adapter")
+    }
+    fn delivery_prepare_send_step(
+        &self,
+        _canonical: &herdr_threads::protocol::handoff::HandoffNamespace,
+        _request: &herdr_threads::protocol::handoff::DeliveryMutation,
+        _admission: herdr_threads::ports::DurableWorkAdmission,
+        _budget: &CallBudget,
+    ) -> Result<
+        herdr_threads::ports::SendPreparationProgress,
+        herdr_threads::protocol::results::ApiError,
+    > {
+        unreachable!("automatic route reached unrelated legacy adapter")
+    }
+    fn bootstrap_mutate(
+        &self,
+        _canonical: &herdr_threads::protocol::handoff::HandoffNamespace,
+        _command: herdr_threads::protocol::commands::PermitMutation,
+        _permit: herdr_threads::protocol::authority::MutationPermit,
+        _guard: Option<herdr_threads::ports::BootstrapAttachmentGuard>,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        unreachable!("automatic route reached unrelated legacy adapter")
+    }
+    fn bootstrap_query(
+        &self,
+        _canonical: &herdr_threads::protocol::handoff::HandoffNamespace,
+        _command: &Command,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        unreachable!("automatic route reached unrelated legacy adapter")
+    }
+    fn bootstrap_recovery_replay(
+        &self,
+        _canonical: &herdr_threads::protocol::handoff::HandoffNamespace,
+        _request: &herdr_threads::protocol::handoff::RecoverBootstrap,
+        _actor: &herdr_threads::protocol::authority::OperatorActor,
+        _budget: &CallBudget,
+    ) -> Result<
+        Option<herdr_threads::protocol::handoff::BootstrapRecoveryResult>,
+        herdr_threads::protocol::results::ApiError,
+    > {
+        unreachable!("automatic route reached unrelated legacy adapter")
+    }
+    fn bootstrap_recover(
+        &self,
+        _canonical: &herdr_threads::protocol::handoff::HandoffNamespace,
+        _request: &herdr_threads::protocol::handoff::RecoverBootstrap,
+        _actor: &herdr_threads::protocol::authority::OperatorActor,
+        _guard: Option<herdr_threads::ports::BootstrapAttachmentGuard>,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+        unreachable!("automatic route reached unrelated legacy adapter")
+    }
+}
+
+#[test]
+fn automatic_generic_selected_runtime_defaults_refuse_without_effects() {
+    let mut f = Fixture::new();
+    let request = automatic_request(&f);
+    let host = Arc::new(herdr_threads::host::native::NativeCli::new(
+        "/host.sock".into(),
+        f.clock.clone(),
+    ));
+    f.service = f
+        .service
+        .with_bootstrap_runtime(
+            super::topology_handoff::namespace(),
+            host,
+            Arc::new(GenericBootstrap),
+        )
+        .unwrap();
+    let before =
+        f.db.query_row("SELECT count(*) FROM operations", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap();
+    let mut status = request.clone();
+    status.action = AutomaticDeliveryAction::Status;
+    for phase in [status, request.clone(), request.begin(), request.ensure()] {
+        assert_eq!(
+            automatic_call(&f, phase).unwrap_err().code,
+            herdr_threads::protocol::results::ErrorCode::Unsupported
+        );
+    }
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM operations", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM channel_handoff_fences", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn automatic_canonical_historical_ensure_keeps_original_claim_namespace_and_fence() {
+    use herdr_threads::protocol::results::ErrorCode;
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    automatic_call(&f, request.begin()).unwrap();
+    let result = automatic_call(&f, request.ensure()).unwrap();
+    let thread = automatic_selected_thread(&result).unwrap();
+    assert!(
+        matches!(automatic_call(&f,request.begin()).unwrap(),CommandResult::Handoff(ref r) if r.thread.as_ref()==Some(thread))
+    );
+    f.db.execute(
+        "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(automatic_call(&f, request.ensure()).unwrap(), result);
+    for completed in [false, true] {
+        if completed {
+            f.db.execute("UPDATE channel_handoff_fences SET state='completed',completed_at=1 WHERE compound='automatic-compound'",[]).unwrap();
+        }
+        let mut status = request.clone();
+        status.action = AutomaticDeliveryAction::Status;
+        assert!(
+            matches!(automatic_call(&f,status).unwrap(),CommandResult::Handoff(ref r) if r.thread.as_ref()==Some(thread))
+        );
+        for field in ["claim", "namespace", "body"] {
+            let mut forged = request.clone();
+            match field {
+                "claim" => forged.claim.binding_generation += 1,
+                "namespace" => {
+                    let AutomaticOriginal::Delivery(p) = &mut forged.original else {
+                        panic!()
+                    };
+                    p.payload.namespace.state_dir = "/other".into();
+                }
+                _ => {
+                    let AutomaticOriginal::Delivery(p) = &mut forged.original else {
+                        panic!()
+                    };
+                    p.payload.body = "forged body".into();
+                }
+            }
+            forged.digest = forged.original.digest(&forged.claim).unwrap();
+            let error = automatic_call(&f, forged.ensure()).unwrap_err();
+            assert!(matches!(
+                error.code,
+                ErrorCode::OperationPayloadMismatch | ErrorCode::InstanceMismatch
+            ));
+        }
+        assert_eq!(automatic_call(&f, request.ensure()).unwrap(), result);
+        assert_eq!(
+            f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+}
+
+#[test]
+fn automatic_canonical_registration_refuses_cross_role_and_legacy_key_adoption() {
+    use herdr_threads::protocol::{commands::CreateThread, ids::OperationId};
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    automatic_call(&f, request.begin()).unwrap();
+    let mut collision = request.clone();
+    let AutomaticOriginal::Delivery(plan) = &mut collision.original else {
+        panic!()
+    };
+    plan.payload.keys = AutomaticHandoffKeys::new(OperationId::new("other-compound"));
+    plan.payload.keys.ensure = request.plan().payload.keys.send.clone();
+    collision.digest = collision.original.digest(&collision.claim).unwrap();
+    assert!(automatic_call(&f, collision.begin()).is_err());
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM automatic_handoff_companions",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM automatic_handoff_keys", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        5
+    );
+    let mut legacy = request;
+    let AutomaticOriginal::Delivery(plan) = &mut legacy.original else {
+        panic!()
+    };
+    plan.payload.keys = AutomaticHandoffKeys::new(OperationId::new("legacy-compound"));
+    legacy.digest = legacy.original.digest(&legacy.claim).unwrap();
+    f.call(Command::CreateThread(CreateThread {
+        name: None,
+        topic: "ordinary".into(),
+        goal: "manual".into(),
+        operation: legacy.plan().payload.keys.ensure.clone(),
+        claim: legacy.claim.clone(),
+    }))
+    .unwrap();
+    assert!(automatic_call(&f, legacy.begin()).is_err());
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM automatic_handoff_companions",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }

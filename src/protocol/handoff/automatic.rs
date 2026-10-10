@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const AUTOMATIC_PLAN_VERSION: u32 = 2;
+pub(crate) const MAX_AUTOMATIC_ORIGINAL_BYTES: usize = 131072;
 
 /// Automatic selection has one Ensure child and no independent invitation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,8 +291,20 @@ impl AutomaticDeliveryMutation {
         };
         request
     }
+    /// The canonical representation stores the entire normalized original,
+    /// including its frozen caller and outer launch. Escaping counts toward the bound.
+    pub(crate) fn canonical_original_bytes(&self) -> Result<Vec<u8>, &'static str> {
+        let mut normalized = self.clone();
+        normalized.action = AutomaticDeliveryAction::Prepare;
+        let bytes = serde_json::to_vec(&normalized).map_err(|_| "invalid automatic original")?;
+        if bytes.len() > MAX_AUTOMATIC_ORIGINAL_BYTES {
+            return Err("automatic original exceeds 128 KiB storage bound");
+        }
+        Ok(bytes)
+    }
     pub fn validate(&self) -> Result<(), &'static str> {
         self.original.validate()?;
+        self.canonical_original_bytes()?;
         let plan = self.plan();
         let keys = &plan.payload.keys;
         if self.version != AUTOMATIC_PLAN_VERSION

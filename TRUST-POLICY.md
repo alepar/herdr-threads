@@ -499,6 +499,15 @@ and refuse before effects when today's composer would differ from frozen V1, so 
 future composer change stops new Root launches rather than producing reports that
 completion cannot validate.
 
+Canonical automatic handoff storage retains the full normalized V2 original request,
+including frozen scope, caller, digest, namespace, child keys and any outer launch,
+context and startup template, within 128 KiB of encoded JSON. JSON escaping counts;
+a syntactically valid plan can exceed this representation ceiling. Shared request
+validation refuses it before local publication or canonical effects; no fields are
+truncated or omitted to make it fit. Exact historical presentation compares this
+complete immutable original and canonical attachment. This bound creates no new
+provenance, receipt authority or permission from local data.
+
 Canonical topology storage has encoded-byte ceilings for retained bootstrap envelopes:
 128 KiB for the full frozen identity, creation evidence and attachment; 256 KiB for
 an immutable recovery decision; and 2 MiB for the full completed result, including

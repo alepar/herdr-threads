@@ -107,6 +107,49 @@ impl DomainService {
         self.bootstrap.is_some()
     }
 
+    fn automatic_delivery_command(
+        &self,
+        request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        request.validate().map_err(ApiError::invalid_request)?;
+        let runtime = self
+            .bootstrap
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
+        crate::store::handoff::automatic::validate_namespace(&runtime.canonical, request)?;
+        let (owner, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        if matches!(
+            request.action,
+            crate::protocol::handoff::AutomaticDeliveryAction::Status
+                | crate::protocol::handoff::AutomaticDeliveryAction::Prepare
+        ) {
+            return runtime
+                .store
+                .automatic_delivery_query(&runtime.canonical, request, budget);
+        }
+        let inner = crate::store::handoff::automatic::inner(request)?;
+        let permit = self
+            .store
+            .issue_cooperative_permit(crate::store::cooperative_permit_request(&inner)?, budget)?;
+        runtime
+            .store
+            .automatic_delivery_mutate(&runtime.canonical, request, permit, budget)
+    }
+
     fn delivery_command(
         &self,
         request: &crate::protocol::handoff::DeliveryMutation,
@@ -751,10 +794,7 @@ impl LocalService for DomainService {
         match command {
             Command::HandoffDelivery(request) => self.delivery_command(&request, peer, budget),
             Command::AutomaticHandoffDelivery(request) => {
-                request.validate().map_err(ApiError::invalid_request)?;
-                Err(ApiError::unsupported(
-                    "automatic canonical runtime unavailable",
-                ))
+                self.automatic_delivery_command(&request, peer, budget)
             }
             command @ (Command::BeginBootstrap(_)
             | Command::ReserveBootstrapAttempt(_)

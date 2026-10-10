@@ -127,6 +127,9 @@ const DEADLINE_TABLES: &[&str] = &[
 pub const KNOWN_UNMAPPED: &[&str] = &[
     // Pair identity is passive; its ordinary invitation/membership writes kick their own lanes.
     "direct_threads",
+    // Immutable automatic identities accompany the archival fence parent.
+    "automatic_handoff_companions",
+    "automatic_handoff_keys",
     // Bootstrap proof/history transitions also update the archival barrier parent.
     "bootstrap_child_keys",
     "bootstrap_attempts",

@@ -121,6 +121,49 @@ impl BootstrapStorePort for SqliteStore {
             canonical,
         )
     }
+    fn automatic_delivery_query(
+        &self,
+        canonical: &HandoffNamespace,
+        request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        crate::store::handoff::automatic::validate_namespace(canonical, request)?;
+        if canonical.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic instance differs",
+            ));
+        }
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, _, ()| crate::store::handoff::automatic::query(tx, request),
+        )
+    }
+    fn automatic_delivery_mutate(
+        &self,
+        canonical: &HandoffNamespace,
+        request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        permit: MutationPermit,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        crate::store::handoff::automatic::validate_namespace(canonical, request)?;
+        if canonical.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic instance differs",
+            ));
+        }
+        crate::store::handoff::automatic::mutate(
+            &self.context,
+            &mut *self.writer(budget)?,
+            budget,
+            request,
+            permit,
+            self.settings.invitation_default_ms,
+        )
+    }
     fn delivery_query(
         &self,
         canonical: &HandoffNamespace,

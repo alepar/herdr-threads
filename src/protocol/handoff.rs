@@ -5,7 +5,7 @@ use super::{
     ids::{OperationId, SeatId, ThreadId},
 };
 use serde::{Deserialize, Serialize};
-mod automatic;
+pub(crate) mod automatic;
 pub use automatic::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

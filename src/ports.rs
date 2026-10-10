@@ -2540,6 +2540,27 @@ pub trait BootstrapStorePort: Send + Sync {
         admission: DurableWorkAdmission,
         budget: &CallBudget,
     ) -> Result<SendPreparationProgress, ApiError>;
+    fn automatic_delivery_query(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic canonical runtime unavailable",
+        ))
+    }
+    fn automatic_delivery_mutate(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        _permit: MutationPermit,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic canonical runtime unavailable",
+        ))
+    }
     fn delivery_query(
         &self,
         canonical: &crate::protocol::handoff::HandoffNamespace,
