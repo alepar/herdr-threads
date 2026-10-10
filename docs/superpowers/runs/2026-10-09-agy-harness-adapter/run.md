@@ -13,3 +13,4 @@ base: main
 
 approvals:
 - top-split · auto · ht-poh.1 LEAF, ht-poh.7 LEAF, ht-poh.2 PROMOTE, ht-poh.3 PROMOTE, ht-poh.4 PROMOTE, ht-poh.5 LEAF, ht-poh.6 PROMOTE
+- coverage-round-1 · c1 auto applied, c2 auto applied, c3 auto applied, c4 auto applied, c5 auto rejected, c6 auto applied, c7 auto applied, c8 auto applied, c9 auto applied, c10 auto rejected, c11 auto applied, c12 auto rejected, c13 auto applied, c14 auto applied, c15 auto rejected · R1–R13 canonical (+R14 R15 R16 from r-new) · requirements: 13 · mapped: 12 · unmapped: 1 (R13)
