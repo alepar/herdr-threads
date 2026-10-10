@@ -2603,6 +2603,69 @@ impl StorePort for SqliteStore {
             .map_err(|error| db.map_error(error))?;
         Ok(seats)
     }
+    fn pull_notice_page(
+        &self,
+        seat: &SeatId,
+        limit: usize,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::ports::PulledNotice>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        attention::notice_offer_page(&db, seat.as_str(), limit)?
+            .into_iter()
+            .map(|offered| {
+                let topic: String = db
+                    .query_row(
+                        "SELECT topic FROM threads WHERE id=?1",
+                        [offered.notice.thread.as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+                let author: Option<String> = db
+                    .query_row(
+                        "SELECT actor_seat_id FROM messages WHERE id=?1",
+                        [offered.notice.warning.as_str()],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(store_error)?
+                    .flatten();
+                Ok(crate::ports::PulledNotice {
+                    notice: offered.notice,
+                    topic,
+                    author: author.map(SeatId::new),
+                })
+            })
+            .collect()
+    }
+    fn settle_pulled_notices(
+        &self,
+        seat: &SeatId,
+        generation: u64,
+        native_session: &str,
+        carried: &[crate::protocol::results::WarningRef],
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        if carried.is_empty() {
+            return Ok(false);
+        }
+        let mut writer = self.writer(budget)?;
+        self.context.execute_decision(
+            &mut writer,
+            |tx| {
+                attention::settle_pulled_notices(
+                    tx,
+                    &self.instance,
+                    seat.as_str(),
+                    generation,
+                    native_session,
+                    carried,
+                )
+            },
+            |_, _, settled| Ok(settled),
+        )
+    }
     fn clear_wake_batch_if_empty(
         &self,
         seat: &SeatId,

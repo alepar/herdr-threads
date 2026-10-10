@@ -335,7 +335,10 @@ impl ConversationState {
                 user,
             });
         }
-        self.injected_this_turn = true;
+        // An empty id list injected nothing a confirm could prove.
+        if !ids.is_empty() {
+            self.injected_this_turn = true;
+        }
     }
 }
 
@@ -857,8 +860,20 @@ impl Step<'_> {
                     record.downgrade(&reason, now);
                     save_downgrade(self.state_dir, &record);
                 }
-                let step = record.step(now);
-                if record.downgraded_at.is_some()
+                // A page with no offered id (a notices-only or attention-only page)
+                // has nothing a transcript scan could confirm: it never opens or
+                // spends a probation turn, and a downgraded harness gets the step
+                // known to work.
+                let confirmable = !page.offered.is_empty();
+                let step = if confirmable {
+                    record.step(now)
+                } else if record.downgraded_at.is_some() {
+                    InjectionStep::UserMessage
+                } else {
+                    InjectionStep::SystemMessage
+                };
+                if confirmable
+                    && record.downgraded_at.is_some()
                     && !record.probation
                     && step == InjectionStep::SystemMessage
                 {

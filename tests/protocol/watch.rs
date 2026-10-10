@@ -641,3 +641,26 @@ fn no_mod_channels_is_inert() {
     channels.unregister(crate::ports::ModChannelId(1), UtcMillis(0));
     channels.close(&seat, WatchCloseReason::Stopping, UtcMillis(0));
 }
+
+#[test]
+fn notice_marker_names_body_only_with_and_without_a_prefix() {
+    let id = MessageId::new("w-1");
+    assert_eq!(
+        notice_marker_for(&[], &id),
+        "informational, no ACK; read: herdr-threads body w-1"
+    );
+    let prefixed = notice_marker_for(
+        &[
+            "/opt/ht".to_owned(),
+            "--instance".to_owned(),
+            "x".to_owned(),
+        ],
+        &id,
+    );
+    assert_eq!(
+        prefixed,
+        "informational, no ACK; read: /opt/ht --instance x body w-1"
+    );
+    assert!(!prefixed.contains('\n'));
+    assert!(!prefixed.contains("ack w-1"));
+}

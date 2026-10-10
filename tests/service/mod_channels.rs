@@ -219,6 +219,7 @@ fn view(seat_name: &str, generation: u64, fingerprint: ModFingerprint) -> ModSea
             binding_generation: Some(generation),
             ..fingerprint
         },
+        newest_pending_notice: None,
     }
 }
 fn pending(version: u64) -> ModFingerprint {

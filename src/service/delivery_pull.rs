@@ -43,7 +43,12 @@ pub const PAGE_MAX_TEXT_BYTES: usize = 64 * 1024;
 /// warnings and invitations, the binding generation), so the version moves
 /// whenever the pending set does, which the bare `wake_work.attention_version`
 /// counter does not on settlement.
-pub fn attention_version(fingerprint: &ModFingerprint) -> u64 {
+///
+/// `newest_notice` (the newest unoffered informational notice's ordinal) is
+/// appended so an `Unchanged` reply never hides a pending notice. Notices are
+/// not part of `ModFingerprint`: they never wake and the mod channel's change
+/// detector must not see them.
+pub fn attention_version(fingerprint: &ModFingerprint, newest_notice: Option<i64>) -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET;
@@ -63,6 +68,13 @@ pub fn attention_version(fingerprint: &ModFingerprint) -> u64 {
         Some(generation) => {
             feed(1);
             feed(generation);
+        }
+        None => feed(0),
+    }
+    match newest_notice {
+        Some(ordinal) => {
+            feed(1);
+            feed(ordinal as u64);
         }
         None => feed(0),
     }
@@ -214,7 +226,7 @@ impl DomainService {
         };
         let seat = &pull.claim.seat;
         let now = self.clock.utc_now();
-        let version = attention_version(&view.fingerprint);
+        let version = attention_version(&view.fingerprint, view.newest_pending_notice);
         let seen_current = pull.seen_attention_version == Some(version);
         let known: HashMap<MessageId, Offer> = {
             let mut ledger = self.delivery_pull.lock();
@@ -292,6 +304,78 @@ impl DomainService {
         // Step 5: one attention block when the version moved and something that
         // wakes the seat (an invitation or a waking warning) is pending.
         let with_attention = !seen_current && view.fingerprint.other_pending > 0;
+        // Informational notices (never wake, shown once): carried after the
+        // message blocks, settled before the reply by the frontier rule.
+        let mut notice_blocks: Vec<FrameItem> = Vec::new();
+        let mut notices_settled = false;
+        let mut notices_has_more = false;
+        let room = PAGE_MAX_BLOCKS.saturating_sub(blocks.len() + usize::from(with_attention));
+        let limit = room.min(crate::protocol::results::MAX_NOTICE_PAGE_ITEMS);
+        if !more && limit > 0 && view.newest_pending_notice.is_some() {
+            let mut page = self
+                .store
+                .pull_notice_page(seat, limit + 1, budget)
+                .unwrap_or_default();
+            notices_has_more = page.len() > limit;
+            page.truncate(limit);
+            let mut kept = 0;
+            let mut bytes_used = text_bytes;
+            for pulled in &page {
+                let block = FrameItem {
+                    kind: "notice".to_owned(),
+                    id: pulled.notice.warning.as_str().to_owned(),
+                    thread: Some(pulled.notice.thread.as_str().to_owned()),
+                    thread_name: delivery::assemble::label(&pulled.topic),
+                    sender: pulled.author.as_ref().map(|a| a.as_str().to_owned()),
+                    sender_name: Some(
+                        pulled
+                            .author
+                            .as_ref()
+                            .map_or_else(|| "service".to_owned(), |a| a.as_str().to_owned()),
+                    ),
+                    body: crate::protocol::watch::notice_marker_for(
+                        &pull.marker_prefix,
+                        &pulled.notice.warning,
+                    ),
+                    ..FrameItem::default()
+                };
+                let bytes = block_bytes(&block);
+                if bytes_used + bytes > PAGE_MAX_TEXT_BYTES {
+                    break;
+                }
+                bytes_used += bytes;
+                notice_blocks.push(block);
+                kept += 1;
+            }
+            if kept < page.len() {
+                notices_has_more = true;
+            }
+            page.truncate(kept);
+            let carried: Vec<_> = page.iter().map(|p| p.notice.clone()).collect();
+            notices_settled = self
+                .store
+                .settle_pulled_notices(
+                    seat,
+                    binding.generation,
+                    &binding.native_session,
+                    &carried,
+                    budget,
+                )
+                .unwrap_or(false);
+            if notices_settled {
+                blocks.append(&mut notice_blocks);
+            }
+        }
+        let carried_all = notices_settled && !notices_has_more;
+        let notices_left = view.newest_pending_notice.is_some() && !carried_all;
+        let reply_version = attention_version(
+            &view.fingerprint,
+            if carried_all {
+                None
+            } else {
+                view.newest_pending_notice
+            },
+        );
         if with_attention {
             blocks.push(FrameItem {
                 kind: "attention".to_owned(),
@@ -310,13 +394,13 @@ impl DomainService {
                 // The whole pending set was read: what is no longer in it left.
                 entry.retain_pending(&pending);
             }
-            entry.more_pending = more;
+            entry.more_pending = more || notices_left;
             entry.read_attention = (!more).then_some(view.fingerprint.attention_version);
         }
         if blocks.is_empty() {
             return Ok(CommandResult::DeliveryPulled(
                 DeliveryPullReply::Unchanged {
-                    attention_version: version,
+                    attention_version: reply_version,
                 },
             ));
         }
@@ -324,7 +408,7 @@ impl DomainService {
             shown.into_iter().partition(|(_, truncated)| *truncated);
         Ok(CommandResult::DeliveryPulled(DeliveryPullReply::Page(
             DeliveryPage {
-                attention_version: version,
+                attention_version: reply_version,
                 text: frame(&blocks),
                 offered: offered.into_iter().map(|(id, _)| id).collect(),
                 truncated: truncated.into_iter().map(|(id, _)| id).collect(),

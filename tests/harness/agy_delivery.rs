@@ -963,6 +963,43 @@ fn a_probation_with_no_stop_re_downgrades_at_the_next_injection_after_24_hours()
 }
 
 #[test]
+fn a_page_with_no_offered_id_neither_opens_nor_spends_probation() {
+    let rig = Rig::new();
+    let a = ident("a");
+    missing_turn(&rig, "stop-error-unknown-step.json", &runtime(1000, &a));
+    let at = 1000 + 24 * HOUR;
+    let before = rig.record().unwrap();
+    // A notices-only page while the probation is due: userMessage, no probation.
+    let notices = Fake::with(vec![page(&[], TEXT, 12)]);
+    let out = rig.pre(0, &notices, &runtime(at, &a));
+    assert_eq!(out, fixture_bytes("output-user-message.json"));
+    let record = rig.record().unwrap();
+    assert!(!record.probation, "no probation turn opened");
+    assert_eq!(record, before, "the record is unchanged");
+    assert!(
+        !rig.conversation().injected_this_turn,
+        "nothing a confirm could prove was injected"
+    );
+    // The turn ends: nothing to re-downgrade.
+    rig.stop("stop-no-tool-call.json", &Fake::default(), &runtime(at, &a));
+    assert_eq!(rig.record().unwrap(), before);
+    // A page with an offered id opens probation as before.
+    let out = rig.pre(0, &offering(), &runtime(at, &a));
+    assert_eq!(out, fixture_bytes("output-system-message.json"));
+    assert!(rig.record().unwrap().probation);
+}
+
+#[test]
+fn a_notices_only_page_renders_a_system_message_when_not_downgraded() {
+    let rig = Rig::new();
+    let a = ident("a");
+    let notices = Fake::with(vec![page(&[], TEXT, 12)]);
+    let out = rig.pre(0, &notices, &runtime(1000, &a));
+    assert_eq!(out, fixture_bytes("output-system-message.json"));
+    assert!(!rig.conversation().injected_this_turn);
+}
+
+#[test]
 fn setup_clears_the_downgrade_record() {
     let temp = Temp::new();
     let home = temp.0.join("home");

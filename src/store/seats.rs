@@ -4649,6 +4649,7 @@ pub fn mod_seat_view(
         binding,
         attention_version,
         fingerprint,
+        newest_pending_notice: super::attention::newest_pending_notice(db, seat.as_str())?,
     }))
 }
 

@@ -146,6 +146,24 @@ pub fn attention_marker_for(prefix: &[String]) -> String {
     )
 }
 
+/// The body of a hook-pull `notice` block: an informational warning, shown
+/// once, with no ACK. `prefix` spells the invocation as for
+/// [`attention_marker_for`]. One line.
+pub fn notice_marker_for(prefix: &[String], warning: &MessageId) -> String {
+    let program = [MARKER_PROGRAM.to_owned()];
+    let prefix = if prefix.is_empty() {
+        &program[..]
+    } else {
+        prefix
+    };
+    let mut argv = prefix.to_vec();
+    argv.extend(["body".to_owned(), warning.as_str().to_owned()]);
+    format!(
+        "informational, no ACK; read: {}",
+        super::output::format_command_argv(&argv)
+    )
+}
+
 /// Daemon setting `mod_delivery` (`src/daemon/settings.rs` re-uses it).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -768,7 +768,7 @@ fn an_attention_only_page_answers_page() {
 fn attention_version_moves_with_every_fingerprint_field() {
     use crate::ports::ModFingerprint;
     let base = ModFingerprint::default();
-    let version = |fingerprint: &ModFingerprint| attention_version(fingerprint);
+    let version = |fingerprint: &ModFingerprint| attention_version(fingerprint, None);
     let moved = [
         ModFingerprint {
             attention_version: 1,
@@ -804,6 +804,12 @@ fn attention_version_moves_with_every_fingerprint_field() {
         assert!(seen.insert(version(fingerprint)), "{fingerprint:?}");
     }
     assert_eq!(version(&base), version(&base.clone()), "deterministic");
+    // The notice term: absent, ordinal 1 and ordinal 2 are three versions.
+    let with_notice = |notice| attention_version(&base, notice);
+    let mut seen = std::collections::BTreeSet::new();
+    for notice in [None, Some(1), Some(2)] {
+        assert!(seen.insert(with_notice(notice)), "{notice:?}");
+    }
 }
 
 #[test]
@@ -878,4 +884,280 @@ fn the_hook_pull_outlook_follows_offers_reoffers_and_parking() {
         "a rotated generation starts over"
     );
     assert!(!f.state.holds_parked(&seat, rotated.binding_generation));
+}
+
+// ---- informational notices on the pull (ht-poh.53) ----
+
+/// A projected informational notice for `s`: an overdue transition about
+/// another seat (`x`), which never wakes `s` (TRUST-POLICY A7).
+fn service_notice(f: &Fixture, id: &str) {
+    let sequence = next_sequence(&f.db);
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES (?1,'i','t',?2,'warn','{}',0,?3,1)", params![id, sequence, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t',?1,'x',?1,?2)", params![id, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s',?1,'t',?2,1)", params![id, sequence + 2]).unwrap();
+    bump(&f.db, sequence);
+}
+fn overdue_notice_about_x(f: &Fixture, id: &str) {
+    service_notice(f, id);
+}
+/// A projected invitation-rejection notice for `s`, authored by `x`.
+fn rejection_notice(f: &Fixture, id: &str) {
+    let sequence = next_sequence(&f.db);
+    let inv = format!("inv-{id}");
+    f.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES(?1,'t','x',9,'pending',0,1,300,300)", [&inv]).unwrap();
+    f.db.execute("INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES (?1,'outside role',100,'x',1,'cooperative_top_level:test')", [&inv]).unwrap();
+    let json =
+        format!(r#"{{"action":"reject","seat":"x","invitation":"{inv}","reason":"outside role"}}"#);
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,source_invitation_id,event_key,event_json,decision_at,decision_seq,event_offset) VALUES (?1,'i','t',?2,'warn','native','x',?3,'reject:'||?3,?4,100,?5,1)", params![id, sequence, inv, json, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s',?1,'t',?2,1)", params![id, sequence + 2]).unwrap();
+    bump(&f.db, sequence);
+}
+fn notice_frontier(f: &Fixture) -> i64 {
+    f.db.query_row(
+        "SELECT COALESCE(MAX(offered_ordinal),0) FROM digest_notice_offer WHERE seat_id='s'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+fn current_check_in(
+    f: &Fixture,
+    claim: CallerClaim,
+    operation: &str,
+) -> crate::protocol::results::CheckInResult {
+    let command = Command::CheckIn(CheckIn {
+        mode: CheckInMode::Current,
+        claim,
+        operation: OperationId::new(operation),
+    });
+    match f.service.handle(command, peer(), &budget()).unwrap() {
+        CommandResult::CheckedIn(result) => result,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn a_service_notice_reaches_the_next_pull_once_as_a_notice_block() {
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    service_notice(&f, "w-rej");
+    let first = page(pull_with_prefix(&f, &context, None, &["ht"]));
+    assert!(
+        first.text.contains("[herdr-threads] notice w-rej in "),
+        "{}",
+        first.text
+    );
+    assert!(first.text.contains("ht body w-rej"), "{}", first.text);
+    assert!(
+        first.text.contains("informational, no ACK"),
+        "{}",
+        first.text
+    );
+    assert!(first.offered.is_empty() && first.truncated.is_empty());
+    assert_eq!(
+        pull(&f, &context, Some(first.attention_version)),
+        DeliveryPullReply::Unchanged {
+            attention_version: first.attention_version
+        }
+    );
+    // Shown once: even without the version it is not shown again.
+    assert_eq!(
+        pull(&f, &context, None),
+        DeliveryPullReply::Unchanged {
+            attention_version: first.attention_version
+        }
+    );
+}
+
+#[test]
+fn a_rejection_notice_reaches_the_next_pull_once_as_a_notice_block() {
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    rejection_notice(&f, "w-rej");
+    assert!(
+        !crate::store::attention::warning_wakes_seat(&f.db, "s", "w-rej").unwrap(),
+        "a rejection notice is informational"
+    );
+    let first = page(pull(&f, &context, None));
+    assert!(
+        first.text.contains("[herdr-threads] notice w-rej in "),
+        "{}",
+        first.text
+    );
+    assert!(first.text.contains("from x"), "{}", first.text);
+    assert!(first.text.contains("body w-rej"), "{}", first.text);
+    assert!(first.offered.is_empty() && first.truncated.is_empty());
+    assert!(matches!(
+        pull(&f, &context, Some(first.attention_version)),
+        DeliveryPullReply::Unchanged { .. }
+    ));
+}
+
+#[test]
+fn an_overdue_transition_about_another_seat_reaches_the_next_pull() {
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    overdue_notice_about_x(&f, "w-over");
+    let first = page(pull(&f, &context, None));
+    assert!(
+        first.text.contains("[herdr-threads] notice w-over in "),
+        "{}",
+        first.text
+    );
+    assert!(first.offered.is_empty());
+    assert!(matches!(
+        pull(&f, &context, Some(first.attention_version)),
+        DeliveryPullReply::Unchanged { .. }
+    ));
+}
+
+#[test]
+fn a_pending_notice_reserves_no_wake() {
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    let before = wake_attention(&f);
+    overdue_notice_about_x(&f, "w-over");
+    let view = f
+        .store
+        .mod_seat_view(&SeatId::new("s"), &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        view.fingerprint.other_pending, 0,
+        "a notice is not mod attention"
+    );
+    assert_eq!(wake_attention(&f), before);
+    let candidates: i64 =
+        f.db.query_row(
+            "SELECT count(*) FROM wake_batches WHERE seat_id='s'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(candidates, 0);
+    let _ = page(pull(&f, &context, None));
+    assert_eq!(
+        wake_attention(&f),
+        before,
+        "carrying it moves no wake counter either"
+    );
+}
+
+#[test]
+fn a_notice_carried_by_a_pull_is_not_carried_by_a_later_lifecycle_check_in() {
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    service_notice(&f, "w-1");
+    let _ = page(pull(&f, &context, None));
+    let result = current_check_in(&f, context.clone(), "ci-2");
+    assert!(result.notices.items.is_empty(), "{:?}", result.notices);
+}
+
+#[test]
+fn a_notice_carried_by_a_check_in_is_not_pulled() {
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    service_notice(&f, "w-1");
+    let result = current_check_in(&f, context.clone(), "ci-2");
+    assert_eq!(result.notices.items.len(), 1);
+    let context = result.context;
+    assert_eq!(
+        pull(&f, &context, None),
+        DeliveryPullReply::Unchanged {
+            attention_version: attention_version(
+                &f.store
+                    .mod_seat_view(&SeatId::new("s"), &budget())
+                    .unwrap()
+                    .unwrap()
+                    .fingerprint,
+                None
+            )
+        }
+    );
+}
+
+#[test]
+fn a_new_notice_moves_the_version_past_unchanged() {
+    let f = fixture(1);
+    let context = pull_seat(&f);
+    let first = page(pull(&f, &context, None));
+    assert!(matches!(
+        pull(&f, &context, Some(first.attention_version)),
+        DeliveryPullReply::Unchanged { .. }
+    ));
+    service_notice(&f, "w-late");
+    let second = page(pull(&f, &context, Some(first.attention_version)));
+    assert!(second.text.contains("notice w-late"), "{}", second.text);
+    assert!(second.offered.is_empty(), "the message is not re-offered");
+}
+
+#[test]
+fn notices_beyond_one_page_continue_on_the_next_pull() {
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    let total = crate::protocol::results::MAX_NOTICE_PAGE_ITEMS + 2;
+    for n in 0..total {
+        service_notice(&f, &format!("w-{n:02}"));
+    }
+    let first = page(pull(&f, &context, None));
+    assert_eq!(
+        first.text.matches("] notice w-").count(),
+        16,
+        "{}",
+        first.text
+    );
+    let second = page(pull(&f, &context, Some(first.attention_version)));
+    assert_eq!(
+        second.text.matches("] notice w-").count(),
+        2,
+        "{}",
+        second.text
+    );
+    assert!(second.text.contains("notice w-16") && second.text.contains("notice w-17"));
+    assert!(matches!(
+        pull(&f, &context, Some(second.attention_version)),
+        DeliveryPullReply::Unchanged { .. }
+    ));
+}
+
+#[test]
+fn notices_wait_while_the_message_page_is_full() {
+    let f = fixture(40);
+    let context = pull_seat(&f);
+    service_notice(&f, "w-wait");
+    let first = page(pull(&f, &context, None));
+    assert!(first.more);
+    assert!(!first.text.contains("notice w-wait"), "{}", first.text);
+    assert_eq!(notice_frontier(&f), 0);
+    let second = page(pull(&f, &context, Some(first.attention_version)));
+    assert!(second.text.contains("notice w-wait"), "{}", second.text);
+}
+
+#[test]
+fn an_invitation_attention_block_is_not_repeated_after_notices_settle() {
+    let f = fixture(0);
+    pending_invitation(&f);
+    let context = pull_seat(&f);
+    service_notice(&f, "w-1");
+    let first = page(pull(&f, &context, None));
+    assert!(first.text.contains("attention pending"), "{}", first.text);
+    assert!(first.text.contains("notice w-1"), "{}", first.text);
+    assert_eq!(
+        pull(&f, &context, Some(first.attention_version)),
+        DeliveryPullReply::Unchanged {
+            attention_version: first.attention_version
+        }
+    );
+}
+
+#[test]
+fn confirm_of_a_notice_id_is_not_offered() {
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    service_notice(&f, "w-1");
+    let _ = page(pull(&f, &context, None));
+    assert_eq!(
+        confirm(&f, &context, &["w-1"], "op-n"),
+        vec![("w-1".to_owned(), Outcome::NotOffered, None)]
+    );
 }
