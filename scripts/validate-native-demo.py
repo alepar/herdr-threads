@@ -144,14 +144,17 @@ WAKE_SETTLE_S = 15
 # Default inbox page size (src/protocol/pagination.rs DEFAULT_PAGE_LIMIT): a burst needs more threads than this.
 INBOX_PAGE_LIMIT = 20
 MAX_BURST_THREADS = 40
-# User approval (run.md, 2026-09-30): the Claude TUI trust dialog may be accepted for /private/tmp scratch projects
-# only; ~/.claude.json is recorded (hash + this project's entry, never copied whole) before and after.
-TUI_TRUST_ROOTS = ("/private/tmp/",)
+# The platform scratch root: /private/tmp on macOS (where /tmp is a symlink to it), /tmp on Linux.
+SCRATCH_ROOT = "/private/tmp" if sys.platform == "darwin" else "/tmp"
+# User approval (run.md, 2026-09-30): the Claude TUI trust dialog may be accepted for SCRATCH_ROOT (/private/tmp on
+# macOS) scratch projects only; ~/.claude.json is recorded (hash + this project's entry, never copied whole) before
+# and after.
+TUI_TRUST_ROOTS = (SCRATCH_ROOT + "/",)
 
 
 def scratch_trust_refusal(project, run_root):
     """Why a folder-trust answer for `project` is NOT approved, else None. Approved (user, 2026-09-30) only for a
-    project inside this run's own root, with that root under TUI_TRUST_ROOTS (/private/tmp scratch). Both paths
+    project inside this run's own root, with that root under TUI_TRUST_ROOTS (SCRATCH_ROOT scratch). Both paths
     are resolved first, so a symlink or `..` cannot step outside."""
     project, root = Path(project).resolve(), Path(run_root).resolve()
     if not any(str(root).rstrip("/") + "/" == r or str(root).startswith(r) for r in TUI_TRUST_ROOTS):
@@ -827,10 +830,10 @@ class Driver:
         if args.run_root:
             base = Path(args.run_root)
         elif getattr(args, "tui_accept_trust", False) or (args.harness == "codex" and args.mode == "tui"):
-            # the trust approval (Claude) and the hook-trust bypass (interactive Codex) cover /private/tmp scratch only
-            base = Path("/private/tmp") / "ht-native-demo"
+            # the trust approval (Claude) and the hook-trust bypass (interactive Codex) cover SCRATCH_ROOT scratch only
+            base = Path(SCRATCH_ROOT) / "ht-native-demo"
         else:
-            base = Path(os.environ.get("TMPDIR", "/private/tmp")) / "ht-native-demo"
+            base = Path(os.environ.get("TMPDIR", SCRATCH_ROOT)) / "ht-native-demo"
         base.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.fixture = NativeFixture.create(base / self.run_id)
         self.root = self.fixture.root
@@ -1679,8 +1682,8 @@ class Driver:
                            "(setup's hooks and socket allowance), never the real ~/.codex",
             "user_config_path": str(Path(self.facts.get("codex_home") or "") / "config.toml"),
             "hook_trust_bypass": "--dangerously-bypass-hook-trust" in argv,
-            "hook_trust_scope": "/private/tmp scratch project only (validate_args)",
-            "folder_trust": ("accepted on screen for the /private/tmp scratch run root only (--tui-accept-trust; persisted into "
+            "hook_trust_scope": f"{SCRATCH_ROOT} scratch project only (validate_args)",
+            "folder_trust": (f"accepted on screen for the {SCRATCH_ROOT} scratch run root only (--tui-accept-trust; persisted into "
                              "the scratch CODEX_HOME config.toml)" if self.args.tui_accept_trust else
                              "not approved for this run: a folder-trust screen FAILs with nothing typed"),
             "folder_trust_acceptances": self.facts.setdefault("codex_folder_trust", [])}
@@ -1953,7 +1956,7 @@ class Driver:
                     return FAIL, f"Codex folder-trust screen without 'Trust and continue' selected; nothing typed (pane-{phase}-ready.txt)", None
                 refusal = scratch_trust_refusal(self.project, self.root)
                 if refusal:
-                    return FAIL, (f"Codex folder-trust screen: {refusal}; the approval covers /private/tmp scratch run roots "
+                    return FAIL, (f"Codex folder-trust screen: {refusal}; the approval covers {SCRATCH_ROOT} scratch run roots "
                                   f"only; nothing typed (pane-{phase}-ready.txt)"), None
                 self.herdr("agent", "send-keys", pane, "enter", tag=f"tui:accept-codex-trust:{phase}")
                 time.sleep(1)
@@ -4408,7 +4411,7 @@ class Driver:
         self.step("S05", "scratch run/state/project dirs", self.s_scratch, needs=("S01",))
         claude_tui = a.mode == "tui" and self.harness == "claude"
         if claude_tui:  # USER-APPROVED trust accept for /private/tmp scratch projects only; ~/.claude.json recorded
-            self.step("S01T", "~/.claude.json before (read-only) + scratch project under /private/tmp", self.s_tui_trust_before, needs=("S05",))
+            self.step("S01T", f"~/.claude.json before (read-only) + scratch project under {SCRATCH_ROOT}", self.s_tui_trust_before, needs=("S05",))
         self.step("S02", "installed harness version vs doctor recipe registry", self.s_version_pin, needs=("S01", "S05"))
         self.step("S02H", "hook version gate (empty-stdin probe, no service call)", self.s_hook_version_gate, needs=("S04",))
         self.step("S02Q", "user-level hook silent outside its Herdr instance", self.s_hook_quiet, needs=("S04", "S05"))
@@ -4576,7 +4579,8 @@ class Driver:
 
 
 def parse(argv=None):
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(description=__doc__.replace("/private/tmp", SCRATCH_ROOT),
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--harness", choices=["claude", "codex"], required=True)
     p.add_argument("--mode", choices=["print", "tui"], default="print", help="print (default: claude -p / codex exec) or tui (interactive Claude or Codex in the pane; enables the clear "
                         "phase: Claude /clear, Codex /new)")
@@ -4599,7 +4603,7 @@ def parse(argv=None):
     p.add_argument("--claude-permission-mode", default="default")
     p.add_argument("--tui-accept-trust", action="store_true",
                    help="answer the Claude or Codex folder-trust screen, only when it is on screen and the project is inside a "
-                        "/private/tmp run root (Claude: writes ~/.claude.json; Codex: the scratch CODEX_HOME); required for "
+                        f"{SCRATCH_ROOT} run root (Claude: writes ~/.claude.json; Codex: the scratch CODEX_HOME); required for "
                         "Claude --mode tui")
     p.add_argument("--codex-bin", default=None,
                    help="absolute path of the Codex binary to run (default $HT_CODEX_BIN, else codex on PATH); the native "

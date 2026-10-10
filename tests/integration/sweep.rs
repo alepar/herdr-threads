@@ -48,7 +48,7 @@ pub(crate) fn agent_pane(id: &str, terminal: &str, kind: &str, session: Option<&
 }
 
 /// The stand-in Herdr's answer to one request against the scripted `panes`.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
     let id = request["id"].clone();
     match request["method"].as_str().unwrap_or_default() {
@@ -329,7 +329,8 @@ fn membership(plugin: &Plugin, caller: Caller, thread: &str, seat: &str) -> Stri
 #[test]
 fn installed_flow_prelaunch_handoff_to_explicit_receipt_survives_daemon_restart() {
     let root = PathBuf::from(format!(
-        "/private/tmp/htsweep-{}",
+        "{}/htsweep-{}",
+        herdr_threads::test_support::SHORT_TMP,
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -790,7 +791,8 @@ fn stand_in_herdr_scripts_pane_agent_present_absent_mismatched_and_error() {
         },
     };
     let root = PathBuf::from(format!(
-        "/private/tmp/htsweep-{}",
+        "{}/htsweep-{}",
+        herdr_threads::test_support::SHORT_TMP,
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();

@@ -178,7 +178,8 @@ fn labeled(id: &str, terminal: &str, label: &str) -> Value {
 #[test]
 fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
     let root = PathBuf::from(format!(
-        "/private/tmp/htfo-{}",
+        "{}/htfo-{}",
+        herdr_threads::test_support::SHORT_TMP,
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -375,7 +376,8 @@ fn follow_prints_the_recent_tail_then_only_new_messages_irc_style() {
 #[test]
 fn public_follow_alias_resolves_names_streams_and_leaves_obligations_untouched() {
     let root = PathBuf::from(format!(
-        "/private/tmp/htfo-{}",
+        "{}/htfo-{}",
+        herdr_threads::test_support::SHORT_TMP,
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();

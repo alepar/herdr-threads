@@ -40,7 +40,7 @@ pub(crate) fn pane(id: &str, terminal: &str) -> Value {
 }
 
 /// The stand-in Herdr's answer to one request against the scripted `panes`.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
     let id = request["id"].clone();
     match request["method"].as_str().unwrap_or_default() {
@@ -185,7 +185,8 @@ impl World {
     }
     fn build(state_name: &str, host_name: &str, with_human: bool) -> Self {
         let root = PathBuf::from(format!(
-            "/private/tmp/htlc-{}",
+            "{}/htlc-{}",
+            herdr_threads::test_support::SHORT_TMP,
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();

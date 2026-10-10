@@ -193,28 +193,32 @@ fn unserved_methods_and_rejected_params_are_unsupported_for_that_operation_only(
 
     // Over the socket: the operation fails as Unsupported while the host
     // answered, and the next operation on the same adapter still works.
-    let (path, worker) = serve_calls(2, |stream, request| {
-        if request["method"] == "agent.get" {
-            respond_error(
-                stream,
-                &request,
-                "unknown_method",
-                "unknown method: agent.get",
-            );
-        } else {
-            respond(stream, &request, json!({"type":"pane_info","pane":pane()}));
-        }
-    });
-    let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
-    let unsupported = cli.run(
-        &["agent", "get", "w4:p1"],
-        &budget(5000),
-        Duration::from_secs(2),
-    );
-    let pane = cli.pane("w4:p1", &budget(5000));
-    cleanup(path, worker);
-    assert_eq!(unsupported.unwrap_err().code, ErrorCode::Unsupported);
-    assert_eq!(pane.unwrap().terminal_id, "term_1");
+    // Like serve_calls, only where the adapter has the kernel peer witness.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let (path, worker) = serve_calls(2, |stream, request| {
+            if request["method"] == "agent.get" {
+                respond_error(
+                    stream,
+                    &request,
+                    "unknown_method",
+                    "unknown method: agent.get",
+                );
+            } else {
+                respond(stream, &request, json!({"type":"pane_info","pane":pane()}));
+            }
+        });
+        let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
+        let unsupported = cli.run(
+            &["agent", "get", "w4:p1"],
+            &budget(5000),
+            Duration::from_secs(2),
+        );
+        let pane = cli.pane("w4:p1", &budget(5000));
+        cleanup(path, worker);
+        assert_eq!(unsupported.unwrap_err().code, ErrorCode::Unsupported);
+        assert_eq!(pane.unwrap().terminal_id, "term_1");
+    }
 }
 
 #[test]
@@ -273,7 +277,7 @@ fn explicit_pane_and_snapshot_use_separate_ping_and_operation_connections() {
     // macOS binds the response to the serving process; elsewhere it stays Unknown.
     assert_eq!(
         matches!(observed.incarnation, IncarnationEvidence::Verified { .. }),
-        cfg!(target_os = "macos")
+        herdr_threads::host::continuity::PEER_WITNESS_SUPPORTED
     );
     assert!(!observed.has_verified_execution());
     cleanup(path, handle);
@@ -294,7 +298,7 @@ fn explicit_pane_and_snapshot_use_separate_ping_and_operation_connections() {
     assert_eq!(snapshot.targets.len(), 1);
     assert_eq!(
         snapshot.authorizes_absence_closure(),
-        cfg!(target_os = "macos")
+        herdr_threads::host::continuity::PEER_WITNESS_SUPPORTED
     );
     cleanup(path, handle);
 }
@@ -495,10 +499,10 @@ fn prompt_submission_is_transport_only_and_public_native_capabilities_stay_close
         PromptOutcome::Submitted
     );
     // Guarded start is the adapter's launch capability wherever the kernel
-    // peer witness exists (macOS); it grants no prompt or receipt authority.
+    // peer witness exists (macOS, Linux); it grants no prompt or receipt authority.
     assert_eq!(
         cli.native_launch_capability(),
-        if cfg!(target_os = "macos") {
+        if herdr_threads::host::continuity::PEER_WITNESS_SUPPORTED {
             NativeLaunchCapability::HostGuardedStart
         } else {
             NativeLaunchCapability::Unsupported
@@ -1156,7 +1160,7 @@ fn relative_endpoint_and_oversized_request_are_rejected_before_connect() {
 
 /// Serves `calls` complete ping+operation exchanges on one endpoint, each on
 /// its own connection, from this process (so the kernel peer is this process).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn serve_calls<F>(calls: usize, operation: F) -> (PathBuf, thread::JoinHandle<()>)
 where
     F: Fn(&mut UnixStream, Value) + Send + 'static,
@@ -1182,7 +1186,7 @@ where
     (path, handle)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn snapshot_or_pane(stream: &mut UnixStream, request: Value) {
     match request["method"].as_str().unwrap() {
         "session.snapshot" => respond(
@@ -1208,7 +1212,7 @@ fn snapshot_or_pane(stream: &mut UnixStream, request: Value) {
 /// Kills: `enumerate_targets` reporting `IncarnationEvidence::Unknown` /
 /// `CompleteUnverified` with sequence 0 (composition probe B8: every capture
 /// was invalidated and no seat could exist on a real host).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn witnessed_snapshot_is_a_verified_coherent_server_incarnation() {
     use herdr_threads::ports::{EnumerationEvidence, EvidenceKind, ObservationProvenance};
@@ -1256,7 +1260,7 @@ fn witnessed_snapshot_is_a_verified_coherent_server_incarnation() {
 /// Counting fake Herdr endpoint that stays alive until stopped: every accepted
 /// connection is counted, each ping is answered with a pong and each operation
 /// is served by `snapshot_or_pane`.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 struct CountingServer {
     path: PathBuf,
     connections: Arc<std::sync::atomic::AtomicUsize>,
@@ -1264,7 +1268,7 @@ struct CountingServer {
     handle: Option<thread::JoinHandle<()>>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl CountingServer {
     fn start() -> Self {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1323,7 +1327,7 @@ impl CountingServer {
 /// (`if false && context.expected_boot.is_some() && ...`). The stale-epoch
 /// case runs while the counting server is still alive, so without the fence
 /// the call connects (and the read even succeeds against the same boot).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn current_target_is_fenced_by_published_server_boot_and_epoch() {
     use herdr_threads::protocol::ids::HostBootId;
@@ -1401,7 +1405,7 @@ fn resume_after_persisted_epoch_starts_a_newer_epoch_only() {
 /// Kills: mapping Herdr `pane_not_found` to HostUnavailable, which advanced
 /// the connection epoch and invalidated the whole observation lane for a
 /// mistyped pane.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn missing_pane_is_typed_not_found_without_epoch_advance() {
     let (path, handle) = serve_calls(1, snapshot_or_pane);

@@ -24,7 +24,8 @@ struct Scratch {
 impl Scratch {
     fn new(host: &Path) -> Self {
         let root = PathBuf::from(format!(
-            "/private/tmp/hths-{}",
+            "{}/hths-{}",
+            herdr_threads::test_support::SHORT_TMP,
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();

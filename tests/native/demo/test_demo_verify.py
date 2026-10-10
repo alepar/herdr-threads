@@ -24,6 +24,21 @@ spec = importlib.util.spec_from_file_location("demo", REPO / "scripts" / "valida
 demo = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(demo)
 
+# The platform scratch root the driver approves folder trust under: /private/tmp on macOS, /tmp on Linux.
+SCRATCH_ROOT = demo.SCRATCH_ROOT
+
+
+def non_scratch_dir():
+    """A writable existing directory outside SCRATCH_ROOT, for tests that need a refusal to happen: the platform temp
+    dir when it is not scratch (/var/folders on macOS), else /dev/shm, /var/tmp or the home directory. None if none."""
+    for candidate in (tempfile.gettempdir(), "/dev/shm", "/var/tmp", str(Path.home())):
+        path = Path(candidate).resolve()
+        if (path.is_dir() and os.access(path, os.W_OK | os.X_OK)
+                and str(path) != SCRATCH_ROOT and not str(path).startswith(SCRATCH_ROOT + "/")):
+            return str(path)
+    return None
+
+
 SEAT, COORD, THREAD, MSG, SESSION = "seat-a", "seat-c", "thread-1", "msg-1", "11111111-2222-3333-4444-555555555555"
 
 
@@ -1041,35 +1056,37 @@ class VersionPinTests(unittest.TestCase):
 
 
 class ScratchTrustGuardTests(unittest.TestCase):
-    """ht-p03.140: a folder-trust answer is approved only for a project inside the run's own /private/tmp root."""
+    """ht-p03.140: a folder-trust answer is approved only for a project inside the run's own scratch root
+    (/private/tmp on macOS, /tmp on Linux)."""
 
     def test_project_inside_private_tmp_run_root_is_approved(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT) as tmp:
             root = Path(tmp) / "run"
             (root / "project").mkdir(parents=True)
             self.assertIsNone(demo.scratch_trust_refusal(root / "project", root))
 
     def test_tmp_spelling_of_private_tmp_root_is_approved(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT) as tmp:
             root = Path(tmp) / "run"
             (root / "project").mkdir(parents=True)
             alias = Path("/tmp") / Path(tmp).name / "run"
             if not alias.exists():
-                self.skipTest("/tmp is not an alias of /private/tmp here")
+                self.skipTest(f"/tmp is not an alias of {SCRATCH_ROOT} here")
             self.assertIsNone(demo.scratch_trust_refusal(alias / "project", alias))
 
     def test_root_outside_private_tmp_is_refused_naming_the_root(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        outside = non_scratch_dir()
+        if outside is None:
+            self.skipTest(f"no writable directory outside {SCRATCH_ROOT} here")
+        with tempfile.TemporaryDirectory(dir=outside) as tmp:
             root = Path(tmp).resolve() / "run"
             (root / "project").mkdir(parents=True)
-            if str(root).startswith("/private/tmp/"):
-                self.skipTest("gettempdir is under /private/tmp here")
             reason = demo.scratch_trust_refusal(root / "project", root)
             self.assertIn(str(root), reason)
             self.assertIn("outside", reason)
 
     def test_project_outside_the_run_root_is_refused_naming_the_project(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT) as tmp:
             root = Path(tmp) / "run"
             other = Path(tmp) / "other"
             root.mkdir()
@@ -1079,7 +1096,7 @@ class ScratchTrustGuardTests(unittest.TestCase):
             self.assertIn("outside the run root", reason)
 
     def test_symlink_inside_root_pointing_outside_is_refused(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT) as tmp:
             root = Path(tmp) / "run"
             other = Path(tmp) / "other"
             root.mkdir()
@@ -1088,15 +1105,15 @@ class ScratchTrustGuardTests(unittest.TestCase):
             self.assertIn("outside the run root", demo.scratch_trust_refusal(root / "project", root))
 
     def test_dotdot_cannot_step_outside(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT) as tmp:
             root = Path(tmp) / "run"
             (Path(tmp) / "other").mkdir()
             root.mkdir()
             self.assertIsNotNone(demo.scratch_trust_refusal(root / ".." / "other", root))
 
     def test_private_tmp_itself_as_project_is_refused(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
-            self.assertIsNotNone(demo.scratch_trust_refusal(Path("/private/tmp"), Path(tmp)))
+        with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT) as tmp:
+            self.assertIsNotNone(demo.scratch_trust_refusal(Path(SCRATCH_ROOT), Path(tmp)))
 
 
 class CodexBinTests(unittest.TestCase):
@@ -1559,7 +1576,7 @@ class ChildSignalTests(unittest.TestCase):
         host = FakeHostDriver(self)
         previous = signal.signal(signal.SIGTERM, signal.SIG_IGN)
         try:
-            rc, out, _ = host.driver.run(["/bin/sh", "-c", "trap -p TERM; grep SigIgn /proc/self/status 2>/dev/null; kill -TERM $$; echo alive"], tag="t")
+            rc, out, _ = host.driver.run(["/bin/sh", "-c", "trap; grep SigIgn /proc/self/status 2>/dev/null; kill -TERM $$; echo alive"], tag="t")
         finally:
             signal.signal(signal.SIGTERM, previous)
         self.assertNotIn("alive", out)
@@ -2512,10 +2529,10 @@ class ManagedLaunchTests(unittest.TestCase):
 
 
 class TuiTrustRecordTests(unittest.TestCase):
-    """(f) --mode tui --tui-accept-trust: /private/tmp only; ~/.claude.json recorded, never written."""
+    """(f) --mode tui --tui-accept-trust: scratch root (/private/tmp on macOS) only; ~/.claude.json recorded, never written."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir="/private/tmp")
+        self.tmp = tempfile.TemporaryDirectory(dir=SCRATCH_ROOT)
         self.driver = demo.Driver(args(self.tmp.name, mode="tui", tui_accept_trust=True))
         self.driver.project.mkdir()
         self.path = Path(self.driver.args.claude_json)
@@ -2545,15 +2562,16 @@ class TuiTrustRecordTests(unittest.TestCase):
             self.assertNotIn("email", (self.driver.ev / name).read_text())
 
     def test_project_outside_private_tmp_fails(self):
-        self.driver.project = Path(tempfile.gettempdir()).resolve() / "not-private-tmp-project"
-        if str(self.driver.project).startswith("/private/tmp/"):
-            self.skipTest("gettempdir is under /private/tmp here")
+        outside = non_scratch_dir()
+        if outside is None:
+            self.skipTest(f"no writable directory outside {SCRATCH_ROOT} here")
+        self.driver.project = Path(outside) / "not-private-tmp-project"
         self.assertEqual(self.driver.s_tui_trust_before()[0], demo.FAIL)
 
     def test_default_run_root_is_private_tmp_under_trust(self):
         driver = demo.Driver(args(self.tmp.name, mode="tui", tui_accept_trust=True, run_root=None))
         self.addCleanup(driver.cmdlog.close)
-        self.assertTrue(str(driver.root).startswith("/private/tmp/ht-native-demo/"))
+        self.assertTrue(str(driver.root).startswith(SCRATCH_ROOT + "/ht-native-demo/"))
         import shutil
         self.addCleanup(shutil.rmtree, driver.root, True)
 
@@ -2597,7 +2615,7 @@ class ScenarioArgsTests(ArgsTests):
 
     def test_trust_accept_only_under_private_tmp(self):
         self.rejected("--harness", "claude", "--mode", "tui", "--tui-accept-trust", "--allow-uncapped-spend", "--run-root", "/var/tmp/x")
-        self.parse("--harness", "claude", "--mode", "tui", "--tui-accept-trust", "--allow-uncapped-spend", "--run-root", "/private/tmp/x")
+        self.parse("--harness", "claude", "--mode", "tui", "--tui-accept-trust", "--allow-uncapped-spend", "--run-root", SCRATCH_ROOT + "/x")
 
 
 class ScenarioManifestTests(ManifestTests):

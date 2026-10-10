@@ -2714,7 +2714,8 @@ mod continuity_gate {
     impl Pane {
         fn new() -> Self {
             let dir = PathBuf::from(format!(
-                "/private/tmp/hkc-{}",
+                "{}/hkc-{}",
+                crate::test_support::SHORT_TMP,
                 &uuid::Uuid::new_v4().simple().to_string()[..10]
             ));
             std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
@@ -4769,10 +4770,11 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
     let (offer, overview, digest, _) =
         startup_offer_with_topic(&instruction, &threads, Some(&"\"".repeat(120)));
     // The pinned commands fit up to a harness-specific state-dir depth (the
-    // fitting boundary; inside 0..450 for both harnesses). Routing can only
-    // evict there, so every depth in a window just below the boundary is
-    // compared, and depths further below are sampled.
-    const DEPTHS: usize = 450;
+    // fitting boundary; inside 0..480 for both harnesses under either temp
+    // root, /private/tmp or /tmp). Routing can only evict there, so every
+    // depth in a window just below the boundary is compared, and depths
+    // further below are sampled.
+    const DEPTHS: usize = 480;
     const BOUNDARY_WINDOW: usize = 48;
     const SAMPLE_STRIDE: usize = 16;
     for harness in [Harness::Claude, Harness::Codex] {
@@ -4781,7 +4783,11 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
         // Returns whether the pinned commands fit without routing (and then
         // checks that routing keeps them).
         let case = |depth: usize| -> bool {
-            let root = format!("/private/tmp/{}/state", "d".repeat(depth));
+            let root = format!(
+                "{}/{}/state",
+                crate::test_support::SHORT_TMP,
+                "d".repeat(depth)
+            );
             let prefix = prefix(&root);
             let actions = next_actions(&prefix, Some(&digest));
             let routing = CommandRouting {
@@ -4968,7 +4974,8 @@ mod mod_channel_live {
     impl Pane {
         fn new() -> Self {
             let dir = PathBuf::from(format!(
-                "/private/tmp/hkm-{}",
+                "{}/hkm-{}",
+                crate::test_support::SHORT_TMP,
                 &uuid::Uuid::new_v4().simple().to_string()[..10]
             ));
             std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();

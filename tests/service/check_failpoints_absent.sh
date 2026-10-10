@@ -16,7 +16,7 @@ echo "failpoint hooks in source: $count"
 printf '  %s\n' $names
 
 # Reuse one Cargo cache for the two feature configurations. CI already
-# builds the ordinary release for the installer; separate cold trees rebuilt
+# builds both releases before the suite; separate cold trees rebuilt
 # all dependencies twice and starved timing-sensitive tests. Preserve each
 # binary before the next build overwrites Cargo's shared output path.
 mkdir -p "$target"

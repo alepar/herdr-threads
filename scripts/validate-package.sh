@@ -88,7 +88,7 @@ evidence["source_commit"] = source_commit
 evidence["shared_config"] = str(shared_config)
 
 # Short and unique: sockets live here and macOS limits sockaddr_un paths.
-root = Path(tempfile.mkdtemp(prefix="htpv-", dir="/private/tmp"))
+root = Path(tempfile.mkdtemp(prefix="htpv-", dir="/private/tmp" if sys.platform == "darwin" else "/tmp"))
 home, config, state, runtime = (root / name for name in ("home", "cfg", "st", "rt"))
 for directory in (home, config, state, runtime):
     directory.mkdir(mode=0o700)

@@ -19,6 +19,8 @@ import time
 import tomllib
 import uuid
 
+SCRATCH_ROOT = "/private/tmp" if sys.platform == "darwin" else "/tmp"
+
 ACTIVE_RUN = None
 
 
@@ -271,8 +273,8 @@ def stop_tagged(run_id):
 
 def cleanup(root):
     root = root.resolve()
-    if root.parent != Path("/private/tmp") or not root.name.startswith("ht-try-it."):
-        raise ValueError("cleanup requires the exact owned /private/tmp/ht-try-it.* run")
+    if root.parent != Path(SCRATCH_ROOT) or not root.name.startswith("ht-try-it."):
+        raise ValueError(f"cleanup requires the exact owned {SCRATCH_ROOT}/ht-try-it.* run")
     manifest = json.loads((root / "private.json").read_text())
     if manifest["root"] != str(root):
         raise ValueError("run ownership record does not match")
@@ -330,7 +332,7 @@ def prepare(args):
     global ACTIVE_RUN
     if os.environ.get("HERDR_ENV") != "1" or not os.environ.get("HERDR_SOCKET_PATH"):
         raise ValueError("run inside the authorized Herdr task pane")
-    root = Path(tempfile.mkdtemp(prefix="ht-try-it.", dir="/private/tmp"))
+    root = Path(tempfile.mkdtemp(prefix="ht-try-it.", dir=SCRATCH_ROOT))
     root.chmod(0o700)
     ACTIVE_RUN = root
     for name in ("bin", "home", "project", "claude-config", "codex-home", "tmp"):
@@ -487,7 +489,7 @@ def main():
     args = parser.parse_args()
     if args.copy_settings:
         root = args.copy_settings.resolve()
-        if root.parent != Path("/private/tmp") or not root.name.startswith("ht-try-it."):
+        if root.parent != Path(SCRATCH_ROOT) or not root.name.startswith("ht-try-it."):
             parser.error("settings require an owned private run")
         manifest = json.loads((root / "private.json").read_text())
         if manifest["root"] != str(root) or manifest.get("tab_closed"):
@@ -496,7 +498,7 @@ def main():
         install_candidate_skill(root, private_env(manifest["env"]))
     elif args.camera:
         root = args.camera.resolve()
-        if root.parent != Path("/private/tmp") or not root.name.startswith("ht-try-it."):
+        if root.parent != Path(SCRATCH_ROOT) or not root.name.startswith("ht-try-it."):
             parser.error("camera requires an owned private run")
         manifest = json.loads((root / "private.json").read_text())
         if manifest["root"] != str(root) or manifest.get("tab_closed"):

@@ -50,8 +50,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn private_dir(label: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let p =
-        PathBuf::from("/private/tmp").join(format!("ht-codex-fp-{label}-{}", uuid::Uuid::new_v4()));
+    let p = PathBuf::from(crate::test_support::SHORT_TMP)
+        .join(format!("ht-codex-fp-{label}-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&p).unwrap();
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
     p

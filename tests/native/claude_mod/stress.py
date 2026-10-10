@@ -39,6 +39,8 @@ import time
 import uuid
 
 MIN_CLAUDE = "2.1.287"
+# The platform scratch root: /private/tmp on macOS, /tmp on Linux.
+SCRATCH_ROOT = "/private/tmp" if sys.platform == "darwin" else "/tmp"
 SCENARIO_NAMES = [
     "busy_context", "idle_submit", "lazy_append", "queued_user_prompt", "stop_hook_continuation",
     "esc_interrupt_hold", "permission_dialog", "clear_rebind", "resume_keeps_set", "reload",
@@ -1144,7 +1146,7 @@ def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     procs = Procs()
     # short: Unix socket paths (the stand-in Herdr, the daemon's) must stay under 104 bytes
-    root = tempfile.mkdtemp(prefix="ht-ms-", dir="/private/tmp")
+    root = tempfile.mkdtemp(prefix="ht-ms-", dir=SCRATCH_ROOT)
     os.makedirs(args.evidence_dir, exist_ok=True)
 
     def on_signal(signum, _frame):

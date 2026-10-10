@@ -421,7 +421,7 @@ impl Pty {
                     &mut slave,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
-                    &mut size,
+                    &raw mut size,
                 )
             },
             0
@@ -485,11 +485,26 @@ impl Pty {
             if String::from_utf8_lossy(&out).contains(needle) {
                 return out;
             }
-            assert!(
-                self.child.try_wait().unwrap().is_none(),
-                "CLI exited before {needle:?}: {}",
-                String::from_utf8_lossy(&self.seen)
-            );
+            if self.child.try_wait().unwrap().is_some() {
+                // The child can print the needle and exit after the read
+                // above; its output stays queued on the master (the slave is
+                // still open, so there is no EOF). Drain it before deciding.
+                let drain_until = Instant::now() + Duration::from_secs(5);
+                loop {
+                    let more = self.read_for(Duration::from_millis(20));
+                    if more.is_empty() {
+                        break;
+                    }
+                    out.extend(more);
+                    assert!(Instant::now() < drain_until, "CLI output never drained");
+                }
+                assert!(
+                    String::from_utf8_lossy(&out).contains(needle),
+                    "CLI exited before {needle:?}: {}",
+                    String::from_utf8_lossy(&self.seen)
+                );
+                return out;
+            }
         }
         panic!(
             "CLI did not print {needle:?}: {}",

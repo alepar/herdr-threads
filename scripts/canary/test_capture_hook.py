@@ -82,7 +82,8 @@ class ScriptTier1(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        t = pathlib.Path(self.tmp.name)
+        # Canonical: macOS's default TMPDIR is under the /var -> /private/var link.
+        t = pathlib.Path(self.tmp.name).resolve()
         self.t = t
         self.home = t / "home"
         self.home.mkdir()

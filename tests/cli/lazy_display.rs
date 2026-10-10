@@ -1007,7 +1007,11 @@ fn continuation_final_argv_budget_blocks_proof_and_mutation() {
         v2: true,
         result: CommandResult::InboxBatchV2(p),
     };
-    let state = format!("/private/tmp/{} ' $", "s".repeat(900));
+    let state = format!(
+        "{}/{} ' $",
+        herdr_threads::test_support::SHORT_TMP,
+        "s".repeat(900)
+    );
     let mut writer = CountingWriter::default();
     let result = run_to_writer(
         &f,
@@ -1038,7 +1042,8 @@ fn continuation_final_argv_budget_blocks_proof_and_mutation() {
                 calls: Default::default(),
             };
             let state = format!(
-                "/private/tmp/state '{}' $ {}",
+                "{}/state '{}' $ {}",
+                herdr_threads::test_support::SHORT_TMP,
                 "s".repeat(if impossible { 900 } else { 20 }),
                 "界".repeat(4)
             );
