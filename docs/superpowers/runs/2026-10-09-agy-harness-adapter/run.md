@@ -5,7 +5,7 @@ resumeChange: 2026-10-09 · "let's /super-auto this. Fully autonomouns from now,
 resumeChange: 2026-10-10 · "I think this is way too much text… marks everything as 'untrusted'… I want that corrected… create a new bead task under our epic and handle it ourselves" · added leaf for compact cooperative framing (R17) after the Claude re-fit; supersedes R9 byte-identity for the mod's model-visible frame text only
 resumeChange: 2026-10-10 · "the nudge should probably say something minimal, like 'wake up' and then let hook inject the actual message" · added leaf for adapter-declared minimal wake text (R18): agy and Claude mod wake with 'wake up', bodies injected at turn start
 resumeChange: 2026-10-10 · "also let's add to AGENTS.md that when designing comms, we strive to design the protocols to be token efficient as much as possible" · folded into ht-poh.13: AGENTS.md 'Token-efficient communication' rule (no dedicated token-efficiency research found in ~/Documents)
-phase: fix-loop
+phase: roast-code
 codeMechanism: Workflow
 
 spec: 2026-10-09-agy-harness-adapter-design.md
@@ -15,7 +15,7 @@ branch: super-auto/agy-harness-adapter
 base: main
 
 roastDesignRound: 2
-roastCodeRound: 1
+roastCodeRound: 2
 roast-code: 2026-10-10-agy-harness-adapter-roast-pr-1.md
 roast-design: 2026-10-10-agy-harness-adapter-roast-design-1.md, 2026-10-10-agy-harness-adapter-roast-design-2.md
 
@@ -30,7 +30,7 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (invocation 6 final review: R17 missing; post-tool-call confirm unverified on genuine agy; final-SHA evidence pending; parked decisions DC-3, unsetup backups, daemon-down notice; flakes) — code-final-review-6.md
+  review: not ready (invocation 7 final review: no Critical/Important defect; missing evidence — full suite, final-SHA gate + live smoke, R13 report; flaky ht-01s; two unclassified flakes) — code-final-review-7.md
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: round 1 allowlist hot-file cap raised to 4; round 2 graph-bound, edge audit armed; audit 1 left ht-poh.5 <- ht-poh.4.5 drop for an operator (parked)
   worktreesKept: task-ht-poh.13 — uncommitted partial R17 work (BLOCKED-AUTH), task-ht-poh.4.5 — unmerged (blocked on agy binary, since resolved)
