@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-handoff-delivery-redesign
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-design
+phase: code
 
 idea: ok back to the handoff redesign. let's $super-auto from here, fully autonomous, both roasts are on. once integration branch is ready for merge, lets $herdr-threads notify main tab that it is
 branch: super-auto/handoff-delivery-redesign
@@ -24,3 +24,11 @@ roast-design: 2026-10-10-handoff-delivery-redesign-roast-design-1.md, 2026-10-10
 
 parked:
 - 2026-10-10-handoff-delivery-redesign-roast-design-2.md · degraded-verdict · "clean (0 nits) [low coverage] — proceeded, not re-roasted under caller-owned fully autonomous exception; sole cause literal zero-raw rule despite all nine fresh scouts completed and both prior Blockings resolved; no dead stages, caps, escalations or unverified findings"
+
+codeBuckets:
+  completed: ht-0lo.6, ht-0lo.7
+  escalated:
+  pendingRetry:
+  parked:
+  stalled: false
+  review: pending

@@ -1,0 +1,3 @@
+# Base composition before implementation
+
+Merged main6107075f (v0.6.3) into the settled design branch after design clearance. No conflicts; the specs index clean merge retains both runs. Reviewed source delta from the original7c40 baseline: literal name/topic search and filtered-directory cursor name revision, supporting control revision bump, CLI help and protocol comment. No receipt, invitation, launch or hook behavior changed upstream. Implementation must retain this discovery behavior while editing overlapping CLI/protocol/store files. Final code roast and readiness checks cover this combined candidate.
