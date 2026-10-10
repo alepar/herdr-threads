@@ -1134,6 +1134,11 @@ pub enum InboxBatchV2Item {
         body_start: u64,
         body_end: u64,
         body_len: u64,
+        /// The reading seat's `wake_on` is `all` (delivery-policy DP8): a
+        /// push-channel consumer promotes this row to a `message` line.
+        /// Absent (false) for a default seat and from an older daemon.
+        #[serde(default, skip_serializing_if = "is_false")]
+        wakes: bool,
     },
     Warning {
         thread: ThreadId,

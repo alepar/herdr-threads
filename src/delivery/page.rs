@@ -122,3 +122,7 @@ pub fn drain_pages<E>(
 #[cfg(test)]
 #[path = "../../tests/delivery/extraction.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/delivery/promotion.rs"]
+mod promotion_tests;

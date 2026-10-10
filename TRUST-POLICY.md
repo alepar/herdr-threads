@@ -417,6 +417,14 @@ A push-channel mod (today the bundled Claude mod) is a second completion source:
 (A5) and recorded with the `cooperative_mod_delivery` claim "appended to the transcript". Like inbox
 completion it is presentation bookkeeping (no ACK actor, adoption or proof of consumption).
 
+A seat that set `wake_on: all` (A5) opts its own lazy rows into push-channel promotion: the daemon marks such a
+row `wakes` in the inbox batch, and the mod delivers it as a `message` line with no ACK to run. The daemon still
+creates no receipt, deadline or wake for it. The mod may complete a promoted row delivered via `context` or
+`submit` (`watch ack --via context|submit`); the daemon completes it as a lazy row (a lazy-mode id completes
+regardless of `via`), decided against A2 under the same checks as above, and records the claim "entered the
+model's context through the mod". Like every lazy completion it is presentation bookkeeping: no ACK actor,
+adoption or proof of consumption.
+
 ## Accepted limits
 
 Delivery-only cleanup recovery retains a private, bounded versioned terminal record after
