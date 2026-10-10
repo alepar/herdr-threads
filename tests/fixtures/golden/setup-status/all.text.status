@@ -1,0 +1,3 @@
+exit: 2
+stderr:
+herdr-threads: setup-status synthetic_fourth: setup: invalid adapter input: synthetic fourth: explicit fixture root unavailable (invalid_request)

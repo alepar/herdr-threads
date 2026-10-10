@@ -1,0 +1,8 @@
+action: not_installed
+harness: claude
+manifest: <root>/state/setup/claude-user-<hash32>.json
+mod: not_recorded
+note: no herdr-threads installation is recorded for these settings and this state directory; nothing changed
+prompt_suggestions: not_recorded
+scope: user
+settings: <root>/claude config/settings.json

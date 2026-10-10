@@ -1,0 +1,1 @@
+{"setup":{"action":"removed","allow_rule":"removed","deleted_created_settings":true,"harness":"claude","manifest":"<root>/state/setup/claude-user-<hash32>.json","mod":"reverted","prompt_suggestions":"not_recorded","scope":"user","settings":"<root>/claude config/settings.json"}}
