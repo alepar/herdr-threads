@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-thread-search-discovery
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-code
+phase: fix-loop (skipped)
 
 idea: lets debug, then once we understand the problem, $super-auto it, fully autonomous, both roasts on
 branch: super-auto/thread-search-discovery
@@ -32,3 +32,10 @@ private-target: /Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/thread
 HT_LEAK_RUN_ID: c494afe8-aa16-4b6b-a2a8-b9bee8e65cb8
 
 roastCodeRound: 1
+
+roast-code: 2026-10-10-thread-search-discovery-roast-pr-1.md
+
+parked:
+- 2026-10-10-thread-search-discovery-roast-pr-1.md · degraded-verdict · "clean (0 nits) [low coverage] — proceeded autonomously, not re-roasted; all ten lanes completed empty, no failed scouts or unjudged candidates"
+
+fix-loop: skipped — no confirmed findings, escalations or beyond-cap candidates; no scope-filter dispatch needed
