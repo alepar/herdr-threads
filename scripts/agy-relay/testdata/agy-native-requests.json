@@ -1,0 +1,215 @@
+{
+ "n01-A.req.json": {
+  "path": "/v1beta/models/gemini-3.1-flash-lite-preview:streamGenerateContent?alt=sse",
+  "contents": [
+   {
+    "parts": [
+     {
+      "text": "Run the shell command: echo HT_TOOL_OK. Then reply with exactly the command's output."
+     }
+    ],
+    "role": "user"
+   }
+  ],
+  "generationConfig": {
+   "thinkingConfig": {
+    "includeThoughts": true,
+    "thinkingBudget": -1
+   }
+  },
+  "tool_names": []
+ },
+ "n02-A.req.json": {
+  "path": "/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
+  "contents": [
+   {
+    "parts": [
+     {
+      "text": "<USER_REQUEST>\nRun the shell command: echo HT_TOOL_OK. Then reply with exactly the command's output.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-08T21:50:58-07:00.\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from None to Gemini 3.8 Flash (Medium). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.\n</USER_SETTINGS_CHANGE>"
+     }
+    ],
+    "role": "user"
+   }
+  ],
+  "generationConfig": {
+   "maxOutputTokens": 65536,
+   "thinkingConfig": {
+    "includeThoughts": true,
+    "thinkingBudget": 4000
+   }
+  },
+  "tool_names": [
+   "view_file",
+   "run_command",
+   "manage_task",
+   "send_message",
+   "schedule",
+   "invoke_subagent",
+   "define_subagent",
+   "manage_subagents",
+   "write_to_file",
+   "replace_file_content",
+   "read_url_content",
+   "search_web",
+   "ask_question"
+  ]
+ },
+ "n03-A.req.json": {
+  "path": "/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
+  "contents": [
+   {
+    "parts": [
+     {
+      "text": "<USER_REQUEST>\nRun the shell command: echo HT_TOOL_OK. Then reply with exactly the command's output.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-08T21:50:58-07:00.\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from None to Gemini 3.8 Flash (Medium). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.\n</USER_SETTINGS_CHANGE>"
+     }
+    ],
+    "role": "user"
+   },
+   {
+    "parts": [
+     {
+      "functionCall": {
+       "args": {
+        "CommandLine": "echo HT_TOOL_OK",
+        "Cwd": "/ROOT/ws",
+        "WaitMsBeforeAsync": 100,
+        "toolAction": "Executing echo command",
+        "toolSummary": "Execute shell command"
+       },
+       "id": "3dbfab59-4678-4ae0-b4c1-fa820e049259",
+       "name": "run_command"
+      }
+     }
+    ],
+    "role": "model"
+   },
+   {
+    "parts": [
+     {
+      "functionResponse": {
+       "id": "3dbfab59-4678-4ae0-b4c1-fa820e049259",
+       "name": "run_command",
+       "response": {
+        "output": "Created At: 2026-10-08T21:51:02-07:00\nCompleted At: 2026-10-08T21:51:02-07:00\n\nThe command exited with code 0.\nOutput:\nHT_TOOL_OK\r\n\n"
+       }
+      }
+     }
+    ],
+    "role": "user"
+   }
+  ],
+  "generationConfig": {
+   "maxOutputTokens": 65536,
+   "thinkingConfig": {
+    "includeThoughts": true,
+    "thinkingBudget": 4000
+   }
+  },
+  "tool_names": [
+   "view_file",
+   "run_command",
+   "manage_task",
+   "send_message",
+   "schedule",
+   "invoke_subagent",
+   "define_subagent",
+   "manage_subagents",
+   "write_to_file",
+   "replace_file_content",
+   "read_url_content",
+   "search_web",
+   "ask_question"
+  ]
+ },
+ "n04-B.req.json": {
+  "path": "/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
+  "contents": [
+   {
+    "parts": [
+     {
+      "text": "<USER_REQUEST>\nRun the shell command: echo HT_TOOL_OK. Then reply with exactly the command's output.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-08T21:50:58-07:00.\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from None to Gemini 3.8 Flash (Medium). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.\n</USER_SETTINGS_CHANGE>"
+     }
+    ],
+    "role": "user"
+   },
+   {
+    "parts": [
+     {
+      "functionCall": {
+       "args": {
+        "CommandLine": "echo HT_TOOL_OK",
+        "Cwd": "/ROOT/ws",
+        "WaitMsBeforeAsync": 100,
+        "toolAction": "Executing echo command",
+        "toolSummary": "Execute shell command"
+       },
+       "id": "3dbfab59-4678-4ae0-b4c1-fa820e049259",
+       "name": "run_command"
+      }
+     }
+    ],
+    "role": "model"
+   },
+   {
+    "parts": [
+     {
+      "functionResponse": {
+       "id": "3dbfab59-4678-4ae0-b4c1-fa820e049259",
+       "name": "run_command",
+       "response": {
+        "output": "Created At: 2026-10-08T21:51:02-07:00\nCompleted At: 2026-10-08T21:51:02-07:00\n\nThe command exited with code 0.\nOutput:\nHT_TOOL_OK\r\n\n"
+       }
+      }
+     }
+    ],
+    "role": "user"
+   },
+   {
+    "parts": [
+     {
+      "text": "HT_TOOL_OK"
+     }
+    ],
+    "role": "model"
+   },
+   {
+    "parts": [
+     {
+      "text": "<USER_REQUEST>\nWhat did the previous command print? Reply in one line.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-08T21:51:04-07:00.\n</ADDITIONAL_METADATA>"
+     }
+    ],
+    "role": "user"
+   },
+   {
+    "parts": [
+     {
+      "text": "The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-10-09T04:51:04Z sender=system priority=MESSAGE_PRIORITY_LOW content=[Notice] All your subagents and background tasks have been stopped due to server restart. If you want a subagent to continue working, it needs to be revived by sending it a new message. If resuming work, please check on status and restart as needed.\n</SYSTEM_MESSAGE>"
+     }
+    ],
+    "role": "user"
+   }
+  ],
+  "generationConfig": {
+   "maxOutputTokens": 65536,
+   "thinkingConfig": {
+    "includeThoughts": true,
+    "thinkingBudget": 4000
+   }
+  },
+  "tool_names": [
+   "view_file",
+   "run_command",
+   "manage_task",
+   "send_message",
+   "schedule",
+   "invoke_subagent",
+   "define_subagent",
+   "manage_subagents",
+   "write_to_file",
+   "replace_file_content",
+   "read_url_content",
+   "search_web",
+   "ask_question"
+  ]
+ }
+}

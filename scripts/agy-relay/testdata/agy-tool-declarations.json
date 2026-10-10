@@ -1,0 +1,68 @@
+{
+ "selected": {
+  "run_command": {
+   "description": "PROPOSE a command to run on behalf of the user. Operating System: mac. Shell: zsh.\n**NEVER PROPOSE A cd COMMAND**.\nMake sure to specify CommandLine exactly as it should be run in the shell.\nIMPORTANT: The Cwd (working directory) MUST be within the user's workspace.",
+   "name": "run_command",
+   "parametersJsonSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "CommandLine": {
+      "description": "The exact command line string to execute.",
+      "type": "string"
+     },
+     "Cwd": {
+      "description": "The current working directory for the command",
+      "type": "string"
+     },
+     "IsDaemon": {
+      "description": "Set to true for long-running support processes that are meant to keep running in the background indefinitely.",
+      "type": "boolean"
+     },
+     "WaitMsBeforeAsync": {
+      "description": "The number of milliseconds to wait after starting the command before sending it to the background.",
+      "type": "integer"
+     },
+     "toolAction": {
+      "description": "Brief 2-5 word phrase in -ing form describing the specific action.",
+      "type": "string"
+     },
+     "toolSummary": {
+      "description": "Brief 2-5 word noun phrase describing the specific task.",
+      "type": "string"
+     }
+    },
+    "required": ["Cwd", "WaitMsBeforeAsync", "CommandLine", "toolSummary", "toolAction"],
+    "type": "object"
+   }
+  },
+  "send_message": {
+   "description": "Send a message to another agent. This tool can be used to communicate with subagents, peer agents, etc. Do not use this tool to communicate with the user.",
+   "name": "send_message",
+   "parametersJsonSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+     "Message": {
+      "description": "The message content.",
+      "type": "string"
+     },
+     "Recipient": {
+      "description": "The recipient ID to send the message to, e.g. a subagent conversation ID.",
+      "type": "string"
+     },
+     "toolAction": {
+      "description": "Brief 2-5 word phrase in -ing form describing the specific action.",
+      "type": "string"
+     },
+     "toolSummary": {
+      "description": "Brief 2-5 word noun phrase describing the specific task.",
+      "type": "string"
+     }
+    },
+    "required": ["Recipient", "Message", "toolSummary", "toolAction"],
+    "type": "object"
+   }
+  }
+ }
+}
