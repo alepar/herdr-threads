@@ -66,4 +66,4 @@ Columns: date · title · relative link · one-line summary · status · tags.
 
 | 2026-10-07 | Installer permissions: installer-permission-gateway | [Design](../runs/2026-10-07-installer-human-permissions/2026-10-07-installer-human-permissions--installer-permission-gateway-design.md) | Installer delivers only its validated owned executable spellings to independently consented native permission setup, with truthful update/removal and gateway evidence. | designed | installer-human-permissions, ht-uwd.8 |
 
-| 2026-10-10 | Invitation rejection policy and warning delivery | [Design](../runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-design.md) | Require decided bad-fit rejection and deliver attributed reasons with stable replay | draft | invitation, warning |
+| 2026-10-10 | Invitation rejection policy and warning delivery | [Design](../runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-design.md) | Require decided bad-fit rejection and deliver attributed reasons with stable replay | implemented | invitation, warning |

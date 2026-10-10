@@ -33,3 +33,5 @@ No operational rollout or real invitation rejection is in scope. Main merge rema
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+2026-10-10 — Changes vs. original design: none to the delivery architecture. Canonical classification additionally compares retained payload/timestamp. Both roasts and whole-epic review cleared the implementation. Passive notices retain A7's existing conservative saturated-window wake exception; the PR panel unanimously rejected treating that accepted limit as a new regression. Combined verification passed 131 focused tests plus fmt/clippy/default-feature gates. Main merge remains separate.

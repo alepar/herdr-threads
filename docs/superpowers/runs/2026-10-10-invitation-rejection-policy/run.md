@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-invitation-rejection-policy
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: code
+phase: report
 
 idea: I want to add instructions to herdr-threads skill to explicitly reject invitations we choose to not accept due to bad fit. rejection should have a reason, which gets delivered to the thread as a warning system message.
 branch: super-auto/invitation-rejection-policy
@@ -17,12 +17,12 @@ approvals:
 roastDesignRound: 1
 
 codeBuckets:
-  completed:
+  completed: ht-xms.1, ht-xms.2, ht-xms.3
   escalated:
-  pendingRetry: ht-xms.1, ht-xms.2, ht-xms.3
+  pendingRetry:
   parked:
   stalled: false
-  review: pending
+  review: CLEAN
 
 roast-design: 2026-10-10-invitation-rejection-policy-roast-design-1.md
 
@@ -30,3 +30,7 @@ coverage-round-1: coverage-round-1.md
 requirements: 7 · mapped: 7 · unmapped: 0 (none)
 coverage-round-2: coverage-round-2.md
 requirements: 7 · mapped: 7 · unmapped: 0 (none)
+
+roastCodeRound: 1
+
+roast-code: 2026-10-10-invitation-rejection-policy-roast-pr-1.md
