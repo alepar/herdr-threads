@@ -519,13 +519,14 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   `HERDR_THREADS_CODEX_OPTS` and `HERDR_THREADS_CLAUDE_OPTS` add user-selected launch
   arguments, with no automatic daemon argument by default. No argument or settings check
   grants receipt authority, moves a seat or relaxes the canonical binding checks in A2.
-- **Native permission rules are cooperative matching limits.** Owned Claude rules use
-  finite ordinary command text/routing forms; unsupported quoting or arrangements may
-  prompt. Codex rules use literal/union executable prefixes with stricter immediate
-  `human` prompt prefixes, not arbitrary argument predicates. Stronger deny/ask/managed
-  policy remains effective. Foreign broad allowances are preserved and can still cover
-  Human commands. Bare names cannot attest later PATH, alias or function resolution;
-  owned absolute inventory is checked at setup time only. Generated matching and native
+- **Native permission rules are cooperative matching limits.** Owned Claude rules allow
+  the bare `herdr-threads` / `ht` command text and ask for `human`, `setup`, `unsetup`,
+  `doctor fix` and `internal installer-integrations`; owned Codex rules use a literal
+  executable-prefix allow with `prompt` prefixes for the same words. The CLI refuses an
+  agent that does not write those words first, but quoting or rearranging words to dodge
+  a text rule is outside the model. Stronger deny/ask/managed policy remains effective.
+  Foreign broad allowances are preserved and can still cover Human commands. Bare names
+  cannot attest later PATH, alias or function resolution. Generated matching and native
   checker evidence never prove a live classifier verdict or installed wrapper support.
   Setup changes no general shell, network, sandbox or approval-mode setting.
 - **Unattributed public reads retain ordinary daemon spelling.** Public read requests
