@@ -903,7 +903,7 @@ enum ThreadSub {
     },
     /// Alias for thread name THREAD --set NAME.
     Rename { thread: String, name: String },
-    /// List threads, optionally filtered by membership or topic text.
+    /// List threads, optionally filtered by membership or name/topic text.
     List(ThreadListArgs),
     /// Show a thread's topic, state and recent details.
     Show {
@@ -1052,6 +1052,7 @@ struct ThreadListArgs {
     invited: bool,
     #[arg(long, group = "membership")]
     all: bool,
+    /// Match a case-sensitive literal substring in thread name or topic.
     #[arg(long)]
     search: Option<String>,
     #[command(flatten)]

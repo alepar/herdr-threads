@@ -881,6 +881,16 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
 }
 
 #[test]
+fn thread_list_help_explains_literal_name_or_topic_search() {
+    let help = match parse_argv_or_informational(["ht", "thread", "list", "--help"]).unwrap_err() {
+        ParseFailure::Informational(text) => text,
+        other => panic!("expected help, got {other:?}"),
+    };
+    assert!(help.contains("case-sensitive literal substring"), "{help}");
+    assert!(help.contains("thread name or topic"), "{help}");
+}
+
+#[test]
 fn continuation_argv_round_trips_context_filter_format_and_bounds() {
     use crate::protocol::pagination::{Cursor, CursorDirection, CursorScope};
     let cursor = Cursor {
@@ -912,8 +922,9 @@ fn continuation_argv_round_trips_context_filter_format_and_bounds() {
         "thread".into(),
         "list".into(),
         "--all".into(),
+        "--recent".into(),
         "--search".into(),
-        "雪's topic".into(),
+        "雪's %_.* topic".into(),
         "--cursor".into(),
         cursor.clone(),
         "--limit".into(),
@@ -936,8 +947,8 @@ fn continuation_argv_round_trips_context_filter_format_and_bounds() {
     );
     assert!(
         matches!(parsed.action, CliAction::Wire(crate::protocol::commands::Command::Directory(q)) if
-        q.membership_filter == crate::protocol::commands::DirectoryMembership::All &&
-        q.topic_contains.as_deref() == Some("雪's topic") && q.page.cursor.as_deref() == Some(&cursor) &&
+        q.recent && q.membership_filter == crate::protocol::commands::DirectoryMembership::All &&
+        q.topic_contains.as_deref() == Some("雪's %_.* topic") && q.page.cursor.as_deref() == Some(&cursor) &&
         q.page.limit == 3 && q.page.max_bytes == 600)
     );
 }

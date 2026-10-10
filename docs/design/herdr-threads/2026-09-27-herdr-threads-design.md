@@ -91,7 +91,7 @@ First verified availability is an immutable per-seat decision anchor. Every publ
 
 ## Compact discovery and history
 
-The shared directory is a browsable index exposed through CLI/API, backed by SQLite. It is not a filesystem hierarchy. Any agent in the local instance may list/search/read without joining, including subagents. Scope/filter by membership, pending invitation and topic. Unbounded bulk history is never automatic.
+The shared directory is a browsable index exposed through CLI/API, backed by SQLite. It is not a filesystem hierarchy. Any agent in the local instance may list/search/read without joining, including subagents. Scope/filter by membership, pending invitation and case-sensitive literal name-or-topic substring. Unbounded bulk history is never automatic.
 
 Progressive disclosure:
 
