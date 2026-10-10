@@ -5,8 +5,11 @@
 //! pull seat.
 use super::*;
 use crate::{
-    delivery::{HEADER, ledger::REOFFER_AFTER_MS},
-    ports::{LocalService, StorePort},
+    delivery::{
+        HEADER,
+        ledger::{MAX_OFFERS_PER_GENERATION, REOFFER_AFTER_MS},
+    },
+    ports::{HookPullOutlook, LocalService, NextPull, StorePort},
     protocol::{
         authority::{CallerClaim, CallerRole, Harness, PeerIdentity},
         commands::{CheckIn, CheckInMode, Command},
@@ -19,7 +22,7 @@ use crate::{
         time::{CallBudget, Clock, MonoInstant, UtcMillis},
         watch::WATCH_BODY_LIMIT_BYTES,
     },
-    service::{dispatch::DomainService, fair_writer::FairWriter},
+    service::{delivery_pull::DeliveryPullState, dispatch::DomainService, fair_writer::FairWriter},
     store::{SqliteStore, StoreSettings, connection::StoreContext},
 };
 use rusqlite::{Connection, params};
@@ -40,6 +43,9 @@ impl Clock for TestClock {
 
 struct Fixture {
     service: DomainService,
+    store: Arc<dyn StorePort>,
+    /// The offered ledger the service and (in production) the wake lane share.
+    state: Arc<DeliveryPullState>,
     clock: Arc<TestClock>,
     db: Connection,
     directory: std::path::PathBuf,
@@ -100,10 +106,14 @@ fn fixture(ordinary: usize) -> Fixture {
     }
     let store: Arc<dyn StorePort> =
         Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
-    let service = DomainService::new("i".into(), store, shared)
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
+    let state = Arc::new(DeliveryPullState::default());
+    let service = DomainService::new("i".into(), Arc::clone(&store), shared)
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_delivery_pull(Arc::clone(&state));
     let f = Fixture {
         service,
+        store,
+        state,
         clock,
         db,
         directory,
@@ -112,6 +122,36 @@ fn fixture(ordinary: usize) -> Fixture {
         ordinary_message(&f, &format!("m{n}"), "hello");
     }
     f
+}
+
+/// A daemon restart: a fresh service (and so a fresh process-local ledger) over the same store.
+fn restart(f: &mut Fixture) {
+    let shared: Arc<dyn Clock> = f.clock.clone();
+    f.state = Arc::new(DeliveryPullState::default());
+    f.service = DomainService::new("i".into(), Arc::clone(&f.store), shared)
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_delivery_pull(Arc::clone(&f.state));
+}
+/// The seat's wake attention counter (the store bumps it for every new pending source; 0 without a row).
+fn wake_attention(f: &Fixture) -> u64 {
+    use rusqlite::OptionalExtension;
+    f.db.query_row(
+        "SELECT attention_version FROM wake_work WHERE seat_id='s'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()
+    .unwrap()
+    .unwrap_or(0) as u64
+}
+/// What the store does for a new pending source: move the seat's wake attention counter (the fixture inserts
+/// messages directly, so it must be moved by hand).
+fn bump_wake_attention(f: &Fixture) {
+    f.db.execute(
+        "INSERT INTO wake_work(seat_id,attention_version) VALUES ('s',1) ON CONFLICT(seat_id) DO UPDATE SET attention_version=attention_version+1",
+        [],
+    )
+    .unwrap();
 }
 
 /// Next free message sequence (also used for the decision sequence).
@@ -672,4 +712,73 @@ fn attention_version_moves_with_every_fingerprint_field() {
 #[test]
 fn delivery_pull_is_advertised() {
     assert!(crate::protocol::capabilities::ADVERTISED.contains(&"delivery.pull_v1"));
+}
+
+// Kills: a pull answered `Unchanged` before this process read the seat's whole
+// pending set, which strands offered-unconfirmed items after a daemon restart.
+#[test]
+fn a_restarted_daemon_offers_pending_items_again_to_a_hook_holding_its_last_version() {
+    let mut f = fixture(1);
+    let context = pull_seat(&f);
+    let first = page(pull(&f, &context, None));
+    assert_eq!(first.offered, ids(&["m1"]));
+    restart(&mut f);
+    assert_eq!(
+        confirm(&f, &context, &["m1"], "op-1"),
+        vec![("m1".to_owned(), Outcome::NotOffered, None)]
+    );
+    assert_eq!(receipt_state(&f, "m1"), "pending");
+    let again = page(pull(&f, &context, Some(first.attention_version)));
+    assert_eq!(again.offered, ids(&["m1"]));
+    assert_eq!(
+        pull(&f, &context, Some(again.attention_version)),
+        DeliveryPullReply::Unchanged {
+            attention_version: again.attention_version
+        },
+        "the short-circuit works again after a whole read"
+    );
+}
+
+// Kills: an outlook that ignores offers, due re-offers, parking, new attention
+// or a rotated generation.
+#[test]
+fn the_hook_pull_outlook_follows_offers_reoffers_and_parking() {
+    let f = fixture(1);
+    let context = pull_seat(&f);
+    let seat = SeatId::new("s");
+    let generation = context.binding_generation;
+    let now = |f: &Fixture| UtcMillis(f.clock.0.load(Ordering::SeqCst));
+    let outlook = |f: &Fixture| {
+        f.state
+            .next_pull(&seat, generation, wake_attention(f), now(f))
+    };
+    assert_eq!(outlook(&f), NextPull::Unknown, "before any pull");
+    page(pull(&f, &context, None));
+    assert_eq!(
+        outlook(&f),
+        NextPull::ReofferAt(UtcMillis(now(&f).0 + REOFFER_AFTER_MS))
+    );
+    assert!(!f.state.holds_parked(&seat, generation));
+    for _ in 1..MAX_OFFERS_PER_GENERATION {
+        advance(&f, REOFFER_AFTER_MS);
+        assert_eq!(outlook(&f), NextPull::Delivers, "the re-offer is due");
+        page(pull(&f, &context, None));
+    }
+    assert_eq!(outlook(&f), NextPull::Nothing);
+    assert!(f.state.holds_parked(&seat, generation));
+    ordinary_message(&f, "m2", "later");
+    bump_wake_attention(&f);
+    assert_eq!(outlook(&f), NextPull::Delivers, "new attention");
+    let rotated = rotate(&f, &context, "n2", 2);
+    assert_eq!(
+        f.state.next_pull(
+            &seat,
+            rotated.binding_generation,
+            wake_attention(&f),
+            now(&f)
+        ),
+        NextPull::Unknown,
+        "a rotated generation starts over"
+    );
+    assert!(!f.state.holds_parked(&seat, rotated.binding_generation));
 }

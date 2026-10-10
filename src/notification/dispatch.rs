@@ -51,17 +51,28 @@ pub struct NativeWakeDispatcher<'a, H: HostPort + ?Sized, C: ReservationCheck + 
     host: &'a H,
     check: &'a C,
     clock: &'a dyn Clock,
+    /// Which seats hold ids parked for `inbox`; default: none known.
+    hook_pull: &'a dyn crate::ports::HookPullOutlook,
     /// Post-send verification per seat, taken by the scheduler drive.
     verifications: Mutex<HashMap<SeatId, SubmissionVerification>>,
 }
+
+static NO_HOOK_PULL: crate::ports::NoHookPullOutlook = crate::ports::NoHookPullOutlook;
 impl<'a, H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'a, H, C> {
     pub fn new(host: &'a H, check: &'a C, clock: &'a dyn Clock) -> Self {
         Self {
             host,
             check,
             clock,
+            hook_pull: &NO_HOOK_PULL,
             verifications: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Supplies the hook-pull outlook: a seat holding ids parked for `inbox` is woken with the marker.
+    pub fn with_hook_pull(mut self, outlook: &'a dyn crate::ports::HookPullOutlook) -> Self {
+        self.hook_pull = outlook;
+        self
     }
 
     /// Advisory read-only verification. A held marker is reported without
@@ -346,7 +357,21 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 MARKER
             }
             _ => target.bound_harness.as_deref().map_or(MARKER, |id| {
-                crate::harness::registry::builtins().wake_text(id)
+                // Ids parked for `inbox` are never pulled again in this generation: the wake names `inbox`.
+                let generation = match &reservation.authority {
+                    ReservedWakeAuthority::Registered {
+                        binding_generation, ..
+                    } => Some(*binding_generation),
+                    ReservedWakeAuthority::Cooperative {
+                        binding_generation, ..
+                    } => *binding_generation,
+                    ReservedWakeAuthority::RecoveryHint { .. } => None,
+                };
+                if generation.is_some_and(|g| self.hook_pull.holds_parked(&reservation.seat, g)) {
+                    MARKER
+                } else {
+                    crate::harness::registry::builtins().wake_text(id)
+                }
             }),
         };
         // Unsolicited attention never queues into an active turn.

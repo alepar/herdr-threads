@@ -6,11 +6,11 @@ use crate::{
         policy::{MARKER, WAKE_TEXTS, WAKE_UP},
     },
     ports::{
-        EvidenceKind, ExecutionEvidence, HostCallContext, HostObservation, HostPort, HostSnapshot,
-        HostUiState, IncarnationEvidence, NativeLaunchCapability, NativeLaunchOutcome,
-        NativeLaunchRequest, NativeOccupant, NotificationPort, ObservationProvenance,
-        PromptOutcome, ReservedWakeAuthority, SafeWakeTarget, StructuralOccupancy,
-        WakeAttentionWitness, WakeOutcome, WakeReservation,
+        EvidenceKind, ExecutionEvidence, HookPullOutlook, HostCallContext, HostObservation,
+        HostPort, HostSnapshot, HostUiState, IncarnationEvidence, NativeLaunchCapability,
+        NativeLaunchOutcome, NativeLaunchRequest, NativeOccupant, NotificationPort,
+        ObservationProvenance, PromptOutcome, ReservedWakeAuthority, SafeWakeTarget,
+        StructuralOccupancy, WakeAttentionWitness, WakeOutcome, WakeReservation,
     },
     protocol::{
         authority::Harness,
@@ -208,11 +208,31 @@ fn cooperative(harness: &str) -> ReservedWakeAuthority {
     }
 }
 
+/// An outlook that says whether any seat holds ids parked for `inbox`.
+struct FakeOutlook {
+    parked: bool,
+}
+impl HookPullOutlook for FakeOutlook {
+    fn holds_parked(&self, _: &SeatId, _: u64) -> bool {
+        self.parked
+    }
+}
+
 /// The one prompt a native wake with this authority types.
 fn typed_for(
     authority: ReservedWakeAuthority,
     verified_idle: bool,
     host_bound_harness: Option<&'static str>,
+) -> Vec<String> {
+    typed_with(authority, verified_idle, host_bound_harness, false)
+}
+
+/// Like [`typed_for`], through a dispatcher whose outlook reports `parked`.
+fn typed_with(
+    authority: ReservedWakeAuthority,
+    verified_idle: bool,
+    host_bound_harness: Option<&'static str>,
+    parked: bool,
 ) -> Vec<String> {
     let context = HostCallContext {
         budget: CallBudget {
@@ -227,7 +247,9 @@ fn typed_for(
         host_bound_harness,
         typed: Mutex::new(vec![]),
     };
-    let dispatch = NativeWakeDispatcher::new(&host, &CurrentReservation, &FixedClock);
+    let outlook = FakeOutlook { parked };
+    let dispatch =
+        NativeWakeDispatcher::new(&host, &CurrentReservation, &FixedClock).with_hook_pull(&outlook);
     assert_eq!(
         dispatch
             .attempt_wake(reservation(authority), &context)
@@ -260,6 +282,56 @@ fn native_wake_types_the_bound_harness_wake_text() {
     );
     assert_eq!(
         typed_for(cooperative("codex"), false, None),
+        vec![MARKER.to_owned()]
+    );
+}
+
+fn cooperative_in(harness: &str, binding_generation: Option<u64>) -> ReservedWakeAuthority {
+    ReservedWakeAuthority::Cooperative {
+        terminal: TerminalId::new("terminal"),
+        incarnation: "incarnation".into(),
+        binding_generation,
+        harness: Some(harness.to_owned()),
+    }
+}
+
+/// Kills: a content-free wake for a seat whose pending ids are parked for `inbox` (an empty turn),
+/// a lookup without a generation, and a marker forced on harnesses or hints that never needed it.
+#[test]
+fn a_seat_holding_parked_ids_is_woken_with_the_marker() {
+    let agy =
+        |generation, parked| typed_with(cooperative_in("agy", generation), false, None, parked);
+    assert_eq!(agy(Some(1), true), vec![MARKER.to_owned()]);
+    assert_eq!(
+        agy(Some(1), false),
+        vec!["herdr-threads: wake up".to_owned()]
+    );
+    assert_eq!(
+        agy(None, true),
+        vec!["herdr-threads: wake up".to_owned()],
+        "no generation, no lookup"
+    );
+    assert_eq!(
+        typed_with(cooperative_in("claude", Some(1)), false, None, true),
+        vec![MARKER.to_owned()]
+    );
+    let registered = ReservedWakeAuthority::Registered {
+        binding_generation: 1,
+        execution: ExecutionId::new("execution"),
+    };
+    assert_eq!(
+        typed_with(registered.clone(), true, Some("agy"), true),
+        vec![MARKER.to_owned()]
+    );
+    assert_eq!(
+        typed_with(registered, true, Some("agy"), false),
+        vec!["herdr-threads: wake up".to_owned()]
+    );
+    let hint = ReservedWakeAuthority::RecoveryHint {
+        execution: ExecutionId::new("execution"),
+    };
+    assert_eq!(
+        typed_with(hint, true, Some("agy"), true),
         vec![MARKER.to_owned()]
     );
 }

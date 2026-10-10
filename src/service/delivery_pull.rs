@@ -84,6 +84,23 @@ impl DeliveryPullState {
     }
 }
 
+impl crate::ports::HookPullOutlook for DeliveryPullState {
+    fn next_pull(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        binding_generation: u64,
+        attention_version: u64,
+        now: crate::protocol::time::UtcMillis,
+    ) -> crate::ports::NextPull {
+        self.lock()
+            .next_pull(seat, binding_generation, attention_version, now)
+    }
+
+    fn holds_parked(&self, seat: &crate::protocol::ids::SeatId, binding_generation: u64) -> bool {
+        self.lock().holds_parked(seat, binding_generation)
+    }
+}
+
 /// `InboxBatchV2` pages read straight from the store.
 struct StorePageSource<'a> {
     store: &'a dyn StorePort,
@@ -202,7 +219,11 @@ impl DomainService {
         let known: HashMap<MessageId, Offer> = {
             let mut ledger = self.delivery_pull.lock();
             let entry = ledger.seat_mut(seat, binding.generation, &binding.native_session);
-            if seen_current && !entry.more_pending && !entry.any_due(now) {
+            if seen_current
+                && entry.read_attention.is_some()
+                && !entry.more_pending
+                && !entry.any_due(now)
+            {
                 return Ok(CommandResult::DeliveryPulled(
                     DeliveryPullReply::Unchanged {
                         attention_version: version,
@@ -290,6 +311,7 @@ impl DomainService {
                 entry.retain_pending(&pending);
             }
             entry.more_pending = more;
+            entry.read_attention = (!more).then_some(view.fingerprint.attention_version);
         }
         if blocks.is_empty() {
             return Ok(CommandResult::DeliveryPulled(

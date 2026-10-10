@@ -3,6 +3,7 @@
 //! when. Pure data with explicit bounds; the daemon keeps one behind a `Mutex`
 //! (`service::delivery_pull`) and never holds the lock across a store read.
 
+use crate::ports::NextPull;
 use crate::protocol::{ids::MessageId, ids::SeatId, time::UtcMillis};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -42,6 +43,9 @@ pub struct SeatOffers {
     pub native_session: String,
     /// The last page stopped at a bound, so more is pending behind it.
     pub more_pending: bool,
+    /// The seat's wake attention counter at the last pull of this process that read the whole pending set. `None` on
+    /// a new entry (a new process, an evicted seat and a rotated generation all start there).
+    pub read_attention: Option<u64>,
     pub offers: BTreeMap<MessageId, Offer>,
     touched: u64,
 }
@@ -50,6 +54,31 @@ impl SeatOffers {
     /// True when some offered id is due to be shown again.
     pub fn any_due(&self, now: UtcMillis) -> bool {
         self.offers.values().any(|offer| offer.is_due(now))
+    }
+
+    /// What the seat's next pull would show at `now`, given the wake attention counter.
+    pub fn next_pull(&self, attention_version: u64, now: UtcMillis) -> NextPull {
+        if self.read_attention != Some(attention_version)
+            || self.more_pending
+            // An evicted pending id would be shown again.
+            || self.offers.len() >= MAX_OFFERS_PER_SEAT
+            || self.any_due(now)
+        {
+            return NextPull::Delivers;
+        }
+        self.offers
+            .values()
+            .filter(|offer| offer.count < MAX_OFFERS_PER_GENERATION)
+            .map(|offer| offer.last_at.0.saturating_add(REOFFER_AFTER_MS))
+            .min()
+            .map_or(NextPull::Nothing, |at| NextPull::ReofferAt(UtcMillis(at)))
+    }
+
+    /// True when some offered id was shown the maximum number of times (it waits for `inbox`).
+    pub fn holds_parked(&self) -> bool {
+        self.offers
+            .values()
+            .any(|offer| offer.count >= MAX_OFFERS_PER_GENERATION)
     }
 
     /// Record that `id` was shown at `now` (count + 1; the first sight sets
@@ -135,6 +164,7 @@ impl OfferedLedger {
                     generation,
                     native_session: native_session.to_owned(),
                     more_pending: false,
+                    read_attention: None,
                     offers: BTreeMap::new(),
                     touched,
                 },
@@ -152,6 +182,29 @@ impl OfferedLedger {
     /// The seat's entry, if any, without touching it.
     pub fn get(&self, seat: &SeatId) -> Option<&SeatOffers> {
         self.seats.get(seat)
+    }
+
+    /// Read-only: never creates an entry and never touches the LRU order. Another generation, or none, is `Unknown`.
+    pub fn next_pull(
+        &self,
+        seat: &SeatId,
+        generation: u64,
+        attention_version: u64,
+        now: UtcMillis,
+    ) -> NextPull {
+        self.seats
+            .get(seat)
+            .filter(|entry| entry.generation == generation)
+            .map_or(NextPull::Unknown, |entry| {
+                entry.next_pull(attention_version, now)
+            })
+    }
+
+    /// Read-only, like [`Self::next_pull`].
+    pub fn holds_parked(&self, seat: &SeatId, generation: u64) -> bool {
+        self.seats
+            .get(seat)
+            .is_some_and(|entry| entry.generation == generation && entry.holds_parked())
     }
 
     pub fn seat_count(&self) -> usize {

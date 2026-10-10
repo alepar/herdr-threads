@@ -581,6 +581,27 @@ fn the_state_file_never_exceeds_4_kib() {
     assert_eq!(state.injected.last().unwrap().id, *ids.last().unwrap());
 }
 
+// Kills: a tracking bound below one full page, which would show the oldest ids again after 60 s.
+#[test]
+fn a_full_page_of_offered_ids_is_tracked() {
+    use crate::{
+        protocol::ids::{generate_public_id, prefix},
+        service::delivery_pull::PAGE_MAX_BLOCKS,
+    };
+    let rig = Rig::new();
+    let rt = runtime(1000, &ident("a"));
+    let ids: Vec<String> = (0..PAGE_MAX_BLOCKS)
+        .map(|_| generate_public_id(prefix::MESSAGE))
+        .collect();
+    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    rig.pre(0, &Fake::with(vec![page(&refs, TEXT, 1)]), &rt);
+    let state = rig.conversation();
+    assert_eq!(state.injected.len(), PAGE_MAX_BLOCKS);
+    assert_eq!(state.injected.first().unwrap().id, ids[0]);
+    let len = std::fs::metadata(rig.state_file()).unwrap().len();
+    assert!(len as usize <= MAX_STATE_BYTES, "{len}");
+}
+
 #[test]
 fn a_new_binding_generation_forgets_the_previous_generations_ids() {
     let rig = Rig::new();

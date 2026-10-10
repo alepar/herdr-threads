@@ -703,9 +703,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   offered and settle them as `cooperative_hook_delivery`; the daemon checks the canonical binding, its
   generation and its offered ledger, not the process.
 - **The offered ledger is process-local.** A daemon restart loses it: a later confirm is `not_offered`, the items
-  stay pending and the next pull offers them again (at-least-once).
+  stay pending, and the next pull offers them again (at-least-once): a pull is never answered unchanged before the
+  daemon process has read the seat's whole pending set, whatever version the hook last saw.
 - **Re-offers are bounded.** An unconfirmed id is shown at most 3 times per binding generation, 60 s apart; after
-  that it waits for `inbox`.
+  that it waits for `inbox`. While a seat holds such an id, its idle wake names `inbox`.
 - **An unreadable transcript leaves items pending.** A hook-pull hook confirms only ids whose frame header it
   found at the start of a line in a hook-injected step of a transcript it could read (text in tool output, model
   output or user input never confirms; malformed records are skipped): a missing, unreadable or unparseable transcript, or one that grew
@@ -717,7 +718,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **A resume rotates the generation.** The offered set is discarded and items the resumed transcript already
   holds are offered again.
 - **A native wake marker names `inbox` only for a harness whose turn start injects nothing.** A hook-pull harness (agy) is
-  woken with the content-free `herdr-threads: wake up`; its woken turn's first hook pull carries the bodies. A woken pull
+  woken with the content-free `herdr-threads: wake up` only when its next hook pull would carry something: an id shown
+  less than 60 s ago is not wake work until its re-offer is due, a seat whose next pull would show nothing is not woken,
+  and a seat holding ids parked for `inbox` is woken with the marker that names `inbox`. A woken pull
   session that also runs `inbox` may display bodies twice; it never settles twice.
 - **Engine-reported idleness is trusted.** The mod takes busy and idle from Claude Code's turn events; the
   post-abort hold bounds the known Esc takeover.

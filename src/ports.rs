@@ -3467,6 +3467,42 @@ pub trait ModChannels: Send + Sync {
 pub struct NoModChannels;
 impl ModChannels for NoModChannels {}
 
+/// What a hook-pull seat's next `DeliveryPull` would show, from the daemon's process-local offered ledger (no
+/// store read). Seats the ledger has no entry for are `Unknown`: every seat of a harness without hook pull, and every
+/// seat before its first pull in this process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NextPull {
+    Unknown,
+    /// New attention since the last whole read, more behind a page bound, or a re-offer that is due.
+    Delivers,
+    /// Everything pending was shown; the earliest re-offer comes due at this time.
+    ReofferAt(UtcMillis),
+    /// Everything pending was shown and no re-offer is left in this generation.
+    Nothing,
+}
+
+pub trait HookPullOutlook: Send + Sync {
+    fn next_pull(
+        &self,
+        _seat: &SeatId,
+        _binding_generation: u64,
+        _attention_version: u64,
+        _now: UtcMillis,
+    ) -> NextPull {
+        NextPull::Unknown
+    }
+    /// The seat's ledger entry of this generation holds an id shown the maximum number of times (it waits for
+    /// `inbox`).
+    fn holds_parked(&self, _seat: &SeatId, _binding_generation: u64) -> bool {
+        false
+    }
+}
+
+/// The default outlook: nothing is known.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoHookPullOutlook;
+impl HookPullOutlook for NoHookPullOutlook {}
+
 pub trait NotificationPort: Send + Sync {
     fn attempt_wake(
         &self,

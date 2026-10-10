@@ -40,7 +40,7 @@ pub struct DomainService {
     cooperative_runtime: Option<(u32, Arc<FairWriter>)>,
     bootstrap: Option<BootstrapRuntime>,
     mod_channels: Arc<dyn crate::ports::ModChannels>,
-    pub(super) delivery_pull: super::delivery_pull::DeliveryPullState,
+    pub(super) delivery_pull: Arc<super::delivery_pull::DeliveryPullState>,
 }
 
 impl DomainService {
@@ -57,6 +57,14 @@ impl DomainService {
             mod_channels: Arc::new(crate::ports::NoModChannels),
             delivery_pull: Default::default(),
         }
+    }
+    /// Share the offered ledger with the wake lane (the same instance the wake worker reads).
+    pub fn with_delivery_pull(
+        mut self,
+        state: Arc<super::delivery_pull::DeliveryPullState>,
+    ) -> Self {
+        self.delivery_pull = state;
+        self
     }
     /// The shared registry of live mod delivery channels (spec D2).
     pub fn with_mod_channels(mut self, channels: Arc<dyn crate::ports::ModChannels>) -> Self {

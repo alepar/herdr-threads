@@ -1416,6 +1416,8 @@ where
             );
             kicks.set_mod_observer(mod_registry.observer());
             let mod_channels: Arc<dyn crate::ports::ModChannels> = mod_registry.clone();
+            let delivery_pull =
+                Arc::new(crate::service::delivery_pull::DeliveryPullState::default());
             let wake_pacer = register_lane(Lane::Wakes);
             reachability.attach_wake_pacer(Arc::clone(&wake_pacer));
             factory_probe.attach_reachability(&reachability);
@@ -1432,6 +1434,7 @@ where
                 Arc::new(ObservedPokeCapabilities::new(Arc::clone(&harnesses))),
                 Arc::clone(&reachability),
                 Arc::clone(&mod_channels),
+                Arc::clone(&delivery_pull) as Arc<dyn crate::ports::HookPullOutlook>,
             )?);
             let observation_pacer = Arc::new(Pacer::new(
                 Lane::Observation.name(),
@@ -1602,7 +1605,8 @@ where
             )
             .with_operator_owner(crate::daemon::paths::effective_uid())
             .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer)
-            .with_mod_channels(Arc::clone(&mod_channels));
+            .with_mod_channels(Arc::clone(&mod_channels))
+            .with_delivery_pull(Arc::clone(&delivery_pull));
             if let Some((state_dir, host_endpoint, observer)) = &bootstrap {
                 domain = domain
                     .with_bootstrap_runtime(

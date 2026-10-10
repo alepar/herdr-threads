@@ -146,3 +146,106 @@ fn retain_pending_drops_ids_no_longer_pending_and_remove_forgets_one() {
         vec![id(3)]
     );
 }
+
+#[test]
+fn next_pull_is_unknown_without_an_entry_of_that_generation() {
+    let mut ledger = OfferedLedger::new();
+    assert_eq!(ledger.next_pull(&seat(1), 1, 7, at(0)), NextPull::Unknown);
+    assert!(!ledger.holds_parked(&seat(1), 1));
+    let entry = ledger.seat_mut(&seat(1), 1, "n");
+    entry.read_attention = Some(7);
+    for _ in 0..MAX_OFFERS_PER_GENERATION {
+        entry.record(&id(1), at(0), false);
+    }
+    assert_eq!(ledger.next_pull(&seat(1), 2, 7, at(0)), NextPull::Unknown);
+    assert!(!ledger.holds_parked(&seat(1), 2));
+    assert!(
+        ledger.holds_parked(&seat(1), 1),
+        "the control: generation 1 does hold one"
+    );
+}
+
+#[test]
+fn next_pull_delivers_until_a_whole_read_matches_the_attention_version() {
+    let mut ledger = OfferedLedger::new();
+    let entry = ledger.seat_mut(&seat(1), 1, "n");
+    assert_eq!(entry.next_pull(7, at(0)), NextPull::Delivers, "never read");
+    entry.read_attention = Some(7);
+    assert_eq!(entry.next_pull(7, at(0)), NextPull::Nothing, "the control");
+    assert_eq!(
+        entry.next_pull(8, at(0)),
+        NextPull::Delivers,
+        "new attention"
+    );
+    entry.more_pending = true;
+    assert_eq!(
+        entry.next_pull(7, at(0)),
+        NextPull::Delivers,
+        "more behind a page"
+    );
+}
+
+#[test]
+fn next_pull_waits_for_the_earliest_due_reoffer() {
+    let mut ledger = OfferedLedger::new();
+    let entry = ledger.seat_mut(&seat(1), 1, "n");
+    entry.record(&id(1), at(0), false);
+    entry.record(&id(2), at(10_000), false);
+    entry.read_attention = Some(7);
+    assert_eq!(
+        entry.next_pull(7, at(1_000)),
+        NextPull::ReofferAt(at(REOFFER_AFTER_MS))
+    );
+    assert_eq!(entry.next_pull(7, at(REOFFER_AFTER_MS)), NextPull::Delivers);
+}
+
+#[test]
+fn next_pull_is_nothing_once_every_offer_is_parked() {
+    let mut ledger = OfferedLedger::new();
+    let entry = ledger.seat_mut(&seat(1), 1, "n");
+    entry.read_attention = Some(7);
+    assert_eq!(entry.next_pull(7, at(0)), NextPull::Nothing);
+    assert!(!entry.holds_parked());
+    for _ in 0..MAX_OFFERS_PER_GENERATION {
+        entry.record(&id(1), at(0), false);
+    }
+    assert_eq!(
+        entry.next_pull(7, at(10 * REOFFER_AFTER_MS)),
+        NextPull::Nothing
+    );
+    assert!(entry.holds_parked());
+}
+
+#[test]
+fn a_full_offer_table_always_delivers() {
+    let mut ledger = OfferedLedger::new();
+    let entry = ledger.seat_mut(&seat(1), 1, "n");
+    entry.read_attention = Some(7);
+    for n in 0..MAX_OFFERS_PER_SEAT {
+        entry.record(&id(n), at(0), false);
+    }
+    assert_eq!(entry.next_pull(7, at(1)), NextPull::Delivers);
+    entry.remove(&id(0));
+    assert_eq!(
+        entry.next_pull(7, at(1)),
+        NextPull::ReofferAt(at(REOFFER_AFTER_MS)),
+        "the control: one below the bound is not full"
+    );
+}
+
+#[test]
+fn next_pull_never_touches_the_lru_order() {
+    let mut ledger = OfferedLedger::new();
+    for n in 0..MAX_LEDGER_SEATS {
+        ledger.seat_mut(&seat(n), 1, "n");
+    }
+    // Asking about seat 0 (the oldest) must not refresh it.
+    ledger.next_pull(&seat(0), 1, 7, at(0));
+    ledger.holds_parked(&seat(0), 1);
+    ledger.seat_mut(&seat(MAX_LEDGER_SEATS), 1, "n");
+    assert!(
+        ledger.get(&seat(0)).is_none(),
+        "seat 0 is still the stalest"
+    );
+    assert!(ledger.get(&seat(1)).is_some());
+}
