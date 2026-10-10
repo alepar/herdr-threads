@@ -85,6 +85,8 @@ pub enum CommandResult {
     MessageSent(MessageId),
     Acknowledged(AckResult),
     ModDeliveryAcked(crate::protocol::watch::ModAckReport),
+    DeliveryPulled(crate::protocol::delivery::DeliveryPullReply),
+    DeliveryConfirmed(crate::protocol::delivery::DeliveryConfirmReport),
     Left(ThreadId),
     TopicChanged(ThreadId),
     ThreadNameChanged(ThreadId),

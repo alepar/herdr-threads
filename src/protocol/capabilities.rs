@@ -39,6 +39,10 @@ pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 /// with ht-j16.2.
 pub const MOD_WATCH: &str = "mod.watch_v1";
 
+/// Hook-pull delivery (`protocol::delivery`, delivery-policy DP4). Defined by the
+/// ht-poh.3.1 seam; advertised only when its handlers land (L4).
+pub const DELIVERY_PULL: &str = "delivery.pull_v1";
+
 /// Everything this daemon build serves. A capability is listed only once its
 /// handler has landed (ht-p03.105): `HISTORY_FULL_BODIES` landed with
 /// ht-p03.12.8; `HOOK_PARSE_FAILURE_REPORT` landed with ht-p03.23;

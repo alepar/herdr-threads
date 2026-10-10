@@ -811,6 +811,10 @@ impl LocalService for DomainService {
             Command::AckModDelivered(request) => {
                 self.ack_mod_delivered(request, peer, budget, read)
             }
+            // Inert seam (delivery-policy DP4): the wire exists, no handler is served yet.
+            Command::DeliveryPull(_) | Command::DeliveryConfirm(_) => {
+                Err(error(ErrorCode::Unsupported, "delivery pull is not served"))
+            }
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
