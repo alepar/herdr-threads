@@ -5,6 +5,36 @@ use super::{
     runtime::{printable, token},
 };
 use serde::{Deserialize, Serialize};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
+
+/// Private subdirectory of the plugin state root, shared by every harness's
+/// hook-side state (evidence gates, admission caches).
+pub const DIR: &str = "harness";
+
+/// `<state>/harness`.
+pub fn dir(state_dir: &Path) -> PathBuf {
+    state_dir.join(DIR)
+}
+
+/// Create (0700) or verify `<state>/harness` under an existing owned state
+/// root. The state root is never created here.
+pub fn prepare(state_dir: &Path) -> io::Result<PathBuf> {
+    crate::daemon::paths::check_owned_state_root(state_dir)?;
+    let private = dir(state_dir);
+    crate::daemon::paths::ensure_private_dir(&private)?;
+    Ok(private)
+}
+
+/// Verify an existing `<state>/harness` without creating anything.
+pub fn existing(state_dir: &Path) -> io::Result<PathBuf> {
+    crate::daemon::paths::check_owned_state_root(state_dir)?;
+    let private = dir(state_dir);
+    crate::daemon::paths::check_private_dir(&private)?;
+    Ok(private)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -205,10 +205,24 @@ fn outcome_of(outcome: &HarnessEvidenceOutcome) -> EvidenceOutcome {
     }
 }
 
-/// Only Claude's runtime-written metadata can credit a held start. Codex's
-/// creator header never qualifies a current runtime, including fresh startup.
+/// Only a harness whose native-payload descriptor holds attribution
+/// (`UntilAttributed`) can credit a held start, and only for its always-sent
+/// lifecycle event. A creator-only header never qualifies a current runtime,
+/// including fresh startup.
 fn holds_session_start(message: &HarnessEvidence) -> bool {
-    message.harness == "claude" && message.event == "SessionStart"
+    use crate::harness::evidence::{AttributionHolding, EvidenceOrigin};
+    let registry = crate::harness::registry::builtins();
+    registry
+        .agent(&message.harness)
+        .ok()
+        .and_then(|id| registry.by_id(id).ok())
+        .is_some_and(|registration| {
+            registration.contracts().iter().any(|d| {
+                d.origin == EvidenceOrigin::NativePayload
+                    && d.holding == AttributionHolding::UntilAttributed
+                    && d.event(&message.event).is_some_and(|e| e.always_send)
+            })
+        })
 }
 
 impl HarnessEvidenceRecorder {

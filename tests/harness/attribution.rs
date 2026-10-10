@@ -468,7 +468,7 @@ fn resume_session_start_is_unattributable_without_reading() {
     let missing = dir.0.join("nope.jsonl");
     for (harness, reason) in [
         ("claude", Unattributed::ResumeBeforeFirstEntry),
-        ("codex", Unattributed::CodexResumed),
+        ("codex", Unattributed::ResumedCreator),
     ] {
         let payload = json!({
             "hook_event_name": "SessionStart",
@@ -536,7 +536,7 @@ fn reason_strings_are_pinned() {
             "resume before first entry",
         ),
         (
-            Unattributed::CodexResumed,
+            Unattributed::ResumedCreator,
             "codex resume: rollout version is the creating CLI's",
         ),
         (Unattributed::Absent, "transcript not found"),
@@ -618,7 +618,7 @@ fn adapter_runtime_attribution_uses_native_reader_reason() {
             RuntimeAttribution::Unavailable { diagnostic } => {
                 let expected = match registration.metadata().id {
                     "claude" => Unattributed::NoTranscriptPath.as_str(),
-                    "codex" => Unattributed::CodexCreatorOnly.as_str(),
+                    "codex" => Unattributed::CreatorOnly.as_str(),
                     "hermes" => "startup_callback_unavailable",
                     "synthetic_fourth" => "synthetic_runtime_unavailable",
                     other => panic!("unexpected builtin {other}"),
@@ -655,7 +655,7 @@ fn adapter_runtime_attribution_suppresses_every_resumed_codex_event() {
     );
     match result {
         RuntimeAttribution::Unavailable { diagnostic } => {
-            assert_eq!(diagnostic, Unattributed::CodexResumed.as_str())
+            assert_eq!(diagnostic, Unattributed::ResumedCreator.as_str())
         }
         RuntimeAttribution::Attributed(_) => {
             panic!("resumed creator version must never be attributed")
@@ -683,7 +683,7 @@ fn adapter_runtime_identity_is_native_transcript_release() {
         let input = HookInput { bytes: serde_json::to_vec(&serde_json::json!({"hook_event_name":"PreToolUse", "transcript_path":fixture(transcript)})).unwrap(), registered_event: Some("PreToolUse".into()) };
         if harness == "codex" {
             assert!(
-                matches!(registration.attribute_runtime(&input,&budget), RuntimeAttribution::Unavailable {diagnostic} if diagnostic==Unattributed::CodexCreatorOnly.as_str())
+                matches!(registration.attribute_runtime(&input,&budget), RuntimeAttribution::Unavailable {diagnostic} if diagnostic==Unattributed::CreatorOnly.as_str())
             );
             let Attribution::Attributed { version, .. } =
                 attribute_transcript("codex", &fixture(transcript))
@@ -725,6 +725,74 @@ fn task3_versionless_codex_creator_is_not_current_runtime_even_at_startup() {
     let payload = json!({"hook_event_name": "SessionStart", "source": "resume", "transcript_path": transcript});
     assert_eq!(
         attribute_payload("codex", &payload),
-        unattributable(Unattributed::CodexResumed)
+        unattributable(Unattributed::ResumedCreator)
+    );
+}
+
+/// The creator-only reasons keep the exact texts that the Codex-named variants
+/// put on the wire and into doctor; the declaration, not the harness name,
+/// decides which one a payload gets.
+#[test]
+fn transcript_version_spec_decides_resumed_and_creator_only_reasons() {
+    use super::adapter::{TranscriptRead, TranscriptVersionSpec};
+    use super::attribution::attribute_payload_in;
+    use super::contract_tests::version_fixture;
+    fn head(entry: &Value) -> Option<&str> {
+        entry.get("tst")?.as_str()
+    }
+    static CREATOR_ONLY: TranscriptVersionSpec = TranscriptVersionSpec {
+        read: TranscriptRead::HeadLine,
+        extract: head,
+        current_runtime: false,
+    };
+    static CURRENT: TranscriptVersionSpec = TranscriptVersionSpec {
+        read: TranscriptRead::NewestEntry,
+        extract: head,
+        current_runtime: true,
+    };
+    assert_eq!(
+        Unattributed::ResumedCreator.as_str(),
+        "codex resume: rollout version is the creating CLI's"
+    );
+    assert_eq!(
+        Unattributed::CreatorOnly.as_str(),
+        "codex rollout creator metadata does not identify the current runtime"
+    );
+    let resume = json!({"hook_event_name": "SessionStart", "source": "resume"});
+    let startup = json!({"hook_event_name": "SessionStart", "source": "startup",
+        "transcript_path": "/nonexistent/never-read.jsonl"});
+
+    let creator = version_fixture::registry(Some(&CREATOR_ONLY));
+    assert_eq!(
+        attribute_payload_in(&creator, "test", &resume),
+        unattributable(Unattributed::ResumedCreator)
+    );
+    assert_eq!(
+        attribute_payload_in(&creator, "test", &startup),
+        unattributable(Unattributed::CreatorOnly),
+        "a creator-only transcript is never read for the current runtime"
+    );
+
+    let current = version_fixture::registry(Some(&CURRENT));
+    assert_eq!(
+        attribute_payload_in(&current, "test", &resume),
+        unattributable(Unattributed::ResumeBeforeFirstEntry)
+    );
+    // The same payload reads the transcript and normalizes with the adapter's syntax.
+    let dir = TestDir::new();
+    let transcript = dir.write("t.jsonl", b"{\"tst\":\"tst 1.2.3 (Test)\"}\n");
+    let payload = json!({"hook_event_name": "PreToolUse", "transcript_path": transcript});
+    assert_eq!(
+        attribute_payload_in(&current, "test", &payload),
+        Attribution::Attributed {
+            harness: "test",
+            version: "1.2.3".into()
+        }
+    );
+    // No declaration, no attribution.
+    let none = version_fixture::registry(None);
+    assert_eq!(
+        attribute_payload_in(&none, "test", &resume),
+        unattributable(Unattributed::UnrecognizedVersion)
     );
 }

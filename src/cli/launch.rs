@@ -862,7 +862,6 @@ fn execute_guarded_inner(
                 }
                 identity.release_version.clone()
             }
-            InstallObservation::CodexWitness(version) => Some(version.as_str().to_owned()),
             InstallObservation::ExecutableAvailable { binary: observed } => {
                 if fs::canonicalize(observed).ok() != fs::canonicalize(&binary).ok() {
                     return Err(api(

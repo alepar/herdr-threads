@@ -242,13 +242,36 @@ fn api_failure(stage: &str, error: &ApiError) -> Failure {
     Failure::UnavailableDetail(format!("{stage}: {:?}", error.code), error.detail.clone())
 }
 
-/// Registered operational input contract, independent of PATH and runtime metadata.
+/// Registered operational input contract, independent of PATH and runtime
+/// metadata: a handle naming the adapter whose declared contract admits this
+/// hook's input.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InstalledHarness {
-    Claude(String),
-    DeclaredClaude(crate::harness::claude::ClaudeContract),
-    Codex(crate::harness::codex::InstalledVersion),
-    DeclaredCodex(crate::harness::codex::CodexContract),
+pub struct InstalledHarness(crate::harness::registry::AgentHarnessId);
+
+impl InstalledHarness {
+    fn harness(&self) -> Harness {
+        crate::harness::registry::OccupantHarness::Agent(self.0).into()
+    }
+}
+
+/// Constructors the hook tests use for the built-in handles.
+#[cfg(test)]
+#[allow(non_snake_case)]
+impl InstalledHarness {
+    fn builtin(id: &str) -> Self {
+        let registry = crate::harness::registry::builtins();
+        Self(registry.agent(id).expect("builtin adapter"))
+    }
+    pub(crate) fn DeclaredClaude(_: crate::harness::claude::ClaudeContract) -> Self {
+        Self::builtin("claude")
+    }
+    /// A handle carries no version: a hook never reads one.
+    pub(crate) fn Claude(_: String) -> Self {
+        Self::builtin("claude")
+    }
+    pub(crate) fn Codex(_: crate::harness::codex::InstalledVersion) -> Self {
+        Self::builtin("codex")
+    }
 }
 
 /// First absolute, executable `name` on `PATH`.
@@ -282,14 +305,11 @@ pub fn observe_harness_in(
 ) -> Result<InstalledHarness, String> {
     let registration = registration_for(harness)?;
     if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract {
-        return match harness {
-            Harness::Claude => Ok(InstalledHarness::DeclaredClaude(
-                crate::harness::claude::ClaudeContract::registered(),
-            )),
-            Harness::Codex => Ok(InstalledHarness::DeclaredCodex(
-                crate::harness::codex::CodexContract::registered(),
-            )),
-            _ => Err("legacy hook handle unavailable for registered adapter".into()),
+        return match harness.occupant() {
+            crate::harness::registry::OccupantHarness::Agent(id) => Ok(InstalledHarness(id)),
+            crate::harness::registry::OccupantHarness::Human => {
+                Err("legacy hook handle unavailable for registered adapter".into())
+            }
         };
     }
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
@@ -302,7 +322,7 @@ pub fn observe_harness_in(
         },
         &budget(Instant::now() + timeout, clock.as_ref()),
     );
-    installed_compat(registration, &observation).ok_or_else(|| observation_failure(observation))
+    Err(observation_failure(observation))
 }
 fn observation_failure(observation: InstallObservation) -> String {
     match observation {
@@ -328,19 +348,10 @@ pub fn parse_event(
     installed: &InstalledHarness,
     stdin: &[u8],
 ) -> Result<LifecycleEvent, ContextError> {
-    let harness = match installed {
-        InstalledHarness::Claude(_) | InstalledHarness::DeclaredClaude(_) => Harness::Claude,
-        InstalledHarness::Codex(_) | InstalledHarness::DeclaredCodex(_) => Harness::Codex,
-    };
-    let registration = registration_for(harness).map_err(ContextError::UnsupportedVersion)?;
-    let observation =
-        if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract {
-            InstallObservation::NotRequested
-        } else {
-            installed_observation(installed)
-        };
+    let registration =
+        registration_for(installed.harness()).map_err(ContextError::UnsupportedVersion)?;
     let request = AdmissionRequest {
-        installed: observation,
+        installed: InstallObservation::NotRequested,
         input: None,
         runtime_candidate: None,
     };
@@ -363,24 +374,6 @@ pub fn parse_event(
         .context_event()
         .ok_or(ContextError::Invalid)
 }
-fn installed_observation(installed: &InstalledHarness) -> InstallObservation {
-    match installed {
-        InstalledHarness::Claude(version) => {
-            match RuntimeIdentity::stable_release(version, "installed_probe") {
-                Ok(identity) => InstallObservation::Available {
-                    binary: PathBuf::new(),
-                    identity,
-                },
-                Err(diagnostic) => InstallObservation::Unavailable { diagnostic },
-            }
-        }
-        InstalledHarness::Codex(version) => InstallObservation::CodexWitness(version.clone()),
-        InstalledHarness::DeclaredClaude(_) | InstalledHarness::DeclaredCodex(_) => {
-            InstallObservation::NotRequested
-        }
-    }
-}
-
 /// Refuse a registered-event or harness mismatch before service/journal access.
 #[cfg(test)]
 fn parse_registered_event(
@@ -541,9 +534,9 @@ fn compose_context(
     recovery: Option<&RecoveryRows>,
     command_routing: Option<&CommandRouting>,
 ) -> String {
-    let codex_start = policy.empty_lifecycle
+    let empty_lifecycle_start = policy.empty_lifecycle
         && event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
-    if text.is_empty() && recovery.is_none() && !codex_start {
+    if text.is_empty() && recovery.is_none() && !empty_lifecycle_start {
         return String::new();
     }
     let base_instruction = render_context(event.role, &[], true).unwrap_or_default();
@@ -1204,12 +1197,13 @@ pub(crate) fn report_parse_failure(
     error: &ContextError,
     budget: &CallBudget,
 ) -> bool {
-    let name = match harness {
-        Harness::Claude => "claude",
-        Harness::Codex => "codex",
-        Harness::Human => return false,
-        _ => return false,
+    let Ok(registration) = registration_for(harness) else {
+        return false;
     };
+    if registration.legacy_contract_id().is_none() {
+        return false;
+    }
+    let name = registration.metadata().id;
     if !capabilities.supports(HOOK_PARSE_FAILURE_REPORT) {
         return false;
     }
@@ -1301,7 +1295,20 @@ impl PaneSeat {
     }
 }
 
+/// [`find_seat_for`] as a Claude hook.
+#[cfg(test)]
 fn find_seat(
+    client: &dyn LocalClient,
+    target: &HostTargetId,
+    deadline: Instant,
+    clock: &dyn Clock,
+) -> Result<PaneSeat, Failure> {
+    find_seat_for(Harness::Claude, client, target, deadline, clock)
+}
+
+/// The pane's seat as the invoking hook's `harness` sees it.
+fn find_seat_for(
+    harness: Harness,
     client: &dyn LocalClient,
     target: &HostTargetId,
     deadline: Instant,
@@ -1343,7 +1350,7 @@ fn find_seat(
         let selection = super::commands::CooperativeSelection {
             seat: seat.seat.clone(),
             target: target.clone(),
-            harness: Harness::Claude,
+            harness,
             role: Role::TopLevel,
         };
         return match super::selected_generation(&selection, &inspection) {
@@ -1529,7 +1536,7 @@ fn check_in(
     // for a top-level resume. The reattachment is one complete check-in (the
     // daemon rebinds the seat and opens its successor binding), so nothing
     // follows it.
-    let existing = match find_seat(&client, &target, deadline, clock.as_ref())? {
+    let existing = match find_seat_for(event.harness, &client, &target, deadline, clock.as_ref())? {
         // A resume in a pane that still looks resolved may be running in a
         // restored Herdr (the same pane id, a new incarnation) the daemon has
         // not reconciled yet (ht-p63). The continuity request makes the daemon
@@ -1591,7 +1598,7 @@ fn check_in(
         )
         .map_err(|e| api_failure("seat enrollment", &e))?;
         // Operation replay is historical, never current mapping authority.
-        match find_seat(&client, &target, deadline, clock.as_ref())? {
+        match find_seat_for(event.harness, &client, &target, deadline, clock.as_ref())? {
             PaneSeat::Resolved(current, generation) if current == resolved => (current, generation),
             _ => {
                 return Err(Failure::Unavailable(
@@ -2569,7 +2576,7 @@ pub fn run_hook(
 pub(crate) fn run_hook_registered(
     registration: &'static Registration,
     args: &HookArgs,
-    installed: &InstalledHarness,
+    _installed: &InstalledHarness,
     stdin: &[u8],
     env: &HookEnv,
     deadline: Instant,
@@ -2584,9 +2591,12 @@ pub(crate) fn run_hook_registered(
         registered_event: args.event.clone(),
     };
     let installed = match registration.hook_admission_policy() {
-        HookAdmissionPolicy::RegisteredContract => InstallObservation::NotRequested,
         HookAdmissionPolicy::QualifiedCallback => callback_install_observation(registration),
-        HookAdmissionPolicy::InstalledObservation => installed_observation(installed),
+        // The handle names a registered contract and carries no installed
+        // probe: a hook never resolves or runs an executable.
+        HookAdmissionPolicy::RegisteredContract | HookAdmissionPolicy::InstalledObservation => {
+            InstallObservation::NotRequested
+        }
     };
     let request = hook_admission_request(registration, installed, &input);
     let admitted = match registration.admit(&request, &budget(deadline, clock.as_ref())) {
@@ -2681,25 +2691,6 @@ fn quiet_outcome(detail: String) -> HookOutcome {
         stdout: vec![],
         diagnostic: Some(detail),
         attention: None,
-    }
-}
-fn installed_compat(
-    registration: &Registration,
-    observation: &InstallObservation,
-) -> Option<InstalledHarness> {
-    match observation {
-        InstallObservation::CodexWitness(version) if registration.metadata().id == "codex" => {
-            Some(InstalledHarness::Codex(version.clone()))
-        }
-        InstallObservation::Available { identity, .. }
-            if registration.metadata().id == "claude" =>
-        {
-            identity
-                .release_version
-                .clone()
-                .map(InstalledHarness::Claude)
-        }
-        _ => None,
     }
 }
 fn child_endpoint_available(args: &HookArgs) -> bool {
@@ -3361,6 +3352,10 @@ pub(crate) fn sequence<T>(
 #[cfg(test)]
 #[path = "../../tests/cli/hook.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/cli/hook_neutral.rs"]
+mod neutral_tests;
 
 #[cfg(test)]
 fn native_event_name(event: &LifecycleEvent) -> &'static str {

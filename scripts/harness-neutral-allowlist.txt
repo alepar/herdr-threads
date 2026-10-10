@@ -64,24 +64,10 @@ src/cli/handoff.rs:HERDR_THREADS_CLAUDE_OPTS — to-migrate: ht-poh.2.2 launch/C
 src/cli/handoff.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/handoff.rs:claude — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/handoff.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/hook.rs:Claude — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook.rs:ClaudeContract — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook.rs:Codex — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook.rs:CodexContract — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook.rs:CodexWitness — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook.rs:DeclaredClaude — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook.rs:DeclaredCodex — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook.rs:codex — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook.rs:codex_start — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook_evidence.rs:CodexResumed — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook_evidence.rs:codex — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/cli/hook_evidence.rs:codex_evidence — to-migrate: ht-poh.2.6 contract/evidence/hook
 src/cli/launch.rs:CLAUDE_CONFIG_DIR — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/launch.rs:CODEX_HOME — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/launch.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/launch.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/launch.rs:CodexWitness — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/launch.rs:HERDR_THREADS_CLAUDE_OPTS — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/launch.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/launch.rs:Hermes — to-migrate: ht-poh.2.2 launch/CLI projections
@@ -150,24 +136,15 @@ src/cli/topology_runtime.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projecti
 src/cli/watch.rs:Claude — to-migrate: ht-poh.3.3 watch/delivery
 src/cli/watch.rs:NotClaude — to-migrate: ht-poh.3.3 watch/delivery
 src/client/mod.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/daemon/harness_evidence.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
 src/daemon/health.rs:claude: state("claude"), — frozen-wire: v1 HarnessHealth projection, the single place naming the two frozen fields (frozen wire shape)
 src/daemon/health.rs:codex: state("codex"), — frozen-wire: v1 HarnessHealth projection, the single place naming the two frozen fields (frozen wire shape)
-src/harness/adapter.rs:CodexWitness — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/harness/adapter.rs:CodexWitness(super::codex::InstalledVersion) — to-migrate: ht-poh.2.6 CodexWitness
-src/harness/admission.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/harness/admission.rs:codex — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/harness/attribution.rs:CodexCreatorOnly — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/harness/attribution.rs:CodexResumed — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/harness/attribution.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/harness/attribution.rs:claude_version — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/harness/attribution.rs:codex — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/harness/attribution.rs:codex_version — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/admission.rs:rows.extend(version_rows("codex", super::codex::RECIPES)) — frozen-wire: schema-2 versions.json generator, byte-locked by versions_json_guard (frozen artifact)
+src/harness/admission.rs:src/harness/claude.rs RECIPES, src/harness/codex.rs RECIPES — frozen-wire: schema-2 versions.json generator, byte-locked by versions_json_guard (frozen artifact)
+src/harness/admission.rs:version_rows("claude", super::claude::RECIPES) — frozen-wire: schema-2 versions.json generator, byte-locked by versions_json_guard (frozen artifact)
+src/harness/attribution.rs:"codex resume: rollout version is the creating CLI's" — frozen-wire: Unattributed::as_str text goes on the wire and into doctor (frozen wire shape)
+src/harness/attribution.rs:"codex rollout creator metadata does not identify the current runtime" — frozen-wire: Unattributed::as_str text goes on the wire and into doctor (frozen wire shape)
 src/harness/context.rs:pub const Claude: Self — registration: context::Harness const over the registry identity (permanent registration)
 src/harness/context.rs:pub const Codex: Self — registration: context::Harness const over the registry identity (permanent registration)
-src/harness/contract.rs:Claude — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/harness/contract.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/harness/contract.rs:codex — to-migrate: ht-poh.2.6 contract/evidence/hook
 src/harness/launch.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
 src/harness/launch.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
 src/harness/launch.rs:CodexLaunchForm — to-migrate: ht-poh.2.2 launch/CLI projections

@@ -1193,7 +1193,7 @@ fn codex_fresh_session_creator_metadata_is_not_current_runtime() {
         assert_eq!(note.version, None, "{note:?}");
         assert_eq!(
             note.unattributed_reason.as_deref(),
-            Some(crate::harness::attribution::Unattributed::CodexCreatorOnly.as_str())
+            Some(crate::harness::attribution::Unattributed::CreatorOnly.as_str())
         );
     }
     assert!(!fx.gate("codex", "s").resumed);

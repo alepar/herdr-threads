@@ -381,8 +381,6 @@ pub enum InstallObservation {
     },
     /// Hook-only selection under an explicit registered-contract policy.
     NotRequested,
-    /// Carries the unforgeable installed binary/schema witness, never a payload claim.
-    CodexWitness(super::codex::InstalledVersion),
     Available {
         binary: std::path::PathBuf,
         identity: RuntimeIdentity,
@@ -1077,9 +1075,6 @@ pub fn observe_daemon_default<A: HarnessAdapter + ?Sized>(
     let installed = adapter.observe_install(env, budget);
     let identity = match &installed {
         InstallObservation::Available { identity, .. } => Some(identity.clone()),
-        InstallObservation::CodexWitness(version) => {
-            RuntimeIdentity::stable_release(version.as_str(), "installed_probe").ok()
-        }
         _ => None,
     };
     let status = match &installed {
