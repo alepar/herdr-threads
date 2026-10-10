@@ -255,6 +255,7 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
                 delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 thread,
                 body: plan.body.into(),
+                direct_recipient: None,
                 invited_recipients: vec![plan.recipient.clone()],
                 deadline_millis: None,
                 relays_user: false,

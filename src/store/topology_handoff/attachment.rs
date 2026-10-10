@@ -281,6 +281,7 @@ pub(crate) fn validate_selected_child_phase(
         }
         PermitMutation::SendMessage(v) => {
             v.delivery_mode.is_ordinary()
+                && v.direct_recipient.is_none()
                 && v.body == identity.payload.handoff.body
                 && v.invited_recipients == [attachment.resolved_seat.clone()]
                 && v.deadline_millis.is_none()

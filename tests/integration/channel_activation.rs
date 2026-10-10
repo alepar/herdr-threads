@@ -379,6 +379,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
             delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: plan.request.body.clone(),
+            direct_recipient: None,
             invited_recipients: vec![plan.recipient.clone()],
             deadline_millis: None,
             relays_user: false,

@@ -467,6 +467,7 @@ impl MutationSpec {
                 delivery_mode,
                 thread,
                 body,
+                direct_recipient: None,
                 invited_recipients: require_ack,
                 deadline_millis,
                 operation,

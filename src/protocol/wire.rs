@@ -31,6 +31,8 @@ use std::io::{self, Write};
 /// 6: canonical compound handoff fences and the quiet-channel lifecycle lane.
 ///    The mod watch connection (`protocol::watch`) rides version 6 behind
 ///    capability `mod.watch_v1`.
+///    Canonical pair resolution and direct_recipient use thread.direct_v1;
+///    automatic handoff uses handoff.automatic_v1 within version 6.
 pub const PROTOCOL_VERSION: u16 = 6;
 pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
 

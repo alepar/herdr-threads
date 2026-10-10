@@ -2622,3 +2622,93 @@ fn task48_native_empty_data_retains_internal_field_fences() {
         }
     }
 }
+
+#[test]
+fn direct_thread_protocol_is_strict_accountable_and_unadvertised() {
+    use herdr_threads::protocol::{
+        capabilities::{ADVERTISED, AUTOMATIC_HANDOFF_V1, DIRECT_THREADS_V1},
+        commands::PermitMutation,
+    };
+    let claim = serde_json::json!({"instance":"i","seat":"a","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"});
+    let value = serde_json::json!({"kind":"ensure_direct_thread","args":{"recipient":"b","operation":"o","claim":claim}});
+    let command: Command = serde_json::from_value(value.clone()).unwrap();
+    command.validate().unwrap();
+    assert_eq!(
+        WireRequest::decode(wire_fixture(value.clone()).to_string().as_bytes())
+            .unwrap()
+            .command,
+        command
+    );
+    assert_eq!(serde_json::to_value(&command).unwrap(), value);
+    let mutation = PermitMutation::try_from(command).unwrap();
+    assert!(matches!(mutation, PermitMutation::EnsureDirectThread(_)));
+    let permit = herdr_threads::store::cooperative_permit_request(&mutation).unwrap();
+    assert_eq!(permit.operation.as_str(), "o");
+    assert_eq!(permit.claim.seat.as_str(), "a");
+    let mut other = value.clone();
+    other["args"]["recipient"] = serde_json::json!("c");
+    let other =
+        PermitMutation::try_from(serde_json::from_value::<Command>(other).unwrap()).unwrap();
+    assert_ne!(
+        herdr_threads::store::cooperative_permit_request(&other)
+            .unwrap()
+            .payload_hash,
+        permit.payload_hash
+    );
+    let mut child = value.clone();
+    child["args"]["claim"]["role"] = serde_json::json!("subagent");
+    assert!(
+        serde_json::from_value::<Command>(child)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    for (field, bad) in [
+        ("recipient", serde_json::json!("")),
+        ("operation", serde_json::json!("")),
+        ("extra", serde_json::json!(true)),
+        ("claim", serde_json::json!({})),
+    ] {
+        let mut invalid = value.clone();
+        invalid["args"][field] = bad;
+        assert!(
+            serde_json::from_value::<Command>(invalid.clone()).is_err(),
+            "{field}"
+        );
+        assert!(WireRequest::decode(wire_fixture(invalid).to_string().as_bytes()).is_err());
+    }
+    assert!(!ADVERTISED.contains(&DIRECT_THREADS_V1));
+    assert!(!ADVERTISED.contains(&AUTOMATIC_HANDOFF_V1));
+}
+
+#[test]
+fn direct_recipient_send_preserves_historical_bytes_and_roundtrips() {
+    use sha2::{Digest, Sha256};
+    let historical = r#"{"kind":"send_message","args":{"thread":"t","body":"body","invited_recipients":[],"deadline_millis":null,"operation":"o","claim":{"instance":"i","seat":"a","binding_generation":0,"role":"top_level","harness":"codex","native_session":"n","execution":"e","target":"p"}}}"#;
+    let command: Command = serde_json::from_str(historical).unwrap();
+    assert_eq!(serde_json::to_string(&command).unwrap(), historical);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&command).unwrap())
+        ),
+        format!("{:x}", Sha256::digest(historical))
+    );
+    let mut direct = serde_json::from_str::<serde_json::Value>(historical).unwrap();
+    direct["args"]["direct_recipient"] = serde_json::json!("b");
+    let command: Command = serde_json::from_value(direct.clone()).unwrap();
+    assert_eq!(
+        WireRequest::decode(wire_fixture(direct).to_string().as_bytes())
+            .unwrap()
+            .command,
+        command
+    );
+    let Command::SendMessage(send) = &command else {
+        panic!("send")
+    };
+    assert_eq!(send.direct_recipient.as_ref().unwrap().as_str(), "b");
+    assert_eq!(
+        serde_json::from_slice::<Command>(&serde_json::to_vec(&command).unwrap()).unwrap(),
+        command
+    );
+}

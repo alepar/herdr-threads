@@ -64,7 +64,8 @@ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sq
 const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
 const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
 const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
-pub(crate) const LATEST_VERSION: i64 = 28;
+const V29: &str = include_str!("../../migrations/0029_direct_threads.sql");
+pub(crate) const LATEST_VERSION: i64 = 29;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -166,6 +167,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V26))
                 .and_then(|_| conn.execute_batch(V27))
                 .and_then(|_| conn.execute_batch(V28))
+                .and_then(|_| conn.execute_batch(V29))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -406,7 +408,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=28 => verify_existing(conn),
+        18..=29 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -574,7 +576,49 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_existing_v28(conn)
+    verify_existing_v28(conn)?;
+    if (1..=28).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V29)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v29(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 29)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_existing_v29(conn)
+}
+
+fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+    let expected = V29
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let actual: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='direct_threads'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if actual.as_deref().map(str::trim) != Some(expected.trim().trim_end_matches(';')) {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered direct pair registry",
+        ));
+    }
+    Ok(())
 }
 
 fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {

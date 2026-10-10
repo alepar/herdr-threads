@@ -124,6 +124,7 @@ impl Fixture {
             delivery_mode: DeliveryMode::Ordinary,
             thread: ThreadId::new("t"),
             body: "critical".into(),
+            direct_recipient: None,
             invited_recipients: vec![],
             deadline_millis: Some(60_000),
             operation: OperationId::new("send"),

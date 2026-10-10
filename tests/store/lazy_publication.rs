@@ -59,6 +59,7 @@ fn send_request() -> SendMessage {
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Lazy,
         thread: ThreadId::new("t"),
         body: "hello".into(),
+        direct_recipient: None,
         invited_recipients: vec![],
         deadline_millis: None,
         operation: OperationId::new("op"),

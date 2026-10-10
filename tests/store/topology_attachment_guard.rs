@@ -623,6 +623,7 @@ fn actual_main_linked_phase_preserves_ordinary_and_rejects_lazy_mode() {
         delivery_mode: DeliveryMode::Ordinary,
         thread,
         body: id.payload.handoff.body.clone(),
+        direct_recipient: None,
         invited_recipients: vec![child.recipient.clone()],
         deadline_millis: None,
         operation: id.payload.handoff.keys.send.clone(),
@@ -637,6 +638,19 @@ fn actual_main_linked_phase_preserves_ordinary_and_rejects_lazy_mode() {
         false,
     )
     .unwrap();
+    send.direct_recipient = Some(child.recipient.clone());
+    assert_eq!(
+        topology_handoff::validate_selected_child_phase(
+            &db,
+            &id.payload.handoff.namespace,
+            &PermitMutation::SendMessage(send.clone()),
+            false,
+        )
+        .unwrap_err()
+        .code,
+        crate::protocol::results::ErrorCode::OperationPayloadMismatch
+    );
+    send.direct_recipient = None;
     send.delivery_mode = DeliveryMode::Lazy;
     assert!(
         crate::protocol::commands::Command::SendMessage(send.clone())

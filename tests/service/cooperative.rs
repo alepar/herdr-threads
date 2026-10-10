@@ -246,6 +246,7 @@ fn explicit_send_accept_and_ack_are_separate_sqlite_decisions() {
                 delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 thread: created.clone(),
                 body: "pending mail".into(),
+                direct_recipient: None,
                 invited_recipients: vec![SeatId::new("recipient")],
                 deadline_millis: None,
                 operation: OperationId::new("send"),
@@ -533,6 +534,7 @@ fn partial_send_preparation_survives_budget_expiry_and_resumes_exact_intent() {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: "bounded preparation".into(),
+        direct_recipient: None,
         invited_recipients: vec![],
         deadline_millis: None,
         operation: OperationId::new("send"),
@@ -606,6 +608,7 @@ fn stale_sender_cannot_publish_a_prepared_message() {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: "stale sender".into(),
+        direct_recipient: None,
         invited_recipients: vec![],
         deadline_millis: None,
         operation: OperationId::new("send"),
@@ -1091,6 +1094,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: format!("mail {operation}"),
+            direct_recipient: None,
             invited_recipients: required,
             deadline_millis: None,
             operation: OperationId::new(operation),
@@ -1257,6 +1261,7 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: "before the first pass".into(),
+            direct_recipient: None,
             invited_recipients: vec![SeatId::new("recipient")],
             deadline_millis: None,
             operation: OperationId::new("pre-pass-send"),
@@ -1453,6 +1458,7 @@ fn lazy_inbox_fix_real_service_completion() {
                     delivery_mode: DeliveryMode::Lazy,
                     thread: thread.clone(),
                     body: "quiet".into(),
+                    direct_recipient: None,
                     invited_recipients: vec![],
                     deadline_millis: None,
                     operation: OperationId::new(op),
@@ -1523,4 +1529,48 @@ fn lazy_inbox_fix_real_service_completion() {
         .unwrap(),
         CommandResult::InboxDeliveryCompleted(vec![human])
     );
+}
+
+#[test]
+fn direct_thread_contract_refuses_before_effects_until_guarded_runtime() {
+    use crate::protocol::commands::{EnsureDirectThread, SendMessage};
+    let (service, db) = fixture();
+    let ensure = Command::EnsureDirectThread(EnsureDirectThread {
+        recipient: SeatId::new("peer"),
+        operation: OperationId::new("ensure"),
+        claim: claim(),
+    });
+    let send = Command::SendMessage(SendMessage {
+        delivery_mode: crate::protocol::commands::DeliveryMode::Lazy,
+        thread: ThreadId::new("t"),
+        body: "body".into(),
+        direct_recipient: Some(SeatId::new("peer")),
+        invited_recipients: vec![],
+        deadline_millis: None,
+        operation: OperationId::new("send"),
+        claim: claim(),
+        relays_user: false,
+        user_intent: None,
+    });
+    for command in [ensure, send] {
+        assert_eq!(
+            service
+                .handle(command, PeerIdentity::from_kernel(501), &budget())
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
+    }
+    for table in [
+        "threads",
+        "invitations",
+        "messages",
+        "send_preparations",
+        "operations",
+    ] {
+        let count: i64 = db
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
 }

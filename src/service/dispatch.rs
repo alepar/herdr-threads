@@ -395,6 +395,14 @@ impl DomainService {
         read: ReadContext,
         operator_override: bool,
     ) -> Result<CommandResult, ApiError> {
+        if matches!(&mutation, PermitMutation::EnsureDirectThread(_))
+            || matches!(&mutation, PermitMutation::SendMessage(send) if send.direct_recipient.is_some())
+        {
+            return Err(error(
+                ErrorCode::Unsupported,
+                "direct threads require guarded canonical runtime",
+            ));
+        }
         let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
             error(
                 ErrorCode::CallerUnverified,
@@ -815,6 +823,7 @@ impl LocalService for DomainService {
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
             | Command::CreateThread(_)
+            | Command::EnsureDirectThread(_)
             | Command::Invite(_)
             | Command::Join(_)
             | Command::Accept(_)

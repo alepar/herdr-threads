@@ -173,6 +173,8 @@ pub enum SemanticMutation {
         user_intent: Option<crate::protocol::summary::UserIntent>,
         thread: ThreadId,
         body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direct_recipient: Option<SeatId>,
         invited_recipients: Vec<SeatId>,
         deadline_millis: Option<u64>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -631,6 +633,7 @@ impl SemanticMutation {
                 delivery_mode,
                 thread,
                 body,
+                direct_recipient,
                 invited_recipients,
                 deadline_millis,
                 relays_user,
@@ -639,6 +642,7 @@ impl SemanticMutation {
                 delivery_mode: *delivery_mode,
                 thread: thread.clone(),
                 body: body.clone(),
+                direct_recipient: direct_recipient.clone(),
                 invited_recipients: invited_recipients.clone(),
                 deadline_millis: *deadline_millis,
                 operation,

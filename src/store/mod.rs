@@ -1512,6 +1512,13 @@ impl StorePort for SqliteStore {
                 "cooperative permit instance mismatch",
             ));
         }
+        if matches!(&command, PermitMutation::SendMessage(send) if send.direct_recipient.is_some())
+        {
+            return Err(api_error(
+                ErrorCode::Unsupported,
+                "direct sends require guarded canonical audience",
+            ));
+        }
         let mut writer = self.writer(budget)?;
         match command {
             PermitMutation::BeginBootstrap(_)
@@ -1538,6 +1545,10 @@ impl StorePort for SqliteStore {
             PermitMutation::CompleteHandoff(v) => {
                 handoff::mutate(&self.context, &mut writer, budget, &v, permit, true)
             }
+            PermitMutation::EnsureDirectThread(_) => Err(api_error(
+                ErrorCode::Unsupported,
+                "direct threads require guarded canonical resolver",
+            )),
             PermitMutation::CreateThread(v) => {
                 control::create_thread(&self.context, &mut writer, budget, &v, permit)
             }
@@ -1603,6 +1614,12 @@ impl StorePort for SqliteStore {
         admission: DurableWorkAdmission,
         budget: &CallBudget,
     ) -> Result<SendPreparationProgress, ApiError> {
+        if request.direct_recipient.is_some() {
+            return Err(api_error(
+                ErrorCode::Unsupported,
+                "direct sends require guarded canonical audience",
+            ));
+        }
         if request.claim.instance != self.instance {
             return Err(api_error(
                 ErrorCode::CallerUnverified,
@@ -2908,6 +2925,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::CheckIn(v.identity.claim.seat.clone()),
             control::cooperative_payload_hash("complete_handoff", v)?,
+            None,
+        ),
+        PermitMutation::EnsureDirectThread(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            control::cooperative_payload_hash("ensure_direct_thread", v)?,
             None,
         ),
         PermitMutation::CreateThread(v) => (

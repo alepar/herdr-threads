@@ -304,6 +304,7 @@ fn archival_legacy_valid_noncompound_is_a_transient_coverage_veto() {
                     user_intent: None,
                     thread: herdr_threads::protocol::ids::ThreadId::new("t"),
                     body: "work".into(),
+                    direct_recipient: None,
                     invited_recipients: vec![],
                     deadline_millis: None,
                     relays_user: false,
