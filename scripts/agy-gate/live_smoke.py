@@ -579,8 +579,18 @@ def execute(args, env, info, binary, evidence_dir, owner, run_id, herdr_version,
                                     state["ack_phase"], aborted, mode)
             writer = EvidenceWriter(evidence_dir, root=world.root, home=agyenv.real_home())
             collect_evidence(world, backend, state, summary, writer)
-    finally:
-        pass
+    except Exception as exc:  # World.__enter__ (or __exit__) failed: still leak-check and write a record
+        aborted = aborted or "error"
+        error = (error or "") + traceback.format_exc()[-3000:]
+        if summary is None:
+            checks = list(getattr(world, "checks", None) or [])
+            checks.append({"name": "the smoke world started", "ok": False,
+                           "detail": "%s: %s" % (type(exc).__name__, exc)})
+            summary = build_summary(info, checks, state["phases"], backend.budget(),
+                                    state["ack_phase"], aborted, mode)
+            writer = EvidenceWriter(evidence_dir, root=getattr(world, "root", None),
+                                    home=agyenv.real_home())
+            writer.write("summary.json", summary)
     if error:
         sys.stderr.write(error)
     leak_ok, leak_output = (leak_check or agyenv.check_leaks)(run_id)
