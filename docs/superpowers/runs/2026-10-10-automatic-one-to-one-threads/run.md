@@ -21,3 +21,13 @@ parked:
 - 2026-10-10-automatic-one-to-one-threads-roast-design-2.md · degraded-verdict · "clean (0 nits) [low coverage] — proceeded, not re-roasted; auto under explicit fully-autonomous delegation. All9scouts valid/completed; zero raw findings triggers reporter literal rule; no failed stages or missing applicable judges. Prior Blocking resolved, no new/carried/regressed; no escalations/beyond caps."
 
 Design hand-off: ht-e99 ready for caller-owned code phase; two design-roast rounds, one design-only repair ht-e99.6 closed at ce11790f. No implementation code delivered.
+
+codeBuckets:
+  completed: ht-e99.6
+  escalated:
+  pendingRetry:
+  parked:
+  stalled: false
+  review: PENDING
+
+Code phase started: ht-e99.6 is closed design-only repair at ce11790f, with no implementation merge.
