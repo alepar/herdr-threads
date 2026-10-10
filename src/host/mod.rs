@@ -3,6 +3,7 @@
 pub mod compatibility;
 pub mod native;
 pub mod observation;
+pub mod process_table;
 mod transport;
 
 pub mod continuity;
