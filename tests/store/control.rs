@@ -8974,6 +8974,578 @@ fn rejection_retains_reason_provenance_and_settles_only_invitation() {
     let _ = std::fs::remove_file(path);
 }
 
+// Catches rejection being retained only as an info audit, dropped during
+// attribution, revived after an offer, or duplicated by either replay path.
+#[test]
+fn invitation_rejection_delivers_reason_once_as_a_thread_warning() {
+    let (context, mut conn, path, clock, thread, invitation) = rejection_offer();
+    let command = crate::protocol::commands::Reject {
+        thread: thread.clone(),
+        invitation: invitation.clone(),
+        reason: "Outside this seat's mail-only remit".into(),
+        operation: OperationId::new("reject-warning"),
+        claim: claim("s2"),
+    };
+    let original = rejection_call(&context, &mut conn, &command, 100).unwrap();
+    let (id, kind, actor, event): (String, String, String, String) = conn
+        .query_row(
+            "SELECT id,kind,actor_seat_id,event_json FROM messages WHERE event_key=?1",
+            [format!("reject:{}", invitation.as_str())],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "warn");
+    assert_eq!(actor, "s2");
+    let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+    assert_eq!(event["reason"], command.reason);
+    assert_eq!(event["invitation"], invitation.as_str());
+    assert_eq!(event["seat"], "s2");
+    let pending = |db: &Connection| {
+        crate::store::attention::seat_pending_warnings(db, "s1", &|| Ok(()))
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        pending(&conn),
+        vec![id.clone()],
+        "visible before projection"
+    );
+    assert!(!crate::store::attention::warning_wakes_seat(&conn, "s1", &id).unwrap());
+    for seat in ["s1", "s2"] {
+        let wake = crate::store::attention::wake_seat_attention(&conn, seat).unwrap();
+        assert!(!wake.attention.has_pending_invitation);
+        assert!(!wake.attention.has_pending_receipt);
+        assert_eq!(wake.attention.latest_warning_seq, None);
+    }
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let CommandResult::InboxBatch(batch) = crate::store::queries::query(
+        &context,
+        "i",
+        &crate::protocol::commands::Command::InboxBatch(crate::protocol::commands::InboxQuery {
+            seat: Some(SeatId::new("s1")),
+            page: Default::default(),
+        }),
+        &budget,
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert!(
+        batch.items.iter().any(|item| matches!(item,
+            crate::protocol::results::InboxBatchItem::Warning { warning, .. }
+            if warning.as_str() == id
+        )),
+        "reason must reach the thread member's inbox: {batch:?}"
+    );
+
+    let CommandResult::Message(detail) = crate::store::queries::query(
+        &context,
+        "i",
+        &crate::protocol::commands::Command::Message(crate::protocol::commands::MessageQuery {
+            message: MessageId::new(&id),
+            body: crate::protocol::commands::BodyReadRequest {
+                cursor: None,
+                offset: None,
+                max_bytes: 4096,
+            },
+        }),
+        &budget,
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(
+        detail.summary.event_author,
+        Some(crate::protocol::service::EventAuthor::Native(SeatId::new(
+            "s2"
+        )))
+    );
+    assert!(matches!(detail.content,
+        crate::protocol::results::MessageContent::System { event, .. }
+        if event.kind == crate::protocol::results::MessageKind::Warn
+            && event.event_json["reason"] == command.reason
+            && event.source_invitation.as_ref() == Some(&invitation)
+    ));
+    let job: String = conn
+        .query_row(
+            "SELECT id FROM work_jobs WHERE kind='warning_attribution' AND subject_id=?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    while crate::store::materialization::advance_work(
+        &mut conn,
+        &job,
+        crate::ports::DurableWorkAdmission::new(1).unwrap(),
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    assert_eq!(pending(&conn), vec![id.clone()], "visible after projection");
+    for seat in ["s1", "s2"] {
+        assert_eq!(
+            crate::store::attention::wake_seat_attention(&conn, seat)
+                .unwrap()
+                .attention
+                .latest_warning_seq,
+            None
+        );
+    }
+    let tx = conn.transaction().unwrap();
+    let page = crate::store::attention::notice_offer_page(&tx, "s1", 16).unwrap();
+    assert_eq!(page.len(), 1);
+    let execution: String = tx
+        .query_row(
+            "SELECT execution_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    crate::store::attention::settle_offered_notices(&tx, "s1", 1, &execution, &page).unwrap();
+    tx.commit().unwrap();
+    assert!(
+        pending(&conn).is_empty(),
+        "offered warning must stay settled"
+    );
+    assert_eq!(
+        rejection_call(&context, &mut conn, &command, 100).unwrap(),
+        original
+    );
+    let mut replay = command.clone();
+    replay.operation = OperationId::new("reject-warning-again");
+    assert_eq!(
+        rejection_call(&context, &mut conn, &replay, 100).unwrap(),
+        original
+    );
+    assert!(pending(&conn).is_empty(), "replay must not redeliver");
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM messages WHERE event_key=?1",
+            [format!("reject:{}", invitation.as_str())],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+// Catches validation moving after durable rejection/event publication, or
+// selecting a caller's invitation without checking its exact thread.
+#[test]
+fn invitation_rejection_invalid_reason_or_wrong_thread_has_no_effects() {
+    for (reason, wrong_thread, wrong_invitation) in [
+        ("", false, false),
+        (" \n\t", false, false),
+        ("Outside my remit", true, false),
+        ("Outside my remit", false, true),
+    ] {
+        let (context, mut conn, path, _, thread, invitation) = rejection_offer();
+        let command = crate::protocol::commands::Reject {
+            thread: if wrong_thread {
+                ThreadId::new("unrelated")
+            } else {
+                thread
+            },
+            invitation: if wrong_invitation {
+                InvitationId::new("wrong-invitation")
+            } else {
+                invitation.clone()
+            },
+            reason: reason.into(),
+            operation: OperationId::new("invalid-reject"),
+            claim: claim("s2"),
+        };
+        let before: i64 = conn
+            .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            rejection_call(&context, &mut conn, &command, 100)
+                .unwrap_err()
+                .code,
+            if wrong_thread || wrong_invitation {
+                ErrorCode::Unauthorized
+            } else {
+                ErrorCode::InvalidRequest
+            }
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM invitation_rejections", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM digest_pending_invitations WHERE invitation_id=?1",
+                [invitation.as_str()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+// Catches a failed projection advancing the fanout cursor, or a global offer
+// watermark swallowing attribution that was not actually carried.
+#[test]
+fn invitation_rejection_projection_retry_and_late_offer_keep_exact_delivery() {
+    let (context, mut conn, path, clock, thread, invitation) = rejection_offer();
+    let command = crate::protocol::commands::Reject {
+        thread: thread.clone(),
+        invitation: invitation.clone(),
+        reason: "Outside remit".into(),
+        operation: OperationId::new("reject-delayed"),
+        claim: claim("s2"),
+    };
+    rejection_call(&context, &mut conn, &command, 100).unwrap();
+    let (id, seq): (String, i64) = conn
+        .query_row(
+            "SELECT id,decision_seq FROM messages WHERE event_key=?1",
+            [format!("reject:{}", invitation.as_str())],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    conn.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT seat_id,generation,execution_id,?1 FROM occupant_bindings WHERE seat_id='s1'", [seq+100]).unwrap();
+    conn.execute_batch("CREATE TEMP TRIGGER reject_projection_failure BEFORE INSERT ON digest_programmatic_warnings BEGIN SELECT RAISE(ABORT,'injected rejection projection failure'); END;").unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let job = format!("work:{id}");
+    let failed = crate::store::materialization::advance_work(
+        &mut conn,
+        &job,
+        crate::ports::DurableWorkAdmission::new(1).unwrap(),
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap();
+    assert!(failed.last_error.is_some());
+    assert_eq!(failed.processed_this_turn, 0);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",
+            [&id],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT position FROM work_jobs WHERE id=?1", [&job], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        crate::store::attention::informational_notice_pending(&conn, "s1", &id).unwrap(),
+        Some(true)
+    );
+    conn.execute_batch("DROP TRIGGER reject_projection_failure;")
+        .unwrap();
+    while crate::store::materialization::advance_work(
+        &mut conn,
+        &job,
+        crate::ports::DurableWorkAdmission::new(1).unwrap(),
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM digest_programmatic_warnings WHERE warning_id=?1",
+            [&id],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        crate::store::attention::notice_offer_page(&conn, "s1", 1)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        crate::store::attention::informational_notice_pending(&conn, "s1", &id).unwrap(),
+        Some(true)
+    );
+    assert!(!crate::store::attention::warning_wakes_seat(&conn, "s2", &id).unwrap());
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+// Catches worker-time membership replacing the rejection's frozen audience,
+// or an offered prefix settling uncarried notices or a successor binding.
+#[test]
+fn invitation_rejection_frozen_members_and_binding_scoped_prefix() {
+    let (context, mut conn, path, clock, thread, invitation) = rejection_offer();
+    let command = crate::protocol::commands::Reject {
+        thread: thread.clone(),
+        invitation: invitation.clone(),
+        reason: "Outside remit".into(),
+        operation: OperationId::new("reject-frozen"),
+        claim: claim("s2"),
+    };
+    rejection_call(&context, &mut conn, &command, 100).unwrap();
+    let (id, seq): (String, i64) = conn
+        .query_row(
+            "SELECT id,decision_seq FROM messages WHERE event_key=?1",
+            [format!("reject:{}", invitation.as_str())],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('later','i','resolved','native','later',1,1,100)", []).unwrap();
+    conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,'later',1,?2)", params![thread.as_str(),seq+1]).unwrap();
+    conn.execute(
+        "UPDATE membership_intervals SET left_seq=?1 WHERE thread_id=?2 AND seat_id='s1'",
+        params![seq + 1, thread.as_str()],
+    )
+    .unwrap();
+    assert!(!crate::store::effective::is_warning_recipient(&conn, &id, "later").unwrap());
+    assert!(crate::store::effective::is_warning_recipient(&conn, &id, "s1").unwrap());
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    while crate::store::materialization::advance_work(
+        &mut conn,
+        &format!("work:{id}"),
+        crate::ports::DurableWorkAdmission::new(1).unwrap(),
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM warning_recipients WHERE warning_id=?1 AND seat_id='later'",
+            [&id],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    // A second exact invitation can be independently refused, producing a new notice.
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,state,created_at,deadline_at,episode,created_decision_seq,frozen_duration_ms) SELECT 'second-refusal',thread_id,seat_id,'pending',created_at,deadline_at,episode+1,created_decision_seq,frozen_duration_ms FROM invitations WHERE id=?1", [invitation.as_str()]).unwrap();
+    let mut second = command.clone();
+    second.invitation = InvitationId::new("second-refusal");
+    second.operation = OperationId::new("second-refusal");
+    rejection_call(&context, &mut conn, &second, 100).unwrap();
+    let second_id: String = conn
+        .query_row(
+            "SELECT id FROM messages WHERE event_key='reject:second-refusal'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    while crate::store::materialization::advance_work(
+        &mut conn,
+        &format!("work:{second_id}"),
+        crate::ports::DurableWorkAdmission::new(1).unwrap(),
+        &budget,
+        clock.as_ref(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    let page = crate::store::attention::notice_offer_page(&conn, "s2", 1).unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].notice.warning.as_str(), id);
+    let execution: String = conn
+        .query_row(
+            "SELECT execution_id FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    crate::store::attention::settle_offered_notices(&conn, "s2", 1, &execution, &page).unwrap();
+    assert_eq!(
+        crate::store::attention::informational_notice_pending(&conn, "s2", &id).unwrap(),
+        Some(false)
+    );
+    assert_eq!(
+        crate::store::attention::informational_notice_pending(&conn, "s2", &second_id).unwrap(),
+        Some(true)
+    );
+    // A stale predecessor frontier does not cover the current occupant.
+    conn.execute(
+        "UPDATE digest_notice_offer SET execution_id='predecessor' WHERE seat_id='s2'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        crate::store::attention::notice_offer_page(&conn, "s2", 16)
+            .unwrap()
+            .len(),
+        2
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+// Catches replay upgrading historical audit events into deliverable warnings.
+#[test]
+fn invitation_rejection_historical_info_replay_stays_unchanged() {
+    let (context, mut conn, path, _, thread, invitation) = rejection_offer();
+    let command = crate::protocol::commands::Reject {
+        thread: thread.clone(),
+        invitation: invitation.clone(),
+        reason: "Historical refusal".into(),
+        operation: OperationId::new("historical-replay"),
+        claim: claim("s2"),
+    };
+    conn.execute("INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES (?1,?2,100,'s2',1,'cooperative_top_level:old')",params![invitation.as_str(),command.reason]).unwrap();
+    let tx = conn.transaction().unwrap();
+    let payload=serde_json::json!({"action":"reject","seat":"s2","invitation":invitation.as_str(),"reason":command.reason}).to_string();
+    let (id, _) = schema::append_attributed_event_once(
+        &tx,
+        schema::EventInput {
+            thread: &thread,
+            key: &format!("reject:{}", invitation.as_str()),
+            kind: "info",
+            payload_json: &payload,
+            decision_at: UtcMillis(100),
+            source_message: None,
+            source_invitation: Some(&invitation),
+        },
+        crate::protocol::service::EventAuthor::Native(SeatId::new("s2")),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let first = rejection_call(&context, &mut conn, &command, 100).unwrap();
+    assert_eq!(
+        rejection_call(&context, &mut conn, &command, 100).unwrap(),
+        first
+    );
+    let mut fresh = command.clone();
+    fresh.operation = OperationId::new("historical-fresh");
+    assert_eq!(
+        rejection_call(&context, &mut conn, &fresh, 100).unwrap(),
+        first
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT kind FROM messages WHERE id=?1",
+            [id.as_str()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "info"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM warning_jobs WHERE warning_id=?1",
+            [id.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert!(
+        crate::store::attention::seat_pending_warnings(&conn, "s1", &|| Ok(()))
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+// Catches passive classification trusting peer JSON instead of the exact
+// retained source, event key and honest native author.
+#[test]
+fn invitation_rejection_notice_classification_requires_canonical_event() {
+    for variant in [
+        "wrong-key",
+        "missing-source",
+        "wrong-actor",
+        "built-in",
+        "wrong-json",
+        "missing-ledger",
+    ] {
+        let (_context, mut conn, path, _, thread, invitation) = rejection_offer();
+        if variant != "missing-ledger" {
+            conn.execute("INSERT INTO invitation_rejections(invitation_id,reason,rejected_at,actor_seat_id,generation,observation) VALUES (?1,'Outside remit',100,'s2',1,'cooperative_top_level:old')", [invitation.as_str()]).unwrap();
+        }
+        let tx = conn.transaction().unwrap();
+        let payload=serde_json::json!({"action":"reject","seat":"s2","invitation":invitation.as_str(),"reason":if variant=="wrong-json" {"unretained peer text"} else {"Outside remit"}}).to_string();
+        let key = if variant == "wrong-key" {
+            "other-event".into()
+        } else {
+            format!("reject:{}", invitation.as_str())
+        };
+        let author = if variant == "built-in" {
+            crate::protocol::service::EventAuthor::BuiltIn
+        } else {
+            crate::protocol::service::EventAuthor::Native(SeatId::new(
+                if variant == "wrong-actor" { "s1" } else { "s2" },
+            ))
+        };
+        let (id, _) = schema::append_attributed_event_once(
+            &tx,
+            schema::EventInput {
+                thread: &thread,
+                key: &key,
+                kind: "warn",
+                payload_json: &payload,
+                decision_at: UtcMillis(100),
+                source_message: None,
+                source_invitation: if variant == "missing-source" {
+                    None
+                } else {
+                    Some(&invitation)
+                },
+            },
+            author,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert!(
+            !crate::store::effective::is_invitation_rejection_notice(&conn, id.as_str()).unwrap(),
+            "{variant}"
+        );
+        assert_eq!(
+            crate::store::attention::informational_notice_pending(&conn, "s1", id.as_str())
+                .unwrap(),
+            None,
+            "{variant}"
+        );
+        assert!(
+            crate::store::attention::warning_wakes_seat(&conn, "s1", id.as_str()).unwrap(),
+            "{variant}"
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 fn rejection_accept(
     context: &StoreContext,
     conn: &mut Connection,

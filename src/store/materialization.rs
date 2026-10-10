@@ -361,6 +361,15 @@ fn attribute(tx: &Connection, warning: &str, seat: &str, event_seq: i64) -> Resu
             ));
         }
     }
+    if super::effective::is_invitation_rejection_notice(tx, warning)? {
+        // The delivery row and fanout cursor commit in the same worker unit.
+        // Late attribution stays pending above the occupant's notice frontier.
+        tx.execute(
+            "INSERT OR IGNORE INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) SELECT ?1,id,thread_id,decision_seq,event_offset FROM messages WHERE id=?2",
+            params![seat, warning],
+        ).map_err(store_error)?;
+        return Ok(());
+    }
     let unoffered = super::attention::informational_notice_pending(tx, seat, warning)?
         .unwrap_or(!offered(tx, seat, event_seq)?);
     if inserted > 0 && actionable(tx, warning, seat)? && unoffered {
