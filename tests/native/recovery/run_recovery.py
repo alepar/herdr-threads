@@ -37,6 +37,9 @@ import tempfile
 import time
 import traceback
 
+# The platform scratch root a run directory must live under: /private/tmp on macOS, /tmp on Linux.
+SCRATCH_ROOT = "/private/tmp" if sys.platform == "darwin" else "/tmp"
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "support"))
 from private_host import (CommandLog, PrivateHerdr, SafetyError, TestDaemon, foreign_processes, pid_alive,
@@ -97,9 +100,10 @@ class Suite:
         self.args = args
         self.binary = Path(args.bin).resolve()
         # Short root: the private API socket must fit macOS's sockaddr_un limit.
-        self.run_root = Path(args.run_root or "/private/tmp")
-        if not str(self.run_root.resolve()).startswith("/private/tmp"):
-            raise SafetyError("--run-root must be under /private/tmp")
+        self.run_root = Path(args.run_root or SCRATCH_ROOT)
+        resolved = str(self.run_root.resolve())
+        if resolved != SCRATCH_ROOT and not resolved.startswith(SCRATCH_ROOT + "/"):
+            raise SafetyError(f"--run-root must be under {SCRATCH_ROOT}")
         self.run_dir = Path(tempfile.mkdtemp(prefix="htr-", dir=str(self.run_root)))
         self.fixture = NativeFixture.create(self.run_dir / "fixture")
         self.evidence_dir = self.run_dir / "evidence"
@@ -215,8 +219,8 @@ class Suite:
         herdr = self.host.check_binary()
         s.save("herdr-binary", herdr)
         s.check("Herdr is the pinned 0.9.1 binary", herdr["pinned"], herdr)
-        s.check("run directory is private under /private/tmp",
-                str(self.run_dir).startswith(str(self.run_root / "htr-")) and str(self.run_dir).startswith("/private/tmp/")
+        s.check(f"run directory is private under {SCRATCH_ROOT}",
+                str(self.run_dir).startswith(str(self.run_root / "htr-")) and str(self.run_dir).startswith(SCRATCH_ROOT + "/")
                 and (self.run_dir.stat().st_mode & 0o777) == 0o700)
         s.check("private server environment names only the private socket",
                 self.host.environment()["HERDR_SOCKET_PATH"] == str(self.host.socket)
@@ -846,7 +850,7 @@ def main(argv=None):
     parser.add_argument("--evidence-out", help="directory to copy results, report, command log and evidence into")
     parser.add_argument("--deadline-seconds", type=int, default=20, help="R06 receipt deadline (default 20)")
     parser.add_argument("--only", help="comma-separated scenario ids (R01 and R12 always run)")
-    parser.add_argument("--run-root", help="directory under /private/tmp for the private run directory (default /private/tmp)")
+    parser.add_argument("--run-root", help=f"directory under {SCRATCH_ROOT} for the private run directory (default {SCRATCH_ROOT})")
     args = parser.parse_args(argv)
     if platform.system() != "Darwin":
         print("UNSUPPORTED: the verified host incarnation witness exists only on macOS", file=sys.stderr)

@@ -136,7 +136,8 @@ impl Fixture {
         lose_create_reply: bool,
         original_harness: Harness,
     ) -> Self {
-        let root = PathBuf::from("/private/tmp").join(format!("ht-a-{}", Uuid::new_v4()));
+        let root = PathBuf::from(herdr_threads::test_support::SHORT_TMP)
+            .join(format!("ht-a-{}", Uuid::new_v4()));
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -469,11 +470,15 @@ impl Fixture {
             cmd.arg("human");
         }
         cmd.arg("--json")
-            .arg("--state-dir")
-            .arg(&self.context.state_dir)
-            .arg("--host-endpoint")
-            .arg(&self.context.host_endpoint)
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.context.state_dir),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.context.host_endpoint),
+                ],
+                args,
+            ))
             .env("HOME", self.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("CODEX_HOME", self.root.join("codex"))

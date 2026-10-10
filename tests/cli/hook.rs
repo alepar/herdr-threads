@@ -396,6 +396,7 @@ fn digest(invitations: &[(&str, &str)], receipts: &[(&str, &str)]) -> AttentionD
         count_has_more: false,
     };
     AttentionDigest {
+        lazy: None,
         version: 1,
         seat: SeatId::new("seat-1"),
         token: Default::default(),
@@ -1681,6 +1682,7 @@ fn hook_parse_error_outside_herdr_is_quiet() {
             stdout: Vec::new(),
             diagnostic: Some("bad argv".into()),
             attention: None,
+            lazy: None,
         }
     );
 }
@@ -1944,10 +1946,10 @@ fn hook_deadline_window_never_waits_past_the_deadline() {
 // P6 (native Claude demo 2): print mode denied the ready commands because
 // setup granted nothing that covered them. Every command form the hook tells
 // an agent to run, rendered by the hook's own renderers (`cli_prefix`,
-// `next_actions`, `encode_native`, `diagnose_argv`), must be covered by the
-// owned rule `Bash(herdr-threads *)` under Claude's documented Bash rule
-// matching (modelled by `claude::bash_rule_covers`), and none by the retired
-// export rule. Kills: an absolute-path argv0 in ready commands, a rule that
+// `next_actions`, `encode_native`, `diagnose_argv`), must be allowed (and not
+// asked) by the rules setup renders under Claude's documented Bash rule
+// matching (modelled by `claude::bash_rule_covers`), and none is covered by
+// the retired export rule. Kills: an absolute-path argv0 in ready commands, a rule that
 // misses a subcommand form or a quoted state dir, a label/separator leaking
 // into a command, and reinstating the dead export rule as the only grant.
 #[test]
@@ -1955,6 +1957,7 @@ fn owned_claude_allow_rule_covers_every_ready_command_form() {
     use crate::harness::claude::{
         CALLER_CONTEXT_ALLOW_RULE, HERDR_THREADS_ALLOW_RULE, bash_rule_covers,
     };
+    use crate::harness::permissions::claude::render;
     use crate::protocol::attention::AttentionRequirement;
     let mut digest = digest(
         &[("invitation-a", "thread-1"), ("invitation-r", "thread-r")],
@@ -2053,10 +2056,16 @@ fn owned_claude_allow_rule_covers_every_ready_command_form() {
             command.starts_with("herdr-threads "),
             "not a bare herdr-threads command: {command}"
         );
+        let rules = render();
         assert!(
-            bash_rule_covers(HERDR_THREADS_ALLOW_RULE, command),
-            "owned rule does not cover {command}"
+            rules
+                .allow
+                .iter()
+                .any(|rule| bash_rule_covers(rule, command))
+                && !rules.ask.iter().any(|rule| bash_rule_covers(rule, command)),
+            "setup's rules do not allow {command}"
         );
+        assert!(bash_rule_covers(HERDR_THREADS_ALLOW_RULE, command));
         assert!(!bash_rule_covers(CALLER_CONTEXT_ALLOW_RULE, command));
     }
     // The model of Claude's matcher is not vacuous: word boundary, whole
@@ -2707,7 +2716,8 @@ mod continuity_gate {
     impl Pane {
         fn new() -> Self {
             let dir = PathBuf::from(format!(
-                "/private/tmp/hkc-{}",
+                "{}/hkc-{}",
+                crate::test_support::SHORT_TMP,
                 &uuid::Uuid::new_v4().simple().to_string()[..10]
             ));
             std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
@@ -4762,10 +4772,11 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
     let (offer, overview, digest, _) =
         startup_offer_with_topic(&instruction, &threads, Some(&"\"".repeat(120)));
     // The pinned commands fit up to a harness-specific state-dir depth (the
-    // fitting boundary; inside 0..450 for both harnesses). Routing can only
-    // evict there, so every depth in a window just below the boundary is
-    // compared, and depths further below are sampled.
-    const DEPTHS: usize = 450;
+    // fitting boundary; inside 0..480 for both harnesses under either temp
+    // root, /private/tmp or /tmp). Routing can only evict there, so every
+    // depth in a window just below the boundary is compared, and depths
+    // further below are sampled.
+    const DEPTHS: usize = 480;
     const BOUNDARY_WINDOW: usize = 48;
     const SAMPLE_STRIDE: usize = 16;
     for harness in [Harness::Claude, Harness::Codex] {
@@ -4774,7 +4785,11 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
         // Returns whether the pinned commands fit without routing (and then
         // checks that routing keeps them).
         let case = |depth: usize| -> bool {
-            let root = format!("/private/tmp/{}/state", "d".repeat(depth));
+            let root = format!(
+                "{}/{}/state",
+                crate::test_support::SHORT_TMP,
+                "d".repeat(depth)
+            );
             let prefix = prefix(&root);
             let actions = next_actions(&prefix, Some(&digest));
             let routing = CommandRouting {
@@ -4894,9 +4909,11 @@ mod mod_channel_live {
                 Command::AttentionDigest(query) => {
                     self.calls.lock().unwrap().push("digest");
                     Ok(CommandResult::AttentionDigest(AttentionDigest {
+                        lazy: None,
                         version: DIGEST_VERSION,
                         seat: query.seat,
                         token: AttentionToken {
+                            lazy: None,
                             receipt: Some((11, 0)),
                             unavailability_episode: 1,
                             ..Default::default()
@@ -4961,7 +4978,8 @@ mod mod_channel_live {
     impl Pane {
         fn new() -> Self {
             let dir = PathBuf::from(format!(
-                "/private/tmp/hkm-{}",
+                "{}/hkm-{}",
+                crate::test_support::SHORT_TMP,
                 &uuid::Uuid::new_v4().simple().to_string()[..10]
             ));
             std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
@@ -6333,6 +6351,30 @@ mod registered_resume {
                     Ok(CommandResult::HotThreads(hot))
                 }
                 Command::HookParseFailure(_) => Ok(CommandResult::HookParseFailureRecorded),
+                // Scripted only for the hook inbox page tests: the v2 inbox and
+                // hook lazy delivery are advertised and one page is served.
+                Command::Capabilities if self.control("inbox-v2.json") => Ok(
+                    CommandResult::Capabilities(crate::protocol::results::CapabilityList {
+                        capabilities: vec![
+                            crate::protocol::capabilities::INBOX_BATCH_V2.into(),
+                            crate::protocol::capabilities::LAZY_HOOK_DELIVERY.into(),
+                        ],
+                    }),
+                ),
+                Command::InboxBatchV2(query) if self.control("inbox-v2.json") => {
+                    assert_eq!(
+                        query.seat.as_ref().map(SeatId::as_str),
+                        Some("registered-seat")
+                    );
+                    let path = self
+                        .transcript
+                        .as_ref()
+                        .unwrap()
+                        .with_file_name("inbox-v2.json");
+                    let page = read_fixture_json(&path, 65_536)
+                        .map_err(|_| crate::test_support::unserved("no scripted inbox page"))?;
+                    Ok(CommandResult::InboxBatchV2(page))
+                }
                 _ => Err(crate::test_support::unserved(
                     "unused registered fixture command",
                 )),
@@ -7546,6 +7588,72 @@ mod registered_resume {
         assert_eq!(row["topic"], "hot \"topic\"peer");
         assert_eq!(row["hot"], "pending_receipt");
     }
+    // Lazy hook delivery for Hermes: a top-level pre_llm_call qualified turn
+    // takes the shared check-in path, so its context carries the inbox page
+    // and the outcome holds exactly the whole lazy IDs to complete after
+    // delivery (never before; the process boundary commits). Kills: a
+    // Claude/Codex-only implementation, and completion claimed for an item
+    // that was not shown whole.
+    #[test]
+    fn hermes_qualified_turn_injects_inbox_page_and_defers_lazy_completion() {
+        let f = Fixture::new(true);
+        let lazy = |id: &str, body: &str, end: usize| {
+            crate::protocol::results::InboxBatchV2Item::LazyMessage {
+                thread: crate::protocol::ids::ThreadId::new("t-hermes"),
+                topic_data: "hermes topic".into(),
+                message: crate::protocol::ids::MessageId::new(id),
+                sequence: 4,
+                sender: Some(SeatId::new("peer")),
+                author_role: None,
+                relays_user: false,
+                user_intent: None,
+                author_role_backfilled: false,
+                body: body[..end].into(),
+                body_start: 0,
+                body_end: end as u64,
+                body_len: body.len() as u64,
+            }
+        };
+        let page = crate::protocol::pagination::Page {
+            items: vec![
+                lazy("m-whole", "hermes lazy body", 16),
+                lazy("m-part", "a partial lazy body", 9),
+            ],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            has_more: true,
+            stop_reason: crate::protocol::pagination::StopReason::Bytes,
+            consistency: crate::protocol::pagination::Consistency::BoundedLive,
+        };
+        write_fixture_json(&f.root.join("inbox-v2.json"), &page).unwrap();
+        let r = task52_registration();
+        let start = hermes_input("pre_llm_call", "lazy-sess", "turn-1", 1, "top");
+        let outcome = f.run(r, &start);
+        let output = task52_output(&outcome, "startup", &start);
+        let context = output["context"].as_str().unwrap();
+        assert!(
+            context.contains(crate::cli::hook_inbox::INBOX_HEADER),
+            "{context}"
+        );
+        assert!(context.contains("hermes lazy body"), "{context}");
+        assert!(!context.contains("a partial"), "{context}");
+        assert!(context.contains("More inbox content remains"), "{context}");
+        assert_eq!(
+            outcome.lazy.as_ref().map(|lazy| lazy.messages.clone()),
+            Some(vec![crate::protocol::ids::MessageId::new("m-whole")])
+        );
+        assert!(
+            !f.service
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::CompleteInboxDelivery(_) | Command::Ack(_))),
+            "nothing completes or ACKs before delivery"
+        );
+    }
     #[test]
     fn task52_facade_declared_reset_clear_has_hot_rows_guidance_and_precise_ack() {
         let f = task52_hot_fixture();
@@ -8234,6 +8342,7 @@ mod registered_resume {
                 | Command::SeatInspect(_)
                 | Command::ResolveSeat(_)
                 | Command::CheckIn(_)
+                | Command::Capabilities
                 | Command::AttentionDigest(_)
                 | Command::Directory(_)
                 | Command::HotThreads(_)

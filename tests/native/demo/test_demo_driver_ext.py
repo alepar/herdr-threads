@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 import shlex
 import sys
-import tempfile
 import unittest
 from unittest import mock
 
@@ -23,6 +22,7 @@ sys.modules["demo_verify_base"] = base
 _spec.loader.exec_module(base)
 demo = base.demo
 SEAT, COORD, THREAD, MSG, SESSION = base.SEAT, base.COORD, base.THREAD, base.MSG, base.SESSION
+SCRATCH_ROOT = base.SCRATCH_ROOT  # /private/tmp on macOS, /tmp on Linux
 
 
 class Clock:
@@ -59,7 +59,7 @@ class ExtArgsTests(base.ArgsTests):
 
     def test_codex_tui_hook_trust_bypass_only_under_private_tmp(self):
         self.rejected("--harness", "codex", "--mode", "tui", "--allow-uncapped-spend", "--run-root", "/var/tmp/x")
-        self.parse("--harness", "codex", "--mode", "tui", "--allow-uncapped-spend", "--run-root", "/private/tmp/x")
+        self.parse("--harness", "codex", "--mode", "tui", "--allow-uncapped-spend", "--run-root", SCRATCH_ROOT + "/x")
 
     def test_lostprompt_and_blockedui_need_an_interactive_agent(self):
         for name in ("lostprompt", "blockedui"):
@@ -76,12 +76,12 @@ class ExtArgsTests(base.ArgsTests):
     def test_default_codex_tui_run_root_is_private_tmp(self):
         with mock.patch.object(demo.NativeFixture, "create") as create, mock.patch.object(Path, "mkdir"), \
                 mock.patch("builtins.open", mock.mock_open()):
-            create.return_value = mock.Mock(root=Path("/private/tmp/x/r"), evidence_dir=Path("/private/tmp/x/r/evidence"))
+            create.return_value = mock.Mock(root=Path(SCRATCH_ROOT) / "x/r", evidence_dir=Path(SCRATCH_ROOT) / "x/r/evidence")
             try:
                 demo.Driver(base.args("/unused", harness="codex", mode="tui", run_root=None))
             except Exception:  # noqa: BLE001 - only the chosen base directory matters here
                 pass
-            self.assertTrue(str(create.call_args[0][0]).startswith("/private/tmp/ht-native-demo/"))
+            self.assertTrue(str(create.call_args[0][0]).startswith(SCRATCH_ROOT + "/ht-native-demo/"))
 
 
 class CodexTuiCommandTests(unittest.TestCase):
@@ -146,7 +146,7 @@ class CodexTuiLaunchTests(unittest.TestCase):
             self.assertIn("trust", detail)
             self.assertEqual(self.typed(host), [])
 
-    def launch_trust(self, accept, screens, tmp_dir="/private/tmp", project=None):
+    def launch_trust(self, accept, screens, tmp_dir=SCRATCH_ROOT, project=None):
         host = base.FakeHostDriver(self, harness="codex", mode="tui", tui_accept_trust=accept, tmp_dir=tmp_dir)
         if project is not None:
             host.driver.project = project
@@ -158,17 +158,19 @@ class CodexTuiLaunchTests(unittest.TestCase):
     FOLDER = "Trust this folder? Codex can read, edit, and run files here.\n› 1. Trust and continue\n  2. Quit\n enter continue"
 
     def test_approved_codex_folder_trust_is_accepted_then_prompt_sent(self):
-        # User decision 2026-09-30: accept Codex folder trust for /private/tmp scratch only (--tui-accept-trust).
+        # User decision 2026-09-30: accept Codex folder trust for scratch under SCRATCH_ROOT only (--tui-accept-trust).
         host, (status, detail, _) = self.launch_trust(True, [self.FOLDER, "OpenAI Codex", "? for shortcuts", "done"])
         self.assertEqual(status, demo.PASS, detail)
         tags = [c[1] for c in host.calls]
         self.assertLess(tags.index("tui:accept-codex-trust:initial"), tags.index("tui:prompt:initial"))
 
     def test_codex_folder_trust_outside_scratch_root_is_refused(self):
-        # tmp_dir=None puts the run root under the platform temp dir (/var/folders on macOS), outside /private/tmp.
-        if str(Path(tempfile.gettempdir()).resolve()).startswith("/private/tmp/"):
-            self.skipTest("gettempdir is under /private/tmp here")
-        host, (status, detail, _) = self.launch_trust(True, [self.FOLDER], tmp_dir=None)
+        # The run root goes under a directory outside SCRATCH_ROOT: the platform temp dir when it is not scratch
+        # (/var/folders on macOS), else /dev/shm, /var/tmp or the home directory (Linux, where gettempdir is /tmp).
+        outside = base.non_scratch_dir()
+        if outside is None:
+            self.skipTest(f"no writable directory outside {SCRATCH_ROOT} here")
+        host, (status, detail, _) = self.launch_trust(True, [self.FOLDER], tmp_dir=outside)
         self.assertEqual(status, demo.FAIL)
         self.assertIn("outside", detail)
         self.assertIn("nothing typed", detail)
@@ -177,13 +179,13 @@ class CodexTuiLaunchTests(unittest.TestCase):
 
     def test_codex_folder_trust_project_moved_outside_root_is_refused(self):
         # The check uses the live project path, not --run-root.
-        host, (status, detail, _) = self.launch_trust(True, [self.FOLDER], project=Path("/private/tmp"))
+        host, (status, detail, _) = self.launch_trust(True, [self.FOLDER], project=Path(SCRATCH_ROOT))
         self.assertEqual(status, demo.FAIL)
         self.assertIn("outside the run root", detail)
         self.assertEqual(self.typed(host), [])
 
     def test_codex_folder_trust_acceptance_is_recorded(self):
-        host = base.FakeHostDriver(self, harness="codex", mode="tui", tui_accept_trust=True, tmp_dir="/private/tmp")
+        host = base.FakeHostDriver(self, harness="codex", mode="tui", tui_accept_trust=True, tmp_dir=SCRATCH_ROOT)
         d = host.driver
         host.wait_state, host.screens = "blocked", [self.FOLDER, "OpenAI Codex", "? for shortcuts", "done"]
         d.facts.update({"agent_pane": "w9:p1", "phase_started_utc": {"initial": "2026-09-30T00:00:00+00:00"}})

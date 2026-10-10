@@ -42,7 +42,7 @@ pub fn is_harness_agent_kind(kind: &str) -> bool {
         .by_host_kind(kind)
         .is_some()
 }
-/// A person acting from their own pane identity (`herdr-threads me init`).
+/// A person acting from their own pane identity (`herdr-threads human me init`).
 pub const OPERATOR_HUMAN_PROVENANCE: &str = "operator_human";
 /// C4: bindings a structural reconfirmation carries to a new host epoch;
 /// native `verified_current_target` bindings re-register instead. The planner

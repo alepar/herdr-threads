@@ -1799,7 +1799,7 @@ fn derive_selection_refuses_human_context_with_agent_marker() {
     let detail = refusal_detail(select(&[("CLAUDECODE", "1")], Ok(None), false).unwrap_err());
     assert!(detail.contains("CLAUDECODE"), "{detail}");
     assert!(
-        detail.contains("herdr-threads me init --operator"),
+        detail.contains("herdr-threads human me init --operator"),
         "{detail}"
     );
     assert!(select(&[("PATH", "/bin")], Ok(None), false).is_ok());
@@ -1812,7 +1812,7 @@ fn derive_selection_refuses_human_context_when_herdr_reports_agent() {
             refusal_detail(select(&[], Ok(Some(observed(Some(kind)))), false).unwrap_err());
         assert!(detail.contains(kind), "{detail}");
         assert!(
-            detail.contains("herdr-threads me init --operator"),
+            detail.contains("herdr-threads human me init --operator"),
             "{detail}"
         );
     }
@@ -4717,4 +4717,450 @@ fn current_main_human_selected_registered_agent_refuses_before_effects() {
     );
     assert_eq!(actor_fixture_snapshot(&root), before);
     assert!(output.is_empty());
+}
+
+/// Ordinary replay uses the production canonical store and domain dispatcher.
+pub(crate) struct OrdinaryHumanRetryFixture {
+    pub(crate) client: OrdinaryReplayClient,
+    pub(crate) dir: std::path::PathBuf,
+    pub(crate) runtime: crate::daemon::paths::RuntimeContext,
+    pub(crate) paths: crate::daemon::paths::InstancePaths,
+    pub(crate) journal: Journal,
+    pub(crate) reference: crate::cli::journal::IntentRef,
+    pub(crate) original: CallerClaim,
+    pub(crate) clock: std::sync::Arc<dyn crate::protocol::time::Clock>,
+}
+pub(crate) struct OrdinaryReplayClient {
+    service: crate::service::dispatch::DomainService,
+    pub(crate) calls: std::sync::Mutex<Vec<Command>>,
+}
+impl crate::ports::LocalClient for OrdinaryReplayClient {
+    fn call(
+        &self,
+        command: Command,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        self.call_with_output(command, &Default::default(), budget)
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        output: &crate::protocol::output::OutputSpec,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        use crate::ports::LocalService;
+        self.calls.lock().unwrap().push(command.clone());
+        self.service.handle_with_output(
+            command,
+            crate::protocol::authority::PeerIdentity::from_kernel(501),
+            budget,
+            output,
+        )
+    }
+}
+impl crate::ports::LocalClient for &OrdinaryReplayClient {
+    fn call(
+        &self,
+        command: Command,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        crate::ports::LocalClient::call(*self, command, budget)
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        output: &crate::protocol::output::OutputSpec,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        crate::ports::LocalClient::call_with_output(*self, command, output, budget)
+    }
+}
+impl OrdinaryHumanRetryFixture {
+    pub(crate) fn new(committed: bool) -> Self {
+        use crate::{
+            harness::context::{OccupantContext, Role, SessionReference},
+            ports::LocalClient,
+            protocol::commands::{CheckIn, CheckInMode},
+        };
+        let dir =
+            std::env::temp_dir().join(format!("ht-ordinary-human-retry-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let runtime = crate::daemon::paths::RuntimeContext::explicit(
+            dir.join("state"),
+            dir.join("host.sock"),
+            None,
+        )
+        .unwrap();
+        let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+        let instance = uuid::Uuid::new_v4();
+        crate::daemon::paths::ensure_owned_state_root(&runtime.state_dir).unwrap();
+        crate::daemon::paths::ensure_private_dir(paths.instance_dir.parent().unwrap()).unwrap();
+        crate::daemon::paths::ensure_private_dir(&paths.instance_dir).unwrap();
+        std::fs::write(&paths.namespace_path, instance.to_string()).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            &paths.namespace_path,
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let clock: std::sync::Arc<dyn crate::protocol::time::Clock> =
+            std::sync::Arc::new(crate::app::SystemClock::new());
+        let context =
+            crate::store::connection::StoreContext::new(dir.join("store.db"), clock.clone());
+        let conn = context.open_writer().unwrap();
+        conn.execute(
+            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)",
+            [&instance.to_string()],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('seat',?1,'resolved','native','w:p1',0,0,0)", [&instance.to_string()]).unwrap();
+        conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,'w:p1','b',1,0,1,'fresh','unknown','unknown',0,0,'term','inc','coherent_enumeration',1)", [&instance.to_string()]).unwrap();
+        drop(conn);
+        let store = std::sync::Arc::new(
+            crate::store::SqliteStore::new(
+                context,
+                instance.to_string(),
+                crate::store::StoreSettings::default(),
+            )
+            .unwrap(),
+        );
+        let client = OrdinaryReplayClient {
+            service: crate::service::dispatch::DomainService::new(
+                instance.to_string(),
+                store,
+                clock.clone(),
+            )
+            .with_cooperative_owner(
+                501,
+                std::sync::Arc::new(crate::service::fair_writer::FairWriter::new(4)),
+            ),
+            calls: Default::default(),
+        };
+        let budget = crate::cli::cooperative_budget(clock.as_ref());
+        let mut original = claim();
+        original.instance = instance.to_string();
+        original.target = HostTargetId::new("w:p1");
+        original.binding_generation = 0;
+        original.harness = Harness::Human;
+        original.execution = ExecutionId::new(uuid::Uuid::new_v4().to_string());
+        original.native_session =
+            NativeSessionId::new(format!("plugin_context:{}", uuid::Uuid::new_v4()));
+        let result = client
+            .call(
+                Command::CheckIn(CheckIn {
+                    claim: original,
+                    operation: OperationId::new("human-initial"),
+                    mode: CheckInMode::Lifecycle {
+                        expected_binding_generation: 0,
+                    },
+                }),
+                &budget,
+            )
+            .unwrap();
+        let CommandResult::CheckedIn(result) = result else {
+            panic!("check-in result")
+        };
+        let original = result.context;
+        let contexts = crate::cli::seat_contexts(&paths, instance, &original.seat).unwrap();
+        let context_for = |claim: &CallerClaim, harness| OccupantContext {
+            format_version: 1,
+            instance,
+            seat: claim.seat.as_str().into(),
+            target: claim.target.as_str().into(),
+            harness,
+            binding_generation: claim.binding_generation,
+            execution: uuid::Uuid::parse_str(claim.execution.as_str()).unwrap(),
+            session: SessionReference::PluginContext(
+                uuid::Uuid::parse_str(
+                    claim
+                        .native_session
+                        .as_str()
+                        .strip_prefix("plugin_context:")
+                        .unwrap(),
+                )
+                .unwrap(),
+            ),
+            role: Role::TopLevel,
+        };
+        let human = context_for(&original, crate::harness::context::Harness::Human);
+        contexts.install_reattached(human).unwrap();
+        let journal = Journal::open(paths.instance_dir.join("intents")).unwrap();
+        let semantic = SemanticMutation::freeze(
+            SemanticMutation::CreateThread {
+                name: None,
+                topic: "historical human topic".into(),
+                goal: "historical goal".into(),
+            },
+            original.clone(),
+        )
+        .unwrap();
+        let reference = journal
+            .record(
+                IntentScope::Cooperative {
+                    instance: original.instance.clone(),
+                    seat: original.seat.clone(),
+                },
+                semantic,
+                1,
+            )
+            .unwrap();
+        if committed {
+            let failure = retry::run_retry_api_to_writer(
+                &journal,
+                &reference,
+                &journal.load(&reference).unwrap().header.scope,
+                || panic!("frozen claim"),
+                |command| client.call(command, &budget),
+                &json_output(),
+                &mut OrdinaryFailedOutput::flush(),
+            );
+            assert!(
+                matches!(failure, Err(retry::RetryFailure::Local(_))),
+                "{failure:?}"
+            );
+        }
+        let mut agent = original.clone();
+        agent.harness = Harness::Codex;
+        agent.execution = ExecutionId::new(uuid::Uuid::new_v4().to_string());
+        agent.native_session =
+            NativeSessionId::new(format!("plugin_context:{}", uuid::Uuid::new_v4()));
+        let result = client
+            .call(
+                Command::CheckIn(CheckIn {
+                    claim: agent,
+                    operation: OperationId::new("agent-successor"),
+                    mode: CheckInMode::Lifecycle {
+                        expected_binding_generation: original.binding_generation,
+                    },
+                }),
+                &budget,
+            )
+            .unwrap();
+        let CommandResult::CheckedIn(result) = result else {
+            panic!("agent check-in result")
+        };
+        contexts
+            .install_reattached(context_for(
+                &result.context,
+                crate::harness::context::Harness::Codex,
+            ))
+            .unwrap();
+        client.calls.lock().unwrap().clear();
+        Self {
+            client,
+            dir,
+            runtime,
+            paths,
+            journal,
+            reference,
+            original,
+            clock,
+        }
+    }
+    pub(crate) fn argv(&self, human: bool) -> Vec<String> {
+        let mut argv = vec!["ht".into()];
+        if human {
+            argv.push("human".into());
+        }
+        argv.extend([
+            "--state-dir".into(),
+            self.runtime.state_dir.to_string_lossy().into_owned(),
+            "--host-endpoint".into(),
+            self.runtime.host_endpoint.to_string_lossy().into_owned(),
+            "--json".into(),
+            "retry".into(),
+            self.reference.recovery_ref(),
+        ]);
+        argv
+    }
+    fn invoke(&self, writer: &mut impl io::Write) -> Result<(), crate::cli::RunError> {
+        let parsed = crate::cli::commands::parse_argv(self.argv(true)).unwrap();
+        let connection = crate::cli::LazyConnection::new(|| {
+            Ok((
+                uuid::Uuid::parse_str(&self.original.instance).unwrap(),
+                &self.client,
+            ))
+        });
+        let selection = crate::cli::derive_selection(
+            &parsed,
+            Some("w:p1"),
+            &self.runtime,
+            &self.paths,
+            &connection,
+            &self.clock,
+        )?;
+        crate::cli::run_selected(
+            parsed,
+            &selection,
+            &self.paths,
+            uuid::Uuid::parse_str(&self.original.instance).unwrap(),
+            &self.client,
+            self.clock.as_ref(),
+            writer,
+        )
+    }
+    pub(crate) fn snapshot(&self) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+        fn visit(
+            root: &std::path::Path,
+            bytes: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+        ) {
+            for entry in std::fs::read_dir(root).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(&path, bytes);
+                } else {
+                    bytes.insert(path.clone(), std::fs::read(path).unwrap());
+                }
+            }
+        }
+        let mut bytes = Default::default();
+        visit(&self.paths.instance_dir, &mut bytes);
+        bytes
+    }
+    fn operation_bytes(&self) -> Vec<(String, Vec<u8>, String)> {
+        let conn = rusqlite::Connection::open(self.dir.join("store.db")).unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT operation_key,digest,result_json FROM operations ORDER BY operation_key",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+}
+impl Drop for OrdinaryHumanRetryFixture {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.dir).unwrap();
+    }
+}
+fn json_output() -> crate::protocol::output::OutputSpec {
+    crate::protocol::output::OutputSpec {
+        format: crate::protocol::output::OutputFormat::Json,
+        ..Default::default()
+    }
+}
+struct OrdinaryFailedOutput {
+    bytes: Vec<u8>,
+    fail_write: bool,
+}
+impl OrdinaryFailedOutput {
+    fn flush() -> Self {
+        Self {
+            bytes: vec![],
+            fail_write: false,
+        }
+    }
+}
+impl io::Write for OrdinaryFailedOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.fail_write {
+            return Err(io::Error::other("ordinary output write interrupted"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Err(io::Error::other("ordinary output flush interrupted"))
+    }
+}
+#[test]
+fn frozen_human_ordinary_retry_after_agent_binding() {
+    let fx = OrdinaryHumanRetryFixture::new(true);
+    let frozen = fx.snapshot();
+    let saved = fx.journal.load(&fx.reference).unwrap();
+    let operations = fx.operation_bytes();
+    let request = saved
+        .semantic
+        .to_command(fx.reference.operation.clone(), Some(fx.original.clone()))
+        .unwrap();
+    let mut flushed = vec![];
+    for fail_write in [true, false] {
+        let mut writer = OrdinaryFailedOutput {
+            bytes: vec![],
+            fail_write,
+        };
+        let failure = fx.invoke(&mut writer).unwrap_err();
+        assert!(
+            matches!(failure, crate::cli::RunError::Io(ref error) if error.to_string().contains("ordinary output")),
+            "{failure:?}"
+        );
+        assert_eq!(
+            fx.snapshot(),
+            frozen,
+            "output failure must retain exact intent and context bytes"
+        );
+        assert_eq!(
+            fx.operation_bytes(),
+            operations,
+            "canonical stored response/digest/key must remain exact"
+        );
+        if !fail_write {
+            flushed = writer.bytes;
+            assert!(!flushed.is_empty());
+        }
+    }
+    let mut output = vec![];
+    fx.invoke(&mut output).unwrap();
+    assert_eq!(output, flushed);
+    assert_eq!(fx.operation_bytes(), operations);
+    assert!(
+        fx.journal.load(&fx.reference).is_err(),
+        "successful flush completes only the retained intent"
+    );
+    let remaining = fx.snapshot();
+    let removed: Vec<_> = frozen
+        .keys()
+        .filter(|path| !remaining.contains_key(*path))
+        .collect();
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].extension().unwrap(), "intent");
+    for (path, bytes) in remaining {
+        assert_eq!(Some(&bytes), frozen.get(&path));
+    }
+    let calls = fx.client.calls.lock().unwrap();
+    let replay: Vec<_> = calls
+        .iter()
+        .filter(|command| matches!(command, Command::CreateThread(_)))
+        .collect();
+    assert_eq!(replay.len(), 3);
+    for command in replay {
+        assert_eq!(
+            serde_json::to_vec(command).unwrap(),
+            serde_json::to_vec(&request).unwrap()
+        );
+    }
+}
+#[test]
+fn frozen_human_ordinary_retry_pending_canonical_refuses() {
+    let fx = OrdinaryHumanRetryFixture::new(false);
+    let frozen = fx.snapshot();
+    let operations = fx.operation_bytes();
+    let mut output = vec![];
+    let failure = fx.invoke(&mut output).unwrap_err();
+    assert!(
+        matches!(failure, crate::cli::RunError::Api(ref error) if error.code == crate::protocol::results::ErrorCode::CallerUnverified),
+        "{failure:?}"
+    );
+    assert!(output.is_empty());
+    assert_eq!(fx.snapshot(), frozen);
+    assert_eq!(fx.operation_bytes(), operations);
+    let conn = rusqlite::Connection::open(fx.dir.join("store.db")).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM threads", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(
+        fx.client
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|command| matches!(command, Command::CreateThread(_))),
+        "refusal must come from canonical replay, after frozen dispatch"
+    );
 }

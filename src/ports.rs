@@ -1300,7 +1300,7 @@ impl BootstrapPaneObservation {
             .verified_structural_proof()
             .ok_or("bootstrap requires qualified same-response pane scope")?;
         if witness.schema != 1
-            || witness.platform != "macos-proc-bsdinfo-v1"
+            || !crate::host::continuity::known_witness_platform(&witness.platform)
             || witness.peer_pid == 0
             || witness.start_seconds == 0
             || witness.start_microseconds >= 1_000_000
@@ -4558,7 +4558,7 @@ impl CreatedTab {
         );
         let prefix = format!("{}:", self.workspace.as_str());
         if w.schema != 1
-            || w.platform != "macos-proc-bsdinfo-v1"
+            || !crate::host::continuity::known_witness_platform(&w.platform)
             || w.peer_pid == 0
             || w.start_seconds == 0
             || w.start_microseconds >= 1_000_000

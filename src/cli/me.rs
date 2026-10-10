@@ -38,11 +38,13 @@ use std::{io::Write, sync::Arc};
 pub const ME_INIT_HELP: &str = "Run it in your own shell pane, then use `ht human` for thread create, invite, send, \
 read, ack and accept there with no --cooperative-* flags. Your actions are recorded as \
 operator_human, never as an agent. Messages remain readable, but a human seat owes no ACK and \
-gets no overdue-ACK warning, even when a sender uses --require-ack. Re-run `human me init` after a daemon restart to \
+gets no overdue-ACK warning, even when a sender uses --require-ack. Re-run `ht human me init` after a daemon restart to \
 mark yourself available again. It is refused where agent markers (CLAUDECODE, CODEX_SANDBOX, \
 CODEX_SANDBOX_NETWORK_DISABLED) or a Claude or Codex agent reported by Herdr are present, and over \
-a seat bound to an agent; `human me init --operator` overrides that as the local account (later \
-commands in this pane then run as you).";
+a seat bound to an agent; `ht human me init --operator` overrides that as the local account (later \
+commands in this pane then run as you). Put --state-dir, --host-endpoint and output flags \
+after human. --human changes output only. Recover retained person/operator intents with \
+`ht human retry REF`.";
 
 fn budget(clock: &dyn Clock, millis: u64) -> CallBudget {
     CallBudget {

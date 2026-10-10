@@ -61,7 +61,8 @@ fn bytes(v: &Value) -> Vec<u8> {
     serde_json::to_vec(v).unwrap()
 }
 fn private_dir(label: &str) -> PathBuf {
-    let p = PathBuf::from("/private/tmp").join(format!("ht-codex-{label}-{}", Uuid::new_v4()));
+    let p = PathBuf::from(crate::test_support::SHORT_TMP)
+        .join(format!("ht-codex-{label}-{}", Uuid::new_v4()));
     std::fs::create_dir(&p).unwrap();
     #[cfg(unix)]
     {

@@ -2,14 +2,14 @@
 //! detached daemon, the installed hook and a stand-in Herdr that runs as its
 //! own process. A new Herdr process is a new server incarnation to the
 //! daemon's kernel peer witness, so a restart of the stand-in is exactly the
-//! "Herdr incarnation change" of TRUST-POLICY C2 (macOS only: elsewhere the
+//! "Herdr incarnation change" of TRUST-POLICY C2 (macOS and Linux: elsewhere the
 //! adapter never produces a verified incarnation). No model runs; the agent's
 //! hook payloads are the native JSON a harness would write on stdin.
 //!
 //! The stand-in re-reads its scripted pane file on every request and records
 //! every `agent.prompt` it receives, so a test changes what Herdr "sees" (an
 //! agent appearing in a pane, a failing read) without restarting it.
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use super::sweep::{Scratch, agent_pane, host_reply, pane};
 use herdr_threads::test_support::spawn::SpawnOwned;
@@ -754,12 +754,12 @@ fn f6_walking_skeleton() {
     let text = refused.refused("rebind onto an owned target").to_owned();
     assert!(text.contains(&n1), "{text}");
     assert!(
-        text.contains(&format!("herdr-threads seat retire {b} --operator")),
+        text.contains(&format!("herdr-threads human seat retire {b} --operator")),
         "{text}"
     );
     assert!(
         text.contains(&format!(
-            "herdr-threads seat rebind {b} --pane w1:p2 --replace {n1} --operator"
+            "herdr-threads human seat rebind {b} --pane w1:p2 --replace {n1} --operator"
         )),
         "{text}"
     );

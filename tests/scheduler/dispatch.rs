@@ -3422,14 +3422,14 @@ fn cached_current_target_response_does_not_authorize_a_prompt() {
 /// ping+operation exchange per connection, answering `pane.get`,
 /// `agent.get` (with the current agent status, or `agent_not_found` for a
 /// shell) and `agent.prompt`, recording every operation and prompt text.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 struct FakeHerdr {
     socket: std::path::PathBuf,
     status: Arc<Mutex<&'static str>>,
     methods: Arc<Mutex<Vec<String>>>,
     prompts: Arc<Mutex<Vec<String>>>,
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl FakeHerdr {
     fn start(status: &'static str) -> Self {
         use std::io::{BufRead, BufReader, Write};
@@ -3512,7 +3512,7 @@ impl FakeHerdr {
 /// writes one durable warning and the wake lane submits exactly one
 /// coalesced prompt, only after the fresh agent recheck. The minimum spacing
 /// then holds the seat, and a working or shell target is never prompted.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
     for (status, expect_prompt) in [

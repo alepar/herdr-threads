@@ -14,10 +14,6 @@ use std::{
 use uuid::Uuid;
 
 const MAX_SETTINGS_BYTES: u64 = 4_096;
-#[cfg(target_os = "macos")]
-const O_NOFOLLOW: i32 = 0x0000_0100;
-#[cfg(target_os = "linux")]
-const O_NOFOLLOW: i32 = 0x0002_0000;
 
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
@@ -103,7 +99,7 @@ impl ServiceConfig {
         }
         let mut file = OpenOptions::new()
             .read(true)
-            .custom_flags(O_NOFOLLOW)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(&path)?;
         let opened = file.metadata()?;
         let after = fs::symlink_metadata(&path)?;

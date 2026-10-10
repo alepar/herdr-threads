@@ -94,6 +94,136 @@ pub fn render_now() -> UtcMillis {
     })
 }
 
+// Local command spelling only; never serialized or used as authority. Producers
+// enter this scope from a known caller/action before measuring their page.
+thread_local! {
+    static HUMAN_COMMANDS: Cell<bool> = const { Cell::new(false) };
+}
+
+pub struct CommandNamespaceGuard(bool);
+
+impl CommandNamespaceGuard {
+    pub fn enter(human: bool) -> Self {
+        Self(HUMAN_COMMANDS.with(|cell| cell.replace(human)))
+    }
+}
+
+impl Drop for CommandNamespaceGuard {
+    fn drop(&mut self) {
+        HUMAN_COMMANDS.with(|cell| cell.set(self.0));
+    }
+}
+
+pub fn human_commands() -> bool {
+    HUMAN_COMMANDS.with(Cell::get)
+}
+
+/// A check-in result itself retains its original caller, including historical
+/// responses. Subject seats, authorship labels and output format are not callers.
+pub fn result_human_commands(result: &CommandResult) -> bool {
+    match result {
+        CommandResult::CheckedIn(check) => {
+            check.context.harness == super::authority::Harness::Human
+        }
+        _ => human_commands(),
+    }
+}
+
+/// Only call on a declared command argv, never on peer data or arbitrary JSON.
+pub fn namespace_argv(argv: &mut Vec<String>) {
+    if human_commands() && argv.len() > 1 && argv[1] != "human" {
+        argv.insert(1, "human".into());
+    }
+}
+
+fn namespace_optional(argv: &mut Option<Vec<String>>) {
+    if let Some(argv) = argv {
+        namespace_argv(argv);
+    }
+}
+
+pub fn namespace_error(error: &mut ApiError) {
+    namespace_optional(&mut error.restart_argv);
+}
+
+fn namespace_page<T>(page: &mut super::pagination::Page<T>) {
+    namespace_optional(&mut page.next_argv);
+}
+
+/// Transform just the protocol's declared command fields on a rendering copy.
+/// Unknown variants and all peer strings, event JSON, cursors and rows stay intact.
+pub fn namespace_result(result: &mut CommandResult) {
+    use super::results::{MessageContent, SearchHit};
+    fn message(summary: &mut MessageSummary) {
+        namespace_optional(&mut summary.preview_detail_argv);
+    }
+    fn topic(summary: &mut ThreadSummary) {
+        namespace_optional(&mut summary.topic_detail_argv);
+    }
+    match result {
+        CommandResult::Directory(page) => {
+            namespace_page(page);
+            for summary in &mut page.items {
+                topic(summary);
+            }
+        }
+        CommandResult::History(page) => {
+            namespace_page(page);
+            for summary in &mut page.items {
+                message(summary);
+            }
+        }
+        CommandResult::Search(search) => {
+            namespace_page(&mut search.matches);
+            for hit in &mut search.matches.items {
+                match hit {
+                    SearchHit::Topic(summary) => topic(summary),
+                    SearchHit::Body(summary) => message(summary),
+                }
+            }
+        }
+        CommandResult::Thread(details) => {
+            topic(&mut details.summary);
+            namespace_page(&mut details.participants);
+            namespace_argv(&mut details.pending_receipts_argv);
+        }
+        CommandResult::Message(details) => {
+            message(&mut details.summary);
+            if let MessageContent::Ordinary { body_next_argv, .. } = &mut details.content {
+                namespace_optional(body_next_argv);
+            }
+        }
+        CommandResult::DeliveryInspect(details) => {
+            message(&mut details.message);
+            namespace_page(&mut details.recipients);
+        }
+        CommandResult::SeatInspect(details) => {
+            namespace_optional(&mut details.mapping.detail_argv);
+            if let Some(hold) = &mut details.hold {
+                namespace_argv(&mut hold.detail_argv);
+            }
+            namespace_page(&mut details.history);
+        }
+        CommandResult::CheckedIn(check) => {
+            namespace_page(&mut check.inbox);
+            namespace_page(&mut check.warnings);
+        }
+        CommandResult::CachedCheckInPage(page) => namespace_optional(&mut page.next_argv),
+        CommandResult::Seats(page) => namespace_page(page),
+        CommandResult::Inbox(page) => namespace_page(page),
+        CommandResult::InboxBatch(page) => namespace_page(page),
+        CommandResult::Warnings(page) | CommandResult::ActiveWarnings(page) => namespace_page(page),
+        CommandResult::Participants(page) => namespace_page(page),
+        CommandResult::Recipients(page) => namespace_page(page),
+        CommandResult::WarningRecipients(page) => namespace_page(page),
+        CommandResult::PendingReceipts(page) => namespace_page(page),
+        CommandResult::LocalIntents(page) => namespace_page(page),
+        CommandResult::Diagnostics(page) => namespace_page(page),
+        CommandResult::RetirementJobs(page) => namespace_page(page),
+        _ => {}
+    }
+}
+
 /// `(month, day)` of `at` (UTC) when its UTC date is not the render-time
 /// date (earlier or later), else `None`. A bare time on another day is
 /// ambiguous in both directions, so renderers qualify both.
@@ -122,6 +252,7 @@ pub type SelectedEncoder = fn(&CommandResult, &OutputSpec) -> Result<Vec<u8>, Ap
 /// Encode the selected CLI representation, including its terminal newline.
 pub fn encode_selected(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, ApiError> {
     spec.validate().map_err(ApiError::invalid_request)?;
+    let _namespace = CommandNamespaceGuard::enter(result_human_commands(result));
     let selected = selected_result(result, spec);
     #[derive(Serialize)]
     struct Envelope<'a> {
@@ -160,6 +291,7 @@ pub fn encode_selected(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<
 
 /// Apply the selected snippet caps and detail commands without encoding.
 pub fn selected_result(result: &CommandResult, spec: &OutputSpec) -> CommandResult {
+    let _namespace = CommandNamespaceGuard::enter(result_human_commands(result));
     let mut selected = result.clone();
     match &mut selected {
         CommandResult::Directory(page) => {
@@ -184,6 +316,7 @@ pub fn selected_result(result: &CommandResult, spec: &OutputSpec) -> CommandResu
         CommandResult::Message(detail) => cap_preview(&mut detail.summary, spec),
         _ => {}
     }
+    namespace_result(&mut selected);
     selected
 }
 
@@ -288,6 +421,7 @@ pub(crate) fn detail_argv(spec: &OutputSpec, command: &[&str]) -> Vec<String> {
         argv.push("--json".into());
     }
     argv.extend(command.iter().map(|part| (*part).into()));
+    namespace_argv(&mut argv);
     argv
 }
 

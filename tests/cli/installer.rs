@@ -103,13 +103,61 @@ fn separate_missing_decisions_and_owned_updates_have_independent_side_effects() 
     for entry in report["integrations"].as_array().unwrap() {
         assert_eq!(
             entry["outcome"],
-            if entry["component"] == "skill" {
-                "updated"
-            } else {
-                "declined"
+            match entry["component"].as_str() {
+                Some("skill") => "updated",
+                // Permissions follow the hooks: never granted where the hooks were declined.
+                Some("permissions") => "skipped",
+                _ => "declined",
             }
         );
     }
+}
+
+// The permissions component is asked separately, only once the hooks are in place, and a no
+// leaves the hooks installed without a grant; --without-permissions never asks.
+#[test]
+fn permissions_are_a_separate_decision_after_the_hooks() {
+    let f = Fixture::new();
+    let mut prompts = Vec::new();
+    let report = execute(&f.env, false, true, |question| {
+        prompts.push(question.to_owned());
+        Ok(!question.contains("claude run"))
+    });
+    assert_eq!(report["exit_status"], 0, "{report}");
+    assert!(
+        prompts.contains(&super::permission_question("claude")),
+        "{prompts:?}"
+    );
+    assert!(
+        prompts.contains(&super::permission_question("codex")),
+        "{prompts:?}"
+    );
+    let outcome = |harness: &str| {
+        report["integrations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["harness"] == harness && e["component"] == "permissions")
+            .map(|e| e["outcome"].clone())
+    };
+    assert_eq!(outcome("claude"), Some(json!("declined")));
+    assert_eq!(outcome("codex"), Some(json!("installed")));
+    assert!(f.root.join("codex/rules/herdr-threads.rules").exists());
+    let settings = fs::read_to_string(f.root.join("claude/settings.json")).unwrap();
+    assert!(!settings.contains("Bash(herdr-threads *)"), "{settings}");
+    let again = super::execute_with(&f.env, false, true, true, |question| {
+        assert!(!question.contains("without prompting"), "{question}");
+        Ok(true)
+    });
+    let claude = again["integrations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["harness"] == "claude" && e["component"] == "permissions")
+        .unwrap()
+        .clone();
+    assert_eq!(claude["outcome"], "skipped");
+    assert_eq!(claude["detail"], "--without-permissions");
 }
 
 // Kills adopting a skill directory created by another writer while the user considers consent.

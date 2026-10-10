@@ -3,7 +3,7 @@
 #
 # A mad tea party where Claude and Codex agents talk to each other.
 # Creates a fresh Herdr workspace with a host, a coordinator and four guests:
-#   - a coordinator shell pane: `herdr-threads me init`, then a live IRC-style
+#   - a coordinator shell pane: `herdr-threads human me init`, then a live IRC-style
 #     view of the tea-party thread (`herdr-threads read THREAD --follow`);
 #   - a Claude host pane, launched with ordinary `herdr-threads launch` into
 #     its frozen pane ID. The script creates four guest panes; the host creates
@@ -225,7 +225,7 @@ herdr workspace create --label $(quote "$label") --cwd $(quote "$cwd") $(focus_f
 #   -> HOST=frozen host pane ID; host and guests remain in this created tab
 # panes named: $(quote "$host_pane") $guests $(quote "$coord_pane")
 # Codex guest environment: $(quote "CODEX_HOME=$codex_home")
-herdr pane run "\$COORD" 'herdr-threads me init'
+herdr pane run "\$COORD" 'herdr-threads human me init'
 herdr pane wait-output "\$COORD" --match 'You are seat' --timeout 30000
 #   -> COORDINATOR_SEAT read from the coordinator pane
 herdr-threads launch --pane "\$HOST" --kind claude -- $(join_quoted "${host_native[@]}") "\$HOST_PROMPT"
@@ -297,7 +297,7 @@ herdr pane rename "$host" "$host_pane" >/dev/null
 herdr pane rename "$coord" "$coord_pane" >/dev/null
 say "host pane $host, coordinator pane $coord"
 
-herdr pane run "$coord" "herdr-threads me init" >/dev/null
+herdr pane run "$coord" "herdr-threads human me init" >/dev/null
 herdr pane wait-output "$coord" --match "You are seat" --timeout 30000 >/dev/null ||
     die "me init did not report a seat in the coordinator pane"
 coordinator_seat=$(herdr pane read "$coord" --source recent-unwrapped --lines 40 |

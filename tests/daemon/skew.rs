@@ -84,7 +84,8 @@ struct Scratch {
 impl Scratch {
     fn new() -> Self {
         let root = PathBuf::from(format!(
-            "/private/tmp/htsk-{}",
+            "{}/htsk-{}",
+            herdr_threads::test_support::SHORT_TMP,
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -102,11 +103,15 @@ impl Scratch {
     /// This CLI with the scratch context (isolated HOME and harness config).
     fn cli(&self, args: &[&str]) -> Output {
         crate::scrubbed_command(BIN)
-            .arg("--state-dir")
-            .arg(&self.state)
-            .arg("--host-endpoint")
-            .arg(&self.host)
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.state),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.host),
+                ],
+                args,
+            ))
             .env("HOME", self.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"))
             .env("CODEX_HOME", self.root.join("codex-home"))

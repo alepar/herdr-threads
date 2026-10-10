@@ -205,14 +205,24 @@ install --version v0.1.0
 pass "pinned install exits 0"
 expect "final status line: installed and linked" [ "$(last_line)" = "installed and linked: herdr-threads 0.1.0" ]
 expect "piped installer output has no ANSI color" bash -c "! grep -q $'\\033' '$out'"
-if [ "$(uname -s)" = Darwin ]; then
-    (cd "$root/cwd" && script -q "$root/color.log" "${run_env[@]}" TERM=xterm \
+# Run a command on a pseudo-terminal, recording its output in LOG (BSD and util-linux script differ).
+pty_run() {
+    local log=$1
+    shift
+    if [ "$(uname -s)" = Darwin ]; then
+        script -q "$log" "$@"
+    else
+        script -q -e -c "$(printf '%q ' "$@")" "$log"
+    fi
+}
+if command -v script > /dev/null || fail "script(1) is needed for the terminal color checks"; then
+    (cd "$root/cwd" && pty_run "$root/color.log" "${run_env[@]}" TERM=xterm \
         bash "$repo/scripts/install.sh" --release-url "file://$rel" --version v0.1.0 --no-setup < /dev/null > /dev/null 2>&1)
     expect "terminal status is colored" grep -q $'\033\[1;32m' "$root/color.log"
-    (cd "$root/cwd" && script -q "$root/no-color.log" "${run_env[@]}" TERM=xterm NO_COLOR=1 \
+    (cd "$root/cwd" && pty_run "$root/no-color.log" "${run_env[@]}" TERM=xterm NO_COLOR=1 \
         bash "$repo/scripts/install.sh" --release-url "file://$rel" --version v0.1.0 --no-setup < /dev/null > /dev/null 2>&1)
     expect "NO_COLOR suppresses terminal ANSI color" bash -c "! grep -q $'\\033' '$root/no-color.log'"
-    (cd "$root/cwd" && script -q "$root/dumb-color.log" "${run_env[@]}" TERM=dumb \
+    (cd "$root/cwd" && pty_run "$root/dumb-color.log" "${run_env[@]}" TERM=dumb \
         bash "$repo/scripts/install.sh" --release-url "file://$rel" --version v0.1.0 --no-setup < /dev/null > /dev/null 2>&1)
     expect "TERM=dumb suppresses terminal ANSI color" bash -c "! grep -q $'\\033' '$root/dumb-color.log'"
 fi

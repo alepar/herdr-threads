@@ -1884,6 +1884,7 @@ fn invalid_inbox_completion_writes_no_state() {
         target: HostTargetId::new("p"),
     };
     let completion = CompleteInboxDelivery {
+        via: None,
         messages: vec![MessageId::new("m")],
         operation: OperationId::new("done"),
         claim: claim.clone(),

@@ -233,7 +233,8 @@ fn percentile(samples: &mut [Duration], pct: usize) -> Duration {
 #[test]
 fn history_and_health_stay_fast_under_a_party_with_a_slow_host() {
     let root = PathBuf::from(format!(
-        "/private/tmp/htlat-{}",
+        "{}/htlat-{}",
+        herdr_threads::test_support::SHORT_TMP,
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();

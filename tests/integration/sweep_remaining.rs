@@ -2609,7 +2609,8 @@ fn startup_failure_lane_failure_and_skew_reach_the_operator() {
     // 1. Startup failure, in its own state directory.
     {
         let root = std::path::PathBuf::from(format!(
-            "/private/tmp/hosw-{}",
+            "{}/hosw-{}",
+            herdr_threads::test_support::SHORT_TMP,
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));
         let state = root.join("st");

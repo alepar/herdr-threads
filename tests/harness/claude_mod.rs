@@ -662,3 +662,21 @@ fn inspect_reports_installed_launch_and_mismatch() {
     assert_eq!(bare.installed_launch, None);
     assert!(bare.launch_current);
 }
+
+/// Kills a mod install or revert that edits settings.json without keeping the prior version.
+#[test]
+fn install_and_revert_back_up_settings() {
+    use crate::harness::setup::user_config_backups;
+    let original = b"{\"model\":\"x\"}".to_vec();
+    let f = Fixture::new(&original);
+    f.plain();
+    let installed = fs::read(&f.settings).unwrap();
+    assert_eq!(
+        user_config_backups(&f.settings),
+        std::slice::from_ref(&original)
+    );
+    assert_eq!(f.revert(), RevertOutcome::Reverted);
+    let mut expected = vec![original, installed];
+    expected.sort();
+    assert_eq!(user_config_backups(&f.settings), expected);
+}

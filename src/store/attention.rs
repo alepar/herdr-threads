@@ -350,11 +350,13 @@ pub fn seat_digest(
             warning: pair(frontier.actionable_warning),
             unavailability_episode: u64::try_from(episode)
                 .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative episode"))?,
+            lazy: None,
         },
         invitations: with_requirements(db, seat_id, invitation_class)?,
         receipts: receipt_class,
         warnings: class(&warnings)?,
         unavailability_open: open != 0,
+        lazy: None,
         mod_channel_live: false,
     };
     Ok(DigestRun {
@@ -366,6 +368,66 @@ pub fn seat_digest(
             + receipt_thread_steps,
         warnings,
     })
+}
+
+/// The seat's pending published lazy rows: one `WINDOW` walk of the pending
+/// seat/ordinal index, newest ordinal first, taken before any publication
+/// filter so an unpublished backlog cannot stretch it. Each windowed row
+/// counts only when its manifest is published in this instance up to the
+/// host decision sequence `through`; its key is (publication decision
+/// sequence, recipient ordinal). Lazy rows never enter the wake frontier
+/// (`wake_seat_attention` does not read them).
+pub fn pending_lazy(
+    db: &Connection,
+    instance: &str,
+    seat_id: &str,
+    through: i64,
+) -> Result<PendingSet, ApiError> {
+    let window = rows(
+        db,
+        "SELECT w.ordinal,w.message_id,w.thread_id,(SELECT sm.decision_seq FROM send_manifests sm JOIN messages m ON m.id=sm.message_id WHERE sm.preparation_id=w.preparation_id AND sm.message_id=w.message_id AND sm.instance_id=?3 AND sm.decision_seq<=?4 AND m.delivery_mode='lazy') FROM (SELECT ordinal,preparation_id,message_id,thread_id FROM lazy_recipients INDEXED BY lazy_recipients_pending_seat_ordinal WHERE seat_id=?1 AND state='pending' ORDER BY ordinal DESC LIMIT ?2) w",
+        params![seat_id, WINDOW_SQL, instance, through],
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+            ))
+        },
+    )?;
+    let mut gather = Gather::default();
+    gather.window(window.len());
+    for (ordinal, id, thread_id, published) in window {
+        if let Some(decision) = published {
+            gather.add(PendingItem {
+                id,
+                thread_id,
+                key: (decision, ordinal),
+            });
+        }
+    }
+    Ok(gather.finish())
+}
+
+/// Add the lazy class and the token's lazy key to a digest that asked for
+/// them (`AttentionDigestQuery.lazy`).
+pub fn add_lazy(
+    db: &Connection,
+    instance: &str,
+    digest: &mut AttentionDigest,
+) -> Result<(), ApiError> {
+    let through: i64 = db
+        .query_row(
+            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let lazy = pending_lazy(db, instance, digest.seat.as_str(), through)?;
+    digest.token.lazy = frontier_key(&lazy)?.map(|k| (k.decision_seq, k.event_offset));
+    digest.lazy = Some(class(&lazy)?);
+    Ok(())
 }
 
 /// The seat's pending invitations (optionally in one thread): one `WINDOW`

@@ -100,9 +100,15 @@ impl Smoke {
         fs::create_dir_all(&smoke.cwd).unwrap();
         smoke.write_settings();
         smoke.herdr.start();
-        let setup = smoke
-            .cli()
-            .args(["setup", "hermes", "--profile", "work", "--harness-binary"])
+        // `setup` takes every option after the subcommand.
+        let mut setup = smoke.base(spawn::command(BIN));
+        spawn::tag(&mut setup);
+        let setup = setup
+            .args(["setup", "hermes", "--json", "--state-dir"])
+            .arg(&smoke.state)
+            .arg("--host-endpoint")
+            .arg(smoke.herdr.socket_path())
+            .args(["--profile", "work", "--harness-binary"])
             .arg(&smoke.launcher)
             .output()
             .unwrap();

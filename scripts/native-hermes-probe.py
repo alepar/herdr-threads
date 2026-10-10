@@ -29,6 +29,8 @@ STAGES = ('source_capture', 'recognition', 'plugin_discovery', 'enablement',
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_CAP = 65536
 ERROR_CAP = 8192
+# The platform scratch root an isolation root must live under: /private/tmp on macOS, /tmp on Linux.
+SCRATCH_ROOT = '/private/tmp' if sys.platform == 'darwin' else '/tmp'
 
 
 def token(value, cap=4096):
@@ -95,7 +97,7 @@ def validate(data):
         if not token(data[key]) or not os.path.isabs(data[key]):
             raise ValueError('input_path')
     root = Path(data['isolation_root']).resolve(strict=True)
-    if root == Path('/') or root == Path.home() or not str(root).startswith('/private/tmp/'):
+    if root == Path('/') or root == Path.home() or not str(root).startswith(SCRATCH_ROOT + '/'):
         raise ValueError('isolated_private_tmp_required')
     for key in ('home', 'physical_home', 'state_root', 'host_endpoint'):
         if not Path(data[key]).resolve().is_relative_to(root):
@@ -259,7 +261,7 @@ def isolated_environment(data, mode):
                HERDR_SOCKET_PATH=data['host_endpoint'],
                HERDR_PLUGIN_STATE_DIR=data['state_root'], HERDR_CONFIG_PATH=str(root/'herdr.toml'),
                XDG_CONFIG_HOME=str(root/'config'), XDG_STATE_HOME=str(root/'xdg-state'),
-               XDG_RUNTIME_DIR=str(root/'runtime'), TMPDIR='/private/tmp', PYTHONDONTWRITEBYTECODE='1')
+               XDG_RUNTIME_DIR=str(root/'runtime'), TMPDIR=SCRATCH_ROOT, PYTHONDONTWRITEBYTECODE='1')
     return env
 
 

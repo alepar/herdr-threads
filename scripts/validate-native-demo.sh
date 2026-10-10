@@ -113,12 +113,25 @@ cell_flags() {
 
 cell_claude_version() { echo "${HT_CLAUDE_VERSION:-2.1.287}"; }
 
+scratch_root() { # the private scratch root: /private/tmp on macOS, /tmp elsewhere
+    if [ "$(uname -s)" = Darwin ]; then echo /private/tmp; else echo /tmp; fi
+}
+private_dir() { # creates DIR (mode 700) or accepts it only when it is a real directory this user owns and only
+    # this user can write: the scratch root is shared, so another account could pre-create a predictable path
+    # (the Claude shim directory goes on PATH)
+    [ -L "$1" ] || mkdir -p -m 700 "$1" 2>/dev/null
+    if [ -L "$1" ] || [ ! -d "$1" ] || [ ! -O "$1" ] || [ -n "$(find "$1" -maxdepth 0 \( -perm -g+w -o -perm -o+w \))" ]; then
+        echo "cell: $1 is not a private directory owned by $(id -un)" >&2
+        return 1
+    fi
+}
 cell_claude_prefix() { # pins the versioned Claude binary on a run-root PATH entry; prints the entry
     v=$(cell_claude_version)
     bin=${HT_CLAUDE_BIN:-$HOME/.local/share/claude/versions/$v}
     [ -x "$bin" ] || { echo "cell: claude $v binary not found at $bin (set HT_CLAUDE_BIN)" >&2; return 1; }
-    shim=${HT_CLAUDE_SHIM:-/private/tmp/ht-cell-claude-$v}/shim
-    mkdir -p "$shim" && ln -sf "$bin" "$shim/claude"
+    base=${HT_CLAUDE_SHIM:-$(scratch_root)/ht-cell-claude-$v}
+    shim=$base/shim
+    private_dir "$base" && private_dir "$shim" && ln -sf "$bin" "$shim/claude" || return 1
     echo "$shim"
 }
 
@@ -155,8 +168,10 @@ run_cell() {
     repo=$(CDPATH='' cd "$script_dir/.." && pwd -P)
     sha=$(git -C "$repo" rev-parse HEAD)
     flags=$(cell_flags "$name") || { echo "cell: unknown cell '$name' (try --cell list)" >&2; return 2; }
-    out=${HT_CELL_OUT:-/private/tmp/ht-cell}/$name-$(date +%Y%m%d-%H%M%S)
-    mkdir -p "$out"
+    out_base=${HT_CELL_OUT:-$(scratch_root)/ht-cell}
+    private_dir "$out_base" || return 1
+    out=$out_base/$name-$(date +%Y%m%d-%H%M%S)
+    mkdir -m 700 "$out" || return 1
     harness=${flags#--harness }; harness=${harness%% *}
     harness_bin=$harness
     case "$flags" in

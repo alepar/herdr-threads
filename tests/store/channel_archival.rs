@@ -852,7 +852,7 @@ fn archival_connection_epoch_change_accepts_new_order_but_rejects_delayed_old_ep
 // SOURCE_UNCOMPILED_UNEXECUTED. Additive draft for tests/store/channel_archival.rs.
 // Not a new test target or product module. Rebind to the actual B4 successor.
 // Uses only existing BASE APIs, including the one-field ComposerObservation.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod archival_actual_producer_base_fixture {
     use herdr_threads::{
         host::native::NativeCli,
@@ -904,8 +904,11 @@ mod archival_actual_producer_base_fixture {
             Self::configured(kind, capture, "idle")
         }
         fn configured(kind: &'static str, capture: &'static str, status: &'static str) -> Self {
-            let socket =
-                PathBuf::from(format!("/private/tmp/ha-{}", uuid::Uuid::new_v4().simple()));
+            let socket = PathBuf::from(format!(
+                "{}/ha-{}",
+                herdr_threads::test_support::SHORT_TMP,
+                uuid::Uuid::new_v4().simple()
+            ));
             assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
             let listener = UnixListener::bind(&socket).expect("owned fixture socket bind");
             // Guard owns the pathname before every later fallible operation.
@@ -1727,7 +1730,7 @@ mod archival_actual_producer_base_fixture {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn native_archival_none_occupant_reaches_canonical_sample() {
     archival_actual_producer_base_fixture::run_both_captured_grammars();
@@ -1837,12 +1840,12 @@ fn registered_composer_archival_ticket_and_scheduler_preserve_identity() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn archival_actual_producer_full_grace_and_authority_are_exact() {
     archival_actual_producer_base_fixture::full_grace_actual_producers();
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn archival_actual_producer_parser_mismatch_and_absence_refuse() {
     archival_actual_producer_base_fixture::actual_parser_negatives();
@@ -2015,7 +2018,7 @@ fn archival_stale_sample_harness_cannot_pass_final_member_scan() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn archival_registered_alias_family_actual_producer_and_poke() {
     archival_actual_producer_base_fixture::registered_alias_family_actual_producer_and_poke();

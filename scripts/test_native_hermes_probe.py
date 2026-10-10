@@ -17,11 +17,24 @@ DRIVER = Path(__file__).with_name('native-hermes-probe.py')
 STAGES = ('source_capture', 'recognition', 'plugin_discovery', 'enablement',
           'guarded_launch', 'callback_context', 'child', 'model_accept',
           'model_inbox', 'model_read', 'model_ack', 'reset')
+# The platform scratch root the driver requires the isolation root under: /private/tmp on macOS, /tmp on Linux.
+SCRATCH_ROOT = '/private/tmp' if sys.platform == 'darwin' else '/tmp'
+
+
+def non_scratch_dir():
+    """A writable existing directory outside SCRATCH_ROOT (the platform temp dir when it is not scratch, else
+    /dev/shm, /var/tmp or the home directory), or None."""
+    for candidate in (tempfile.gettempdir(), '/dev/shm', '/var/tmp', str(Path.home())):
+        path = Path(candidate).resolve()
+        if (path.is_dir() and os.access(path, os.W_OK | os.X_OK)
+                and str(path) != SCRATCH_ROOT and not str(path).startswith(SCRATCH_ROOT + '/')):
+            return str(path)
+    return None
 
 
 class NativeHermesProbeTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='ht-hermes-driver-', dir='/private/tmp')
+        self.tmp = tempfile.TemporaryDirectory(prefix='ht-hermes-driver-', dir=SCRATCH_ROOT)
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.fake = self.root / 'explicit synthetic executable.py'
@@ -80,7 +93,7 @@ elif mode=='cleanup':
         process = subprocess.Popen([sys.executable,'-I','-B',str(DRIVER),'--'+mode,
                                    '--input',str(path),'--result',str(result)],
                                   stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,
-                                  env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',TMPDIR='/private/tmp'))
+                                  env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1',TMPDIR=SCRATCH_ROOT))
         try:
             out, err = process.communicate(timeout=12)
         finally:
@@ -182,6 +195,20 @@ elif mode=='cleanup':
         module=importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
+
+    def test_isolation_root_outside_the_scratch_root_is_refused(self):
+        driver=self.driver_module()
+        self.assertEqual(driver.SCRATCH_ROOT,SCRATCH_ROOT)
+        driver.validate(json.loads(json.dumps(self.input)))  # the scratch fixture itself is accepted
+        outside=non_scratch_dir()
+        if outside is None:
+            self.skipTest(f'no writable directory outside {SCRATCH_ROOT} here')
+        elsewhere=tempfile.TemporaryDirectory(prefix='ht-hermes-outside-',dir=outside)
+        self.addCleanup(elsewhere.cleanup)
+        for root in (elsewhere.name,str(self.root)+'/../..'):
+            bad=json.loads(json.dumps(self.input));bad['isolation_root']=root
+            with self.subTest(root=root),self.assertRaisesRegex(ValueError,'isolated_private_tmp_required'):
+                driver.validate(bad)
 
     def test_real_native_command_contract_and_cli_start_consumer(self):
         """Source-only argv/decoder test; does not run native commands."""

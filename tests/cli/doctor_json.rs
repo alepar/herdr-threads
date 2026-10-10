@@ -1222,6 +1222,7 @@ fn doctor_actual_fix_discards_wrong_scope_capture_and_owned_repair() {
             [
                 std::ffi::OsString::from("herdr-threads"),
                 "doctor".into(),
+                "fix".into(),
                 "--json".into(),
                 "--harness".into(),
                 "fourth".into(),
@@ -1231,7 +1232,6 @@ fn doctor_actual_fix_discards_wrong_scope_capture_and_owned_repair() {
                 state.clone().into_os_string(),
                 "--host-endpoint".into(),
                 host.clone().into_os_string(),
-                "fix".into(),
             ],
             &registry,
         )

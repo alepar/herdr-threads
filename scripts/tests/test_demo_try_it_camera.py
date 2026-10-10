@@ -9,13 +9,16 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+import sys
+
+SCRATCH_ROOT = "/private/tmp" if sys.platform == "darwin" else "/tmp"
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 
 
 class CameraTests(unittest.TestCase):
     def run_camera(self, action, setup_failure=False):
-        with tempfile.TemporaryDirectory(prefix="ht-try-it.", dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(prefix="ht-try-it.", dir=SCRATCH_ROOT) as directory:
             root = Path(directory)
             client = root / "herdr"
             client.write_text("#!/usr/bin/env python3\nimport os,signal,time\n"
@@ -75,7 +78,7 @@ class CameraTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("camera", SCRIPTS / "demo-try-it-camera.py")
         camera = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(camera)
-        with tempfile.TemporaryDirectory(prefix="ht-try-it.", dir="/private/tmp") as directory:
+        with tempfile.TemporaryDirectory(prefix="ht-try-it.", dir=SCRATCH_ROOT) as directory:
             root = Path(directory)
             (root / "camera.pid").mkdir()
             client = root / "herdr"

@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 use herdr_threads::host::continuity::KernelProcessInfo;
 use herdr_threads::host::continuity::{
     CaptureError, ProcessInfo, ProcessInfoProvider, capture_peer_witness, capture_peer_witness_with,

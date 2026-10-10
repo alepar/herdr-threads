@@ -6,7 +6,7 @@ fn doctor_debug_and_fix_are_scoped_to_doctor() {
     assert!(matches!(plain.action, CliAction::Doctor { debug: false, fix: false, .. }));
     let debug = parse_argv(["herdr-threads", "doctor", "--debug"]).unwrap();
     assert!(matches!(debug.action, CliAction::Doctor { debug: true, fix: false, .. }));
-    let fix = parse_argv(["herdr-threads", "--json", "doctor", "fix"]).unwrap();
+    let fix = parse_argv(["herdr-threads", "doctor", "fix", "--json"]).unwrap();
     assert!(matches!(fix.action, CliAction::Doctor { debug: false, fix: true, .. }));
     assert_eq!(fix.output.format, OutputFormat::Json);
     assert!(parse_argv(["herdr-threads", "doctor", "repair"]).is_err());
@@ -1573,7 +1573,7 @@ fn local_profile_and_options_are_validated_before_dispatch() {
     assert!(parse_argv(["herdr-threads", "setup", "codex", "--disable-prompt-suggestions"]).is_err());
     assert!(parse_argv(["herdr-threads", "setup", "claude", "--disable-prompt-suggestions", "--keep-prompt-suggestions"]).is_err());
     let bare = parse_argv(["herdr-threads", "setup", "--disable-prompt-suggestions"]).unwrap();
-    assert!(matches!(bare.action, CliAction::SetupAll(_, crate::cli::setup::PromptSuggestionPolicy::Disable)));
+    assert!(matches!(bare.action, CliAction::SetupAll(_, crate::cli::setup::PromptSuggestionPolicy::Disable, _)));
 }
 
 #[test]
@@ -1823,57 +1823,39 @@ fn legacy_handoff_body_word_recover_remains_data() {
     assert_eq!(request.body, "recover");
 }
 
+/// Kills an agent-grantable self-permission: every config-changing command is escalating.
 #[test]
-fn human_topology_recovery_help_and_errors_use_only_canonical_route() {
-    let ParseFailure::Informational(help)=parse_argv_or_informational(["ht","human","handoff","recover","--help"]).unwrap_err() else {panic!("expected help")};
-    assert!(help.contains("ht human handoff recover"),"{help}");assert!(help.contains("--attempt"));assert!(!help.contains("_topology-recover"));
-    let error=parse_argv(["ht","human","handoff","recover","local:1","--not-created"]).unwrap_err();assert!(error.detail.contains("human handoff recover"),"{error:?}");assert!(!error.detail.contains("_topology-recover"));
-    for argv in [vec!["ht","human","_topology-recover","local:1","--attempt","1","--not-created"],vec!["ht","--state-dir","human","handoff","recover","local:1","--attempt","1","--not-created"],vec!["ht","handoff","human","recover","local:1","--attempt","1","--not-created"],vec!["ht","handoff","recover","local:1","--attempt","1","--not-created","--operator"]] { assert!(parse_argv(argv).is_err()); }
-    let parsed=parse_argv(["ht","human","--state-dir","human","handoff","recover","local:1","--attempt","1","--not-created"]).unwrap();assert_eq!(parsed.output.context.state_dir.as_deref(),Some("human"));
-    let parsed=parse_argv(["ht","handoff","--pane","w1:p2","--thread","t1","--kind","codex","--agent-arg=recover","--","human handoff recover local:1"]).unwrap();let CliAction::Handoff(request)=parsed.action else {panic!("legacy route changed")};assert_eq!(request.body,"human handoff recover local:1");assert_eq!(request.launch.argv,vec!["recover"]);
+fn escalating_commands_are_the_self_granting_ones() {
+    let expected: [&[&str]; 4] = [&["setup"], &["unsetup"], &["doctor", "fix"], &["internal", "installer-integrations"]];
+    assert_eq!(ESCALATING_COMMANDS, &expected[..]);
 }
 
+/// Kills an escalating command an agent can move out of a native prompt rule's reach:
+/// its words must lead, with every option after them; `human` keeps its own prompt.
 #[test]
-fn actor_route_immediate_namespace_and_output_are_independent() {
-    for executable in ["herdr-threads", "ht", "/private/a space/ht"] {
-        for args in [vec!["inbox"], vec!["send", "t1", "--body", "human --operator --human"], vec!["ack", "m1"], vec!["accept", "t1"], vec!["join", "t1"], vec!["leave", "t1"], vec!["check-in"], vec!["invite", "t1", "--seat", "s1"], vec!["reject", "t1", "--invitation", "i1", "--reason", "reason"], vec!["accept-required", "t1", "--invitation", "i1", "--requirement", "r1", "--revision", "1"]] {
-            let ordinary = parse_argv(std::iter::once(executable).chain(args.iter().copied())).unwrap();
-            let human = parse_argv([executable, "human"].into_iter().chain(args.iter().copied())).unwrap();
-            assert_eq!(ordinary.action, human.action);
-            assert_eq!(ordinary.actor, crate::cli::actor_route::InvocationActor::Agent);
-            assert_eq!(human.actor, crate::cli::actor_route::InvocationActor::Human);
-        }
+fn escalating_command_words_lead() {
+    for argv in [
+        vec!["ht", "doctor", "--debug", "fix"],
+        vec!["ht", "doctor", "--harness", "claude", "fix"],
+        vec!["ht", "--json", "doctor", "fix"],
+        vec!["ht", "--state-dir", "/private/s", "setup", "claude"],
+        vec!["ht", "--state-dir=/private/s", "unsetup"],
+        vec!["ht", "--json", "internal", "installer-integrations"],
+        vec!["ht", "internal", "--json", "installer-integrations"],
+    ] {
+        let error = parse_argv(argv.clone()).unwrap_err();
+        assert!(error.detail.contains("first and put every option after it"), "{argv:?}: {}", error.detail);
     }
-}
-#[test]
-fn actor_route_legacy_person_operator_forms_require_human() {
-    for args in [vec!["me", "init"], vec!["me", "init", "--operator"], vec!["invite", "t1", "--seat", "s1", "--operator"], vec!["seat", "retire", "s1", "--operator"]] {
-        let error = parse_argv(std::iter::once("ht").chain(args.iter().copied())).unwrap_err();
-        assert!(error.detail.contains("human"), "{}", error.detail);
-        assert!(parse_argv(["ht", "human"].into_iter().chain(args)).is_ok());
-    }
-}
-#[test]
-fn permission_cli_inputs_are_bounded_and_command_scoped() {
-    assert!(parse_argv(["ht", "setup", "--permissions", "--with-permissions", "--permission-installed-binary", "/private/a space/$binary"]).is_ok());
-    assert!(parse_argv(["ht", "setup", "--permission-link-path", "/private/ht"]).is_err());
-}
-
-#[test]
-fn ordinary_catalog_exports_positive_syntax_contract() {
-    let catalog = ordinary_catalog();
-    for prefix in [&["send"][..], &["join"], &["launch"], &["seat", "resolve"], &["service", "inspect"], &["--skill"], &["thread", "rename"], &["--version"], &["--help"]] {
-        assert!(catalog.families.iter().any(|f| f.prefix == prefix), "missing {prefix:?}");
-    }
-    assert!(catalog.output_flags.contains(&"--human"));
-    assert!(catalog.routing_forms.iter().any(|f| f.contains(&RoutingToken::StateDirectory) && f.contains(&RoutingToken::HostEndpoint)));
-}
-#[test]
-fn ordinary_catalog_excludes_person_and_operator_families() {
-    let catalog = ordinary_catalog();
-    assert!(!catalog.families.is_empty());
-    for forbidden in [&["human"][..], &["me"], &["me", "init"], &["seat"], &["seat", "rebind"], &["seat", "retire"], &["service"], &["service", "disconnect"]] {
-        assert!(!catalog.families.iter().any(|f| f.prefix == forbidden));
+    for argv in [
+        vec!["ht", "doctor", "fix", "--debug"],
+        vec!["ht", "doctor", "--debug"],
+        vec!["ht", "--json", "doctor"],
+        vec!["ht", "setup", "claude", "--state-dir", "/private/s"],
+        vec!["ht", "--state-dir", "/private/s", "setup-status", "claude"],
+        vec!["ht", "internal", "installer-integrations", "--confirm-missing"],
+        vec!["ht", "human", "--state-dir", "/private/s", "unsetup", "claude"],
+    ] {
+        assert!(parse_argv(argv.clone()).is_ok(), "{argv:?}");
     }
 }
 
@@ -1960,65 +1942,33 @@ fn actor_route_os_string_identity_is_preserved() {
 }
 
 #[test]
-fn permission_cli_inputs_preserve_installer_spellings() {
-    let binary = "/private/a space/$binary;`literal`'quoted'";
-    for verb in ["setup", "unsetup", "setup-status"] {
-        let parsed = parse_argv(["ht", verb, "--permissions", "--permission-installed-binary", binary, "--permission-link-path", "/private/link", "--permission-alias-path", "/private/alias"]).unwrap();
-        assert!(parsed.permissions.permissions);
-        assert_eq!(parsed.permissions.permission_installed_binary.as_deref(), Some(binary));
-        assert_eq!(parsed.permissions.permission_link_path.as_deref(), Some("/private/link"));
-        assert_eq!(parsed.permissions.permission_alias_path.as_deref(), Some("/private/alias"));
-        assert_eq!(parse_argv(["ht", verb]).unwrap().permissions, PermissionCliInputs::default());
+fn permission_consent_flags_are_setup_scoped() {
+    use crate::cli::setup::PermissionPolicy;
+    for (flag, policy) in [
+        (None, PermissionPolicy::Ask),
+        (Some("--with-permissions"), PermissionPolicy::Grant),
+        (Some("--without-permissions"), PermissionPolicy::Decline),
+    ] {
+        let named: Vec<&str> = ["ht", "setup", "claude"].into_iter().chain(flag).collect();
+        let CliAction::Setup(request) = parse_argv(named).unwrap().action else { panic!("setup") };
+        assert_eq!(request.permissions, policy);
+        let bare: Vec<&str> = ["ht", "setup"].into_iter().chain(flag).collect();
+        assert!(matches!(parse_argv(bare).unwrap().action, CliAction::SetupAll(_, _, p) if p == policy));
+    }
+    assert!(parse_argv(["ht", "setup", "--with-permissions", "--without-permissions"]).is_err());
+    for verb in ["unsetup", "setup-status"] {
         for flag in ["--with-permissions", "--without-permissions"] {
-            assert_eq!(parse_argv(["ht", verb, flag]).is_ok(), verb == "setup");
+            assert!(parse_argv(["ht", verb, "claude", flag]).is_err(), "{verb} {flag}");
         }
     }
-    for flag in ["--with-permissions", "--without-permissions"] {
-        let parsed = parse_argv(["ht", "internal", "installer-integrations", "--confirm-missing", flag, "--permission-installed-binary", binary]).unwrap();
-        assert!(matches!(parsed.action, CliAction::InstallerIntegrations { confirm_missing: true }));
-        assert_eq!(parsed.permissions.with_permissions, flag == "--with-permissions");
-        assert_eq!(parsed.permissions.without_permissions, flag == "--without-permissions");
-        assert_eq!(parsed.permissions.permission_installed_binary.as_deref(), Some(binary));
-    }
-    for args in [vec!["setup", "--with-permissions", "--without-permissions"], vec!["internal", "installer-integrations", "--with-permissions", "--without-permissions"], vec!["inbox", "--permissions"], vec!["setup", "--permission-alias-path", "/private/alias"], vec!["setup", "--permission-installed-binary", "/private/a", "--permission-installed-binary", "/private/a"]] {
+    assert!(matches!(
+        parse_argv(["ht", "internal", "installer-integrations", "--without-permissions"]).unwrap().action,
+        CliAction::InstallerIntegrations { confirm_missing: false, without_permissions: true }
+    ));
+    // The executable inventory flags are gone with absolute-path spellings.
+    for args in [vec!["inbox", "--with-permissions"], vec!["setup", "--permissions"], vec!["setup", "--permission-installed-binary", "/private/a"]] {
         assert!(parse_argv(["ht"].into_iter().chain(args)).is_err());
     }
-    for path in ["".into(), "relative".into(), "/private/line\nfeed".into(), "/private/tab\t".into(), format!("/{}", "x".repeat(4096))] {
-        for flag in ["--permission-installed-binary", "--permission-link-path", "--permission-alias-path"] {
-            assert!(parse_argv(["ht", "setup", flag, &path]).is_err(), "{flag}: {path:?}");
-        }
-    }
-    let maximum = format!("/{}", "x".repeat(4095));
-    assert_eq!(parse_argv(["ht", "setup", "--permission-installed-binary", &maximum]).unwrap().permissions.permission_installed_binary, Some(maximum));
-}
-
-#[test]
-fn ordinary_catalog_routing_and_output_forms_parse_without_actor_escalation() {
-    let catalog = ordinary_catalog();
-    for executable in ["ht", "herdr-threads", "/private/a space/herdr-threads"] {
-        for routing in catalog.routing_forms {
-            let pinned: Vec<&str> = routing.iter().map(|token| match token {
-                RoutingToken::Literal(token) => *token,
-                RoutingToken::StateDirectory => "/private/a space/state",
-                RoutingToken::HostEndpoint => "/private/a space/host.sock",
-            }).collect();
-            for flag in catalog.output_flags {
-                for position in catalog.output_positions {
-                    let mut argv = vec![executable];
-                    argv.extend(&pinned);
-                    if *position == OutputPosition::BeforeFamily { argv.push(flag); }
-                    argv.extend(["send", "t1", "--body", "human --operator; ht human me init"]);
-                    if *position == OutputPosition::AfterArguments { argv.push(flag); }
-                    let parsed = parse_argv(argv).unwrap();
-                    assert_eq!(parsed.actor, crate::cli::actor_route::InvocationActor::Agent);
-                    assert!(matches!(parsed.action, CliAction::Mutation(MutationSpec::Send { body, .. }) if body == "human --operator; ht human me init"));
-                }
-            }
-        }
-    }
-    let resolve = catalog.families.iter().find(|f| f.prefix == ["seat", "resolve"]).unwrap();
-    assert_eq!(resolve.human_options, ["--operator", "--new-seat"]);
-    assert_eq!(catalog.families.iter().find(|f| f.prefix == ["invite"]).unwrap().human_options, ["--operator"]);
 }
 
 #[test]

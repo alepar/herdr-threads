@@ -349,7 +349,8 @@ impl Rig {
     fn with_settings(settings: Option<Value>) -> Self {
         let guard = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
         let root = PathBuf::from(format!(
-            "/private/tmp/htmd-{}",
+            "{}/htmd-{}",
+            herdr_threads::test_support::SHORT_TMP,
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -512,15 +513,22 @@ impl Rig {
 
     fn command_with(&self, json: bool, pane: Option<&str>, args: &[&str]) -> std::process::Command {
         let mut command = spawn::command(BIN);
+        let mut words = Vec::new();
         if json {
-            command.arg("--json");
+            words.push("--json");
         }
+        words.extend_from_slice(args);
+        let args = &words[..];
         command
-            .arg("--state-dir")
-            .arg(&self.state)
-            .arg("--host-endpoint")
-            .arg(&self.socket)
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.state),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.socket),
+                ],
+                args,
+            ))
             .env_remove("CLAUDECODE")
             .env_remove("HERDR_PLUGIN_STATE_DIR")
             .env_remove("HERDR_SOCKET_PATH")

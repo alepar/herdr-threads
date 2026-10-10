@@ -23,7 +23,8 @@ FOOTER = FOOTER[FOOTER.index('\n'):].rsplit('\n}', 1)[0]
 class InstallerDispatch(unittest.TestCase):
     def run_actual_lane(self, mode='ask', modern=True, fail=False, registered=1,
                         harnesses=(), user_level=True, bare=True, terminal=False,
-                        consent=False, final_status=False):
+                        consent=False, final_status=False, without_permissions=False,
+                        help_text=''):
         with tempfile.TemporaryDirectory(prefix='ht-installer-actual-shell-') as folder:
             root = pathlib.Path(folder)
             path = root / 'bin'
@@ -39,6 +40,7 @@ class InstallerDispatch(unittest.TestCase):
             binary.write_text('''#!/bin/bash
 printf '%s\\n' "$*" >> "$CALL_LOG"
 if [ "$1 $2 $3" = 'internal installer-integrations --help' ]; then
+  printf '%s\\n' "$HELP_TEXT"
   exit "$CAPABILITY_STATUS"
 fi
 if [ "$1 $2" = 'internal installer-integrations' ]; then
@@ -85,12 +87,26 @@ new_version=fixture
                        CALL_LOG=str(log), CAPABILITY_STATUS='0' if modern else '2',
                        INTEGRATION_STATUS='1' if fail else '0', USER_LEVEL=str(int(user_level)),
                        BARE_SETUP=str(int(bare)), TERMINAL=str(int(terminal)),
-                       CONSENT=str(int(consent)))
+                       CONSENT=str(int(consent)), HELP_TEXT=help_text,
+                       without_permissions=str(int(without_permissions)))
             out = subprocess.run([BASH, '-c', script], env=env, cwd=root,
                                  capture_output=True, text=True, timeout=5)
             self.assertEqual(out.returncode, 3 if final_status and fail else 0, out.stderr)
             self.assertFalse(marker.exists(), 'PATH discovery must not execute a provider')
             return out.stdout + out.stderr, log.read_text().splitlines() if log.exists() else []
+
+    # Kills dropping --without-permissions, or passing it to a build that cannot parse it.
+    def test_without_permissions_reaches_only_a_build_that_knows_it(self):
+        for help_text, wanted in [('  --without-permissions  Skip the permissions component',
+                                   'internal installer-integrations --without-permissions'),
+                                  ('', 'internal installer-integrations')]:
+            with self.subTest(help_text=help_text):
+                _, calls = self.run_actual_lane(without_permissions=True, help_text=help_text)
+                self.assertEqual(calls[-1], wanted)
+        _, calls = self.run_actual_lane(mode='yes', without_permissions=True,
+                                        help_text='--without-permissions')
+        self.assertEqual(calls[-1],
+                         'internal installer-integrations --confirm-missing --without-permissions')
 
     # Kills the legacy membership gate suppressing a registry-only modern installer.
     def test_modern_registry_route_without_legacy_path(self):

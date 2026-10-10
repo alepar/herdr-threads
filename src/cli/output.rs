@@ -236,6 +236,9 @@ pub fn human_active() -> bool {
 pub fn emitted_bytes(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, ApiError> {
     let result = inbox_continuation(result);
     let result = &result;
+    let _namespace = crate::protocol::output::CommandNamespaceGuard::enter(
+        crate::protocol::output::result_human_commands(result),
+    );
     if HUMAN.with(Cell::get)
         && spec.format == OutputFormat::Text
         && let Some(text) = super::human::render(result, spec)

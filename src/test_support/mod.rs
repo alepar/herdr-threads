@@ -13,6 +13,15 @@ pub mod search_barrier;
 pub mod server_completion;
 pub mod spawn;
 
+/// A short real temp root for fixtures that bind Unix sockets (macOS caps
+/// socket paths at 104 bytes and its default TMPDIR is long). macOS uses the
+/// canonical `/private/tmp`, so paths match what the kernel reports back.
+pub const SHORT_TMP: &str = if cfg!(target_os = "macos") {
+    "/private/tmp"
+} else {
+    "/tmp"
+};
+
 /// Explicit authenticated-peer fixture for direct handler controls.
 /// Production peers are constructed only from the socket kernel credential.
 pub fn peer_identity(uid: u32) -> crate::protocol::authority::PeerIdentity {

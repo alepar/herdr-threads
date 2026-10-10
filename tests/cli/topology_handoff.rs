@@ -1883,6 +1883,14 @@ mod live {
             "typed Bootstrap decoder has no independent4096 header cap"
         );
     }
+    #[cfg(target_os = "linux")]
+    fn composition_heap_statistics() -> [usize; 3] {
+        // glibc arena statistics: live bytes (small + mmapped), then the
+        // touched arena size twice (glibc keeps no separate high water).
+        let info = unsafe { libc::mallinfo2() };
+        let touched = info.arena + info.hblkhd;
+        [info.uordblks + info.hblkhd, touched, touched]
+    }
     #[cfg(target_os = "macos")]
     fn composition_heap_statistics() -> [usize; 3] {
         #[repr(C)]
@@ -1904,13 +1912,13 @@ mod live {
         }
         [stats.in_use, stats.maximum_touched, stats.allocated]
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     struct CompositionSampler {
         stop: Arc<std::sync::atomic::AtomicBool>,
         peak: Arc<std::sync::atomic::AtomicUsize>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     impl CompositionSampler {
         fn new(baseline: usize) -> Self {
             use std::sync::atomic::Ordering;
@@ -1933,7 +1941,7 @@ mod live {
             }
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     impl Drop for CompositionSampler {
         fn drop(&mut self) {
             self.stop.store(true, std::sync::atomic::Ordering::Release);
@@ -1947,7 +1955,7 @@ mod live {
         thread: Option<std::thread::JoinHandle<std::time::Duration>>,
     }
     impl CompositionContender<'_> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         fn finish(mut self) -> std::time::Duration {
             self.turn.take();
             self.thread.take().unwrap().join().unwrap()
@@ -1997,7 +2005,7 @@ mod live {
         assert!(writer.enter_foreground(&budget, clock.as_ref()).is_ok());
     }
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn composition_maximum_legal_escaped_serializer_memory_and_budgets() {
         use crate::ports::StorePort;
         use std::sync::atomic::Ordering;

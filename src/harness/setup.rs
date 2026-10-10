@@ -152,13 +152,6 @@ const DECLARED_RULE: &str = super::claude::HERDR_THREADS_ALLOW_RULE;
 /// The allow rule earlier setups installed; recognized in their manifests only, so re-setup can
 /// replace and unsetup can remove an owned copy.
 const RETIRED_RULE: &str = super::claude::CALLER_CONTEXT_ALLOW_RULE;
-fn permission_record(pre_existing: bool) -> OwnedPermission {
-    OwnedPermission {
-        rule: DECLARED_RULE.into(),
-        fingerprint: permission_fingerprint(DECLARED_RULE),
-        pre_existing,
-    }
-}
 /// A recorded permission is owned only for a rule this adapter declares or once declared, with a
 /// matching fingerprint: a manifest can never direct removal of an arbitrary user rule.
 fn permission_valid(permission: &OwnedPermission) -> bool {
@@ -275,7 +268,7 @@ fn owned(event: &str, group: Value) -> Result<OwnedEntry, SetupError> {
         fingerprint: fingerprint(&bytes),
     })
 }
-fn root(bytes: &[u8]) -> Result<Value, SetupError> {
+pub(crate) fn root(bytes: &[u8]) -> Result<Value, SetupError> {
     if bytes.len() > 1_048_576 {
         return Err(SetupError::TooLarge);
     }
@@ -507,6 +500,33 @@ fn restoration_base(
     Ok(stripped)
 }
 
+/// `current` without the permission component's rendered rules, dropping a list or
+/// `permissions` object they alone left when the recorded base held none: the file as the hook
+/// installation would see it with no grant in place. `None` when either is not composable.
+fn without_permission_rules(current: &[u8], recorded_base: &[u8]) -> Option<Vec<u8>> {
+    let mut value = root(current).ok()?;
+    let base = root(recorded_base).ok()?;
+    let rendered = super::permissions::claude::render();
+    if let Some(permissions) = value.get_mut("permissions").and_then(Value::as_object_mut) {
+        for (list, rules) in [("allow", &rendered.allow), ("ask", &rendered.ask)] {
+            if let Some(entries) = permissions.get_mut(list).and_then(Value::as_array_mut) {
+                entries.retain(|entry| {
+                    entry
+                        .as_str()
+                        .is_none_or(|rule| !rules.iter().any(|r| r == rule))
+                });
+                if entries.is_empty() && base["permissions"].get(list).is_none() {
+                    permissions.remove(list);
+                }
+            }
+        }
+        if permissions.is_empty() && base.get("permissions").is_none() {
+            value.as_object_mut()?.remove("permissions");
+        }
+    }
+    serde_json::to_vec(&value).ok()
+}
+
 struct Resume {
     bytes: Vec<u8>,
     base: Vec<u8>,
@@ -588,7 +608,18 @@ fn plan_resume(
             compose_json(recorded_base, &manifest.owned, &target_rules)?.proposed_bytes,
         )
     } else {
-        let base = if recorded.is_empty() && rules_present.is_empty() {
+        // Apart from the permission component's own rules, the file may still be exactly the
+        // recorded base plus recorded groups: keep that base, so removal (permissions first,
+        // then hooks) still restores it byte for byte.
+        let base_plus_grant = !recorded.is_empty()
+            && !recorded_base.is_empty()
+            && without_permission_rules(current, recorded_base).is_some_and(|plain| {
+                compose_json(recorded_base, &recorded, &rules_present)
+                    .is_ok_and(|plan| plan.proposed_bytes == plain)
+            });
+        let base = if base_plus_grant {
+            recorded_base.clone()
+        } else if recorded.is_empty() && rules_present.is_empty() {
             current.to_vec()
         } else {
             prune_emptied_recorded_events(
@@ -910,7 +941,7 @@ pub struct HookInspection {
     pub observed: NativeObservation,
     /// Present only for an exact, owned installation; suitable for managed launch.
     pub configured_hook: Option<ConfiguredHook>,
-    /// Claude project only: the recorded permission allow rule and whether it is present now.
+    /// Claude only: the allow rule an earlier setup recorded and whether it is present now.
     pub allow_rule: Option<AllowRuleInspection>,
     /// The owned groups belong to another setup's installation (they carry its owner marker),
     /// adopted for this file: recorded by a manifest, or found by inspection with none yet.
@@ -931,17 +962,15 @@ pub struct Adoption {
     pub recorded: bool,
 }
 
-/// Who holds the declared allow rule, as recorded by the ownership manifest.
+/// Who holds the allow rule an earlier hook setup recorded, until the permission component
+/// retires the record (current hook setup records none).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllowRuleOwnership {
     /// Setup added the rule and unsetup removes it.
     Owned,
     /// The user's settings held the identical rule before setup; unsetup leaves it.
     PreExisting,
-    /// The manifest records no rule (installed before the rule was declared): re-run setup.
-    NotRecorded,
-    /// The manifest records only the retired `claude::CALLER_CONTEXT_ALLOW_RULE`: re-run setup
-    /// to replace it (an owned copy is removed) with the declared rule.
+    /// The manifest records the retired `claude::CALLER_CONTEXT_ALLOW_RULE`.
     Superseded,
 }
 
@@ -1022,6 +1051,144 @@ pub(crate) fn config_bytes(path: &Path) -> Result<Vec<u8>, SetupError> {
         return Err(SetupError::TooLarge);
     }
     Ok(bytes)
+}
+
+/// Replace a user configuration file whose bytes the caller just validated as `current`.
+/// An unchanged result writes nothing; otherwise `current` is first kept as a private sibling
+/// backup (see [`backup_user_config`]), whatever it holds. A backup stays even when
+/// the replacement then fails. herdr-threads state and manifests use
+/// [`write_replacement`] directly and are never backed up.
+pub(crate) fn write_user_config(
+    path: &Path,
+    current: &[u8],
+    bytes: &[u8],
+) -> Result<(), SetupError> {
+    if config_bytes(path)? != current {
+        return Err(SetupError::Conflict);
+    }
+    if current == bytes {
+        return Ok(());
+    }
+    back_up_before_change(path, current)?;
+    write_replacement(path, bytes, false)
+}
+
+thread_local! {
+    static BACKUP_SESSION: std::cell::RefCell<Option<std::collections::HashSet<std::path::PathBuf>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// One command run: while a session is open, each user configuration file is backed up once,
+/// before its first change, so one run leaves one pre-image per file however many components
+/// write it. Without a session every change is backed up.
+pub struct BackupSession(());
+impl BackupSession {
+    pub fn start() -> Self {
+        BACKUP_SESSION.with(|session| *session.borrow_mut() = Some(Default::default()));
+        Self(())
+    }
+}
+impl Drop for BackupSession {
+    fn drop(&mut self) {
+        BACKUP_SESSION.with(|session| *session.borrow_mut() = None);
+    }
+}
+
+/// This run created `path` (setup's own placeholder): it has no pre-image to keep, so its
+/// later changes in the same session are not backed up.
+pub(crate) fn note_created_user_config(path: &Path) {
+    BACKUP_SESSION.with(|session| {
+        if let Some(seen) = session.borrow_mut().as_mut() {
+            seen.insert(path.to_path_buf());
+        }
+    });
+}
+
+/// Back up `current` unless this session already kept a pre-image of `path` or created it.
+fn back_up_before_change(path: &Path, current: &[u8]) -> Result<(), SetupError> {
+    let first = BACKUP_SESSION.with(|session| {
+        session
+            .borrow_mut()
+            .as_mut()
+            .is_none_or(|seen| seen.insert(path.to_path_buf()))
+    });
+    if first {
+        backup_user_config(path, current)?;
+    }
+    Ok(())
+}
+
+/// Delete a user configuration file whose bytes the caller just validated as `current`, keeping
+/// them first as a backup (see [`backup_user_config`]).
+pub(crate) fn remove_user_config(path: &Path, current: &[u8]) -> Result<(), SetupError> {
+    if config_bytes(path)? != current {
+        return Err(SetupError::Conflict);
+    }
+    back_up_before_change(path, current)?;
+    fs::remove_file(path).map_err(|_| SetupError::Io)?;
+    fs::File::open(path.parent().ok_or(SetupError::Invalid)?)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|_| SetupError::Io)
+}
+
+/// Keep `current` beside `path` as `<name>.<UTC timestamp>-<uuid>.herdr-threads`: mode 0600,
+/// never overwriting, synced with its directory before the caller mutates `path`. Backups are
+/// retained; herdr-threads never restores from, prunes or trusts them.
+pub(crate) fn backup_user_config(
+    path: &Path,
+    current: &[u8],
+) -> Result<std::path::PathBuf, SetupError> {
+    let parent = path.parent().ok_or(SetupError::Invalid)?;
+    let file_name = path
+        .file_name()
+        .ok_or(SetupError::Invalid)?
+        .to_string_lossy();
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| SetupError::Io)?
+        .as_millis();
+    let stamp: String =
+        super::manifest::format_rfc3339_utc(i64::try_from(millis).map_err(|_| SetupError::Io)?)
+            .chars()
+            .filter(|c| !matches!(c, '-' | ':'))
+            .collect();
+    let backup = parent.join(format!(
+        "{file_name}.{stamp}-{}.herdr-threads",
+        uuid::Uuid::new_v4()
+    ));
+    let result = (|| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&backup).map_err(|_| SetupError::Io)?;
+        file.write_all(current).map_err(|_| SetupError::Io)?;
+        file.sync_all().map_err(|_| SetupError::Io)?;
+        fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|_| SetupError::Io)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&backup);
+    }
+    result.map(|()| backup)
+}
+
+/// Test oracle: the retained backups of `config`, as sorted byte contents.
+#[cfg(test)]
+pub(crate) fn user_config_backups(config: &Path) -> Vec<Vec<u8>> {
+    let prefix = format!("{}.", config.file_name().unwrap().to_string_lossy());
+    let mut found: Vec<Vec<u8>> = fs::read_dir(config.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with(&prefix) && name.ends_with(".herdr-threads")
+        })
+        .map(|entry| fs::read(entry.path()).unwrap())
+        .collect();
+    found.sort();
+    found
 }
 
 pub(crate) fn write_replacement(
@@ -1164,36 +1331,15 @@ fn install_user_settings_inner<F: FnOnce()>(
         }
         let unmarked_command = shell_command(hook_argv)?;
         let current = config_bytes(config)?;
-        let rule_count = allow_count(&root(&current)?, DECLARED_RULE)?;
-        // A manifest recorded before the declared rule (none, or only the retired export rule)
-        // gains it now. Earlier setups never wrote the declared rule, so an identical rule
-        // already present is the user's own. A legacy unmarked installation cannot record the
-        // intent safely: remove and set up again.
-        // A kind without the allow rule has nothing to record: its permission is always current.
-        let recorded_current = !kind.manages_permission()
-            || manifest.permission.as_ref().is_some_and(permission_current);
-        let permission = match &manifest.permission {
-            _ if !kind.manages_permission() => None,
-            Some(permission) if recorded_current => Some(permission.clone()),
-            _ if manifest.installation_id.is_empty() => return Err(SetupError::Conflict),
-            _ => Some(permission_record(rule_count > 0)),
-        };
-        // An owned retired rule is replaced: record it so an interruption still removes it.
-        let retiring = manifest
-            .permission
-            .as_ref()
-            .filter(|p| !permission_current(p) && !p.pre_existing)
-            .cloned()
-            .or_else(|| manifest.superseded_permission.clone());
+        // The permission rule is not part of the hook installation: a manifest that still records
+        // one is first settled by the permission component, which retires the record.
+        if manifest.permission.is_some() || manifest.superseded_permission.is_some() {
+            return Err(SetupError::Conflict);
+        }
         if manifest.phase == InstallPhase::Installed {
-            // Every recorded owned group must still be exact before anything is claimed, and a
-            // recorded declared rule must still be present (setup never silently re-adds a
-            // removed rule). A retired rule already gone is fine: the upgrade removes it anyway.
+            // Every recorded owned group must still be exact before anything is claimed.
             uninstall_json(&current, &manifest.owned)?;
-            if kind.manages_permission() && recorded_current && rule_count == 0 {
-                return Err(SetupError::Conflict);
-            }
-            if manifest.owned == expected && recorded_current {
+            if manifest.owned == expected {
                 return Ok(manifest);
             }
             // Upgrade to the current declaration. Prove the target composes before durably
@@ -1206,8 +1352,6 @@ fn install_user_settings_inner<F: FnOnce()>(
                 .cloned()
                 .collect();
             intent.owned = expected.clone();
-            intent.permission = permission;
-            intent.superseded_permission = retiring;
             intent.phase = InstallPhase::Prepared;
             plan_resume(&current, &intent, &unmarked_command)?;
             replace_manifest(manifest_path, &intent)?;
@@ -1228,12 +1372,6 @@ fn install_user_settings_inner<F: FnOnce()>(
                 }
             }
             manifest.owned = expected.clone();
-            manifest.permission = permission;
-            manifest.superseded_permission = retiring;
-            replace_manifest(manifest_path, &manifest)?;
-        } else if !recorded_current {
-            manifest.permission = permission;
-            manifest.superseded_permission = retiring;
             replace_manifest(manifest_path, &manifest)?;
         }
         let resume = plan_resume(&current, &manifest, &unmarked_command)?;
@@ -1241,7 +1379,7 @@ fn install_user_settings_inner<F: FnOnce()>(
             if config_bytes(config)? != current {
                 return Err(SetupError::Conflict);
             }
-            write_replacement(config, &resume.bytes, false)?;
+            write_user_config(config, &current, &resume.bytes)?;
             if fault == InstallFault::InterruptAfterPublication {
                 action.take().expect("one fault action")();
                 return Err(SetupError::Io);
@@ -1251,7 +1389,6 @@ fn install_user_settings_inner<F: FnOnce()>(
         manifest.installed_fingerprint = fingerprint(&resume.bytes);
         manifest.installation_base_bytes = resume.base;
         manifest.superseded.clear();
-        manifest.superseded_permission = None;
         replace_manifest(manifest_path, &manifest)?;
         return Ok(manifest);
     }
@@ -1271,24 +1408,11 @@ fn install_user_settings_inner<F: FnOnce()>(
     {
         return Err(SetupError::Conflict);
     }
-    // Never duplicate the user's identical allow rule: record it as pre-existing instead.
-    let permission = if kind.manages_permission() {
-        Some(permission_record(
-            allow_count(&baseline, DECLARED_RULE)? > 0,
-        ))
-    } else {
-        None
-    };
     let installation_id = uuid::Uuid::new_v4().to_string();
     let plan = compose_json(
         expected_base,
         &kind.entries(&owned_command(hook_argv, &installation_id)?)?,
-        &permission
-            .as_ref()
-            .filter(|p| !p.pre_existing)
-            .map(|p| p.rule.as_str())
-            .into_iter()
-            .collect::<Vec<_>>(),
+        &[],
     )?;
     let manifest = OwnershipManifest {
         version: 2,
@@ -1302,7 +1426,7 @@ fn install_user_settings_inner<F: FnOnce()>(
         installed_fingerprint: fingerprint(&plan.proposed_bytes),
         phase: InstallPhase::Prepared,
         superseded: Vec::new(),
-        permission,
+        permission: None,
         superseded_permission: None,
         adopted: false,
     };
@@ -1324,7 +1448,7 @@ fn install_user_settings_inner<F: FnOnce()>(
     if fault == InstallFault::BeforeReplacement {
         action.take().expect("one fault action")();
     }
-    write_replacement(config, &plan.proposed_bytes, false)?;
+    write_user_config(config, expected_base, &plan.proposed_bytes)?;
     let mut installed = manifest;
     installed.phase = InstallPhase::Installed;
     replace_manifest(manifest_path, &installed)?;
@@ -1386,6 +1510,83 @@ fn read_manifest(path: &Path) -> Result<Option<OwnershipManifest>, SetupError> {
     Ok(Some(manifest))
 }
 
+/// The permission rules an earlier Claude hook setup recorded in its manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedPermission {
+    /// The rules that setup added, which are owned: never a rule the user already held.
+    pub owned: Vec<String>,
+    /// Whether the user's settings had no `permissions` / `permissions.allow` before that setup
+    /// (unknown for a legacy manifest without a recorded base: then both are kept).
+    pub created_permissions: bool,
+    pub created_allow: bool,
+    /// The exact manifest bytes the record was read from.
+    manifest: Vec<u8>,
+}
+
+/// The permission record of the Claude hook manifest at `manifest_path` for `config`, validated
+/// like removal: only a declared or retired rule with its fingerprint is ever owned.
+pub fn recorded_hook_permission(
+    config: &Path,
+    manifest_path: &Path,
+) -> Result<Option<RecordedPermission>, SetupError> {
+    let Some(manifest) = read_manifest(manifest_path)? else {
+        return Ok(None);
+    };
+    if manifest.permission.is_none() && manifest.superseded_permission.is_none() {
+        return Ok(None);
+    }
+    if !manifest_matches(SettingsKind::ClaudeUser, &manifest, config)?
+        || !recorded_ownership_valid(&manifest)
+    {
+        return Err(SetupError::Conflict);
+    }
+    let owned = owned_rule(&manifest)
+        .into_iter()
+        .chain(superseded_rule(&manifest))
+        .map(str::to_owned)
+        .collect();
+    let base = root(&manifest.installation_base_bytes).ok();
+    Ok(Some(RecordedPermission {
+        owned,
+        created_permissions: base
+            .as_ref()
+            .is_some_and(|base| base.get("permissions").is_none()),
+        created_allow: base
+            .as_ref()
+            .is_some_and(|base| base["permissions"].get("allow").is_none()),
+        manifest: fs::read(manifest_path).map_err(|_| SetupError::Io)?,
+    }))
+}
+
+/// Drop the permission record [`recorded_hook_permission`] read, once the permission component
+/// owns its outcome. A manifest that changed since is a conflict; one already without a record
+/// is done.
+pub fn retire_hook_permission(
+    manifest_path: &Path,
+    recorded: &RecordedPermission,
+) -> Result<(), SetupError> {
+    let Some(mut manifest) = read_manifest(manifest_path)? else {
+        return Err(SetupError::Conflict);
+    };
+    if manifest.permission.is_none() && manifest.superseded_permission.is_none() {
+        return Ok(());
+    }
+    if fs::read(manifest_path).map_err(|_| SetupError::Io)? != recorded.manifest {
+        return Err(SetupError::Conflict);
+    }
+    manifest.permission = None;
+    manifest.superseded_permission = None;
+    // The installation's own published state no longer includes the rule, so a later removal
+    // of a file back to exactly the base plus the hooks still restores the base byte for byte.
+    if manifest.phase == InstallPhase::Installed
+        && !manifest.installation_base_bytes.is_empty()
+        && let Ok(plan) = compose_json(&manifest.installation_base_bytes, &manifest.owned, &[])
+    {
+        manifest.installed_fingerprint = fingerprint(&plan.proposed_bytes);
+    }
+    replace_manifest(manifest_path, &manifest)
+}
+
 /// The recorded ownership manifest, if one exists. The setup CLI passes its
 /// `original_bytes` back as the install baseline on a re-run and shows its
 /// recorded command; ownership decisions stay in install/inspect/remove.
@@ -1435,27 +1636,15 @@ pub fn inspect_user_settings_for(
             && let Ok(Some(adoptable)) = adoptable_user_settings(kind, config, argv)
             && let Ok(current) = config_bytes(config)
         {
-            let rule_present = root(&current)
-                .and_then(|value| allow_count(&value, DECLARED_RULE))
-                .is_ok_and(|count| count > 0);
-            let installed = !kind.manages_permission() || rule_present;
             return Ok(HookInspection {
-                installed,
+                installed: true,
                 observed,
-                configured_hook: installed.then(|| ConfiguredHook {
+                configured_hook: Some(ConfiguredHook {
                     scope: kind.scope().into(),
                     path: config.to_string_lossy().into_owned(),
                     fingerprint: fingerprint(&current),
                 }),
-                allow_rule: kind.manages_permission().then_some(AllowRuleInspection {
-                    rule: DECLARED_RULE,
-                    ownership: if rule_present {
-                        AllowRuleOwnership::PreExisting
-                    } else {
-                        AllowRuleOwnership::NotRecorded
-                    },
-                    present: rule_present,
-                }),
+                allow_rule: None,
                 adopted: Some(Adoption {
                     owner: adoptable.installation_id,
                     recorded: false,
@@ -1481,30 +1670,29 @@ pub fn inspect_user_settings_for(
     let declaration_valid = recorded_ownership_valid(&manifest)
         && shared_command(&manifest.owned).is_some_and(|s| !s.is_empty())
         && (is_current_declaration(kind, &manifest.owned) || legacy);
-    let rule = DECLARED_RULE;
-    let rule_present = serde_json::from_slice::<Value>(&current)
-        .ok()
-        .and_then(|v| allow_count(&v, rule).ok())
-        .is_some_and(|count| count > 0);
-    let allow_rule = AllowRuleInspection {
-        rule,
-        ownership: match &manifest.permission {
-            Some(p) if !permission_current(p) => AllowRuleOwnership::Superseded,
-            Some(p) if p.pre_existing => AllowRuleOwnership::PreExisting,
-            Some(_) => AllowRuleOwnership::Owned,
-            None => AllowRuleOwnership::NotRecorded,
-        },
-        present: rule_present,
-    };
-    // Installed also means the declared allow rule (Claude) is recorded and present.
+    // A rule recorded by an earlier setup stays reported until the permission component
+    // retires the record; current hook setup records none.
+    let allow_rule = manifest.permission.as_ref().map(|p| {
+        let rule = if permission_current(p) {
+            DECLARED_RULE
+        } else {
+            RETIRED_RULE
+        };
+        AllowRuleInspection {
+            rule,
+            ownership: match p {
+                _ if !permission_current(p) => AllowRuleOwnership::Superseded,
+                p if p.pre_existing => AllowRuleOwnership::PreExisting,
+                _ => AllowRuleOwnership::Owned,
+            },
+            present: serde_json::from_slice::<Value>(&current)
+                .ok()
+                .and_then(|v| allow_count(&v, rule).ok())
+                .is_some_and(|count| count > 0),
+        }
+    });
     let installed = manifest.phase == InstallPhase::Installed
         && declaration_valid
-        && (!kind.manages_permission()
-            || (manifest
-                .permission
-                .as_ref()
-                .is_some_and(|p| permission_valid(p) && permission_current(p))
-                && rule_present))
         && manifest.owned.iter().all(|entry| {
             serde_json::from_slice::<Value>(&current)
                 .ok()
@@ -1521,7 +1709,7 @@ pub fn inspect_user_settings_for(
             path: manifest.path.clone(),
             fingerprint: fingerprint(&current),
         }),
-        allow_rule: kind.manages_permission().then_some(allow_rule),
+        allow_rule,
         adopted: manifest.adopted.then(|| Adoption {
             owner: manifest.installation_id.clone(),
             recorded: true,
@@ -1554,8 +1742,9 @@ pub fn remove_user_settings(
     // retired one it was replacing.
     let rules: Vec<&str> = rule.into_iter().chain(superseded_rule(&manifest)).collect();
     let base = &manifest.installation_base_bytes;
+    // A file exactly the recorded base plus the owned groups restores the base byte for byte,
+    // even when its fingerprint changed in between (a permission grant added and removed).
     let removed = if manifest.phase == InstallPhase::Installed
-        && fingerprint(&current) == manifest.installed_fingerprint
         && !manifest.installation_base_bytes.is_empty()
     {
         let structurally_removed = uninstall_claude(&current, &manifest.owned, &rules, base)?;
@@ -1600,7 +1789,7 @@ pub fn remove_user_settings(
         return Err(SetupError::Conflict);
     }
     if removed != current {
-        write_replacement(config, &removed, false)?;
+        write_user_config(config, &current, &removed)?;
     }
     fs::remove_file(manifest_path).map_err(|_| SetupError::Io)
 }
@@ -1735,12 +1924,6 @@ pub fn adopt_user_settings(
         return Ok(None);
     };
     let current = config_bytes(config)?;
-    let permission =
-        if kind.manages_permission() && allow_count(&root(&current)?, DECLARED_RULE)? > 0 {
-            Some(permission_record(true))
-        } else {
-            None
-        };
     let manifest = OwnershipManifest {
         version: 2,
         harness: kind.harness().into(),
@@ -1753,7 +1936,7 @@ pub fn adopt_user_settings(
         installed_fingerprint: fingerprint(&current),
         phase: InstallPhase::Installed,
         superseded: Vec::new(),
-        permission,
+        permission: None,
         superseded_permission: None,
         adopted: true,
     };
@@ -2039,6 +2222,7 @@ pub(crate) mod legacy {
                 .transpose()?,
             prompt_suggestions,
             hooks_only: false,
+            permissions: Default::default(),
         })
     }
     fn installer_failure(detail: impl Into<String>) -> crate::cli::RunError {
@@ -2233,6 +2417,7 @@ pub(crate) mod legacy {
             .options
             .get(crate::harness::claude::setup::HOOKS_ONLY_OPTION)
             == Some(&true);
+        legacy.permissions = crate::cli::setup::PermissionPolicy::from_options(&request.options);
         harness_binary(&legacy, &env).map_err(adapter_failure)?;
         if let Some(leftover) = env.instance_source["state_dir_leftover"].as_str() {
             return Err(adapter_failure(invalid(format!(
@@ -2443,6 +2628,7 @@ pub(crate) mod legacy {
                         .open(&self.path)?
                         .write_all(self.initial)?;
                     self.created_file = true;
+                    crate::harness::setup::note_created_user_config(&self.path);
                 }
                 Err(error) => return Err(error.into()),
             }
@@ -2928,7 +3114,7 @@ pub(crate) mod legacy {
         }
     }
     pub(crate) const NO_HUMAN_SETUP: &str =
-        "setup manages agent hooks only; a person uses `herdr-threads me init`";
+        "setup manages agent hooks only; a person uses `herdr-threads human me init`";
     pub(crate) fn harness_name(harness: Harness) -> &'static str {
         harness.as_str()
     }

@@ -29,7 +29,8 @@ struct Scratch {
 impl Scratch {
     fn new(host: &Path) -> Self {
         let root = PathBuf::from(format!(
-            "/private/tmp/hotx-{}",
+            "{}/hotx-{}",
+            herdr_threads::test_support::SHORT_TMP,
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -43,11 +44,15 @@ impl Scratch {
     }
     fn cli(&self, args: &[&str]) -> Output {
         crate::scrubbed_command(BIN)
-            .arg("--state-dir")
-            .arg(&self.state)
-            .arg("--host-endpoint")
-            .arg(&self.host)
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.state),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.host),
+                ],
+                args,
+            ))
             .env("HOME", self.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"))
             .env("CODEX_HOME", self.root.join("codex-home"))
@@ -84,7 +89,8 @@ fn text(bytes: &[u8]) -> String {
 /// `remedy(None, StartupFailure{attempt log})`).
 #[test]
 fn ensure_startup_failure_prints_remedy_and_attempt_log() {
-    let scratch = Scratch::new(&PathBuf::from("/private/tmp/hotx-no-host.sock"));
+    let scratch =
+        Scratch::new(&Path::new(herdr_threads::test_support::SHORT_TMP).join("hotx-no-host.sock"));
     let paths = scratch.paths();
     fs::write(
         &paths.database_path,
@@ -112,7 +118,8 @@ fn ensure_startup_failure_prints_remedy_and_attempt_log() {
 /// exit-3 error, drifting from `remedy(class, Exit3)`.
 #[test]
 fn exit_3_paths_print_the_class_remedy() {
-    let scratch = Scratch::new(&PathBuf::from("/private/tmp/hotx-no-host.sock"));
+    let scratch =
+        Scratch::new(&Path::new(herdr_threads::test_support::SHORT_TMP).join("hotx-no-host.sock"));
     let unavailable = scratch.cli(&["inbox", "--seat", "s1"]);
     let stderr = text(&unavailable.stderr);
     assert_eq!(unavailable.status.code(), Some(3), "{stderr}");
@@ -139,7 +146,8 @@ fn exit_3_paths_print_the_class_remedy() {
 /// Kills: doctor printing a log path other than `daemon_log_path`.
 #[test]
 fn doctor_prints_the_daemon_log_path() {
-    let scratch = Scratch::new(&PathBuf::from("/private/tmp/hotx-no-host.sock"));
+    let scratch =
+        Scratch::new(&Path::new(herdr_threads::test_support::SHORT_TMP).join("hotx-no-host.sock"));
     let ensured = scratch.cli(&["daemon", "ensure"]);
     assert!(ensured.status.success(), "{}", text(&ensured.stderr));
     let expected = format!(

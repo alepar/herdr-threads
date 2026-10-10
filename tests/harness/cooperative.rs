@@ -121,8 +121,8 @@ fn missing_native_session_and_wrong_child_fields_fail_closed() {
 }
 #[test]
 fn child_adapter_cannot_publish_even_with_frozen_top_level_request() {
-    let path =
-        std::path::PathBuf::from("/private/tmp").join(format!("ht-child-{}", uuid::Uuid::new_v4()));
+    let path = std::path::PathBuf::from(crate::test_support::SHORT_TMP)
+        .join(format!("ht-child-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&path).unwrap();
     #[cfg(unix)]
     {
@@ -229,7 +229,7 @@ fn claude_lifecycle_declared_child_is_suppressed_without_native_role_attestation
     assert_eq!(event.role, Role::Subagent);
     assert_eq!(event.event_id, "external-key");
     assert!(!event.can_check_in());
-    let path = std::path::PathBuf::from("/private/tmp")
+    let path = std::path::PathBuf::from(crate::test_support::SHORT_TMP)
         .join(format!("ht-claude-child-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&path).unwrap();
     #[cfg(unix)]
@@ -346,6 +346,7 @@ fn startup_tells_top_level_agent_how_to_accept_required_membership() {
     assert!(procedure.contains("revision"));
     assert!(procedure.contains("release"));
     let mut digest = crate::protocol::attention::AttentionDigest {
+        lazy: None,
         version: 1,
         seat: crate::protocol::ids::SeatId::new("seat-1"),
         token: Default::default(),

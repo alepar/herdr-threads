@@ -7918,14 +7918,14 @@ fn rebind_onto_owned_target_lists_both_resolutions() {
     assert!(
         error
             .detail
-            .contains("herdr-threads seat retire s1 --operator"),
+            .contains("herdr-threads human seat retire s1 --operator"),
         "{}",
         error.detail
     );
     assert!(
         error
             .detail
-            .contains("herdr-threads seat rebind s1 --pane s2 --replace s2 --operator"),
+            .contains("herdr-threads human seat rebind s1 --pane s2 --replace s2 --operator"),
         "{}",
         error.detail
     );

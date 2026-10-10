@@ -14,12 +14,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from private_host import CommandLog, PrivateHerdr, SafetyError, TestDaemon, pid_alive
 
 HERDR = shutil.which("herdr")
+SCRATCH_ROOT = "/private/tmp" if sys.platform == "darwin" else "/tmp"  # the platform scratch root
 
 
 @unittest.skipUnless(HERDR, "herdr not on PATH")
 class GuardTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="htrt-", dir="/private/tmp"))
+        self.root = Path(tempfile.mkdtemp(prefix="htrt-", dir=SCRATCH_ROOT))
         self.log = CommandLog(self.root / "commands.jsonl")
         self.host = PrivateHerdr(self.root, self.log)
         self.children = []

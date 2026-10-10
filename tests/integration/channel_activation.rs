@@ -41,7 +41,8 @@ struct World {
 impl World {
     fn new(version: i64, disabled: bool) -> Self {
         let root = PathBuf::from(format!(
-            "/private/tmp/htch-{}",
+            "{}/htch-{}",
+            herdr_threads::test_support::SHORT_TMP,
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();

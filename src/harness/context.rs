@@ -1463,15 +1463,30 @@ fn private_metadata(path: &Path, directory: bool) -> Result<(), ContextError> {
 fn secure_options(options: &mut OpenOptions) {
     #[cfg(unix)]
     options.mode(0o600);
-    #[cfg(target_os = "macos")]
-    options.custom_flags(0x100);
-    #[cfg(target_os = "linux")]
-    options.custom_flags(0x20000);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
 }
 
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+
+    // The flag is per-architecture on Linux (0x20000 on x86_64, 0x8000 on
+    // aarch64); a hardcoded value silently followed links on one of them.
+    #[test]
+    fn secure_options_refuse_a_symlinked_final_component() {
+        let dir = std::env::temp_dir().join(format!("ht-nofollow-{}", Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("target"), b"x").unwrap();
+        std::os::unix::fs::symlink(dir.join("target"), dir.join("link")).unwrap();
+        let mut options = OpenOptions::new();
+        options.read(true);
+        secure_options(&mut options);
+        let error = options.open(dir.join("link")).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
+        assert!(options.open(dir.join("target")).is_ok());
+        fs::remove_dir_all(dir).unwrap();
+    }
     fn fixture() -> PendingCheckIn {
         PendingCheckIn {
             operation_id: Uuid::from_u128(2),

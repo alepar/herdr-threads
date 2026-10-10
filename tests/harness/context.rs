@@ -8,7 +8,8 @@ use std::{
 use uuid::Uuid;
 
 fn dir() -> std::path::PathBuf {
-    let p = std::path::PathBuf::from("/private/tmp").join(format!("ht-context-{}", Uuid::new_v4()));
+    let p = std::path::PathBuf::from(crate::test_support::SHORT_TMP)
+        .join(format!("ht-context-{}", Uuid::new_v4()));
     fs::create_dir(&p).unwrap();
     #[cfg(unix)]
     {
@@ -641,6 +642,7 @@ fn attention_mark_is_per_execution_last_writer_wins() {
     let b = Uuid::new_v4();
     assert_eq!(j.attention_mark(a), None);
     let items = crate::protocol::attention::AttentionToken {
+        lazy: None,
         receipt: Some((7, 0)),
         unavailability_episode: 1,
         ..Default::default()
