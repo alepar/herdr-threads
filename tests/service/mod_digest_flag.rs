@@ -95,6 +95,7 @@ fn budget() -> CallBudget {
 fn flags(service: &DomainService, seat: &str) -> (bool, bool) {
     let query = || AttentionDigestQuery {
         seat: SeatId::new(seat),
+        lazy: false,
     };
     let peer = || PeerIdentity::from_kernel(501);
     let plain = match service

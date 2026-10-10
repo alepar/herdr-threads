@@ -642,6 +642,7 @@ fn attention_mark_is_per_execution_last_writer_wins() {
     let b = Uuid::new_v4();
     assert_eq!(j.attention_mark(a), None);
     let items = crate::protocol::attention::AttentionToken {
+        lazy: None,
         receipt: Some((7, 0)),
         unavailability_episode: 1,
         ..Default::default()

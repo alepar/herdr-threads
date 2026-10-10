@@ -7,6 +7,7 @@ fn token(
     episode: u64,
 ) -> AttentionToken {
     AttentionToken {
+        lazy: None,
         invitation,
         receipt,
         warning,
@@ -86,6 +87,7 @@ fn digest_bounds_are_explicit() {
         requirement: None,
     };
     let mut digest = AttentionDigest {
+        lazy: None,
         version: DIGEST_VERSION,
         seat: SeatId::new("s"),
         token: AttentionToken::default(),
@@ -123,6 +125,7 @@ fn digest_bounds_are_explicit() {
 #[test]
 fn mod_channel_live_absent_when_false_and_round_trips_when_true() {
     let mut digest = AttentionDigest {
+        lazy: None,
         version: DIGEST_VERSION,
         seat: SeatId::new("s"),
         token: AttentionToken::default(),
@@ -141,4 +144,97 @@ fn mod_channel_live_absent_when_false_and_round_trips_when_true() {
     assert_eq!(live["mod_channel_live"], serde_json::json!(true));
     let back: AttentionDigest = serde_json::from_value(live).unwrap();
     assert_eq!(back, digest);
+}
+
+// Lazy hook delivery: a lazy key is a fourth publication component, spelled
+// v2 only when present (v1 marks and readers stay valid), canonical, and it
+// advances and joins like the others. Kills: lazy left out of
+// `advanced_beyond` or `join`, a v2 spelling for a token without a lazy key
+// (two spellings of one token), and a decoder that drops the lazy key.
+#[test]
+fn lazy_key_is_a_v2_component_that_advances_and_joins() {
+    let plain = token(Some((10, 1)), None, None, 3);
+    assert!(plain.encode().starts_with("v1."));
+    let lazy = AttentionToken {
+        lazy: Some((12, 40)),
+        ..plain
+    };
+    let raw = lazy.encode();
+    assert_eq!(raw, "v2.10-1._._.12-40.3");
+    assert_eq!(AttentionToken::decode(&raw), Ok(lazy));
+    assert_eq!(
+        serde_json::from_str::<AttentionToken>(&format!("\"{raw}\"")).unwrap(),
+        lazy
+    );
+    assert!(lazy.advanced_beyond(&plain));
+    assert!(!plain.advanced_beyond(&lazy));
+    assert!(
+        AttentionToken {
+            lazy: Some((13, 2)),
+            ..plain
+        }
+        .advanced_beyond(&lazy)
+    );
+    // Completing the newest lazy row lowers the current key: not new.
+    assert!(
+        !AttentionToken {
+            lazy: Some((11, 9)),
+            ..plain
+        }
+        .advanced_beyond(&lazy)
+    );
+    assert_eq!(plain.join(&lazy), lazy);
+    for bad in [
+        "v2.10-1._._._.3",
+        "v2.10-1._._.12-40",
+        "v3.10-1._._.12-40.3",
+    ] {
+        assert!(AttentionToken::decode(bad).is_err(), "{bad}");
+    }
+}
+
+// Kills: a lazy key without a lazy class, an unbounded lazy class, a lazy
+// class ignored by `is_empty`, or the summary dropping it.
+#[test]
+fn digest_lazy_class_is_bounded_and_counted() {
+    let mut digest = AttentionDigest {
+        version: DIGEST_VERSION,
+        seat: SeatId::new("s"),
+        token: AttentionToken::default(),
+        invitations: AttentionClass::default(),
+        receipts: AttentionClass::default(),
+        warnings: AttentionClass::default(),
+        unavailability_open: false,
+        lazy: None,
+        mod_channel_live: false,
+    };
+    assert!(digest.validate().is_ok() && digest.is_empty());
+    assert!(!digest.summary().contains("lazy"));
+    digest.token.lazy = Some((5, 1));
+    assert!(digest.validate().is_err(), "key without rows");
+    digest.lazy = Some(AttentionClass {
+        count: 1,
+        items: vec![AttentionRef {
+            id: "m1".into(),
+            thread: ThreadId::new("t"),
+            requirement: None,
+        }],
+        has_more: false,
+        count_has_more: false,
+    });
+    assert!(digest.validate().is_ok());
+    assert!(!digest.is_empty());
+    assert!(digest.summary().ends_with("; lazy=1 [m1@t]"));
+    digest.lazy.as_mut().unwrap().count = 0;
+    assert!(digest.validate().is_err(), "listed beyond its count");
+    let json = serde_json::to_value(AttentionDigest {
+        lazy: None,
+        token: AttentionToken::default(),
+        ..digest.clone()
+    })
+    .unwrap();
+    assert!(
+        json.get("lazy").is_none(),
+        "absent on the wire when not asked"
+    );
 }

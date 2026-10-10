@@ -141,6 +141,7 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | `cooperative_inbox_display` | receipt action observation | The selected top-level agent's text `inbox` command fully wrote and flushed a bounded page before claiming that its listed complete messages were displayed. It is a cooperative output claim, not proof that the model consumed the text. The receipt retains the binding's `cooperative_top_level` provenance separately. JSON, machine, foreign-seat and other read commands do not make this claim. |
 | `cooperative_mod_channel` | mod channel registrations only (process-local) | The pane's top-level Claude session, through the bundled herdr-threads mod's `watch` child, opened a delivery channel for the seat's current binding generation. The daemon decides it against A2 (seat resolved and not held, open `cooperative_top_level` binding with harness `claude`, native session equal to the claim's, no stall cooldown, `mod_delivery` on). It grants nothing but receiving deliveries and making `cooperative_mod_delivery` claims for that binding generation. Never on bindings or receipts. |
 | `cooperative_mod_delivery` | receipt action observation; lazy completion claim | The mod reported that a delivery path's predicate held (spec D6): for an ordinary message, that its full body entered the model's context through the mod (an answered tool result carrying the mod's context, or a `$.prompt.submit` that resolved without `drop`; or, after a plugin reload disposed the instance whose submit was still in flight, a main turn whose prompt carries the mod's frame naming the id, or the completion of the turn that was open when the successor loaded (the engine does not report the disposed instance's submit outcome)); for a lazy row, that it was appended to the transcript (`$.session.append` resolved without `deny`). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's `cooperative_top_level` provenance separately. A truncated item never carries it. |
+| `cooperative_hook_context` | lazy completion claim | A top-level standard native hook wrote and flushed output whose context carried the lazy message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`, which is part of the accountable operation's payload digest (as `AckModDelivered` carries the mod claim); no per-row source is stored. Not proof that the harness ingested it or the model read it. A prefix never carries it. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
@@ -397,9 +398,9 @@ independent of sender role, relay and human intent. A lazy audience is frozen by
 and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
 Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
 Unpublished rows are invisible and may be discarded in bounded cleanup; published progress is retained.
-Lazy delivery creates no receipt, deadline, ACK evidence, attention, wake, poke or automatic adoption.
+Lazy delivery creates no receipt, deadline, ACK evidence, wake attention, wake, poke or automatic adoption.
 
-Only the caller's default text inbox, or the bundled Claude mod as below, may claim completion after complete contiguous body output has
+Only the caller's default text inbox, a standard native hook, or the bundled Claude mod as below, may claim completion after complete contiguous body output has
 been written and flushed. The completion handler validates the current top-level or human canonical
 caller (A2) and exact published addressed message IDs in its deciding transaction; declared subagents
 cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
@@ -414,6 +415,20 @@ The bundled Claude mod is a second completion source: it completes lazy rows it 
 (`watch ack --via append`), decided by the daemon against A2 under the same checks as the mod delivery ACK
 (A5) and recorded with the `cooperative_mod_delivery` claim "appended to the transcript". Like inbox
 completion it is presentation bookkeeping (no ACK actor, adoption or proof of consumption).
+
+A standard native hook (top-level SessionStart, Bash PreToolUse or qualified turn; never a subagent event)
+is a third completion source. Only a digest the hook explicitly requests (`AttentionDigestQuery.lazy`)
+reports pending lazy rows and a lazy token key, so a lazy arrival moves the hook's change marker; the wake
+frontier, wake candidates, prompts, pokes, deadlines and warnings never read lazy rows. When the hook
+presents (marker advanced, or a lifecycle check-in) and no mod channel is live, it reads one bounded
+read-only v2 inbox page and places only complete items in the bytes its ordinary context leaves under the
+context bound. After its stdout was written and flushed, and the adapter reported that the output carries
+context, it submits exactly the lazy IDs shown whole with `CompleteInboxDelivery` under the registered
+execution's canonical claim and the `cooperative_hook_context` claim (`via: hook_context`). The daemon
+decides it under the same checks as inbox completion (A2). The claim is that the hook emitted the body as
+context, not that the harness ingested it or the model read it. The hook never ACKs: ACK-required
+messages it shows stay pending, with an exact `ack` command for the agent. It writes no local journal
+record. A failed or unknown completion leaves the rows pending and they are shown again (at least once).
 
 ## Accepted limits
 

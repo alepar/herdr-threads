@@ -658,6 +658,7 @@ impl SemanticMutation {
             }),
             Self::CompleteInboxDelivery { messages } => {
                 Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                    via: None,
                     messages: messages.clone(),
                     operation,
                     claim: native()?,

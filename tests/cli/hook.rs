@@ -396,6 +396,7 @@ fn digest(invitations: &[(&str, &str)], receipts: &[(&str, &str)]) -> AttentionD
         count_has_more: false,
     };
     AttentionDigest {
+        lazy: None,
         version: 1,
         seat: SeatId::new("seat-1"),
         token: Default::default(),
@@ -1681,6 +1682,7 @@ fn hook_parse_error_outside_herdr_is_quiet() {
             stdout: Vec::new(),
             diagnostic: Some("bad argv".into()),
             attention: None,
+            lazy: None,
         }
     );
 }
@@ -4900,9 +4902,11 @@ mod mod_channel_live {
                 Command::AttentionDigest(query) => {
                     self.calls.lock().unwrap().push("digest");
                     Ok(CommandResult::AttentionDigest(AttentionDigest {
+                        lazy: None,
                         version: DIGEST_VERSION,
                         seat: query.seat,
                         token: AttentionToken {
+                            lazy: None,
                             receipt: Some((11, 0)),
                             unavailability_episode: 1,
                             ..Default::default()
@@ -6339,6 +6343,30 @@ mod registered_resume {
                     Ok(CommandResult::HotThreads(hot))
                 }
                 Command::HookParseFailure(_) => Ok(CommandResult::HookParseFailureRecorded),
+                // Scripted only for the hook inbox page tests: the v2 inbox and
+                // hook lazy delivery are advertised and one page is served.
+                Command::Capabilities if self.control("inbox-v2.json") => Ok(
+                    CommandResult::Capabilities(crate::protocol::results::CapabilityList {
+                        capabilities: vec![
+                            crate::protocol::capabilities::INBOX_BATCH_V2.into(),
+                            crate::protocol::capabilities::LAZY_HOOK_DELIVERY.into(),
+                        ],
+                    }),
+                ),
+                Command::InboxBatchV2(query) if self.control("inbox-v2.json") => {
+                    assert_eq!(
+                        query.seat.as_ref().map(SeatId::as_str),
+                        Some("registered-seat")
+                    );
+                    let path = self
+                        .transcript
+                        .as_ref()
+                        .unwrap()
+                        .with_file_name("inbox-v2.json");
+                    let page = read_fixture_json(&path, 65_536)
+                        .map_err(|_| crate::test_support::unserved("no scripted inbox page"))?;
+                    Ok(CommandResult::InboxBatchV2(page))
+                }
                 _ => Err(crate::test_support::unserved(
                     "unused registered fixture command",
                 )),
@@ -7546,6 +7574,72 @@ mod registered_resume {
             .expect("actual escaped hot row missing");
         assert_eq!(row["topic"], "hot \"topic\"peer");
         assert_eq!(row["hot"], "pending_receipt");
+    }
+    // Lazy hook delivery for Hermes: a top-level pre_llm_call qualified turn
+    // takes the shared check-in path, so its context carries the inbox page
+    // and the outcome holds exactly the whole lazy IDs to complete after
+    // delivery (never before; the process boundary commits). Kills: a
+    // Claude/Codex-only implementation, and completion claimed for an item
+    // that was not shown whole.
+    #[test]
+    fn hermes_qualified_turn_injects_inbox_page_and_defers_lazy_completion() {
+        let f = Fixture::new(true);
+        let lazy = |id: &str, body: &str, end: usize| {
+            crate::protocol::results::InboxBatchV2Item::LazyMessage {
+                thread: crate::protocol::ids::ThreadId::new("t-hermes"),
+                topic_data: "hermes topic".into(),
+                message: crate::protocol::ids::MessageId::new(id),
+                sequence: 4,
+                sender: Some(SeatId::new("peer")),
+                author_role: None,
+                relays_user: false,
+                user_intent: None,
+                author_role_backfilled: false,
+                body: body[..end].into(),
+                body_start: 0,
+                body_end: end as u64,
+                body_len: body.len() as u64,
+            }
+        };
+        let page = crate::protocol::pagination::Page {
+            items: vec![
+                lazy("m-whole", "hermes lazy body", 16),
+                lazy("m-part", "a partial lazy body", 9),
+            ],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            has_more: true,
+            stop_reason: crate::protocol::pagination::StopReason::Bytes,
+            consistency: crate::protocol::pagination::Consistency::BoundedLive,
+        };
+        write_fixture_json(&f.root.join("inbox-v2.json"), &page).unwrap();
+        let r = task52_registration();
+        let start = hermes_input("pre_llm_call", "lazy-sess", "turn-1", 1, "top");
+        let outcome = f.run(r, &start);
+        let output = task52_output(&outcome, "startup", &start);
+        let context = output["context"].as_str().unwrap();
+        assert!(
+            context.contains(crate::cli::hook_inbox::INBOX_HEADER),
+            "{context}"
+        );
+        assert!(context.contains("hermes lazy body"), "{context}");
+        assert!(!context.contains("a partial"), "{context}");
+        assert!(context.contains("More inbox content remains"), "{context}");
+        assert_eq!(
+            outcome.lazy.as_ref().map(|lazy| lazy.messages.clone()),
+            Some(vec![crate::protocol::ids::MessageId::new("m-whole")])
+        );
+        assert!(
+            !f.service
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::CompleteInboxDelivery(_) | Command::Ack(_))),
+            "nothing completes or ACKs before delivery"
+        );
     }
     #[test]
     fn task52_facade_declared_reset_clear_has_hot_rows_guidance_and_precise_ack() {
