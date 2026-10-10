@@ -99,11 +99,11 @@ fn claim() -> CallerClaim {
         binding_generation: 0,
         role: CallerRole::TopLevel,
         harness: Harness::Codex,
-        native_session: NativeSessionId::new("plugin_context:n"),
+        native_session: NativeSessionId::new("session-n"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new("p"),
         agent_id: None,
-        liveness: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 fn lifecycle(claim: CallerClaim, operation: &str) -> Command {

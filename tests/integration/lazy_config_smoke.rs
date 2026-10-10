@@ -271,6 +271,11 @@ impl World {
             if human {
                 c.env("HERDR_PANE_ID", target);
             } else {
+                herdr_threads::test_support::isolation::as_agent(
+                    &mut c,
+                    "codex",
+                    &format!("lazy-session-{n}"),
+                );
                 c.args([
                     "--cooperative-seat",
                     &self.seats[n],

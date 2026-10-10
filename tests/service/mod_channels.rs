@@ -826,7 +826,7 @@ mod domain {
                 execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
                 target: HostTargetId::new("p"),
                 agent_id: None,
-                liveness: None,
+                liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
             },
         }
     }

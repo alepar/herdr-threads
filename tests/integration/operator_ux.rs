@@ -67,6 +67,14 @@ impl Plugin {
                 command.env_remove(key);
             }
         }
+        // A stand-in seat is an agent: it acts as a harness session (decision 15).
+        if let Some((seat, _)) = agent {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                &format!("operator-{seat}"),
+            );
+        }
         command
             .args(args)
             .env_remove("CLAUDECODE")
@@ -103,6 +111,20 @@ impl Plugin {
         assert_eq!(
             code, 2,
             "herdr-threads {args:?} must be refused as invalid: {stderr}{value}"
+        );
+        stderr
+    }
+    /// A person's `me init` over a seat holding a live agent binding: no client-local hint exists
+    /// (an agent saves no context), so the daemon refuses it (A2/A4), as a failed request.
+    fn refused_by_daemon(&self, pane: Option<&str>, args: &[&str]) -> String {
+        let (code, value, stderr) = self.run_with_env(pane, None, args, &[]);
+        assert_eq!(
+            code, 1,
+            "herdr-threads {args:?} must be refused by the daemon: {stderr}{value}"
+        );
+        assert!(
+            stderr.contains("never replaces an agent's binding"),
+            "{stderr}"
         );
         stderr
     }
@@ -465,9 +487,13 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
     assert!(in_agent_pane.contains("agent"), "{in_agent_pane}");
     let no_pane = plugin.refused(None, &["human", "me", "init"]);
     assert!(no_pane.contains("HERDR_PANE_ID"), "{no_pane}");
-    // Nor does it take over an agent's registered seat.
-    let agent_seat = plugin.refused(Some("w1:p2"), &["human", "me", "init"]);
-    assert!(agent_seat.contains("never takes over"), "{agent_seat}");
+    // Nor does it take over an agent's registered seat: no client-local hint exists for an
+    // agent (it saves no context), so the daemon refuses.
+    let agent_seat = plugin.refused_by_daemon(Some("w1:p2"), &["human", "me", "init"]);
+    assert!(
+        agent_seat.contains("never replaces an agent's binding"),
+        "{agent_seat}"
+    );
 
     // An agent started later in the person's pane replaces the person at its
     // lifecycle check-in (new generation); the person's history keeps its
@@ -501,8 +527,11 @@ fn person_pane_identity_sends_and_acks_without_flags_with_operator_provenance() 
             ),
         ]
     );
-    let replaced = plugin.refused(Some("w1:p1"), &["human", "me", "init"]);
-    assert!(replaced.contains("never takes over"), "{replaced}");
+    let replaced = plugin.refused_by_daemon(Some("w1:p1"), &["human", "me", "init"]);
+    assert!(
+        replaced.contains("never replaces an agent's binding"),
+        "{replaced}"
+    );
 }
 
 fn scratch(prefix: &str) -> (PathBuf, Scratch, PathBuf) {
@@ -603,7 +632,7 @@ fn refused_then_overridden(root: &Path, socket: &Path) -> (Plugin, String) {
         &["check-in", "--lifecycle-event", "agent-start"],
     );
 
-    let refused = plugin.refused(Some("w1:p1"), &["human", "me", "init"]);
+    let refused = plugin.refused_by_daemon(Some("w1:p1"), &["human", "me", "init"]);
     assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
     let open = |plugin: &Plugin| -> Vec<(String, String)> {
         plugin
@@ -762,50 +791,6 @@ fn me_init_operator_then_person_pane_commands_work() {
     // The mark covers person-pane commands only; a plain `me init` still refuses.
     let refused = plugin.refused_with_env(Some("w1:p1"), &["human", "me", "init"], &env);
     assert!(refused.contains("CODEX_SANDBOX"), "{refused}");
-}
-
-/// No local context is retired before the daemon accepts the operator
-/// check-in: a rejected `me init --operator` leaves the agent's context as it
-/// was. The rejection is forced with a local generation ahead of the
-/// service's (the check-in cannot be prepared at an older generation).
-#[test]
-fn rejected_operator_check_in_leaves_agent_context_intact() {
-    let (root, _scratch, socket) = scratch("htrj");
-    let _host = FakeHost::start(&socket, vec![pane("w1:p1", "term-a")]);
-    let plugin = Plugin {
-        state: root.join("state"),
-        host: socket.clone(),
-    };
-    plugin.ok(None, None, &["daemon", "ensure"]);
-    let seat = plugin.ok(None, None, &["seat", "resolve", "--pane", "w1:p1"])["data"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    plugin.ok(
-        None,
-        Some((seat.as_str(), "w1:p1")),
-        &["check-in", "--lifecycle-event", "agent-start"],
-    );
-    let files = context_files(&plugin.state);
-    assert_eq!(files.len(), 1, "{files:?}");
-    let mut state: Value = serde_json::from_slice(&fs::read(&files[0]).unwrap()).unwrap();
-    assert_eq!(state["current"]["harness"], "Claude", "{state}");
-    state["current"]["binding_generation"] = json!(99);
-    fs::write(&files[0], serde_json::to_vec(&state).unwrap()).unwrap();
-    let before = fs::read(&files[0]).unwrap();
-
-    let (code, value, stderr) = plugin.run_with_env(
-        Some("w1:p1"),
-        None,
-        &["human", "me", "init", "--operator"],
-        &[],
-    );
-    assert_ne!(code, 0, "the check-in must be rejected: {stderr}{value}");
-    let after: Value = serde_json::from_slice(&fs::read(&files[0]).unwrap()).unwrap();
-    assert_eq!(after["current"], state["current"], "{after}");
-    assert_eq!(after["current"]["harness"], "Claude");
-    assert_eq!(fs::read(&files[0]).unwrap(), before);
-    assert_eq!(plugin.operator_mark_files(), 0);
 }
 
 #[test]

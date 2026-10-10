@@ -18,7 +18,8 @@ pub struct CallerClaim {
     /// `CODEX_SESSION_ID`). Absent for a top-level caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<AgentId>,
-    /// The caller's liveness fingerprint (decision 9). Absent until clients send it (ht-54r.5).
+    /// The caller's liveness fingerprint (decision 9). Required of every agent claim that creates
+    /// or connects a binding; human claims carry none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub liveness: Option<LivenessFingerprint>,
 }
@@ -60,6 +61,10 @@ impl LivenessFingerprint {
             start: record.start,
         }
     }
+    /// A fixed fingerprint for tests that need an agent claim to enroll (the daemon requires one
+    /// on every claim that creates or connects a binding). It names no real process.
+    #[cfg(any(test, feature = "test-support"))]
+    pub const TEST: Self = Self { pid: 1, start: 1 };
     /// True iff the fingerprinted process still exists with the same start stamp.
     pub fn is_alive(&self, info: &dyn crate::ports::ProcessInfo) -> bool {
         info.process(self.pid)

@@ -1727,6 +1727,36 @@ fn check_in(
         .map(stamp)
 }
 
+/// The liveness fingerprint of the harness process this hook runs under (spec §1). Unit tests
+/// run under no harness, so they get the fixed test fingerprint; the real-binary tests run the
+/// hook under `test_support::harness_shim`.
+fn hook_fingerprint(
+    harness: Harness,
+) -> Result<crate::protocol::authority::LivenessFingerprint, Failure> {
+    #[cfg(test)]
+    {
+        let _ = harness;
+        Ok(crate::protocol::authority::LivenessFingerprint::TEST)
+    }
+    #[cfg(not(test))]
+    {
+        use crate::harness::caller_env::{EnvInputs, EnvRefusal, harness_fingerprint};
+        let env = |name: &str| std::env::var(name).ok();
+        let inputs = EnvInputs {
+            env: &env,
+            self_pid: std::process::id(),
+            agent_id: None,
+            processes: &crate::host::process_table::HostProcessTable,
+        };
+        harness_fingerprint(&inputs, harness.as_str()).map_err(|refusal| match refusal {
+            EnvRefusal::ManagedDaemon { .. } | EnvRefusal::NoHarness => {
+                Failure::Quiet(refusal.message())
+            }
+            other => Failure::Unavailable(other.message()),
+        })
+    }
+}
+
 /// One hook invocation's connection to the daemon for one pane.
 struct PaneCall<'a> {
     context: &'a RuntimeContext,
@@ -1909,7 +1939,14 @@ impl PaneCall<'_> {
                 break;
             }
         }
-        let execution = uuid::Uuid::new_v4();
+        // The reattached session's binding carries the session's execution, the one its own
+        // claims will: its later calls then match the binding they reattached.
+        let execution = crate::harness::context::session_execution(
+            self.instance,
+            event.harness,
+            session.as_str(),
+            None,
+        );
         let reference = journal
             .record(
                 super::journal::IntentScope::Continuity {
@@ -1978,7 +2015,7 @@ impl PaneCall<'_> {
         let Some(journal) = self.journal() else {
             return Reattach::Pending;
         };
-        let Some((mut reference, mut execution, reused)) =
+        let Some((mut reference, _, reused)) =
             self.continuity_intent(&journal, event, harness, &session, !pane_resolved)
         else {
             return Reattach::Pending;
@@ -1996,13 +2033,12 @@ impl PaneCall<'_> {
                     // A stale replay: drop it and ask once more under a fresh
                     // key, which the daemon cannot answer from a replay.
                     let _ = journal.complete(&reference);
-                    let Some((fresh, fresh_execution, _)) =
+                    let Some((fresh, _, _)) =
                         self.continuity_intent(&journal, event, harness, &session, false)
                     else {
                         return Reattach::Pending;
                     };
                     reference = fresh;
-                    execution = fresh_execution;
                     reattached = match self.submit_continuity(&journal, &reference) {
                         ContinuityOutcome::Reattached(reattached) => reattached,
                         ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
@@ -2016,20 +2052,11 @@ impl PaneCall<'_> {
             Ok(contexts) => contexts,
             Err(error) => return Reattach::InstallFailed(format!("{}: {error:?}", seat.as_str())),
         };
-        let context = OccupantContext {
-            format_version: 1,
-            instance: self.instance,
-            seat: seat.as_str().into(),
-            target: self.target.as_str().into(),
-            harness: event.harness,
-            binding_generation: reattached.binding_generation,
-            execution,
-            session: SessionReference::Native(session.as_str().to_owned()),
-            role: Role::TopLevel,
-        };
+        // The reattached session's identity is its environment, not a saved context: only a
+        // request still pending for the replaced context is dead.
         // On a failed install the intent stays: the daemon replays the same
         // result on the next resume and the install is tried again.
-        let abandoned = match contexts.install_reattached(context) {
+        let abandoned = match contexts.abandon_any_pending() {
             Ok(abandoned) => abandoned,
             Err(error) => return Reattach::InstallFailed(format!("{}: {error:?}", seat.as_str())),
         };
@@ -2102,8 +2129,8 @@ impl PaneCall<'_> {
         seat: &SeatId,
         generation: u64,
     ) -> Result<CheckedIn, Failure> {
-        let (context, paths, client, target) = (self.context, self.paths, self.client, self.target);
-        let (instance, deadline) = (self.instance, self.deadline);
+        let (context, paths, client) = (self.context, self.paths, self.client);
+        let deadline = self.deadline;
         let clock = Arc::clone(&self.clock);
         let lifecycle = event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
         let pane = pane_inputs();
@@ -2162,8 +2189,7 @@ impl PaneCall<'_> {
                 link: None,
             });
         }
-        let contexts = super::seat_contexts(paths, instance, seat)
-            .map_err(|_| Failure::Unavailable("seat context journal unavailable".into()))?;
+        let contexts = self.session_journal(event, seat, generation)?;
         let output = OutputSpec {
             format: OutputFormat::Text,
             context: selectors,
@@ -2174,20 +2200,15 @@ impl PaneCall<'_> {
             // digest token advanced. It writes nothing to the context or intent
             // journal and never replays.
             let boundary = bridge::tool_boundary_check_in(
-            &contexts,
-            event,
-            client,
-            clock.as_ref(),
-            &output,
-            &budget(deadline, clock.as_ref()),
-            event.kind == EventKind::Tool,
-        )
-        .map_err(|e| match e {
-            bridge::BridgeError::Context(ContextError::LifecycleRequired) => Failure::Quiet(
-                "no registered execution for this session; a lifecycle check-in (SessionStart) registers one".into(),
-            ),
-            other => bridge_failure(other),
-        })?;
+                &contexts,
+                event,
+                client,
+                clock.as_ref(),
+                &output,
+                &budget(deadline, clock.as_ref()),
+                event.kind == EventKind::Tool,
+            )
+            .map_err(bridge_failure)?;
             // The inbox page rides only with a presented offer; a live mod
             // channel delivers itself.
             let lazy = (!boundary.live && !boundary.text.is_empty())
@@ -2224,10 +2245,7 @@ impl PaneCall<'_> {
             contexts,
             paths,
             client,
-            target,
             seat,
-            generation,
-            instance,
             &output,
             deadline,
             &self.current_deadline,
@@ -2246,11 +2264,52 @@ impl PaneCall<'_> {
         // hook add a page, under exactly the execution that check-in
         // registered.
         if let Some(execution) = done.attention.as_ref().map(|mark| mark.execution) {
-            done.lazy = super::seat_contexts(paths, instance, seat)
+            done.lazy = self
+                .session_journal(event, seat, generation)
                 .ok()
                 .and_then(|contexts| self.inbox_offer(&contexts, event, Some(execution)));
         }
         Ok(done)
+    }
+
+    /// The seat's context journal acting as the session this hook event names. The payload is
+    /// authoritative: the session comes from `session_id`, the fingerprint from the harness
+    /// process among this hook's ancestors, and nothing about the session is read from or
+    /// written to `context.json` (spec §1, decision 15).
+    fn session_journal(
+        &self,
+        event: &LifecycleEvent,
+        seat: &SeatId,
+        generation: u64,
+    ) -> Result<crate::harness::context::ContextJournal, Failure> {
+        let contexts = super::seat_contexts(self.paths, self.instance, seat)
+            .map_err(|_| Failure::Unavailable("seat context journal unavailable".into()))?;
+        let Some(native) = event.native_session.as_deref() else {
+            return Err(Failure::Quiet(format!(
+                "the {} hook payload carries no session id, so the call is not attributed",
+                event.harness.as_str()
+            )));
+        };
+        let liveness = hook_fingerprint(event.harness)?;
+        let current = OccupantContext {
+            format_version: 1,
+            instance: self.instance,
+            seat: seat.as_str().into(),
+            target: self.target.as_str().into(),
+            harness: event.harness,
+            binding_generation: generation,
+            execution: crate::harness::context::session_execution(
+                self.instance,
+                event.harness,
+                native,
+                None,
+            ),
+            session: SessionReference::Native(native.to_owned()),
+            role: Role::TopLevel,
+        };
+        contexts
+            .with_agent_caller(current, liveness)
+            .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))
     }
 
     /// One bounded inbox page for the registered top-level execution, read
@@ -2273,7 +2332,7 @@ impl PaneCall<'_> {
         {
             return None;
         }
-        let claim = bridge::caller_claim(&saved).ok()?;
+        let claim = contexts.claim(&saved).ok()?;
         let capped = self.deadline.min(Instant::now() + INBOX_READ_BUDGET);
         super::hook_inbox::read_page(self.client, claim, &budget(capped, self.clock.as_ref()))
     }
@@ -2418,10 +2477,7 @@ fn lifecycle_check_in(
     contexts: crate::harness::context::ContextJournal,
     paths: &InstancePaths,
     client: &dyn LocalClient,
-    target: &HostTargetId,
     seat: &SeatId,
-    generation: u64,
-    instance: uuid::Uuid,
     output: &OutputSpec,
     deadline: Instant,
     current_deadline: &CurrentDeadline,
@@ -2445,17 +2501,11 @@ fn lifecycle_check_in(
         let replay = contexts
             .request_for_event(&turn.event_key)
             .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
-        let matching = contexts
-            .current()
-            .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?
-            .is_some_and(|saved| {
-                saved.harness == event.harness
-                    && saved.target == target.as_str()
-                    && saved.binding_generation > 0
-                    && saved.binding_generation == generation
-                    && saved.session == SessionReference::Native(turn.session.clone())
-                    && turn.reset.is_none()
-            });
+        // The session this journal already checked in continues as a Current turn.
+        let matching = turn.reset.is_none()
+            && contexts
+                .session_known(&turn.session)
+                .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
         if replay.as_ref().map_or(matching, |request| {
             request.mode == crate::harness::context::CheckInMode::Current
         }) {
@@ -2510,10 +2560,9 @@ fn lifecycle_check_in(
     let pending = contexts
         .pending()
         .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
-    let mut replay = false;
     if let Some(pending) = pending {
         match run(&pending_event(&pending), None, &mut replayed) {
-            Ok(()) => replay = true,
+            Ok(()) => (),
             Err(error) if definitive(&error) => {
                 replayed.clear();
                 abandon(&journal, contexts, &pending.event_id)?;
@@ -2521,74 +2570,13 @@ fn lifecycle_check_in(
             Err(error) => return Err(bridge_failure(error)),
         }
     }
-    let mut current = contexts
-        .current()
-        .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
-    if let Some(saved) = current.clone() {
-        // A replayed lifecycle CheckIn may have advanced past the inspected generation.
-        let advanced_by_replay = replay && saved.binding_generation > generation;
-        if saved.binding_generation < generation {
-            // The service moved the seat past this context (a reattachment
-            // whose reply was lost, or one that installed in another pane): it
-            // is historical whatever its target, retired before any
-            // comparison with the pane. A deliberately fresh lifecycle request
-            // reads the current generation.
-            let retired = contexts
-                .retire_current(&saved)
-                .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
-            if !retired {
-                return Err(Failure::Unavailable(
-                    "local context changed during check-in".into(),
-                ));
-            }
-            current = None;
-        } else if saved.target != target.as_str()
-            || (saved.binding_generation > generation && !advanced_by_replay)
-        {
-            return Err(Failure::Unavailable(
-                "local context differs from current service mapping".into(),
-            ));
-        } else if saved.harness != event.harness
-            && event.harness != crate::harness::context::Harness::Human
-        {
-            // An agent started in a pane a person had claimed with `me init`, or
-            // a different agent harness reuses the pane: its lifecycle CheckIn
-            // replaces that occupant (a new binding generation), never
-            // continues it under the previous harness's context. The context
-            // journal is a client-local hint (A2); the daemon decides the
-            // check-in against the canonical view.
-            let retired = contexts
-                .retire_current(&saved)
-                .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
-            if !retired {
-                return Err(Failure::Unavailable(
-                    "local context changed during check-in".into(),
-                ));
-            }
-            current = None;
-        }
-    }
-    let initial = current.is_none().then(|| {
-        let execution = uuid::Uuid::new_v4();
-        OccupantContext {
-            format_version: 1,
-            instance,
-            seat: seat.as_str().into(),
-            target: target.as_str().into(),
-            harness: event.harness,
-            binding_generation: generation,
-            execution,
-            session: SessionReference::PluginContext(execution),
-            role: Role::TopLevel,
-        }
-    });
     if let Some(turn) = turn {
         let request = bridge::prepare_qualified_turn(
             &journal,
             contexts,
             event,
             turn,
-            initial.as_ref(),
+            None,
             clock.utc_now().0,
         )
         .map_err(|e| bridge_failure(e.into()))?;
@@ -2611,7 +2599,7 @@ fn lifecycle_check_in(
         client,
         seat,
         &budget(deadline, clock.as_ref()),
-        || run(event, initial.as_ref(), &mut text),
+        || run(event, None, &mut text),
     );
     let seeded = match seeded {
         Ok(seeded) => seeded,
@@ -2944,7 +2932,7 @@ fn record_observer_reset(
             continue;
         };
         if journal
-            .current_snapshot()
+            .registered_snapshot()
             .ok()
             .flatten()
             .is_some_and(|c| c.harness == args.harness && c.target == target)

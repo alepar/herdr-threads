@@ -392,16 +392,19 @@ pub fn prepare_event_as(
             created_at_millis,
             operator,
             || {
-                let next = seed
-                    .for_event(event.kind, Uuid::new_v4(), event.native_session.clone())
-                    .map_err(context_io)?;
+                let next = if contexts.is_agent_caller() {
+                    seed.for_agent_event(event.native_session.clone())
+                } else {
+                    seed.for_event(event.kind, Uuid::new_v4(), event.native_session.clone())
+                }
+                .map_err(context_io)?;
                 let mode = match event.kind.mode() {
                     CheckInMode::Current => WireMode::Current,
                     CheckInMode::Lifecycle => WireMode::Lifecycle {
                         expected_binding_generation: seed.binding_generation,
                     },
                 };
-                Ok((caller_claim(&next).map_err(context_io)?, mode))
+                Ok((contexts.claim(&next).map_err(context_io)?, mode))
             },
         )?;
         pending_request(journal, &reference)
@@ -459,16 +462,19 @@ pub fn prepare_qualified_turn(
             };
             let reference =
                 journal.record_check_in_as(scope, &turn.event_key, now, false, || {
-                    let next = seed
-                        .for_event(kind, Uuid::new_v4(), Some(turn.session.clone()))
-                        .map_err(context_io)?;
+                    let next = if contexts.is_agent_caller() {
+                        seed.for_agent_event(Some(turn.session.clone()))
+                    } else {
+                        seed.for_event(kind, Uuid::new_v4(), Some(turn.session.clone()))
+                    }
+                    .map_err(context_io)?;
                     let mode = match kind.mode() {
                         CheckInMode::Current => WireMode::Current,
                         CheckInMode::Lifecycle => WireMode::Lifecycle {
                             expected_binding_generation: seed.binding_generation,
                         },
                     };
-                    Ok((caller_claim(&next).map_err(context_io)?, mode))
+                    Ok((contexts.claim(&next).map_err(context_io)?, mode))
                 })?;
             pending_request(journal, &reference)
         })?;
@@ -516,7 +522,11 @@ pub fn decode_request(request: &PendingCheckIn) -> Result<Command, ContextError>
         },
         _ => return Err(ContextError::Invalid),
     };
-    if check.claim != caller_claim(&request.context)?
+    // The context carries no liveness fingerprint (it is the caller's process, not its identity);
+    // the frozen claim keeps the one it was prepared with.
+    let mut frozen = check.claim.clone();
+    frozen.liveness = None;
+    if frozen != caller_claim(&request.context)?
         || check.operation.as_str() != request.operation_id.to_string()
         || check.mode != mode
     {
@@ -1166,7 +1176,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     {
         return Err(ContextError::LifecycleRequired.into());
     }
-    let claim = caller_claim(&saved)?;
+    let claim = contexts.claim(&saved)?;
     let stored = contexts.attention_mark(saved.execution);
     let last = if coalesce { stored } else { None };
     // Delivery readiness can advance when attribution finishes or a bounded

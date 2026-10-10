@@ -553,7 +553,7 @@ fn reads_and_notify_create_no_acks() {
         execution: ExecutionId::new(history::fixture_execution("s1")),
         target: HostTargetId::new("s1"),
         agent_id: None,
-        liveness: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     let check_in = CheckIn {
         mode: CheckInMode::Current,

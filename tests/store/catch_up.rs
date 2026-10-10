@@ -893,11 +893,11 @@ fn claim(execution: &str, generation: u64) -> CallerClaim {
         binding_generation: generation,
         role: CallerRole::TopLevel,
         harness: Harness::Codex,
-        native_session: NativeSessionId::new("plugin_context:n"),
+        native_session: NativeSessionId::new("session-n"),
         execution: ExecutionId::new(execution),
         target: HostTargetId::new("p"),
         agent_id: None,
-        liveness: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 

@@ -402,7 +402,10 @@ pub fn touch(
         .map_err(store_error)?;
     if let (true, Some(f)) = (found, fingerprint) {
         tx.execute(
-            "UPDATE occupant_bindings SET liveness_pid=?2, liveness_start=?3 WHERE binding_id=?1",
+            // Only a changed fingerprint writes: every agent call touches its binding, and an
+            // unchanged row must not wake the lanes that watch `occupant_bindings`.
+            "UPDATE occupant_bindings SET liveness_pid=?2, liveness_start=?3 WHERE binding_id=?1 \
+             AND (liveness_pid IS NOT ?2 OR liveness_start IS NOT ?3)",
             params![
                 binding.as_str(),
                 i64::from(f.pid),
@@ -851,40 +854,24 @@ pub fn get(db: &Connection, binding: &BindingId) -> Result<Option<BindingRow>, A
     .next())
 }
 
-/// Whether the daemon refuses agent claims that carry no liveness fingerprint (decision 9/15).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FingerprintRule {
-    Transitional,
-    Required,
-}
-/// ht-54r.5 switches this to Required in the commit where every client claim carries a
-/// fingerprint, and deletes `Transitional`. Until then the daemon admits fingerprint-less agent
-/// claims so the pre-ht-54r.5 clients keep working (the rule and its codes are fully tested here).
-pub const AGENT_FINGERPRINT_RULE: FingerprintRule = FingerprintRule::Transitional;
-
 /// Decision 15 / decision 9. Human claims are exempt. `launch:` sessions are never a caller
-/// (SessionClaimRequired). Under Required: a `plugin_context:` session is SessionClaimRequired,
-/// and a missing fingerprint is LivenessFingerprintRequired when the claim would enroll,
+/// (SessionClaimRequired), and so is a `plugin_context:` session. A missing fingerprint is LivenessFingerprintRequired when the claim would enroll,
 /// reconnect or reopen a binding (a plain touch of an open binding needs none: `touch(None)`).
-pub fn admit_agent_claim(
-    claim: &CallerClaim,
-    creates_or_connects: bool,
-    rule: FingerprintRule,
-) -> Result<(), ApiError> {
+pub fn admit_agent_claim(claim: &CallerClaim, creates_or_connects: bool) -> Result<(), ApiError> {
     if claim.harness == crate::protocol::authority::Harness::Human {
         return Ok(());
     }
     let session = claim.native_session.as_str();
     let placeholder = session.is_empty()
         || session.starts_with(crate::protocol::authority::MANAGED_LAUNCH_PLACEHOLDER_PREFIX)
-        || (rule == FingerprintRule::Required && session.starts_with(PLUGIN_CONTEXT_PREFIX));
+        || session.starts_with(PLUGIN_CONTEXT_PREFIX);
     if placeholder {
         return Err(api_error(
             ErrorCode::SessionClaimRequired,
             "agent call without a harness session id",
         ));
     }
-    if rule == FingerprintRule::Required && creates_or_connects && claim.liveness.is_none() {
+    if creates_or_connects && claim.liveness.is_none() {
         return Err(api_error(
             ErrorCode::LivenessFingerprintRequired,
             "agent call without a liveness fingerprint",
@@ -1055,10 +1042,9 @@ pub fn link_lineage(
 pub fn resolve_claim(
     tx: &Connection,
     request: &ResolveRequest<'_>,
-    rule: FingerprintRule,
     now: UtcMillis,
 ) -> Result<Resolution, ApiError> {
-    resolve_claim_with_hooks(tx, request, rule, now, ENROLL_HOOKS)
+    resolve_claim_with_hooks(tx, request, now, ENROLL_HOOKS)
 }
 
 /// Rewrites the placement columns of an open binding from the deciding mapping.
@@ -1097,7 +1083,6 @@ fn refresh_placement(
 pub(crate) fn resolve_claim_with_hooks(
     tx: &Connection,
     request: &ResolveRequest<'_>,
-    rule: FingerprintRule,
     now: UtcMillis,
     hooks: &[(&str, EnrollHook)],
 ) -> Result<Resolution, ApiError> {
@@ -1133,7 +1118,7 @@ fn resolve_claim_inner(
     }
     let creates_or_connects = request.lifecycle || found.is_none();
     if !human {
-        admit_agent_claim(claim, creates_or_connects, rule)?;
+        admit_agent_claim(claim, creates_or_connects)?;
     }
     let harness = claim.harness;
     let top_provenance = if request.lifecycle || human {

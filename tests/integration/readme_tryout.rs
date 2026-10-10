@@ -195,6 +195,11 @@ impl World {
             .env("HERDR_PANE_ID", actor.map_or("w1:p1", |(_, pane, _)| pane))
             .env("NO_COLOR", "1");
         if let Some((seat, pane, kind)) = actor {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut cmd,
+                kind,
+                &format!("tryout-{}", seat),
+            );
             cmd.args([
                 "--cooperative-seat",
                 seat,

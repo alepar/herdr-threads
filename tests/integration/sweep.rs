@@ -203,6 +203,12 @@ impl Plugin {
             .arg("--host-endpoint")
             .arg(&self.host);
         if let Some(caller) = caller {
+            // A stand-in seat is an agent: it acts as a harness session (decision 15).
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                &format!("sweep-{}", caller.seat),
+            );
             command.args([
                 "--cooperative-seat",
                 caller.seat,

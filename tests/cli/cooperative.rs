@@ -4894,16 +4894,14 @@ impl OrdinaryHumanRetryFixture {
             harness,
             binding_generation: claim.binding_generation,
             execution: uuid::Uuid::parse_str(claim.execution.as_str()).unwrap(),
-            session: SessionReference::PluginContext(
-                uuid::Uuid::parse_str(
-                    claim
-                        .native_session
-                        .as_str()
-                        .strip_prefix("plugin_context:")
-                        .unwrap(),
-                )
-                .unwrap(),
-            ),
+            session: match claim
+                .native_session
+                .as_str()
+                .strip_prefix("plugin_context:")
+            {
+                Some(id) => SessionReference::PluginContext(uuid::Uuid::parse_str(id).unwrap()),
+                None => SessionReference::Native(claim.native_session.as_str().into()),
+            },
             role: Role::TopLevel,
         };
         let human = context_for(&original, crate::harness::context::Harness::Human);
@@ -4946,8 +4944,8 @@ impl OrdinaryHumanRetryFixture {
         let mut agent = original.clone();
         agent.harness = Harness::Codex;
         agent.execution = ExecutionId::new(uuid::Uuid::new_v4().to_string());
-        agent.native_session =
-            NativeSessionId::new(format!("plugin_context:{}", uuid::Uuid::new_v4()));
+        agent.native_session = NativeSessionId::new(format!("session-{}", uuid::Uuid::new_v4()));
+        agent.liveness = Some(crate::protocol::authority::LivenessFingerprint::TEST);
         let result = client
             .call(
                 Command::CheckIn(CheckIn {

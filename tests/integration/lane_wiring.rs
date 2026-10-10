@@ -146,6 +146,11 @@ impl Session {
             .arg("--host-endpoint")
             .arg(self.herdr.socket_path());
         if let Some(caller) = caller {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                &format!("wiring-{}", caller.seat),
+            );
             command.args([
                 "--cooperative-seat",
                 &caller.seat,

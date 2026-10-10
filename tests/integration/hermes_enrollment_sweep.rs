@@ -85,8 +85,10 @@ impl Sweep {
     }
 
     fn hook(&self, pane: &str, harness: &str, payload: &Value) -> Value {
-        let mut child = self
-            .command()
+        let mut command = self.command();
+        // A hook runs under its harness (the test process stands in for it).
+        herdr_threads::test_support::isolation::as_agent(&mut command, harness, "hook-session");
+        let mut child = command
             .args(["hook", harness])
             .env("HERDR_ENV", "1")
             .env("HERDR_PANE_ID", pane)
@@ -213,7 +215,7 @@ impl Sweep {
         self.db()
             .query_row(
                 "SELECT native_session FROM occupant_bindings WHERE seat_id=?1 \
-                 AND harness='hermes' AND ended_at IS NULL",
+                 AND harness='hermes' AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1",
                 [seat],
                 |row| row.get(0),
             )
@@ -346,7 +348,8 @@ fn hermes_bare_cli_main_flow_enrolls_checks_in_keeps_seat_on_new_and_excludes_ch
         std::slice::from_ref(&seat),
         "/new moved or added a seat"
     );
-    assert_eq!(sweep.open_bindings("hermes", &seat), 1);
+    // Each session keeps its own binding (spec §1): /new adds one and ends nothing.
+    assert_eq!(sweep.open_bindings("hermes", &seat), 2);
     assert_eq!(sweep.open_session(&seat), "sweep-s2");
 
     // 4. Children never enroll and never change accountable state.

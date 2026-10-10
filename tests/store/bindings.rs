@@ -410,7 +410,6 @@ mod resolution {
         db: &Connection,
         claim: &CallerClaim,
         lifecycle: bool,
-        rule: FingerprintRule,
     ) -> Result<Resolution, crate::protocol::results::ApiError> {
         let place = placement();
         resolve_claim(
@@ -421,7 +420,6 @@ mod resolution {
                 placement: &place,
                 lineage: None,
             },
-            rule,
             UtcMillis(50),
         )
     }
@@ -438,13 +436,7 @@ mod resolution {
     #[test]
     fn plain_call_of_an_unknown_session_enrolls_with_env_provenance() {
         let db = db();
-        let r = resolve(
-            &db,
-            &claim("sess-A", None),
-            false,
-            FingerprintRule::Required,
-        )
-        .unwrap();
+        let r = resolve(&db, &claim("sess-A", None), false).unwrap();
         let Resolution::Enrolled { ref binding, .. } = r else {
             panic!("expected Enrolled, got {r:?}");
         };
@@ -453,13 +445,7 @@ mod resolution {
         assert_eq!(binding.fingerprint, Some(FP));
         assert_eq!(binding.generation, 4);
         // A second plain call of the same session is that binding, not a new one.
-        let again = resolve(
-            &db,
-            &claim("sess-A", None),
-            false,
-            FingerprintRule::Required,
-        )
-        .unwrap();
+        let again = resolve(&db, &claim("sess-A", None), false).unwrap();
         assert!(
             matches!(again, Resolution::Existing { reconnected: false, ref binding } if binding.binding_id == r.binding().binding_id)
         );
@@ -469,20 +455,20 @@ mod resolution {
     #[test]
     fn lifecycle_enrollment_uses_the_harness_cooperative_provenance() {
         let db = db();
-        let r = resolve(&db, &claim("sess-A", None), true, FingerprintRule::Required).unwrap();
+        let r = resolve(&db, &claim("sess-A", None), true).unwrap();
         assert_eq!(r.binding().provenance, COOPERATIVE_TOP_LEVEL_PROVENANCE);
     }
 
     #[test]
     fn plain_touch_of_a_disconnected_binding_serves_it_without_reconnecting() {
         let db = db();
-        let first = resolve(&db, &claim("sess-A", None), true, FingerprintRule::Required).unwrap();
+        let first = resolve(&db, &claim("sess-A", None), true).unwrap();
         let id = first.binding().binding_id.clone();
         disconnect(&db, &id, DisconnectReason::EndEvent, UtcMillis(20)).unwrap();
         let mut c = claim("sess-A", None);
         c.liveness = Some(LivenessFingerprint { pid: 8, start: 99 });
         // Required, yet a touch of an open binding needs and gets no reconnect.
-        let r = resolve(&db, &c, false, FingerprintRule::Required).unwrap();
+        let r = resolve(&db, &c, false).unwrap();
         let Resolution::Existing {
             binding,
             reconnected,
@@ -522,24 +508,10 @@ mod resolution {
             placement: &place,
             lineage: None,
         };
-        let first = resolve_claim_with_hooks(
-            &db,
-            &request,
-            FingerprintRule::Required,
-            UtcMillis(10),
-            hooks,
-        )
-        .unwrap();
+        let first = resolve_claim_with_hooks(&db, &request, UtcMillis(10), hooks).unwrap();
         let id = first.binding().binding_id.clone();
         disconnect(&db, &id, DisconnectReason::ProcessExit, UtcMillis(20)).unwrap();
-        let again = resolve_claim_with_hooks(
-            &db,
-            &request,
-            FingerprintRule::Required,
-            UtcMillis(30),
-            hooks,
-        )
-        .unwrap();
+        let again = resolve_claim_with_hooks(&db, &request, UtcMillis(30), hooks).unwrap();
         let Resolution::Existing {
             binding,
             reconnected,
@@ -566,7 +538,6 @@ mod resolution {
                 lifecycle: false,
                 ..request
             },
-            FingerprintRule::Required,
             UtcMillis(31),
             hooks,
         )
@@ -578,7 +549,7 @@ mod resolution {
     fn lifecycle_refreshes_the_placement_of_an_open_binding() {
         let db = db();
         let c = claim("sess-A", None);
-        resolve(&db, &c, true, FingerprintRule::Required).unwrap();
+        resolve(&db, &c, true).unwrap();
         let mut place = placement();
         place.execution = "e2".into();
         place.host_epoch = 9;
@@ -591,7 +562,6 @@ mod resolution {
                 placement: &place,
                 lineage: None,
             },
-            FingerprintRule::Required,
             UtcMillis(60),
         )
         .unwrap();
@@ -610,14 +580,8 @@ mod resolution {
     #[test]
     fn two_sessions_resolve_to_two_open_bindings() {
         let db = db();
-        let a = resolve(&db, &claim("sess-A", None), true, FingerprintRule::Required).unwrap();
-        let b = resolve(
-            &db,
-            &other_process("sess-B"),
-            true,
-            FingerprintRule::Required,
-        )
-        .unwrap();
+        let a = resolve(&db, &claim("sess-A", None), true).unwrap();
+        let b = resolve(&db, &other_process("sess-B"), true).unwrap();
         assert_ne!(a.binding().binding_id, b.binding().binding_id);
         assert_eq!(
             count(
@@ -638,7 +602,7 @@ mod resolution {
         let db = db();
         let sub = claim("sess-A", Some("a1"));
         // No parent yet: it is enrolled first, from the plain call.
-        let r = resolve(&db, &sub, false, FingerprintRule::Required).unwrap();
+        let r = resolve(&db, &sub, false).unwrap();
         let child = r.binding();
         assert_eq!(child.role, BindingRole::Subagent);
         assert_eq!(child.provenance, COOPERATIVE_HOOK_AGENT_PROVENANCE);
@@ -651,13 +615,7 @@ mod resolution {
             Some(parent.binding_id.clone())
         );
         // A second subagent of the same session attaches to the same parent.
-        let other = resolve(
-            &db,
-            &claim("sess-A", Some("a2")),
-            false,
-            FingerprintRule::Required,
-        )
-        .unwrap();
+        let other = resolve(&db, &claim("sess-A", Some("a2")), false).unwrap();
         assert_eq!(
             parent_of(&db, &other.binding().binding_id).unwrap(),
             Some(parent.binding_id)
@@ -670,14 +628,14 @@ mod resolution {
         let db = db();
         let mut sub = claim("sess-A", Some("a1"));
         sub.harness = Harness::Codex;
-        let r = resolve(&db, &sub, false, FingerprintRule::Transitional).unwrap();
+        let r = resolve(&db, &sub, false).unwrap();
         assert_eq!(r.binding().provenance, COOPERATIVE_ENV_SESSION_PROVENANCE);
     }
 
     #[test]
     fn attach_subagent_attaches_to_an_existing_parent_without_touching_it() {
         let db = db();
-        let parent = resolve(&db, &claim("sess-A", None), true, FingerprintRule::Required).unwrap();
+        let parent = resolve(&db, &claim("sess-A", None), true).unwrap();
         let sub = claim("sess-A", Some("a1"));
         let mut place = placement();
         place.provenance = COOPERATIVE_HOOK_AGENT_PROVENANCE.into();
@@ -709,12 +667,12 @@ mod resolution {
         let db = db();
         let mut c = claim("sess-A", None);
         c.role = CallerRole::Subagent;
-        let err = resolve(&db, &c, false, FingerprintRule::Transitional).unwrap_err();
+        let err = resolve(&db, &c, false).unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidRequest);
         // And an agent id on a top-level claim.
         let mut c = claim("sess-A", Some("a1"));
         c.role = CallerRole::TopLevel;
-        let err = resolve(&db, &c, false, FingerprintRule::Transitional).unwrap_err();
+        let err = resolve(&db, &c, false).unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidRequest);
         assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 0);
     }
@@ -723,7 +681,7 @@ mod resolution {
     fn reopen_after_unresolve_keeps_cursors() {
         let db = db();
         let c = claim("sess-A", None);
-        let first = resolve(&db, &c, true, FingerprintRule::Required).unwrap();
+        let first = resolve(&db, &c, true).unwrap();
         let id = first.binding().binding_id.clone();
         read_cursors::advance(&db, &id, &thread(), 7).unwrap();
         assert_eq!(
@@ -736,7 +694,7 @@ mod resolution {
             .unwrap(),
             1
         );
-        let r = resolve(&db, &c, true, FingerprintRule::Required).unwrap();
+        let r = resolve(&db, &c, true).unwrap();
         let Resolution::Reopened(binding) = r else {
             panic!("expected Reopened, got {r:?}");
         };
@@ -755,7 +713,7 @@ mod resolution {
     fn rows_ended_as_replaced_are_never_reopened() {
         let db = db();
         let c = claim("sess-A", None);
-        let first = resolve(&db, &c, true, FingerprintRule::Required).unwrap();
+        let first = resolve(&db, &c, true).unwrap();
         end_open_bindings(
             &db,
             &SeatId::new("s"),
@@ -763,7 +721,7 @@ mod resolution {
             UtcMillis(20),
         )
         .unwrap();
-        let r = resolve(&db, &c, true, FingerprintRule::Required).unwrap();
+        let r = resolve(&db, &c, true).unwrap();
         assert!(matches!(r, Resolution::Enrolled { .. }), "{r:?}");
         assert_ne!(r.binding().binding_id, first.binding().binding_id);
     }
@@ -772,7 +730,7 @@ mod resolution {
     fn unresolved_seat_does_not_reopen_before_it_is_resolved_again() {
         let db = db();
         let c = claim("sess-A", None);
-        let first = resolve(&db, &c, true, FingerprintRule::Required).unwrap();
+        let first = resolve(&db, &c, true).unwrap();
         end_open_bindings(
             &db,
             &SeatId::new("s"),
@@ -782,7 +740,7 @@ mod resolution {
         .unwrap();
         db.execute("UPDATE seats SET state='unresolved'", [])
             .unwrap();
-        let r = resolve(&db, &c, true, FingerprintRule::Required).unwrap();
+        let r = resolve(&db, &c, true).unwrap();
         assert!(matches!(r, Resolution::Enrolled { .. }), "{r:?}");
         assert_ne!(r.binding().binding_id, first.binding().binding_id);
     }
@@ -790,43 +748,38 @@ mod resolution {
     #[test]
     fn launch_placeholder_session_is_refused() {
         let db = db();
-        for rule in [FingerprintRule::Transitional, FingerprintRule::Required] {
-            let err = resolve(&db, &claim("launch:x", None), true, rule).unwrap_err();
-            assert_eq!(err.code, ErrorCode::SessionClaimRequired, "{rule:?}");
-        }
+        let err = resolve(&db, &claim("launch:x", None), true).unwrap_err();
+        assert_eq!(err.code, ErrorCode::SessionClaimRequired);
         assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 0);
     }
 
     #[test]
-    fn required_rule_refuses_fingerprintless_enrollment_but_serves_touches() {
+    fn fingerprintless_enrollment_is_refused_but_touches_are_served() {
         let db = db();
         let mut bare = claim("sess-A", None);
         bare.liveness = None;
-        let err = resolve(&db, &bare, false, FingerprintRule::Required).unwrap_err();
+        let err = resolve(&db, &bare, false).unwrap_err();
         assert_eq!(err.code, ErrorCode::LivenessFingerprintRequired);
         assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 0);
         // A lifecycle claim (re)connects, so it needs one too.
-        let err = resolve(&db, &bare, true, FingerprintRule::Required).unwrap_err();
+        let err = resolve(&db, &bare, true).unwrap_err();
         assert_eq!(err.code, ErrorCode::LivenessFingerprintRequired);
-        // Transitional admits the enrollment.
-        resolve(&db, &bare, false, FingerprintRule::Transitional).unwrap();
-        // An existing open binding is served without a fingerprint under Required.
-        let r = resolve(&db, &bare, false, FingerprintRule::Required).unwrap();
+        // A fingerprinted claim enrolls; an existing open binding is then served without one.
+        resolve(&db, &claim("sess-A", None), false).unwrap();
+        let r = resolve(&db, &bare, false).unwrap();
         assert!(matches!(r, Resolution::Existing { .. }));
         assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 1);
         // A lifecycle claim without one is refused again, even for an open binding.
-        let err = resolve(&db, &bare, true, FingerprintRule::Required).unwrap_err();
+        let err = resolve(&db, &bare, true).unwrap_err();
         assert_eq!(err.code, ErrorCode::LivenessFingerprintRequired);
     }
 
     #[test]
-    fn required_rule_refuses_plugin_context_sessions() {
+    fn plugin_context_sessions_are_refused() {
         let db = db();
         let c = claim("plugin_context:x", None);
-        let err = resolve(&db, &c, false, FingerprintRule::Required).unwrap_err();
+        let err = resolve(&db, &c, false).unwrap_err();
         assert_eq!(err.code, ErrorCode::SessionClaimRequired);
-        // The transitional rule still admits what today's clients send.
-        resolve(&db, &c, false, FingerprintRule::Transitional).unwrap();
     }
 
     #[test]
@@ -835,7 +788,7 @@ mod resolution {
         let mut c = claim("launch:x", None);
         c.harness = Harness::Human;
         c.liveness = None;
-        let r = resolve(&db, &c, true, FingerprintRule::Required).unwrap();
+        let r = resolve(&db, &c, true).unwrap();
         assert_eq!(
             r.binding().provenance,
             crate::protocol::authority::OPERATOR_HUMAN_PROVENANCE
@@ -847,12 +800,12 @@ mod resolution {
         let db = db();
         let mut c = claim("person", None);
         c.harness = Harness::Human;
-        let err = resolve(&db, &c, false, FingerprintRule::Transitional).unwrap_err();
+        let err = resolve(&db, &c, false).unwrap_err();
         assert_eq!(err.code, ErrorCode::CallerUnverified);
         assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 0);
         // The person's lifecycle check-in enrolls; afterwards plain calls are served.
-        resolve(&db, &c, true, FingerprintRule::Transitional).unwrap();
-        let r = resolve(&db, &c, false, FingerprintRule::Transitional).unwrap();
+        resolve(&db, &c, true).unwrap();
+        let r = resolve(&db, &c, false).unwrap();
         assert!(matches!(r, Resolution::Existing { .. }));
     }
 
@@ -896,7 +849,6 @@ mod resolution {
                             placement: &place,
                             lineage: None,
                         },
-                        FingerprintRule::Required,
                         UtcMillis(50),
                     )
                     .unwrap();
@@ -930,14 +882,8 @@ mod resolution {
     #[test]
     fn end_open_bindings_disconnects_then_ends() {
         let db = db();
-        let a = resolve(&db, &claim("sess-A", None), true, FingerprintRule::Required).unwrap();
-        let b = resolve(
-            &db,
-            &other_process("sess-B"),
-            true,
-            FingerprintRule::Required,
-        )
-        .unwrap();
+        let a = resolve(&db, &claim("sess-A", None), true).unwrap();
+        let b = resolve(&db, &other_process("sess-B"), true).unwrap();
         disconnect(
             &db,
             &b.binding().binding_id,
@@ -982,10 +928,10 @@ mod resolution {
             "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','i','resolved','native',4,0);",
         )
         .unwrap();
-        let on_a = resolve(&db, &claim("sess-A", None), true, FingerprintRule::Required).unwrap();
+        let on_a = resolve(&db, &claim("sess-A", None), true).unwrap();
         let mut moved = claim("sess-A", None);
         moved.seat = SeatId::new("s2");
-        let on_b = resolve(&db, &moved, true, FingerprintRule::Required).unwrap();
+        let on_b = resolve(&db, &moved, true).unwrap();
         assert!(matches!(on_b, Resolution::Enrolled { .. }));
         assert_ne!(on_a.binding().binding_id, on_b.binding().binding_id);
         assert_eq!(on_b.binding().seat, SeatId::new("s2"));

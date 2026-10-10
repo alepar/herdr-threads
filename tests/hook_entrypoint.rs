@@ -516,13 +516,24 @@ fn run_hook_traced(
         }
     };
     record(started, HookPhase::CommandBuildStart);
-    let mut command_line = scrubbed_command("/bin/sh");
+    // A native hook runs under its harness: the shim gives the installed command line a `claude`,
+    // `codex` or `hermes` parent, which is where the hook takes its liveness fingerprint from.
+    let mut words = command.split_whitespace();
+    let harness = words
+        .by_ref()
+        .find(|word| word.trim_matches('\'') == "hook")
+        .and_then(|_| words.next())
+        .map_or("claude", |word| word.trim_matches('\''));
+    let mut command_line = herdr_threads::test_support::harness_shim::under_harness(
+        harness,
+        Path::new("/bin/sh"),
+        &["-c", command],
+        &[],
+    );
     if !scaled {
         command_line.env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV);
     }
     command_line
-        .arg("-c")
-        .arg(command)
         .env("HERDR_ENV", "1")
         .env("HERDR_PANE_ID", pane)
         .env("HERDR_SOCKET_PATH", host)
@@ -616,6 +627,22 @@ fn tool(session: &str) -> Vec<u8> {
     Payload::pre_tool_use(session, "ls").bytes()
 }
 
+/// An agent's identity is its environment, never a saved context (decision 15): the journal's
+/// `current` is empty. What tests ask of "the registered context" is the one the hook last
+/// checked in as, which is the journal's last completed (not historical) check-in.
+fn registered_current(mut state: serde_json::Value) -> serde_json::Value {
+    if state["current"].is_null()
+        && let Some(done) = state["completed"].as_array().and_then(|done| {
+            done.iter()
+                .rev()
+                .find(|done| done["response"]["historical"] == false)
+        })
+    {
+        state["current"] = done["response"]["context"].clone();
+    }
+    state
+}
+
 fn count(db: &Path, sql: &str) -> i64 {
     rusqlite::Connection::open(db)
         .unwrap()
@@ -648,8 +675,31 @@ fn cooperative(
     ];
     args.extend_from_slice(command);
     let mut out = Vec::new();
+    let _agent = agent_origin("claude", "sess-1");
     herdr_threads::cli::run(args, &mut out).unwrap();
     serde_json::from_slice(&out).unwrap()
+}
+
+/// The in-process CLI acts as the harness session the hooks register (decision 15; the
+/// fingerprint is the fixed test one).
+fn agent_origin(harness: &str, session: &str) -> herdr_threads::cli::caller::OriginFixture {
+    use herdr_threads::protocol::authority::{
+        COOPERATIVE_ENV_SESSION_PROVENANCE, CallerRole, Harness, LivenessFingerprint,
+    };
+    herdr_threads::cli::caller::fix_origin(herdr_threads::cli::caller::CallerOrigin::Agent(
+        herdr_threads::harness::caller_env::EnvClaim {
+            harness: if harness == "codex" {
+                Harness::Codex
+            } else {
+                Harness::Claude
+            },
+            native_session: herdr_threads::protocol::ids::NativeSessionId::new(session),
+            agent_id: None,
+            role: CallerRole::TopLevel,
+            fingerprint: LivenessFingerprint::TEST,
+            provenance: COOPERATIVE_ENV_SESSION_PROVENANCE,
+        },
+    ))
 }
 
 fn seed(paths: &InstancePaths) -> Uuid {
@@ -1015,7 +1065,7 @@ impl Fixture {
     }
     fn context_json(&self, seat: &str) -> serde_json::Value {
         let bytes = fs::read(self.context_dir(seat).join("context.json")).unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+        registered_current(serde_json::from_slice(&bytes).unwrap())
     }
     fn intents(&self) -> usize {
         let dir = self.instance_dir.join("intents");
@@ -1206,14 +1256,25 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     assert!(child.stdout.is_empty());
     assert_eq!(check_ins.load(Ordering::SeqCst), before);
 
-    // 6. A tool call from an unseen native session is tool-boundary traffic:
-    // it registers nothing (quiet, stderr only). Its SessionStart registers.
+    // 6. A tool call from an unseen native session enrolls that session's own binding (decision
+    // 15; there is no "no registered execution" refusal) and moves nothing else. Its
+    // SessionStart then registers the same binding.
     let other = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
     assert_eq!(other.code, Some(0), "{}", other.stderr);
-    assert!(other.stdout.is_empty());
-    assert!(other.stderr.contains("lifecycle"), "{}", other.stderr);
+    assert!(
+        !other.stderr.contains("lifecycle"),
+        "an unseen session is enrolled, not refused: {}",
+        other.stderr
+    );
     assert_eq!(
         count(&db, "SELECT generation FROM seats WHERE id='seat'"),
+        1
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND native_session='sess-2'"
+        ),
         1
     );
     let other = run_hook(&command, "w9:p1", &host, &start("sess-2"));
@@ -1873,6 +1934,7 @@ fn lazy_mail_reaches_the_next_codex_tool_hook() {
     ));
     fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
     let mut out = Vec::new();
+    let _codex = agent_origin("codex", "cx-sess");
     herdr_threads::cli::run(
         [
             "herdr-threads",
@@ -3421,7 +3483,10 @@ fn agent_path(fx: &Fixture) -> String {
 /// Run one emitted command line exactly as an agent's shell tool would, in
 /// the agent's pane environment (no state dir env, no seat flags).
 fn run_in_pane(fx: &Fixture, pane: &str, command: &str) -> std::process::Output {
-    scrubbed_command("/bin/sh")
+    // The commands a hook printed are run by the agent: as the harness session that registered.
+    let mut shell = scrubbed_command("/bin/sh");
+    herdr_threads::test_support::isolation::as_agent(&mut shell, "claude", "sess-1");
+    shell
         .arg("-c")
         .arg(command)
         .env("HERDR_ENV", "1")
@@ -4399,12 +4464,7 @@ fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
             [],
         )
         .unwrap();
-    let journal = fx.context_dir("seat").join("context.json");
-    let mut state = fx.context_json("seat");
-    assert_eq!(state["current"]["harness"], "Claude");
-    state["current"]["harness"] = "Human".into();
-    fs::write(&journal, serde_json::to_vec(&state).unwrap()).unwrap();
-    let human_execution = state["current"]["execution"].clone();
+    let human_execution = fx.context_json("seat")["current"]["execution"].clone();
 
     let takeover = fx.hook("w9:p1", &start("agent-2"));
     assert_eq!(takeover.code, Some(0), "{}", takeover.stderr);
@@ -4434,7 +4494,7 @@ fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
         1,
         "the person's binding is ended, not continued"
     );
-    // The local context: the agent's, on a new execution; the person's is gone.
+    // The agent registered as its own session (its own execution); no context is saved for it.
     let after = fx.context_json("seat");
     assert_eq!(after["current"]["harness"], "Claude");
     assert_ne!(after["current"]["execution"], human_execution);
@@ -4923,7 +4983,7 @@ mod continuity {
         }
         pub fn context_json(&self, seat: &str) -> serde_json::Value {
             let bytes = fs::read(self.context_dir(seat).join("context.json")).unwrap();
-            serde_json::from_slice(&bytes).unwrap()
+            super::registered_current(serde_json::from_slice(&bytes).unwrap())
         }
         pub fn intents(&self) -> usize {
             fs::read_dir(self.instance_dir.join("intents")).map_or(0, |entries| {
@@ -5559,14 +5619,9 @@ mod continuity {
                 1,
                 "{harness}"
             );
-            // The client context names the seat and the new binding generation.
+            // The reattached session is not saved as the pane's context (decision 15).
             let state = fx.context_json("saved");
-            assert_eq!(state["current"]["seat"], "saved");
-            assert_eq!(state["current"]["target"], PANE);
-            assert_eq!(
-                state["current"]["binding_generation"],
-                fx.count("SELECT generation FROM seats WHERE id='saved'")
-            );
+            assert!(state["current"].is_null(), "{harness}");
             assert!(state["pending"].is_null());
             // Pane released; the last unresolved seat lifted the restore hold.
             assert_eq!(
@@ -5900,12 +5955,10 @@ mod continuity {
                 1,
                 "{harness}"
             );
+            // The stale file is neither consulted nor rewritten: the reattached session is its
+            // environment's (decision 15).
             let state = fx.context_json("saved");
-            assert_eq!(state["current"]["target"], PANE, "{harness}");
-            assert_eq!(
-                state["current"]["binding_generation"],
-                fx.count("SELECT generation FROM seats WHERE id='saved'")
-            );
+            assert_eq!(state["current"]["target"], "old-pane", "{harness}");
             assert_eq!(fx.intents(), 0);
         }
     }
@@ -5946,13 +5999,10 @@ mod continuity {
                 "{harness}: {}",
                 start.stderr
             );
+            // The stale file from before the restart is never consulted, so it can neither make
+            // the check-in differ from the mapping nor be rewritten by it.
             let state = fx.context_json("saved");
-            assert_eq!(state["current"]["target"], PANE, "{harness}");
-            assert_eq!(
-                state["current"]["binding_generation"],
-                fx.count("SELECT generation FROM seats WHERE id='saved'"),
-                "{harness}"
-            );
+            assert_eq!(state["current"]["target"], "old-pane", "{harness}");
             assert_eq!(fx.count(decisions), 1, "{harness}: no second decision");
         }
     }
@@ -6115,16 +6165,9 @@ mod continuity {
             let again = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
             assert_eq!(again.code, Some(0), "{harness}: {}", again.stderr);
             // The pending intent was reused under its key and execution: one
-            // decision, the intent finished, the context installed from the reply.
+            // decision, the intent finished, the binding carrying its execution.
             assert_eq!(fx.count(decisions), 1, "{harness}");
             assert_eq!(fx.intents(), 0, "{harness}");
-            let state = fx.context_json("saved");
-            assert_eq!(state["current"]["target"], PANE);
-            assert_eq!(state["current"]["execution"], execution.as_str());
-            assert_eq!(
-                state["current"]["binding_generation"],
-                fx.count("SELECT generation FROM seats WHERE id='saved'")
-            );
             assert_eq!(
                 fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL AND execution_id='{}'", execution.as_str())),
                 1,
@@ -6271,8 +6314,10 @@ fn clear_and_codex_compact_emit_recovery_text_but_startup_and_tool_calls_do_not(
 fn versionless_native_callbacks_without_path_refuse_registered_event_mismatch() {
     let fx = Fixture::start();
     let invoke = |harness: &str, pane: &str, registered: &str, payload: &[u8]| {
-        let mut child = scrubbed_command(BIN)
-            .args([
+        let mut child = herdr_threads::test_support::harness_shim::under_harness(
+            harness,
+            Path::new(BIN),
+            &[
                 "--state-dir",
                 fx.state.to_str().unwrap(),
                 "--host-endpoint",
@@ -6281,16 +6326,18 @@ fn versionless_native_callbacks_without_path_refuse_registered_event_mismatch() 
                 harness,
                 "--event",
                 registered,
-            ])
-            .env("PATH", "")
-            .env("HERDR_ENV", "1")
-            .env("HERDR_PANE_ID", pane)
-            .env("HERDR_SOCKET_PATH", &fx.host)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn_owned()
-            .unwrap();
+            ],
+            &[],
+        )
+        .env("PATH", "")
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", pane)
+        .env("HERDR_SOCKET_PATH", &fx.host)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn_owned()
+        .unwrap();
         child.stdin.take().unwrap().write_all(payload).unwrap();
         child.wait_with_output().unwrap()
     };

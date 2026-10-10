@@ -312,9 +312,9 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let native = CallerClaim {
             instance: instance.to_string(), seat: SeatId::new("pending"), binding_generation: 0,
             role: CallerRole::TopLevel, harness: Harness::Codex,
-            native_session: NativeSessionId::new("plugin_context:pending"),
+            native_session: NativeSessionId::new("session-pending"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000111"),
-            target: HostTargetId::new("pane-pending"), agent_id: None, liveness: None, };
+            target: HostTargetId::new("pane-pending"), agent_id: None, liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST), };
         let checked = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
             mode: CheckInMode::Lifecycle { expected_binding_generation: 0 },
             claim: native, operation: OperationId::new("native-check-in"),
@@ -391,9 +391,9 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let recipient_claim = CallerClaim {
             instance: instance.to_string(), seat: SeatId::new("member-1"), binding_generation: 1,
             role: CallerRole::TopLevel, harness: Harness::Codex,
-            native_session: NativeSessionId::new("plugin_context:member-1"),
+            native_session: NativeSessionId::new("session-member-1"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000112"),
-            target: HostTargetId::new("pane-member-1"), agent_id: None, liveness: None, };
+            target: HostTargetId::new("pane-member-1"), agent_id: None, liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST), };
         let checked_recipient = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
             mode: CheckInMode::Lifecycle { expected_binding_generation: 1 },
             claim: recipient_claim, operation: OperationId::new("recipient-check-in"),

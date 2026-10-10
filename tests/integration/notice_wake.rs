@@ -106,7 +106,7 @@ impl Fixture {
             execution: ExecutionId::new(execution),
             target: HostTargetId::new(seat),
             agent_id: None,
-            liveness: None,
+            liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
         }
     }
     fn mutate(&self, mutation: PermitMutation) -> CommandResult {

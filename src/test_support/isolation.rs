@@ -110,7 +110,25 @@ impl TestIsolation {
 pub fn scrub_env(command: &mut Command) -> &mut Command {
     scrub_inherited(command, std::env::vars_os().map(|(key, _)| key));
     crate::test_support::spawn::tag(command);
+    // The harness above the test runner (the developer's own Claude Code, say) is not this
+    // child's caller: its ancestry, for `caller_env`, ends at the test process.
+    command.env("HT_TEST_ANCESTRY_FLOOR_PID", std::process::id().to_string());
     command
+}
+
+/// Make `command` an agent of `harness` ("claude" | "codex" | "hermes") running session
+/// `session`, for tests that drive the binary with `--cooperative-*` flags: the spawning test
+/// process stands in for the harness process (fingerprint included) and the harness's own session
+/// variable carries `session`. Real process ancestry is `harness_shim`'s job.
+pub fn as_agent<'a>(command: &'a mut Command, harness: &str, session: &str) -> &'a mut Command {
+    let variable = match harness {
+        "claude" => "CLAUDE_CODE_SESSION_ID",
+        "codex" => "CODEX_SESSION_ID",
+        _ => "HERMES_SESSION_ID",
+    };
+    command
+        .env("HT_TEST_HARNESS", harness)
+        .env(variable, session)
 }
 
 /// The removal half of [`scrub_env`] over an explicit list of inherited

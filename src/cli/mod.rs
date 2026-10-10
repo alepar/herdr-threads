@@ -1,5 +1,6 @@
 //! Typed CLI client, selected renderer and local journal composition.
 pub mod actor_route;
+pub mod caller;
 pub mod commands;
 pub mod doctor;
 pub mod exit;
@@ -212,6 +213,58 @@ pub(crate) fn selected_generation(
     Ok(inspection.summary.generation)
 }
 
+/// The selected seat's current mapping generation, read from the daemon (the same inspection
+/// every seat-acting command makes).
+pub(crate) fn seat_generation<C: LocalClient + ?Sized>(
+    client: &C,
+    output: &OutputSpec,
+    selection: &CooperativeSelection,
+    clock: &dyn Clock,
+) -> Result<u64, RunError> {
+    use crate::protocol::{commands::SeatInspectQuery, pagination::PageRequest};
+    let inspection = client.call_with_output(
+        Command::SeatInspect(SeatInspectQuery {
+            seat: selection.seat.clone(),
+            page: PageRequest {
+                cursor: None,
+                limit: 1,
+                max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+            },
+        }),
+        output,
+        &cooperative_budget(clock),
+    )?;
+    let CommandResult::SeatInspect(inspection) = inspection else {
+        return Err(mapping_error("service returned no seat inspection"));
+    };
+    selected_generation(selection, &inspection)
+}
+
+/// `contexts` acting as the calling session when the active caller is an agent (decision 15):
+/// its context is derived from the environment at `generation` and never saved.
+pub(crate) fn caller_journal(
+    contexts: crate::harness::context::ContextJournal,
+    instance: uuid::Uuid,
+    selection: &CooperativeSelection,
+    generation: u64,
+) -> Result<crate::harness::context::ContextJournal, RunError> {
+    match caller::active() {
+        Some(caller::CallerOrigin::Agent(env)) => contexts
+            .with_agent_caller(
+                caller::agent_context(
+                    &env,
+                    instance,
+                    &selection.seat,
+                    &selection.target,
+                    generation,
+                ),
+                env.fingerprint,
+            )
+            .map_err(context_run_error),
+        _ => Ok(contexts),
+    }
+}
+
 struct SocketViewReader(LocalSocketClient);
 impl ViewReader for SocketViewReader {
     fn read(
@@ -251,6 +304,7 @@ where
 {
     output::set_stdout_is_terminal(stdout_is_terminal);
     output::set_harness_marked(output::harness_marked(|name| std::env::var_os(name)));
+    caller::derive_from_process();
     run(argv, writer)
 }
 
@@ -918,6 +972,22 @@ fn run_parsed_in_pane<W: Write>(
     Ok(())
 }
 
+/// The actions that call the daemon as a cooperative caller (reads included).
+fn caller_needs_identity(action: &CliAction) -> bool {
+    matches!(
+        action,
+        CliAction::Wire(_)
+            | CliAction::Mutation(_)
+            | CliAction::PendingOps(_)
+            | CliAction::Retry(_)
+            | CliAction::CachedCheckIn(_)
+            | CliAction::Summary(_)
+            | CliAction::Handoff(_)
+            | CliAction::TopologyHandoff(_)
+            | CliAction::TopologyRecover(_)
+    )
+}
+
 /// A daemon connection opened on first use and then shared, so one CLI
 /// invocation never connects twice.
 struct LazyConnection<C, F> {
@@ -978,6 +1048,19 @@ where
             .host
             .get_or_insert_with(|| context.host_endpoint.to_string_lossy().into_owned());
     }
+    // Who is calling comes from the environment (decision 15): an agent without a session id is
+    // refused before any daemon call, reads included.
+    // The `human` namespace is a person's explicit choice: it keeps the pane-context path, and
+    // its own guard (TRUST-POLICY A4) refuses it under an agent harness.
+    let origin = (parsed.actor != actor_route::InvocationActor::Human)
+        .then(|| caller::derive(&parsed))
+        .flatten();
+    if let Some(caller::CallerOrigin::Refused(refusal)) = &origin
+        && caller_needs_identity(&parsed.action)
+    {
+        return Err(caller::refusal_error(refusal));
+    }
+    let _origin = caller::ActiveGuard::enter(origin);
     // Capture omission before default_seat resolves the caller read. The second
     // guard below adds the canonical selected seat while retaining that choice.
     let _origin_inbox = output::InboxInvocationGuard::enter(&parsed, None);
@@ -1303,7 +1386,7 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         .ok_or_else(|| {
             caller_not_located("context missing; explicit lifecycle check-in required")
         })?;
-    let claim = crate::harness::bridge::caller_claim(&context).map_err(context_run_error)?;
+    let claim = contexts.claim(&context).map_err(context_run_error)?;
     let mut request = query.clone();
     request.seat = Some(claim.seat.clone());
     let capabilities = match client.call(Command::Capabilities, &cooperative_budget(clock)) {
@@ -1589,11 +1672,15 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     let historical = replay
         .as_ref()
         .and_then(|claim| replay_selection(selection, claim, instance));
+    let origin = caller::active();
     let selection = if let Some(historical) = &historical {
         historical
     } else {
         if !matches!(&parsed.action, CliAction::Retry(_)) {
             validate_actor_harness(parsed.actor, selection.harness)?;
+            if let Some(origin) = &origin {
+                caller::check_selection(origin, selection.harness)?;
+            }
         }
         selection
     };
@@ -1613,7 +1700,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         return Err(mapping_error("service returned no seat inspection"));
     };
     let generation = selected_generation(selection, &inspection)?;
-    let contexts = seat_contexts(paths, instance, &selection.seat)?;
+    let mut contexts = seat_contexts(paths, instance, &selection.seat)?;
     let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
     let mut current = contexts.current().map_err(context_run_error)?;
     let lifecycle = matches!(
@@ -1660,6 +1747,13 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         && context.target == selection.target.as_str()
     {
         current = None;
+    }
+    // An agent caller acts as its harness session (decision 15): its context is derived from the
+    // environment at the seat's mapping generation and never saved. The saved pane context is
+    // consulted above only to retire a person's, which an agent's lifecycle check-in replaces.
+    if matches!(origin, Some(caller::CallerOrigin::Agent(_))) {
+        contexts = caller_journal(contexts, instance, selection, generation)?;
+        current = contexts.current().map_err(context_run_error)?;
     }
     // A fresh lifecycle check-in (a new event, not a replay of a recorded
     // one) is a deliberate new registration: it is seeded from the service's
@@ -1708,7 +1802,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         let saved = current
             .as_ref()
             .ok_or_else(|| caller_not_located("handoff requires lifecycle check-in"))?;
-        let claim = crate::harness::bridge::caller_claim(saved).map_err(context_run_error)?;
+        let claim = contexts.claim(saved).map_err(context_run_error)?;
         let topology = match &parsed.action {
             CliAction::TopologyHandoff(_) => true,
             CliAction::Retry(recovery) => topology_runtime::is_compound(
@@ -1819,8 +1913,12 @@ fn exact_check_in_replay(
                 let CommandResult::CheckedIn(check) = result else {
                     return Err(context_run_error(ContextError::Corrupt));
                 };
-                return Ok(check.context
-                    == bridge::caller_claim(&response.context).map_err(context_run_error)?);
+                // The daemon echoes the frozen claim, liveness fingerprint included.
+                let mut echoed = check.context.clone();
+                echoed.liveness = None;
+                return Ok(
+                    echoed == bridge::caller_claim(&response.context).map_err(context_run_error)?
+                );
             }
             (
                 journal.find_check_in(&scope, event_id)?,
@@ -2396,6 +2494,25 @@ where
     let seat = pane_seat(client, &parsed.output, &pane, clock.as_ref())?
         .ok_or_else(|| no_seat_for_pane(&pane))?;
     let instance = read_existing_namespace(paths)?.ok_or_else(daemon_unavailable)?;
+    let origin = caller::active();
+    if let Some(caller::CallerOrigin::Agent(env)) = &origin {
+        // An agent's identity is its harness session: no saved context is read or required.
+        let selection = CooperativeSelection {
+            seat,
+            target: pane,
+            harness: crate::harness::context::Harness::from(env.harness),
+            role: caller::role_of(env.role),
+        };
+        if let Some(claim) = replay
+            && let Some(historical) = replay_selection(&selection, &claim, instance)
+        {
+            return Ok(historical);
+        }
+        if !matches!(&parsed.action, CliAction::Retry(_)) {
+            validate_actor_harness(parsed.actor, selection.harness)?;
+        }
+        return Ok(selection);
+    }
     let contexts = seat_contexts(paths, instance, &seat)?;
     let context = match contexts.current().map_err(context_run_error)? {
         Some(context) => context,
@@ -2738,6 +2855,21 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             let seed = initial
                 .or(context.as_ref())
                 .ok_or_else(|| unsupported("lifecycle requires a service-resolved durable seat"))?;
+            // An agent's session is its environment's; a differing `--native-session` is a
+            // mistake, never a second identity.
+            let native_session = match (&seed.session, contexts.is_agent_caller()) {
+                (crate::harness::context::SessionReference::Native(own), true) => {
+                    match native_session {
+                        Some(given) if given != *own => {
+                            return Err(invalid_request(
+                                "--native-session differs from the calling harness session",
+                            ));
+                        }
+                        _ => Some(own.clone()),
+                    }
+                }
+                _ => native_session,
+            };
             let event = LifecycleEvent {
                 harness: seed.harness,
                 source: "explicit".into(),
@@ -2763,7 +2895,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         }
         CliAction::Mutation(mutation) => {
             let context = current()?;
-            let claim = bridge::caller_claim(&context).map_err(context_run_error)?;
+            let claim = contexts.claim(&context).map_err(context_run_error)?;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),

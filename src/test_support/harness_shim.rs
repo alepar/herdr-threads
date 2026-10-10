@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// Outer: `$1` is the argv0, the rest are the parent's marker args, `--`, then the program.
-const OUTER: &str = r#"h=$1; shift; exec -a "$h" bash -c "$HT_SHIM_INNER" "$@""#;
+const OUTER: &str = r#"h=$1; shift; exec -a "$h" "$BASH" -c "$HT_SHIM_INNER" "$@""#;
 /// Inner: drop the marker args up to `--`, then run the program as a child (no exec).
 const INNER: &str = r#"while [ "$1" != -- ]; do shift; done; shift; "$@"; exit $?"#;
 
@@ -25,7 +25,8 @@ fn build(
     } else {
         INNER.to_string()
     };
-    let mut command = crate::test_support::spawn::command("bash");
+    // Absolute: the program under test may run with an empty PATH.
+    let mut command = crate::test_support::spawn::command("/bin/bash");
     command
         .arg("-c")
         .arg(OUTER)

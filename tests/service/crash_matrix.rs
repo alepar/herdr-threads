@@ -210,11 +210,11 @@ impl Matrix {
             binding_generation: 0,
             role: CallerRole::TopLevel,
             harness: Harness::Codex,
-            native_session: NativeSessionId::new(format!("plugin_context:{seat}")),
+            native_session: NativeSessionId::new(format!("session-{seat}")),
             execution: ExecutionId::new(format!("00000000-0000-4000-8000-{n:012}")),
             target: HostTargetId::new(seat),
             agent_id: None,
-            liveness: None,
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         };
         self.lifecycle(claim, &format!("checkin-{seat}-{n}"))
     }
@@ -1832,11 +1832,11 @@ impl Matrix {
                 binding_generation: 0,
                 role: CallerRole::TopLevel,
                 harness: Harness::Codex,
-                native_session: NativeSessionId::new(format!("plugin_context:{pane}")),
+                native_session: NativeSessionId::new(format!("session-{pane}")),
                 execution: ExecutionId::new(execution),
                 target: HostTargetId::new(pane),
                 agent_id: None,
-                liveness: None,
+                liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
             };
             claims.push(self.lifecycle(claim, &format!("checkin-{pane}")));
         }
@@ -1937,10 +1937,20 @@ struct CliSeat {
     selection: crate::cli::commands::CooperativeSelection,
 }
 
+/// The in-process CLI has no harness process to fingerprint: the shipped CLI's agent check-ins
+/// carry the test fingerprint on the way in, as a real harness's would carry its own.
+fn fingerprinted(mut command: Command) -> Command {
+    if let Command::CheckIn(check) = &mut command
+        && check.claim.harness != crate::protocol::authority::Harness::Human
+    {
+        check.claim.liveness = Some(crate::protocol::authority::LivenessFingerprint::TEST);
+    }
+    command
+}
 struct MatrixClient<'a>(&'a Matrix);
 impl crate::ports::LocalClient for MatrixClient<'_> {
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
-        self.0.handle(command)
+        self.0.handle(fingerprinted(command))
     }
     fn call_with_output(
         &self,
@@ -1948,7 +1958,7 @@ impl crate::ports::LocalClient for MatrixClient<'_> {
         _: &crate::protocol::output::OutputSpec,
         _: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
-        self.0.handle(command)
+        self.0.handle(fingerprinted(command))
     }
 }
 
@@ -1981,6 +1991,11 @@ impl Matrix {
     fn cli(&self, seat: &CliSeat, argv: &[&str]) -> Result<Vec<u8>, crate::cli::RunError> {
         let mut full = vec!["herdr-threads"];
         full.extend_from_slice(argv);
+        // A lifecycle check-in names its harness session (decision 15; a `plugin_context:` one is
+        // refused).
+        if argv.contains(&"--lifecycle-event") && !argv.contains(&"--native-session") {
+            full.extend(["--native-session", "matrix-session"]);
+        }
         let parsed = crate::cli::commands::parse_argv(full).unwrap();
         let mut output = Vec::new();
         crate::cli::run_selected(
@@ -2423,11 +2438,11 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
         binding_generation: 0,
         role: CallerRole::TopLevel,
         harness: Harness::Codex,
-        native_session: NativeSessionId::new("plugin_context:pane-u"),
+        native_session: NativeSessionId::new("session-pane-u"),
         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
         target: HostTargetId::new("pane-u"),
         agent_id: None,
-        liveness: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     let cli = m.cli_seat(&u);
     let operator_ops = || {
