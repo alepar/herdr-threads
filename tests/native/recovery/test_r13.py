@@ -56,5 +56,22 @@ class R13ShellPhase(unittest.TestCase):
         self.assertEqual(s.finish()["status"], "PASS")
 
 
+class RunRootGuard(unittest.TestCase):
+    """The run directory must live under the platform scratch root (/private/tmp on macOS, /tmp on Linux)."""
+
+    def suite(self, run_root):
+        return run_recovery.Suite(types.SimpleNamespace(bin="/bin/true", run_root=run_root))
+
+    def test_run_root_outside_the_scratch_root_is_refused(self):
+        for root in ("/var/tmp/htr-guard", str(Path.home() / "htr-guard"), run_recovery.SCRATCH_ROOT + "/../etc"):
+            with self.subTest(root), self.assertRaisesRegex(run_recovery.SafetyError, "--run-root must be under"):
+                self.suite(root)
+
+    def test_refusal_names_the_platform_scratch_root(self):
+        with self.assertRaises(run_recovery.SafetyError) as caught:
+            self.suite("/var/tmp/htr-guard")
+        self.assertIn(run_recovery.SCRATCH_ROOT, str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

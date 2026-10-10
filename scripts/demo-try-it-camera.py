@@ -19,11 +19,14 @@ import signal
 import struct
 import termios
 import time
+import sys
+
+SCRATCH_ROOT = "/private/tmp" if sys.platform == "darwin" else "/tmp"
 
 
 def capture(args):
     root = args.root.resolve()
-    if root.parent != Path("/private/tmp") or not root.name.startswith("ht-try-it."):
+    if root.parent != Path(SCRATCH_ROOT) or not root.name.startswith("ht-try-it."):
         raise ValueError("camera requires an owned private run directory")
     for name in ("camera-start", "camera-stop", "camera.cast", "camera-private.ansi", "control.jsonl"):
         if (root / name).exists():

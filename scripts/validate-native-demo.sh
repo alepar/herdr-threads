@@ -113,11 +113,14 @@ cell_flags() {
 
 cell_claude_version() { echo "${HT_CLAUDE_VERSION:-2.1.287}"; }
 
+scratch_root() { # the private scratch root: /private/tmp on macOS, /tmp elsewhere
+    if [ "$(uname -s)" = Darwin ]; then echo /private/tmp; else echo /tmp; fi
+}
 cell_claude_prefix() { # pins the versioned Claude binary on a run-root PATH entry; prints the entry
     v=$(cell_claude_version)
     bin=${HT_CLAUDE_BIN:-$HOME/.local/share/claude/versions/$v}
     [ -x "$bin" ] || { echo "cell: claude $v binary not found at $bin (set HT_CLAUDE_BIN)" >&2; return 1; }
-    shim=${HT_CLAUDE_SHIM:-/private/tmp/ht-cell-claude-$v}/shim
+    shim=${HT_CLAUDE_SHIM:-$(scratch_root)/ht-cell-claude-$v}/shim
     mkdir -p "$shim" && ln -sf "$bin" "$shim/claude"
     echo "$shim"
 }
@@ -155,7 +158,7 @@ run_cell() {
     repo=$(CDPATH='' cd "$script_dir/.." && pwd -P)
     sha=$(git -C "$repo" rev-parse HEAD)
     flags=$(cell_flags "$name") || { echo "cell: unknown cell '$name' (try --cell list)" >&2; return 2; }
-    out=${HT_CELL_OUT:-/private/tmp/ht-cell}/$name-$(date +%Y%m%d-%H%M%S)
+    out=${HT_CELL_OUT:-$(scratch_root)/ht-cell}/$name-$(date +%Y%m%d-%H%M%S)
     mkdir -p "$out"
     harness=${flags#--harness }; harness=${harness%% *}
     harness_bin=$harness

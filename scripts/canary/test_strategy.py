@@ -362,6 +362,7 @@ class Strategy(unittest.TestCase):
 
     def test_exact_runtime_companion_argv_isolated_env_and_index(self):
         with tempfile.TemporaryDirectory() as d:
+            d = str(pathlib.Path(d).resolve())  # canonical: macOS TMPDIR is under a /var link
             root = pathlib.Path(d) / "repo"
             companions = root / "scripts/canary/adapters"
             companions.mkdir(parents=True)
@@ -601,7 +602,8 @@ class RequiredPreflight(unittest.TestCase):
         import shutil
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.base = pathlib.Path(self.tmp.name)
+        # Canonical: macOS's default TMPDIR is under the /var -> /private/var link.
+        self.base = pathlib.Path(self.tmp.name).resolve()
         self.root = self.base / "repo"
         self.canary = self.root / "scripts/canary"
         self.canary.mkdir(parents=True)
