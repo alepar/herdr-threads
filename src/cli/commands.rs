@@ -614,7 +614,11 @@ enum Top {
     },
     /// Leave a thread without changing other participants.
     Leave { thread: String },
-    /// Send a message to a thread, with optional explicit ACK recipients.
+    /// Send to THREAD or use --seat SEAT for its canonical automatic pair channel.
+    /// Lazy by default (--body TEXT, --file PATH or --stdin); --nudge notifies.
+    /// Direct ACK requests name only the target; --require-ack-pane is refused.
+    /// Creation invites the peer without accepting; lifecycle repair is explicit.
+    /// Immediate human send uses the same recipient routing.
     Send(SendArgs),
     /// ACK exact message IDs after reading them.
     Ack {
