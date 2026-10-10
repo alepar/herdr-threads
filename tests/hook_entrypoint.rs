@@ -11,7 +11,7 @@ use herdr_threads::{
         paths::{InstancePaths, RuntimeContext},
     },
     harness::manifest::{CurlFetcher, ManifestPolicy, ManifestService},
-    harness::{context::Harness, setup::plan_claude},
+    harness::{claude::setup::plan_claude, context::Harness},
     protocol::{
         commands::Command,
         results::CommandResult,

@@ -1317,6 +1317,9 @@ impl HarnessAdapter for CodexAdapter {
     fn text(&self) -> &'static AdapterText {
         &TEXT
     }
+    fn setup_environment_inputs(&self) -> &'static [&'static str] {
+        &["CODEX_HOME"]
+    }
     fn default_config_root(&self, environment: &SetupEnvironment) -> Option<std::path::PathBuf> {
         setup::codex_home_from(
             environment.declared.get("CODEX_HOME").cloned(),
@@ -1866,7 +1869,7 @@ pub mod launch {
     /// The effective Codex home, its `config.toml` and the selected profile,
     /// which answers "why was my Codex profile not applied?".
     pub(crate) fn codex_report(env: &SetupEnv, argv: &[String]) -> Value {
-        let home = env.codex_home.as_deref();
+        let home = crate::harness::codex::setup::codex_root(env);
         let config_path = home.map(|home| home.join("config.toml"));
         let config = config_path
             .as_deref()
@@ -2113,6 +2116,10 @@ impl InstallerPolicy for CodexAdapter {
             &request.scope,
             &request.environment,
         )?;
+        // Historical owned allowances beside the hook file: an incomplete or edited record
+        // refuses before the generic hook inspection.
+        setup::installer_allowance_precheck(&env)
+            .map_err(|error| SetupFailure::Invalid(error.to_string()))?;
         crate::harness::setup::legacy::installer_hooks_installed(&env, Harness::Codex)
             .map(|owned| {
                 if owned {

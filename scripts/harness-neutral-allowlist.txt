@@ -79,48 +79,18 @@ src/cli/mod.rs:CODEX_SANDBOX_NETWORK_DISABLED — to-migrate: ht-poh.2.2 launch/
 src/cli/output.rs:CODEX_SANDBOX — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/output.rs:CODEX_SANDBOX_NETWORK_DISABLED — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/output.rs:CODEX_THREAD_ID — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/setup.rs:CLAUDE_CODE_DISABLE_AGENT_VIEW — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:CLAUDE_CONFIG_DIR — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:CODEX_HOME — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:CODEX_SANDBOX_MEASURED_VERSIONS — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:CODEX_TRUST_NOTE — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:CODEX_WRITABLE_DIRS — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:Claude — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:Codex — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:CodexLayerFile — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:CodexPaths — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:HERMES_HOME — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:claude — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:claude_config_dir — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:claude_config_dir_from — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:claude_override — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:claude_paths — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:claude_settings — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex_file — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex_foreign_proxy_warnings — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex_home — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex_home_from — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex_layer_paths — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex_missing_roots_warning — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex_override — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex_paths — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex_sandbox_note — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex_trust_report — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:codex_unmeasured_allowance_warning — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:hermes — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup.rs:observe_codex_layer — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup/foreground.rs:CLAUDE_ADVICE — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup/foreground.rs:CLAUDE_CODE_DISABLE_AGENT_VIEW — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup/foreground.rs:CLAUDE_CODE_DISABLE_BACKGROUND_TASKS — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup/foreground.rs:CODEX_ADVICE — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup/foreground.rs:Claude — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup/foreground.rs:Codex — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup/foreground.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup/foreground.rs:claude_config_dir — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup/foreground.rs:codex — to-migrate: ht-poh.2.3 setup projections
-src/cli/setup/foreground.rs:codex_home — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:CLAUDE_CODE_DISABLE_AGENT_VIEW — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
+src/cli/setup.rs:CLAUDE_CONFIG_DIR — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
+src/cli/setup.rs:CODEX_HOME — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
+src/cli/setup.rs:Claude — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
+src/cli/setup.rs:Codex — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
+src/cli/setup.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
+src/cli/setup.rs:HERMES_HOME — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
+src/cli/setup.rs:claude — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
+src/cli/setup.rs:codex hook trust: {} — frozen-wire: text fallback of the v1 trust_reminder scalar for reports without trust_reminders
+src/cli/setup.rs:codex — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
+src/cli/setup.rs:hermes — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
+src/cli/setup.rs:if name == "codex" { — frozen-wire: v1 setup JSON scalar trust_reminder is always Codex's note
 src/cli/topology_handoff.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/topology_handoff.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/topology_handoff.rs:claude — to-migrate: ht-poh.2.2 launch/CLI projections
@@ -152,7 +122,6 @@ src/harness/mod.rs:pub mod codex_config; — registration: adapter module declar
 src/harness/mod.rs:pub mod codex_evidence; — registration: adapter module declaration (permanent registration)
 src/harness/mod.rs:pub mod codex_schema; — registration: adapter module declaration (permanent registration)
 src/harness/mod.rs:pub mod hermes; — registration: adapter module declaration (permanent registration)
-src/harness/prompt_suggestion.rs:claude — to-migrate: ht-poh.2.3 setup projections
 src/harness/registry.rs:CLAUDE — registration: builtins() row, registry identity or its assert (permanent registration)
 src/harness/registry.rs:CODEX — registration: builtins() row, registry identity or its assert (permanent registration)
 src/harness/registry.rs:Registration::new(&crate::harness::claude::ClaudeAdapter), — registration: builtins() row, registry identity or its assert (permanent registration)
@@ -166,30 +135,6 @@ src/harness/registry.rs:pub const Claude: Self = Self::Agent(CLAUDE); — regist
 src/harness/registry.rs:pub const Codex: Self = Self::Agent(CODEX); — registration: builtins() row, registry identity or its assert (permanent registration)
 src/harness/registry.rs:registry.agent("claude").expect("built-in Claude missing"), — registration: builtins() row, registry identity or its assert (permanent registration)
 src/harness/registry.rs:registry.agent("codex").expect("built-in Codex missing"), — registration: builtins() row, registry identity or its assert (permanent registration)
-src/harness/setup.rs:Claude — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:Codex — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:CodexContract — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:CodexSetupPlan — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:claude — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:claude_config_dir — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:claude_entries — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:claude_paths — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:claude_settings — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:codex — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:codex_config — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:codex_file — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:codex_home — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:codex_paths — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:codex_session_manifest — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:inspect_codex_session — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:plan_claude — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:plan_claude_command — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:plan_codex — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:plan_codex_for_contract — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:plan_codex_for_version — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:uninstall_claude — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:uninstall_codex — to-migrate: ht-poh.2.3 setup projections
-src/harness/setup.rs:verify_codex_base — to-migrate: ht-poh.2.3 setup projections
 src/protocol/commands.rs:if !matches!(report.harness.as_str(), "claude" | "codex") — frozen-wire: v1 HookParseFailure validation (frozen wire shape)
 src/protocol/commands.rs:if !matches!(self.harness.as_str(), "claude" | "codex") — frozen-wire: v1 HarnessEvidence::validate (frozen wire shape)
 src/protocol/results.rs:claude: HarnessState::Unknown, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)

@@ -19,7 +19,7 @@ use herdr_threads::{
     app::{LaneProbe, SystemClock, run_elected_probed},
     cli::hook::installed_argv,
     daemon::paths::{InstancePaths, RuntimeContext},
-    harness::{context::Harness, setup::plan_claude},
+    harness::{claude::setup::plan_claude, context::Harness},
     host::native::NativeCli,
     ports::HostPort,
     protocol::time::{Cancellation, Clock, MonoInstant, UtcMillis},

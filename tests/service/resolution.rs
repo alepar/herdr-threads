@@ -2821,8 +2821,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
         state_dir: Some(root.join("state")),
         cwd: root.clone(),
         path: Some(root.join("bin").into_os_string()),
-        codex_home: None,
-        claude_config_dir: Some(root.join("claude-config")),
+        config_roots: [("claude".into(), root.join("claude-config"))].into(),
         host_endpoint: Some(root.join("host.sock")),
         instance_source: serde_json::Value::Null,
     };

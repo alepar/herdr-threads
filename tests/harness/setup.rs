@@ -1,3 +1,8 @@
+use crate::harness::claude::setup::plan_claude;
+use crate::harness::codex::setup::{
+    codex_session_manifest, inspect_codex_session, plan_codex_for_contract, plan_codex_for_version,
+    uninstall_codex, verify_codex_base,
+};
 use crate::harness::setup::*;
 use serde_json::{Value, json};
 use sha2::Digest;
@@ -3343,4 +3348,455 @@ fn operation_scope_defaults_preserve_legacy_resolution_and_refuse_foreign_genera
             .is_err()
     );
     assert!(!root.exists(), "refusal created a native or state root");
+}
+
+// ------------------------------------------------ extension proof (core-sweep D4, D5, D6)
+
+/// A test-only adapter registered in a test `Registry`: it declares a config root, foreground
+/// advice and an allow-member-only settings kind, and nothing in core names it. The setup
+/// engine, the foreground report and the inspection plumbing reach it through the registry alone.
+mod extension_proof {
+    use crate::cli::setup::{SetupEnv, default_config_roots, foreground};
+    use crate::harness::{
+        adapter::*,
+        registry::{Registration, Registry},
+        setup::{
+            InstallPhase, NativeObservation, OwnedAllowSpec, SettingsKind, SettingsKindSpec,
+            SetupError, inspect_user_settings, install_user_settings, legacy, plan_settings,
+            read_settings_manifest, remove_user_settings,
+        },
+    };
+    use crate::protocol::time::CallBudget;
+    use serde_json::{Value, json};
+    use std::path::{Path, PathBuf};
+
+    const ID: &str = "exttest";
+    const MEMBER: &str = "Bash(exttest *)";
+
+    fn no_groups(_: &str) -> Vec<(&'static str, Value)> {
+        Vec::new()
+    }
+    fn session_group(command: &str) -> Vec<(&'static str, Value)> {
+        vec![(
+            "SessionStart",
+            json!({"hooks": [{"type": "command", "command": command}]}),
+        )]
+    }
+    static MEMBER_KIND: SettingsKindSpec = SettingsKindSpec {
+        harness: ID,
+        file_name: "ext-settings.json",
+        hook_groups: no_groups,
+        owned_allow: Some(OwnedAllowSpec {
+            rule: MEMBER,
+            retired: &[],
+            native_rewrites: true,
+        }),
+        adoption_note: "",
+        legacy_upgrade_warning: "",
+    };
+    static HOOK_KIND: SettingsKindSpec = SettingsKindSpec {
+        harness: ID,
+        file_name: "ext-hooks.json",
+        hook_groups: session_group,
+        owned_allow: None,
+        adoption_note: "",
+        legacy_upgrade_warning: "",
+    };
+
+    fn inspect_ext(bytes: &[u8], report: &mut Value) -> Result<(), String> {
+        let text = std::str::from_utf8(bytes).map_err(|_| "ext config is not UTF-8".to_owned())?;
+        if text.contains("bad") {
+            return Err("ext config is invalid".into());
+        }
+        report["ext_flag"] = json!(text.contains("on"));
+        if text.contains("on") {
+            report["status"] = json!("configured");
+        }
+        Ok(())
+    }
+    static FOREGROUND: ForegroundAdvice = ForegroundAdvice {
+        settings_file: "ext.toml",
+        advice: "turn the ext flag on",
+        fixed_fields: &[("fixed_field", "always")],
+        inspect: inspect_ext,
+    };
+    static METADATA: AdapterMetadata = AdapterMetadata {
+        id: ID,
+        display_label: "Exttest",
+        context_spelling: "Exttest",
+        context_aliases: &[],
+        executable: ExecutableLookup::Unsupported,
+        host_kinds: &[],
+        setup_scopes: &[SetupScopeKind::ConfigRoot],
+        budget: EventBudgetPolicy {
+            lifecycle_ms: 1000,
+            observer_ms: 1000,
+        },
+        runtime_sources: &[],
+        agent_env_markers: &[],
+    };
+
+    struct Ext {
+        kind: &'static SettingsKindSpec,
+    }
+    impl HarnessAdapter for Ext {
+        type Admission = ();
+        fn metadata(&self) -> &'static AdapterMetadata {
+            &METADATA
+        }
+        fn setup_environment_inputs(&self) -> &'static [&'static str] {
+            &["HT_TEST_ROOT"]
+        }
+        fn default_config_root(&self, environment: &SetupEnvironment) -> Option<PathBuf> {
+            match environment.declared.get("HT_TEST_ROOT") {
+                Some(root) if !root.is_empty() => Some(PathBuf::from(root)),
+                _ => environment
+                    .home
+                    .as_ref()
+                    .map(|home| PathBuf::from(home).join(".testharness")),
+            }
+        }
+        fn settings_kind(&self) -> Option<&'static SettingsKindSpec> {
+            Some(self.kind)
+        }
+        fn foreground_advice(&self) -> Option<&'static ForegroundAdvice> {
+            Some(&FOREGROUND)
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            &[]
+        }
+        fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+            unreachable!()
+        }
+        fn admit(&self, _: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<()> {
+            unreachable!()
+        }
+        fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
+            unreachable!()
+        }
+        fn classify(&self, _: &HookInput) -> ContractObservation {
+            unreachable!()
+        }
+        fn decode(&self, _: &(), _: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+            unreachable!()
+        }
+        fn encode(
+            &self,
+            _: &(),
+            _: &DecodedEvent,
+            _: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            unreachable!()
+        }
+        fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+            unreachable!()
+        }
+        fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+            unreachable!()
+        }
+        fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
+            unreachable!()
+        }
+        fn unsetup(
+            &self,
+            _: &UnsetupRequest,
+            _: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            unreachable!()
+        }
+    }
+
+    fn registry(kind: &'static SettingsKindSpec) -> &'static Registry {
+        let adapter: &'static Ext = Box::leak(Box::new(Ext { kind }));
+        Box::leak(Box::new(
+            Registry::new(Box::leak(
+                vec![Registration::new(adapter)].into_boxed_slice(),
+            ))
+            .expect("a well-formed extension registers"),
+        ))
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ht-ext-{label}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn environment(home: Option<&Path>, root: Option<&Path>) -> SetupEnvironment {
+        SetupEnvironment {
+            home: home.map(|home| home.as_os_str().to_owned()),
+            declared: root
+                .map(|root| ("HT_TEST_ROOT".to_owned(), root.as_os_str().to_owned()))
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn setup_env(roots: std::collections::BTreeMap<String, PathBuf>, state: &Path) -> SetupEnv {
+        SetupEnv {
+            home: None,
+            declared_environment: Default::default(),
+            executable: PathBuf::from("/x/herdr-threads"),
+            state_dir: Some(state.to_path_buf()),
+            cwd: PathBuf::from("/"),
+            path: None,
+            config_roots: roots,
+            host_endpoint: Some(PathBuf::from("/x/host.sock")),
+            instance_source: Value::Null,
+        }
+    }
+
+    /// Kills: a core that resolves only the roots it names, or lets `HOME` win over the
+    /// adapter's declared variable, or keeps an empty value.
+    #[test]
+    fn a_registered_adapter_contributes_its_config_root() {
+        let registry = registry(&MEMBER_KIND);
+        let home = Path::new("/h");
+        let declared =
+            default_config_roots(registry, &environment(Some(home), Some(Path::new("/r"))));
+        assert_eq!(declared.get(ID), Some(&PathBuf::from("/r")));
+        let fallback = default_config_roots(registry, &environment(Some(home), None));
+        assert_eq!(fallback.get(ID), Some(&PathBuf::from("/h/.testharness")));
+        let empty = default_config_roots(registry, &environment(Some(home), Some(Path::new(""))));
+        assert_eq!(empty.get(ID), Some(&PathBuf::from("/h/.testharness")));
+        assert!(default_config_roots(registry, &environment(None, None)).is_empty());
+        assert_eq!(declared.len(), 1, "only registered adapters have roots");
+    }
+
+    /// Kills: a foreground report that skips the adapter's fixed fields or `user_config`, a
+    /// missing file that is an error, an adapter parse error that leaves `status` untouched, or
+    /// a hard-coded adapter table (this adapter is in no core table).
+    #[test]
+    fn foreground_report_assembles_from_the_adapters_advice() {
+        let registry = registry(&MEMBER_KIND);
+        let dir = scratch("foreground");
+        let env = setup_env([(ID.to_owned(), dir.clone())].into(), &dir);
+        let missing = foreground::inspect_in(registry, ID, &env);
+        assert_eq!(missing["status"], "required");
+        assert_eq!(missing["scope"], "user");
+        assert_eq!(missing["execution"], "unknown");
+        assert_eq!(
+            missing["settings_file"],
+            dir.join("ext.toml").display().to_string()
+        );
+        assert_eq!(missing["advice"], "turn the ext flag on");
+        assert_eq!(missing["modified_by_setup"], false);
+        assert_eq!(missing["fixed_field"], "always");
+        assert_eq!(missing["user_config"], "missing");
+        assert!(missing.get("ext_flag").is_none() && missing.get("inspection_error").is_none());
+
+        std::fs::write(dir.join("ext.toml"), "flag = on").unwrap();
+        let configured = foreground::inspect_in(registry, ID, &env);
+        assert_eq!(configured["status"], "configured");
+        assert_eq!(configured["ext_flag"], true);
+        assert_eq!(configured["user_config"], "read");
+        assert_eq!(configured["fixed_field"], "always");
+
+        std::fs::write(dir.join("ext.toml"), "flag = off").unwrap();
+        let off = foreground::inspect_in(registry, ID, &env);
+        assert_eq!(
+            (off["status"].as_str(), off["ext_flag"].as_bool()),
+            (Some("required"), Some(false))
+        );
+
+        std::fs::write(dir.join("ext.toml"), "bad").unwrap();
+        let bad = foreground::inspect_in(registry, ID, &env);
+        assert_eq!(bad["status"], "unknown");
+        assert_eq!(bad["inspection_error"], "ext config is invalid");
+        assert!(bad.get("user_config").is_none(), "{bad}");
+
+        let rootless = setup_env(Default::default(), &dir);
+        let unknown = foreground::inspect_in(registry, ID, &rootless);
+        assert_eq!(unknown["status"], "unknown");
+        assert_eq!(
+            unknown["inspection_error"],
+            "user config directory is unknown"
+        );
+        assert_eq!(unknown["settings_file"], Value::Null);
+
+        assert_eq!(
+            foreground::inspect_in(registry, "unregistered", &env),
+            Value::Null
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    struct Fixture {
+        dir: PathBuf,
+        kind: SettingsKind,
+        config: PathBuf,
+        manifest: PathBuf,
+        /// The baseline setup read when it first ran: re-running setup passes it again.
+        base: Vec<u8>,
+    }
+    impl Fixture {
+        /// The settings file and manifest exactly where the generic plumbing puts them: under
+        /// the registered adapter's resolved config root and the state directory.
+        fn new(spec: &'static SettingsKindSpec, base: Option<&str>) -> Self {
+            let registry = registry(spec);
+            let dir = scratch("engine");
+            let roots = default_config_roots(registry, &environment(None, Some(&dir.join("root"))));
+            let env = setup_env(roots, &dir.join("state"));
+            let kind = legacy::registered_kind_in(registry, ID).expect("registered kind");
+            let (config, manifest) = legacy::settings_paths(&env, kind).unwrap();
+            assert_eq!(config, dir.join("root").join(spec.file_name));
+            assert_eq!(
+                manifest.parent().unwrap(),
+                dir.join("state").join("setup"),
+                "manifest under the state directory"
+            );
+            std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            if let Some(base) = base {
+                std::fs::write(&config, base).unwrap();
+            }
+            Self {
+                dir,
+                kind,
+                config,
+                manifest,
+                base: base.unwrap_or_default().as_bytes().to_vec(),
+            }
+        }
+        fn argv() -> Vec<String> {
+            vec!["/x/herdr-threads".to_owned()]
+        }
+        fn install(&self) -> Result<crate::harness::setup::OwnershipManifest, SetupError> {
+            install_user_settings(
+                self.kind,
+                &self.config,
+                &self.manifest,
+                &Self::argv(),
+                &self.base,
+            )
+        }
+        fn installed(&self) -> bool {
+            inspect_user_settings(
+                self.kind,
+                &self.config,
+                &self.manifest,
+                NativeObservation::Unknown,
+            )
+            .unwrap()
+            .installed
+        }
+        fn value(&self) -> Value {
+            serde_json::from_slice(&std::fs::read(&self.config).unwrap()).unwrap()
+        }
+        fn rewrite(&self, value: Value) {
+            std::fs::write(&self.config, serde_json::to_vec(&value).unwrap()).unwrap();
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Kills: a member the user already held that is recorded as owned (and removed), an absent
+    /// `permissions.allow` that is not created or not pruned again, a native rewrite that keeps
+    /// the member but reads as not installed, and a rewrite that drops the member but reads as
+    /// installed or is not re-added by the next install.
+    #[test]
+    fn install_status_and_unsetup_run_the_generic_engine_for_a_registered_kind() {
+        // Pre-existing: recorded, untouched, never removed.
+        let base = format!(r#"{{"permissions":{{"allow":["{MEMBER}"]}},"keep":1}}"#);
+        let held = Fixture::new(&MEMBER_KIND, Some(&base));
+        let manifest = held.install().unwrap();
+        assert!(manifest.owned.is_empty() && manifest.phase == InstallPhase::Installed);
+        assert!(
+            manifest
+                .permission
+                .as_ref()
+                .is_some_and(|p| p.pre_existing && p.rule == MEMBER)
+        );
+        assert_eq!(std::fs::read(&held.config).unwrap(), base.as_bytes());
+        assert!(held.installed());
+        remove_user_settings(held.kind, &held.config, &held.manifest).unwrap();
+        assert_eq!(std::fs::read(&held.config).unwrap(), base.as_bytes());
+        assert!(read_settings_manifest(&held.manifest).unwrap().is_none());
+
+        // Array absent: created by install, pruned by unsetup.
+        let absent = Fixture::new(&MEMBER_KIND, Some(r#"{"keep":1}"#));
+        let manifest = absent.install().unwrap();
+        assert!(
+            manifest
+                .permission
+                .as_ref()
+                .is_some_and(|p| !p.pre_existing)
+        );
+        assert_eq!(absent.value()["permissions"]["allow"], json!([MEMBER]));
+        assert!(absent.installed());
+        remove_user_settings(absent.kind, &absent.config, &absent.manifest).unwrap();
+        assert_eq!(absent.value(), json!({"keep": 1}));
+
+        // Native rewrite that keeps the member (keys reordered, a key added): still installed.
+        // A rewrite that drops it reads as not installed; the next install re-adds the member.
+        let rewritten = Fixture::new(&MEMBER_KIND, Some(r#"{"keep":1}"#));
+        rewritten.install().unwrap();
+        rewritten
+            .rewrite(json!({"added": true, "permissions": {"allow": [MEMBER, "Read"]}, "keep": 1}));
+        assert!(
+            rewritten.installed(),
+            "a rewrite keeping the member stays installed"
+        );
+        rewritten.rewrite(json!({"added": true, "keep": 1}));
+        assert!(
+            !rewritten.installed(),
+            "a rewrite dropping the member is not installed"
+        );
+        rewritten.install().unwrap();
+        assert!(rewritten.installed());
+        assert!(
+            rewritten.value()["permissions"]["allow"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|rule| rule == MEMBER)
+        );
+        remove_user_settings(rewritten.kind, &rewritten.config, &rewritten.manifest).unwrap();
+        assert!(
+            !rewritten.value()["permissions"]["allow"]
+                .as_array()
+                .is_some_and(|allow| allow.iter().any(|rule| rule == MEMBER))
+        );
+    }
+
+    /// Kills: `plan_settings` that only knows two adapters' groups, an edited owned group that
+    /// is accepted instead of refused, or a registered hook kind whose install leaves nothing
+    /// to remove.
+    #[test]
+    fn a_registered_hook_kind_plans_installs_and_uninstalls_through_the_generic_paths() {
+        let argv = Fixture::argv();
+        let plan = plan_settings(SettingsKind::new(&HOOK_KIND), b"{}", &argv).unwrap();
+        assert_eq!(plan.owned.len(), 1);
+        assert_eq!(plan.owned[0].event, "SessionStart");
+        let again =
+            plan_settings(SettingsKind::new(&HOOK_KIND), &plan.proposed_bytes, &argv).unwrap();
+        assert_eq!(
+            again.proposed_bytes, plan.proposed_bytes,
+            "composition is idempotent"
+        );
+        let mut edited: Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
+        edited["hooks"]["SessionStart"][0]["hooks"][0]["timeout"] = json!(1);
+        assert_eq!(
+            plan_settings(
+                SettingsKind::new(&HOOK_KIND),
+                &serde_json::to_vec(&edited).unwrap(),
+                &argv
+            ),
+            Err(SetupError::Conflict)
+        );
+
+        let fixture = Fixture::new(&HOOK_KIND, Some(r#"{"keep":1}"#));
+        let manifest = fixture.install().unwrap();
+        assert_eq!(manifest.owned.len(), 1);
+        assert!(manifest.permission.is_none());
+        assert!(fixture.installed());
+        assert_eq!(fixture.value()["keep"], 1);
+        remove_user_settings(fixture.kind, &fixture.config, &fixture.manifest).unwrap();
+        assert_eq!(fixture.value().get("hooks"), None);
+        assert!(!fixture.installed());
+    }
 }

@@ -4,8 +4,6 @@ use std::{fs, io::Read, path::Path};
 
 const LIMIT: u64 = 1 << 20;
 const EXPLANATION: &str = "herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings only and never changes foreground settings. User settings and launch arguments are not proof of execution; project/managed settings, environment, and wrapper behavior may override them.";
-pub(crate) const CLAUDE_ADVICE: &str = "Set disableAgentView to true in Claude's user settings.json (merge {\"disableAgentView\":true} into the existing object), or set env.CLAUDE_CODE_DISABLE_AGENT_VIEW to \"1\" there. This disables agent view, --bg/background and on-demand daemon mode. CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is a different setting and does not replace this choice.";
-pub(crate) const CODEX_ADVICE: &str = "Codex 0.160.1 has no persistent user config/environment opt-out for daemon attachment. features.daemon_auto_start = false prevents automatic startup only: Codex still attaches to an existing daemon. Use native codex --no-daemon, or set HERDR_THREADS_CODEX_OPTS='--no-daemon' for herdr-threads launch when the selected binary/wrapper supports and forwards that argument. These configured arguments do not prove that a wrapper runs in the foreground; verify its behavior.";
 
 /// Bound reads and reject symlinks/special files before reading; O_NONBLOCK also covers a
 /// file replaced with a FIFO between metadata inspection and open.
@@ -44,83 +42,54 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
     Ok(Some(bytes))
 }
 
-fn truthy(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+pub(crate) fn inspect(harness: Harness, env: &SetupEnv) -> Value {
+    inspect_in(crate::harness::registry::builtins(), harness.as_str(), env)
 }
 
-pub(crate) fn inspect(harness: Harness, env: &SetupEnv) -> Value {
-    let (path, advice) = match harness {
-        Harness::Claude => (
-            env.claude_config_dir
-                .as_ref()
-                .map(|p| p.join("settings.json")),
-            CLAUDE_ADVICE,
-        ),
-        Harness::Codex => (
-            env.codex_home.as_ref().map(|p| p.join("config.toml")),
-            CODEX_ADVICE,
-        ),
-        _ => return Value::Null,
+/// The foreground report of adapter `id` in `registry`; `null` for an adapter that declares no
+/// foreground advice.
+pub(crate) fn inspect_in(
+    registry: &crate::harness::registry::Registry,
+    id: &str,
+    env: &SetupEnv,
+) -> Value {
+    let Some(registration) = registry
+        .agent(id)
+        .ok()
+        .and_then(|id| registry.by_id(id).ok())
+    else {
+        return Value::Null;
     };
+    let Some(spec) = registration.foreground_advice() else {
+        return Value::Null;
+    };
+    let path = env
+        .config_roots
+        .get(registration.metadata().id)
+        .map(|root| root.join(spec.settings_file));
     let mut report = json!({
         "status": "required", "scope": "user", "execution": "unknown",
         "settings_file": path.as_ref().map(|p| p.display().to_string()),
-        "explanation": EXPLANATION, "advice": advice, "modified_by_setup": false,
+        "explanation": EXPLANATION, "advice": spec.advice, "modified_by_setup": false,
     });
-    if harness == Harness::Codex {
-        report["persistent_opt_out"] = json!("unavailable (Codex 0.160.1)");
+    for (key, value) in spec.fixed_fields {
+        report[*key] = json!(value);
     }
-    let inspected = path
+    let result = path
         .as_ref()
         .ok_or_else(|| "user config directory is unknown".to_owned())
-        .and_then(|p| read(p));
-    let result = inspected.and_then(|bytes| match (harness, bytes) {
-        (_, None) => {
-            report["user_config"] = json!("missing");
-            Ok(())
-        }
-        (Harness::Claude, Some(bytes)) => {
-            let settings: Value = serde_json::from_slice(&bytes)
-                .map_err(|_| "invalid user settings JSON".to_owned())?;
-            if !settings.is_object() {
-                return Err("user settings JSON must be an object".into());
+        .and_then(|p| read(p))
+        .and_then(|bytes| match bytes {
+            None => {
+                report["user_config"] = json!("missing");
+                Ok(())
             }
-            let flag = settings.get("disableAgentView");
-            let env_flag = settings
-                .get("env")
-                .and_then(|v| v.get("CLAUDE_CODE_DISABLE_AGENT_VIEW"));
-            report["disableAgentView"] = flag.cloned().unwrap_or(Value::Null);
-            report["CLAUDE_CODE_DISABLE_AGENT_VIEW"] = env_flag.cloned().unwrap_or(Value::Null);
-            let env_enabled = env_flag.and_then(Value::as_str).is_some_and(truthy);
-            if flag == Some(&Value::Bool(true)) || env_enabled {
-                report["status"] = json!("configured");
-            } else if flag.is_some_and(|v| !v.is_boolean())
-                || env_flag.is_some_and(|v| !v.is_string())
-            {
-                return Err("foreground user setting has an unrecognized value".into());
+            Some(bytes) => {
+                (spec.inspect)(&bytes, &mut report)?;
+                report["user_config"] = json!("read");
+                Ok(())
             }
-            report["user_config"] = json!("read");
-            Ok(())
-        }
-        (Harness::Codex, Some(bytes)) => {
-            let text = std::str::from_utf8(&bytes)
-                .map_err(|_| "user config TOML is not UTF-8".to_owned())?;
-            let config = text
-                .parse::<toml_edit::DocumentMut>()
-                .map_err(|_| "invalid user config TOML".to_owned())?;
-            report["daemon_auto_start"] = config
-                .get("features")
-                .and_then(|v| v.get("daemon_auto_start"))
-                .and_then(toml_edit::Item::as_bool)
-                .map_or(Value::Null, Value::Bool);
-            report["user_config"] = json!("read");
-            Ok(())
-        }
-        _ => unreachable!(),
-    });
+        });
     if let Err(error) = result {
         report["status"] = json!("unknown");
         report["inspection_error"] = json!(error);

@@ -723,8 +723,11 @@ pub(crate) fn legacy_claude_projection(
                     "recorded": adoption.recorded,
                 })),
             });
-            claude["allow_rule"] = super::setup::allow_rule_json(inspection.allow_rule.as_ref());
-            claude["prompt_suggestions"] = super::setup::prompt_suggestion_status(
+            claude["allow_rule"] = crate::harness::setup::allow_rule_json(
+                crate::harness::claude::settings_kind(),
+                inspection.allow_rule.as_ref(),
+            );
+            claude["prompt_suggestions"] = crate::harness::claude::setup::prompt_suggestion_status(
                 &env,
                 &settings,
                 request
@@ -802,7 +805,7 @@ pub(crate) fn legacy_codex_projection(
         Err(error) => json!({"installed": false, "error": error}),
     };
     let codex_trust = if codex_setup["installed"] == json!(true) {
-        super::setup::codex_trust_report(&env)
+        crate::harness::codex::setup::codex_trust_report(&env)
     } else {
         json!({"status": "not_installed"})
     };
@@ -812,7 +815,8 @@ pub(crate) fn legacy_codex_projection(
     let binary = super::hook::resolve_on_path("codex", path.as_deref());
     let installed = json!(installed_declared("codex", path.as_deref()));
     let last_hook: Option<crate::harness::codex_evidence::AdmissionRecord> = None;
-    let sandbox_warning = super::setup::codex_unmeasured_allowance_warning(&env, None);
+    let sandbox_warning =
+        crate::harness::codex::setup::codex_unmeasured_allowance_warning(&env, None);
     let socket_policy_validation = binary.as_ref().map(|_| "not_run");
     if let Some(binary) = &binary {
         match &codex_inspection {
@@ -826,11 +830,11 @@ pub(crate) fn legacy_codex_projection(
     if let Some(warning) = &sandbox_warning {
         limitations.push(format!("codex sandbox: {warning}"));
     }
-    let roots_warning = super::setup::codex_missing_roots_warning(&env, None);
+    let roots_warning = crate::harness::codex::setup::codex_missing_roots_warning(&env, None);
     if let Some(warning) = &roots_warning {
         limitations.push(format!("codex sandbox: {warning}"));
     }
-    let proxy_warnings = super::setup::codex_foreign_proxy_warnings(&env);
+    let proxy_warnings = crate::harness::codex::setup::codex_foreign_proxy_warnings(&env);
     for warning in &proxy_warnings {
         limitations.push(format!("codex sandbox: {warning}"));
     }
