@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-thread-search-discovery
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-design
+phase: code
 
 idea: lets debug, then once we understand the problem, $super-auto it, fully autonomous, both roasts on
 branch: super-auto/thread-search-discovery
@@ -16,3 +16,13 @@ approvals:
 
 roastDesignRound: 1
 roast-design: 2026-10-10-thread-search-discovery-roast-design-1.md
+
+codeBuckets:
+  completed:
+  escalated:
+  pendingRetry:
+  parked:
+  stalled: false
+  review: pending
+
+HT_LEAK_RUN_ID: c494afe8-aa16-4b6b-a2a8-b9bee8e65cb8
