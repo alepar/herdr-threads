@@ -236,14 +236,46 @@ class AllowlistTests(Case):
         self.write("src/cli/x.rs", 'let h = "claude";\n')
 
     def test_entry_allows_and_counts(self):
-        self.allow("src/cli/x.rs:claude — to-migrate: test")
+        self.allow("src/cli/x.rs:claude — frozen-wire: test")
         p = self.run_check()
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(
             p.stdout.splitlines()[-1],
             "check-harness-neutral: ok — 0 violations, 1 allowlisted "
+            "(to-migrate 0, frozen-wire 1, history 0, registration 0), 1 entries",
+        )
+
+    def test_to_migrate_entry_is_a_hard_failure(self):
+        self.allow("src/cli/x.rs:claude — to-migrate: test")
+        p = self.run_check()
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("to-migrate entries are forbidden: 1", p.stdout)
+        self.assertEqual(
+            p.stdout.splitlines()[-1],
+            "check-harness-neutral: FAILED — 0 violations, 1 allowlisted "
             "(to-migrate 1, frozen-wire 0, history 0, registration 0), 1 entries",
         )
+
+    def test_to_migrate_failure_counts_every_entry(self):
+        self.write("src/cli/x.rs", 'let h = "claude"; let i = "codex";\n')
+        self.allow("src/cli/x.rs:claude — to-migrate: a", "src/cli/x.rs:codex — to-migrate: b")
+        p = self.run_check()
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("to-migrate entries are forbidden: 2", p.stdout)
+
+    def test_to_migrate_json_failure(self):
+        self.allow("src/cli/x.rs:claude — to-migrate: test")
+        p = self.run_check("--json")
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        data = json.loads(p.stdout)
+        self.assertEqual(data["status"], "failed")
+        self.assertEqual(data["entries_by_category"]["to-migrate"], 1)
+        self.assertIn("to-migrate entries are forbidden: 1", p.stderr)
+        self.assertNotIn("forbidden", p.stdout)
+
+    def test_no_forbidden_message_without_to_migrate(self):
+        self.allow("src/cli/x.rs:claude — frozen-wire: kept")
+        self.assertNotIn("forbidden", self.run_check().stdout)
 
     def test_line_scoped_pattern(self):
         self.write("src/cli/x.rs", 'registry.agent("claude");\nlet h = "claude";\n')
@@ -264,7 +296,7 @@ class AllowlistTests(Case):
 
     def test_stale_entry_fails(self):
         self.allow(
-            "src/cli/gone.rs:claude — to-migrate: gone",
+            "src/cli/gone.rs:claude — frozen-wire: gone",
             "src/cli/x.rs:claude — frozen-wire: kept",
         )
         p = self.run_check()
@@ -275,7 +307,7 @@ class AllowlistTests(Case):
     def test_first_covering_entry_gets_the_count(self):
         self.allow(
             "src/cli/x.rs:claude — history: first",
-            'src/cli/x.rs:let h = "claude" — to-migrate: second',
+            'src/cli/x.rs:let h = "claude" — registration: second',
         )
         p = self.run_check()
         self.assertEqual(p.returncode, 0, p.stdout)
@@ -333,13 +365,18 @@ class SuggestAndJsonTests(Case):
                 "src/cli/x.rs:codex — to-migrate: TODO",
             ],
         )
+        # Suggested lines are a bootstrap aid: committed as-is they fail the strict check.
         self.allow(*p.stdout.splitlines())
         q = self.run_check()
-        self.assertEqual(q.returncode, 0, q.stdout)
-        self.assertIn("3 allowlisted (to-migrate 3", q.stdout.splitlines()[-1])
+        self.assertEqual(q.returncode, 1, q.stdout)
+        self.assertIn("to-migrate entries are forbidden: 2", q.stdout)
+        self.allow(*[l.replace("— to-migrate: TODO", "— frozen-wire: reviewed") for l in p.stdout.splitlines()])
+        r = self.run_check()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("3 allowlisted (to-migrate 0, frozen-wire 3", r.stdout.splitlines()[-1])
 
     def test_json_shape(self):
-        self.allow("src/cli/x.rs:codex — history: h", "src/cli/z.rs:claude — to-migrate: stale")
+        self.allow("src/cli/x.rs:codex — history: h", "src/cli/z.rs:claude — frozen-wire: stale")
         p = self.run_check("--json")
         self.assertEqual(p.returncode, 1)
         data = json.loads(p.stdout)
@@ -358,8 +395,8 @@ class SuggestAndJsonTests(Case):
                 },
                 "entries": 2,
                 "entries_by_category": {
-                    "to-migrate": 1,
-                    "frozen-wire": 0,
+                    "to-migrate": 0,
+                    "frozen-wire": 1,
                     "history": 1,
                     "registration": 0,
                 },

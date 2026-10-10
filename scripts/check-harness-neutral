@@ -14,12 +14,15 @@
 #                      "history":c,"registration":d},"entries":E,"entries_by_category":{...}}
 #   --suggest         print, sorted and unique, one `<path>:<token> — to-migrate: TODO`
 #                     allowlist line per currently unallowed (path, token) pair; exit 0.
+#                     A bootstrap aid only: the lines must not be committed as printed, because
+#                     any to-migrate entry fails the check (see Allowlist).
 #
-# Exit codes: 0 pass; 1 violations or stale allowlist entries; 2 usage or configuration
+# Exit codes: 0 pass; 1 violations, stale allowlist entries or any to-migrate entry; 2 usage or configuration
 # error (bad flag, malformed/unsorted/duplicate allowlist line, no builtins() rows).
 #
 # Human output: one line per violation, `<path>:<line>: <token>: <source line, trimmed>`;
-# one line per stale entry, `stale allowlist entry: <entry line>`; then exactly one summary
+# one line per stale entry, `stale allowlist entry: <entry line>`; when the allowlist holds
+# N > 0 to-migrate entries, `to-migrate entries are forbidden: N`; then exactly one summary
 # line, always last on stdout:
 #   check-harness-neutral: <ok|FAILED> — <V> violations, <A> allowlisted (to-migrate a,
 #   frozen-wire b, history c, registration d), <E> entries
@@ -62,6 +65,9 @@
 # occurs in L (comments removed) and contains T. A match is counted once, under the first
 # covering entry in file order. An entry covering no match is stale (exit 1). Entries must
 # be sorted (byte order) and unique, else exit 2 naming the first offending line.
+# Policy: only frozen-wire, history and registration entries may be committed. to-migrate
+# stays a recognised category so a stray entry fails with a clear message (exit 1) instead of
+# a malformed-line error, but any to-migrate entry is a hard failure.
 
 set -euo pipefail
 export LC_ALL=C
@@ -381,7 +387,8 @@ $1 == "R" {
 END {
     if (mode == "suggest") exit 0
     for (id = 1; id <= ne; id++) if (!(id in used)) { nstale++; print "stale allowlist entry: " eline[id] > errout }
-    failed = (nviol > 0 || nstale > 0)
+    if (ecount["to-migrate"] > 0) print "to-migrate entries are forbidden: " ecount["to-migrate"] > errout
+    failed = (nviol > 0 || nstale > 0 || ecount["to-migrate"] > 0)
     if (mode == "json") {
         printf "{\"status\":\"%s\",\"violations\":%d,\"stale\":%d,\"allowlisted\":%d,\"allowlisted_by_category\":%s,\"entries\":%d,\"entries_by_category\":%s}\n", \
             (failed ? "failed" : "ok"), nviol, nstale, nallowed, json_cats(allowed), ne, json_cats(ecount)
