@@ -5,7 +5,7 @@ resumeChange: 2026-10-09 · "let's /super-auto this. Fully autonomouns from now,
 resumeChange: 2026-10-10 · "I think this is way too much text… marks everything as 'untrusted'… I want that corrected… create a new bead task under our epic and handle it ourselves" · added leaf for compact cooperative framing (R17) after the Claude re-fit; supersedes R9 byte-identity for the mod's model-visible frame text only
 resumeChange: 2026-10-10 · "the nudge should probably say something minimal, like 'wake up' and then let hook inject the actual message" · added leaf for adapter-declared minimal wake text (R18): agy and Claude mod wake with 'wake up', bodies injected at turn start
 resumeChange: 2026-10-10 · "also let's add to AGENTS.md that when designing comms, we strive to design the protocols to be token efficient as much as possible" · folded into ht-poh.13: AGENTS.md 'Token-efficient communication' rule (no dedicated token-efficiency research found in ~/Documents)
-phase: code
+phase: roast-code
 codeMechanism: Workflow
 
 spec: 2026-10-09-agy-harness-adapter-design.md
@@ -15,6 +15,7 @@ branch: super-auto/agy-harness-adapter
 base: main
 
 roastDesignRound: 2
+roastCodeRound: 1
 roast-design: 2026-10-10-agy-harness-adapter-roast-design-1.md, 2026-10-10-agy-harness-adapter-roast-design-2.md
 
 stepBackDesign-round-1: patch — two findings share one cause (transcript-confirm read only at next PreInvocation; Stop used only for error-string detection); cluster C1 rule applied in root + subspecs; executable-identity source patched separately
@@ -23,12 +24,12 @@ stepBackDesign-round-1: patch — two findings share one cause (transcript-confi
 baseAbsorbed: f3431b31 → d342add2, 14 conflicted files (main v0.6.0 absorbed mid-phase-3: remaining agy delivery work depends on main's lazy hook delivery and permission core; follow-ups ht-poh.16, ht-poh.17, ht-poh.18)
 
 codeBuckets:
-  completed: ht-poh.7, ht-poh.1, ht-poh.6.1, ht-poh.6.3, ht-poh.9, ht-poh.6.2, ht-poh.3.1, ht-poh.2.7, ht-poh.3.5, ht-poh.3.2, ht-poh.2.1, ht-poh.2.5, ht-poh.2.6, ht-poh.3.3, ht-poh.2.3, ht-poh.3.7, ht-poh.2.2, ht-poh.3.6, ht-poh.2.4, ht-poh.4.1, ht-poh.8, ht-poh.3.4, ht-poh.2.8, ht-poh.4.2, ht-poh.4.4, ht-poh.4.3, ht-poh.6.5, ht-poh.4.6, ht-poh.4.7, ht-poh.4.8, ht-poh.6.4
-  escalated: ht-poh.4.5, ht-poh.13
+  completed: ht-poh.1, ht-poh.7, ht-poh.9, ht-poh.8, ht-poh.2.1–2.8, ht-poh.3.1–3.7, ht-poh.4.1–4.8, ht-poh.5, ht-poh.6.1–6.8, ht-poh.11, ht-poh.14, ht-poh.16, ht-poh.17, ht-poh.18, ht-poh.22, ht-poh.25, ht-poh.28, ht-poh.30, ht-poh.31, ht-poh.35, ht-poh.36, ht-poh.37 (ht-poh.27 closed as superseded)
+  escalated: ht-poh.13 (BLOCKED-AUTH; gated on human ht-poh.19)
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (epic incomplete; main v0.6.0 drift with 14 conflicts; agy docs claim unimplemented delivery; must-fix list in the invocation-1 final review)
+  review: not ready (invocation 6 final review: R17 missing; post-tool-call confirm unverified on genuine agy; final-SHA evidence pending; parked decisions DC-3, unsetup backups, daemon-down notice; flakes) — code-final-review-6.md
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: round 1 allowlist hot-file cap raised to 4; round 2 graph-bound, edge audit armed; audit 1 left ht-poh.5 <- ht-poh.4.5 drop for an operator (parked)
   worktreesKept: task-ht-poh.13 — uncommitted partial R17 work (BLOCKED-AUTH), task-ht-poh.4.5 — unmerged (blocked on agy binary, since resolved)
