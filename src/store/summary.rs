@@ -315,11 +315,11 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-struct Caller {
-    seat: SeatId,
-    /// The claim names the seat's current open binding (generation and
-    /// execution); only then may a call enter or end catch-up.
-    current: bool,
+pub(crate) struct Caller {
+    pub(crate) seat: SeatId,
+    /// The claim's own session binding is open on the seat and the seat has not been rebound
+    /// since the claim; only then may a call enter or end catch-up.
+    pub(crate) current: bool,
 }
 
 /// A2 entitlement, decided against the canonical view. The claim's instance
@@ -327,7 +327,7 @@ struct Caller {
 /// read the thread by exactly the predicate `history` applies: the thread
 /// exists in the instance (history has no per-seat read gate). Either claim
 /// role is admitted: a summary worker is a declared subagent of the seat.
-fn check_caller(
+pub(crate) fn check_caller(
     conn: &Connection,
     instance: &str,
     claim: &CallerClaim,
@@ -339,15 +339,15 @@ fn check_caller(
             "caller instance does not match service",
         ));
     }
-    let seat: Option<(String, String)> = conn
+    let seat: Option<(String, String, i64)> = conn
         .query_row(
-            "SELECT instance_id, state FROM seats WHERE id=?1",
+            "SELECT instance_id, state, generation FROM seats WHERE id=?1",
             [claim.seat.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(store_error)?;
-    let Some((_, state)) = seat.filter(|(owner, _)| owner == instance) else {
+    let Some((_, state, generation)) = seat.filter(|(owner, ..)| owner == instance) else {
         return Err(api_error(
             ErrorCode::Unauthorized,
             "seat does not belong to instance",
@@ -363,14 +363,21 @@ fn check_caller(
     if !known {
         return Err(api_error(ErrorCode::NotFound, "thread not found"));
     }
+    // The seat's mapping generation is the fence ("not rebound since the claim"). The binding
+    // is the claim's own session, found by key (a summary worker acts for its session's
+    // top-level binding), and it must hold the claim's execution, as catch-up entry requires.
+    // A binding's own `generation` is informational (ht-54r.3).
     let current = state == "resolved"
+        && generation == to_i64(claim.binding_generation)
         && conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 \
-                 AND ended_at IS NULL AND generation=?2 AND execution_id=?3)",
+                 AND harness=?2 AND native_session=?3 AND agent_id='' AND ended_at IS NULL \
+                 AND execution_id=?4)",
                 params![
                     claim.seat.as_str(),
-                    to_i64(claim.binding_generation),
+                    claim.harness.as_str(),
+                    claim.native_session.as_str(),
                     claim.execution.as_str()
                 ],
                 |r| r.get(0),

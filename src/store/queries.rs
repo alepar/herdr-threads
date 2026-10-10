@@ -226,7 +226,7 @@ pub(super) fn query_with_output_for_caller(
     let human = match caller {
         Some(OperationReadScope::Operator(_)) => true,
         Some(OperationReadScope::Seat(seat)) => db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND b.ended_at IS NULL AND b.harness='human')",
+            "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND b.ended_at IS NULL AND b.harness='human')",
             params![seat.as_str(), instance], |row| row.get::<_, bool>(0),
         ).map_err(|error| db.map_error(error))?,
         _ => false,
@@ -5051,14 +5051,14 @@ fn inbox_batch(
         return Err(api_error(ErrorCode::NotFound, "seat not found"));
     }
     let current_harness: Option<String> = db.query_row(
-        "SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>''",
+        "SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>'' ORDER BY b.ordinal DESC LIMIT 1",
         [seat.as_str()], |r| r.get(0),
     ).optional().map_err(store_error)?;
     let current_agent = current_harness
         .as_deref()
         .is_some_and(|harness| crate::harness::registry::builtins().agent(harness).is_ok());
     let offered_warning_through: i64 = db.query_row(
-        "SELECT o.offered_through_seq FROM warning_offer o JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND o.execution_id=b.execution_id",
+        "SELECT o.offered_through_seq FROM warning_offer o JOIN seats s ON s.id=o.seat_id WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.execution_id=o.execution_id)",
         [seat.as_str()], |r| r.get(0),
     ).optional().map_err(store_error)?.unwrap_or(0);
     let filter = digest(&(seat.as_str(), "inbox_batch_v1"))?;
@@ -5862,6 +5862,10 @@ fn hot_threads_in(
 #[path = "../../tests/store/queries.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "../../tests/store/multi_binding_readers.rs"]
+mod multi_binding_readers_tests;
+
 /// One bounded query under the canonical read transaction; no host labels or client hints.
 fn participant_locations(
     db: &QueryConnection,
@@ -5935,8 +5939,33 @@ mod inbox_v2 {
     fn invalid(detail: &str) -> ApiError {
         api_error(ErrorCode::InvalidCursor, detail)
     }
-    fn binding(db: &Connection, seat: &SeatId) -> Result<Option<(u64, ExecutionId)>, ApiError> {
-        db.query_row("SELECT b.generation,b.execution_id FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id AND s.generation=b.generation WHERE b.seat_id=?1 AND b.ended_at IS NULL",[seat.as_str()],|r|Ok((r.get::<_,i64>(0)? as u64,ExecutionId::new(r.get::<_,String>(1)?)))).optional().map_err(store_error)
+    /// The snapshot's binding fence: the seat's mapping generation and the execution of its most
+    /// recent open binding (presentation only; a seat holds many bindings, ht-54r.3). A captured
+    /// cursor stays valid while the seat generation is unchanged and some open binding still holds
+    /// the captured execution (`fence_holds`), so another session enrolling does not invalidate it.
+    pub(super) fn binding(
+        db: &Connection,
+        seat: &SeatId,
+    ) -> Result<Option<(u64, ExecutionId)>, ApiError> {
+        db.query_row("SELECT s.generation,b.execution_id FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.seat_id=?1 AND b.ended_at IS NULL ORDER BY b.ordinal DESC LIMIT 1",[seat.as_str()],|r|Ok((r.get::<_,i64>(0)? as u64,ExecutionId::new(r.get::<_,String>(1)?)))).optional().map_err(store_error)
+    }
+    pub(super) fn fence_holds(
+        db: &Connection,
+        seat: &SeatId,
+        generation: Option<u64>,
+        execution: Option<&ExecutionId>,
+    ) -> Result<bool, ApiError> {
+        match (generation, execution) {
+            (Some(generation), Some(execution)) => db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.seat_id=?1 AND b.ended_at IS NULL AND s.generation=?2 AND b.execution_id=?3)",
+                    params![seat.as_str(), generation as i64, execution.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error),
+            (None, None) => Ok(binding(db, seat)?.is_none()),
+            _ => Ok(false),
+        }
     }
     fn capture(db: &Connection, instance: &str, seat: &SeatId) -> Result<State, ApiError> {
         let high = super::super::lazy_delivery::capture_high_water(db, instance, seat)?;
@@ -5950,7 +5979,7 @@ mod inbox_v2 {
             )
             .map_err(store_error)
         };
-        let offered=db.query_row("SELECT o.offered_through_seq FROM warning_offer o JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND o.execution_id=b.execution_id",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?.unwrap_or(0);
+        let offered=db.query_row("SELECT o.offered_through_seq FROM warning_offer o JOIN seats s ON s.id=o.seat_id WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.execution_id=o.execution_id)",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?.unwrap_or(0);
         Ok(State {
             seat: seat.clone(),
             binding_generation: generation,
@@ -6357,8 +6386,7 @@ mod inbox_v2 {
             Some(raw) => State::decode_for(raw, instance, seat).map_err(invalid)?,
             None => capture(db, instance, seat)?,
         };
-        let current = binding(db, seat)?;
-        if current != state.binding_generation.zip(state.execution.clone()) {
+        if !fence_holds(db, seat, state.binding_generation, state.execution.as_ref())? {
             return Err(invalid("inbox binding changed"));
         }
         let decision: i64 = db
@@ -6375,7 +6403,7 @@ mod inbox_v2 {
         // in inbox v1, with its exact current-binding predicate, and display-ACK
         // settlement), never a fixed harness list:
         // a Hermes binding's pending receipts are ACK candidates too.
-        let current_harness:Option<String>=db.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>''",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
+        let current_harness:Option<String>=db.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>'' ORDER BY b.ordinal DESC LIMIT 1",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
         let current_agent = current_harness
             .as_deref()
             .is_some_and(|harness| crate::harness::registry::builtins().agent(harness).is_ok());

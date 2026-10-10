@@ -4856,13 +4856,14 @@ fn recent_picker_committed_notices_update_activity_duplicates_and_rollback_do_no
     );
 }
 
-// Catches a stale open binding conferring display eligibility after the seat's
-// canonical binding generation has advanced. Reading the message remains allowed.
+// Catches a binding conferring display eligibility after the seat's canonical
+// generation has advanced (a rebind ends the seat's bindings; a binding's own generation is
+// informational since ht-54r.21). Reading the message remains allowed.
 #[test]
 fn adapter_inbox_batch_stale_generation_cannot_offer_display_ack() {
     let (store, db) = fixture();
     bind_query_agent(&db);
-    db.execute_batch("UPDATE seats SET generation=2 WHERE id='s'; INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,body,decision_at) VALUES ('i',1,'stale','t',1,'ordinary','body',0); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('stale','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+    db.execute_batch("UPDATE seats SET generation=2 WHERE id='s'; UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s'; INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,body,decision_at) VALUES ('i',1,'stale','t',1,'ordinary','body',0); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('stale','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
     let CommandResult::InboxBatch(batch) = query(
         &store,
         "i",

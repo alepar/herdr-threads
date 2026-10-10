@@ -252,7 +252,8 @@ fn entry_with_another_binding_supersedes_the_old_row_first() {
     enter(&mut db, "s", 10, UtcMillis(100));
     // The seat's binding is replaced (generation 2); the old row is stale.
     db.execute_batch(
-        "UPDATE occupant_bindings SET ended_at=150 WHERE seat_id='s';\
+        "UPDATE seats SET generation=2 WHERE id='s';\
+         UPDATE occupant_bindings SET ended_at=150 WHERE seat_id='s';\
          INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',2,'pane-s','host',1,'codex','n','exec-s2','cooperative_top_level',0,'tm','inc');",
     )
     .unwrap();
@@ -383,7 +384,8 @@ fn reentry_after_ready_or_supersession_extends_again() {
     // A successor binding (after /clear) supersedes the active row and its
     // entry is eligible too.
     db.execute_batch(
-        "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s';\
+        "UPDATE seats SET generation=2 WHERE id='s';\
+         UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s';\
          INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',2,'pane-s','host',1,'codex','n','exec-s2','cooperative_top_level',0,'tm','inc');",
     )
     .unwrap();

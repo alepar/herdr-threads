@@ -46,14 +46,24 @@ impl CatchUpEndReason {
     }
 }
 
-/// The seat's open binding as `(generation, execution_id)`.
-fn open_binding(conn: &Connection, seat: &SeatId) -> Result<Option<(i64, String)>, ApiError> {
+/// Whether the entry's claim still names the seat: the seat's mapping generation equals the
+/// claim's and some open binding of the seat holds the claim's execution. A seat holds many
+/// bindings (ht-54r.3); a binding's own `generation` is informational, so the fence is
+/// `seats.generation`.
+fn claim_is_current(
+    conn: &Connection,
+    seat: &SeatId,
+    generation: u64,
+    execution: &ExecutionId,
+) -> Result<bool, ApiError> {
+    let Ok(generation) = i64::try_from(generation) else {
+        return Ok(false);
+    };
     conn.query_row(
-        "SELECT generation, execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-        [seat.as_str()],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.generation=?2 AND b.ended_at IS NULL AND b.execution_id=?3)",
+        params![seat.as_str(), generation, execution.as_str()],
+        |r| r.get(0),
     )
-    .optional()
     .map_err(store_error)
 }
 
@@ -78,7 +88,7 @@ fn thread_instance(tx: &Transaction<'_>, thread: &ThreadId) -> Result<String, Ap
 /// Opens the (seat, thread) row or keeps an active one, in the deciding
 /// transaction of a `Summary` that returns Work. Returns the frontier in
 /// force: an active row's F, unchanged, else `entry.frontier_seq`. The entry
-/// claim must equal the seat's open binding (generation and execution); there
+/// claim must name the seat's current mapping generation and an open binding's execution; there
 /// is no child-role gate (spec §7, r3). The entry extension hook runs unless
 /// this is a re-entry after a stall with no block stored since (spec §8,
 /// ht-hqg).
@@ -87,11 +97,7 @@ pub fn enter_or_keep(
     entry: &CatchUpEntry<'_>,
     settings: &SummarySettings,
 ) -> Result<u64, ApiError> {
-    let current = open_binding(tx, entry.seat)?;
-    if current.as_ref().is_none_or(|(generation, execution)| {
-        u64::try_from(*generation).ok() != Some(entry.binding_generation)
-            || execution != entry.execution.as_str()
-    }) {
+    if !claim_is_current(tx, entry.seat, entry.binding_generation, entry.execution)? {
         return Err(api_error(
             ErrorCode::CallerUnverified,
             "catch-up entry requires the seat's current binding",
@@ -240,7 +246,8 @@ fn end_row(
 }
 
 /// Ends (`superseded`) and releases every active row of `seat` whose binding
-/// is no longer the seat's open binding (all of them when none is open).
+/// no longer names an open binding of the seat at its current generation (all of them when
+/// none is open).
 /// Called in the transaction that ends or replaces a binding; never touches
 /// bindings or seats.
 pub fn supersede_stale(
@@ -251,7 +258,7 @@ pub fn supersede_stale(
     let threads: Vec<String> = {
         let mut stmt = tx
             .prepare(
-                "SELECT c.thread_id FROM catch_up c WHERE c.seat_id=?1 AND c.state='active' AND NOT EXISTS (SELECT 1 FROM occupant_bindings b WHERE b.seat_id=c.seat_id AND b.ended_at IS NULL AND b.generation=c.binding_generation AND b.execution_id=c.execution_id) ORDER BY c.thread_id",
+                "SELECT c.thread_id FROM catch_up c WHERE c.seat_id=?1 AND c.state='active' AND NOT EXISTS (SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=c.seat_id AND s.generation=c.binding_generation AND b.ended_at IS NULL AND b.execution_id=c.execution_id) ORDER BY c.thread_id",
             )
             .map_err(store_error)?;
         stmt.query_map([seat.as_str()], |r| r.get(0))
