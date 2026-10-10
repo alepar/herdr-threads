@@ -215,6 +215,79 @@ fn inv0_resume_reattaches_the_seat_by_c1_from_the_first_turn_start() {
     assert!(routine.stdout.is_empty(), "{:?}", routine.stdout);
 }
 
+/// Every file named `name` under `dir` whose parent directory is `adapter-state/agy/conversations`.
+fn conversation_state_files(dir: &Path, name: &std::ffi::OsStr, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            conversation_state_files(&path, name, found);
+        } else if path.file_name() == Some(name)
+            && path
+                .parent()
+                .is_some_and(|parent| parent.ends_with("adapter-state/agy/conversations"))
+        {
+            found.push(path);
+        }
+    }
+}
+
+#[test]
+fn a_resume_of_an_earlier_conversation_with_a_state_file_rebinds_by_c1() {
+    let fx = Fixture::start();
+    home_with(&fx, "clear");
+    let home = home_with(&fx, "resume-stale-lock");
+    system_message(&run(&fx, &home, "SessionStart", "session-start-top"));
+    assert_eq!(live_binding(&fx, TOP), 1);
+    let text = system_message(&run(
+        &fx,
+        &home,
+        "PreInvocation",
+        "pre-invocation-inv0-resume",
+    ));
+    assert!(text.starts_with(LIFECYCLE_PREFIX), "{text}");
+    assert_eq!(live_binding(&fx, RESUME), 1);
+    // A routine turn of RESUME: its pull writes the conversation's delivery-cache file.
+    let routine = run(&fx, &home, "PreInvocation", "pre-invocation-inv0-resume");
+    assert_eq!(routine.code, Some(0), "{}", routine.stderr);
+    assert!(routine.stdout.is_empty(), "{:?}", routine.stdout);
+    let file_name = herdr_threads::harness::agy::paths::conversation_state(Path::new(""), RESUME)
+        .file_name()
+        .unwrap()
+        .to_owned();
+    let mut found = Vec::new();
+    conversation_state_files(&fx.state, &file_name, &mut found);
+    assert_eq!(found.len(), 1, "RESUME's state file: {found:?}");
+    // `/clear` moves the pane to another conversation.
+    system_message(&run(
+        &fx,
+        &home,
+        "SessionStart",
+        "session-start-after-clear",
+    ));
+    assert_eq!(live_binding(&fx, CLEAR), 1);
+    assert_eq!(live_bindings(&fx), 1);
+    let before = generation(&fx);
+    // `agy --conversation RESUME` again: the state file must not make it known.
+    let text = system_message(&run(
+        &fx,
+        &home,
+        "PreInvocation",
+        "pre-invocation-inv0-resume",
+    ));
+    assert!(text.starts_with(LIFECYCLE_PREFIX), "{text}");
+    assert!(
+        text[LIFECYCLE_PREFIX.len()..].starts_with("Use inbox"),
+        "{text}"
+    );
+    assert!(generation(&fx) > before);
+    assert_eq!(live_binding(&fx, RESUME), 1);
+    assert_eq!(live_bindings(&fx), 1);
+    assert!(found[0].exists(), "the fix does not delete the cache file");
+}
+
 #[test]
 fn a_routine_turn_of_the_enrolled_conversation_prints_nothing() {
     let fx = Fixture::start();

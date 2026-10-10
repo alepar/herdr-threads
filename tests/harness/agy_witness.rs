@@ -250,25 +250,20 @@ fn inv0_with_one_step_is_a_startup_or_a_clear() {
 }
 
 #[test]
-fn a_known_conversation_runs_no_glob_and_stays_a_top_level_observer() {
-    let (t, home) = home_with("top-level");
-    let state = t.0.join("state");
-    let file = paths::conversation_state(&state, TOP);
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(&file, b"{}").unwrap();
+fn the_pane_bound_conversation_runs_no_glob_and_stays_a_top_level_observer() {
+    let (_t, home) = home_with("top-level");
     for (name, event) in [
         ("pre-invocation-inv0-fresh", "PreInvocation"),
         ("pre-invocation-inv1", "PreInvocation"),
         ("stop-no-tool-call", "Stop"),
     ] {
-        let mut case = Case::new(&home, None);
-        case.state = Some(&state);
+        let case = Case::new(&home, Some(TOP));
         let input = input(name, event);
         let (evidence, globs, pane_asks) = case.evidence(&input);
-        assert_eq!(globs, 0, "{name}: state file known");
+        assert_eq!(globs, 0, "{name}: the pane-bound conversation is known");
         assert_eq!(
-            pane_asks, 0,
-            "{name}: the pane scan is skipped when the state file answers"
+            pane_asks, 1,
+            "{name}: the pane context is the one witness of a known conversation"
         );
         assert_eq!(
             role(&evidence),
@@ -283,13 +278,6 @@ fn a_known_conversation_runs_no_glob_and_stays_a_top_level_observer() {
             "{name}"
         );
     }
-    // The pane bound to the conversation is the same witness.
-    let bound = Case::new(&home, Some(TOP));
-    let input = input("pre-invocation-inv1", "PreInvocation");
-    let (evidence, globs, _) = bound.evidence(&input);
-    assert_eq!(globs, 0, "P == C");
-    assert_eq!(evidence.lifecycle, None);
-    assert_eq!(intent(&bound.refined(&input)), "observer");
 }
 
 #[test]
@@ -306,27 +294,38 @@ fn an_unknown_routine_turn_checks_the_listing_and_reads_no_lifecycle() {
 }
 
 #[test]
-fn an_oversized_or_symlinked_state_file_does_not_make_a_conversation_known() {
-    let (t, home) = home_with("top-level");
+fn a_state_file_never_makes_a_conversation_known() {
+    let (t, home) = home_with("resume-stale-lock");
     let state = t.0.join("state");
-    let file = paths::conversation_state(&state, TOP);
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    let input = input("pre-invocation-inv1", "PreInvocation");
-    let mut case = Case::new(&home, None);
-    case.state = Some(&state);
-    std::fs::write(&file, vec![b' '; 4097]).unwrap();
-    assert_eq!(case.evidence(&input).1, 1, "4097 bytes is past the bound");
-    std::fs::write(&file, vec![b' '; 4096]).unwrap();
-    assert_eq!(case.evidence(&input).1, 0, "4096 bytes is within it");
-    std::fs::remove_file(&file).unwrap();
-    let target = t.0.join("target");
-    std::fs::write(&target, b"{}").unwrap();
-    std::os::unix::fs::symlink(&target, &file).unwrap();
-    assert_eq!(
-        case.evidence(&input).1,
-        1,
-        "a symlink is not a regular file"
-    );
+    for id in [RESUME, TOP] {
+        let file = paths::conversation_state(&state, id);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"{}").unwrap();
+    }
+    let resume = input("pre-invocation-inv0-resume", "PreInvocation");
+    for pane in [None, Some(TOP)] {
+        let case = Case {
+            state: Some(&state),
+            ..Case::new(&home, pane)
+        };
+        let (evidence, _, _) = case.evidence(&resume);
+        assert_eq!(evidence.lifecycle, Some(EventKind::Resume), "pane {pane:?}");
+        let decoded = case.refined(&resume);
+        assert_eq!(intent(&decoded), "lifecycle:Resume", "pane {pane:?}");
+        assert_eq!(decoded.metadata.context_source, "resume", "pane {pane:?}");
+    }
+    let (_t2, top_home) = home_with("top-level");
+    let case = Case {
+        state: Some(&state),
+        ..Case::new(&top_home, None)
+    };
+    let routine = input("pre-invocation-inv1", "PreInvocation");
+    let (evidence, globs, _) = case.evidence(&routine);
+    assert_eq!(globs, 1, "the listing is checked: the file is no witness");
+    assert_eq!(evidence.lifecycle, None);
+    let decoded = case.refined(&routine);
+    assert_eq!(decoded.role, EventRole::TopLevel);
+    assert_eq!(intent(&decoded), "observer");
 }
 
 #[test]
