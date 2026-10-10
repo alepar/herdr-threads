@@ -1,0 +1,24 @@
+agent_name: seat-recipien
+agent_name_source: seat
+argv: 
+binding.binding_generation: 2
+binding.provenance: managed_launch
+binding.recorded: true
+binding.state: launched, not checked in
+codex: none
+config_dir.path: <root>/claude-config
+config_dir.source: launcher
+handoff.has_more: false
+handoff.pending_invitations: 0
+handoff.pending_receipts: 0
+handoff.threads: []
+harness: claude
+harness_version.admission: contract_declared
+harness_version.binary: <root>/claude
+harness_version.recipe: claude-hooks-2.1.283
+harness_version.version: none
+next: the agent's SessionStart hook shows pending invitations and messages; if its initial prompt is lost, the idle agent is woken for pending work, and `herdr-threads inbox --seat recipient` still lists it
+outcome: started
+pane: w4:p2
+receipt: launch is not receipt: nothing was checked in, accepted or ACKed
+seat: recipient

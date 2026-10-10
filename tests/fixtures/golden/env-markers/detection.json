@@ -1,0 +1,97 @@
+[
+  {
+    "case": "none",
+    "env": [],
+    "exit": 3,
+    "stderr": "herdr-threads: daemon is not running for this state/host context; run `herdr-threads daemon ensure` (host_unavailable)\n",
+    "stdout": ""
+  },
+  {
+    "case": "CLAUDECODE",
+    "env": [
+      [
+        "CLAUDECODE",
+        "1"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "CLAUDECODE-empty",
+    "env": [
+      [
+        "CLAUDECODE",
+        ""
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "CODEX_THREAD_ID",
+    "env": [
+      [
+        "CODEX_THREAD_ID",
+        "thread-1"
+      ]
+    ],
+    "exit": 3,
+    "stderr": "herdr-threads: daemon is not running for this state/host context; run `herdr-threads daemon ensure` (host_unavailable)\n",
+    "stdout": ""
+  },
+  {
+    "case": "CODEX_SANDBOX",
+    "env": [
+      [
+        "CODEX_SANDBOX",
+        "seatbelt"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CODEX_SANDBOX is set). Run them in your own shell pane, or override as the local account with `herdr-threads me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "CODEX_SANDBOX_NETWORK_DISABLED",
+    "env": [
+      [
+        "CODEX_SANDBOX_NETWORK_DISABLED",
+        "1"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CODEX_SANDBOX_NETWORK_DISABLED is set). Run them in your own shell pane, or override as the local account with `herdr-threads me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "CLAUDECODE+CODEX_SANDBOX",
+    "env": [
+      [
+        "CLAUDECODE",
+        "1"
+      ],
+      [
+        "CODEX_SANDBOX",
+        "seatbelt"
+      ]
+    ],
+    "exit": 2,
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stdout": ""
+  },
+  {
+    "case": "CODEX_HOME-only",
+    "env": [
+      [
+        "CODEX_HOME",
+        "/nowhere"
+      ]
+    ],
+    "exit": 3,
+    "stderr": "herdr-threads: daemon is not running for this state/host context; run `herdr-threads daemon ensure` (host_unavailable)\n",
+    "stdout": ""
+  }
+]
