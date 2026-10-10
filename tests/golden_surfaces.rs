@@ -1058,14 +1058,25 @@ impl Topology {
     }
 
     fn seed(paths: &InstancePaths, context: &RuntimeContext, instance: uuid::Uuid) {
+        Self::seed_with_store_clock(paths, context, instance, Arc::new(SystemClock::new()));
+    }
+
+    /// Seeds the instance's store. `store_clock` is the clock the store's
+    /// writer quantum and budgets read; the host call keeps the system clock.
+    /// Returns how many writer turns staged the snapshot's targets.
+    fn seed_with_store_clock(
+        paths: &InstancePaths,
+        context: &RuntimeContext,
+        instance: uuid::Uuid,
+        store_clock: Arc<dyn Clock>,
+    ) -> usize {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let native = NativeCli::new(context.host_endpoint.clone(), clock.clone());
-        let budget = CallBudget {
-            deadline: MonoInstant(clock.monotonic_now().0 + 5000),
-            cancellation: Cancellation::default(),
-        };
         let ctx = HostCallContext {
-            budget: budget.clone(),
+            budget: CallBudget {
+                deadline: MonoInstant(clock.monotonic_now().0 + 5000),
+                cancellation: Cancellation::default(),
+            },
             expected_boot: None,
             expected_epoch: None,
         };
@@ -1076,7 +1087,11 @@ impl Topology {
             )
             .unwrap();
         let observation = observed.observation();
-        let store_context = StoreContext::new(paths.database_path.clone(), clock.clone());
+        let store_context = StoreContext::new(paths.database_path.clone(), store_clock.clone());
+        let budget = CallBudget {
+            deadline: MonoInstant(store_clock.monotonic_now().0 + 5000),
+            cancellation: Cancellation::default(),
+        };
         let db = store_context.open_writer().unwrap();
         db.execute(
             "INSERT INTO host_instances(id,created_at) VALUES(?1,0)",
@@ -1099,15 +1114,26 @@ impl Topology {
                 &budget,
             )
             .unwrap();
-        store
-            .stage_snapshot_targets(
-                &stage.id,
-                0,
-                &snapshot.targets,
-                DurableWorkAdmission::new(16).unwrap(),
-                &budget,
-            )
-            .unwrap();
+        // A writer turn that spends its quantum (a scheduling stall on a
+        // loaded machine) commits only a prefix; stage the rest in the
+        // following turns, as `publish_captured` does.
+        let admission = DurableWorkAdmission::new(16).unwrap();
+        let mut turns = 0;
+        let mut offset = 0usize;
+        while offset < snapshot.targets.len() {
+            let progress = store
+                .stage_snapshot_targets(
+                    &stage.id,
+                    offset as u64,
+                    &snapshot.targets[offset..],
+                    admission,
+                    &budget,
+                )
+                .unwrap();
+            assert!(progress.visited > 0, "a staging turn must advance");
+            offset += usize::from(progress.visited);
+            turns += 1;
+        }
         store.seal_snapshot_stage(&stage.id, &budget).unwrap();
         store.publish_snapshot_stage(&stage.id, &budget).unwrap();
         let execution = uuid::Uuid::new_v4();
@@ -1142,6 +1168,7 @@ impl Topology {
                 role: Role::TopLevel,
             })
             .unwrap();
+        turns
     }
 
     /// The roots, the instance, and the IDs the daemon generated for this
@@ -1284,6 +1311,44 @@ impl Drop for Topology {
         self.daemon.stop();
         self.host.stop_and_join();
     }
+}
+
+/// Advances 10 ms on every read, so the store's 5 ms writer quantum is spent
+/// after each staged target: the stall a loaded machine causes (ht-01s).
+struct SteppingClock(std::sync::atomic::AtomicU64);
+impl Clock for SteppingClock {
+    fn utc_now(&self) -> herdr_threads::protocol::time::UtcMillis {
+        herdr_threads::protocol::time::UtcMillis(0)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(self.0.fetch_add(10, Ordering::AcqRel))
+    }
+}
+
+/// The store ends a staging turn early when its writer quantum is spent (a
+/// scheduling stall), committing only a prefix of the targets. The fixture
+/// must stage the remainder in following turns, as `publish_captured` does,
+/// or sealing fails with "snapshot target set incomplete" on a loaded machine.
+#[test]
+fn seeding_stages_the_rest_after_a_spent_writer_quantum() {
+    let iso = TestIsolation::new("golden-seed");
+    let socket = iso.socket_path("host.sock");
+    let _host = Host::start(&socket);
+    let state = iso.path("state");
+    fs::create_dir_all(&state).unwrap();
+    let context = RuntimeContext::explicit(state, socket, None).unwrap();
+    let paths = InstancePaths::resolve(&context).unwrap();
+    let owner = OwnerLock::acquire(&paths).unwrap();
+    let instance = owner.instance_uuid();
+    drop(owner);
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock(std::sync::atomic::AtomicU64::new(1)));
+    let turns = Topology::seed_with_store_clock(&paths, &context, instance, clock);
+    let db = Connection::open(&paths.database_path).unwrap();
+    let staged: i64 = db
+        .query_row("SELECT count(*) FROM snapshot_targets", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(staged, 3, "the fake host's three panes are all staged");
+    assert_eq!(turns, 3, "one target fits each spent-quantum turn");
 }
 
 #[test]
