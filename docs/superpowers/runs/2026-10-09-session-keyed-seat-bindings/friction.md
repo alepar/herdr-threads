@@ -3,3 +3,7 @@
 - [2026-10-10] coverage r1: reviewer prompt (16 KB) passed by file path (one Read) instead of inline, to keep orchestrator context; template says no tool calls.
 - [2026-10-10] design roast r1: rung Workflow (super-roast engine via assemble-args --script).
 - [2026-10-10] account switch: coordinator stopped mid-round (user-authorized handoff to aisw claude-2); ht-54r.3 in-flight work kept as WIP commit on its task branch; relaunch with resumeFromRunId wf_c01646a6-b33.
+- [2026-10-10] resumed under aisw claude-2: coordinator relaunched with resumeFromRunId; psa-global not found for seat sk8JoyBoJ (no thread, no invitation).
+- [2026-10-10] super-code resume: resumeFromRunId replayed pre-fan-out calls and re-split an already-merged task (reopened ht-54r.1, new review bead ht-54r.28, spurious merge→blocker); session closed them by hand. Coordinator should check already-merged before re-splitting on replay.
+- [2026-10-10] super-code: resumeFromRunId after a mid-round stop replayed a stale round and returned ready-drained with work ready; fresh relaunch used instead.
+- [2026-10-10] user-requested pause (account switch suspected not effective): .7 merge refused by the permission layer under the switched profile; .22 blocked on an 8-file rebase with migration renumbering; .5 WIP saved; coordinator stopped.
