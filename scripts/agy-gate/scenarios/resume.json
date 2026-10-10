@@ -1,0 +1,12 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "resume",
+  "aux_text": "Gate resume title",
+  "default": {"text": "RESUME-UNEXPECTED"},
+  "steps": [
+    {"label": "a1", "match": {"contains": ["ALPHA-ONE"]}, "reply": {"text": "A1-OK"}},
+    {"label": "b1", "match": {"contains": ["BRAVO-ONE"]}, "reply": {"text": "B1-OK"}},
+    {"label": "a2", "match": {"contains": ["ALPHA-TWO"]}, "reply": {"text": "A2-OK"}},
+    {"label": "a3", "match": {"contains": ["ALPHA-THREE"]}, "reply": {"text": "A3-OK"}}
+  ]
+}
