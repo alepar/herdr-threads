@@ -20,6 +20,8 @@ roast-design: 2026-10-10-agy-harness-adapter-roast-design-1.md, 2026-10-10-agy-h
 stepBackDesign-round-1: patch — two findings share one cause (transcript-confirm read only at next PreInvocation; Stop used only for error-string detection); cluster C1 rule applied in root + subspecs; executable-identity source patched separately
 
 
+baseAbsorbed: f3431b31 → d342add2, 14 conflicted files (main v0.6.0 absorbed mid-phase-3: remaining agy delivery work depends on main's lazy hook delivery and permission core; follow-ups ht-poh.16, ht-poh.17, ht-poh.18)
+
 codeBuckets:
   completed: ht-poh.7, ht-poh.1, ht-poh.6.1, ht-poh.6.3, ht-poh.9, ht-poh.6.2, ht-poh.3.1, ht-poh.2.7, ht-poh.3.5, ht-poh.3.2, ht-poh.2.1, ht-poh.2.5, ht-poh.2.6, ht-poh.3.3, ht-poh.2.3, ht-poh.3.7, ht-poh.2.2, ht-poh.3.6, ht-poh.2.4, ht-poh.4.1, ht-poh.8, ht-poh.3.4, ht-poh.2.8, ht-poh.4.2, ht-poh.4.4, ht-poh.4.3, ht-poh.6.5, ht-poh.4.6, ht-poh.4.7, ht-poh.4.8, ht-poh.6.4
   escalated: ht-poh.4.5, ht-poh.13
