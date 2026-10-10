@@ -31,7 +31,8 @@ use std::io::{self, Write};
 /// 6: canonical compound handoff fences and the quiet-channel lifecycle lane.
 ///    The mod watch connection (`protocol::watch`) rides version 6 behind
 ///    capability `mod.watch_v1`.
-pub const PROTOCOL_VERSION: u16 = 6;
+/// 7: session-keyed binding claims: CallerClaim gains optional agent_id and liveness fingerprint (ht-54r).
+pub const PROTOCOL_VERSION: u16 = 7;
 pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -1954,6 +1954,8 @@ fn current_main_registered_original_caller_preserves_bootstrap_and_delivery_clai
         harness: hermes,
         native_session: NativeSessionId::new("session"),
         execution: ExecutionId::new(execution),
+        agent_id: None,
+        liveness: None,
     };
     let setup = f.cli(
         &["setup", "codex", "--harness-binary", "/usr/bin/true"],
@@ -2169,6 +2171,8 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
         native_session: NativeSessionId::new("session"),
         execution: ExecutionId::new(execution),
         target: HostTargetId::new("w4:p1"),
+        agent_id: None,
+        liveness: None,
     };
     let payload = BootstrapPayload {
         handoff: HandoffPayload {

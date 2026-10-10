@@ -434,6 +434,8 @@ fn probe_mod_watch() {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("e"),
             target: HostTargetId::new("p"),
+            agent_id: None,
+            liveness: None,
         },
     };
     let refusal = domain
@@ -1123,6 +1125,8 @@ fn probe_invitation_reject() {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("e"),
             target: HostTargetId::new("w1:p1"),
+            agent_id: None,
+            liveness: None,
         },
     });
     assert!(command.validate().is_ok());
@@ -1571,6 +1575,8 @@ fn probe_thread_join() {
             native_session: crate::protocol::ids::NativeSessionId::new("n"),
             execution: crate::protocol::ids::ExecutionId::new("e"),
             target: crate::protocol::ids::HostTargetId::new("w1:p1"),
+            agent_id: None,
+            liveness: None,
         },
     });
     assert!(command.validate().is_ok());

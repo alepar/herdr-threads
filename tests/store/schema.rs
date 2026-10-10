@@ -4027,7 +4027,8 @@ fn v8_upgrade_rebuilds_occupant_bindings_to_accept_a_human_occupant() {
     );
     assert_eq!(rows(&db), before);
     for index in [
-        "occupant_bindings_current",
+        "occupant_bindings_open",
+        "occupant_bindings_session_key",
         "occupant_bindings_history",
         "occupant_bindings_execution",
     ] {
@@ -4339,7 +4340,7 @@ fn b1_indexes_are_usable_by_name() {
         "SELECT source_ordinal FROM digest_open_warning_recipients INDEXED BY digest_open_warning_recipients_seat WHERE seat_id=?1 AND source=?2 AND source_ordinal>?3 ORDER BY source_ordinal LIMIT 1",
         "SELECT source_ordinal FROM digest_open_warnings INDEXED BY digest_open_warnings_affected WHERE affected_seat_id=?1 AND source=?2 AND source_ordinal>?3 ORDER BY source_ordinal LIMIT 1",
         "SELECT ordinal FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2 ORDER BY ordinal LIMIT 1",
-        "SELECT ordinal FROM occupant_bindings INDEXED BY occupant_bindings_current WHERE seat_id=?1 AND ended_at IS NULL",
+        "SELECT ordinal FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=?1 AND ended_at IS NULL",
     ] {
         db.prepare(probe).unwrap_or_else(|e| panic!("{probe}: {e}"));
     }
@@ -5497,6 +5498,8 @@ fn adapter_historical_database(version: usize) -> Connection {
         include_str!("../../migrations/0024_harness_contract_diagnostics.sql"),
         include_str!("../../migrations/0025_warning_notice_delivery.sql"),
         include_str!("../../migrations/0026_lazy_message_delivery.sql"),
+        include_str!("../../migrations/0027_harness_adapters.sql"),
+        include_str!("../../migrations/0028_handoff_topology.sql"),
     ];
     // Tests start from several versions: replay each step of the chain at
     // most once per test process, keep the image after every prefix, and
@@ -5740,8 +5743,10 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
     );
     // Forward24 intentionally rebuilds these three tables and adds three evidence tables.
     // Every other historical table must retain its original root page.
+    // V29 adds binding_cursors; occupant_bindings is rebuilt again by V29.
     let adapter_tables = [
         "occupant_bindings",
+        "binding_cursors",
         "harness_version_evidence",
         "harness_unattributed",
         "harness_runtime_identities",
@@ -6179,6 +6184,247 @@ fn binding_archival_guards(db: &Connection) -> Vec<(String, String)> {
         .query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect()
 }
 
+fn v28_binding_fixture() -> Connection {
+    let db = adapter_historical_database(28);
+    db.execute_batch("
+      INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('i',0,30);
+      INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES
+        ('agent','i','resolved','native',3,0),('human','i','resolved','native',1,0),
+        ('launch','i','resolved','native',1,0),('plugin','i','resolved','native',1,0),('idle','i','resolved','native',1,0);
+      INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES
+        ('t','i','topic','goal',0,0),('u','i','topic2','goal',0,0),('empty','i','topic3','goal',0,0);
+      INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES
+        ('t','agent','joined',1),('u','agent','joined',1),('empty','agent','joined',1),
+        ('t','human','joined',1),('u','launch','left',1);
+      INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES
+        ('i','m1','t',1,'ordinary','b',1,1),('i','m2','t',2,'ordinary','b',2,2),('i','m3','u',1,'ordinary','b',3,3);
+      -- repeated ended rows for one session, then the open row (r1 acceptance)
+      INSERT INTO occupant_bindings(ordinal,seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,terminal_id,incarnation) VALUES
+        (1,'agent',1,'p1','b',0,'claude','sess-A','e1','cooperative_top_level',10,10,20,'term','inc'),
+        (2,'agent',2,'p1','b',0,'claude','sess-A','e2','cooperative_top_level',20,20,30,'term','inc'),
+        (3,'agent',3,'p1','b',0,'claude','sess-A','e3','cooperative_top_level',30,30,NULL,'term','inc'),
+        (4,'human',1,'p2','b',0,'human','human','human','operator_human',5,5,NULL,'term','inc'),
+        (5,'launch',1,'p3','b',0,'codex','launch:x','launch:x','managed_launch',6,NULL,NULL,'term','inc'),
+        (9,'plugin',1,'p4','b',0,'codex','plugin_context:00000000-0000-4000-8000-000000000009','e9','cooperative_top_level',7,7,NULL,'term','inc');
+      UPDATE sqlite_sequence SET seq=50 WHERE name='occupant_bindings';
+    ").unwrap();
+    db
+}
+
+#[test]
+fn v28_upgrade_migrates_bindings_to_session_keyed_v29() {
+    let db = v28_binding_fixture();
+    let guards = binding_archival_guards(&db);
+    schema::initialize(&db, || UtcMillis(777)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        29
+    );
+    assert_eq!(schema::LATEST_VERSION, 29);
+    // ordinals, sequence and archival guards survive the rebuild
+    assert_eq!(
+        db.query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name='occupant_bindings'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        50
+    );
+    assert_eq!(binding_archival_guards(&db), guards);
+    type Row = (
+        i64,
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<String>,
+        i64,
+        Option<String>,
+        Option<i64>,
+    );
+    let rows: Vec<Row> = db.prepare("SELECT ordinal,role,agent_id,liveness,disconnected_at,disconnect_reason,migrated,migrated_session,ended_at FROM occupant_bindings ORDER BY ordinal").unwrap()
+        .query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                1,
+                "top_level".into(),
+                "".into(),
+                "disconnected".into(),
+                Some(20),
+                Some("migrated".into()),
+                0,
+                None,
+                Some(20)
+            ),
+            (
+                2,
+                "top_level".into(),
+                "".into(),
+                "disconnected".into(),
+                Some(30),
+                Some("migrated".into()),
+                0,
+                None,
+                Some(30)
+            ),
+            (
+                3,
+                "top_level".into(),
+                "".into(),
+                "disconnected".into(),
+                Some(777),
+                Some("migrated".into()),
+                1,
+                Some("sess-A".into()),
+                None
+            ),
+            (
+                4,
+                "top_level".into(),
+                "".into(),
+                "connected".into(),
+                None,
+                None,
+                0,
+                None,
+                None
+            ),
+            (
+                5,
+                "top_level".into(),
+                "".into(),
+                "disconnected".into(),
+                Some(777),
+                Some("migrated".into()),
+                1,
+                None,
+                None
+            ),
+            (
+                9,
+                "top_level".into(),
+                "".into(),
+                "disconnected".into(),
+                Some(777),
+                Some("migrated".into()),
+                1,
+                None,
+                None
+            ),
+        ]
+    );
+    // every row has a distinct non-empty binding id; no fingerprints were invented
+    assert_eq!(
+        db.query_row(
+            "SELECT count(DISTINCT binding_id), count(*), count(liveness_pid) FROM occupant_bindings",
+            [],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        )
+        .unwrap(),
+        (6, 6, 0)
+    );
+    // one cursor per (open binding, joined thread) at the thread head; none for left memberships or ended rows
+    let cursors: Vec<(i64, String, i64)> = db.prepare("SELECT b.ordinal,c.thread_id,c.seq FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id ORDER BY b.ordinal,c.thread_id").unwrap()
+        .query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(
+        cursors,
+        vec![
+            (3, "empty".into(), 0),
+            (3, "t".into(), 2),
+            (3, "u".into(), 1),
+            (4, "t".into(), 2)
+        ]
+    );
+    // new attribution columns exist and are NULL for history
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM messages WHERE sender_binding_id IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM pragma_table_info('receipts') WHERE name='ack_binding_id'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    // reopening audits the V29 shape without migrating again
+    schema::initialize(&db, || UtcMillis(999)).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT disconnected_at FROM occupant_bindings WHERE ordinal=3",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        777
+    );
+}
+
+#[test]
+fn v29_session_key_is_unique_only_among_open_rows() {
+    let db = v28_binding_fixture();
+    schema::initialize(&db, || UtcMillis(1)).unwrap();
+    let insert = |generation: i64, session: &str, agent: &str, ended: Option<i64>| {
+        db.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at,agent_id,terminal_id,incarnation) VALUES ('agent',?1,'p1','b',0,'claude',?2,'e','cooperative_top_level',1,?3,?4,'term','inc')",
+        rusqlite::params![generation, session, ended, agent])
+    };
+    assert!(insert(3, "sess-A", "", None).is_err()); // same open key: refused
+    assert!(insert(3, "sess-A", "", Some(5)).is_ok()); // ended duplicate, same generation: fine
+    assert!(insert(3, "sess-B", "", None).is_ok()); // second open binding on one seat
+    assert!(insert(3, "sess-B", "agent-1", None).is_ok()); // subagent key differs by agent id
+}
+
+#[test]
+fn v29_fresh_matches_upgraded_catalog() {
+    let upgraded = v28_binding_fixture();
+    schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
+    let fresh = fresh_db();
+    let catalog = |db: &Connection| {
+        db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
+        .query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('"', "")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+    };
+    assert_eq!(catalog(&upgraded), catalog(&fresh));
+}
+
+#[test]
+fn v29_startup_rejects_missing_or_altered_binding_objects() {
+    for alteration in [
+        "DROP INDEX occupant_bindings_session_key",
+        "DROP INDEX occupant_bindings_open",
+        "DROP INDEX binding_cursors_thread",
+        "DROP TABLE binding_cursors",
+        "DROP INDEX occupant_bindings_session_key; CREATE INDEX occupant_bindings_session_key ON occupant_bindings(seat_id, harness, native_session, agent_id) WHERE ended_at IS NULL",
+    ] {
+        let db = fresh_db();
+        db.execute_batch(alteration).unwrap();
+        assert_eq!(
+            schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+            ErrorCode::IncompatibleSchema,
+            "{alteration}"
+        );
+    }
+}
+
 // Catches an altered current table or missing retention index accepted at v24.
 #[test]
 fn task3_versionless_schema24_rejects_altered_table_and_missing_index() {
@@ -6252,13 +6498,16 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
             .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('\"',"")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
         };
         assert_eq!(catalog(&db), catalog(&fresh));
+        // V29 deltas: +1 table (binding_cursors); indexes -occupant_bindings_current,
+        // +occupant_bindings_session_key, +occupant_bindings_open, +binding_cursors_thread
+        // (net +2); triggers are recreated one for one.
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            74
+            75
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            139
+            141
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),

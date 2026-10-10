@@ -910,6 +910,8 @@ mod contract_tests {
                 native_session: NativeSessionId::new("native-1"),
                 execution: ExecutionId::new("execution-1"),
                 target: HostTargetId::new("target-1"),
+                agent_id: None,
+                liveness: None,
             },
         };
         assert_eq!(

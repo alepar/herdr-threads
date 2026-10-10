@@ -21,6 +21,8 @@ pub(super) fn identity() -> HandoffIdentity {
             harness: Harness::Codex,
             native_session: NativeSessionId::new("session"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
+            agent_id: None,
+            liveness: None,
         },
         thread: Some(ThreadId::new("t")),
         recipient: SeatId::new("s"),
@@ -412,7 +414,7 @@ fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_withou
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        28
+        29
     );
     let tx = db.transaction().unwrap();
     let imported = handoff::import_hint(&tx, &id, None, "legacy22", UtcMillis(100)).unwrap();

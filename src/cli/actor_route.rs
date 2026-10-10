@@ -43,7 +43,8 @@ pub(crate) fn command_index(argv: &[OsString]) -> Option<usize> {
             | "--cooperative-seat"
             | "--cooperative-target"
             | "--cooperative-harness"
-            | "--cooperative-role" => index += 2,
+            | "--cooperative-role"
+            | "--agent-id" => index += 2,
             _ if [
                 "--state-dir=",
                 "--host-endpoint=",
@@ -51,6 +52,7 @@ pub(crate) fn command_index(argv: &[OsString]) -> Option<usize> {
                 "--cooperative-target=",
                 "--cooperative-harness=",
                 "--cooperative-role=",
+                "--agent-id=",
             ]
             .iter()
             .any(|flag| token.starts_with(flag)) =>

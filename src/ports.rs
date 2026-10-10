@@ -3342,6 +3342,21 @@ pub trait ModChannelSink: Send + Sync {
     fn push(&self, frame: crate::protocol::watch::WatchFrame) -> bool;
 }
 
+/// One process as the host reports it (ancestry walk and liveness re-check).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessRecord {
+    pub pid: u32,
+    pub parent: Option<u32>,
+    /// Opaque OS start stamp; see `LivenessFingerprint`.
+    pub start: u64,
+    /// argv as reported by the host (argv[0] first); may be empty when unreadable.
+    pub argv: Vec<String>,
+}
+/// Read-only view of the host process table. `None`: no such process (or unreadable).
+pub trait ProcessInfo: Send + Sync {
+    fn process(&self, pid: u32) -> Option<ProcessRecord>;
+}
+
 /// The registry of live mod delivery channels (spec D2, D7). Every method has
 /// a no-op default; the defaults ARE the inert behaviour ([`NoModChannels`]).
 pub trait ModChannels: Send + Sync {
@@ -3386,6 +3401,12 @@ pub trait ModChannels: Send + Sync {
     /// alike, whatever its binding generation. Consumers: the wake candidate
     /// path and pokes (scheduler `mod_suppressed`) and the Claude hook digest
     /// flag (`mod_channel_live`). The default answers from `status()`.
+    /// Binding-keyed liveness of the mod channel (spec §3). Contract stub over today's
+    /// seat-keyed registry; ht-54r.12 keys the registry by binding and overrides this.
+    fn binding_live(&self, seat: &SeatId, binding: &crate::protocol::ids::BindingId) -> bool {
+        let _ = binding;
+        self.seat_live(seat)
+    }
     fn seat_live(&self, seat: &SeatId) -> bool {
         self.status()
             .is_some_and(|status| status.channels.iter().any(|entry| &entry.seat == seat))

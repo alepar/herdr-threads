@@ -386,8 +386,7 @@ fn claim() -> crate::protocol::authority::CallerClaim {
         harness: Harness::Codex,
         native_session: NativeSessionId::new("native-1"),
         execution: ExecutionId::new("execution-1"),
-        target: HostTargetId::new("pane-1"),
-    }
+        target: HostTargetId::new("pane-1"), agent_id: None, liveness: None, }
 }
 
 #[test]
@@ -2440,4 +2439,58 @@ fn adapters_discovery_refuses_invalid_provider_before_daemon_dispatch() {
     let registry=Registry::new(Box::leak(vec![Registration::new(&BAD)].into_boxed_slice())).unwrap();
     let parsed=parse_argv(["ht","adapters","--json"]).unwrap();
     assert!(adapter_discovery_output(&parsed,&registry).is_err());
+}
+
+#[test]
+fn agent_id_global_parses_in_both_forms_and_changes_nothing_else() {
+    let base = parse_argv(["herdr-threads", "thread", "list"]).unwrap();
+    assert_eq!(base.agent_id, None);
+    for argv in [
+        vec!["herdr-threads", "--agent-id=agent-7", "thread", "list"],
+        vec!["herdr-threads", "--agent-id", "agent-7", "thread", "list"],
+        vec!["herdr-threads", "thread", "list", "--agent-id", "agent-7"],
+    ] {
+        let parsed = parse_argv(argv.clone()).unwrap();
+        assert_eq!(
+            parsed.agent_id,
+            Some(crate::protocol::ids::AgentId::new("agent-7")),
+            "{argv:?}"
+        );
+        assert_eq!(parsed.action, base.action, "{argv:?}");
+        assert_eq!(parsed.cooperative, base.cooperative);
+    }
+}
+
+#[test]
+fn agent_id_rejects_invalid_values_and_the_human_namespace() {
+    assert!(parse_argv(["herdr-threads", "--agent-id=", "thread", "list"]).is_err());
+    assert!(parse_argv(["herdr-threads", "--agent-id", "has space", "thread", "list"]).is_err());
+    assert!(parse_argv(["herdr-threads", "human", "--agent-id", "a1", "thread", "list"]).is_err());
+}
+
+#[test]
+fn stamp_agent_id_sets_only_the_claim_agent_id() {
+    use crate::protocol::{authority::*, ids::*};
+    let parsed = parse_argv(["herdr-threads", "--agent-id=a1", "thread", "list"]).unwrap();
+    let claim = CallerClaim {
+        instance: "i".into(),
+        seat: SeatId::new("s"),
+        binding_generation: 0,
+        role: CallerRole::TopLevel,
+        harness: Harness::Codex,
+        native_session: NativeSessionId::new("n"),
+        execution: ExecutionId::new("e"),
+        target: HostTargetId::new("p"),
+        agent_id: None,
+        liveness: None,
+    };
+    let stamped = parsed.stamp_agent_id(claim.clone());
+    assert_eq!(stamped.agent_id, Some(AgentId::new("a1")));
+    assert_eq!(stamped.role, claim.role);
+    assert_eq!(
+        parse_argv(["herdr-threads", "thread", "list"])
+            .unwrap()
+            .stamp_agent_id(claim.clone()),
+        claim
+    );
 }

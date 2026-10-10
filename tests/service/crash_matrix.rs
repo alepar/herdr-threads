@@ -213,6 +213,8 @@ impl Matrix {
             native_session: NativeSessionId::new(format!("plugin_context:{seat}")),
             execution: ExecutionId::new(format!("00000000-0000-4000-8000-{n:012}")),
             target: HostTargetId::new(seat),
+            agent_id: None,
+            liveness: None,
         };
         self.lifecycle(claim, &format!("checkin-{seat}-{n}"))
     }
@@ -1829,6 +1831,8 @@ impl Matrix {
                 native_session: NativeSessionId::new(format!("plugin_context:{pane}")),
                 execution: ExecutionId::new(execution),
                 target: HostTargetId::new(pane),
+                agent_id: None,
+                liveness: None,
             };
             claims.push(self.lifecycle(claim, &format!("checkin-{pane}")));
         }
@@ -2417,6 +2421,8 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
         native_session: NativeSessionId::new("plugin_context:pane-u"),
         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
         target: HostTargetId::new("pane-u"),
+        agent_id: None,
+        liveness: None,
     };
     let cli = m.cli_seat(&u);
     let operator_ops = || {

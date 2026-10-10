@@ -1043,6 +1043,9 @@ impl Command {
             Self::Archive(v) | Self::Reopen(v) => Some(&v.claim),
             _ => None,
         };
+        if let Some(claim) = claim {
+            claim.validate_binding_fields()?;
+        }
         if claim.is_some_and(|v| v.role == crate::protocol::authority::CallerRole::Subagent) {
             return Err("declared subagents cannot perform accountable operations");
         }

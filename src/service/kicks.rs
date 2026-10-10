@@ -132,6 +132,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "bootstrap_attachments",
     "bootstrap_reports",
     "allocation_decisions",
+    // Per-binding read cursors (ht-54r.1): inert until ht-54r.7 reads them; kicks are
+    // classified with their delivery behaviour.
+    "binding_cursors",
     "delivery_observations",
     "digest_notice_offer",
     "digest_open_warning_recipients",

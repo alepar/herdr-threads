@@ -145,6 +145,8 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("human"),
         execution: ExecutionId::new("execution"),
         target: HostTargetId::new("w1:p1"),
+        agent_id: None,
+        liveness: None,
     }
 }
 fn request() -> HandoffRequest {

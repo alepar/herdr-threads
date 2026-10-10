@@ -132,6 +132,8 @@ impl Fx {
             native_session: NativeSessionId::new(format!("n{seat}")),
             execution: ExecutionId::new(format!("e{seat}")),
             target: HostTargetId::new(format!("pane-{seat}")),
+            agent_id: None,
+            liveness: None,
         }
     }
 

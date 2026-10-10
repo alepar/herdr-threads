@@ -558,6 +558,8 @@ impl DomainService {
                     native_session: binding.native_session.clone(),
                     execution: binding.execution.clone(),
                     target: binding.target.clone(),
+                    agent_id: None,
+                    liveness: None,
                 },
                 ..request.clone()
             }
@@ -1084,6 +1086,8 @@ mod operator_tests {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("e"),
             target: HostTargetId::new("p"),
+            agent_id: None,
+            liveness: None,
         };
         let budget = || CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5000),
@@ -1168,6 +1172,8 @@ mod operator_tests {
                         native_session: NativeSessionId::new("n"),
                         execution: ExecutionId::new("e"),
                         target: HostTargetId::new("p"),
+                        agent_id: None,
+                        liveness: None,
                     },
                 }),
                 PeerIdentity::from_kernel(501),

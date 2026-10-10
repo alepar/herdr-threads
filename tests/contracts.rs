@@ -374,6 +374,8 @@ fn registration_request_binds_operation_and_selected_offer_context() {
                 native_session: NativeSessionId::new("n"),
                 execution: ExecutionId::new("e"),
                 target: HostTargetId::new("p"),
+                agent_id: None,
+                liveness: None,
             },
             operation: OperationId::new("op"),
         },
@@ -1737,6 +1739,8 @@ fn operator_boundary_only_accepts_three_administrative_commands() {
             native_session: NativeSessionId::new("n1"),
             execution: ExecutionId::new("e1"),
             target: HostTargetId::new("p1"),
+            agent_id: None,
+            liveness: None,
         },
     });
     assert!(OperatorCommand::try_from(native).is_err());

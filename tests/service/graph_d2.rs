@@ -314,8 +314,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
             role: CallerRole::TopLevel, harness: Harness::Codex,
             native_session: NativeSessionId::new("plugin_context:pending"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000111"),
-            target: HostTargetId::new("pane-pending"),
-        };
+            target: HostTargetId::new("pane-pending"), agent_id: None, liveness: None, };
         let checked = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
             mode: CheckInMode::Lifecycle { expected_binding_generation: 0 },
             claim: native, operation: OperationId::new("native-check-in"),
@@ -394,8 +393,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
             role: CallerRole::TopLevel, harness: Harness::Codex,
             native_session: NativeSessionId::new("plugin_context:member-1"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000112"),
-            target: HostTargetId::new("pane-member-1"),
-        };
+            target: HostTargetId::new("pane-member-1"), agent_id: None, liveness: None, };
         let checked_recipient = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
             mode: CheckInMode::Lifecycle { expected_binding_generation: 1 },
             claim: recipient_claim, operation: OperationId::new("recipient-check-in"),

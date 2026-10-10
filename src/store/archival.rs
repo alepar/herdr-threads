@@ -565,6 +565,8 @@ pub(crate) fn observation_ticket_with_registry(
         native_session: NativeSessionId::new(session),
         execution: ExecutionId::new(execution),
         target: HostTargetId::new(target),
+        agent_id: None,
+        liveness: None,
     };
     if runtime_boot != rt.boot {
         return Ok(None);

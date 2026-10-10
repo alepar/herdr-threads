@@ -28,6 +28,8 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("session-secret"),
         execution: ExecutionId::new("execution-secret"),
         target: HostTargetId::new("target-secret"),
+        agent_id: None,
+        liveness: None,
     }
 }
 fn send() -> SemanticMutation {
