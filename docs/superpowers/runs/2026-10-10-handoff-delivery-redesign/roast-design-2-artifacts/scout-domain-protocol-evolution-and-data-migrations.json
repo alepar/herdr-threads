@@ -1,0 +1,7 @@
+{
+  "findings": [],
+  "priorAssessment": {
+    "R1-1": "resolved: settled-input.md, root Confirmed roast refinements and receipt/invitation refinements, now specifies a 5,000ms safety tick, 100-candidate per-drive cap, immediate successful-progress continuation, fair finite high-water cursors unaffected by continuing arrivals, and native wake independence. It supplies the conditional finite discovery bound 5,000ms + (2*ceil(N/100)+2)*Q, explicit outage/error/overload limits, restart reconstruction, and >=250-candidate tests for each class with blocked wakes, future/due rows, arrivals and restart. Task-tree ht-0lo.1.2/.2.2 carry the contract in descriptions and acceptance criteria; ht-0lo.1.3 requires multi-batch historical upgrade discovery.",
+    "R1-4": "resolved: settled-input.md, root/receipt/handoff Confirmed roast refinements, explicitly defines messages.send_time_receipts_v1 and requires modern clients to discover it before every new ACK-required ordinary send or handoff durable/native effect. Unsupported discovery refuses without legacy fallback; CLI and service-capable sends are included. Upgraded daemons apply canonical semantics to old client requests; lazy/human exemptions and immutable completed historical replays remain explicit. Task-tree ht-0lo.1.1 owns the capability and mixed-version fixtures in its description and acceptance criteria, while ht-0lo.3.2 consumes it and tests refusal before staging/launch. Pending historical retries on unsupported daemons refuse before additional effects."
+  }
+}

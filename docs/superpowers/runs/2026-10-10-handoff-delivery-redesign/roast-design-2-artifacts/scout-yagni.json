@@ -1,0 +1,7 @@
+{
+  "findings": [],
+  "priorAssessment": {
+    "R1-1": "resolved: settled-input.md root Confirmed roast refinements (also receipts/invitations refinements and ht-0lo.1.2/ht-0lo.2.2 descriptions and acceptance) specifies a 5,000ms safety tick, 100-candidate drive cap, immediate continuation, fair stable finite high-water cursors that continuing arrivals cannot starve, and native-wake-independent progress. It states the conditional finite-snapshot detection bound 5,000ms + (2*ceil(N/100)+2)*Q and explicitly excludes outages, repeated errors, unbounded overload and native submission. Required early tests cover at least 250 candidates in EACH class, blocked wakes, continuing arrivals, restart and historical multi-batch discovery. This closes the prior missing progress/latency contract at design level.",
+    "R1-4": "resolved: settled-input.md root/receipts/handoff Confirmed roast refinements and ht-0lo.1.1 description/acceptance require messages.send_time_receipts_v1 before every new ACK-required ordinary send or handoff durable/native effect, with explicit unsupported-daemon refusal and no legacy fallback. Capability advertisement depends on active canonical projection and ordinary-send handlers; all CLI and service-capable client sends promising the contract are covered. Old-client/new-daemon semantics, lazy/human exemptions, retained historical results and pending-retry refusal are specified, with mixed-version capability fixtures. ht-0lo.3.2 explicitly consumes the capability before staging/launch."
+  }
+}

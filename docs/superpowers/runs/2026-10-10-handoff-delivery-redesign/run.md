@@ -20,4 +20,7 @@ approvals:
 - top-split · ht-0lo.1 PROMOTE, ht-0lo.2 PROMOTE, ht-0lo.3 PROMOTE, ht-0lo.4 PROMOTE, ht-0lo.5 LEAF, ht-0lo.6 LEAF (closed design fix), ht-0lo.7 LEAF (closed design fix) · exact updated child set accepted under explicit fully autonomous user delegation
 
 roastDesignRound: 2
-roast-design: 2026-10-10-handoff-delivery-redesign-roast-design-1.md
+roast-design: 2026-10-10-handoff-delivery-redesign-roast-design-1.md, 2026-10-10-handoff-delivery-redesign-roast-design-2.md
+
+parked:
+- 2026-10-10-handoff-delivery-redesign-roast-design-2.md · degraded-verdict · "clean (0 nits) [low coverage] — proceeded, not re-roasted under caller-owned fully autonomous exception; sole cause literal zero-raw rule despite all nine fresh scouts completed and both prior Blockings resolved; no dead stages, caps, escalations or unverified findings"

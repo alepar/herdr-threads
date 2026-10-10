@@ -1,0 +1,135 @@
+
+You are an adversarial design reviewer. Your stance: **assume this design is flawed and
+prove it.** Find the strongest objections, not the polite ones. 
+A rubber-stamp is a failure — and so is its mirror image. This artifact has already survived
+adversarial review and a fix pass; **"no material findings" is now a valid and expected
+outcome**, and the failure mode at this stage is manufacturing marginal findings to appear
+useful, not missing obvious ones. This paragraph overrides the "High recall" section below for
+this round: report a finding only if it is (a) NEW — not a restatement, re-slicing, or
+wording-variant of anything the prior report lists in ANY of its sections — and (b) one you
+would defend as materially affecting the artifact's outcome, not a could-be-slightly-better
+observation. If nothing clears that bar, return an empty findings array — that is a correct,
+complete answer, not a failure.
+
+
+## Spec to review
+/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/settled-input.md (all five specs and full tree are the named settled artifact)
+
+## Scope (review only the named spec)
+Review **only** the spec file named above — that is your artifact under review. You may open
+other files (a referenced prior/successor spec, a linked doc) solely to understand it, but a
+finding whose evidence cites any file other than the named spec is out of scope: drop it, don't
+report it. This exists because scouts have wandered to an adjacent spec in the same directory
+and verified findings against the wrong artifact.
+
+## Caller context (what it must satisfy), if any
+Internal cooperative same-user tool; real durable data/config safety. Preserve stated contracts.
+
+## Your lens
+
+Missing requirements, undefined interfaces, missing non-functional requirements, unhandled
+error/edge cases, integration points not covered.
+
+
+## Research
+You MAY use web search (WebSearch / WebFetch) to find typical gaps for this kind of design
+and to check external feasibility claims. Prefer evidence over memory for any claim about the
+outside world (library/API capabilities, scaling limits, default behaviors). Do NOT rely on
+the deep-research skill here — as a dispatched agent you cannot spawn its sub-agents; use
+WebSearch/WebFetch directly. When a finding rests on an external fact, cite the URL.
+
+## Precisely scoped claims
+Write each claim to assert exactly what your evidence supports — no more. An overstated
+sub-clause riding alongside a real problem gives a downstream reviewer legitimate grounds to
+reject the whole finding, so an inflated claim can cost you a real gap. If part of a claim is
+solid and part is speculation, split them into separate findings or say plainly which part is
+speculative — don't state the speculative part as established fact.
+
+## High recall
+Report every defensible finding with location and evidence, including ones you are uncertain
+about — do not filter by severity or confidence; downstream stages do that. You do not assign
+severity at all; leave it out entirely.
+
+## Prior report
+If a prior review report appears below, do not re-surface any finding it lists as Rejected —
+that ground is already covered; spend your budget on what it missed.
+
+---
+super-roast verdict: Blocking (2 confirmed)
+mode: design        iteration: 1 of 3
+profile (assumed): Internal, cooperative same-user coordination CLI with durable message data and real native configuration ownership. No adversarial caller-authentication requirement is implied. Receipt and invitation confirmation deadlines are core behavior; data/configuration safety and explicitly stated core-purpose floors remain binding.
+inputs: settled 6c74fa0a: all five handoff-delivery-redesign specs, exact full task-tree.json, coverage-ledger.md, author-refinements.md, coverage-changes.md and coverage-round-2 summaries; baseline 7c40c83c028d4a1a7650d6a58e92cd0bdedd3cdb
+coverage: premortem, completeness, yagni, failure-mode, feasibility, domain:durable-messaging, domain:protocol-evolution-and-data-migrations, domain:native-hook-configuration-ownership · 11 raw → 5 deduped → 5 panel / 0 spot-checked · judge completion 100% (15/15) · remainder-capped: 0
+independence: same-family (OpenAI) — seat-differentiated panel
+seat-agreement: panels 5 · rr 0.80 · rg 0.60 · fg 0.80 · unanimous 0.60 · ground-loo 0.75 (n=4) · reproduce 1/4/0 · refute 2/3/0 · ground 3/2/0
+
+## Confirmed findings
+
+- [Blocking] R1-1 — Root design (settled-input.md): Goal; Message deadline contract; Risks and mitigations; task-tree ht-0lo.1.2 and ht-0lo.1.3 — The bounded-time warning promise relies on fair, sufficiently frequent progress through overdue work, but the design specifies neither a detection-lag bound nor a backlog-progress test that establishes that assumption.
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓)
+  evidence: All three seats confirm the design assumption. Ground cites settled-input.md:41's “bounded-time warning”, :62's retained “bounded deadline detection”, and :60/:112's normal bounded scan and bounded scan work. The complete artifact supplies no scan cadence, fair multi-batch continuation rule or per-obligation detection-lag bound. ht-0lo.1.2's indexed discovery and ht-0lo.1.3's bounded warning burst do not establish progress through several batches while native delivery remains blocked. Reproduce identifies the concrete dependency: an obligation beyond the first upgrade batch needs later scanner progress, which bounded work per invocation alone does not establish.
+  severity: The confirming seats suggest Should-fix because an actual scanner defect is not demonstrated. This is a confirmed design-level dependency rather than a demonstrated implementation defect; nevertheless, the missing progress/latency contract leaves the artifact's stated core bounded-time warning purpose unsupported. Apply the explicit core-purpose Blocking floor before profile demotion. No unlimited-load or bounded native-delivery guarantee is required.
+  fix-shape hint: State a finite supported workload, fair scanner continuation and detection-lag bound; require multi-batch receipt/invitation progress with blocked native wakes, restart and continuing due arrivals, or narrow the bounded-time promise.
+
+- [Blocking] R1-4 — Root design: Message deadline contract; Invitation contract capability negotiation; Risks and mitigations; receipt task ht-0lo.1.1; invitation task ht-0lo.2.1 — The design does not specify capability negotiation for the changed ordinary-send receipt semantics, so a modern client cannot establish that an older daemon will start an unavailable recipient’s ACK deadline at send time.
+  verdict: confirmed (reproduce REJECT / refute ✗-survived / ground ✓)
+  evidence: Refute and ground confirm that “every new durable ACK-required ordinary send” must use canonical committed send time, including unavailable/unbound recipients. The only explicit negotiation contract is for mutations requiring the new invitation representation or new incompatible fields. ht-0lo.2.1 owns that refusal; ht-0lo.1.1 assigns receipt projection without an ordinary-send semantic capability contract. The local schema/semantics marker does not establish the connected daemon's semantics.
+  dissent resolution: Reproduce rejects because mixed-version ordinary sends are not expressly guaranteed to be supported. Refute and ground directly address that scope premise: the ordinary-send guarantee is universal as written, the artifact explicitly considers old peers, and it supplies neither a global minimum-daemon-version requirement nor an accepted receipt exception. The objection does not identify an existing mechanism excluding the proposed wire-compatible send. Retain the arithmetic confirmation as a missing compatibility/scope contract; this does not assert that an actual implementation has been shown to admit the combination. An explicit upgraded-daemon limitation can resolve it without adding a new capability.
+  severity: Confirming seats suggest Should-fix, but the omitted compatibility boundary leaves the core send-anchored deadline guarantee unenforceable in the described old-peer case. Apply the stated core-purpose Blocking floor; the internal cooperative profile does not remove that requirement.
+  fix-shape hint: Specify receipt-semantics negotiation/refusal and mixed-version coverage, or explicitly limit the receipt guarantee to upgraded daemons and define how that boundary is enforced.
+
+## Not verified (beyond panel cap)
+
+- none
+
+## Beyond remainder cap (count only)
+
+- none
+
+## Rejected (with reason)
+
+- [FYI] R1-2 — Root design: Message deadline contract and Invitation contract; acceptance and validation — Late confirmation before the first overdue scan need not create a historical missed-deadline warning under the stated pending-confirmation contract. Reproduce and refute cite the goal's “unconfirmed” condition, the receipt subtree's “Every pending ACK-required message”, preserved terminal states and invitations that “settle at acceptance”. Ground confirms that scanner ordering can change whether a warning existed, but cites no requirement for a historical deadline-audit record after genuine confirmation. Dissent resolved in favor of rejection: warning wording constrains existing warning meaning; it does not establish that stronger audit guarantee. The pending obligation has settled in the proposed ordering, so the finding does not demonstrate a material core-purpose violation.
+- [FYI] R1-3 — Stable hook entrypoints and ownership; Risks and mitigations — All three seats reject. The selected ownership contract is manifest-owned exact groups/fingerprints plus installation ID (ground cites settled-input.md:51/:86). The example retains that management record and every exact recorded observation; the foreign-group rule concerns “Existing unmanaged identical groups”. No seat establishes a requirement that an unobserved identical deletion/recreation revoke retained manifest ownership. Requiring that historical distinction adds a continuity guarantee absent from the chosen contract.
+- [FYI] R1-5 — Options and decisions item 3; Stable hook entrypoints and ownership; hooks subtree — All three seats reject. The alternative existing syntax could also be deterministic, but dedicated hook-event entrypoints and legacy compatibility are explicit design choices (ground cites settled-input.md:51/:84/:86). Parser/dispatch, registry/help/canary and migration consequences are assigned to ht-0lo.4.1/.4.2. The missing comparison demonstrates neither a violated stability/ownership requirement nor significant implementation risk or rework; it remains a rationale suggestion.
+
+## Unverified nits (spot-checked)
+
+- none
+
+## Escalations (need human)
+
+- none — all panels are complete, no external premise is unverified, and both split-panel disagreements are explicitly resolved above.
+---
+
+
+## Required structured output (do NOT write a prose essay)
+
+Findings, and nothing else — there is no free-text section, so anything you write outside a
+finding is discarded. In particular, a load-bearing assumption the design silently takes for
+granted is not a preamble: it is a finding of kind `UNVERIFIED-ASSUMPTION`, whose `evidence`
+names the spec text that leans on it and says what would have to be true.
+
+**Findings** — each finding as:
+- **claim:** the specific problem, one sentence, scoped to exactly what your evidence
+  supports (required)
+- **location:** where in the spec (section/quote) — or "absent" for a gap (required)
+- **category:** the lens name for this dispatch — same value used to fill `
+Missing requirements, undefined interfaces, missing non-functional requirements, unhandled
+error/edge cases, integration points not covered.
+` above
+  (required)
+- **external:** true if the claim depends on an external fact (so a judge must research
+  it), false if it's verifiable from the spec text alone (required)
+- **evidence:** the spec quote, the cited URL + quote, or the reasoning chain that backs
+  the claim (required)
+- **kind:** `GAP` (unaddressed by the spec) or `UNVERIFIED-ASSUMPTION` (the design leans on
+  something unverified) — optional; set it whenever the finding is one of these two.
+  (`ISSUE` is a third kind value used elsewhere in this scout schema; design-mode scouts
+  only ever use `GAP` or `UNVERIFIED-ASSUMPTION`.)
+- **spike:** Question / Cheapest test / Kill criteria — optional; add it only for an
+  UNVERIFIED-ASSUMPTION that is both high-importance (load-bearing) and high-uncertainty
+  (little evidence either way)
+
+Report only real, defensible findings. Quality over quantity — but do not soften.
+
+Category completeness. Read complete current artifact. Also verify whether prior CONFIRMED R1-1/R1-4 are actually resolved by current text; report any still-open/regressed issue with original ID explicitly as a fix verification, while NEW findings must satisfy late-round stance. Write JSON {"findings": [...], "priorAssessment": {"R1-1": "resolved/still-open/regressed with evidence", "R1-4": "resolved/still-open/regressed with evidence"}} to /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/scout-completeness.json. No other writes, implementation or threads messages. Return counts.
