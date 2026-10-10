@@ -2109,15 +2109,20 @@ impl PaneCall<'_> {
         })?;
             // The inbox page rides only with a presented offer; a live mod
             // channel delivers itself.
-            let lazy = (!boundary.live && !boundary.text.is_empty())
-                .then(|| {
-                    self.inbox_offer(
-                        &contexts,
-                        event,
-                        boundary.mark.map(|(execution, _)| execution),
-                    )
-                })
-                .flatten();
+            // One rule for both boundaries (TRUST-POLICY A8): a hook-pull seat's lazy
+            // rows ride only `DeliveryPull`, never this page.
+            let lazy = (crate::delivery::routing::hook_inbox_page(
+                crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
+                boundary.live,
+            ) && !boundary.text.is_empty())
+            .then(|| {
+                self.inbox_offer(
+                    &contexts,
+                    event,
+                    boundary.mark.map(|(execution, _)| execution),
+                )
+            })
+            .flatten();
             let attention = boundary.mark.map(|(execution, token)| AttentionCommit {
                 contexts,
                 execution,
@@ -2164,7 +2169,19 @@ impl PaneCall<'_> {
         // read and found no live mod channel seeds a mark; only then does the
         // hook add a page, under exactly the execution that check-in
         // registered.
-        if let Some(execution) = done.attention.as_ref().map(|mark| mark.execution) {
+        // A hook-pull seat reads no page at any boundary (TRUST-POLICY A8); channel
+        // liveness is already folded into `done.attention`.
+        if let Some(execution) = done
+            .attention
+            .as_ref()
+            .map(|mark| mark.execution)
+            .filter(|_| {
+                crate::delivery::routing::hook_inbox_page(
+                    crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
+                    false,
+                )
+            })
+        {
             done.lazy = super::seat_contexts(paths, instance, seat)
                 .ok()
                 .and_then(|contexts| self.inbox_offer(&contexts, event, Some(execution)));
@@ -3656,6 +3673,10 @@ mod neutral_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "../../tests/cli/hook_local_evidence.rs"]
 mod local_evidence_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "../../tests/cli/hook_pull_lazy.rs"]
+mod hook_pull_lazy_tests;
 
 #[cfg(test)]
 fn native_event_name(event: &LifecycleEvent) -> &'static str {

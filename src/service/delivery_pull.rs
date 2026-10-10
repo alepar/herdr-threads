@@ -444,3 +444,7 @@ impl DomainService {
 #[cfg(all(test, feature = "test-support"))]
 #[path = "../../tests/service/delivery_pull.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "../../tests/service/lazy_hook_pull.rs"]
+mod lazy_hook_pull_tests;
