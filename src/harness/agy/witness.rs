@@ -35,7 +35,7 @@ fn regular_file(path: &Path) -> Witness {
 
 /// The child's listing under one candidate parent. A parent that is not a directory has no
 /// listing, so it reads `Absent`; the marker check keeps the strict reading.
-fn listing_entry(data: &Path, parent: &str, child: &str) -> Witness {
+pub(super) fn listing_entry(data: &Path, parent: &str, child: &str) -> Witness {
     let path = data
         .join("brain")
         .join(parent)
@@ -185,4 +185,4 @@ fn candidate_listing(
 
 #[cfg(test)]
 #[path = "../../../tests/harness/agy_witness.rs"]
-mod tests;
+pub(super) mod tests;

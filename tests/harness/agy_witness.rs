@@ -18,9 +18,9 @@ const CHILD: &str = "5781d6c5-188b-42a5-8f8c-e8b0da366322";
 const CLEAR: &str = "e806a19d-b316-4599-b4c5-a56db668fb4a";
 const RESUME: &str = "ccac2ead-d847-45fb-aa4b-9fc7126acdc5";
 
-struct Temp(PathBuf);
+pub(in crate::harness::agy) struct Temp(pub(in crate::harness::agy) PathBuf);
 impl Temp {
-    fn new() -> Self {
+    pub(in crate::harness::agy) fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("agyw-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
@@ -36,7 +36,7 @@ fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/agy")
 }
 /// Creates every path of `tests/fixtures/agy/layouts/<manifest>.txt` under `home`'s agy data dir.
-fn build_layout(home: &Path, manifest: &str) {
+pub(in crate::harness::agy) fn build_layout(home: &Path, manifest: &str) {
     let data = AgyRoots::from_home(home).data;
     let text = std::fs::read_to_string(fixtures().join("layouts").join(format!("{manifest}.txt")))
         .unwrap();
