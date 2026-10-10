@@ -802,12 +802,12 @@ pub fn reject(
             tx.execute("UPDATE memberships SET voluntary_state=?1,left_at=?2 WHERE thread_id=?3 AND seat_id=?4 AND voluntary_state='invited' AND episode=(SELECT episode FROM invitations WHERE id=?5) AND NOT EXISTS(SELECT 1 FROM invitations i WHERE i.thread_id=?3 AND i.seat_id=?4 AND i.state='pending' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=i.id))",
                 params![if prior_left.is_some() { "left" } else { "absent" },prior_left,command.thread.as_str(),caller.as_str(),command.invitation.as_str()]).map_err(store_error)?;
             let payload = serde_json::json!({"action":"reject","seat":caller.as_str(),"invitation":command.invitation.as_str(),"reason":command.reason}).to_string();
-            schema::append_attributed_event_once(
+            let (warning, inserted) = schema::append_attributed_event_once(
                 tx,
                 EventInput {
                     thread: &command.thread,
                     key: &format!("reject:{}", command.invitation.as_str()),
-                    kind: "info",
+                    kind: "warn",
                     payload_json: &payload,
                     decision_at: decision.utc,
                     source_message: None,
@@ -815,6 +815,14 @@ pub fn reject(
                 },
                 crate::protocol::service::EventAuthor::Native(caller.clone()),
             )?;
+            if inserted {
+                schema::enqueue_invitation_rejection_notice(
+                    tx,
+                    warning.as_str(),
+                    command.thread.as_str(),
+                    caller.as_str(),
+                )?;
+            }
             schema::bump_membership_revision(tx, &command.thread)?;
             schema::bump_filter_revision(tx, &command.claim.instance, "directory", "all")?;
             bump_member_directory(tx, &command.claim.instance, &caller)?;
