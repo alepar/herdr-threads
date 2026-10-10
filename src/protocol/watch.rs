@@ -44,8 +44,8 @@
 //! `body`, and the row stays pending until a text `inbox` shows it; nothing
 //! reminds about it.
 //!
-//! The mod frames all message text as untrusted data and never starts a
-//! submit with `/`.
+//! The mod frames all message text so a body can never pass for a header
+//! line, and never starts a submit with `/`.
 
 use super::{
     authority::CallerClaim,

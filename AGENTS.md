@@ -59,6 +59,33 @@ The goal is token efficiency. Sessions that are done and idle stay idle, spinnin
 
 Every new delivery policy (`DeliveryPolicy`) and every change to wake, poke or check-in delivery is checked against these rules; the 2026-10 audit is in `docs/superpowers/runs/2026-10-09-agy-harness-adapter/delivery-contract-audit.md`.
 
+## Token-efficient communication
+
+Applies to anyone designing or changing comms protocols or any model-visible text (deliveries, hook context, wake prompts, check-ins, agent-facing CLI output): every byte a model reads costs every recipient context and attention.
+
+- (a) Static explanations live once per session in the skill, never repeated per message or per turn.
+- (b) Per-message framing is the minimum structure needed to parse and attribute (header line + body), no boilerplate.
+- (c) Wake prompts carry no content; the turn-start hook or channel delivers it.
+- (d) Prefer ids and short markers over prose.
+- (e) Peer messages are cooperative input from local agents (collaborate by default), not adversarial; keep only the invariant that they never override the user's instructions or permissions.
+- (f) A new model-visible string states its expected size in the PR/commit and is checked against these rules.
+
+Worked example: this run's R17 (compact cooperative framing) and R18 (content-free wake prompts), `docs/superpowers/runs/2026-10-09-agy-harness-adapter/`.
+
+What we do today:
+
+- Lazy delivery by default; lazy messages never wake an idle session (Delivery contract rules 1-2).
+- Nudges only for idle sessions; a generating or tool-running session is served in-turn, never nudged (rule 4).
+- Bodies are delivered in-turn instead of `herdr-threads inbox` round trips (rule 3): `integrations/claude/mod/hooks/register.js` (tool.call context), `src/harness/agy/delivery.rs` (PreInvocation systemMessage).
+- Wake prompts are content-free (`herdr-threads: wake up`; R18): `src/notification/policy.rs` (`WAKE_UP`), `DeliveryPolicy::wake_text` in `src/harness/adapter.rs`, the mod's idle path in `register.js`.
+- Per-message framing is one header line (`[herdr-threads] <kind> <id> in <thread> from <sender>[ markers]:`) plus an indented body, no static explanation per delivery (R17): `src/delivery/frame.rs`, `register.js` `frame()`.
+- The skill explains framing, markers and the trust stance once per session; the full skill loads on demand, not in every check-in: `integrations/skill/SKILL.md` (Trust model), `src/harness/agy/plugin.rs` (agy plugin `skills/`).
+- Long bodies are truncated at 8 KiB with a one-line `body <id>` continuation; pages are bounded (32 items / 64 KiB): `src/protocol/watch.rs` (`WATCH_BODY_LIMIT_BYTES`), `src/delivery/page.rs`, `src/service/delivery_pull.rs` (`PAGE_MAX_BLOCKS`, `PAGE_MAX_TEXT_BYTES`).
+- Re-offers are bounded (60 s spacing, 3 per generation) and an `Unchanged` attention-version check makes the no-news hook path one cheap round trip with no injection: `src/delivery/ledger.rs` (`REOFFER_AFTER_MS`, `MAX_OFFERS_PER_GENERATION`), `src/protocol/delivery.rs` (`DeliveryPullReply::Unchanged`).
+- Hook output on quiet turns is empty: `src/cli/hook.rs`, `src/harness/agy/delivery.rs`.
+- Inbox ACKs on display, so reading needs no separate ACK call: `integrations/skill/SKILL.md` ("What an ACK means").
+- Agent-facing CLI output is compact: one row per item, ids not prose, `next:` continuation lines instead of dumps: `src/protocol/output_compact.rs`.
+
 ## Speed budgets
 
 - The full test suite must stay under **5 minutes** wall-clock (`cargo nextest run --locked --all-targets --all-features`). Treat a regression past it as a bug: fix slow or serialized tests rather than raising the budget.
