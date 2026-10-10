@@ -1869,7 +1869,7 @@ fn canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window()
         Some((UtcMillis(30_000), 30_000))
     );
     let db = store.context.open_writer().unwrap();
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s','t',0,1,'e',100,'active')",[]).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) SELECT binding_id,'s','t',0,100,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
     drop(db);
     // The restarted process has never tracked this batch in its runtime map.
     drop(store);

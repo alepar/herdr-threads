@@ -12,7 +12,10 @@ use crate::{
     protocol::{
         authority::{CallerClaim, CallerRole, Harness, LivenessFingerprint},
         commands::{Command, ParticipantsQuery, SeatInspectQuery, SeatsQuery, ThreadQuery},
-        ids::{AgentId, ExecutionId, HostBootId, HostTargetId, NativeSessionId, SeatId, ThreadId},
+        ids::{
+            AgentId, BindingId, ExecutionId, HostBootId, HostTargetId, NativeSessionId, SeatId,
+            ThreadId,
+        },
         pagination::{Consistency, Page, PageRequest, StopReason},
         results::{CheckInContextDisposition, CheckInResult, CommandResult, ErrorCode},
         time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
@@ -504,6 +507,13 @@ fn summary_caller_is_current_per_session_binding() {
     };
     assert!(current(&claim("sess-A")));
     assert!(current(&claim("sess-B")));
+    assert_eq!(
+        summary::check_caller(&f.db, "i", &claim("sess-B"), &thread)
+            .unwrap()
+            .binding,
+        Some(binding_of(&f.db, "sess-B")),
+        "the catch-up row belongs to the claim's own session binding"
+    );
     assert!(!current(&claim("sess-unknown")), "no binding for the key");
     let mut behind = claim("sess-A");
     behind.binding_generation = SEAT_GENERATION - 1;
@@ -526,69 +536,106 @@ fn summary_caller_is_current_per_session_binding() {
     assert_eq!(error.code, ErrorCode::CallerUnverified);
 }
 
+fn binding_of(db: &Connection, session: &str) -> BindingId {
+    BindingId::parse(
+        db.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE native_session=?1",
+            [session],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+/// ht-54r.22: catch-up rows belong to a binding. Entry needs an open binding of the seat (every
+/// seat generation bump ends the seat's open bindings), and only an ended binding's rows are
+/// superseded: another session's check-in leaves them alone.
 #[test]
-fn catch_up_entry_and_supersede_use_the_seat_fence() {
+fn catch_up_entry_and_supersede_are_per_binding() {
     let mut f = fixture();
     stale_binding_generations(&f.db);
     let seat = SeatId::new("s");
     let thread = ThreadId::new("t");
-    let execution = ExecutionId::new(EXEC);
+    let (a, b) = (binding_of(&f.db, "sess-A"), binding_of(&f.db, "sess-B"));
+    let settings = crate::protocol::summary::SummarySettings::default();
     let tx = f.db.transaction().unwrap();
     let frontier = catch_up::enter_or_keep(
         &tx,
         &CatchUpEntry {
+            binding: &a,
             seat: &seat,
             thread: &thread,
             frontier_seq: 2,
-            binding_generation: SEAT_GENERATION,
-            execution: &execution,
             now: UtcMillis(100),
         },
-        &crate::protocol::summary::SummarySettings::default(),
+        &settings,
     )
     .unwrap();
     assert_eq!(frontier, 2);
-    for (generation, exec) in [(SEAT_GENERATION - 1, EXEC), (SEAT_GENERATION, "other")] {
-        let exec = ExecutionId::new(exec);
-        let error = catch_up::enter_or_keep(
-            &tx,
-            &CatchUpEntry {
-                seat: &seat,
-                thread: &thread,
-                frontier_seq: 2,
-                binding_generation: generation,
-                execution: &exec,
-                now: UtcMillis(100),
-            },
-            &crate::protocol::summary::SummarySettings::default(),
-        )
-        .unwrap_err();
-        assert_eq!(error.code, ErrorCode::CallerUnverified);
-    }
+    // A binding of another seat is refused.
+    let other_seat = SeatId::new("other");
+    let error = catch_up::enter_or_keep(
+        &tx,
+        &CatchUpEntry {
+            binding: &b,
+            seat: &other_seat,
+            thread: &thread,
+            frontier_seq: 2,
+            now: UtcMillis(100),
+        },
+        &settings,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::CallerUnverified);
     tx.commit().unwrap();
     let state = |db: &Connection| -> String {
         db.query_row(
-            "SELECT state FROM catch_up WHERE seat_id='s' AND thread_id='t'",
-            [],
+            "SELECT state FROM catch_up WHERE binding_id=?1 AND thread_id='t'",
+            [a.as_str()],
             |r| r.get(0),
         )
         .unwrap()
     };
     assert_eq!(state(&f.db), "active");
-    // Another session's lifecycle check-in supersedes nothing: the row's execution is still held.
+    // Another session's lifecycle check-in supersedes nothing: A is still open.
     let tx = f.db.transaction().unwrap();
     assert_eq!(
-        catch_up::supersede_stale(&tx, &seat, UtcMillis(110)).unwrap(),
+        catch_up::supersede_ended_bindings(&tx, &seat, UtcMillis(110)).unwrap(),
+        0
+    );
+    assert_eq!(
+        catch_up::supersede_stale(&tx, &a, UtcMillis(110)).unwrap(),
         0
     );
     tx.commit().unwrap();
     assert_eq!(state(&f.db), "active");
-    // Once no open binding holds the execution (or the seat was rebound) it is superseded.
-    f.db.execute("UPDATE occupant_bindings SET execution_id='moved'", [])
-        .unwrap();
+    // Once A ends its row is superseded; B's entry is unaffected.
+    f.db.execute(
+        "UPDATE occupant_bindings SET ended_at=115 WHERE binding_id=?1",
+        [a.as_str()],
+    )
+    .unwrap();
     let tx = f.db.transaction().unwrap();
+    let error = catch_up::enter_or_keep(
+        &tx,
+        &CatchUpEntry {
+            binding: &a,
+            seat: &seat,
+            thread: &thread,
+            frontier_seq: 2,
+            now: UtcMillis(116),
+        },
+        &settings,
+    )
+    .unwrap_err();
     assert_eq!(
-        catch_up::supersede_stale(&tx, &seat, UtcMillis(120)).unwrap(),
+        error.code,
+        ErrorCode::CallerUnverified,
+        "an ended binding cannot enter"
+    );
+    assert_eq!(
+        catch_up::supersede_ended_bindings(&tx, &seat, UtcMillis(120)).unwrap(),
         1
     );
     tx.commit().unwrap();

@@ -128,7 +128,7 @@ fn active_catch_up_excludes_the_thread() {
     let now = latest - 40_000;
     assert_eq!(due(&conn, now)[0].receipts.len(), 2);
     conn.execute(
-        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('rcv','ta',0,1,'e',0,'active')",
+        "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) SELECT binding_id,'rcv','ta',0,0,'active' FROM occupant_bindings WHERE seat_id='rcv'",
         [],
     )
     .unwrap();

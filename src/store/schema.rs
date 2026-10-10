@@ -66,7 +66,8 @@ const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
 const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
 const V29: &str = include_str!("../../migrations/0029_session_bindings.sql");
 const V30: &str = include_str!("../../migrations/0030_archival_scan_scope.sql");
-pub(crate) const LATEST_VERSION: i64 = 30;
+const V31: &str = include_str!("../../migrations/0031_binding_delivery_state.sql");
+pub(crate) const LATEST_VERSION: i64 = 31;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -175,6 +176,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V28))
                 .and_then(|_| conn.execute_batch(V29))
                 .and_then(|_| conn.execute_batch(V30))
+                .and_then(|_| conn.execute_batch(V31))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -415,7 +417,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=30 => verify_existing(conn),
+        18..=31 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -591,7 +593,11 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     if (1..=29).contains(&version) {
         migrate_v29_to_v30(conn)?;
     }
-    verify_existing_v30(conn)
+    verify_existing_v30(conn)?;
+    if (1..=30).contains(&version) {
+        migrate_v30_to_v31(conn)?;
+    }
+    verify_existing_v31(conn)
 }
 
 /// V30 (ht-54r.15): archival scan scope. Narrows the mutation-revision triggers so the revision
@@ -676,6 +682,87 @@ fn verify_existing_v30(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// V31 (ht-54r.22): lazy display state onto binding cursors (legacy pending carry-over) and
+/// catch-up rows keyed by binding. One transaction.
+fn migrate_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V31)
+        .map_err(store_error)
+        .and_then(|_| verify_existing_v31(conn))
+        .and_then(|_| {
+            conn.pragma_update(None, "user_version", 31)
+                .map_err(store_error)
+        });
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+/// Objects V31 creates or rebuilds, audited exactly as written (see `V29_AUDITED`).
+const V31_AUDITED: [(&str, &str, &str); 6] = [
+    ("table", "catch_up_v31", "catch_up"),
+    (
+        "index",
+        "catch_up_extension_until",
+        "catch_up_extension_until",
+    ),
+    ("index", "catch_up_thread_active", "catch_up_thread_active"),
+    ("index", "catch_up_seat", "catch_up_seat"),
+    ("index", "lazy_recipients_legacy", "lazy_recipients_legacy"),
+    (
+        "index",
+        "lazy_recipients_seat_ordinal",
+        "lazy_recipients_seat_ordinal",
+    ),
+];
+
+fn verify_existing_v31(conn: &Connection) -> Result<(), ApiError> {
+    audit_rebuilt_objects(conn, V31, &V31_AUDITED, "binding delivery state")?;
+    let column_ok: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('lazy_recipients') WHERE name='legacy_pending' AND type='INTEGER' AND \"notnull\"=1 AND dflt_value='0')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let table_sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='lazy_recipients'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !column_ok
+        || !table_sql
+            .contains("legacy_pending INTEGER NOT NULL DEFAULT 0 CHECK(legacy_pending IN (0,1))")
+    {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered lazy_recipients.legacy_pending",
+        ));
+    }
+    // The rebuilt catch_up must not be a stale V29-era shape.
+    let shaped: bool = conn
+        .query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM pragma_table_info('catch_up') WHERE name IN ('binding_generation','execution_id'))",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !shaped {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "catch_up still carries binding generation columns",
+        ));
+    }
+    Ok(())
+}
+
 /// V29 (ht-54r): session-keyed bindings. The SQL rebuild runs in one transaction; the
 /// upgrade time is the disconnected_at of each open migrated binding (archival grace).
 fn migrate_v28_to_v29(conn: &Connection, now: UtcMillis) -> Result<(), ApiError> {
@@ -730,9 +817,15 @@ const V29_AUDITED: [(&str, &str, &str); 7] = [
     ("index", "binding_cursors_thread", "binding_cursors_thread"),
 ];
 
-fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+/// Compare each object `audited` lists against its statement in `source`, exactly as written.
+fn audit_rebuilt_objects(
+    conn: &Connection,
+    source: &str,
+    audited: &[(&str, &str, &str)],
+    what: &str,
+) -> Result<(), ApiError> {
     let normalize = |sql: &str| sql.trim().trim_end_matches(';').trim().to_owned();
-    for (kind, written, installed) in V29_AUDITED {
+    for (kind, written, installed) in audited.iter().copied() {
         let headers: &[String] = &if kind == "table" {
             vec![format!("CREATE TABLE {written} ")]
         } else {
@@ -743,10 +836,10 @@ fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
         };
         let start = headers
             .iter()
-            .find_map(|header| V29.find(header.as_str()))
-            .expect("audited V29 object present");
-        let end = start + V29[start..].find(';').expect("statement terminator");
-        let mut expected = V29[start..end].to_owned();
+            .find_map(|header| source.find(header.as_str()))
+            .expect("audited object present");
+        let end = start + source[start..].find(';').expect("statement terminator");
+        let mut expected = source[start..end].to_owned();
         if written != installed {
             expected = expected.replacen(written, &format!("\"{installed}\""), 1);
         }
@@ -761,10 +854,15 @@ fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
         if actual.as_deref().map(normalize) != Some(normalize(&expected)) {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
-                format!("missing or altered session binding {kind} {installed}"),
+                format!("missing or altered {what} {kind} {installed}"),
             ));
         }
     }
+    Ok(())
+}
+
+fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+    audit_rebuilt_objects(conn, V29, &V29_AUDITED, "session binding")?;
     for (table, column) in [
         ("receipts", "ack_binding_id"),
         ("messages", "sender_binding_id"),
@@ -793,6 +891,7 @@ fn schema_version(conn: &Connection) -> Result<i64, ApiError> {
 }
 
 fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
+    let v31 = schema_version(conn)? >= 31;
     // Compare every lazy object, including trigger bodies with embedded semicolons.
     let ddl = V26
         .lines()
@@ -808,6 +907,18 @@ fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
         let words = sql.split_whitespace().collect::<Vec<_>>();
         let kind = words[1].to_ascii_lowercase();
         let name = words[2];
+        // V31 appends one column to lazy_recipients; SQLite stores it right after `state`.
+        let appended;
+        let sql = if kind == "table" && name == "lazy_recipients" && v31 {
+            appended = sql.replacen(
+                "CHECK(state IN ('pending','displayed'))",
+                "CHECK(state IN ('pending','displayed')), legacy_pending INTEGER NOT NULL DEFAULT 0 CHECK(legacy_pending IN (0,1))",
+                1,
+            );
+            appended.as_str()
+        } else {
+            sql
+        };
         let actual: Option<String> = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",

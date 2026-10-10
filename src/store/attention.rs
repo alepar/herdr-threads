@@ -385,7 +385,11 @@ pub fn pending_lazy(
 ) -> Result<PendingSet, ApiError> {
     let window = rows(
         db,
-        "SELECT w.ordinal,w.message_id,w.thread_id,(SELECT sm.decision_seq FROM send_manifests sm JOIN messages m ON m.id=sm.message_id WHERE sm.preparation_id=w.preparation_id AND sm.message_id=w.message_id AND sm.instance_id=?3 AND sm.decision_seq<=?4 AND m.delivery_mode='lazy') FROM (SELECT ordinal,preparation_id,message_id,thread_id FROM lazy_recipients INDEXED BY lazy_recipients_pending_seat_ordinal WHERE seat_id=?1 AND state='pending' ORDER BY ordinal DESC LIMIT ?2) w",
+        concat!(
+            "SELECT w.ordinal,w.message_id,w.thread_id,(SELECT sm.decision_seq FROM send_manifests sm JOIN messages m ON m.id=sm.message_id WHERE sm.preparation_id=w.preparation_id AND sm.message_id=w.message_id AND sm.instance_id=?3 AND sm.decision_seq<=?4 AND m.delivery_mode='lazy') FROM (SELECT r.ordinal,r.preparation_id,r.message_id,r.thread_id FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND (m.id IS NULL OR ",
+            super::lazy_delivery::seat_unread_sql!(),
+            ") ORDER BY r.ordinal DESC LIMIT ?2) w"
+        ),
         params![seat_id, WINDOW_SQL, instance, through],
         |r| {
             Ok((

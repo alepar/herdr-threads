@@ -1149,7 +1149,7 @@ fn hold_and_bypass() {
         !offered.contains(&held),
         "the ordinary one is still held: {offered}"
     );
-    binding_change_supersedes_and_releases(&fx, &held);
+    binding_refresh_keeps_the_binding_row(&fx, &held);
 }
 
 /// What a completed catch-up leaves behind, for the cases that look at it.
@@ -1616,13 +1616,12 @@ fn stall_lapses_and_the_warning_fires_on_the_effective_deadline() {
     assert_eq!(fx.world.pending_for(&fx.b, &fx.ack)["overdue"], true);
 }
 
-/// Case 9: a new binding ends the row `superseded`; the successor does not
-/// inherit the hold, so what was held is offered. Runs on Case 3's active
-/// row, with `held` still held from B's digest.
-fn binding_change_supersedes_and_releases(fx: &Fixture, held: &str) {
-    let before = fx.world.wake_attention(&fx.b);
-    // A `clear` in B's pane is a new execution of the seat: the hook's
-    // lifecycle check-in registers it and ends B's row.
+/// Case 9: catch-up rows belong to the binding (ht-54r.22). A `clear` in B's
+/// pane that re-registers the same session on a new execution refreshes the
+/// same binding, so its row stays active and the hold stays in force. (A row
+/// ends `superseded` only when its binding ends; the unit tests in
+/// `store::catch_up` and the retirement path cover the release.)
+fn binding_refresh_keeps_the_binding_row(fx: &Fixture, held: &str) {
     let restarted = fx.world.hook(
         "claude",
         PANE_B,
@@ -1632,26 +1631,12 @@ fn binding_change_supersedes_and_releases(fx: &Fixture, held: &str) {
     let row = fx.world.catch_up(&fx.b, &fx.thread).unwrap();
     assert_eq!(
         (row.state.as_str(), row.end_reason.as_deref()),
-        ("ended", Some("superseded")),
+        ("active", None),
         "{row:?}"
     );
-    // The hook reads its digest before the check-in that ends the row, so the
-    // successor's next boundary is where the release arrives.
-    let successor = fx.boundary_b();
     assert!(
-        successor.contains(held),
-        "the successor is offered what the predecessor had held: {successor}"
-    );
-    assert!(
-        fx.world.wake_attention(&fx.b) > before,
-        "the row end re-derived the seat's wake reasons"
-    );
-    // The successor inherits no hold: a new ordinary message above F is
-    // offered at its next boundary.
-    let fresh = fx.send_as_a("a message after the change", &["--nudge"]);
-    assert!(
-        fx.boundary_b().contains(&fresh),
-        "no hold survives the binding change"
+        !fx.boundary_b().contains(held),
+        "the binding's hold survives its own re-registration"
     );
 }
 

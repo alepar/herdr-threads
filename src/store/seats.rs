@@ -1701,7 +1701,7 @@ fn mark_seat_unresolved(
     // The binding end is honest (disconnect reason `seat_unresolved`), which is what lets the
     // same session reopen its binding after a rebind (ht-54r.3).
     bindings::end_open_bindings(tx, seat, bindings::DisconnectReason::SeatUnresolved, at.utc)?;
-    catch_up::supersede_stale(tx, seat, at.utc)?;
+    catch_up::supersede_ended_bindings(tx, seat, at.utc)?;
     tx.execute(
         "DELETE FROM warning_offer WHERE seat_id=?1",
         [seat.as_str()],
@@ -3325,7 +3325,7 @@ fn rebind_unresolved_seat(
         params![at.0, seat.as_str()],
     )
     .map_err(store_error)?;
-    catch_up::supersede_stale(tx, seat, at)?;
+    catch_up::supersede_ended_bindings(tx, seat, at)?;
     tx.execute(
         "DELETE FROM warning_offer WHERE seat_id=?1",
         [seat.as_str()],
@@ -3703,7 +3703,7 @@ pub fn decide_continuity(
                 params![seat.as_str(),new_generation,target.as_str(),expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,
                     command.harness.as_str(),command.native_session.as_str(),command.execution.as_str(),
                     crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE,at.utc.0,terminal,incarnation]).map_err(store_error)?;
-            catch_up::supersede_stale(tx, seat, at.utc)?;
+            catch_up::supersede_ended_bindings(tx, seat, at.utc)?;
             tx.execute("UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
                 params![new_generation,seat.as_str()]).map_err(store_error)?;
             let seq = schema::next_decision_seq(tx, &instance)?;
@@ -4405,7 +4405,9 @@ pub fn register_available(
                 if human {
                     bindings::end_agent_bindings(tx, seat, at.utc)?;
                 }
-                catch_up::supersede_stale(tx, seat, at.utc)?;
+                // Only ended bindings' catch-up rows end: another binding's check-in leaves an
+                // open binding's catch-up alone (ht-54r.22).
+                catch_up::supersede_ended_bindings(tx, seat, at.utc)?;
                 if let Some(actor) = operator {
                     tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_human_override',?4,?5,?6,?7,?8)",
                         params![claim.instance,claim.target.as_str(),seat.as_str(),at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,actor.audit_label()]).map_err(store_error)?;
@@ -4704,15 +4706,10 @@ pub fn mod_seat_view(
     let attention_version = u64::try_from(attention_version)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative attention version"))?;
     let run = super::attention::seat_digest(db, instance, seat, &|| Ok(()))?;
-    let (lazy_pending, max_lazy_rowid): (i64, i64) = db
-        .query_row(
-            // Published rows only: a staged row is invisible to the mod and
-            // its publication (manifest + message) must change the fingerprint.
-            "SELECT count(*),COALESCE(max(ordinal),0) FROM (SELECT r.ordinal FROM lazy_recipients r INDEXED BY lazy_recipients_pending_seat_ordinal JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=sm.message_id AND m.delivery_mode='lazy' WHERE r.seat_id=?1 AND r.state='pending' ORDER BY r.ordinal DESC LIMIT ?2)",
-            params![seat.as_str(), MOD_LAZY_COUNT_CAP],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(store_error)?;
+    // Published rows only: a staged row is invisible to the mod and its publication (manifest +
+    // message) must change the fingerprint. ht-54r.12 later moves the fingerprint per binding.
+    let (lazy_pending, max_lazy_rowid) =
+        super::lazy_delivery::seat_lazy_pending(db, seat, MOD_LAZY_COUNT_CAP)?;
     let digest = &run.digest;
     // Only warnings that would wake the seat natively raise mod attention
     // (TRUST-POLICY A7): another seat's overdue transition, and every clear,
@@ -4727,7 +4724,7 @@ pub fn mod_seat_view(
             .token
             .receipt
             .map_or(0, |(seq, _)| i64::try_from(seq).unwrap_or(i64::MAX)),
-        lazy_pending: u64::try_from(lazy_pending).unwrap_or(0),
+        lazy_pending,
         max_lazy_rowid,
         other_pending: digest.invitations.count + waking_warnings,
         binding_generation: binding.as_ref().map(|b| b.generation),

@@ -4,7 +4,7 @@
 //! the contract in `store::catch_up`.
 use crate::protocol::{
     authority::CallerClaim,
-    ids::{LeaseToken, MessageId, SeatId, SummaryBlockId, SummaryJobId, ThreadId},
+    ids::{BindingId, LeaseToken, MessageId, SeatId, SummaryBlockId, SummaryJobId, ThreadId},
     results::{ApiError, ErrorCode, MessageKind},
     summary::{
         AuthorRole, Block, BlockHeader, BlockProvenance, BundleMessage, ChildNarrative, CoverSizes,
@@ -317,8 +317,11 @@ fn hex(bytes: &[u8]) -> String {
 
 pub(crate) struct Caller {
     pub(crate) seat: SeatId,
-    /// The claim's own session binding is open on the seat and the seat has not been rebound
-    /// since the claim; only then may a call enter or end catch-up.
+    /// The claim's own session binding when it is open on the seat, holds the claim's
+    /// execution and the seat has not been rebound since the claim; only a call that names
+    /// one may enter or end catch-up, and the row belongs to that binding.
+    pub(crate) binding: Option<BindingId>,
+    /// `binding.is_some()`.
     pub(crate) current: bool,
 }
 
@@ -365,26 +368,36 @@ pub(crate) fn check_caller(
     }
     // The seat's mapping generation is the fence ("not rebound since the claim"). The binding
     // is the claim's own session, found by key (a summary worker acts for its session's
-    // top-level binding), and it must hold the claim's execution, as catch-up entry requires.
-    // A binding's own `generation` is informational (ht-54r.3).
-    let current = state == "resolved"
-        && generation == to_i64(claim.binding_generation)
-        && conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 \
-                 AND harness=?2 AND native_session=?3 AND agent_id='' AND ended_at IS NULL \
-                 AND execution_id=?4)",
-                params![
-                    claim.seat.as_str(),
-                    claim.harness.as_str(),
-                    claim.native_session.as_str(),
-                    claim.execution.as_str()
-                ],
-                |r| r.get(0),
-            )
-            .map_err(store_error)?;
+    // top-level binding), and it must hold the claim's execution. A binding's own
+    // `generation` is informational (ht-54r.3). The catch-up row belongs to that binding
+    // (ht-54r.22).
+    let binding = if state == "resolved" && generation == to_i64(claim.binding_generation) {
+        conn.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 \
+             AND harness=?2 AND native_session=?3 AND agent_id='' AND ended_at IS NULL \
+             AND execution_id=?4",
+            params![
+                claim.seat.as_str(),
+                claim.harness.as_str(),
+                claim.native_session.as_str(),
+                claim.execution.as_str()
+            ],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .map(|id| {
+            BindingId::parse(id)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid binding id"))
+        })
+        .transpose()?
+    } else {
+        None
+    };
+    let current = binding.is_some();
     Ok(Caller {
         seat: claim.seat.clone(),
+        binding,
         current,
     })
 }
@@ -986,16 +999,19 @@ pub fn summary(
     let caller = check_caller(tx, instance, &request.claim, &request.thread)?;
     let thread = &request.thread;
     let version = render::chunking_version(settings);
-    // Frontier: an active catch-up row's F for this seat, else the published head.
-    let active: Option<i64> = tx
-        .query_row(
-            "SELECT frontier_seq FROM catch_up WHERE seat_id=?1 AND thread_id=?2 \
-             AND state='active'",
-            params![caller.seat.as_str(), thread.as_str()],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(store_error)?;
+    // Frontier: the active catch-up row's F for the caller's binding, else the published head.
+    let active: Option<i64> = match &caller.binding {
+        Some(binding) => tx
+            .query_row(
+                "SELECT frontier_seq FROM catch_up WHERE binding_id=?1 AND thread_id=?2 \
+                 AND state='active'",
+                params![binding.as_str(), thread.as_str()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?,
+        None => None,
+    };
     let head = published_head(tx, thread)?;
     let frontier = match active {
         Some(f) => seq_u64(f)?.min(head),
@@ -1010,15 +1026,8 @@ pub fn summary(
 
     if plan.ready() {
         let ready = assemble_ready(tx, thread, &version, frontier, &plan, covered_end, settings)?;
-        if caller.current {
-            catch_up::on_ready(
-                tx,
-                &caller.seat,
-                thread,
-                request.claim.binding_generation,
-                now,
-                settings,
-            )?;
+        if let Some(binding) = &caller.binding {
+            catch_up::on_ready(tx, binding, thread, now, settings)?;
         }
         return Ok(SummaryOutcome::Ready(ready));
     }
@@ -1037,15 +1046,14 @@ pub fn summary(
     }
     let (jobs, leased_elsewhere) =
         lease_pass(tx, instance, &caller.seat, &eligible, settings, now)?;
-    let frontier = if caller.current {
+    let frontier = if let Some(binding) = &caller.binding {
         catch_up::enter_or_keep(
             tx,
             &CatchUpEntry {
+                binding,
                 seat: &caller.seat,
                 thread,
                 frontier_seq: frontier,
-                binding_generation: request.claim.binding_generation,
-                execution: &request.claim.execution,
                 now,
             },
             settings,

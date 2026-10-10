@@ -227,6 +227,21 @@ impl Clock for TestClock {
     }
 }
 
+/// An open binding of seat `s` (created on first use); returns its binding_id.
+fn seat_s_binding(db: &Connection) -> String {
+    db.execute(
+        "INSERT OR IGNORE INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,'p','b',0,'codex','n','e','cooperative_top_level',0,'tm','inc')",
+        [],
+    )
+    .unwrap();
+    db.query_row(
+        "SELECT binding_id FROM occupant_bindings WHERE seat_id='s'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
 fn seeded_db(utc: i64) -> (StoreContext, Connection, Arc<TestClock>) {
     let clock = Arc::new(TestClock::new(utc));
     let context = StoreContext::new(db_path(), clock.clone());
@@ -4712,10 +4727,11 @@ fn fresh_database_has_thread_summary_schema() {
             .to_string()
             .contains("summary blocks are retained")
     );
+    let binding = seat_s_binding(&db);
     let catch_up = |state: &str, reason: Option<&str>, ended: Option<i64>| {
         db.execute(
-            "INSERT OR REPLACE INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state,end_reason,ended_at) VALUES ('s','t',1,0,'e',0,?1,?2,?3)",
-            params![state, reason, ended],
+            "INSERT OR REPLACE INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state,end_reason,ended_at) VALUES (?4,'s','t',1,0,?1,?2,?3)",
+            params![state, reason, ended, binding],
         )
     };
     assert!(catch_up("active", Some("ready"), Some(1)).is_err());
@@ -4933,10 +4949,11 @@ fn backfilled_rows_read_through_is_priority() {
 fn fresh_database_has_catch_up_release_column() {
     let (_context, db, _clock) = seeded_db(0);
     assert!(column_exists(&db, "catch_up", "release_seq"));
+    let binding = seat_s_binding(&db);
     let insert = |release: i64| {
         db.execute(
-            "INSERT OR REPLACE INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state,end_reason,ended_at,release_seq) VALUES ('s','t',1,0,'e',0,'ended','ready',1,?1)",
-            [release],
+            "INSERT OR REPLACE INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state,end_reason,ended_at,release_seq) VALUES (?2,'s','t',1,0,'ended','ready',1,?1)",
+            params![release, binding],
         )
     };
     assert!(insert(0).is_err(), "release_seq must be positive");
@@ -4955,6 +4972,7 @@ fn v13_database_upgrades_keeping_catch_up_rows() {
          INSERT INTO host_instances(id,created_at) VALUES ('i',0);\
          INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0);\
          INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
+         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,'p','b',0,'codex','n','e','cooperative_top_level',0,'tm','inc');\
          INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s','t',9,1,'e',0,'active');",
     )
     .unwrap();
@@ -5744,9 +5762,11 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
     // Forward24 intentionally rebuilds these three tables and adds three evidence tables.
     // Every other historical table must retain its original root page.
     // V29 adds binding_cursors; occupant_bindings is rebuilt again by V29.
+    // V31 rebuilds catch_up (per-binding rows).
     let adapter_tables = [
         "occupant_bindings",
         "binding_cursors",
+        "catch_up",
         "harness_version_evidence",
         "harness_unattributed",
         "harness_runtime_identities",
@@ -6259,7 +6279,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v29() {
             .unwrap(),
         schema::LATEST_VERSION
     );
-    assert_eq!(schema::LATEST_VERSION, 30);
+    assert_eq!(schema::LATEST_VERSION, 31);
     // ordinals, sequence and archival guards survive the rebuild
     assert_eq!(
         db.query_row(
@@ -6479,15 +6499,22 @@ const V30_TRIGGERS: [&str; 5] = [
     "archival_fence_occupant_bindings_insert",
     "archival_fence_occupant_bindings_update",
 ];
-/// A database exactly as V29 leaves it: the fresh schema with V30's triggers swapped back.
+/// A database exactly as V29 leaves it: the historical V28 schema with the V29 step applied
+/// by hand (the fresh schema is V31 since ht-54r.22, so V30's triggers can no longer simply be
+/// swapped back).
 fn v29_database() -> Connection {
-    let db = fresh_db();
-    for name in V30_TRIGGERS {
-        db.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}"))
-            .unwrap();
-        db.execute_batch(&v23_trigger(name)).unwrap();
-    }
+    let db = adapter_historical_database(28);
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    db.execute_batch(include_str!("../../migrations/0029_session_bindings.sql"))
+        .unwrap();
     db.pragma_update(None, "user_version", 29).unwrap();
+    db.execute_batch("COMMIT").unwrap();
+    for name in V30_TRIGGERS {
+        assert!(
+            v23_trigger(name).starts_with(&format!("CREATE TRIGGER {name} ")),
+            "V29 holds the V23 text of {name}"
+        );
+    }
     db
 }
 fn trigger_catalog(db: &Connection) -> Vec<(String, String, String)> {
@@ -6510,6 +6537,278 @@ fn trigger_catalog(db: &Connection) -> Vec<(String, String, String)> {
     .collect()
 }
 
+/// Lazy rows at V28 shape (the lazy tables exist since V26): a pending published message at
+/// thread sequence 3, a displayed one at 4, and a staged (unpublished) one, all for `agent`.
+const V28_LAZY_ROWS: &str = "
+  INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES
+    ('prep-3','i','scope','prep-3',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy'),
+    ('prep-4','i','scope','prep-4',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy'),
+    ('prep-5','i','scope','prep-5',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');
+  INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES
+    ('prep-3','msg-3','t','agent'),('prep-4','msg-4','t','agent'),('prep-5','msg-5','t','agent');
+  INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES
+    ('msg-3','i','t',3,'ordinary',4,'pending','0','lazy'),('msg-4','i','t',4,'ordinary',5,'shown','0','lazy');
+  INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES
+    ('prep-3','msg-3','i','t',4,0,3,0,1,0),('prep-4','msg-4','i','t',5,0,4,0,1,0);
+  UPDATE lazy_recipients SET state='displayed' WHERE message_id='msg-4';
+";
+
+/// A V29 database (the V29 step applied by hand) holding the V28 binding fixture, lazy rows and
+/// catch-up rows in their V29 shape.
+fn v29_delivery_fixture() -> Connection {
+    let db = v28_binding_fixture();
+    db.execute_batch(V28_LAZY_ROWS).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    db.execute_batch(include_str!("../../migrations/0029_session_bindings.sql"))
+        .unwrap();
+    db.execute(
+        "UPDATE occupant_bindings SET disconnected_at=777 WHERE migrated=1 AND ended_at IS NULL",
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "user_version", 29).unwrap();
+    db.execute_batch("COMMIT").unwrap();
+    db.execute_batch(
+        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,last_progress_at,state,end_reason,ended_at,release_seq) VALUES
+           ('agent','t',2,3,'e3',40,5000,45,'active',NULL,NULL,NULL),
+           ('agent','u',1,3,'e3',41,NULL,NULL,'ended','ready',50,9),
+           ('human','t',1,1,'human',42,6000,NULL,'active',NULL,NULL,NULL),
+           ('idle','t',1,1,'x',43,NULL,NULL,'active',NULL,NULL,NULL);",
+    )
+    .unwrap();
+    db
+}
+
+/// `v29_delivery_fixture` with the V30 step (archival scan scope, ht-54r.15) applied by hand:
+/// a V30 database holding lazy and catch-up rows in their pre-V31 shape.
+fn v30_delivery_fixture() -> Connection {
+    let db = v29_delivery_fixture();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    db.execute_batch(include_str!(
+        "../../migrations/0030_archival_scan_scope.sql"
+    ))
+    .unwrap();
+    db.pragma_update(None, "user_version", 30).unwrap();
+    db.execute_batch("COMMIT").unwrap();
+    db
+}
+
+fn binding_id_of(db: &Connection, ordinal: i64) -> String {
+    db.query_row(
+        "SELECT binding_id FROM occupant_bindings WHERE ordinal=?1",
+        [ordinal],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn v30_to_v31_carries_lazy_and_catch_up_state() {
+    let db = v30_delivery_fixture();
+    let (migrated, human) = (binding_id_of(&db, 3), binding_id_of(&db, 4));
+    schema::initialize(&db, || UtcMillis(900)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        31
+    );
+    // Only the published, still pending row is legacy pending: the displayed row and the
+    // staged (unpublished) one are not.
+    let legacy: Vec<(String, i64, String)> = db
+        .prepare("SELECT message_id,legacy_pending,state FROM lazy_recipients ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        legacy,
+        vec![
+            ("msg-3".into(), 1, "pending".into()),
+            ("msg-4".into(), 0, "displayed".into()),
+            ("msg-5".into(), 0, "pending".into()),
+        ]
+    );
+    // catch_up rows moved to the seat's open migrated binding (else its newest binding); the
+    // row of the seat with no binding row at all is dropped; other columns carry over.
+    type Row = (
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+        String,
+        Option<i64>,
+    );
+    let rows: Vec<Row> = db
+        .prepare("SELECT binding_id,seat_id,thread_id,frontier_seq,extension_until,state,release_seq FROM catch_up ORDER BY seat_id,thread_id")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                migrated.clone(),
+                "agent".into(),
+                "t".into(),
+                2,
+                Some(5000),
+                "active".into(),
+                None
+            ),
+            (
+                migrated,
+                "agent".into(),
+                "u".into(),
+                1,
+                None,
+                "ended".into(),
+                Some(9)
+            ),
+            (
+                human,
+                "human".into(),
+                "t".into(),
+                1,
+                Some(6000),
+                "active".into(),
+                None
+            ),
+        ]
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    // The old shape is gone and the table is keyed by (binding, thread).
+    assert!(!column_exists(&db, "catch_up", "binding_generation"));
+    assert!(!column_exists(&db, "catch_up", "execution_id"));
+    db.execute(
+        "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) VALUES (?1,'agent','t',1,0,'active')",
+        [binding_id_of(&db, 3)],
+    )
+    .expect_err("one row per (binding, thread)");
+    // Reopening audits the V31 shape without migrating again.
+    schema::initialize(&db, || UtcMillis(901)).unwrap();
+}
+
+#[test]
+fn upgrade_from_v28_with_pending_lazy_and_catch_up_mail_delivers_exactly_once() {
+    use crate::protocol::ids::{MessageId, NativeSessionId, SeatId, ThreadId};
+    use crate::store::{
+        bindings::{self, BindingKey},
+        lazy_delivery, read_cursors,
+    };
+    // Pre-upgrade: msg-3 pending, msg-4 displayed, ordinary m1/m2 already shown, one catch-up row.
+    let db = v28_binding_fixture();
+    db.execute_batch(V28_LAZY_ROWS).unwrap();
+    db.execute_batch("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('agent','t',2,3,'e3',40,'active')").unwrap();
+    schema::initialize(&db, || UtcMillis(777)).unwrap();
+    let seat = SeatId::new("agent");
+    let thread = ThreadId::new("t");
+    let key = BindingKey {
+        seat: seat.clone(),
+        harness: "claude".into(),
+        native_session: NativeSessionId::new("sess-A"),
+        agent_id: None,
+    };
+    let migrated = bindings::match_claim(&db, &key)
+        .unwrap()
+        .expect("the migrated binding is found by its stored session")
+        .binding_id;
+    let unread = |db: &Connection| -> Vec<MessageId> {
+        lazy_delivery::binding_lazy_unread(db, &migrated, 100)
+            .unwrap()
+            .into_iter()
+            .map(|u| u.message)
+            .collect()
+    };
+    let seat_page = |db: &Connection| -> Vec<MessageId> {
+        let high = lazy_delivery::capture_high_water(db, "i", &seat).unwrap();
+        lazy_delivery::pending_page(db, "i", &seat, 0, high, 100)
+            .unwrap()
+            .recipients
+            .into_iter()
+            .map(|r| r.message)
+            .collect()
+    };
+    // The migrated binding starts disconnected; the seat-level inbox still carries the
+    // pending message (legacy row), and the binding-level view carries it exactly once.
+    assert_eq!(seat_page(&db), [MessageId::new("msg-3")]);
+    assert_eq!(unread(&db), [MessageId::new("msg-3")]);
+    // The V29 cursor is the head at upgrade: nothing already displayed comes back.
+    assert_eq!(
+        read_cursors::cursor_for(&db, &migrated, &thread).unwrap(),
+        Some(4)
+    );
+    // Re-adoption (the session's next call) does not duplicate or skip it.
+    assert!(
+        bindings::connect(
+            &db,
+            &migrated,
+            None,
+            bindings::ConnectTrigger::Lifecycle,
+            UtcMillis(800)
+        )
+        .unwrap()
+    );
+    assert_eq!(seat_page(&db), [MessageId::new("msg-3")]);
+    assert_eq!(unread(&db), [MessageId::new("msg-3")]);
+    // A message published after the upgrade is past the cursor: delivered, once.
+    db.execute_batch(
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('prep-6','i','scope','prep-6',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy');
+         INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES ('prep-6','msg-6','t','agent');
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES ('msg-6','i','t',5,'ordinary',6,'late','0','lazy');
+         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-6','msg-6','i','t',6,0,5,0,1,0);
+         UPDATE host_instances SET decision_seq=max(decision_seq,6);",
+    )
+    .unwrap();
+    assert_eq!(
+        unread(&db),
+        [MessageId::new("msg-3"), MessageId::new("msg-6")]
+    );
+    // Displaying both settles them; nothing is delivered a second time.
+    let mut db = db;
+    let tx = db.transaction().unwrap();
+    lazy_delivery::complete_for_binding(
+        &tx,
+        "i",
+        &seat,
+        Some(&migrated),
+        &[MessageId::new("msg-3"), MessageId::new("msg-6")],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert!(unread(&db).is_empty());
+    assert!(seat_page(&db).is_empty());
+    assert!(!read_cursors::has_unread(&db, &migrated).unwrap());
+    assert_eq!(
+        read_cursors::cursor_for(&db, &migrated, &thread).unwrap(),
+        Some(5)
+    );
+    // The catch-up row is intact for the migrated binding.
+    let (binding, state, frontier): (String, String, i64) = db
+        .query_row(
+            "SELECT binding_id,state,frontier_seq FROM catch_up WHERE seat_id='agent' AND thread_id='t'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (binding.as_str(), state.as_str(), frontier),
+        (migrated.as_str(), "active", 2)
+    );
+}
+
 #[test]
 fn v30_fresh_matches_upgraded_catalog() {
     let upgraded = v29_database();
@@ -6519,7 +6818,7 @@ fn v30_fresh_matches_upgraded_catalog() {
         upgraded
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        30
+        schema::LATEST_VERSION
     );
     assert_eq!(trigger_catalog(&upgraded), trigger_catalog(&fresh_db()));
     // reopening audits the V30 shape without migrating again
@@ -6559,6 +6858,47 @@ fn v30_startup_rejects_an_altered_archival_trigger() {
     ] {
         let db = fresh_db();
         db.execute_batch(&alteration).unwrap();
+        assert_eq!(
+            schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+            ErrorCode::IncompatibleSchema,
+            "{alteration}"
+        );
+    }
+}
+
+#[test]
+fn v31_fresh_matches_upgraded_catalog_with_delivery_data() {
+    let upgraded = v30_delivery_fixture();
+    assert_eq!(
+        upgraded
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        30
+    );
+    schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
+    let fresh = fresh_db();
+    let catalog = |db: &Connection| {
+        db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
+        .query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('"', "")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+    };
+    assert_eq!(catalog(&upgraded), catalog(&fresh));
+}
+
+#[test]
+fn v31_startup_rejects_altered_catch_up_and_lazy_objects() {
+    for alteration in [
+        "DROP INDEX catch_up_seat",
+        "DROP INDEX catch_up_extension_until",
+        "DROP INDEX catch_up_thread_active",
+        "DROP INDEX lazy_recipients_legacy",
+        "DROP INDEX lazy_recipients_seat_ordinal",
+        "DROP INDEX catch_up_seat; CREATE INDEX catch_up_seat ON catch_up(seat_id, thread_id)",
+        "DROP TRIGGER archival_fence_catch_up_update",
+        "DROP TABLE catch_up; CREATE TABLE catch_up(binding_id TEXT NOT NULL, seat_id TEXT NOT NULL, thread_id TEXT NOT NULL, frontier_seq INTEGER NOT NULL, entered_at INTEGER NOT NULL, extension_until INTEGER, last_progress_at INTEGER, state TEXT NOT NULL, end_reason TEXT, ended_at INTEGER, release_seq INTEGER, PRIMARY KEY(binding_id, thread_id)) STRICT",
+        "PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,'CHECK(legacy_pending IN (0,1))','CHECK(legacy_pending IN (0,1,2))') WHERE type='table' AND name='lazy_recipients'; PRAGMA writable_schema=OFF",
+    ] {
+        let db = fresh_db();
+        db.execute_batch(alteration).unwrap();
         assert_eq!(
             schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
             ErrorCode::IncompatibleSchema,
@@ -6644,13 +6984,15 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         // +occupant_bindings_session_key, +occupant_bindings_open, +binding_cursors_thread
         // (net +2); triggers are recreated one for one. V30 drops archival_fence_seats_insert
         // (a new seat is in no channel) and recreates the other four fences in place (net -1).
+        // V31 deltas: +3 indexes (catch_up_seat, lazy_recipients_legacy,
+        // lazy_recipients_seat_ordinal); catch_up and its triggers are rebuilt one for one.
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
             75
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            141
+            144
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
