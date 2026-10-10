@@ -914,6 +914,8 @@ pub(crate) mod topology_contract_tests {
             native_session: crate::protocol::ids::NativeSessionId::new("session"),
             execution: crate::protocol::ids::ExecutionId::new("exec"),
             target: HostTargetId::new("w1:p1"),
+            agent_id: None,
+            liveness: None,
         }
     }
     pub(crate) fn payload() -> BootstrapPayload {

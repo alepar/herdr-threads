@@ -75,6 +75,8 @@ fn send_request(explicit: Vec<&str>) -> SendMessage {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
             target: HostTargetId::new("pa"),
+            agent_id: None,
+            liveness: None,
         },
         relays_user: false,
         user_intent: None,
@@ -343,6 +345,8 @@ fn ack_request(ids: Vec<MessageId>) -> Ack {
             native_session: NativeSessionId::new("nb"),
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000bb"),
             target: HostTargetId::new("pb"),
+            agent_id: None,
+            liveness: None,
         },
     }
 }

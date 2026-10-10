@@ -15,6 +15,8 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("n"),
         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
         target: HostTargetId::new("w1:p1"),
+        agent_id: None,
+        liveness: None,
     }
 }
 fn lazy(id: &str, body: &str) -> InboxBatchV2Item {

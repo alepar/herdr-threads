@@ -102,6 +102,8 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("plugin_context:n"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new("p"),
+        agent_id: None,
+        liveness: None,
     }
 }
 fn lifecycle(claim: CallerClaim, operation: &str) -> Command {

@@ -105,6 +105,8 @@ impl Fixture {
             native_session: NativeSessionId::new(format!("session-{seat}")),
             execution: ExecutionId::new(execution),
             target: HostTargetId::new(seat),
+            agent_id: None,
+            liveness: None,
         }
     }
     fn mutate(&self, mutation: PermitMutation) -> CommandResult {

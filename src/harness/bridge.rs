@@ -271,6 +271,8 @@ pub fn caller_claim(context: &OccupantContext) -> Result<CallerClaim, ContextErr
         execution: ExecutionId::parse(context.execution.to_string())
             .map_err(|_| ContextError::Invalid)?,
         target: HostTargetId::parse(context.target.clone()).map_err(|_| ContextError::Invalid)?,
+        agent_id: None,
+        liveness: None,
     })
 }
 fn occupant_context(claim: &CallerClaim) -> Result<OccupantContext, ContextError> {

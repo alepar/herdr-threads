@@ -1488,6 +1488,8 @@ fn fixture_claim(seat: &str, target: &str) -> CallerClaim {
         native_session: NativeSessionId::new("n"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new(target),
+        agent_id: None,
+        liveness: None,
     }
 }
 /// Mutates through the production cooperative path: the service-local permit
@@ -1882,6 +1884,8 @@ fn invalid_inbox_completion_writes_no_state() {
         native_session: NativeSessionId::new("n"),
         execution: ExecutionId::new("e"),
         target: HostTargetId::new("p"),
+        agent_id: None,
+        liveness: None,
     };
     let completion = CompleteInboxDelivery {
         via: None,

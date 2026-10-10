@@ -1,6 +1,7 @@
 //! SQLite-backed production store dispatch.
 pub mod archival;
 pub mod attention;
+pub mod bindings;
 pub mod catch_up;
 pub mod connection;
 pub mod control;
@@ -16,6 +17,7 @@ pub mod page_fit;
 pub mod poke;
 pub(crate) mod public_ids;
 pub mod queries;
+pub mod read_cursors;
 pub mod receipts;
 pub mod retention;
 pub mod schema;
@@ -1072,7 +1074,7 @@ fn pending_work_page_on(
 
 /// The seat walk of wake discovery: live (`seats_live_ordinal`) seats in ordinal
 /// order, excluding any seat whose current occupant is human (Wave 18).
-pub(crate) const WAKE_SEAT_WALK: &str = "SELECT s.ordinal,s.id FROM seats s INDEXED BY seats_live_ordinal WHERE s.instance_id=?1 AND s.state!='retired' AND s.ordinal>?2 AND s.ordinal<=?3 AND NOT EXISTS (SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_current WHERE seat_id=s.id AND ended_at IS NULL AND harness='human') ORDER BY s.ordinal LIMIT 1";
+pub(crate) const WAKE_SEAT_WALK: &str = "SELECT s.ordinal,s.id FROM seats s INDEXED BY seats_live_ordinal WHERE s.instance_id=?1 AND s.state!='retired' AND s.ordinal>?2 AND s.ordinal<=?3 AND NOT EXISTS (SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=s.id AND ended_at IS NULL AND harness='human') ORDER BY s.ordinal LIMIT 1";
 
 /// What one discovery pass found: the candidates, the `(before, ordinal)` position
 /// of each, the last seat ordinal passed, and why the pass stopped.

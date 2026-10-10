@@ -846,6 +846,8 @@ fn claim(execution: &str, generation: u64) -> CallerClaim {
         native_session: NativeSessionId::new("plugin_context:n"),
         execution: ExecutionId::new(execution),
         target: HostTargetId::new("p"),
+        agent_id: None,
+        liveness: None,
     }
 }
 

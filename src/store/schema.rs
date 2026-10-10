@@ -64,7 +64,8 @@ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sq
 const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
 const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
 const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
-pub(crate) const LATEST_VERSION: i64 = 28;
+const V29: &str = include_str!("../../migrations/0029_session_bindings.sql");
+pub(crate) const LATEST_VERSION: i64 = 29;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -117,6 +118,11 @@ fn decode_stored_result(json: &str) -> Result<CommandResult, ApiError> {
 
 /// The migration clock is sampled only when legacy preparations need fresh grace.
 pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<(), ApiError> {
+    // The clock is sampled at most once; later reads reuse the first sample.
+    let mut source = Some(now);
+    let mut sampled: Option<UtcMillis> = None;
+    let mut now =
+        move || *sampled.get_or_insert_with(|| (source.take().expect("clock sampled once"))());
     check_integrity(conn)?;
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -166,6 +172,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V26))
                 .and_then(|_| conn.execute_batch(V27))
                 .and_then(|_| conn.execute_batch(V28))
+                .and_then(|_| conn.execute_batch(V29))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -406,7 +413,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=28 => verify_existing(conn),
+        18..=29 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -574,7 +581,127 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_existing_v28(conn)
+    verify_existing_v28(conn)?;
+    if (1..=28).contains(&version) {
+        migrate_v28_to_v29(conn, now())?;
+    }
+    verify_existing_v29(conn)
+}
+
+/// V29 (ht-54r): session-keyed bindings. The SQL rebuild runs in one transaction; the
+/// upgrade time is the disconnected_at of each open migrated binding (archival grace).
+fn migrate_v28_to_v29(conn: &Connection, now: UtcMillis) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V29)
+        .map_err(store_error)
+        .and_then(|_| {
+            conn.execute(
+                "UPDATE occupant_bindings SET disconnected_at=?1 WHERE migrated=1 AND ended_at IS NULL",
+                [now.0],
+            )
+            .map(|_| ())
+            .map_err(store_error)
+        })
+        .and_then(|_| verify_existing_v29(conn))
+        .and_then(|_| {
+            conn.pragma_update(None, "user_version", 29)
+                .map_err(store_error)
+        });
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+/// Objects V29 creates or rebuilds, audited exactly as written: (kind, name as written in V29,
+/// name as installed). The rebuilt table is installed under its final name, which SQLite's
+/// RENAME writes quoted.
+const V29_AUDITED: [(&str, &str, &str); 7] = [
+    ("table", "occupant_bindings_v29", "occupant_bindings"),
+    (
+        "index",
+        "occupant_bindings_session_key",
+        "occupant_bindings_session_key",
+    ),
+    ("index", "occupant_bindings_open", "occupant_bindings_open"),
+    (
+        "index",
+        "occupant_bindings_history",
+        "occupant_bindings_history",
+    ),
+    (
+        "index",
+        "occupant_bindings_execution",
+        "occupant_bindings_execution",
+    ),
+    ("table", "binding_cursors", "binding_cursors"),
+    ("index", "binding_cursors_thread", "binding_cursors_thread"),
+];
+
+fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+    let normalize = |sql: &str| sql.trim().trim_end_matches(';').trim().to_owned();
+    for (kind, written, installed) in V29_AUDITED {
+        let headers: &[String] = &if kind == "table" {
+            vec![format!("CREATE TABLE {written} ")]
+        } else {
+            vec![
+                format!("CREATE INDEX {written} "),
+                format!("CREATE UNIQUE INDEX {written} "),
+            ]
+        };
+        let start = headers
+            .iter()
+            .find_map(|header| V29.find(header.as_str()))
+            .expect("audited V29 object present");
+        let end = start + V29[start..].find(';').expect("statement terminator");
+        let mut expected = V29[start..end].to_owned();
+        if written != installed {
+            expected = expected.replacen(written, &format!("\"{installed}\""), 1);
+        }
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, installed],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(normalize) != Some(normalize(&expected)) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered session binding {kind} {installed}"),
+            ));
+        }
+    }
+    for (table, column) in [
+        ("receipts", "ack_binding_id"),
+        ("messages", "sender_binding_id"),
+    ] {
+        let present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2 AND type='TEXT')",
+                params![table, column],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if !present {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing session binding column {table}.{column}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The schema version stamped in the database (`PRAGMA user_version`).
+fn schema_version(conn: &Connection) -> Result<i64, ApiError> {
+    conn.pragma_query_value(None, "user_version", |r| r.get(0))
+        .map_err(store_error)
 }
 
 fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
@@ -820,6 +947,14 @@ fn verify_existing_v27(conn: &Connection) -> Result<(), ApiError> {
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
             .collect();
         if name == "harness_binding_sequence_v22" {
+            continue;
+        }
+        // V29 rebuilds occupant_bindings and replaces its current-binding index; its own
+        // audit (`verify_existing_v29`) owns them. The history and execution indexes are
+        // recreated identically and stay audited here.
+        if schema_version(conn)? >= 29
+            && (name == "occupant_bindings_v22" || name == "occupant_bindings_current")
+        {
             continue;
         }
         let installed_name = name
@@ -1291,7 +1426,13 @@ fn verify_v11_b1(conn: &Connection) -> Result<(), ApiError> {
             ));
         }
     }
+    let v29 = schema_version(conn)? >= 29;
     for name in B1_EXISTING_ACCESS_PATHS {
+        let name = if v29 && name == "occupant_bindings_current" {
+            "occupant_bindings_open"
+        } else {
+            name
+        };
         let present: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
@@ -2362,6 +2503,12 @@ fn verify_existing_v1(conn: &Connection) -> Result<(), ApiError> {
         "warning_offer",
         "work_jobs",
     ];
+    // V29 replaces the one-open-binding-per-seat index with the non-unique access path.
+    let current_binding_index = if schema_version(conn)? >= 29 {
+        "occupant_bindings_open"
+    } else {
+        "occupant_bindings_current"
+    };
     let required_indexes = [
         "allocation_decisions_target",
         "snapshot_generations_status",
@@ -2372,7 +2519,7 @@ fn verify_existing_v1(conn: &Connection) -> Result<(), ApiError> {
         "seats_instance_ordinal",
         "seats_instance_state_ordinal",
         "seats_unresolved_generation",
-        "occupant_bindings_current",
+        current_binding_index,
         "occupant_bindings_history",
         "allocation_decisions_seat_history",
         "threads_instance_ordinal",

@@ -436,8 +436,7 @@ fn user_intent_service_send_stays_unclassified() {
             harness: Harness::Codex,
             native_session: NativeSessionId::new("plugin_context:worker"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000211"),
-            target: HostTargetId::new("pane-worker"),
-        };
+            target: HostTargetId::new("pane-worker"), agent_id: None, liveness: None, };
         let CommandResult::CheckedIn(checked) = native(Command::CheckIn(CheckIn {
             mode: CheckInMode::Lifecycle {
                 expected_binding_generation: 0,

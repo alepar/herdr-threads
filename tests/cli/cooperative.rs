@@ -664,6 +664,8 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("plugin_context:context"),
         execution: ExecutionId::new("execution"),
         target: HostTargetId::new("pane"),
+        agent_id: None,
+        liveness: None,
     }
 }
 #[test]
@@ -3277,6 +3279,8 @@ fn actor_current_ack_fixture(human_route: bool, human_current: bool) {
         native_session: NativeSessionId::new("plugin_context:00000000-0000-0000-0000-000000000002"),
         execution: ExecutionId::new("00000000-0000-0000-0000-000000000002"),
         target: HostTargetId::new("current-pane"),
+        agent_id: None,
+        liveness: None,
     };
     struct Client<'a> {
         journal: &'a Journal,

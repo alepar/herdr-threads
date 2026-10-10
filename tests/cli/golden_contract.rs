@@ -273,6 +273,8 @@ mod fixtures {
                 native_session: NativeSessionId::new("native-1"),
                 execution: ExecutionId::new("execution-1"),
                 target: HostTargetId::new("pane-1"),
+                agent_id: None,
+                liveness: None,
             },
             seat: SeatId::new("seat-a"),
             offered_through: Some("evt-9".to_owned()),

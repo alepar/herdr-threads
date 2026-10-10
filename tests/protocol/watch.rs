@@ -37,6 +37,8 @@ fn claim(role: CallerRole) -> CallerClaim {
         native_session: NativeSessionId::new("n1"),
         execution: ExecutionId::new("e1"),
         target: HostTargetId::new("p1"),
+        agent_id: None,
+        liveness: None,
     }
 }
 

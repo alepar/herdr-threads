@@ -1851,6 +1851,8 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         native_session: NativeSessionId::new("plugin_context:search-checkin"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new("w1:p1"),
+        agent_id: None,
+        liveness: None,
     };
     let check_in = Command::CheckIn(CheckIn {
         mode: CheckInMode::Lifecycle {

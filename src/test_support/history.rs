@@ -108,6 +108,8 @@ impl Actor {
             native_session: self.native_session.clone(),
             execution: self.execution.clone(),
             target: self.target.clone(),
+            agent_id: None,
+            liveness: None,
         }
     }
     fn permit(

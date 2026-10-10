@@ -222,7 +222,7 @@ fn every_access_path_prepares_indexed_by() {
         .map(|p| (p.index, p.sql))
         .collect();
     paths.push(("seats_live_ordinal", WAKE_SEAT_WALK));
-    paths.push(("occupant_bindings_current", WAKE_SEAT_WALK));
+    paths.push(("occupant_bindings_open", WAKE_SEAT_WALK));
     assert_eq!(
         paths.len(),
         8,

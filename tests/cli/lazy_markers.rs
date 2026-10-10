@@ -371,6 +371,8 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
         native_session: NativeSessionId::new("ns"),
         execution: ExecutionId::new("es"),
         target: HostTargetId::new("pane-s"),
+        agent_id: None,
+        liveness: None,
     };
     let req = SummaryRequest {
         thread: ThreadId::new("t"),

@@ -58,6 +58,7 @@ pub mod recipe;
 #[path = "../../tests/harness/recipe.rs"]
 mod recipe_tests;
 pub mod registry;
+pub mod required_hooks;
 pub mod runtime;
 pub mod setup;
 pub mod state;

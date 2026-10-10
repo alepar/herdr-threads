@@ -925,6 +925,8 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("sess-1"),
         execution: ExecutionId::new(uuid::Uuid::from_u128(2).to_string()),
         target: HostTargetId::new("w1:p1"),
+        agent_id: None,
+        liveness: None,
     }
 }
 

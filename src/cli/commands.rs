@@ -28,6 +28,23 @@ pub struct ParsedCli {
     /// Raw thread selector, consumed once before any daemon dispatch or journal.
     pub thread_selector: Option<String>,
     pub require_ack_panes: Vec<super::panes::PaneSelector>,
+    /// `--agent-id`: the subagent id herdr-threads' Claude PreToolUse hook inserts (spec §1).
+    /// Carried into a cooperative claim by [`ParsedCli::stamp_agent_id`].
+    pub agent_id: Option<crate::protocol::ids::AgentId>,
+}
+
+impl ParsedCli {
+    /// Carry `--agent-id` into a cooperative claim (spec §1). Leaves the claim's role alone.
+    /// Call sites belong to ht-54r.5 (client claim construction).
+    pub fn stamp_agent_id(
+        &self,
+        mut claim: crate::protocol::authority::CallerClaim,
+    ) -> crate::protocol::authority::CallerClaim {
+        if let Some(agent) = &self.agent_id {
+            claim.agent_id = Some(agent.clone());
+        }
+        claim
+    }
 }
 
 /// Commands that change native configuration or herdr-threads' own grants. Native policy asks
@@ -569,6 +586,10 @@ struct Cli {
     /// Agent role for the cooperative call.
     #[arg(long, global = true, value_parser = ["top-level", "subagent"])]
     cooperative_role: Option<String>,
+    /// Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into
+    /// the cooperative claim; no behaviour change until session bindings land.
+    #[arg(long, global = true, value_name = "ID")]
+    agent_id: Option<String>,
     #[command(subcommand)]
     command: Top,
 }
@@ -1690,6 +1711,7 @@ where
                     | "--cooperative-target"
                     | "--cooperative-harness"
                     | "--cooperative-role"
+                    | "--agent-id"
             ) {
             2
         } else {
@@ -1709,6 +1731,11 @@ where
     if actor == InvocationActor::Human && parsed.cooperative.is_some() {
         return Err(ParseFailure::Invalid(invalid(
             "human namespace cannot be mixed with cooperative agent selectors",
+        )));
+    }
+    if actor == InvocationActor::Human && parsed.agent_id.is_some() {
+        return Err(ParseFailure::Invalid(invalid(
+            "human namespace cannot be mixed with --agent-id",
         )));
     }
     // Native permission rules prompt for an escalating command by its exact leading words
@@ -1867,6 +1894,10 @@ fn parse_cli_in_registry(
             ));
         }
     };
+    let agent_id = cli
+        .agent_id
+        .map(|value| id(value, crate::protocol::ids::AgentId::parse))
+        .transpose()?;
     let output = OutputSpec {
         format: if cli.json {
             OutputFormat::Json
@@ -2742,6 +2773,7 @@ fn parse_cli_in_registry(
         cooperative_selector,
         require_ack_panes,
         thread_selector,
+        agent_id,
     })
 }
 
