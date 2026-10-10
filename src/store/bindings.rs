@@ -178,9 +178,11 @@ pub struct EnrollEvent<'a> {
     pub created: bool,
 }
 pub type EnrollHook = fn(&Connection, &EnrollEvent<'_>, UtcMillis) -> Result<(), ApiError>;
-/// Enroll-hook registry, run in order after the row and its cursors exist. ht-54r.4 inserts
-/// `launch_placeholder_replace` before `same_pid_supersede`.
-pub const ENROLL_HOOKS: &[(&str, EnrollHook)] = &[("same_pid_supersede", same_pid_supersede)];
+/// Enroll-hook registry, run in order after the row and its cursors exist.
+pub const ENROLL_HOOKS: &[(&str, EnrollHook)] = &[
+    ("launch_placeholder_replace", launch_placeholder_replace),
+    ("same_pid_supersede", same_pid_supersede),
+];
 
 const COLUMNS: &str = "ordinal,binding_id,seat_id,harness,native_session,agent_id,role,parent_binding,lineage_from,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start,migrated,migrated_session,generation,observation_provenance,ended_at";
 
@@ -421,6 +423,9 @@ pub struct DisconnectEvent<'a> {
 pub type DisconnectHook = fn(&Connection, &DisconnectEvent<'_>) -> Result<(), ApiError>;
 /// Side effects of a disconnect, run inside the deciding transaction after the row changed.
 /// ht-54r.12 appends ("mod_channel_release", ..); ht-54r.23 appends ("availability_recompute", ..).
+/// Human bindings (`harness='human'`) are exempt from the liveness sweep (TRUST-POLICY A4): a
+/// person has no process fingerprint, and the seat stays human-held until an agent replaces it;
+/// ht-54r.23's worker skips them.
 pub const DISCONNECT_HOOKS: &[(&str, DisconnectHook)] = &[];
 
 /// The only disconnect transition (end event, pane close, re-check, session switch, supersede all
@@ -533,8 +538,11 @@ pub fn same_pid_supersede(
     let Some(fp) = binding.fingerprint else {
         return Ok(());
     };
+    // A `managed_launch` placeholder carries the started process's fingerprint but is no session:
+    // it never supersedes a binding (the real session's check-in replaces it instead).
     if binding.role != BindingRole::TopLevel
         || binding.liveness != Liveness::Connected
+        || binding.provenance == crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
         || !(event.created || event.trigger == EnrollTrigger::Lifecycle)
     {
         return Ok(());
@@ -558,6 +566,103 @@ pub fn same_pid_supersede(
         disconnect(tx, &other.binding_id, DisconnectReason::Superseded, now)?;
     }
     Ok(())
+}
+
+/// Enroll hook (TRUST-POLICY A4 `managed_launch`): the first top-level agent binding of harness
+/// H that a lifecycle check-in enrolls or reconnects on seat S replaces every open
+/// `managed_launch` placeholder of H on S: `disconnect(Replaced)` through the sole disconnect
+/// transition, then `ended_at`. Bindings of other harnesses, real sessions and the human binding
+/// are untouched; a plain call (a tool-boundary check-in enrolling an unseen session, or a touch)
+/// never adopts a placeholder. The placeholder's own enrollment never replaces itself.
+pub fn launch_placeholder_replace(
+    tx: &Connection,
+    event: &EnrollEvent<'_>,
+    now: UtcMillis,
+) -> Result<(), ApiError> {
+    let binding = event.binding;
+    if binding.role != BindingRole::TopLevel
+        || binding.harness == "human"
+        || binding.provenance == crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
+        || event.trigger != EnrollTrigger::Lifecycle
+    {
+        return Ok(());
+    }
+    let placeholders = query_rows(
+        tx,
+        &format!(
+            "SELECT {COLUMNS} FROM occupant_bindings WHERE seat_id=?1 AND harness=?2 AND ended_at IS NULL \
+             AND observation_provenance=?3 AND binding_id<>?4 ORDER BY ordinal"
+        ),
+        &[
+            &binding.seat.as_str(),
+            &binding.harness,
+            &crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE,
+            &binding.binding_id.as_str(),
+        ],
+    )?;
+    for placeholder in &placeholders {
+        end_binding(tx, &placeholder.binding_id, DisconnectReason::Replaced, now)?;
+    }
+    Ok(())
+}
+
+/// Disconnects (idempotent, through the sole transition) and then ends one binding. Ending is
+/// only ever done by an exclusivity or retirement rule, never on heuristic evidence.
+fn end_binding(
+    tx: &Connection,
+    binding: &BindingId,
+    reason: DisconnectReason,
+    now: UtcMillis,
+) -> Result<(), ApiError> {
+    disconnect(tx, binding, reason, now)?;
+    tx.execute(
+        "UPDATE occupant_bindings SET ended_at=?2 WHERE binding_id=?1 AND ended_at IS NULL",
+        params![binding.as_str(), now.0],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// Human exclusivity (TRUST-POLICY A4, decision 14): an agent binding enrolled, reconnected or
+/// touched on a seat ends the seat's open human binding (reason `replaced`). Returns how many
+/// bindings it ended. A resume after this enrolls a fresh binding: ended rows are never reopened.
+pub fn end_human_binding(
+    tx: &Connection,
+    seat: &SeatId,
+    now: UtcMillis,
+) -> Result<usize, ApiError> {
+    let humans = query_rows(
+        tx,
+        &format!(
+            "SELECT {COLUMNS} FROM occupant_bindings WHERE seat_id=?1 AND harness='human' AND ended_at IS NULL ORDER BY ordinal"
+        ),
+        &[&seat.as_str()],
+    )?;
+    for human in &humans {
+        end_binding(tx, &human.binding_id, DisconnectReason::Replaced, now)?;
+    }
+    Ok(humans.len())
+}
+
+/// A person's `me init` ends the seat's agent bindings (TRUST-POLICY A4): the disconnected ones
+/// always, the connected ones only under the operator override (the caller refuses a connected
+/// agent otherwise). `ended_at` is set; reason `replaced` is recorded for rows still connected.
+pub fn end_agent_bindings(
+    tx: &Connection,
+    seat: &SeatId,
+    now: UtcMillis,
+) -> Result<usize, ApiError> {
+    let agents = query_rows(
+        tx,
+        &format!(
+            "SELECT {COLUMNS} FROM occupant_bindings WHERE seat_id=?1 AND harness<>'human' AND ended_at IS NULL ORDER BY ordinal"
+        ),
+        &[&seat.as_str()],
+    )?;
+    for agent in &agents {
+        end_binding(tx, &agent.binding_id, DisconnectReason::Replaced, now)?;
+    }
+    Ok(agents.len())
 }
 
 /// Open, connected bindings of the seat, in ordinal order.
@@ -728,7 +833,7 @@ fn subagent_shape_error() -> ApiError {
 
 /// Ends every open binding of the seat: connected ones go through `disconnect(reason)` first (so
 /// ht-54r.10's side-effect hooks run), then `ended_at` is set. Used by unresolve here, and by
-/// retirement (ht-54r.14) and human exclusivity (ht-54r.4).
+/// retirement (ht-54r.14). Human exclusivity uses `end_human_binding` / `end_agent_bindings`.
 pub fn end_open_bindings(
     tx: &Connection,
     seat: &SeatId,
@@ -751,48 +856,6 @@ pub fn end_open_bindings(
     )
     .map_err(store_error)?;
     Ok(open.len())
-}
-
-/// Which kind of lifecycle check-in replaces which bindings (TRUST-POLICY A4). Transitional
-/// until ht-54r.4 moves human exclusivity and the `managed_launch` placeholder replacement into
-/// enroll hooks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplacedBy {
-    /// A person's check-in replaces the seat's agent bindings (operator override only).
-    Human,
-    /// An agent's lifecycle check-in replaces the seat's human binding and its
-    /// `managed_launch` placeholder.
-    Agent,
-}
-
-/// Ends (reason `replaced`) the open bindings of `seat`, other than `keep`, that `by` replaces.
-pub fn end_replaced_bindings(
-    tx: &Connection,
-    seat: &SeatId,
-    keep: &BindingId,
-    by: ReplacedBy,
-    now: UtcMillis,
-) -> Result<usize, ApiError> {
-    let replaced = match by {
-        ReplacedBy::Human => "harness<>'human'",
-        ReplacedBy::Agent => "(harness='human' OR observation_provenance='managed_launch')",
-    };
-    let doomed = query_rows(
-        tx,
-        &format!(
-            "SELECT {COLUMNS} FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND binding_id<>?2 AND {replaced} ORDER BY ordinal"
-        ),
-        &[&seat.as_str(), &keep.as_str()],
-    )?;
-    for binding in &doomed {
-        disconnect(tx, &binding.binding_id, DisconnectReason::Replaced, now)?;
-        tx.execute(
-            "UPDATE occupant_bindings SET ended_at=?2 WHERE binding_id=?1",
-            params![binding.binding_id.as_str(), now.0],
-        )
-        .map_err(store_error)?;
-    }
-    Ok(doomed.len())
 }
 
 pub fn resolve_claim(
@@ -834,8 +897,24 @@ fn refresh_placement(
 }
 
 /// The binding resolution of one cooperative claim, inside the caller's deciding transaction
-/// (spec §1, §2 Enrollment). Never ends another binding.
+/// (spec §1, §2 Enrollment). The only bindings it ends are exclusivity ends (TRUST-POLICY A4): any
+/// agent claim (enroll, reconnect, reopen or plain touch) ends the seat's open human binding, and
+/// the enroll hooks end a launch placeholder.
 pub(crate) fn resolve_claim_with_hooks(
+    tx: &Connection,
+    request: &ResolveRequest<'_>,
+    rule: FingerprintRule,
+    now: UtcMillis,
+    hooks: &[(&str, EnrollHook)],
+) -> Result<Resolution, ApiError> {
+    let resolution = resolve_claim_inner(tx, request, rule, now, hooks)?;
+    if request.claim.harness != crate::protocol::authority::Harness::Human {
+        end_human_binding(tx, &request.claim.seat, now)?;
+    }
+    Ok(resolution)
+}
+
+fn resolve_claim_inner(
     tx: &Connection,
     request: &ResolveRequest<'_>,
     rule: FingerprintRule,

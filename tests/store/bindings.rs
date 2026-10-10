@@ -999,6 +999,195 @@ mod resolution {
     }
 }
 
+// ---- ht-54r.4: human exclusivity and the managed-launch placeholder ----
+
+mod exclusivity {
+    use super::*;
+    use crate::protocol::authority::{
+        CallerClaim, CallerRole, Harness, LivenessFingerprint, MANAGED_LAUNCH_PROVENANCE,
+    };
+
+    const EXEC: &str = "11111111-1111-4111-8111-111111111111";
+
+    fn claim(harness: Harness, session: &str, pid: u32) -> CallerClaim {
+        CallerClaim {
+            instance: "i".into(),
+            seat: SeatId::new("s"),
+            binding_generation: 4,
+            role: CallerRole::TopLevel,
+            harness,
+            native_session: NativeSessionId::new(session),
+            execution: ExecutionId::new(EXEC),
+            target: HostTargetId::new("p"),
+            agent_id: None,
+            liveness: (harness != Harness::Human).then_some(LivenessFingerprint { pid, start: 9 }),
+        }
+    }
+    fn resolve(db: &Connection, claim: &CallerClaim, lifecycle: bool) -> Resolution {
+        let place = placement();
+        resolve_claim(
+            db,
+            &ResolveRequest {
+                claim,
+                lifecycle,
+                placement: &place,
+                lineage: None,
+            },
+            FingerprintRule::Required,
+            UtcMillis(50),
+        )
+        .unwrap()
+    }
+    /// A `managed_launch` placeholder of `harness`, enrolled the way `record_managed_launch` does.
+    fn placeholder(db: &Connection, harness: &str, pid: u32) -> BindingRow {
+        let place = BindingPlacement {
+            provenance: MANAGED_LAUNCH_PROVENANCE.into(),
+            registered_at: None,
+            ..placement()
+        };
+        let key = BindingKey {
+            seat: SeatId::new("s"),
+            harness: harness.into(),
+            native_session: NativeSessionId::new(format!("launch:{harness}-{pid}")),
+            agent_id: None,
+        };
+        let mut req = request(&key, &place);
+        req.fingerprint = Some(LivenessFingerprint { pid, start: 9 });
+        enrolled(enroll(db, &req, UtcMillis(10)).unwrap()).0
+    }
+    fn row(db: &Connection, id: &BindingRow) -> BindingRow {
+        get(db, &id.binding_id).unwrap().unwrap()
+    }
+
+    #[test]
+    fn agent_claims_end_the_human_binding_through_the_disconnect_transition() {
+        for (lifecycle, label) in [(true, "lifecycle enroll"), (false, "plain call")] {
+            let db = db();
+            let human = resolve(&db, &claim(Harness::Human, "plugin_context:p", 0), true);
+            assert_eq!(human.binding().harness, "human");
+            let agent = resolve(&db, &claim(Harness::Claude, "sess-A", 7), lifecycle);
+            let ended = row(&db, human.binding());
+            assert!(ended.ended_at.is_some(), "{label}");
+            assert_eq!(ended.liveness, Liveness::Disconnected, "{label}");
+            assert_eq!(
+                ended.disconnect_reason.as_deref(),
+                Some("replaced"),
+                "{label}"
+            );
+            assert_eq!(row(&db, agent.binding()).ended_at, None, "{label}");
+        }
+    }
+
+    #[test]
+    fn a_human_claim_never_ends_agent_bindings() {
+        let db = db();
+        let agent = resolve(&db, &claim(Harness::Claude, "sess-A", 7), true);
+        resolve(&db, &claim(Harness::Human, "plugin_context:p", 0), true);
+        let after = row(&db, agent.binding());
+        assert_eq!(
+            (after.ended_at, after.liveness),
+            (None, Liveness::Connected)
+        );
+    }
+
+    #[test]
+    fn end_agent_bindings_ends_connected_and_disconnected_but_not_the_person() {
+        let db = db();
+        let a = resolve(&db, &claim(Harness::Claude, "sess-A", 7), true);
+        let b = resolve(&db, &claim(Harness::Claude, "sess-B", 8), true);
+        disconnect(
+            &db,
+            &b.binding().binding_id,
+            DisconnectReason::ProcessExit,
+            UtcMillis(20),
+        )
+        .unwrap();
+        let human = resolve(&db, &claim(Harness::Human, "plugin_context:p", 0), true);
+        assert_eq!(
+            end_agent_bindings(&db, &SeatId::new("s"), UtcMillis(60)).unwrap(),
+            2
+        );
+        let a = row(&db, a.binding());
+        assert_eq!(a.ended_at, Some(UtcMillis(60)));
+        assert_eq!(a.disconnect_reason.as_deref(), Some("replaced"));
+        let b = row(&db, b.binding());
+        assert_eq!(b.ended_at, Some(UtcMillis(60)));
+        assert_eq!(
+            b.disconnect_reason.as_deref(),
+            Some("liveness_process_exit")
+        );
+        assert_eq!(row(&db, human.binding()).ended_at, None);
+    }
+
+    #[test]
+    fn the_first_agent_check_in_replaces_only_its_harness_placeholders() {
+        let db = db();
+        let codex_placeholder = placeholder(&db, "codex", 100);
+        let claude_placeholder = placeholder(&db, "claude", 101);
+        let other_claude = placeholder(&db, "claude", 102);
+        let real = resolve(&db, &claim(Harness::Codex, "sess-real", 7), true);
+        let agent = resolve(&db, &claim(Harness::Claude, "sess-C", 8), true);
+        assert_eq!(real.binding().harness, "codex");
+        // The codex check-in ended the codex placeholder only; the claude check-in both claude ones.
+        let c = row(&db, &codex_placeholder);
+        assert_eq!(c.ended_at, Some(UtcMillis(50)));
+        assert_eq!(c.liveness, Liveness::Disconnected);
+        assert_eq!(c.disconnect_reason.as_deref(), Some("replaced"));
+        for p in [&claude_placeholder, &other_claude] {
+            let p = row(&db, p);
+            assert_eq!(p.ended_at, Some(UtcMillis(50)));
+            assert_eq!(p.disconnect_reason.as_deref(), Some("replaced"));
+        }
+        assert_eq!(row(&db, real.binding()).ended_at, None);
+        assert_eq!(row(&db, agent.binding()).ended_at, None);
+    }
+
+    #[test]
+    fn a_launch_placeholder_is_untouched_by_other_harnesses_and_by_agent_siblings() {
+        let db = db();
+        let codex_placeholder = placeholder(&db, "codex", 100);
+        let sibling = resolve(&db, &claim(Harness::Claude, "sess-A", 7), true);
+        let after = row(&db, &codex_placeholder);
+        assert_eq!(
+            (after.ended_at, after.liveness),
+            (None, Liveness::Connected)
+        );
+        // A claude subagent or a plain touch is not a top-level lifecycle event of codex either.
+        resolve(&db, &claim(Harness::Claude, "sess-A", 7), false);
+        assert_eq!(row(&db, &codex_placeholder).ended_at, None);
+        assert_eq!(row(&db, sibling.binding()).ended_at, None);
+    }
+
+    #[test]
+    fn a_plain_call_enrollment_never_adopts_the_placeholder() {
+        let db = db();
+        let p = placeholder(&db, "claude", 100);
+        resolve(&db, &claim(Harness::Claude, "sess-A", 7), false);
+        let after = row(&db, &p);
+        assert_eq!(
+            (after.ended_at, after.liveness),
+            (None, Liveness::Connected)
+        );
+    }
+
+    #[test]
+    fn a_placeholder_never_supersedes_a_session_with_the_same_process() {
+        let db = db();
+        let agent = resolve(&db, &claim(Harness::Claude, "sess-A", 7), true);
+        // The placeholder carries the same process fingerprint as the session (the started process
+        // is the agent): it is no session, so it must not disconnect the real binding.
+        let p = placeholder(&db, "claude", 7);
+        assert_eq!(
+            p.fingerprint,
+            Some(LivenessFingerprint { pid: 7, start: 9 })
+        );
+        assert_eq!(row(&db, agent.binding()).liveness, Liveness::Connected);
+        // The real session's lifecycle check-in replaces the placeholder instead.
+        resolve(&db, &claim(Harness::Claude, "sess-A", 7), true);
+        assert_eq!(row(&db, &p).ended_at, Some(UtcMillis(50)));
+    }
+}
+
 // ---- ht-54r.10: binding liveness ----
 
 mod liveness {

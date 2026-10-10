@@ -227,6 +227,10 @@ fn probe_seat_managed_launch() {
         incarnation: "herdr-server:pid=1".into(),
         host_boot: HostBootId::new("boot"),
         target_generation: 1,
+        fingerprint: crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 1,
+        },
     });
     assert!(command.validate().is_ok());
     let json = serde_json::to_value(&command).unwrap();

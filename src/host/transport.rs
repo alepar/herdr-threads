@@ -461,6 +461,7 @@ fn request_inner_response(
                         "pane.get" => Some("pane_info"),
                         "pane.current" => Some("pane_current"),
                         "pane.read" => Some("pane_read"),
+                        "pane.process_info" => Some("pane_process_info"),
                         "session.snapshot" => Some("session_snapshot"),
                         "agent.prompt" => Some("agent_prompted"),
                         "agent.start" => Some("agent_started"),

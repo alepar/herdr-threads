@@ -639,6 +639,7 @@ impl NativeCli {
         observed.generation = 0;
         observed.observed_at_mono = self.clock.monotonic_now();
         observed.completed_at_mono = observed.observed_at_mono;
+        let started_process = self.started_process(&request.target, &context.budget);
         let correlation = CorrelatedStartup {
             process_hint: request.process_hint,
             seat: request.seat.clone(),
@@ -653,11 +654,43 @@ impl NativeCli {
             epoch: current_epoch,
             submitted_at_mono,
             completed_at_mono: observed.completed_at_mono,
+            started_process,
         };
         Ok(NativeLaunchOutcome::ObservedStartup {
             correlation,
             diagnostic: observed,
         })
+    }
+
+    /// The process Herdr's guarded start left running in `target` (the managed-launch
+    /// placeholder's liveness fingerprint): the pane's single foreground process other than its
+    /// shell, from Herdr's `pane.process_info`, with its start stamp read from host process info.
+    /// Advisory and unfenced. Never a tty or argv scan: none, several or an unreadable process
+    /// yield `None`, and the launch then records no placeholder.
+    fn started_process(
+        &self,
+        target: &HostTargetId,
+        launch_budget: &CallBudget,
+    ) -> Option<crate::protocol::authority::LivenessFingerprint> {
+        use crate::ports::ProcessInfo as _;
+        // The readiness wait may have used most of the launch budget; this one short read gets
+        // its own (still cancelled by the launch's cancellation).
+        let budget = CallBudget {
+            deadline: crate::protocol::time::MonoInstant(
+                self.clock.monotonic_now().0.saturating_add(2_000),
+            ),
+            cancellation: launch_budget.cancellation.clone(),
+        };
+        let raw = self
+            .run_unfenced(
+                &["pane", "process-info", target.as_str()],
+                &budget,
+                Duration::from_millis(750),
+            )
+            .ok()?;
+        let pid = started_process_pid(&serde_json::from_str(&raw).ok()?)?;
+        let record = crate::host::process_table::HostProcessTable.process(pid)?;
+        Some(crate::protocol::authority::LivenessFingerprint::of(&record))
     }
 
     /// The pane's last lines when the started harness has already exited: its
@@ -970,6 +1003,9 @@ impl NativeCli {
                 ("pane.current", serde_json::json!({"caller_pane_id":caller}))
             }
             ["pane", "get", target] => ("pane.get", serde_json::json!({"pane_id":target})),
+            ["pane", "process-info", target] => {
+                ("pane.process_info", serde_json::json!({"pane_id":target}))
+            }
             ["api", "snapshot"] => ("session.snapshot", serde_json::json!({})),
             ["agent", "get", target] => ("agent.get", serde_json::json!({"target":target})),
             ["agent", "read", target, "--source", source] => (
@@ -2295,6 +2331,25 @@ fn composer_call_aborts(failure: &ApiError) -> bool {
 /// again after it (the harness ran and exited): the trailing lines then, else
 /// `None`. A prompt line ends in `%`, `$`, `#` or `❯`; the echoed command
 /// line (which names `kind`) does not.
+/// The pid of the single foreground process of a `pane.process_info` response other than the
+/// pane's shell. Several foreground processes (or none besides the shell) are not evidence of
+/// which one Herdr started, so they yield `None`.
+fn started_process_pid(response: &serde_json::Value) -> Option<u32> {
+    let info = response.pointer("/result/process_info")?;
+    let shell = info.get("shell_pid").and_then(serde_json::Value::as_u64);
+    let mut pids = info
+        .get("foreground_processes")?
+        .as_array()?
+        .iter()
+        .filter_map(|process| process.get("pid").and_then(serde_json::Value::as_u64))
+        .filter(|pid| Some(*pid) != shell);
+    let pid = pids.next()?;
+    if pids.next().is_some() {
+        return None;
+    }
+    u32::try_from(pid).ok().filter(|pid| *pid != 0)
+}
+
 fn shell_prompt_returned(text: &str, kind: &str) -> Option<String> {
     let ends_with_prompt = |line: &str| line.ends_with(['%', '$', '#', '❯']);
     let lines: Vec<&str> = text
@@ -2735,6 +2790,7 @@ pub(crate) mod tests {
                     assert!(wire["params"].get("process_hint").is_none());
                     started(name.clone())
                 }
+                "pane.process_info" => process_info_fixture(),
                 other => panic!("unexpected fixture operation: {other}"),
             };
             answer(stream, wire, result);
@@ -2891,6 +2947,7 @@ pub(crate) mod tests {
                         assert_eq!(wire["params"]["target"], name);
                         json!({"type":"agent_info","agent":ready["agent"]})
                     }
+                    "pane.process_info" => process_info_fixture(),
                     other => panic!("unexpected fixture operation: {other}"),
                 };
                 answer(stream, wire, result);
@@ -2917,6 +2974,13 @@ pub(crate) mod tests {
             );
             assert!(correlation.matches_request(&request, &context));
             assert_eq!(correlation.argv, ["space arg", "apostrophe's arg"]);
+            // ht-54r.4: the placeholder fingerprint is the pane's single foreground process
+            // (this test process in the fixture), read through host process info.
+            let started = correlation
+                .started_process
+                .unwrap_or_else(|| panic!("started process ({readiness})"));
+            assert_eq!(started.pid, std::process::id());
+            assert_ne!(started.start, 0);
         }
     }
 
@@ -2948,6 +3012,7 @@ pub(crate) mod tests {
                         response["argv"] = json!([vec!["codex".to_owned()], argv.clone()].concat());
                         response
                     }
+                    "pane.process_info" => process_info_fixture(),
                     other => panic!("unexpected Task48 synthetic socket operation: {other}"),
                 };
                 answer(stream, wire, response);
@@ -3074,6 +3139,7 @@ pub(crate) mod tests {
                         }
                         answer(stream, wire, result);
                     }
+                    "pane.process_info" => answer(stream, wire, process_info_fixture()),
                     other => panic!("unexpected fixture operation: {other}"),
                 }
             });
@@ -3269,6 +3335,15 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// Herdr's `pane.process_info` for a pane whose shell runs one foreground process: this test
+    /// process, so host process info can read its start stamp.
+    fn process_info_fixture() -> Value {
+        json!({"type":"pane_process_info","process_info":{
+            "pane_id":"pane","shell_pid":1,
+            "foreground_processes":[{"pid":std::process::id(),"name":"codex","argv0":"codex"}]
+        }})
     }
 
     fn started(name: String) -> Value {
@@ -5926,6 +6001,38 @@ pub(crate) mod tests {
         assert_eq!(shell_prompt_returned("me@host r %", "codex"), None);
         assert_eq!(shell_prompt_returned("", "codex"), None);
         assert!(shell_prompt_returned("r % codex exec\nboom\nr %", "codex").is_some());
+    }
+
+    /// Live 2026-10-10 against Herdr 0.9.1: `pane.process_info` answers
+    /// `{"result":{"process_info":{"shell_pid":N,"foreground_processes":[{"pid":N,"name",
+    /// "argv0","argv","cmdline","cwd"}]}}}`. The managed-launch placeholder fingerprints the one
+    /// foreground process that is not the shell. Kills: a fingerprint taken from the shell, from
+    /// one of several candidate processes, or from a zero or oversized pid.
+    #[test]
+    fn started_process_is_the_single_non_shell_foreground_process() {
+        let info = |shell: u64, pids: &[u64]| {
+            serde_json::json!({"result":{"type":"pane_process_info","process_info":{
+                "shell_pid":shell,
+                "foreground_processes":pids.iter().map(|pid| serde_json::json!({
+                    "pid":pid,"name":"p","argv0":"p","argv":["p"],"cmdline":"p"
+                })).collect::<Vec<_>>()
+            }}})
+        };
+        assert_eq!(started_process_pid(&info(10, &[20])), Some(20));
+        assert_eq!(started_process_pid(&info(10, &[10, 20])), Some(20));
+        assert_eq!(
+            started_process_pid(&info(10, &[10])),
+            None,
+            "only the shell"
+        );
+        assert_eq!(started_process_pid(&info(10, &[])), None);
+        assert_eq!(started_process_pid(&info(10, &[20, 21])), None, "ambiguous");
+        assert_eq!(started_process_pid(&info(10, &[0])), None);
+        assert_eq!(
+            started_process_pid(&info(10, &[u64::from(u32::MAX) + 1])),
+            None
+        );
+        assert_eq!(started_process_pid(&serde_json::json!({"error":{}})), None);
     }
 
     /// Live 2026-10-01 against Herdr 0.9.1 (stand-in `codex` through

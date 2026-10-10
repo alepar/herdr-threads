@@ -33,6 +33,8 @@ struct FakeHost {
     submitted: Mutex<Vec<NativeLaunchRequest>>,
     unknown: bool,
     confirmed_refusal: bool,
+    /// The started process Herdr's pane process info reported (`None`: none observable).
+    started_process: Option<crate::protocol::authority::LivenessFingerprint>,
 }
 impl FakeHost {
     fn new() -> Self {
@@ -42,6 +44,10 @@ impl FakeHost {
             submitted: Mutex::new(Vec::new()),
             unknown: false,
             confirmed_refusal: false,
+            started_process: Some(crate::protocol::authority::LivenessFingerprint {
+                pid: 4242,
+                start: 1,
+            }),
         }
     }
     fn observation(&self) -> HostObservation {
@@ -157,6 +163,7 @@ impl HostPort for FakeHost {
                 epoch: context.expected_epoch.unwrap(),
                 submitted_at_mono: diagnostic.started_at_mono,
                 completed_at_mono: diagnostic.completed_at_mono,
+                started_process: self.started_process,
             },
             diagnostic,
         })
@@ -206,7 +213,7 @@ impl LaunchSeatResolver for FakeSeats {
         self.recorded
             .lock()
             .unwrap()
-            .push(managed_launch_command(startup));
+            .push(managed_launch_command(startup)?);
         let record = |recorded: bool, provenance: &str| {
             Ok(Some(ManagedLaunchRecord {
                 seat: startup.seat.clone(),
@@ -1468,6 +1475,10 @@ fn accepted_startup_records_a_managed_launch_binding() {
             incarnation: "herdr-server:pid=1".into(),
             host_boot: HostBootId::new("boot"),
             target_generation: 1,
+            fingerprint: crate::protocol::authority::LivenessFingerprint {
+                pid: 4242,
+                start: 1,
+            },
         }]
     );
     assert_eq!(out.report["binding"]["recorded"], true);
@@ -1480,6 +1491,42 @@ fn accepted_startup_records_a_managed_launch_binding() {
             .contains("not receipt")
     );
     assert_eq!(s.records()[0]["binding"]["recorded"], true);
+}
+
+/// A start with no observable started process records no placeholder: the
+/// placeholder's identity is the process fingerprint, never a tty or argv scan.
+/// The agent started either way, so the launch still succeeds and the report
+/// says why nothing was recorded. Kills: a placeholder recorded with a guessed
+/// or empty fingerprint, a launch that fails after the agent started, and a
+/// silent report.
+#[test]
+fn launch_is_refused_without_an_observable_started_process() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.285 (Claude Code)", b"");
+    s.setup_claude();
+    let mut host = FakeHost::new();
+    host.started_process = None;
+    let (seats, handoff) = (seats(), handoff());
+    let out = s
+        .launch(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Claude, &[]),
+        )
+        .unwrap();
+    assert_eq!(out.exit, 0);
+    assert_eq!(out.report["outcome"], "started");
+    assert!(seats.recorded.lock().unwrap().is_empty());
+    assert_eq!(out.report["binding"]["recorded"], false);
+    assert!(
+        out.report["binding"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("no started process is observable"),
+        "{}",
+        out.report["binding"]
+    );
 }
 
 /// Kills: reporting an unconfirmed start (exit 5) to the daemon, which would

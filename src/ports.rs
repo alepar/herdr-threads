@@ -1907,6 +1907,11 @@ pub struct CorrelatedStartup {
     pub epoch: u64,
     pub submitted_at_mono: MonoInstant,
     pub completed_at_mono: MonoInstant,
+    /// PID and start stamp of the one process Herdr reports in the launched pane's foreground
+    /// (not its shell), read through host process info right after the observed start. `None`
+    /// when Herdr reported no single such process or the process table could not read it: the
+    /// managed-launch placeholder needs this fingerprint and is not recorded without it.
+    pub started_process: Option<crate::protocol::authority::LivenessFingerprint>,
 }
 impl CorrelatedStartup {
     pub fn matches_request(
@@ -2701,9 +2706,10 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         request: ContinuityRequest,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
-    /// TRUST-POLICY A3 `managed_launch` (ht-5n6): open an unregistered
-    /// occupant binding for a correlated managed launch on a seat with no
-    /// open binding, decided against the effective observation.
+    /// TRUST-POLICY A3 `managed_launch` (ht-5n6, ht-54r.4): open an unregistered
+    /// placeholder binding, carrying the started process's fingerprint, for a
+    /// correlated managed launch beside the seat's other bindings, decided
+    /// against the effective observation.
     fn record_managed_launch(
         &self,
         command: crate::protocol::commands::RecordManagedLaunch,

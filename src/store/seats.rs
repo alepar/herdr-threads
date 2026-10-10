@@ -3873,10 +3873,6 @@ pub(crate) struct CooperativeMapping {
     pub revision: u64,
     pub invalidation_revision: u64,
     pub generation: u64,
-    /// The claim's binding generation: `generation`, or one less when a
-    /// lifecycle check-in replaces a `managed_launch` binding recorded after
-    /// it was prepared (ht-5n6).
-    pub claimed_generation: u64,
     /// Terminal and host incarnation from the same verified effective
     /// observation that proved this mapping. A binding written from this
     /// mapping stores them so snapshot reconciliation can later reconfirm it.
@@ -4023,24 +4019,9 @@ pub(crate) fn cooperative_mapping(
         Some(crate::protocol::commands::CheckInMode::Lifecycle { .. })
     );
     let claimed = checked_host_number(claim.binding_generation)?;
-    // TRUST-POLICY A4 (ht-5n6): a lifecycle check-in prepared against the
-    // seat generation just before `launch` recorded its `managed_launch`
-    // binding (exactly one generation earlier) still replaces it: the agent
-    // that launch started checked in while launch was reporting it.
-    let behind_launch = lifecycle_mode
-        && claimed.checked_add(1) == Some(generation)
-        && db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL AND observation_provenance=?3)",
-                params![
-                    claim.seat.as_str(),
-                    generation,
-                    crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
-                ],
-                |r| r.get::<_, bool>(0),
-            )
-            .map_err(store_error)?;
-    if generation != claimed && !behind_launch {
+    // A `managed_launch` placeholder neither bumps the seat generation nor is replaced by a
+    // generation allowance: a launched agent's check-in matches the seat generation like any other.
+    if generation != claimed {
         let code = if lifecycle_mode {
             ErrorCode::Conflict
         } else {
@@ -4100,7 +4081,6 @@ pub(crate) fn cooperative_mapping(
         revision: revision as u64,
         invalidation_revision: invalidation as u64,
         generation: generation as u64,
-        claimed_generation: claimed as u64,
         terminal: observation.as_ref().and_then(|o| o.terminal_id.clone()),
         incarnation: observation.and_then(|o| o.incarnation),
     })
@@ -4265,9 +4245,7 @@ pub(crate) fn decide_cooperative_fence(
         seat: claim.seat.clone(),
         target: claim.target.clone(),
         mapping_revision: mapping.revision,
-        // The claim's own generation: equal to the seat's, or one behind a
-        // `managed_launch` binding the cooperative mapping accepted.
-        binding_generation: mapping.claimed_generation,
+        binding_generation: mapping.generation,
         invalidation_revision: mapping.invalidation_revision,
         known_invalidated: false,
     };
@@ -4389,12 +4367,13 @@ pub fn register_available(
                 command.mode,
                 crate::protocol::commands::CheckInMode::Lifecycle { .. }
             );
+            let human = claim.harness == crate::protocol::authority::Harness::Human;
             if lifecycle
-                && claim.harness == crate::protocol::authority::Harness::Human
-                && let Some(open) = crate::store::queries::open_binding(tx, seat.as_str())?
-                && crate::protocol::authority::AGENT_BINDING_PROVENANCES
-                    .contains(&open.provenance.as_str())
+                && human
                 && operator.is_none()
+                && let Some(open) = bindings::list_connected(tx, seat)?
+                    .into_iter()
+                    .find(|binding| binding.harness != "human")
             {
                 return Err(api_error(
                     ErrorCode::Unauthorized,
@@ -4419,19 +4398,13 @@ pub fn register_available(
             // bump it (only rebind, unresolve and retire do).
             let generation = mapping.generation as i64;
             if lifecycle {
-                // TRUST-POLICY A4, transitional until ht-54r.4: a person and an agent never
-                // hold a seat together, and the first agent check-in replaces `managed_launch`.
-                bindings::end_replaced_bindings(
-                    tx,
-                    seat,
-                    &binding_id,
-                    if claim.harness == crate::protocol::authority::Harness::Human {
-                        bindings::ReplacedBy::Human
-                    } else {
-                        bindings::ReplacedBy::Agent
-                    },
-                    at.utc,
-                )?;
+                // TRUST-POLICY A4: a person and an agent never hold a seat together. An agent's
+                // check-in already ended the seat's human binding and any launch placeholder
+                // inside `resolve_cooperative`; a person's ends the seat's agent bindings (the
+                // connected ones only under the operator override, refused above otherwise).
+                if human {
+                    bindings::end_agent_bindings(tx, seat, at.utc)?;
+                }
                 catch_up::supersede_stale(tx, seat, at.utc)?;
                 if let Some(actor) = operator {
                     tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_human_override',?4,?5,?6,?7,?8)",
@@ -4521,13 +4494,14 @@ pub fn register_available(
 /// onto the launch target with no recovery hold, the effective observation
 /// must be current for the instance's host boot and epoch and the seat's
 /// target generation, and the launcher's terminal, Herdr incarnation, boot and
-/// target generation must equal it. A seat that already has an open binding
-/// (an agent or person that checked in, or an earlier launch) is left
-/// unchanged and reported with `recorded: false`. The new binding bumps the
-/// seat generation by exactly one, carries placeholder session and execution
-/// ids no caller claim can match, has no `registered_at` and starts no
+/// target generation must equal it. The placeholder is one more binding next to
+/// any the seat already holds (ht-54r.4): it keeps the seat generation, carries
+/// the started process's liveness fingerprint and placeholder session and
+/// execution ids no caller claim can match, has no `registered_at` and starts no
 /// availability, receipt timer or wake binding generation: it authorizes
-/// nothing but a wake prompt to the bound harness.
+/// nothing but a wake prompt to the bound harness. The launched agent's first
+/// lifecycle check-in replaces only the placeholders of its own harness
+/// (`bindings::launch_placeholder_replace`).
 pub fn record_managed_launch(
     context: &StoreContext,
     conn: &mut Connection,
@@ -4603,69 +4577,58 @@ pub fn record_managed_launch(
             ))
         },
         |tx, at, (generation, seat_target_generation, boot, epoch, terminal, incarnation)| {
-            let open: Option<(i64, String)> = tx
-                .query_row(
-                    "SELECT generation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1",
-                    [command.seat.as_str()],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()
-                .map_err(store_error)?;
-            if let Some((bound_generation, provenance)) = open {
-                return Ok(CommandResult::ManagedLaunchRecorded(
-                    crate::protocol::results::ManagedLaunchRecord {
-                        seat: command.seat.clone(),
-                        recorded: false,
-                        binding_generation: u64::try_from(bound_generation).map_err(|_| {
-                            api_error(ErrorCode::StoreCorrupt, "negative binding generation")
-                        })?,
-                        provenance,
-                    },
-                ));
-            }
-            // Exactly one past the seat generation, so a lifecycle check-in
-            // prepared just before this decision is recognized (cooperative
-            // mapping) and still replaces the launch binding.
-            let next = generation.checked_add(1).ok_or_else(|| {
-                api_error(ErrorCode::SequenceExhausted, "seat binding generation exhausted")
-            })?;
-            let taken: bool = tx
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation>=?2)",
-                    params![command.seat.as_str(), next],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            if taken {
-                return Err(api_error(
-                    ErrorCode::Conflict,
-                    "seat binding history is ahead of the seat generation; the agent's check-in registers it",
-                ));
-            }
-            let changed = tx
-                .execute(
-                    "UPDATE seats SET generation=?1 WHERE id=?2 AND generation=?3",
-                    params![next, command.seat.as_str(), generation],
-                )
-                .map_err(store_error)?;
-            if changed != 1 {
-                return Err(api_error(ErrorCode::Conflict, "managed launch generation CAS failed"));
-            }
-            let placeholder = format!(
+            // The seat may already hold agent bindings, connected or not: the placeholder is one
+            // more binding, keyed by its own `launch:` session, and changes none of them. The seat
+            // generation stays: only the launched agent's own check-in replaces the placeholder.
+            let placeholder = crate::protocol::ids::NativeSessionId::new(format!(
                 "{}{}",
                 crate::protocol::authority::MANAGED_LAUNCH_PLACEHOLDER_PREFIX,
                 uuid::Uuid::new_v4()
-            );
-            tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,?9,?10,NULL,?11,?12)",
-                params![command.seat.as_str(),next,command.target.as_str(),boot,epoch,seat_target_generation,
-                    command.harness.as_str(),placeholder,crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE,at.utc.0,terminal,incarnation]).map_err(store_error)?;
+            ));
+            let key = bindings::BindingKey {
+                seat: command.seat.clone(),
+                harness: command.harness.as_str().to_owned(),
+                native_session: placeholder.clone(),
+                agent_id: None,
+            };
+            let placement = bindings::BindingPlacement {
+                generation: u64::try_from(generation).map_err(|_| {
+                    api_error(ErrorCode::StoreCorrupt, "negative seat generation")
+                })?,
+                target_generation: u64::try_from(seat_target_generation).map_err(|_| {
+                    api_error(ErrorCode::StoreCorrupt, "negative target generation")
+                })?,
+                target: command.target.as_str().to_owned(),
+                terminal,
+                incarnation,
+                host_boot: boot,
+                host_epoch: u64::try_from(epoch)
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative host epoch"))?,
+                execution: placeholder.as_str().to_owned(),
+                provenance: crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE.to_owned(),
+                observed_at: at.utc,
+                registered_at: None,
+            };
+            let outcome = bindings::enroll(
+                tx,
+                &bindings::EnrollRequest {
+                    key: &key,
+                    role: bindings::BindingRole::TopLevel,
+                    parent: None,
+                    lineage: None,
+                    fingerprint: Some(command.fingerprint),
+                    placement: &placement,
+                    trigger: bindings::EnrollTrigger::Lifecycle,
+                },
+                at.utc,
+            )?;
+            let (bindings::EnrollOutcome::Enrolled { binding, .. }
+            | bindings::EnrollOutcome::Existing(binding)) = outcome;
             Ok(CommandResult::ManagedLaunchRecorded(
                 crate::protocol::results::ManagedLaunchRecord {
                     seat: command.seat.clone(),
                     recorded: true,
-                    binding_generation: u64::try_from(next).map_err(|_| {
-                        api_error(ErrorCode::StoreCorrupt, "negative seat generation")
-                    })?,
+                    binding_generation: binding.generation,
                     provenance: crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE.into(),
                 },
             ))

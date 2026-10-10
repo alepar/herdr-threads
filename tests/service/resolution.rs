@@ -2751,6 +2751,10 @@ impl HostPort for LaunchHost {
                 epoch: context.expected_epoch.unwrap(),
                 submitted_at_mono: diagnostic.started_at_mono,
                 completed_at_mono: diagnostic.completed_at_mono,
+                started_process: Some(herdr_threads::protocol::authority::LivenessFingerprint {
+                    pid: 4242,
+                    start: 1,
+                }),
             },
             diagnostic,
         })
