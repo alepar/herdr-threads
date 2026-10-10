@@ -918,6 +918,27 @@ pub struct SeatSummary {
     pub generation: u64,
     pub created_at: UtcMillis,
     pub retired_at: Option<UtcMillis>,
+    /// Presence: the seat has an open connected binding (or a live human pane).
+    #[serde(default)]
+    pub active: bool,
+    /// Open bindings in ordinal order.
+    #[serde(default)]
+    pub bindings: Vec<BindingPresence>,
+    /// Availability slot, filled by the liveness worker; absent until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<String>,
+}
+/// One open binding as shown in presence listings; session ids are not presentation data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BindingPresence {
+    pub harness: String,
+    /// `top_level` or `subagent`.
+    pub role: String,
+    pub connected: bool,
+    /// Subagent id; absent for top-level bindings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1390,6 +1411,15 @@ pub struct Participant {
     pub retirement_cutover: Option<UtcMillis>,
     pub cleanup_state: Option<CleanupState>,
     pub accepted_invitation: Option<InvitationAcceptance>,
+    /// Presence: the seat has an open connected binding (or a live human pane).
+    #[serde(default)]
+    pub active: bool,
+    /// Open bindings in ordinal order.
+    #[serde(default)]
+    pub bindings: Vec<BindingPresence>,
+    /// Availability slot, filled by the liveness worker; absent until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

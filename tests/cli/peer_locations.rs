@@ -78,6 +78,9 @@ fn result() -> CommandResult {
                 retirement_cutover: None,
                 cleanup_state: None,
                 accepted_invitation: None,
+                active: false,
+                bindings: Vec::new(),
+                availability: None,
             })
             .collect(),
         next_cursor: None,

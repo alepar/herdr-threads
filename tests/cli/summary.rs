@@ -143,6 +143,9 @@ impl crate::ports::LocalClient for Client {
                     generation: self.generation.load(std::sync::atomic::Ordering::SeqCst),
                     created_at: UtcMillis(0),
                     retired_at: None,
+                    active: false,
+                    bindings: Vec::new(),
+                    availability: None,
                 },
                 mapping: MappingStatus {
                     state: ContinuityStatus::Resolved,

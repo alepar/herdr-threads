@@ -32,6 +32,9 @@ fn selected_service_mapping_rejects_wrong_target_and_repair_hold() {
             generation: 7,
             created_at: crate::protocol::time::UtcMillis(0),
             retired_at: None,
+            active: false,
+            bindings: Vec::new(),
+            availability: None,
         },
         mapping: MappingStatus {
             state: ContinuityStatus::Resolved,
@@ -143,6 +146,9 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
                         generation: self.generation.load(std::sync::atomic::Ordering::SeqCst),
                         created_at: crate::protocol::time::UtcMillis(0),
                         retired_at: None,
+                        active: false,
+                        bindings: Vec::new(),
+                        availability: None,
                     },
                     mapping: MappingStatus {
                         state: ContinuityStatus::Resolved,
@@ -322,6 +328,9 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
                         generation: self.generation.load(Ordering::SeqCst),
                         created_at: crate::protocol::time::UtcMillis(0),
                         retired_at: None,
+                        active: false,
+                        bindings: Vec::new(),
+                        availability: None,
                     },
                     mapping: MappingStatus {
                         state: ContinuityStatus::Resolved,
@@ -1944,6 +1953,9 @@ fn recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution() {
                                 generation: 1,
                                 created_at: crate::protocol::time::UtcMillis(0),
                                 retired_at: None,
+                                active: false,
+                                bindings: Vec::new(),
+                                availability: None,
                             }]
                         },
                         next_cursor: None,
@@ -2202,6 +2214,9 @@ mod scoped_runtime {
                                 generation: 1,
                                 created_at: crate::protocol::time::UtcMillis(0),
                                 retired_at: None,
+                                active: false,
+                                bindings: Vec::new(),
+                                availability: None,
                             }]
                             .into_iter()
                             .filter(|seat| {
@@ -2222,6 +2237,9 @@ mod scoped_runtime {
                                     generation: 1,
                                     created_at: crate::protocol::time::UtcMillis(0),
                                     retired_at: None,
+                                    active: false,
+                                    bindings: Vec::new(),
+                                    availability: None,
                                 },
                                 mapping: crate::protocol::results::MappingStatus {
                                     state: ContinuityStatus::Resolved,
