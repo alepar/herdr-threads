@@ -37,3 +37,9 @@ c34 · r2 · UNOWNED-SEAM · composer capture server · applied — 4.5 uses the
 c35 · r2 · GAP · Herdr host kind agy · applied — 4.5 acceptance asserts herdr reports kind agy
 c36 · r2 · GAP · DP10 owner · rejected — DP10 is the delivery-policy spec's guard every .3 leaf's acceptance cites; no separate deliverable
 c37 · r2 · GAP · agy fixtures owner · applied — 4.2 owns payload fixtures; 4.6 owns help fixture
+g1 · graph · GRAPH-EDGE · ht-poh.6.9 <- ht-poh.11 · kept — final-SHA evidence runs on the post-sweep branch
+g2 · graph · GRAPH-EDGE · ht-poh.2.7 <- ht-poh.7 · parked — safe no
+g3 · graph · GRAPH-EDGE · ht-poh.6.4 <- ht-poh.4.8 · applied — 6.4 already waits on 4.6 and ht-poh.8
+g4 · graph · GRAPH-EDGE · ht-poh.4.4 <- ht-poh.3.6 · parked — safe no
+g5 · graph · GRAPH-EDGE · ht-poh.4 <- ht-poh.1 · applied — epic gate; every .4 leaf waits on ht-poh.1 through leaf edges
+g6 · graph · GRAPH-EDGE · 15 further critical edges · kept — real artifacts

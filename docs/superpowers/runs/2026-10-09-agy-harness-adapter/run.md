@@ -18,8 +18,14 @@ stepBackDesign-round-1: patch — two findings share one cause (transcript-confi
 
 
 parked:
+- graph-pass · graph-change · "ht-poh.2.7 <- ht-poh.7 drop (safe no: 2.7 notes snapshots follow ht-poh.7's audit fixes) — with the 4.4 drop, depth 11→10"
+- graph-pass · graph-change · "ht-poh.4.4 <- ht-poh.3.6 drop (safe no: 4.4 consumes the SKILL_MD wake-on section; would need a placeholder golden)"
+- graph-pass · graph-change · "proposal: seam-contract agy doctor extension point (delivery::doctor_lines) between ht-poh.4.7 and ht-poh.5"
+- graph-pass · graph-change · "proposal: split-file src/cli/hook.rs runner-helper boundary between ht-poh.2.6 and ht-poh.4.1"
 - 2026-10-10-agy-harness-adapter-roast-design-1.md · escalation · "R5/contract rule 4: Herdr may report agy idle while a subagent generates (herdr issue #2354, open per 2 seats; PR #4278 status and fullyIdle semantics unverified), so a Native wake could type a nudge into a busy agy. Patched in-design: agy ComposerPolicy reads the subagent 'Generating' status as Unreadable (no wake); human to confirm on Herdr 0.9.1."
 - 2026-10-10-agy-harness-adapter-roast-design-2.md · escalation · "Stop-time downgrade assumes agy writes the injected systemMessage step to the transcript before the Stop hook on every termination path (UNVERIFIED external). Mitigated in-design: misses count only on normal terminations with a readable transcript, and need two distinct turns (or an abort error); the native gate (ht-poh.6.6) asserts presence at Stop and non-evidence on Esc/API-error paths."
+
+graph-pass: depth 11→11 · width 3.5→3.5 · applied 2 · parked 4
 
 approvals:
 - top-split · auto · ht-poh.1 LEAF, ht-poh.7 LEAF, ht-poh.2 PROMOTE, ht-poh.3 PROMOTE, ht-poh.4 PROMOTE, ht-poh.5 LEAF, ht-poh.6 PROMOTE
