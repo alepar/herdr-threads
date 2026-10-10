@@ -1,6 +1,6 @@
 status: completed with 0 unresolved Blocking, 2 escalations [degraded: final review: not ready (invocation 8 final review: no Critical; Important S1 agy informational notices only at lifecycle check-ins; unmeasured branch; flaky ht-01s + two unclassified flakes) — code-final-review-8.md]
 qualifier: final review: not ready (invocation 8 final review: no Critical; Important S1 agy informational notices only at lifecycle check-ins; unmeasured branch; flaky ht-01s + two unclassified flakes) — code-final-review-8.md
-metrics: pending (upstream-feedback not yet run)
+metrics: docs/superpowers/runs/2026-10-09-agy-harness-adapter/upstream-feedback-draft.md (parked for the hand-back; 4 defects, 2 design questions, 1 doc gap)
 
 > Reader note: the phase-6 sweep ran after final review 8 and passed at the tip: 4904 passed, 0 failed, 44 skipped, 272 s, host quiet, `@ 417c534f`. That resolves the review's "unmeasured branch" item. S1 and the flakes are still open. — run.md `codeBuckets.sweep`
 
