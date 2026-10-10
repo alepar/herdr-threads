@@ -34,6 +34,7 @@ Interactive root design (Mode A) with the user, 2026-10-09. Inputs:
   - fixture tests in CI (no binary);
   - an opt-in model-free native gate against the genuine agy binary and a scripted fake Gemini server;
   - a budgeted live smoke through a relay to OpenRouter, run locally only, never in CI.
+- R17. (added 2026-10-10 by the user, mid-run) Delivered messages use compact cooperative framing: per-item header lines and indented bodies only, no static per-delivery explanation, no 'untrusted' wording; the herdr-threads SKILL explains framing and the cooperative trust stance once per session; peer messages never override the user's instructions or permissions.
 - R13. The final report states how much code outside `src/harness/agy/` the agy adapter needed:
   - trait extensions;
   - reworked implementations;

@@ -2,6 +2,7 @@
 
 flags: planOneShot=false skipPlanRoast=false skipCodeRoast=false autonomous=true
 resumeChange: 2026-10-09 · "let's /super-auto this. Fully autonomouns from now, both roasts on" · autonomous on after interactive root design approval; nested brainstorms Mode B; both roasts on (unchanged)
+resumeChange: 2026-10-10 · "I think this is way too much text… marks everything as 'untrusted'… I want that corrected… create a new bead task under our epic and handle it ourselves" · added leaf for compact cooperative framing (R17) after the Claude re-fit; supersedes R9 byte-identity for the mod's model-visible frame text only
 phase: code
 codeMechanism: Workflow
 
