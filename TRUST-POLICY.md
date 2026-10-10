@@ -81,6 +81,15 @@ after the baseline are not held. Holds are durable and survive daemon restart. A
 operator rebind or fresh seat on that target; cooperative continuity on that target (C1); or, instance-wide,
 when no unresolved nonretired seats remain (implemented, nothing left to protect).
 
+**Pane-close retirement (ht-54r.14).** A pane absent from a coherent snapshot of the *same* Herdr
+incarnation retires its seat, however many session bindings the seat holds. The retirement fence disconnects
+every connected binding with reason `seat_retired` through the one `store::bindings::disconnect` transition
+(side-effect hooks run) and ends every open binding; a binding already disconnected keeps its own reason.
+Memberships retire, receipts settle recipient-retired and invitations close, all seat-level. The seat record and
+every `binding_cursors` row persist, for undo and herdr-graph. A new or unknown incarnation never retires: it
+yields unresolved seats under the C2 restore holds above, and each binding ends with reason `seat_unresolved`
+so the same session can reopen it after a rebind.
+
 **Startup enrollment.** Installed Claude/Codex top-level `SessionStart` lifecycle hooks enroll
 `HERDR_PANE_ID` through the same journaled ordinary canonical guarded seat resolver as `launch`.
 It freshly reads the actual target and decides against A2: reuse its resolved seat, or allocate only

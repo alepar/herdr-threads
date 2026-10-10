@@ -104,6 +104,11 @@ mod operator_text;
 /// Herdr endpoint.
 #[path = "integration/operator_ux.rs"]
 mod operator_ux;
+/// ht-54r.14: pane-close retirement and restart restore holds with several session bindings
+/// on one seat, on an isolated Herdr session.
+#[cfg(feature = "test-support")]
+#[path = "integration/pane_close_retirement.rs"]
+mod pane_close_retirement;
 /// Real versionless setup output/configuration through the live canary consumer.
 #[cfg(feature = "test-support")]
 #[path = "integration/setup_canary_seam.rs"]
