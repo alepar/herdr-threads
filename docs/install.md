@@ -240,6 +240,26 @@ Existing valid owned legacy records are inspected before hook updates and preser
 
 `herdr-threads check-in` remains the manual lifecycle entry for a launch driver: `--lifecycle-event ID` plus the `--cooperative-*` flags (see [agent-usage](agent-usage.md)). A child agent must never run it.
 
+### Antigravity CLI (`agy`)
+
+```
+herdr-threads setup agy
+herdr-threads setup-status agy
+```
+
+agy support is an owned plugin, not edits to agy's global hooks. `setup agy` writes
+`~/.gemini/config/plugins/herdr-threads/` (`plugin.json`, `hooks.json` and the skill) and adds
+the allow member `command(herdr-threads)` to `~/.gemini/antigravity-cli/settings.json`; both are
+recorded in an ownership manifest, and `unsetup agy` removes only what it added. Herdr's own
+`herdr` block in `~/.gemini/config/hooks.json` is untouched.
+
+Setup never enables the plugin for you. If agy reports it disabled, run
+`agy plugin enable herdr-threads`; `setup-status`, `doctor` and `launch` name the repair. agy
+rewrites `settings.json` and can drop the allow member: `setup-status` then reports the entry
+missing and re-running `setup agy` restores it. `agy --sandbox` is unsupported and refused by
+`launch`. The [agy operator guide](../integrations/agy/README.md) has the launch flags,
+`HERDR_THREADS_AGY_OPTS`, `-c` versus `--conversation`, and doctor output.
+
 ## Managed launch
 
 Seat attribution requires hooks and tool commands to inherit the pane running the TUI.
