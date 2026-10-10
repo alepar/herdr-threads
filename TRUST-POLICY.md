@@ -374,8 +374,14 @@ model open work, and summary closure never changes receipt state or installs glo
 
 Automatic archival changes only the channel archive flag and appends a seatless lifecycle event. It
 never retires or moves a seat, leaves a membership, settles a receipt or invitation, or releases a
-requirement. Explicit reopen starts fresh grace. Human, unregistered, unresolved, held and uncertain
-joined occupants block automatic cleanup. Pending compound handoffs remain protected indefinitely;
+requirement. Explicit reopen starts fresh grace. A thread archives after one quiet hour. Only an
+active member blocks: a seat with a connected binding (still needing the idle sample, so
+unregistered, held and uncertain occupants block) or a human seat while its pane exists. A member
+whose seat has no connected binding, an unresolved or retired seat, and the pending invitations to
+and obligations owed by such a seat do not block. A binding migrated from a pre-session-keyed
+database counts as active for 24 hours after the upgrade, so an upgrade causes no archival wave. The
+archival scan restarts only on membership, member-liveness (binding connect, disconnect, end) and
+seat-lifecycle changes, not on fingerprint refreshes, cursor advances or other seat writes. Pending compound handoffs remain protected indefinitely;
 completed compound identities are absorbing tombstones. Exact historical completed retry may present
 and clean up its retained local intent, even after archival or binding change, but cannot resume any
 create/invite/send/launch side effect or revive protection. A legacy hint is reconciled only by exact

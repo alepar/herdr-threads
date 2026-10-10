@@ -446,8 +446,6 @@ fn archival_protected_occupants_and_work_remain_unchanged() {
     for case in [
         "human",
         "unregistered",
-        "unbound",
-        "unresolved",
         "held",
         "unknown",
         "draft",
@@ -477,14 +475,6 @@ fn archival_protected_occupants_and_work_remain_unchanged() {
                 db.execute_batch("UPDATE occupant_bindings SET registered_at=NULL")
                     .unwrap();
             }
-            "unbound" => {
-                db.execute_batch("UPDATE occupant_bindings SET ended_at=1")
-                    .unwrap();
-            }
-            "unresolved" => {
-                db.execute_batch("UPDATE seats SET state='unresolved'")
-                    .unwrap();
-            }
             "held" => {
                 db.execute_batch("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'repair')").unwrap();
             }
@@ -493,7 +483,9 @@ fn archival_protected_occupants_and_work_remain_unchanged() {
             "working" => ui = HostUiState::ActiveTurn,
             "approval" => ui = HostUiState::ApprovalOrQuestion,
             "invitation" | "requirement" => {
-                db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('q','i','resolved','native','q',1,0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('inv','t','q',1,'pending',1,0,300000,300000)").unwrap();
+                // The invitee is an active seat (a connected binding); a pending invitation to an
+                // inactive seat does not block (see the inactive-seat tests below).
+                db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('q','i','resolved','native','q',1,0,0); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('q',1,'q','b',1,'codex','qsession','00000000-0000-4000-8000-000000000002','cooperative_top_level',0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('inv','t','q',1,'pending',1,0,300000,300000)").unwrap();
                 if case == "requirement" {
                     db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES('service','i',0); UPDATE threads SET managed_owner_author_id='service'; INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES('req','t','q','service','inv','pending',1,0)").unwrap();
                 }
@@ -2284,4 +2276,273 @@ fn archival_store_startup_pass_and_next_wait_for_canonical_host_instance() {
         1
     );
     assert!(!archived(&db));
+}
+
+// ---- ht-54r.15: inactive members do not block archival; the scan restarts only on relevant writes.
+
+/// Run quiet-window ticks every minute from 0 through `until` (inclusive) and return the first
+/// tick at which the thread was archived.
+fn archived_at(db: &mut Connection, until: i64) -> Option<i64> {
+    for at in (0..=until).step_by(60_000) {
+        tick(db, &runtime(at));
+        if archived(db) {
+            return Some(at);
+        }
+    }
+    None
+}
+fn disconnect_binding(db: &Connection, reason: &str) {
+    db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=1,disconnect_reason=?1",
+        [reason],
+    )
+    .unwrap();
+}
+
+#[test]
+fn thread_with_only_disconnected_members_archives_after_the_quiet_window() {
+    let mut db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    disconnect_binding(&db, "liveness_process_exit");
+    assert_eq!(
+        archived_at(&mut db, 3_600_000 - 60_000),
+        None,
+        "the quiet window still applies to a thread of disconnected members"
+    );
+    tick(&mut db, &runtime(3_600_000));
+    assert!(
+        archived(&db),
+        "a disconnected member needs no idle sample and does not block"
+    );
+}
+
+#[test]
+fn a_connected_busy_member_still_blocks() {
+    use herdr_threads::ports::HostUiState;
+    let mut db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    for at in (0..=3_720_000).step_by(60_000) {
+        let rt = runtime(at);
+        archival::advance(&db, "i", &rt).unwrap();
+        if let Some(ticket) = archival::observation_ticket(&db, "i", "s", &rt).unwrap() {
+            archival::record_sample(&mut db, &ticket, &rt, &sample(at, HostUiState::ActiveTurn))
+                .unwrap();
+        }
+        tick(&mut db, &rt);
+        assert!(!archived(&db), "busy connected member blocked at {at}");
+    }
+}
+
+#[test]
+fn retired_and_unresolved_member_seats_do_not_block() {
+    for state in ["unresolved", "retired"] {
+        let mut db = fixture();
+        thread(&db);
+        joined_agent(&db);
+        if state == "retired" {
+            db.execute_batch("UPDATE seats SET state='retired',retired_at=1,retired_seq=1")
+                .unwrap();
+        } else {
+            db.execute_batch("UPDATE seats SET state='unresolved'")
+                .unwrap();
+        }
+        // The binding is still open and connected: the seat state alone makes it inactive.
+        assert_eq!(
+            archived_at(&mut db, 3_600_000),
+            Some(3_600_000),
+            "{state} member seat must not block"
+        );
+    }
+}
+
+#[test]
+fn pending_invitation_to_an_inactive_seat_does_not_block() {
+    let mut db = fixture();
+    thread(&db);
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('q','i','resolved','native','q',1,0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('inv','t','q',1,'pending',1,0,300000,300000)").unwrap();
+    assert_eq!(
+        archived_at(&mut db, 3_600_000),
+        Some(3_600_000),
+        "the invitee has no binding"
+    );
+}
+
+#[test]
+fn obligation_owed_by_an_inactive_seat_does_not_block() {
+    let mut db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    ordinary(&db);
+    db.execute_batch("UPDATE threads SET next_sequence=2 WHERE id='t'")
+        .unwrap();
+    db.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES('m','t','s','pending',300000,0,300000)").unwrap();
+    disconnect_binding(&db, "liveness_process_exit");
+    assert_eq!(archived_at(&mut db, 3_600_000), Some(3_600_000));
+    // The same obligation owed by a connected seat blocks.
+    let mut db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    ordinary(&db);
+    db.execute_batch("UPDATE threads SET next_sequence=2 WHERE id='t'")
+        .unwrap();
+    db.execute_batch("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES('m','t','s','pending',300000,0,300000)").unwrap();
+    assert_eq!(archived_at(&mut db, 3_720_000), None);
+}
+
+#[test]
+fn migrated_binding_blocks_within_24h_and_not_after() {
+    const DAY: i64 = 24 * 60 * 60 * 1000;
+    let mut db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    // A v28 binding as the upgrade leaves it: open, migrated, disconnected at the upgrade time.
+    db.execute_batch("UPDATE occupant_bindings SET migrated=1,liveness='disconnected',disconnected_at=0,disconnect_reason='migrated'").unwrap();
+    let archived_tick = archived_at(&mut db, DAY + 5 * 60_000)
+        .expect("a migrated binding stops blocking once its 24 h grace ends");
+    assert!(
+        archived_tick >= DAY,
+        "archived at {archived_tick}, inside the 24 h grace"
+    );
+}
+
+#[test]
+fn human_seat_with_a_live_pane_blocks_like_an_active_member() {
+    let mut db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    db.execute_batch("UPDATE occupant_bindings SET harness='human'")
+        .unwrap();
+    assert_eq!(
+        archived_at(&mut db, 3_720_000),
+        None,
+        "a human seat is active while its pane exists"
+    );
+    // The pane is gone: the seat is unresolved and no longer active.
+    let mut db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    db.execute_batch(
+        "UPDATE occupant_bindings SET harness='human'; UPDATE seats SET state='unresolved'",
+    )
+    .unwrap();
+    assert_eq!(archived_at(&mut db, 3_600_000), Some(3_600_000));
+}
+
+fn mutation_revision(db: &Connection) -> i64 {
+    db.query_row(
+        "SELECT mutation_revision FROM archival_instances WHERE instance_id='i'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+fn scan_scope_fixture() -> Connection {
+    let db = fixture();
+    db.execute_batch(
+        "INSERT INTO archival_instances(instance_id,runtime_boot) VALUES('i','boot');",
+    )
+    .unwrap();
+    thread(&db);
+    joined_agent(&db);
+    db
+}
+
+#[test]
+fn unrelated_seat_and_binding_writes_do_not_bump_the_mutation_revision() {
+    let db = scan_scope_fixture();
+    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('z','i','resolved','native','z',1,0,0);").unwrap();
+    let before = mutation_revision(&db);
+    for (what, sql) in [
+        (
+            "fingerprint refresh (touch)",
+            "UPDATE occupant_bindings SET liveness_pid=7,liveness_start=8,observed_at=9 WHERE seat_id='s'",
+        ),
+        (
+            "registered_at / epoch carry",
+            "UPDATE occupant_bindings SET registered_at=5,host_epoch=2 WHERE seat_id='s'",
+        ),
+        (
+            "cursor advance",
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',3 FROM occupant_bindings WHERE seat_id='s'; UPDATE binding_cursors SET seq=4",
+        ),
+        (
+            "seat column outside the trigger set",
+            "UPDATE seats SET unavailability_open=0 WHERE id='s'",
+        ),
+        (
+            "seat in no channel: state",
+            "UPDATE seats SET state='unresolved' WHERE id='z'",
+        ),
+        (
+            "seat in no channel: new binding",
+            "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES('z',1,'z','b',1,'codex','zsession','00000000-0000-4000-8000-000000000009','cooperative_top_level',0)",
+        ),
+        (
+            "seat in no channel: binding liveness",
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=1,disconnect_reason='x' WHERE seat_id='z'",
+        ),
+        (
+            "new seat",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('y','i','resolved','native','y',1,0,0)",
+        ),
+    ] {
+        db.execute_batch(sql).unwrap();
+        assert_eq!(
+            mutation_revision(&db),
+            before,
+            "{what} must not bump the revision"
+        );
+    }
+}
+
+#[test]
+fn membership_and_liveness_changes_bump_it() {
+    let db = scan_scope_fixture();
+    for (what, sql) in [
+        (
+            "membership insert",
+            "INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('m','i','resolved','native','m',1,0,0); INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('t','m','joined',0)",
+        ),
+        (
+            "binding disconnect",
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=1,disconnect_reason='x' WHERE seat_id='s'",
+        ),
+        (
+            "binding reconnect",
+            "UPDATE occupant_bindings SET liveness='connected',disconnected_at=NULL,disconnect_reason=NULL WHERE seat_id='s'",
+        ),
+        (
+            "new binding of a member",
+            "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES('s',1,'p','b',1,'codex','second','00000000-0000-4000-8000-000000000008','cooperative_top_level',0)",
+        ),
+        (
+            "binding end",
+            "UPDATE occupant_bindings SET ended_at=2 WHERE native_session='second'",
+        ),
+        (
+            "member seat state",
+            "UPDATE seats SET state='unresolved' WHERE id='s'",
+        ),
+        (
+            "member seat target",
+            "UPDATE seats SET target_id='p2',state='resolved' WHERE id='s'",
+        ),
+        (
+            "member seat retired",
+            "UPDATE seats SET state='retired',retired_at=3,retired_seq=1 WHERE id='s'",
+        ),
+        (
+            "membership state",
+            "UPDATE memberships SET state='left',left_at=1 WHERE seat_id='s'",
+        ),
+    ] {
+        let before = mutation_revision(&db);
+        db.execute_batch(sql).unwrap();
+        assert!(
+            mutation_revision(&db) > before,
+            "{what} must bump the revision"
+        );
+    }
 }

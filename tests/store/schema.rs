@@ -6062,7 +6062,8 @@ fn adapter_migration_main24_to26_preserves_archival_guards_and_intent_history() 
     let guards = binding_archival_guards(&db);
     assert_eq!(guards.len(), 6);
     schema::initialize(&db, || UtcMillis(100)).unwrap();
-    assert_eq!(binding_archival_guards(&db), guards);
+    // V30 narrows the insert and update fences; every other guard survives byte for byte.
+    let guards = assert_v30_guards(&guards, &binding_archival_guards(&db));
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
@@ -6125,9 +6126,22 @@ fn adapter_migration_main24_to26_preserves_archival_guards_and_intent_history() 
         )
         .unwrap()
     };
+    // The binding fences fire for a seat in a scanned source: make 's' a joined member.
+    db.execute_batch(
+        "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES('t','s','joined',0)",
+    )
+    .unwrap();
     let before = revision();
     db.execute(
         "UPDATE occupant_bindings SET harness='future_agent' WHERE ordinal=7",
+        [],
+    )
+    .unwrap();
+    // V30: only liveness and ended_at move the mutation revision; the seat/sample reset stays.
+    assert_eq!(revision(), before);
+    let before = revision();
+    db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=1,disconnect_reason='x' WHERE ordinal=7",
         [],
     )
     .unwrap();
@@ -6179,6 +6193,30 @@ fn adapter_migration_main24_to26_preserves_archival_guards_and_intent_history() 
     }
 }
 
+/// V30 owns the narrowed insert and update fences of occupant_bindings; every other binding
+/// trigger must equal its pre-upgrade text. Returns the upgraded guards.
+fn assert_v30_guards(
+    before: &[(String, String)],
+    after: &[(String, String)],
+) -> Vec<(String, String)> {
+    let owned = [
+        "archival_fence_occupant_bindings_insert",
+        "archival_fence_occupant_bindings_update",
+    ];
+    assert_eq!(
+        before.iter().map(|g| &g.0).collect::<Vec<_>>(),
+        after.iter().map(|g| &g.0).collect::<Vec<_>>()
+    );
+    for (old, new) in before.iter().zip(after) {
+        if owned.contains(&old.0.as_str()) {
+            assert_ne!(old.1, new.1, "{} must be narrowed by V30", old.0);
+            assert!(new.1.contains("WHEN EXISTS"), "{}", new.1);
+        } else {
+            assert_eq!(old, new, "{} must be unchanged", old.0);
+        }
+    }
+    after.to_vec()
+}
 fn binding_archival_guards(db: &Connection) -> Vec<(String, String)> {
     db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name='occupant_bindings' ORDER BY name").unwrap()
         .query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect()
@@ -6219,9 +6257,9 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v29() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        29
+        schema::LATEST_VERSION
     );
-    assert_eq!(schema::LATEST_VERSION, 29);
+    assert_eq!(schema::LATEST_VERSION, 30);
     // ordinals, sequence and archival guards survive the rebuild
     assert_eq!(
         db.query_row(
@@ -6232,7 +6270,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v29() {
         .unwrap(),
         50
     );
-    assert_eq!(binding_archival_guards(&db), guards);
+    assert_v30_guards(&guards, &binding_archival_guards(&db));
     type Row = (
         i64,
         String,
@@ -6425,6 +6463,110 @@ fn v29_startup_rejects_missing_or_altered_binding_objects() {
     }
 }
 
+/// The V23 text of a trigger V30 drops or replaces.
+fn v23_trigger(name: &str) -> String {
+    let v23 = include_str!("../../migrations/0023_channel_archival.sql");
+    let start = v23
+        .find(&format!("CREATE TRIGGER {name} "))
+        .expect("v23 trigger");
+    let end = start + v23[start..].find("END;").unwrap() + 4;
+    v23[start..end].to_owned()
+}
+const V30_TRIGGERS: [&str; 5] = [
+    "archival_fence_seats_insert",
+    "archival_fence_seats_update",
+    "archival_fence_memberships_update",
+    "archival_fence_occupant_bindings_insert",
+    "archival_fence_occupant_bindings_update",
+];
+/// A database exactly as V29 leaves it: the fresh schema with V30's triggers swapped back.
+fn v29_database() -> Connection {
+    let db = fresh_db();
+    for name in V30_TRIGGERS {
+        db.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}"))
+            .unwrap();
+        db.execute_batch(&v23_trigger(name)).unwrap();
+    }
+    db.pragma_update(None, "user_version", 29).unwrap();
+    db
+}
+fn trigger_catalog(db: &Connection) -> Vec<(String, String, String)> {
+    db.prepare(
+        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+    )
+    .unwrap()
+    .query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?
+                .split_whitespace()
+                .collect::<String>()
+                .replace('"', ""),
+        ))
+    })
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
+}
+
+#[test]
+fn v30_fresh_matches_upgraded_catalog() {
+    let upgraded = v29_database();
+    assert_ne!(trigger_catalog(&upgraded), trigger_catalog(&fresh_db()));
+    schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
+    assert_eq!(
+        upgraded
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        30
+    );
+    assert_eq!(trigger_catalog(&upgraded), trigger_catalog(&fresh_db()));
+    // reopening audits the V30 shape without migrating again
+    schema::initialize(&upgraded, || UtcMillis(2)).unwrap();
+    let triggers = trigger_catalog(&upgraded)
+        .into_iter()
+        .filter(|r| r.0 == "trigger" && r.1.starts_with("archival_fence_"))
+        .map(|r| r.1)
+        .collect::<Vec<_>>();
+    assert!(!triggers.contains(&"archival_fence_seats_insert".to_owned()));
+    assert!(triggers.contains(&"archival_fence_seats_update".to_owned()));
+}
+
+#[test]
+fn v30_startup_rejects_an_altered_archival_trigger() {
+    for alteration in [
+        // dropped
+        "DROP TRIGGER archival_fence_seats_update".to_owned(),
+        "DROP TRIGGER archival_fence_memberships_update".to_owned(),
+        "DROP TRIGGER archival_fence_occupant_bindings_insert".to_owned(),
+        "DROP TRIGGER archival_fence_occupant_bindings_update".to_owned(),
+        // the dropped V23 insert fence returns
+        v23_trigger("archival_fence_seats_insert"),
+        // reverted to the unscoped V23 text
+        format!(
+            "DROP TRIGGER archival_fence_seats_update; {}",
+            v23_trigger("archival_fence_seats_update")
+        ),
+        format!(
+            "DROP TRIGGER archival_fence_occupant_bindings_update; {}",
+            v23_trigger("archival_fence_occupant_bindings_update")
+        ),
+        // widened column list
+        "DROP TRIGGER archival_fence_memberships_update; CREATE TRIGGER archival_fence_memberships_update AFTER UPDATE ON memberships BEGIN UPDATE archival_instances SET mutation_revision=mutation_revision+1; END".to_owned(),
+        // dropped V23 trigger V30 does not own
+        "DROP TRIGGER archival_fence_memberships_insert".to_owned(),
+    ] {
+        let db = fresh_db();
+        db.execute_batch(&alteration).unwrap();
+        assert_eq!(
+            schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+            ErrorCode::IncompatibleSchema,
+            "{alteration}"
+        );
+    }
+}
+
 // Catches an altered current table or missing retention index accepted at v24.
 #[test]
 fn task3_versionless_schema24_rejects_altered_table_and_missing_index() {
@@ -6474,7 +6616,7 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
                 .unwrap(),
             schema::LATEST_VERSION
         );
-        assert_eq!(binding_archival_guards(&db), guards);
+        assert_v30_guards(&guards, &binding_archival_guards(&db));
         assert_eq!(
             db.query_row(
                 "SELECT event,first_seen_at,last_seen_at FROM harness_contract_diagnostics",
@@ -6500,7 +6642,8 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         assert_eq!(catalog(&db), catalog(&fresh));
         // V29 deltas: +1 table (binding_cursors); indexes -occupant_bindings_current,
         // +occupant_bindings_session_key, +occupant_bindings_open, +binding_cursors_thread
-        // (net +2); triggers are recreated one for one.
+        // (net +2); triggers are recreated one for one. V30 drops archival_fence_seats_insert
+        // (a new seat is in no channel) and recreates the other four fences in place (net -1).
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
             75
@@ -6511,7 +6654,7 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            181
+            180
         );
     }
 }
