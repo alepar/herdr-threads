@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-thread-search-discovery
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: code
+phase: roast-code
 
 idea: lets debug, then once we understand the problem, $super-auto it, fully autonomous, both roasts on
 branch: super-auto/thread-search-discovery
@@ -30,3 +30,5 @@ combined-candidate: 65a67dcf
 private-target: /Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/thread-search-discovery/target
 
 HT_LEAK_RUN_ID: c494afe8-aa16-4b6b-a2a8-b9bee8e65cb8
+
+roastCodeRound: 1
