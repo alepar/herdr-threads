@@ -25,6 +25,28 @@ and operator repair. Read it before changing anything in `src/identity/`, `src/s
 - Decide in the daemon against the canonical view (A2); client-local files are hints, never authority.
 - A change that weakens an invariant or adds an accepted limit updates TRUST-POLICY.md in the same commit.
 
+## Harness-neutral core
+
+- Harness-specific code lives only in `src/harness/<id>/` behind `HarnessAdapter` and its policy traits. Core code looks the adapter up through the registry by the id from the binding or claim.
+- New harness behaviour means a new trait method or policy with a neutral default, never a branch in core.
+- Core is `src/cli`, `src/client`, `src/service`, `src/daemon`, `src/store`, `src/host`, `src/protocol`, `src/app` and the neutral `src/harness/*.rs` files. Adapter-owned paths are `src/harness/<id>.rs`, `src/harness/<id>/**` and `src/harness/<id>_*.rs` for the ids in `builtins()`.
+- `scripts/check-harness-neutral` enforces this, with `scripts/harness-neutral-allowlist.txt` as the exception list. Permanent entries are only frozen wire shapes, historical migrations and registration. See "Development rules" for how to run the checks.
+
+## Delivery contract
+
+The goal is token efficiency. Sessions that are done and idle stay idle, spinning sessions get efficient delivery, and nudges are rare, because excessive nudges disorient some models. Every delivery policy must keep these invariants:
+
+1. Messages are lazy by default.
+2. Lazy messages never wake an idle session (unless the seat opted into `wake_on: all`, once `wake_on` exists).
+3. Turn hooks and channels deliver every pending item, lazy or not, directly into the model's context, avoiding extra `herdr-threads` calls as far as the harness allows.
+4. A nudge wakes a session only when it is idle. A session that is generating, or running a tool, gets no nudge; it is served by in-turn delivery.
+5. Messages that require an ACK are always nudge-class.
+6. Who performs an idle wake is the only per-harness variation:
+   - `Native`: Herdr types the wake marker into an empty composer;
+   - `Channel`: the harness wakes itself, as Claude's mod submits a turn.
+
+Every new delivery policy (`DeliveryPolicy`) and every change to wake, poke or check-in delivery is checked against these rules; the 2026-10 audit is in `docs/superpowers/runs/2026-10-09-agy-harness-adapter/delivery-contract-audit.md`.
+
 ## Speed budgets
 
 - The full test suite must stay under **5 minutes** wall-clock (`cargo nextest run --locked --all-targets --all-features`). Treat a regression past it as a bug: fix slow or serialized tests rather than raising the budget.
