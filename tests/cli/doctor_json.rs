@@ -442,7 +442,7 @@ fn claude_stub_is_not_found_with_null_fields() {
 fn codex_not_found_maps_to_the_same_string_as_state() {
     let codex = crate::harness::codex::InstalledAdmission::observe_on_path(
         Some(std::ffi::OsStr::new("/nonexistent-ht-p03-47")),
-        crate::harness::codex::VERSION_TIMEOUT,
+        crate::harness::process::VERSION_TIMEOUT,
     );
     let installed = codex_installed_json(&codex);
     assert_eq!(installed.admission.as_str(), codex.state());
@@ -942,6 +942,7 @@ impl HarnessAdapter for ProfileDoctorAdapter {
     type Admission = ();
     fn metadata(&self) -> &'static AdapterMetadata {
         static META: AdapterMetadata = AdapterMetadata {
+            agent_env_markers: &[],
             id: "fourth",
             display_label: "Fourth",
             context_spelling: "Fourth",

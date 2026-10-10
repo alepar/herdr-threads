@@ -176,7 +176,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
 }
 
 fn claude() -> InstalledHarness {
-    InstalledHarness::DeclaredClaude(crate::harness::operational::ClaudeContract::registered())
+    InstalledHarness::DeclaredClaude(crate::harness::claude::ClaudeContract::registered())
 }
 
 // Rejects a PATH-dependent hook admission and probes of managed wrappers.
@@ -2516,9 +2516,7 @@ mod parse_failure_report {
         };
         let outcome = run_hook(
             &args,
-            &InstalledHarness::DeclaredClaude(
-                crate::harness::operational::ClaudeContract::registered(),
-            ),
+            &InstalledHarness::DeclaredClaude(crate::harness::claude::ClaudeContract::registered()),
             b"not json",
             &env,
             Instant::now() + Duration::from_millis(500),
@@ -4075,7 +4073,7 @@ mod hook_sequence {
     use std::cell::RefCell;
 
     fn claude() -> InstalledHarness {
-        InstalledHarness::DeclaredClaude(crate::harness::operational::ClaudeContract::registered())
+        InstalledHarness::DeclaredClaude(crate::harness::claude::ClaudeContract::registered())
     }
 
     // Kills: evidence before the probe (the probe's budget is cut, or the
@@ -4199,7 +4197,7 @@ fn codex_command_guidance_survives_overflow_without_granting_permissions() {
     let context = value["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
-    assert!(context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+    assert!(context.contains(crate::harness::codex::CODEX_COMMAND_GUIDANCE));
     assert!(context.len() <= MAX_CONTEXT);
     let fixed = context.split("untrusted_peer_data:").next().unwrap();
     assert!(!fixed.contains("approve all shell commands"));
@@ -4393,14 +4391,14 @@ fn child_lifecycle_claude_sessionstart_keeps_skill_pointer() {
         context.contains(crate::cli::skill::HOOK_SKILL_HINT),
         "{context}"
     );
-    assert!(!context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+    assert!(!context.contains(crate::harness::codex::CODEX_COMMAND_GUIDANCE));
 }
 
 #[test]
 fn child_lifecycle_codex_sessionstart_keeps_guidance_and_skill_pointer() {
     let context = child_lifecycle_context(Harness::Codex, "SessionStart");
     assert!(
-        context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE),
+        context.contains(crate::harness::codex::CODEX_COMMAND_GUIDANCE),
         "{context}"
     );
     assert!(
@@ -4413,7 +4411,7 @@ fn child_lifecycle_codex_sessionstart_keeps_guidance_and_skill_pointer() {
 fn child_lifecycle_codex_subagentstart_keeps_guidance_without_skill_pointer() {
     let context = child_lifecycle_context(Harness::Codex, "SubagentStart");
     assert!(
-        context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE),
+        context.contains(crate::harness::codex::CODEX_COMMAND_GUIDANCE),
         "{context}"
     );
     assert!(
@@ -4560,7 +4558,7 @@ fn stored_commands_require_both_selectors_and_flag_free_recipient_proof() {
 // B's handoff can choose only B's exact group, which remains pinned here.
 #[test]
 fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_groups() {
-    use crate::harness::setup::{SettingsKind, install_user_settings};
+    use crate::harness::setup::install_user_settings;
     let (dir, pane) = scratch_pane();
     let state_a = default_state(&dir);
     let state_b = dir.join("private-b");
@@ -4581,7 +4579,7 @@ fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_
         let mut hook_argv = cli_prefix(&target);
         hook_argv.extend(["hook".into(), "claude".into()]);
         install_user_settings(
-            SettingsKind::ClaudeUser,
+            crate::harness::claude::settings_kind(),
             &config,
             &state.join("manifest.json"),
             &hook_argv,
@@ -4821,7 +4819,7 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
             let peer: String = serde_json::from_str(peer).unwrap();
             assert!(peer.contains(&overview.rows[0]), "main row missing: {peer}");
             if harness == Harness::Codex {
-                assert!(routed.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+                assert!(routed.contains(crate::harness::codex::CODEX_COMMAND_GUIDANCE));
             }
             true
         };

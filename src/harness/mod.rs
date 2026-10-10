@@ -1,6 +1,9 @@
 //! Native harness boundary: versioned Claude/Codex recipes, hook parsing,
 //! context rendering, setup and managed launch.
 pub mod adapter;
+#[cfg(test)]
+#[path = "../../tests/harness/adapter_seam.rs"]
+mod adapter_seam;
 pub mod admission;
 #[cfg(test)]
 #[path = "../../tests/harness/admission_ladder.rs"]
@@ -47,10 +50,10 @@ pub mod manifest;
 #[cfg(test)]
 #[path = "../../tests/harness/manifest.rs"]
 mod manifest_tests;
-pub mod operational;
 #[cfg(test)]
 #[path = "../../tests/harness/optimistic_render.rs"]
 mod optimistic_render;
+pub mod process;
 pub mod prompt_suggestion;
 pub mod recipe;
 #[cfg(test)]
@@ -72,7 +75,7 @@ use serde_json::Value;
 
 /// Identity of a resolved harness binary (canonical path, inode, size, mtime):
 /// the admission observer re-runs admission when it changes.
-pub use codex_schema::BinaryIdentity;
+pub use runtime::BinaryIdentity;
 
 /// The operator-facing label of an optimistic admission, the same wording in
 /// Health and doctor (root spec B6 D2): `newer than verified <max>` or

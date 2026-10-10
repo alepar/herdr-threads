@@ -82,6 +82,14 @@ pub enum RegistryError {
     ReservedContextSpelling(String),
     /// A delivery policy whose `(mechanism, provenance, idle_wake)` is not an allowed pairing.
     InvalidDeliveryPolicy(String),
+    /// An environment marker name outside `[A-Z][A-Z0-9_]{0,63}`.
+    InvalidEnvMarker(String),
+    /// Two registrations (or one twice) declare the same environment marker.
+    DuplicateEnvMarker(String),
+    /// A settings kind whose `harness` is not the declaring adapter's id.
+    InvalidSettingsKind(String),
+    /// An `AdapterText` field over 4096 bytes or holding a control character other than `\n`.
+    InvalidAdapterText(String),
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum LookupError {
@@ -114,6 +122,10 @@ impl std::fmt::Display for RegistryError {
             Self::DuplicateContextSpelling(value) => ("duplicate context spelling", value),
             Self::ReservedContextSpelling(value) => ("reserved context spelling", value),
             Self::InvalidDeliveryPolicy(value) => ("invalid delivery policy", value),
+            Self::InvalidEnvMarker(value) => ("invalid environment marker", value),
+            Self::DuplicateEnvMarker(value) => ("duplicate environment marker", value),
+            Self::InvalidSettingsKind(value) => ("invalid settings kind", value),
+            Self::InvalidAdapterText(value) => ("invalid adapter text", value),
         };
         write!(
             f,
@@ -273,6 +285,16 @@ trait ErasedAdapter: Send + Sync {
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy>;
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy>;
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
+    fn text(&self) -> &'static AdapterText;
+    fn default_config_root(&self, environment: &SetupEnvironment) -> Option<std::path::PathBuf>;
+    fn settings_kind(&self) -> Option<&'static super::setup::SettingsKindSpec>;
+    fn foreground_advice(&self) -> Option<&'static ForegroundAdvice>;
+    fn setup_status_extras(&self, request: &StatusRequest, projection: &mut serde_json::Value);
+    fn setup_report_lines(&self, report: &serde_json::Value) -> Vec<String>;
+    fn doctor_text(&self, hooks: &serde_json::Value, form: DoctorTextForm) -> String;
+    fn doctor_summary_claims(&self) -> &'static [&'static str];
+    fn version_syntax(&self) -> Option<&'static VersionSyntax>;
+    fn transcript_version(&self) -> Option<&'static TranscriptVersionSpec>;
 }
 struct TypedAdapter<A: HarnessAdapter>(&'static A);
 impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
@@ -464,6 +486,36 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         self.0.canary_strategy()
+    }
+    fn text(&self) -> &'static AdapterText {
+        self.0.text()
+    }
+    fn default_config_root(&self, environment: &SetupEnvironment) -> Option<std::path::PathBuf> {
+        self.0.default_config_root(environment)
+    }
+    fn settings_kind(&self) -> Option<&'static super::setup::SettingsKindSpec> {
+        self.0.settings_kind()
+    }
+    fn foreground_advice(&self) -> Option<&'static ForegroundAdvice> {
+        self.0.foreground_advice()
+    }
+    fn setup_status_extras(&self, request: &StatusRequest, projection: &mut serde_json::Value) {
+        self.0.setup_status_extras(request, projection)
+    }
+    fn setup_report_lines(&self, report: &serde_json::Value) -> Vec<String> {
+        self.0.setup_report_lines(report)
+    }
+    fn doctor_text(&self, hooks: &serde_json::Value, form: DoctorTextForm) -> String {
+        self.0.doctor_text(hooks, form)
+    }
+    fn doctor_summary_claims(&self) -> &'static [&'static str] {
+        self.0.doctor_summary_claims()
+    }
+    fn version_syntax(&self) -> Option<&'static VersionSyntax> {
+        self.0.version_syntax()
+    }
+    fn transcript_version(&self) -> Option<&'static TranscriptVersionSpec> {
+        self.0.transcript_version()
     }
 }
 pub struct Registration {
@@ -720,6 +772,39 @@ impl Registration {
     pub fn setup_environment_inputs(&self) -> &'static [&'static str] {
         self.adapter.setup_environment_inputs()
     }
+    pub fn text(&self) -> &'static AdapterText {
+        self.adapter.text()
+    }
+    pub fn default_config_root(
+        &self,
+        environment: &SetupEnvironment,
+    ) -> Option<std::path::PathBuf> {
+        self.adapter.default_config_root(environment)
+    }
+    pub fn settings_kind(&self) -> Option<&'static super::setup::SettingsKindSpec> {
+        self.adapter.settings_kind()
+    }
+    pub fn foreground_advice(&self) -> Option<&'static ForegroundAdvice> {
+        self.adapter.foreground_advice()
+    }
+    pub fn setup_status_extras(&self, request: &StatusRequest, projection: &mut serde_json::Value) {
+        self.adapter.setup_status_extras(request, projection)
+    }
+    pub fn setup_report_lines(&self, report: &serde_json::Value) -> Vec<String> {
+        self.adapter.setup_report_lines(report)
+    }
+    pub fn doctor_text(&self, hooks: &serde_json::Value, form: DoctorTextForm) -> String {
+        self.adapter.doctor_text(hooks, form)
+    }
+    pub fn doctor_summary_claims(&self) -> &'static [&'static str] {
+        self.adapter.doctor_summary_claims()
+    }
+    pub fn version_syntax(&self) -> Option<&'static VersionSyntax> {
+        self.adapter.version_syntax()
+    }
+    pub fn transcript_version(&self) -> Option<&'static TranscriptVersionSpec> {
+        self.adapter.transcript_version()
+    }
     pub fn resolve_setup_scope(
         &self,
         request: &SetupScopeRequest,
@@ -822,7 +907,7 @@ impl Registration {
         scope: &LaunchScope,
         admitted: &AdmittedHandle,
         status: &LocalSetupStatus,
-        probe: &dyn super::launch::CodexShellProbe,
+        probe: &dyn super::launch::PaneShellProbe,
         budget: &CallBudget,
     ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
         use crate::protocol::results::{ApiError, ErrorCode};
@@ -966,7 +1051,7 @@ impl Registration {
         scope: &LaunchScope,
         handle: &PrelaunchHandle,
         status: &LocalSetupStatus,
-        probe: &dyn super::launch::CodexShellProbe,
+        probe: &dyn super::launch::PaneShellProbe,
         budget: &CallBudget,
     ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
         self.check_prelaunch(request, scope, handle)?;
@@ -1092,6 +1177,19 @@ impl Registration {
 pub struct Registry {
     registrations: &'static [Registration],
 }
+/// `[A-Z][A-Z0-9_]{0,63}`.
+fn env_marker_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    (1..=64).contains(&bytes.len())
+        && bytes[0].is_ascii_uppercase()
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_')
+}
+/// At most 4096 bytes and no control character other than `\n`.
+fn adapter_text_field(text: &str) -> bool {
+    text.len() <= 4096 && text.chars().all(|c| c == '\n' || !c.is_control())
+}
 fn token(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
@@ -1117,6 +1215,7 @@ impl Registry {
         let mut ids = std::collections::HashSet::new();
         let mut contexts = std::collections::HashSet::new();
         let mut kinds = std::collections::HashSet::new();
+        let mut markers = std::collections::HashSet::new();
         for r in registrations {
             let m = r.metadata();
             if !token(m.id)
@@ -1168,6 +1267,20 @@ impl Registry {
             {
                 return Err(RegistryError::InvalidDeliveryPolicy(m.id.into()));
             }
+            for marker in m.agent_env_markers {
+                if !env_marker_name(marker.name) {
+                    return Err(RegistryError::InvalidEnvMarker(marker.name.into()));
+                }
+                if !markers.insert(marker.name) {
+                    return Err(RegistryError::DuplicateEnvMarker(marker.name.into()));
+                }
+            }
+            if r.settings_kind().is_some_and(|kind| kind.harness != m.id) {
+                return Err(RegistryError::InvalidSettingsKind(m.id.into()));
+            }
+            if !r.text().fields().into_iter().all(adapter_text_field) {
+                return Err(RegistryError::InvalidAdapterText(m.id.into()));
+            }
             if !ids.insert(m.id) {
                 return Err(RegistryError::DuplicateId(m.id.into()));
             }
@@ -1202,6 +1315,16 @@ impl Registry {
     }
     pub fn registrations(&self) -> &'static [Registration] {
         self.registrations
+    }
+    /// Every registered environment marker, in registry order.
+    pub fn env_markers(&self) -> impl Iterator<Item = &'static AgentEnvMarker> {
+        self.registrations
+            .iter()
+            .flat_map(|r| r.metadata().agent_env_markers.iter())
+    }
+    /// The markers whose presence is TRUST-POLICY A4 person-pane refusal evidence.
+    pub fn person_guard_markers(&self) -> impl Iterator<Item = &'static AgentEnvMarker> {
+        self.env_markers().filter(|marker| marker.person_guard)
     }
     /// The delivery policy of an agent harness id; `"human"` and unknown ids give `None`.
     pub fn delivery_policy(&self, harness_id: &str) -> Option<&'static dyn DeliveryPolicy> {
@@ -1693,6 +1816,7 @@ mod tests {
             let base = fixture(id, spelling, &[], kinds);
             Box::leak(Box::new(TestAdapter {
                 metadata: Box::leak(Box::new(AdapterMetadata {
+                    agent_env_markers: &[],
                     setup_scopes: &[SetupScopeKind::ConfigRoot],
                     executable: ExecutableLookup::Unsupported,
                     budget: EventBudgetPolicy {
@@ -1767,6 +1891,7 @@ mod tests {
         for scopes in CASES {
             let adapter = Box::leak(Box::new(TestAdapter {
                 metadata: Box::leak(Box::new(AdapterMetadata {
+                    agent_env_markers: &[],
                     setup_scopes: scopes,
                     executable: ExecutableLookup::Path("sh"),
                     budget: EventBudgetPolicy {
@@ -1857,6 +1982,7 @@ mod tests {
     ) -> &'static TestAdapter {
         Box::leak(Box::new(TestAdapter {
             metadata: Box::leak(Box::new(AdapterMetadata {
+                agent_env_markers: &[],
                 setup_scopes: scopes,
                 executable: ExecutableLookup::Path("sentinel"),
                 budget: EventBudgetPolicy {
@@ -2312,6 +2438,7 @@ mod tests {
     ) -> &'static TestAdapter {
         Box::leak(Box::new(TestAdapter {
             metadata: Box::leak(Box::new(AdapterMetadata {
+                agent_env_markers: &[],
                 id,
                 display_label: "Test",
                 context_spelling: spelling,

@@ -1324,10 +1324,14 @@ fn cancelled_version_run_kills_the_hung_binary_promptly() {
             cancel.cancel();
         })
     };
-    let result = codex::version_output_cancellable(&hung, Duration::from_secs(30), &cancel);
+    let result = crate::harness::process::version_output_cancellable(
+        &hung,
+        Duration::from_secs(30),
+        &cancel,
+    );
     canceller.join().unwrap();
     assert!(
-        matches!(result, Err(VersionError::Unavailable)),
+        matches!(result, Err(crate::harness::process::Unavailable)),
         "{result:?}"
     );
     let pid = std::fs::read_to_string(&marker).unwrap().trim().to_owned();
@@ -1345,7 +1349,7 @@ fn cancelled_version_run_kills_the_hung_binary_promptly() {
 // Catches operational parsing that bypasses shape validation or claims native support.
 #[test]
 fn versionless_codex_contract_preserves_strict_shape_and_child_suppression() {
-    let contract = crate::harness::operational::CodexContract::registered();
+    let contract = crate::harness::codex::CodexContract::registered();
     let valid = pre_tool("s", "turn", "tool", "true");
     let event = codex::parse_event_for_contract(&bytes(&valid), "event", &contract).unwrap();
     assert_eq!(event.capability, Capability::ContractValidatedInput);

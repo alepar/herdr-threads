@@ -4361,9 +4361,10 @@ pub(crate) mod tests {
     use crate::harness::adapter::*;
     struct FourthAdapter(bool, bool);
     impl HarnessAdapter for FourthAdapter {
-        type Admission = crate::harness::operational::ClaudeContract;
+        type Admission = crate::harness::claude::ClaudeContract;
         fn metadata(&self) -> &'static AdapterMetadata {
             static META: AdapterMetadata = AdapterMetadata {
+                agent_env_markers: &[],
                 id: "fourth",
                 display_label: "Fourth",
                 context_spelling: "Fourth",
@@ -4378,6 +4379,7 @@ pub(crate) mod tests {
                 runtime_sources: &[],
             };
             static THIRD: AdapterMetadata = AdapterMetadata {
+                agent_env_markers: &[],
                 id: "third",
                 display_label: "Third",
                 context_spelling: "Third",

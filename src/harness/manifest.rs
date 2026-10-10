@@ -929,7 +929,7 @@ impl Fetcher for CurlFetcher {
                 args.extend(["-H", header]);
             }
             args.push(url);
-            let output = super::codex::bounded_output(
+            let output = super::process::bounded_output(
                 &curl,
                 &args,
                 16,

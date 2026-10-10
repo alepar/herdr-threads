@@ -86,7 +86,7 @@ fn parse_accepts(harness: &str, bytes: &[u8]) -> bool {
 /// diagnostic runtime/version witnesses. Optional Claude compact is excluded
 /// from accepted_fixtures and remains tested under its captured qualification.
 fn operational_parse_accepts(harness: &str, bytes: &[u8]) -> bool {
-    use crate::harness::operational::{ClaudeContract, CodexContract};
+    use crate::harness::{claude::ClaudeContract, codex::CodexContract};
     match harness {
         "claude" => {
             claude::parse_event_for_contract(bytes, "e", &ClaudeContract::registered()).is_ok()
@@ -766,6 +766,7 @@ mod sparse_discovery_fixture {
 
     pub struct Adapter(pub bool);
     static METADATA: AdapterMetadata = AdapterMetadata {
+        agent_env_markers: &[],
         id: "sparse",
         display_label: "Sparse",
         context_spelling: "Sparse",

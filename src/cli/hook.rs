@@ -246,9 +246,9 @@ fn api_failure(stage: &str, error: &ApiError) -> Failure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstalledHarness {
     Claude(String),
-    DeclaredClaude(crate::harness::operational::ClaudeContract),
+    DeclaredClaude(crate::harness::claude::ClaudeContract),
     Codex(crate::harness::codex::InstalledVersion),
-    DeclaredCodex(crate::harness::operational::CodexContract),
+    DeclaredCodex(crate::harness::codex::CodexContract),
 }
 
 /// First absolute, executable `name` on `PATH`.
@@ -284,10 +284,10 @@ pub fn observe_harness_in(
     if registration.hook_admission_policy() == HookAdmissionPolicy::RegisteredContract {
         return match harness {
             Harness::Claude => Ok(InstalledHarness::DeclaredClaude(
-                crate::harness::operational::ClaudeContract::registered(),
+                crate::harness::claude::ClaudeContract::registered(),
             )),
             Harness::Codex => Ok(InstalledHarness::DeclaredCodex(
-                crate::harness::operational::CodexContract::registered(),
+                crate::harness::codex::CodexContract::registered(),
             )),
             _ => Err("legacy hook handle unavailable for registered adapter".into()),
         };

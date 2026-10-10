@@ -578,7 +578,7 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
         .mode(0o700)
         .create(manifest.parent().unwrap())
         .unwrap();
-    let kind = herdr_threads::harness::setup::SettingsKind::ClaudeUser;
+    let kind = herdr_threads::harness::claude::settings_kind();
     herdr_threads::harness::setup::install_user_settings(
         kind,
         &settings,

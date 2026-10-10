@@ -4,8 +4,8 @@ use std::{fs, io::Read, path::Path};
 
 const LIMIT: u64 = 1 << 20;
 const EXPLANATION: &str = "herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings only and never changes foreground settings. User settings and launch arguments are not proof of execution; project/managed settings, environment, and wrapper behavior may override them.";
-const CLAUDE_ADVICE: &str = "Set disableAgentView to true in Claude's user settings.json (merge {\"disableAgentView\":true} into the existing object), or set env.CLAUDE_CODE_DISABLE_AGENT_VIEW to \"1\" there. This disables agent view, --bg/background and on-demand daemon mode. CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is a different setting and does not replace this choice.";
-const CODEX_ADVICE: &str = "Codex 0.160.1 has no persistent user config/environment opt-out for daemon attachment. features.daemon_auto_start = false prevents automatic startup only: Codex still attaches to an existing daemon. Use native codex --no-daemon, or set HERDR_THREADS_CODEX_OPTS='--no-daemon' for herdr-threads launch when the selected binary/wrapper supports and forwards that argument. These configured arguments do not prove that a wrapper runs in the foreground; verify its behavior.";
+pub(crate) const CLAUDE_ADVICE: &str = "Set disableAgentView to true in Claude's user settings.json (merge {\"disableAgentView\":true} into the existing object), or set env.CLAUDE_CODE_DISABLE_AGENT_VIEW to \"1\" there. This disables agent view, --bg/background and on-demand daemon mode. CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is a different setting and does not replace this choice.";
+pub(crate) const CODEX_ADVICE: &str = "Codex 0.160.1 has no persistent user config/environment opt-out for daemon attachment. features.daemon_auto_start = false prevents automatic startup only: Codex still attaches to an existing daemon. Use native codex --no-daemon, or set HERDR_THREADS_CODEX_OPTS='--no-daemon' for herdr-threads launch when the selected binary/wrapper supports and forwards that argument. These configured arguments do not prove that a wrapper runs in the foreground; verify its behavior.";
 
 /// Bound reads and reject symlinks/special files before reading; O_NONBLOCK also covers a
 /// file replaced with a FIFO between metadata inspection and open.
@@ -51,7 +51,7 @@ fn truthy(value: &str) -> bool {
     )
 }
 
-pub(super) fn inspect(harness: Harness, env: &SetupEnv) -> Value {
+pub(crate) fn inspect(harness: Harness, env: &SetupEnv) -> Value {
     let (path, advice) = match harness {
         Harness::Claude => (
             env.claude_config_dir

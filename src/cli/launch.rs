@@ -68,7 +68,7 @@ use std::{
 };
 
 pub use crate::harness::codex::launch::codex_profile;
-pub use crate::harness::launch::{CodexShellProbe, SHELL_PROBE_TIMEOUT, SystemShellProbe};
+pub use crate::harness::launch::{PaneShellProbe, SHELL_PROBE_TIMEOUT, SystemShellProbe};
 
 /// `launch --help` epilogue.
 pub const LAUNCH_HELP: &str = "Target:
@@ -601,8 +601,8 @@ pub struct LaunchParts<'a> {
     pub clock: &'a dyn Clock,
     /// Directory holding the private launch record (`launches.jsonl`).
     pub record_dir: Option<&'a Path>,
-    /// How the pane shell resolves `codex` (consulted for Codex only).
-    pub shell_probe: &'a dyn CodexShellProbe,
+    /// How the pane shell resolves the agent's configuration directory.
+    pub shell_probe: &'a dyn PaneShellProbe,
 }
 
 /// The finished report and the process exit status (0 observed startup,
@@ -1432,7 +1432,7 @@ mod task23_tests {
 
     /// A canned pane-shell answer for `codex`; never runs a shell.
     struct FakeProbe(Result<String, String>);
-    impl CodexShellProbe for FakeProbe {}
+    impl PaneShellProbe for FakeProbe {}
 
     struct Scratch {
         root: std::path::PathBuf,
@@ -1481,7 +1481,7 @@ mod task23_tests {
             seats: &FakeSeats,
             handoff: &FakeHandoff,
             request: LaunchRequest,
-            probe: &dyn CodexShellProbe,
+            probe: &dyn PaneShellProbe,
         ) -> Result<LaunchReport, RunError> {
             let clock = Clock0(AtomicU64::new(1));
             execute(

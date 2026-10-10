@@ -40,7 +40,7 @@ use super::{RunError, hook};
 use crate::harness::{prompt_suggestion, setup::shell_command};
 use crate::{
     daemon::paths::RuntimeContext,
-    harness::{claude, codex, context::Harness},
+    harness::{claude, context::Harness},
     protocol::{
         output::{OutputFormat, OutputSpec},
         results::{ApiError, ErrorCode},
@@ -251,13 +251,14 @@ fn probe_timeout() -> Duration {
 
 fn herdr_json(herdr: &Path, args: &[&str]) -> Result<Value, String> {
     let timeout = probe_timeout();
-    let bytes = codex::bounded_output(herdr, args, HERDR_QUERY_LIMIT, timeout).map_err(|_| {
-        format!(
-            "`herdr {}` failed or did not answer within {} ms",
-            args.join(" "),
-            timeout.as_millis()
-        )
-    })?;
+    let bytes = crate::harness::process::bounded_output(herdr, args, HERDR_QUERY_LIMIT, timeout)
+        .map_err(|_| {
+            format!(
+                "`herdr {}` failed or did not answer within {} ms",
+                args.join(" "),
+                timeout.as_millis()
+            )
+        })?;
     if bytes.len() as u64 > HERDR_QUERY_LIMIT {
         return Err(format!("`herdr {}` output is too large", args.join(" ")));
     }
@@ -1121,7 +1122,7 @@ pub(crate) fn interactive() -> bool {
 /// The one-line summary `setup`/`unsetup` with no harness print for Claude's
 /// prompt suggestions; `None` when there is nothing to say (the advice is a
 /// warning).
-fn prompt_suggestion_line(value: &Value) -> Option<String> {
+pub(crate) fn prompt_suggestion_line(value: &Value) -> Option<String> {
     let setting = claude::PROMPT_SUGGESTION_SETTING;
     Some(match value {
         Value::String(outcome) => match outcome.as_str() {

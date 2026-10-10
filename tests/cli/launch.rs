@@ -239,7 +239,7 @@ impl HandoffReader for FakeHandoff {
 
 /// A pane shell with no configuration exports; never runs a real shell.
 struct FakeProbe;
-impl CodexShellProbe for FakeProbe {}
+impl PaneShellProbe for FakeProbe {}
 
 struct Scratch {
     root: std::path::PathBuf,
@@ -312,7 +312,7 @@ impl Scratch {
         seats: &FakeSeats,
         handoff: &FakeHandoff,
         request: LaunchRequest,
-        probe: &dyn CodexShellProbe,
+        probe: &dyn PaneShellProbe,
     ) -> Result<LaunchReport, RunError> {
         let clock = Clock0(AtomicU64::new(1));
         execute(
@@ -1134,7 +1134,7 @@ struct PaneExports {
     codex_home: Option<String>,
     claude_config_dir: Option<String>,
 }
-impl CodexShellProbe for PaneExports {
+impl PaneShellProbe for PaneExports {
     fn pane_shell_env(&self, var: &str) -> Option<String> {
         match var {
             "CODEX_HOME" => self.codex_home.clone(),
@@ -1683,6 +1683,7 @@ pub(crate) mod fourth_adapter {
     use crate::harness::registry::{AdmittedHandle, Registration, Registry};
 
     const METADATA: AdapterMetadata = AdapterMetadata {
+        agent_env_markers: &[],
         id: "fourth",
         display_label: "Fourth fixture",
         context_spelling: "Fourth",
@@ -1710,6 +1711,7 @@ pub(crate) mod fourth_adapter {
         fn metadata(&self) -> &'static AdapterMetadata {
             if self.options_fixture {
                 static OPTIONS_METADATA: AdapterMetadata = AdapterMetadata {
+                    agent_env_markers: &[],
                     id: "synthetic_fourth",
                     context_spelling: "SyntheticFourth",
                     ..METADATA
@@ -1828,7 +1830,7 @@ pub(crate) mod fourth_adapter {
         fn resolve_scope(
             &self,
             request: &crate::harness::adapter::LaunchRequest,
-            _: &dyn CodexShellProbe,
+            _: &dyn PaneShellProbe,
             _: &CallBudget,
         ) -> Result<LaunchScope, ApiError> {
             Ok(LaunchScope {
@@ -1859,7 +1861,7 @@ pub(crate) mod fourth_adapter {
             scope: &LaunchScope,
             _: &AdmittedHandle,
             status: &LocalSetupStatus,
-            _: &dyn CodexShellProbe,
+            _: &dyn PaneShellProbe,
             _: &CallBudget,
         ) -> Result<LaunchPreparation, ApiError> {
             Ok(LaunchPreparation {
@@ -1933,6 +1935,7 @@ pub(crate) mod fourth_adapter {
         type Admission = ();
         fn metadata(&self) -> &'static AdapterMetadata {
             static THIRD: AdapterMetadata = AdapterMetadata {
+                agent_env_markers: &[],
                 id: "third",
                 display_label: "Third fixture",
                 context_spelling: "Third",

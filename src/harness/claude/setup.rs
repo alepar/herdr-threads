@@ -11,7 +11,7 @@ use crate::harness::{
     prompt_suggestion::{self, SuggestionState},
     recipe,
     setup::{
-        AllowRuleInspection, AllowRuleOwnership, NativeObservation, SettingsKind, SetupError,
+        AllowRuleInspection, AllowRuleOwnership, NativeObservation, SetupError,
         inspect_user_settings, inspect_user_settings_for, read_settings_manifest,
         remove_user_settings, shared_command, shell_command,
     },
@@ -77,7 +77,7 @@ fn hooks_current(env: &SetupEnv, settings: &Path, manifest: &Path) -> bool {
         return false;
     };
     inspect_user_settings_for(
-        SettingsKind::ClaudeUser,
+        crate::harness::claude::settings_kind(),
         settings,
         manifest,
         NativeObservation::Unknown,
@@ -111,14 +111,14 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
     let mut mod_done = false;
     let result = (|| -> Result<Value, RunError> {
         let (installed, already, adopted) = install_settings(
-            SettingsKind::ClaudeUser,
+            crate::harness::claude::settings_kind(),
             request.verb,
             env,
             &mut file,
             &mut warnings,
         )?;
         let allow_rule = inspect_user_settings(
-            SettingsKind::ClaudeUser,
+            crate::harness::claude::settings_kind(),
             &settings,
             &manifest,
             NativeObservation::Unknown,
@@ -303,7 +303,7 @@ pub fn settle_prompt_suggestions<R: io::BufRead + ?Sized, W: Write + ?Sized>(
 
 pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
     let (settings, manifest) = claude_paths(env)?;
-    let kind = SettingsKind::ClaudeUser;
+    let kind = crate::harness::claude::settings_kind();
     // The mod edit first, then the prompt suggestion, then the hooks: each
     // later step can still restore the file byte for byte (install order is
     // the reverse).
@@ -356,7 +356,7 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
 
 fn claude_status(
     env: &SetupEnv,
-    observation: Result<(Observed, Option<crate::harness::operational::CodexContract>), String>,
+    observation: Result<(Observed, Option<crate::harness::codex::CodexContract>), String>,
 ) -> Result<Value, RunError> {
     let settings = env.claude_settings()?;
     let mut report = json!({
@@ -368,7 +368,12 @@ fn claude_status(
         "recipes": recipe::describe(claude::RECIPES),
         "harness_version": observation_json(&observation),
     });
-    settings_status(SettingsKind::ClaudeUser, env, &settings, &mut report)?;
+    settings_status(
+        crate::harness::claude::settings_kind(),
+        env,
+        &settings,
+        &mut report,
+    )?;
     report["prompt_suggestions"] = prompt_suggestion_status(
         env,
         &settings,
@@ -457,14 +462,14 @@ pub(crate) fn unsetup(
 pub(crate) fn observe(
     request: &SetupRequest,
     env: &SetupEnv,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
     observe_with_cache(request, env, None)
 }
 pub(crate) fn observe_with_cache(
     request: &SetupRequest,
     env: &SetupEnv,
     _codex_cache: Option<&Path>,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
     observe_bounded(
         request,
         env,
@@ -480,7 +485,7 @@ fn observe_bounded(
     _codex_cache: Option<&Path>,
     timeout: Duration,
     cancellation: &crate::protocol::time::Cancellation,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
     if timeout.is_zero() || cancellation.is_cancelled() {
         return Err("native status observation budget exhausted or cancelled".into());
     }
@@ -822,7 +827,7 @@ fn claude_version_gate(
     let Ok((observed, _)) = observe(request, env) else {
         return (None, None, Some("no claude executable found"));
     };
-    let Ok(stdout) = crate::harness::codex::version_output_cancellable(
+    let Ok(stdout) = crate::harness::process::version_output_cancellable(
         &observed.binary,
         CLAUDE_VERSION_TIMEOUT,
         &crate::protocol::time::Cancellation::default(),

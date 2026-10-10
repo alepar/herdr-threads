@@ -13,8 +13,8 @@ use crate::{
         context::Harness,
         recipe,
         setup::{
-            self as lib, SettingsKind, SetupError, read_settings_manifest, remove_user_settings,
-            shared_command, shell_command,
+            self as lib, SetupError, read_settings_manifest, remove_user_settings, shared_command,
+            shell_command,
         },
     },
     protocol::results::ErrorCode,
@@ -499,7 +499,13 @@ pub(crate) fn codex_trust_report(env: &SetupEnv) -> Value {
         return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
     };
     let mut status = json!({});
-    if settings_status(SettingsKind::CodexUser, env, &paths.hooks, &mut status).is_err()
+    if settings_status(
+        crate::harness::codex::settings_kind(),
+        env,
+        &paths.hooks,
+        &mut status,
+    )
+    .is_err()
         || status["installed"] != true
     {
         return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
@@ -569,7 +575,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
             settings_error(
                 error,
                 request.verb,
-                SettingsKind::CodexUser,
+                crate::harness::codex::settings_kind(),
                 &paths.hooks,
                 &paths.hooks_manifest,
             )
@@ -605,7 +611,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
     let mut warnings = Vec::new();
     let mut hooks_file = OwnedFile::new(paths.hooks.clone(), paths.hooks_manifest.clone(), b"{}");
     let (installed, already, adopted) = install_settings(
-        SettingsKind::CodexUser,
+        crate::harness::codex::settings_kind(),
         request.verb,
         env,
         &mut hooks_file,
@@ -668,7 +674,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
 
 pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
     let paths = codex_paths(env)?;
-    let kind = SettingsKind::CodexUser;
+    let kind = crate::harness::codex::settings_kind();
     let mut report = json!({
         "harness": "codex",
         "scope": "user",
@@ -759,7 +765,7 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
 
 fn codex_status(
     env: &SetupEnv,
-    observation: Result<(Observed, Option<crate::harness::operational::CodexContract>), String>,
+    observation: Result<(Observed, Option<crate::harness::codex::CodexContract>), String>,
 ) -> Result<Value, RunError> {
     let mut report = json!({
         "action": "status",
@@ -771,7 +777,12 @@ fn codex_status(
     });
     let hooks = env.codex_file("hooks.json")?;
     report["hooks_file"] = json!(hooks.display().to_string());
-    settings_status(SettingsKind::CodexUser, env, &hooks, &mut report)?;
+    settings_status(
+        crate::harness::codex::settings_kind(),
+        env,
+        &hooks,
+        &mut report,
+    )?;
     let Ok(paths) = codex_paths(env) else {
         return Ok(report);
     };
@@ -836,14 +847,14 @@ pub(crate) fn unsetup(
 pub(crate) fn observe(
     request: &SetupRequest,
     env: &SetupEnv,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
     observe_with_cache(request, env, None)
 }
 pub(crate) fn observe_with_cache(
     request: &SetupRequest,
     env: &SetupEnv,
     codex_cache: Option<&Path>,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
     observe_bounded(
         request,
         env,
@@ -859,7 +870,7 @@ fn observe_bounded(
     _codex_cache: Option<&Path>,
     timeout: Duration,
     cancellation: &crate::protocol::time::Cancellation,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
     if timeout.is_zero() || cancellation.is_cancelled() {
         return Err("native status observation budget exhausted or cancelled".into());
     }
@@ -878,6 +889,6 @@ fn observe_bounded(
             version: None,
             recipe: "codex-hooks-v1",
         },
-        Some(crate::harness::operational::CodexContract::registered()),
+        Some(crate::harness::codex::CodexContract::registered()),
     ))
 }

@@ -31,6 +31,7 @@ impl HarnessAdapter for Overlay {
                     .into_boxed_slice(),
             );
             AdapterMetadata {
+                agent_env_markers: &[],
                 id: base.id,
                 display_label: base.display_label,
                 context_spelling: base.context_spelling,
