@@ -217,10 +217,12 @@ fn lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors()
     replacement.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     let successor = check_in(&store, lifecycle(replacement, "successor")).unwrap();
     assert_eq!(successor.context.binding_generation, 0);
+    // ht-54r.21: the replayed context names the same session binding, still open at the seat's
+    // generation, so it is current; the pane's execution is not part of that identity.
     let historical = check_in(&store, initial).unwrap();
     assert_eq!(
         serde_json::to_value(&historical).unwrap()["context_disposition"],
-        "historical"
+        "current"
     );
     assert_eq!(historical.context, result.context);
     assert_eq!(historical.inbox, result.inbox);
@@ -898,6 +900,16 @@ fn replay_metadata_preserves_stored_domain_result_and_selected_output_bounds() {
     let mut successor = first.context.clone();
     successor.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     check_in(&store, lifecycle(successor, "successor")).unwrap();
+    // ht-54r.21: the session's binding is still open at the seat generation: current. Only
+    // an ended binding (or a rebound seat) makes the replayed context historical.
+    assert_eq!(
+        check_in(&store, original.clone())
+            .unwrap()
+            .context_disposition,
+        CheckInContextDisposition::Current
+    );
+    conn.execute("UPDATE occupant_bindings SET ended_at=1", [])
+        .unwrap();
     let historical = check_in(&store, original).unwrap();
     assert_eq!(
         historical.context_disposition,
@@ -1175,6 +1187,16 @@ fn recorded_context_without_disposition_is_presented_from_locked_occupancy() {
     let mut successor = first.context.clone();
     successor.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     check_in(&store, lifecycle(successor, "successor")).unwrap();
+    // ht-54r.21: the session's binding is still open at the seat generation: current. Only
+    // an ended binding (or a rebound seat) makes the recorded context historical.
+    assert_eq!(
+        check_in(&store, command.clone())
+            .unwrap()
+            .context_disposition,
+        CheckInContextDisposition::Current
+    );
+    conn.execute("UPDATE occupant_bindings SET ended_at=1", [])
+        .unwrap();
     let historical = check_in(&store, command).unwrap();
     assert_eq!(
         historical.context_disposition,
@@ -1312,9 +1334,11 @@ fn stored_noncanonical_context_replay_is_exact_without_normalizing_history() {
     .unwrap();
     let replay = check_in(&store, command).unwrap();
     assert_eq!(replay.context.execution.as_str(), spelling);
+    // ht-54r.21: the session's binding is open at the seat generation whatever execution
+    // spelling the stored context carries, so it is presented as current.
     assert_eq!(
         replay.context_disposition,
-        CheckInContextDisposition::Historical
+        CheckInContextDisposition::Current
     );
     assert_eq!(replay.inbox, first.inbox);
     assert_eq!(

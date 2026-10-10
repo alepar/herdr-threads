@@ -272,7 +272,7 @@ pub fn publish_current_target_observation(
                 params![admission_sequence,admission.instance()],
             ).map_err(store_error)?;
             let current_seat: Option<(String, bool)> = tx.query_row(
-                "SELECT s.id, s.target_generation=?3 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.target_id=s.target_id AND b.generation=s.generation AND b.target_generation=s.target_generation AND b.host_boot=?4 AND b.host_epoch=?5) FROM seats s WHERE s.instance_id=?1 AND s.target_id=?2 AND s.state='resolved'",
+                "SELECT s.id, s.target_generation=?3 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.host_boot=?4 AND b.host_epoch=?5) FROM seats s WHERE s.instance_id=?1 AND s.target_id=?2 AND s.state='resolved'",
                 params![admission.instance(),observation.target.as_str(),generation,observation.host_boot.as_str(),host_epoch],
                 |r| Ok((r.get(0)?,r.get(1)?)),
             ).optional().map_err(store_error)?;
@@ -1526,7 +1526,7 @@ fn saved_seat_cas(
     let binding_query = if invalidated {
         "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1"
     } else {
-        "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL"
+        "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1"
     };
     let mut terminal: Option<String> = tx
         .query_row(binding_query, [seat.as_str()], |r| r.get(0))
@@ -1798,7 +1798,7 @@ pub fn mark_unresolved_from_invalidation(
 /// fresh registration writes, closes the seat's open unavailability marker and
 /// re-points pending wake work. Moves nothing for a native binding.
 #[allow(clippy::too_many_arguments)]
-fn carry_binding_forward(
+pub(crate) fn carry_binding_forward(
     tx: &Transaction<'_>,
     instance: &str,
     at: UtcMillis,
@@ -1809,12 +1809,11 @@ fn carry_binding_forward(
     target_generation: i64,
 ) -> Result<bool, ApiError> {
     let changed = tx.execute(
-        "UPDATE occupant_bindings SET host_epoch=?1,target_generation=?2 WHERE seat_id=?3 AND generation=?4 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?5 AND target_id=?6 AND incarnation=?7 AND observation_provenance IN (?8,?9,?10,?11) AND (host_epoch!=?1 OR target_generation!=?2)",
+        "UPDATE occupant_bindings SET host_epoch=?1,target_generation=?2 WHERE seat_id=?3 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?4 AND target_id=?5 AND incarnation=?6 AND observation_provenance IN (?7,?8,?9,?10) AND (host_epoch!=?1 OR target_generation!=?2)",
         params![
             checked_host_number(publication.epoch)?,
             target_generation,
             seat.as_str(),
-            checked_host_number(generation)?,
             publication.boot.as_str(),
             target,
             publication.incarnation,
@@ -1824,15 +1823,27 @@ fn carry_binding_forward(
             CARRIED_BINDING_PROVENANCES[3]
         ],
     ).map_err(store_error)?;
-    // A seat may hold several bindings of the carried generation (ht-54r.3).
+    // A seat holds many bindings (ht-54r.3): every open registered carried binding moves, and
+    // the seat's availability anchor is written once, from the most recent of them. The seat
+    // generation is the fence (the caller's compare-and-set); a binding's own is informational.
     if changed == 0 {
         return Ok(false);
     }
-    let (binding_generation, provenance): (i64, String) = tx
+    let binding_generation = checked_host_number(generation)?;
+    let provenance: String = tx
         .query_row(
-            "SELECT generation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL",
-            params![seat.as_str(), checked_host_number(generation)?],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            "SELECT observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?2 AND host_epoch=?3 AND target_id=?4 AND observation_provenance IN (?5,?6,?7,?8) ORDER BY ordinal DESC LIMIT 1",
+            params![
+                seat.as_str(),
+                publication.boot.as_str(),
+                checked_host_number(publication.epoch)?,
+                target,
+                CARRIED_BINDING_PROVENANCES[0],
+                CARRIED_BINDING_PROVENANCES[1],
+                CARRIED_BINDING_PROVENANCES[2],
+                CARRIED_BINDING_PROVENANCES[3]
+            ],
+            |r| r.get(0),
         )
         .map_err(store_error)?;
     let seq = schema::next_decision_seq(tx, instance)?;
@@ -1849,6 +1860,37 @@ fn carry_binding_forward(
     )
     .map_err(store_error)?;
     Ok(true)
+}
+
+/// What reconciliation reads of one open binding's placement.
+struct OpenPlacement {
+    host_boot: String,
+    incarnation: Option<String>,
+    execution: String,
+    terminal: Option<String>,
+    registered: bool,
+}
+
+/// The seat's open bindings' placements, most recent first. A seat holds many (ht-54r.3).
+fn open_binding_placements(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+) -> Result<Vec<OpenPlacement>, ApiError> {
+    let mut statement = tx
+        .prepare("SELECT host_boot,incarnation,execution_id,terminal_id,registered_at IS NOT NULL FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC")
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map([seat.as_str()], |r| {
+            Ok(OpenPlacement {
+                host_boot: r.get(0)?,
+                incarnation: r.get(1)?,
+                execution: r.get(2)?,
+                terminal: r.get(3)?,
+                registered: r.get(4)?,
+            })
+        })
+        .map_err(store_error)?;
+    rows.collect::<Result<_, _>>().map_err(store_error)
 }
 
 /// A binding just became available: its availability anchor and the
@@ -2020,14 +2062,12 @@ pub fn apply_reconciliation_transition(
                     if owned {
                         return Ok(None);
                     }
-                    let bound: Option<(String, Option<String>, String)> = tx
-                        .query_row(
-                            "SELECT host_boot,incarnation,execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-                            [transition.seat.as_str()],
-                            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
-                        )
-                        .optional()
-                        .map_err(store_error)?;
+                    // A seat holds many open bindings (ht-54r.3), all in one pane: the evidence
+                    // is the most recent one's, and a verified execution may be any of theirs.
+                    let open_placements = open_binding_placements(tx, &transition.seat)?;
+                    let bound = open_placements
+                        .first()
+                        .map(|p| (p.host_boot.clone(), p.incarnation.clone(), p.execution.clone()));
                     let structural_matches = structural_continuity_matches(
                         tx, &transition.seat, &publication,
                         transition.expected_target.as_ref(), Some(terminal),
@@ -2038,14 +2078,14 @@ pub fn apply_reconciliation_transition(
                                 && incarnation.as_deref() == Some(&publication.incarnation)
                         })
                     { return Ok(None); }
-                    if let Some((_, _, bound_execution)) = bound.as_ref() {
+                    if bound.is_some() {
                         match observed.verified_execution.as_ref() {
                             // A verified execution must be the bound one: a
                             // different one is a replacement, never a move.
                             Some(execution) => {
                                 if observed.occupancy != StructuralOccupancy::Occupied
                                     || !observed.top_level_occupant
-                                    || execution.as_str() != bound_execution
+                                    || !open_placements.iter().any(|p| p.execution == execution.as_str())
                                 {
                                     return Ok(None);
                                 }
@@ -2057,13 +2097,9 @@ pub fn apply_reconciliation_transition(
                             // the new address. A registered binding whose
                             // occupant the snapshot shows absent is not carried.
                             None => {
-                                let (bound_terminal, registered): (Option<String>, bool) = tx.query_row(
-                                    "SELECT terminal_id,registered_at IS NOT NULL FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-                                    [transition.seat.as_str()],
-                                    |r| Ok((r.get(0)?, r.get(1)?)),
-                                ).map_err(store_error)?;
+                                let registered = open_placements.iter().any(|p| p.registered);
                                 let same_terminal = structural_matches == Some(true)
-                                    || bound_terminal.as_deref() == Some(terminal.as_str());
+                                    || open_placements.iter().any(|p| p.terminal.as_deref() == Some(terminal.as_str()));
                                 if !same_terminal || registered && observed.shows_occupant_absent() {
                                     return Ok(None);
                                 }
@@ -2099,10 +2135,9 @@ pub fn apply_reconciliation_transition(
                         )? {
                             Some(true) => Some((publication.boot.as_str().to_owned(), Some(publication.incarnation.clone()))),
                             Some(false) => return Ok(None),
-                            None => tx.query_row(
-                                "SELECT host_boot,incarnation FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-                                [transition.seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?)),
-                            ).optional().map_err(store_error)?,
+                            None => open_binding_placements(tx, &transition.seat)?
+                                .first()
+                                .map(|p| (p.host_boot.clone(), p.incarnation.clone())),
                         }
                     } else {
                         // Unresolved recovery remains restricted by saved_seat_cas
@@ -4779,14 +4814,18 @@ pub fn mod_stall_oldest(
     Ok(oldest.map(UtcMillis))
 }
 
-fn present_check_in_result(
+pub(crate) fn present_check_in_result(
     tx: &Transaction<'_>,
     mut result: CommandResult,
 ) -> Result<CommandResult, ApiError> {
     if let CommandResult::CheckedIn(offer) = &mut result {
         let claim = &offer.context;
-        let current:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.instance_id=?2 AND s.state!='retired' AND s.target_id=?3 AND s.generation=?4 AND b.generation=s.generation AND b.ended_at IS NULL AND b.target_id=s.target_id AND b.harness=?5 AND b.native_session=?6 AND b.execution_id=?7)",
-            params![claim.seat.as_str(),claim.instance,claim.target.as_str(),claim.binding_generation as i64,claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str()],|r|r.get(0)).map_err(store_error)?;
+        // Current: the seat has not been rebound since the claim (`seats.generation`, the
+        // fence) and the claim's own binding, found by key, is open on the seat's target. A
+        // seat holds many bindings, so no binding generation or execution is compared
+        // (ht-54r.3).
+        let current:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.instance_id=?2 AND s.state!='retired' AND s.target_id=?3 AND s.generation=?4 AND b.ended_at IS NULL AND b.target_id=s.target_id AND b.harness=?5 AND b.native_session=?6 AND b.agent_id=?7)",
+            params![claim.seat.as_str(),claim.instance,claim.target.as_str(),claim.binding_generation as i64,claim.harness.as_str(),claim.native_session.as_str(),claim.agent_id.as_ref().map_or("",|a|a.as_str())],|r|r.get(0)).map_err(store_error)?;
         offer.context_disposition = if current {
             crate::protocol::results::CheckInContextDisposition::Current
         } else {

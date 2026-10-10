@@ -1716,10 +1716,13 @@ impl StorePort for SqliteStore {
     ) -> Result<Option<crate::ports::ModAckBinding>, ApiError> {
         use crate::protocol::ids::{ExecutionId, HostTargetId, NativeSessionId};
         let db = self.context.open_query(budget.clone())?;
+        // A seat holds many bindings (ht-54r.3): the channel's binding is the most recent open
+        // top-level one (presentation; ht-54r.12 keys the channel by binding), its predecessor
+        // the next older top-level row of any state. Subagent rows never head a mod channel.
         let mut stmt = db
-            .prepare("SELECT b.generation,b.observation_provenance,b.harness,b.native_session,b.execution_id,b.target_id,b.ended_at IS NULL FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.seat_id=?1 AND s.instance_id=?2 ORDER BY b.ordinal DESC LIMIT 2")
+            .prepare("SELECT b.generation,b.observation_provenance,b.harness,b.native_session,b.execution_id,b.target_id,b.ended_at IS NULL FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.seat_id=?1 AND s.instance_id=?2 AND b.role='top_level' ORDER BY b.ordinal DESC")
             .map_err(store_error)?;
-        let rows = stmt
+        let mut rows = stmt
             .query_map(params![seat.as_str(), instance], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
@@ -1731,13 +1734,23 @@ impl StorePort for SqliteStore {
                     r.get::<_, bool>(6)?,
                 ))
             })
-            .map_err(store_error)?
-            .collect::<Result<Vec<_>, _>>()
             .map_err(store_error)?;
-        let mut rows = rows.into_iter();
-        let Some(open) = rows.next().filter(|row| row.6) else {
+        let mut open = None;
+        for row in rows.by_ref() {
+            let row = row.map_err(store_error)?;
+            if row.6 {
+                open = Some(row);
+                break;
+            }
+        }
+        let Some(open) = open else {
             return Ok(None);
         };
+        let previous = rows
+            .next()
+            .transpose()
+            .map_err(store_error)?
+            .map(|row| (row.0 as u64, NativeSessionId::new(row.3)));
         Ok(Some(crate::ports::ModAckBinding {
             generation: open.0 as u64,
             provenance: open.1,
@@ -1745,9 +1758,7 @@ impl StorePort for SqliteStore {
             native_session: NativeSessionId::new(open.3),
             execution: ExecutionId::new(open.4),
             target: HostTargetId::new(open.5),
-            previous: rows
-                .next()
-                .map(|row| (row.0 as u64, NativeSessionId::new(row.3))),
+            previous,
         }))
     }
     fn issue_cooperative_permit(

@@ -3232,19 +3232,19 @@ fn append_event_once_at_seq(
     Ok((id, true))
 }
 
-/// Spec §1: the author role a seat's open binding gives its messages at decision
-/// time. A `human` harness reads as `human`, any other harness as `agent`; no
-/// open binding records NULL (read as agent).
+/// Spec §1: the author role a seat's open bindings give its messages at decision time. A seat
+/// holds many bindings (ht-54r.3). It reads `human` when a `human` binding is open (a person and
+/// an agent never share a seat, TRUST-POLICY A4); otherwise `agent` while any binding is open;
+/// no open binding records NULL (read as agent).
 pub fn open_binding_role(tx: &Connection, seat: &SeatId) -> Result<Option<&'static str>, ApiError> {
-    let harness: Option<String> = tx
+    let (open, human): (bool, bool) = tx
         .query_row(
-            "SELECT harness FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+            "SELECT COUNT(*)>0, COALESCE(MAX(harness='human'),0) FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
             [seat.as_str()],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .optional()
         .map_err(store_error)?;
-    Ok(harness.map(|h| if h == "human" { "human" } else { "agent" }))
+    Ok(open.then_some(if human { "human" } else { "agent" }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

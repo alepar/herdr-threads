@@ -2334,7 +2334,8 @@ fn user_intent_snapshot_lease_reset_and_fences() {
         )
         .unwrap();
     for sql in [
-        "UPDATE occupant_bindings SET generation=2 WHERE seat_id='a'",
+        // ht-54r.21: a binding's own generation is informational; the seat was rebound.
+        "UPDATE seats SET generation=2 WHERE id='a'",
         "UPDATE occupant_bindings SET execution_id='changed' WHERE seat_id='a'",
     ] {
         fx.db.execute(sql, []).unwrap();
@@ -2351,6 +2352,9 @@ fn user_intent_snapshot_lease_reset_and_fences() {
                 "UPDATE occupant_bindings SET generation=1,execution_id='ea' WHERE seat_id='a'",
                 [],
             )
+            .unwrap();
+        fx.db
+            .execute("UPDATE seats SET generation=1 WHERE id='a'", [])
             .unwrap();
     }
     fx.settings.chunk_bytes += 1;
