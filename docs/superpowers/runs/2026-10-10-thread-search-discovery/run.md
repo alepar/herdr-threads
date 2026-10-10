@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-thread-search-discovery
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: fix-loop (skipped)
+phase: finish
 
 idea: lets debug, then once we understand the problem, $super-auto it, fully autonomous, both roasts on
 branch: super-auto/thread-search-discovery
@@ -25,8 +25,8 @@ codeBuckets:
   stalled: false
   review: CLEAN
 
-combined-main: effa14a2
-combined-candidate: 65a67dcf
+combined-main: 7c40c83c
+combined-candidate: 4a732c83d005ebfbf622361a3cc2b2534664c773
 private-target: /Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/thread-search-discovery/target
 
 HT_LEAK_RUN_ID: c494afe8-aa16-4b6b-a2a8-b9bee8e65cb8
@@ -39,3 +39,9 @@ parked:
 - 2026-10-10-thread-search-discovery-roast-pr-1.md · degraded-verdict · "clean (0 nits) [low coverage] — proceeded autonomously, not re-roasted; all ten lanes completed empty, no failed scouts or unjudged candidates"
 
 fix-loop: skipped — no confirmed findings, escalations or beyond-cap candidates; no scope-filter dispatch needed
+
+phase-history: fix-loop (skipped) → report
+verification: final-verification.md
+
+finish-gate: report exists; phase report evaluated before entry; report not stalled; all epic tasks terminal; final focused project checks green
+feedback-draft: upstream-feedback-draft.md — parked, no external write; awaiting separate proposal/body approval

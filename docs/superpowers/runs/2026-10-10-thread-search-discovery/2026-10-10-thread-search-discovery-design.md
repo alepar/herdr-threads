@@ -52,6 +52,8 @@ One store-focused leaf can own candidate projection, the predicate, dedicated na
 
 ## Post-Implementation Notes
 
+**2026-10-10 — Changes vs. original design:** Use the existing `directory` revision kind with dedicated `name/all` key because the schema rejects a new kind. Feature source/tests survived both current-main integrations unchanged. Final post-roast candidate verification is recorded in `final-verification.md`; PR review retained its policy-required low-coverage qualifier after ten completed empty scouts.
+
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
 
 2026-10-10: Production mutation regression exposed that `filter_revisions.scope_kind` has `CHECK (scope_kind IN ('directory', 'inbox', 'topic'))`; the planned new `name` kind was rejected. Use existing kind `directory` with dedicated key `name/all`, distinct from key `all`. This preserves the atomic, selected-instance rename dependency and search-only cursor binding without a schema migration; no public shape or trust invariant changes.
