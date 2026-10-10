@@ -80,7 +80,6 @@ pub(crate) fn is_compound(semantic: &SemanticMutation) -> bool {
         SemanticMutation::HandoffBootstrap(_)
             | SemanticMutation::HandoffDelivery(_)
             | SemanticMutation::AutomaticDelivery(_)
-            | SemanticMutation::AutomaticHandoff(_)
             | SemanticMutation::AutomaticBootstrap(_)
     )
 }
@@ -118,11 +117,52 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     let reference = &original.header.reference;
     let ns = namespace(selected, instance);
     match original_kind(&original.semantic) {
-        SemanticMutation::AutomaticDelivery(_)
-        | SemanticMutation::AutomaticHandoff(_)
-        | SemanticMutation::AutomaticBootstrap(_) => {
-            Err(super::unsupported("automatic handoff producer unavailable"))
+        SemanticMutation::AutomaticDelivery(_) | SemanticMutation::AutomaticHandoff(_) => {
+            super::handoff_delivery::require_automatic_capability(client, clock)?;
+            let super::journal::SemanticMutation::Frozen { claim, mutation } = &original.semantic
+            else {
+                return Err(super::invalid_request(
+                    "automatic retry lacks frozen caller",
+                ));
+            };
+            let automatic = match mutation.as_ref() {
+                SemanticMutation::AutomaticDelivery(plan) => {
+                    AutomaticOriginal::Delivery(plan.clone())
+                }
+                SemanticMutation::AutomaticHandoff(plan) => {
+                    AutomaticOriginal::Handoff(plan.clone())
+                }
+                _ => unreachable!(),
+            };
+            let mut envelope = super::handoff_delivery::automatic_envelope(claim, automatic)?;
+            envelope.action = AutomaticDeliveryAction::Status;
+            match client.call(
+                Command::AutomaticHandoffDelivery(Box::new(envelope)),
+                &super::cooperative_budget(clock),
+            ) {
+                Ok(CommandResult::Handoff(current)) if current.state == HandoffState::Completed => {
+                    super::handoff_delivery::retry_automatic_to_writer(
+                        journal,
+                        reference,
+                        parsed.actor,
+                        &ns,
+                        client,
+                        None,
+                        clock,
+                        &parsed.output,
+                        writer,
+                    )?;
+                    Ok(true)
+                }
+                Ok(CommandResult::Handoff(_)) => Ok(false),
+                Err(e) if e.code == ErrorCode::NotFound => Ok(false),
+                Err(e) => Err(e.into()),
+                _ => Err(super::invalid_request("unexpected automatic status")),
+            }
         }
+        SemanticMutation::AutomaticBootstrap(_) => Err(super::unsupported(
+            "automatic bootstrap producer unavailable",
+        )),
         SemanticMutation::HandoffBootstrap(_) => {
             require_capability(client, clock)?;
             super::topology_handoff::try_completed(
@@ -198,6 +238,22 @@ pub(crate) fn run(
     let reference = match &parsed.action {
         CliAction::TopologyHandoff(request) if request.existing => {
             let topology = host.topology(&super::cooperative_budget(clock.as_ref()))?;
+            if request.automatic {
+                return super::handoff_delivery::run_automatic_existing(
+                    request,
+                    super::handoff_delivery::Preparation {
+                        claim: &claim,
+                        namespace: &ns,
+                        topology: &topology,
+                        client: &client,
+                        clock: clock.as_ref(),
+                    },
+                    journal,
+                    parsed.actor,
+                    &output,
+                    writer,
+                );
+            }
             let plan = super::handoff_delivery::prepare(
                 request,
                 super::handoff_delivery::Preparation {
@@ -347,6 +403,21 @@ pub(crate) fn run(
                     parsed.actor,
                     &ns,
                     &guarded,
+                    clock.as_ref(),
+                    &output,
+                    writer,
+                )?;
+                return Ok(());
+            }
+            if let SemanticMutation::AutomaticDelivery(_) = original_kind(&original.semantic) {
+                super::handoff_delivery::require_automatic_capability(&client, clock.as_ref())?;
+                super::handoff_delivery::retry_automatic_to_writer(
+                    journal,
+                    &original.header.reference,
+                    parsed.actor,
+                    &ns,
+                    &client,
+                    None,
                     clock.as_ref(),
                     &output,
                     writer,

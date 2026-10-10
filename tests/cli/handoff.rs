@@ -5,6 +5,371 @@ use crate::protocol::{
     time::{CallBudget, MonoInstant, UtcMillis},
 };
 use std::sync::Mutex;
+
+// This fixture exercises the parsed omitted-channel request through the actual
+// producer, and refuses every standalone Create/Invite/Accept/ACK route.
+struct AutomaticClient {
+    supported: bool,
+    calls: Mutex<Vec<Command>>,
+    thread: Mutex<Option<ThreadId>>,
+    sent: Mutex<bool>,
+    completed: Mutex<bool>,
+    lose_complete: Mutex<bool>,
+}
+impl AutomaticClient {
+    fn new() -> Self {
+        Self {
+            supported: true,
+            calls: Mutex::new(vec![]),
+            thread: Mutex::new(None),
+            sent: Mutex::new(false),
+            completed: Mutex::new(false),
+            lose_complete: Mutex::new(false),
+        }
+    }
+}
+impl LocalClient for AutomaticClient {
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command.clone());
+        match command {
+            Command::Capabilities => Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: if self.supported {
+                        vec![crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into()]
+                    } else {
+                        vec![]
+                    },
+                },
+            )),
+            Command::AutomaticHandoffDelivery(request) => {
+                use crate::protocol::handoff::AutomaticDeliveryAction;
+                assert_eq!(request.plan().recipient.as_str(), "recipient");
+                assert_eq!(request.plan().payload.body, "secret durable task");
+                let keys = &request.plan().payload.keys;
+                let status = |state, thread| {
+                    CommandResult::Handoff(crate::protocol::handoff::HandoffResult {
+                        compound: keys.compound.clone(),
+                        thread,
+                        state,
+                    })
+                };
+                match &request.action {
+                    AutomaticDeliveryAction::Prepare => {
+                        Ok(CommandResult::SeatResolved(SeatId::new("recipient")))
+                    }
+                    AutomaticDeliveryAction::Status | AutomaticDeliveryAction::Begin { .. } => {
+                        Ok(status(
+                            if *self.completed.lock().unwrap() {
+                                crate::protocol::handoff::HandoffState::Completed
+                            } else {
+                                crate::protocol::handoff::HandoffState::Live
+                            },
+                            self.thread.lock().unwrap().clone(),
+                        ))
+                    }
+                    AutomaticDeliveryAction::Ensure(ensure) => {
+                        assert_eq!(ensure.operation, keys.ensure);
+                        *self.thread.lock().unwrap() = Some(ThreadId::new("t-pair"));
+                        Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
+                    }
+                    AutomaticDeliveryAction::Send(send) => {
+                        assert_eq!(send.operation, keys.send);
+                        assert_eq!(send.thread.as_str(), "t-pair");
+                        assert_eq!(
+                            send.direct_recipient.as_ref().unwrap().as_str(),
+                            "recipient"
+                        );
+                        *self.sent.lock().unwrap() = true;
+                        Ok(CommandResult::MessageSent(MessageId::new("m-pair")))
+                    }
+                    AutomaticDeliveryAction::Complete { operation } => {
+                        assert_eq!(operation, &keys.complete);
+                        assert!(*self.sent.lock().unwrap());
+                        *self.completed.lock().unwrap() = true;
+                        if std::mem::take(&mut *self.lose_complete.lock().unwrap()) {
+                            return Err(ApiError::unknown_outcome(
+                                "Complete committed; reply lost",
+                            ));
+                        }
+                        Ok(status(
+                            crate::protocol::handoff::HandoffState::Completed,
+                            Some(ThreadId::new("t-pair")),
+                        ))
+                    }
+                }
+            }
+            other => panic!("automatic producer used forbidden command: {other:?}"),
+        }
+    }
+}
+
+#[derive(Default)]
+struct AutomaticLauncher {
+    starts: usize,
+    lose_start: bool,
+}
+impl HandoffLauncher for AutomaticLauncher {
+    fn select_startup_input(
+        &mut self,
+        request: &LaunchRequest,
+    ) -> Result<crate::harness::adapter::StartupInputTemplate, RunError> {
+        Ok(crate::harness::adapter::StartupInputTemplate::positional(
+            request.argv.len(),
+        ))
+    }
+    fn preflight(&mut self, _: &LaunchRequest) -> Result<SeatId, RunError> {
+        Ok(SeatId::new("recipient"))
+    }
+    fn launch(
+        &mut self,
+        request: &LaunchRequest,
+        seat: &SeatId,
+        gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
+    ) -> Result<super::super::launch::LaunchReport, RunError> {
+        assert_eq!(seat.as_str(), "recipient");
+        assert!(request.argv.iter().any(|arg| arg.contains("t-pair")));
+        gate(true)?;
+        self.starts += 1;
+        if self.lose_start {
+            return Err(ApiError::unknown_outcome("native start submitted; reply lost").into());
+        }
+        Ok(super::super::launch::LaunchReport {
+            report: serde_json::json!({"outcome":"started"}),
+            exit: 0,
+        })
+    }
+}
+
+#[test]
+fn automatic_launched_pane_uses_ensure_send_and_one_start() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong parser route")
+    };
+    assert!(request.automatic);
+    let (_temp, journal) = journal();
+    let client = AutomaticClient::new();
+    let mut launcher = AutomaticLauncher::default();
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut bytes = vec![];
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let result = start(
+        &journal,
+        request,
+        original_claim,
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut bytes,
+    );
+    assert!(result.is_ok(), "automatic launch failed: {result:?}");
+    assert_eq!(launcher.starts, 1);
+    let calls = client.calls.lock().unwrap();
+    assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Ensure(_)))).count(), 1);
+    assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Send(_)))).count(), 1);
+    assert!(!bytes.is_empty());
+}
+
+#[test]
+fn automatic_launched_pane_unsupported_refuses_before_journal_and_start() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let (_temp, journal) = journal();
+    let mut client = AutomaticClient::new();
+    client.supported = false;
+    let mut launcher = AutomaticLauncher::default();
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let result = start(
+        &journal,
+        request,
+        original_claim,
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(
+        matches!(result, Err(RunError::Api(ref e)) if e.code == ErrorCode::Unsupported),
+        "{result:?}"
+    );
+    assert_eq!(launcher.starts, 0);
+    assert_eq!(client.calls.lock().unwrap().len(), 1);
+    assert!(journal.resolve_recovery_ref("local:1").is_err());
+}
+
+#[test]
+fn automatic_launched_pane_lost_start_never_resubmits_on_retry() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let (_temp, journal) = journal();
+    let client = AutomaticClient::new();
+    let mut launcher = AutomaticLauncher {
+        lose_start: true,
+        ..Default::default()
+    };
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let mut first_bytes = vec![];
+    let first = start(
+        &journal,
+        request,
+        original_claim,
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut first_bytes,
+    );
+    assert!(
+        matches!(first, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{first:?}"
+    );
+    assert_eq!(launcher.starts, 1);
+    assert!(!first_bytes.is_empty());
+    let reference =
+        crate::cli::handoff_delivery::resolve_automatic_recovery_ref(&journal, "local:1").unwrap();
+    launcher.lose_start = false;
+    let retry = crate::cli::handoff_delivery::retry_automatic_to_writer(
+        &journal,
+        &reference,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &crate::protocol::handoff::HandoffNamespace {
+            instance: claim().instance,
+            state_dir: "/tmp/automatic-state".into(),
+            host_endpoint: "/tmp/automatic-host.sock".into(),
+        },
+        &client,
+        Some(&mut launcher),
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(
+        matches!(retry, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{retry:?}"
+    );
+    assert_eq!(launcher.starts, 1);
+}
+
+#[test]
+fn automatic_launched_pane_lost_complete_retries_terminal_without_relaunch() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let (_temp, journal) = journal();
+    let client = AutomaticClient::new();
+    *client.lose_complete.lock().unwrap() = true;
+    let mut launcher = AutomaticLauncher::default();
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let first = start(
+        &journal,
+        request,
+        original_claim,
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(
+        matches!(first, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{first:?}"
+    );
+    assert_eq!(launcher.starts, 1);
+    let reference =
+        crate::cli::handoff_delivery::resolve_automatic_recovery_ref(&journal, "local:1").unwrap();
+    let report = crate::cli::handoff_delivery::retry_automatic_to_writer(
+        &journal,
+        &reference,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &crate::protocol::handoff::HandoffNamespace {
+            instance: claim().instance,
+            state_dir: "/tmp/automatic-state".into(),
+            host_endpoint: "/tmp/automatic-host.sock".into(),
+        },
+        &client,
+        None,
+        &TestClock,
+        &output,
+        &mut vec![],
+    )
+    .unwrap();
+    assert_eq!(report["outcome"], "started");
+    assert_eq!(launcher.starts, 1);
+}
 struct TestClock;
 impl Clock for TestClock {
     fn utc_now(&self) -> UtcMillis {
