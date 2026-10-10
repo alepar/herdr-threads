@@ -623,11 +623,11 @@ fn validate_report(command: &CompleteLinkedBootstrap) -> Result<(), ApiError> {
                 .into_owned(),
         ),
     };
-    // Frozen V1 composition (empty owned argv), never today's renderer or
-    // registry: an upgrade cannot invalidate an already successful launch.
-    if !crate::cli::handoff::bootstrap_v1::retained_argv_matches(
-        id.payload.launch.harness,
-        &id.payload.launch.argv,
+    // The plan's frozen composition (V1 grammar or the V2 adapter composition, empty
+    // owned argv), never today's renderer: an upgrade cannot invalidate an already
+    // successful launch.
+    if !crate::cli::handoff::retained_launch_argv_matches(
+        &id.payload.launch,
         command.retained.thread.as_str(),
         &context,
         &id.claim.instance,

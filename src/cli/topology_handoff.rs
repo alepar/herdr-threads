@@ -63,7 +63,7 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         .as_deref()
         .ok_or_else(|| fail("bootstrap requires --kind"))?;
     let harness =
-        crate::harness::launch::bootstrap_v1_target(crate::harness::registry::builtins(), kind)
+        crate::harness::launch::bootstrap_target(crate::harness::registry::builtins(), kind)
             .ok_or_else(|| fail("invalid bootstrap harness"))?;
     let cwd = request.cwd.as_deref().unwrap_or(inputs.invocation_cwd);
     if !cwd.is_absolute() || !cwd.is_dir() {
@@ -188,6 +188,15 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
                         .ok_or_else(|| fail("invalid agent --name"))
                 })
                 .transpose()?,
+            // V2 freezes the adapter's own composition; V1 plans carry none.
+            composed_argv: if crate::harness::launch::bootstrap_v1_harness(harness.occupant()) {
+                None
+            } else {
+                Some(crate::harness::launch::compose_bootstrap_v2_argv(
+                    harness.occupant(),
+                    launch.argv.clone(),
+                )?)
+            },
             argv: launch.argv,
         },
         handoff_key: child("handoff"),
@@ -254,8 +263,22 @@ fn preflight_launch_argv(
         request.argv.clone(),
         vec![],
     )?;
-    // Completion validates the retained report against frozen V1 composition.
-    if argv
+    // Completion validates the retained report against the plan's frozen composition.
+    if let Some(composed) = &identity.payload.launch.composed_argv {
+        // V2: the adapter must still compose the frozen caller arguments, and the
+        // launch arguments with the prompt, exactly as today's composer does.
+        let harness = identity.payload.launch.harness;
+        if crate::harness::launch::compose_bootstrap_v2_argv(
+            harness,
+            identity.payload.launch.argv.clone(),
+        )? != *composed
+            || argv != crate::harness::launch::compose_bootstrap_v2_argv(harness, request.argv)?
+        {
+            return Err(super::invalid_request(
+                "current launch composition differs from bootstrap plan V2; a new bootstrap plan version is required",
+            ));
+        }
+    } else if argv
         != crate::harness::launch::compose_bootstrap_v1_argv(
             identity.payload.launch.harness,
             request.argv,
@@ -294,7 +317,7 @@ pub fn publish(
     }
     let semantic = SemanticMutation::freeze(
         SemanticMutation::HandoffBootstrap(Box::new(BootstrapPlan {
-            version: 1,
+            version: identity.payload.plan_version(),
             payload: identity.payload.clone(),
         })),
         identity.claim.clone(),
@@ -1173,10 +1196,9 @@ fn validate_completed(
     };
     wrapper.validate().map_err(super::invalid_request)?;
     let plan = attached_handoff_plan(identity, &done.attachment)?;
-    // Frozen V1 composition, never today's renderer or registry.
-    let launched = super::handoff::bootstrap_v1::retained_argv_matches(
-        identity.payload.launch.harness,
-        &plan.request.launch.argv,
+    // The plan's frozen composition (V1 or V2), never today's renderer or registry.
+    let launched = super::handoff::retained_launch_argv_matches(
+        &identity.payload.launch,
         done.retained.thread.as_str(),
         &plan.context,
         &identity.claim.instance,

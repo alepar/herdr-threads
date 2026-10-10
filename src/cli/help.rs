@@ -194,13 +194,14 @@ fn options_list(registry: &Registry, include: impl Fn(&str) -> bool) -> String {
     }
 }
 
-/// The `--kind` values the frozen version-1 bootstrap accepts, in registry order.
+/// The `--kind` values a bootstrap plan accepts (the V1 targets and every adapter with a
+/// launch policy), in registry order.
 fn bootstrap_kinds(registry: &Registry) -> Vec<&'static str> {
     registry
         .registrations()
         .iter()
         .map(|registration| registration.metadata().id)
-        .filter(|id| crate::harness::launch::bootstrap_v1_target(registry, id).is_some())
+        .filter(|id| crate::harness::launch::bootstrap_target(registry, id).is_some())
         .collect()
 }
 

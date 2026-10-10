@@ -96,7 +96,9 @@ fn prepared(
             namespace: &namespace,
             topology: &topology(),
             invocation_cwd: root,
-            options: Some("--config 'quoted $HOME' --config '$(literal)'".into()),
+            // The synthetic fixture adapter admits no native option words.
+            options: (r.kind.as_deref() != Some("synthetic_fourth"))
+                .then(|| "--config 'quoted $HOME' --config '$(literal)'".into()),
             client: &ReadOnly,
             clock: &crate::app::SystemClock::new(),
         },
@@ -965,6 +967,16 @@ mod live {
             let mut identity = prepared(&request, temp.path()).unwrap();
             if let Some(argv) = argv {
                 identity.payload.launch.argv = argv;
+                // A V2 plan freezes the adapter's composition of these very arguments.
+                if identity.payload.launch.composed_argv.is_some() {
+                    identity.payload.launch.composed_argv = Some(
+                        crate::harness::launch::compose_bootstrap_v2_argv(
+                            identity.payload.launch.harness,
+                            identity.payload.launch.argv.clone(),
+                        )
+                        .unwrap(),
+                    );
+                }
             }
             identity.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
             identity.digest = identity.semantic_digest().unwrap();
@@ -1238,7 +1250,7 @@ mod live {
             gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
         ) -> Result<super::super::super::launch::LaunchReport, RunError> {
             let argv = crate::harness::launch::compose_native_argv(
-                crate::protocol::authority::Harness::Codex,
+                request.harness.into(),
                 request.argv.clone(),
                 vec![],
             )?;
@@ -1266,7 +1278,7 @@ mod live {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o500)).unwrap();
             }
-            let mut report = serde_json::json!({"outcome":if self.unknown {"outcome_unknown"} else {"started"},"pane":request.target,"seat":seat,"harness":"codex","argv":argv});
+            let mut report = serde_json::json!({"outcome":if self.unknown {"outcome_unknown"} else {"started"},"pane":request.target,"seat":seat,"harness":request.harness.as_str(),"argv":argv});
             if self.invalid_report {
                 report["seat"] = serde_json::json!("different-seat");
             }
@@ -5162,6 +5174,70 @@ mod live {
         );
         armed
     }
+    fn fourth_fixture(fault: Fault) -> Fixture {
+        Fixture::with_request(fault, super::fourth_request(), Some(vec![]))
+    }
+    /// A V2 plan for a launch-capable adapter V1 refuses runs end to end through the real
+    /// store: create, attach, launch with the adapter's own composition, complete.
+    #[test]
+    fn bootstrap_v2_synthetic_fourth_completes_end_to_end() {
+        let f = fourth_fixture(Fault::None);
+        assert_eq!(f.peer.identity.payload.plan_version(), 2);
+        let mut launcher = DownstreamLauncher::default();
+        let mut output = vec![];
+        let done = downstream(&f, &mut launcher, &mut output)
+            .unwrap_or_else(|e| panic!("V2 bootstrap must complete: {e:?}"));
+        assert_eq!(done.state, BootstrapState::Completed);
+        let report = done.completed.unwrap().retained.report;
+        assert_eq!(report["harness"], "synthetic_fourth");
+        let argv = report["argv"].as_array().unwrap();
+        assert_eq!(argv[0], "--synthetic-only");
+        assert_eq!(
+            argv.len(),
+            2,
+            "synthetic-only marker plus the generated prompt"
+        );
+        assert_eq!(launcher.starts, 1);
+        // Replay presents the same bytes without a second start.
+        let mut replay = vec![];
+        downstream(&f, &mut launcher, &mut replay).unwrap();
+        assert_eq!(replay, output);
+        assert_eq!(launcher.starts, 1);
+    }
+    /// The V2 Root launch refuses before any native start when today's composer would launch
+    /// different arguments than the adapter composition the plan froze.
+    #[test]
+    fn bootstrap_v2_root_launch_refuses_before_start_when_current_composition_differs() {
+        let f = fourth_fixture(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        let _drift = crate::harness::launch::current_drift::arm_output("--drifted");
+        let result = downstream(&f, &mut launcher, &mut vec![]);
+        assert!(
+            format!("{result:?}").contains("bootstrap plan V2"),
+            "{result:?}"
+        );
+        assert_eq!(launcher.starts, 0, "no native start");
+    }
+    /// A retained V2 report is validated against the frozen composition at completion: a
+    /// report whose argv the adapter would not have produced is refused.
+    #[test]
+    fn bootstrap_v2_completion_refuses_a_report_the_frozen_composition_did_not_produce() {
+        let f = fourth_fixture(Fault::CompleteBefore);
+        let mut setup = DownstreamLauncher::default();
+        assert!(downstream(&f, &mut setup, &mut vec![]).is_err());
+        let path = child_progress_path(&f.journal, &f.peer.reference);
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        saved["progress"]["launch"]["argv"][0] = "--changed".into();
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let mut launcher = DownstreamLauncher {
+            starts: setup.starts,
+            ..Default::default()
+        };
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        assert_eq!(f.peer.status().state, BootstrapState::Attached);
+        assert_eq!(launcher.starts, 1, "no relaunch");
+    }
     #[test]
     fn historical_v1_saved_success_completes_after_current_composition_drift() {
         let f = Fixture::downstream(Fault::CompleteBefore);
@@ -5398,6 +5474,127 @@ fn current_main_topology_native_argv_preserves_empty_tokens() {
     );
 }
 
+fn fourth_request() -> Request {
+    Request {
+        kind: Some("synthetic_fourth".into()),
+        binary: None,
+        argv: vec![],
+        ..request()
+    }
+}
+/// V1 plans keep their exact bytes: no V2 field, plan version 1.
+#[test]
+fn v1_plan_payload_is_unchanged_by_bootstrap_v2() {
+    let temp = Temp::new();
+    let identity = prepared(&request(), temp.path()).unwrap();
+    assert_eq!(identity.payload.plan_version(), 1);
+    assert!(identity.payload.launch.composed_argv.is_none());
+    let launch = serde_json::to_value(&identity.payload.launch).unwrap();
+    assert!(launch.get("composed_argv").is_none(), "{launch}");
+    // A pre-V2 stored payload (no such key) still reads back and validates.
+    let legacy: crate::protocol::handoff::BootstrapPayload =
+        serde_json::from_value(serde_json::to_value(&identity.payload).unwrap()).unwrap();
+    assert_eq!(legacy, identity.payload);
+    legacy.validate().unwrap();
+}
+/// A launch-capable adapter V1 refuses gets a V2 plan that freezes the adapter's composition,
+/// round-trips through the journal, and carries plan version 2.
+#[test]
+fn v2_plan_freezes_adapter_composition_and_round_trips() {
+    let temp = Temp::new();
+    let identity = prepared(&fourth_request(), temp.path()).unwrap();
+    assert_eq!(identity.payload.plan_version(), 2);
+    assert_eq!(identity.payload.launch.harness.as_str(), "synthetic_fourth");
+    let composed = identity.payload.launch.composed_argv.clone().unwrap();
+    assert_eq!(
+        composed,
+        crate::harness::launch::compose_bootstrap_v2_argv(
+            identity.payload.launch.harness,
+            identity.payload.launch.argv.clone()
+        )
+        .unwrap()
+    );
+    assert_eq!(composed[0], "--synthetic-only");
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let reference = publish(&journal, &identity, 1).expect("V2 publication must succeed");
+    let loaded = journal.load(&reference).unwrap();
+    assert_eq!(loaded.header.semantic_digest, identity.digest);
+    let super::super::journal::SemanticMutation::Frozen { mutation, .. } = loaded.semantic else {
+        panic!("missing frozen semantic")
+    };
+    let super::super::journal::SemanticMutation::HandoffBootstrap(plan) = *mutation else {
+        panic!("missing bootstrap")
+    };
+    assert_eq!(plan.version, 2);
+    assert_eq!(plan.payload, identity.payload);
+    let again: super::super::journal::BootstrapPlan =
+        serde_json::from_slice(&serde_json::to_vec(&*plan).unwrap()).unwrap();
+    assert_eq!(again, *plan);
+    again.validate().unwrap();
+}
+/// The plan version and the payload must agree: V1 never carries a frozen composition and V2
+/// never lacks one.
+#[test]
+fn bootstrap_plan_version_must_match_its_payload() {
+    let temp = Temp::new();
+    let v1 = prepared(&request(), temp.path()).unwrap().payload;
+    let v2 = prepared(&fourth_request(), temp.path()).unwrap().payload;
+    let plan = |version, payload: &crate::protocol::handoff::BootstrapPayload| {
+        super::super::journal::BootstrapPlan {
+            version,
+            payload: payload.clone(),
+        }
+    };
+    plan(1, &v1).validate().unwrap();
+    plan(2, &v2).validate().unwrap();
+    assert!(plan(2, &v1).validate().is_err());
+    assert!(plan(1, &v2).validate().is_err());
+    assert!(plan(3, &v2).validate().is_err());
+}
+/// V2 retained-launch validation accepts the frozen composition, refuses a changed argv, and
+/// refuses a plan whose adapter composes the caller arguments differently from the freeze.
+#[test]
+fn v2_retained_argv_validation_accepts_frozen_and_refuses_changed() {
+    let temp = Temp::new();
+    let identity = prepared(&fourth_request(), temp.path()).unwrap();
+    let launch = &identity.payload.launch;
+    let ns = &identity.payload.handoff.namespace;
+    let context = crate::protocol::output::ContinuationContext {
+        state_dir: Some(ns.state_dir.to_string_lossy().into_owned()),
+        host: Some(ns.host_endpoint.to_string_lossy().into_owned()),
+    };
+    let instance = &identity.claim.instance;
+    let prompt = super::super::handoff::bootstrap_v1::prompt("t1", &context, instance);
+    let mut caller = launch.argv.clone();
+    caller.push(prompt);
+    let frozen = serde_json::json!(
+        crate::harness::launch::compose_bootstrap_v2_argv(launch.harness, caller.clone()).unwrap()
+    );
+    let check = |launch: &crate::protocol::handoff::BootstrapLaunch,
+                 retained: &serde_json::Value| {
+        super::super::handoff::retained_launch_argv_matches(
+            launch,
+            "t1",
+            &context,
+            instance,
+            Some(retained),
+        )
+    };
+    assert!(check(launch, &frozen).unwrap());
+    let mut changed = frozen.clone();
+    changed.as_array_mut().unwrap().push("--extra".into());
+    assert!(!check(launch, &changed).unwrap());
+    let mut other_prompt = frozen.clone();
+    *other_prompt.as_array_mut().unwrap().last_mut().unwrap() = "invented prompt".into();
+    assert!(!check(launch, &other_prompt).unwrap());
+    let mut drifted = launch.clone();
+    drifted.composed_argv.as_mut().unwrap().push("--old".into());
+    let refusal = check(&drifted, &frozen).unwrap_err();
+    assert!(
+        refusal.detail.contains("synthetic_fourth") && refusal.detail.contains("V2"),
+        "{refusal:?}"
+    );
+}
 /// Fresh preparation keeps today's native admission: a present-day composer
 /// refusal stops it before publication even though frozen V1 would accept.
 /// The fresh Root generated input is the frozen V1 prompt.

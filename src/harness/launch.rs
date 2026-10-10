@@ -378,7 +378,7 @@ pub mod current_drift {
 }
 
 /// Frozen V1 bootstrap launch composition: the native argv a version-1 Root
-/// bootstrap (`BootstrapPlan.version == 1`, the only plan version) produced
+/// bootstrap (`BootstrapPlan.version == 1`) produced
 /// from its caller arguments plus generated prompt, with the empty owned argv
 /// that production hook inspection supplies. Retained successful launch
 /// reports are validated against this, never against today's registry or
@@ -415,7 +415,50 @@ pub fn bootstrap_v1_target(
     kind: &str,
 ) -> Option<super::context::Harness> {
     let harness: Harness = super::registry::OccupantHarness::Agent(registry.agent(kind).ok()?);
-    (harness == Harness::Claude || harness == Harness::Codex).then(|| harness.into())
+    bootstrap_v1_harness(harness).then(|| harness.into())
+}
+
+/// Whether `harness` is one of the original V1 native targets (Codex, Claude).
+pub fn bootstrap_v1_harness(harness: Harness) -> bool {
+    harness == Harness::Claude || harness == Harness::Codex
+}
+
+/// The version-2 bootstrap target named by a `--kind` value: a registered agent with a launch
+/// policy that version 1 does not admit. A V1-capable kind never gets V2 (its plans stay
+/// byte-identical); an agent without a launch policy, or an unregistered kind, gives `None`.
+pub fn bootstrap_v2_target(
+    registry: &super::registry::Registry,
+    kind: &str,
+) -> Option<super::context::Harness> {
+    if bootstrap_v1_target(registry, kind).is_some() {
+        return None;
+    }
+    let id = registry.agent(kind).ok()?;
+    registry.by_id(id).ok()?.launch_policy()?;
+    Some(super::registry::OccupantHarness::Agent(id).into())
+}
+
+/// Every `--kind` value a bootstrap plan can compose: the V1 targets, then the adapters with a
+/// launch policy (V2).
+pub fn bootstrap_target(
+    registry: &super::registry::Registry,
+    kind: &str,
+) -> Option<super::context::Harness> {
+    bootstrap_v1_target(registry, kind).or_else(|| bootstrap_v2_target(registry, kind))
+}
+
+/// Version-2 bootstrap launch composition: the adapter's own `LaunchPolicy::compose_argv`
+/// over `caller` with empty owned argv, which is what production hook inspection supplies.
+/// Unlike V1 it carries no harness grammar of its own; a plan freezes the result for its
+/// caller arguments and refuses when the adapter later composes them differently.
+pub fn compose_bootstrap_v2_argv(
+    harness: Harness,
+    caller: Vec<String>,
+) -> Result<Vec<String>, ApiError> {
+    launch_registration(super::registry::builtins(), harness)?
+        .launch_policy()
+        .expect("checked provider")
+        .compose_argv(caller, vec![])
 }
 
 /// The V1 Codex acceptance grammar, frozen with its original tables.

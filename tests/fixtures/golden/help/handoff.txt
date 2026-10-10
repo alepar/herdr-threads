@@ -61,8 +61,8 @@ Options:
 
 Choose exactly one channel: --new-thread or --thread ID_OR_NAME.
 Choose one target mode:
-  --pane PANE --kind claude|codex launches in an existing explicit pane;
-  --new-tab LABEL --kind claude|codex creates a tab and launches there;
+  --pane PANE --kind claude|codex|hermes|synthetic_fourth launches in an existing explicit pane;
+  --new-tab LABEL --kind claude|codex|hermes|synthetic_fourth creates a tab and launches there;
   --existing with exactly one --seat SEAT or --pane PANE delivers durable work
     to an existing canonical seat without launching or restarting its session.
 New modes require an original top-level Agent and the guarded daemon capability.
