@@ -1307,7 +1307,7 @@ struct HandoffArgs {
     cwd: Option<std::path::PathBuf>,
     #[command(flatten)]
     selector: super::panes::PaneSelector,
-    #[arg(long, required_unless_present = "thread", conflicts_with = "thread")]
+    #[arg(long, conflicts_with = "thread")]
     new_thread: bool,
     #[arg(long)]
     thread: Option<String>,
@@ -2610,6 +2610,7 @@ fn parse_cli_in_registry(
                     return Err(invalid("native launch arguments conflict with --existing"));
                 }
                 CliAction::TopologyHandoff(super::topology_handoff::Request {
+                    automatic: !args.new_thread && args.thread.is_none(),
                     new_tab: args.new_tab,
                     existing: args.existing,
                     selector: args.selector,
@@ -2627,6 +2628,7 @@ fn parse_cli_in_registry(
                 })
             } else {
                 CliAction::Handoff(super::handoff::HandoffRequest {
+                    automatic: !args.new_thread && args.thread.is_none(),
                     thread: args.thread.map(thread_id).transpose()?,
                     thread_name: args.thread_name,
                     topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,

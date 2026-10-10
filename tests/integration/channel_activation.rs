@@ -304,6 +304,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
     let plan = HandoffPlan {
         startup_input: None,
         request: HandoffRequest {
+            automatic: false,
             thread: None,
             thread_name: Some("legacy handoff".into()),
             topic: Some("topic".into()),

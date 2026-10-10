@@ -149,6 +149,7 @@ fn claim() -> CallerClaim {
 }
 fn request() -> HandoffRequest {
     HandoffRequest {
+        automatic: false,
         thread: None,
         thread_name: Some("review".into()),
         topic: Some("Review".into()),
@@ -2711,6 +2712,7 @@ fn task48_hermes_actual_native_launcher_composes_before_durable_work() {
             // BASE original prompt-free preflight must reach real selected Hermes preparation.
             assert_eq!(launcher.preflight(&launch).unwrap().as_str(), "seat_launch");
             let req = HandoffRequest {
+                automatic: false,
                 launch,
                 ..request()
             };
@@ -3351,6 +3353,7 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
                             start(
                                 &journal,
                                 HandoffRequest {
+                                    automatic: false,
                                     launch,
                                     ..request()
                                 },
@@ -3379,6 +3382,7 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
                         "fresh" => start(
                             &journal,
                             HandoffRequest {
+                                automatic: false,
                                 launch,
                                 ..request()
                             },
@@ -3407,6 +3411,7 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
                             let plan = HandoffPlan {
                                 startup_input: None,
                                 request: HandoffRequest {
+                                    automatic: false,
                                     launch,
                                     ..request()
                                 },
@@ -3542,6 +3547,7 @@ fn task48_claude_lossless_manual_shell_parser_options_and_actual_native_chain() 
                 let result = start(
                     &journal,
                     HandoffRequest {
+                        automatic: false,
                         launch,
                         ..request()
                     },
@@ -3622,6 +3628,7 @@ fn task48_nonpositional_optional_provider_reaches_actual_guarded_native() {
             start(
                 &journal,
                 HandoffRequest {
+                    automatic: false,
                     launch,
                     ..request()
                 },

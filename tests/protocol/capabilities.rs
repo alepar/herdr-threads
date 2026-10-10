@@ -1616,3 +1616,24 @@ fn probe_thread_join() {
         ErrorCode::NotFound
     );
 }
+
+#[test]
+fn automatic_contract_declarations_do_not_advertise_an_unimplemented_runtime() {
+    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let CommandResult::Capabilities(caps) = handler
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("capability reply")
+    };
+    assert!(
+        !caps
+            .capabilities
+            .iter()
+            .any(|cap| cap == AUTOMATIC_HANDOFF_V1)
+    );
+}

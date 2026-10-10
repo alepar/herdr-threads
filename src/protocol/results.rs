@@ -83,6 +83,8 @@ pub enum CommandResult {
     Rejected(InvitationRejection),
     RequiredAccepted(RequiredMembership),
     MessageSent(MessageId),
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapResult>),
+    AutomaticBootstrapReserved(Box<crate::protocol::handoff::AutomaticBootstrapReserved>),
     Acknowledged(AckResult),
     ModDeliveryAcked(crate::protocol::watch::ModAckReport),
     Left(ThreadId),

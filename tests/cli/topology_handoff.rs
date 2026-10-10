@@ -38,6 +38,7 @@ impl LocalClient for ReadOnly {
 }
 fn request() -> Request {
     Request {
+        automatic: false,
         new_tab: Some("same label".into()),
         existing: false,
         selector: PaneSelector::default(),
@@ -147,6 +148,7 @@ fn publication_freezes_route_argv_caller_and_channel() {
     // Names and options can change after publication; reread is only saved bytes.
     let changed = prepared(
         &Request {
+            automatic: false,
             thread: Some("now ambiguous".into()),
             ..request()
         },
@@ -169,6 +171,7 @@ fn publication_validation_has_zero_journal_effects() {
         assert!(
             prepared(
                 &Request {
+                    automatic: false,
                     cwd: Some(cwd),
                     ..request()
                 },
@@ -394,6 +397,7 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
         host_endpoint: temp.path().join("host.sock"),
     };
     let r = Request {
+        automatic: false,
         cwd: Some(work.clone()),
         kind: Some("claude".into()),
         name: Some("Peer Name".into()),
@@ -441,26 +445,32 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
     std::fs::write(&file, "file").unwrap();
     for r in [
         Request {
+            automatic: false,
             cwd: Some(file),
             ..request()
         },
         Request {
+            automatic: false,
             body: " ".into(),
             ..request()
         },
         Request {
+            automatic: false,
             new_tab: Some(" ".into()),
             ..request()
         },
         Request {
+            automatic: false,
             kind: None,
             ..request()
         },
         Request {
+            automatic: false,
             kind: Some("human".into()),
             ..request()
         },
         Request {
+            automatic: false,
             topic: Some("conflict".into()),
             ..request()
         },
@@ -476,6 +486,7 @@ fn publication_refuses_cwd_removed_after_preparation() {
     std::fs::create_dir(&work).unwrap();
     let identity = prepared(
         &Request {
+            automatic: false,
             cwd: Some(work.clone()),
             ..request()
         },
@@ -5434,4 +5445,17 @@ fn fresh_root_preparation_uses_current_admission_and_v1_generated_input() {
         "{refused:?}"
     );
     assert!(!temp.path().join("intents").exists());
+}
+
+#[test]
+fn automatic_bootstrap_preparation_stays_unsupported_before_topology_or_journal() {
+    let temp = Temp::new();
+    let mut request = request();
+    request.automatic = true;
+    request.thread = None;
+    let error = prepared(&request, temp.path()).unwrap_err();
+    assert!(
+        matches!(error,RunError::Api(ref error) if error.code==crate::protocol::results::ErrorCode::Unsupported)
+    );
+    assert!(std::fs::read_dir(temp.path()).unwrap().next().is_none());
 }

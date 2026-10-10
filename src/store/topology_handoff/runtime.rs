@@ -5,6 +5,7 @@ use crate::{
     protocol::{
         authority::{MutationPermit, OperatorActor},
         commands::{Command, PermitMutation},
+        handoff::AutomaticBootstrapMutation,
         results::CommandResult,
         time::CallBudget,
     },
@@ -89,6 +90,9 @@ fn validate_delivery_namespace(
 }
 
 impl BootstrapStorePort for SqliteStore {
+    fn automatic_available(&self) -> bool {
+        true
+    }
     fn bootstrap_begin_permit(
         &self,
         canonical: &HandoffNamespace,
@@ -119,6 +123,209 @@ impl BootstrapStorePort for SqliteStore {
             budget,
             admission,
             canonical,
+        )
+    }
+    fn automatic_bootstrap_check_start(
+        &self,
+        canonical: &HandoffNamespace,
+        request: &AutomaticBootstrapMutation,
+        guard: BootstrapAttachmentGuard,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        if canonical.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic instance differs",
+            ));
+        }
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, _, ()| super::automatic::check_start(tx, canonical, request, &guard),
+        )
+    }
+    fn automatic_bootstrap_query(
+        &self,
+        canonical: &HandoffNamespace,
+        request: &AutomaticBootstrapMutation,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        if canonical.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic bootstrap instance differs",
+            ));
+        }
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, _, ()| super::automatic::query(tx, canonical, request),
+        )
+    }
+    fn automatic_bootstrap_recovery_replay(
+        &self,
+        canonical: &HandoffNamespace,
+        request: &AutomaticBootstrapMutation,
+        actor: &OperatorActor,
+        budget: &CallBudget,
+    ) -> Result<Option<CommandResult>, ApiError> {
+        if canonical.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic instance differs",
+            ));
+        }
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, _, ()| super::automatic::recovery_replay(tx, canonical, request, actor),
+        )
+    }
+    fn automatic_bootstrap_recover(
+        &self,
+        canonical: &HandoffNamespace,
+        request: &AutomaticBootstrapMutation,
+        actor: &OperatorActor,
+        guard: Option<BootstrapAttachmentGuard>,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        if canonical.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic instance differs",
+            ));
+        }
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, _, ()| super::automatic::recover(tx, canonical, request, actor, guard.as_ref()),
+        )
+    }
+    fn automatic_bootstrap_complete(
+        &self,
+        canonical: &HandoffNamespace,
+        request: &AutomaticBootstrapMutation,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        if canonical.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic instance differs",
+            ));
+        }
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, at, ()| super::automatic::complete(tx, canonical, request, at.utc),
+        )
+    }
+    fn automatic_bootstrap_mutate(
+        &self,
+        canonical: &HandoffNamespace,
+        request: &AutomaticBootstrapMutation,
+        permit: MutationPermit,
+        guard: Option<BootstrapAttachmentGuard>,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        if canonical.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic bootstrap instance differs",
+            ));
+        }
+        if matches!(
+            request.action,
+            crate::protocol::handoff::AutomaticBootstrapAction::Complete { .. }
+        ) {
+            return self.automatic_bootstrap_complete(canonical, request, budget);
+        }
+        super::automatic::mutate(
+            &self.context,
+            &mut *self.writer(budget)?,
+            canonical,
+            request,
+            permit,
+            guard.as_ref(),
+            budget,
+        )
+    }
+    fn automatic_delivery_prepare_send_step(
+        &self,
+        canonical: &HandoffNamespace,
+        request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        admission: crate::ports::DurableWorkAdmission,
+        budget: &CallBudget,
+    ) -> Result<crate::ports::SendPreparationProgress, ApiError> {
+        crate::store::handoff::automatic::validate_namespace(canonical, request)?;
+        if canonical.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic instance differs",
+            ));
+        }
+        crate::store::messages::prepare_automatic_send_step(
+            &self.context,
+            &mut *self.writer(budget)?,
+            request,
+            self.settings.message_limits,
+            budget,
+            admission,
+        )
+    }
+    fn automatic_delivery_query(
+        &self,
+        canonical: &HandoffNamespace,
+        request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        crate::store::handoff::automatic::validate_namespace(canonical, request)?;
+        if canonical.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic instance differs",
+            ));
+        }
+        self.context.execute_budgeted_decision(
+            &mut *self.writer(budget)?,
+            budget,
+            |_| Ok(()),
+            |tx, _, ()| crate::store::handoff::automatic::query(tx, request),
+        )
+    }
+    fn automatic_delivery_mutate(
+        &self,
+        canonical: &HandoffNamespace,
+        request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        permit: MutationPermit,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        crate::store::handoff::automatic::validate_namespace(canonical, request)?;
+        if canonical.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InstanceMismatch,
+                "automatic instance differs",
+            ));
+        }
+        if let crate::protocol::handoff::AutomaticDeliveryAction::Send(send) = &request.action {
+            return crate::ports::StorePort::mutate(
+                self,
+                PermitMutation::SendMessage(send.clone()),
+                permit.with_automatic_delivery(request),
+                budget,
+            );
+        }
+        crate::store::handoff::automatic::mutate(
+            &self.context,
+            &mut *self.writer(budget)?,
+            budget,
+            request,
+            permit,
+            self.settings.invitation_default_ms,
         )
     }
     fn delivery_query(

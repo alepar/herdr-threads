@@ -484,7 +484,7 @@ payload from canonical child-key registration, full frozen parent and attachment
 Missing selected context refuses even cached history; unregistered legacy phases
 retain their existing behavior. Completed linked history skips only live guards.
 
-A retained successful version-1 bootstrap launch report (the only plan version) is
+A retained successful version-1 bootstrap launch report is
 validated against frozen V1 composition: the original generated prompt bytes and the
 original Codex/Claude acceptance grammar with empty owned argv, never today's renderer
 or registry. Deciding completion, completed preview, terminal decode and presentation
@@ -498,6 +498,38 @@ Fresh Root preparation and launch still apply today's native admission and geome
 and refuse before effects when today's composer would differ from frozen V1, so a
 future composer change stops new Root launches rather than producing reports that
 completion cannot validate.
+
+Canonical automatic handoff storage retains the full normalized V2 original request,
+including frozen scope, caller, digest, namespace, child keys and any outer launch,
+context and startup template, within 128 KiB of encoded JSON. JSON escaping counts;
+a syntactically valid plan can exceed this representation ceiling. Shared request
+validation refuses it before local publication or canonical effects; no fields are
+truncated or omitted to make it fit. Exact historical presentation compares this
+complete immutable original and canonical attachment. This bound creates no new
+provenance, receipt authority or permission from local data.
+
+The additive V2 automatic topology parent retains the full original agent claim,
+scope, namespace, topology, launch, startup template and delivery payload within
+128 KiB. Its exact typed attachment is derived from that original and canonical
+creation and ordinary resolution; it has the same 128 KiB bound. V2 has no Invite
+phase or wire key. A registered child cannot fall back to unlinked admission.
+Possible-start checks require fresh sealed canonical creation evidence, original
+claim, exact recipient owner and current pair lifecycle; Send success grants no
+start authority. Exact child-completed/parent-incomplete reconciliation retains
+only the original successful report and absorbing tombstones, even after binding
+or membership changes. It cannot create another message or launch.
+
+V2 recovery uses the authenticated local-account operator lane and an immutable
+inspection digest. Its request and complete retained historical result each fit
+256 KiB of encoded JSON; escaping and nested copies count. Fresh overflow refuses
+atomically. At most one creation/noncreation decision and one subsequent
+cancellation are retained per attempt. Recovery never replaces the original agent
+claim, allocates a seat, proves quiescence or authorizes native submission. An
+unknown attempt cannot become transport-proven not-submitted; an inspected
+noncreation decision starts a distinct attempt while retaining the unknown record.
+Live automatic parents protect archival before child registration and on the exact
+selected thread. Completed or cancelled tombstones release only that parent veto;
+replay cannot restore it or cancel a live downstream child fence or journal hint.
 
 Canonical topology storage has encoded-byte ceilings for retained bootstrap envelopes:
 128 KiB for the full frozen identity, creation evidence and attachment; 256 KiB for

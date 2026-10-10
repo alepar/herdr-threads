@@ -75,6 +75,11 @@ pub fn prepare<C: LocalClient + ?Sized>(
     request: &Request,
     inputs: Preparation<'_, C>,
 ) -> Result<DeliveryPlan, RunError> {
+    if request.automatic {
+        return Err(super::unsupported(
+            "automatic delivery producer unavailable",
+        ));
+    }
     let fail = super::invalid_request;
     if !request.existing
         || request.new_tab.is_some()
