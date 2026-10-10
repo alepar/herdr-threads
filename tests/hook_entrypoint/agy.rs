@@ -50,6 +50,11 @@ fn run(fx: &Fixture, home: &Path, event: &str, name: &str) -> Hook {
     run_payload(fx, home, event, &payload(name))
 }
 fn run_payload(fx: &Fixture, home: &Path, event: &str, bytes: &[u8]) -> Hook {
+    run_payload_with(fx, home, event, bytes, true)
+}
+/// `scaled: false` runs the hook with the production wall-clock budgets (no
+/// `HT_TEST_TIMEOUT_SCALE`), for the test that pins the lifecycle bound itself.
+fn run_payload_with(fx: &Fixture, home: &Path, event: &str, bytes: &[u8], scaled: bool) -> Hook {
     let started = Instant::now();
     let mut line = scrubbed_command("/bin/sh");
     line.arg("-c")
@@ -65,6 +70,9 @@ fn run_payload(fx: &Fixture, home: &Path, event: &str, bytes: &[u8]) -> Hook {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if !scaled {
+        line.env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV);
+    }
     herdr_threads::test_support::spawn::tag(&mut line);
     let mut child = line.spawn_owned().unwrap();
     child.stdin.take().unwrap().write_all(bytes).unwrap();
@@ -339,15 +347,18 @@ fn with_the_daemon_down_a_routine_hook_prints_nothing_and_exits_zero() {
     }
 }
 
-/// With the daemon stopped, a lifecycle hook (a top-level `SessionStart`, and the inv0 turn start
-/// that carries a resume) still exits 0 (ht-poh.11). Unlike the routine `hook_step` events these
-/// run the core lifecycle check-in, which ensures a daemon within the 5 s lifecycle budget; with
-/// no Herdr behind it the check-in is refused, and the one step the hook may print is the
-/// locked-shape "check-in unavailable" notice: never the startup context, never a binding.
+/// With the daemon stopped, a lifecycle hook (a top-level `SessionStart`, a `/clear`, and the inv0
+/// turn starts that carry a fresh start or a resume) still exits 0 (ht-poh.11), inside its
+/// production 5 s lifecycle budget (the hook runs unscaled). Unlike the routine `hook_step` events
+/// these run the core check-in, which ensures a daemon within that budget; with no Herdr behind
+/// it the check-in is refused and the one step the hook may print is the locked-shape "check-in
+/// unavailable" notice: never the startup context, never a binding.
 #[test]
 fn with_the_daemon_down_the_lifecycle_hooks_exit_zero_and_enroll_nothing() {
     for (layout, event, name) in [
         ("top-level", "SessionStart", "session-start-top"),
+        ("clear", "SessionStart", "session-start-after-clear"),
+        ("top-level", "PreInvocation", "pre-invocation-inv0-fresh"),
         (
             "resume-stale-lock",
             "PreInvocation",
@@ -357,14 +368,31 @@ fn with_the_daemon_down_the_lifecycle_hooks_exit_zero_and_enroll_nothing() {
         let mut fx = Fixture::start();
         let home = home_with(&fx, layout);
         fx.stop();
-        let hook = run(&fx, &home, event, name);
-        assert_eq!(hook.code, Some(0), "{layout} {event}: {}", hook.stderr);
+        let hook = run_payload_with(&fx, &home, event, &payload(name), false);
+        assert_eq!(
+            hook.code,
+            Some(0),
+            "{layout} {event} {name}: {}",
+            hook.stderr
+        );
+        assert!(
+            hook.elapsed < Duration::from_secs(5) + Duration::from_secs(5),
+            "{layout} {event} {name}: the lifecycle bound is 5 s, took {:?}",
+            hook.elapsed
+        );
         if !hook.stdout.is_empty() {
             let text = system_message(&hook);
-            assert!(text.contains("check-in unavailable"), "{layout}: {text}");
-            assert!(!text.contains("Use inbox"), "{layout}: {text}");
+            assert!(
+                text.contains("check-in unavailable"),
+                "{layout} {name}: {text}"
+            );
+            assert!(!text.contains("Use inbox"), "{layout} {name}: {text}");
         }
-        assert_eq!(live_bindings(&fx), 0, "{layout}: nothing was enrolled");
+        assert_eq!(
+            live_bindings(&fx),
+            0,
+            "{layout} {name}: nothing was enrolled"
+        );
     }
 }
 
