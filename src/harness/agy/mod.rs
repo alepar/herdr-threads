@@ -182,6 +182,9 @@ impl HarnessAdapter for AgyAdapter {
     ) -> Option<DoctorProjection> {
         doctor::doctor_projection(request, daemon, budget)
     }
+    fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+        witness::local_evidence(request)
+    }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         Some(&launch::AgyLaunch)
     }

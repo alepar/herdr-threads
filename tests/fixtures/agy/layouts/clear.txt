@@ -1,0 +1,5 @@
+# /clear: the earlier conversation keeps its lock, the new one has its own
+presence/534e47d6-64b3-4fd6-bd7f-446ceec4d86c.lock
+presence/e806a19d-b316-4599-b4c5-a56db668fb4a.lock
+brain/534e47d6-64b3-4fd6-bd7f-446ceec4d86c/.system_generated/logs/transcript_full.jsonl
+brain/e806a19d-b316-4599-b4c5-a56db668fb4a/.system_generated/logs/transcript_full.jsonl

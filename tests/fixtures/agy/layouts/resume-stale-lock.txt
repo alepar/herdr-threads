@@ -1,0 +1,3 @@
+# agy -c: the resumed conversation's lock and brain directory are left over from its earlier run
+presence/ccac2ead-d847-45fb-aa4b-9fc7126acdc5.lock
+brain/ccac2ead-d847-45fb-aa4b-9fc7126acdc5/.system_generated/logs/transcript_full.jsonl

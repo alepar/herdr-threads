@@ -503,13 +503,32 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   they never grant evidence verification, seat continuity or receipt authority. The filter is in memory
   and starts empty on daemon restart; suppression does not claim durable session history.
 
-- **Global hooks enroll supported top-level Herdr sessions.** A user-level Claude/Codex hook
-  enrolls every supported top-level lifecycle session in its Herdr instance, including sessions
-  started outside `launch`, subject to the ordinary canonical guards above. Outside Herdr it
-  remains silent. No wrapper or global configuration change is made by enrollment. The actual
-  pane environment must come from the user's foreground harness configuration; enrollment
-  cannot infer a different attaching TUI pane or turn a shared-server environment into proof.
-- **Hermes enrolls only through `launch`.** Startup enrollment stays Claude/Codex only. A Hermes
+- **Global hooks enroll supported top-level Herdr sessions.** A user-level Claude/Codex hook or
+  the agy plugin's hooks enroll every supported top-level lifecycle session in its Herdr
+  instance, including sessions started outside `launch`, subject to the ordinary canonical guards
+  above. Outside Herdr it remains silent. No wrapper or global configuration change is made by
+  enrollment. The actual pane environment must come from the user's foreground harness
+  configuration; enrollment cannot infer a different attaching TUI pane or turn a shared-server
+  environment into proof.
+- **agy's top-level role is read from native runtime artifacts.** The artifacts are the
+  conversation's presence lock and the subagent listings under its candidate parents. A
+  hook-runner rule that is neutral to the harness reads them and fails toward child: a missing or
+  unreadable witness, or one past its budget, makes a child. The resulting role is a cooperative
+  top-level claim (`cooperative_top_level`). It is not payload-declared and not daemon-verified.
+  The daemon decides every enrollment, rotation and reattachment it leads to against A2.
+  A child is answered locally with the subagent restriction and never reaches the daemon. agy
+  fires no session start on resume, so the first turn-start hook of a conversation unknown to
+  the pane context (a client-local hint) carries the resume or clear lifecycle.
+- **A child with a presence lock is still a child through the listing.** A child conversation
+  that agy does give a presence lock would read as top-level on the lock alone, but the subagent
+  listing still makes it a child. A listing outside the known layout would let such a child
+  rotate the pane's binding.
+- **A `brain/` directory past 65,536 entries, or a check past its budget, reads as a child.** No
+  agy session of that machine enrolls until the directory is pruned. Doctor reports it.
+- **A presence lock that appears after `SessionStart` is recovered one turn later.** The next
+  turn-start re-check reads it. Meanwhile the session may already have seen a child notice,
+  which the top-level check-in explicitly supersedes.
+- **Hermes enrolls only through `launch`.** Startup enrollment stays Claude, Codex and agy only. A Hermes
   session started outside `launch --kind hermes` gets no seat and no context: the bridge's hooks
   find no resolved seat for the pane, and Herdr does not recognize the bare process as an agent
   without the guarded launch process hint. Delegated Hermes children are answered locally with the
