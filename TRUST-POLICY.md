@@ -209,7 +209,7 @@ model open work, and summary closure never changes receipt state or installs glo
 - *Agent to human*: the daemon refuses a human lifecycle check-in while the open binding is
   `cooperative_top_level` or `managed_launch`, unless the request is `--operator` (implemented). `ht human me init` additionally refuses
   when agent evidence is present: one of the person-guard environment markers registered adapters declare (today `CLAUDECODE`,
-  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), or Herdr reporting a registered adapter's recognized native host kind in the
+  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `ANTIGRAVITY_AGENT`), or Herdr reporting a registered adapter's recognized native host kind in the
   pane. Registry metadata alone never establishes native recognition, continuity or caller authority.
   Unregistered agent kinds are not evidence, and a failed Herdr read counts as no evidence. `--operator`
   overrides the refusal through a local per-execution mark set only after the daemon accepts the request

@@ -100,9 +100,9 @@ pub enum Command {
     /// The bundled Claude mod reports items it delivered (spec D6); sent only to a
     /// daemon advertising `mod.watch_v1`. Decided per id against A2.
     AckModDelivered(AckModDelivered),
-    /// Hook-pull read (delivery-policy DP4); gated by `delivery.pull_v1`, not yet served.
+    /// Hook-pull read (delivery-policy DP4); gated by `delivery.pull_v1`.
     DeliveryPull(crate::protocol::delivery::DeliveryPull),
-    /// Hook-pull settlement (DP4); gated by `delivery.pull_v1`, not yet served.
+    /// Hook-pull settlement (DP4); gated by `delivery.pull_v1`.
     DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),

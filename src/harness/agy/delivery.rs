@@ -42,12 +42,12 @@ use std::{
 
 /// The state file stays at or under this many bytes.
 pub const MAX_STATE_BYTES: usize = 4096;
-/// A confirm scan reads at most this many bytes after the recorded offset.
 /// A conversation state file untouched this long is deleted when another conversation's state
 /// file is first created.
 pub const CONVERSATION_STATE_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 /// At most this many directory entries are looked at per prune.
 const PRUNE_SCAN_LIMIT: usize = 256;
+/// A confirm scan reads at most this many bytes after the recorded offset.
 pub const TRANSCRIPT_WINDOW: u64 = 8 * 1024 * 1024;
 /// Injected ids tracked per conversation: at least one full page (the oldest go first).
 pub const MAX_TRACKED: usize = crate::service::delivery_pull::PAGE_MAX_BLOCKS;

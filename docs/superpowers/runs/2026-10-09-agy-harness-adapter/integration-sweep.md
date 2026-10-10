@@ -10,7 +10,7 @@ Written 2026-10-10. Status: every flow below passes; the gaps found are listed u
 |---|---|---|---|
 | 1 | Bare agy enrollment: child vs `/clear`, resume, startup context | `tests/hook_entrypoint/agy.rs` (existing: top-level, child, clear, inv0 resume, state-file rebind, no-lock) | passes |
 | 2 | HookPull pull -> inject -> transcript confirm -> settle with `cooperative_hook_delivery` | unit round trip in `tests/harness/agy_delivery.rs` (`daemon`), and new end to end `agy_pull_confirm_and_the_claude_watch_path_coexist_on_one_daemon` (real `hook agy` through `sh -c`, elected daemon, scripted transcript) | passes |
-| 3 | Claude mod `PushChannel` unchanged | DP10 files show no diff against `f3431b31` and `d342add2`; DP10 suites, `golden_surfaces::`, `mod_delivery::` all pass; the new coexistence test keeps a live `watch` channel beside the agy seat | passes |
+| 3 | Claude mod `PushChannel` unchanged | DP10 wire and every DP10 file except the two R18 mod files show no diff against `f3431b31` and `d342add2` (`integrations/claude/mod/hooks/register.js` and `integrations/claude/mod/tests/delivery.test.ts` changed on purpose in 9be243ee, ht-poh.14: the idle path appends frames, then submits `herdr-threads: wake up`); DP10 suites, `golden_surfaces::`, `mod_delivery::` all pass; the new coexistence test keeps a live `watch` channel beside the agy seat | passes |
 | 4 | `wake_on` all/nudge across Native and Channel seats | new `wake_on_all_wakes_a_native_hook_pull_seat_for_a_lazy_row_and_nudge_never` and `wake_on_all_promotes_a_lazy_row_on_a_live_channel_instead_of_a_native_wake` | passes |
 | 5 | `check-harness-neutral` strict | `ok - 0 violations, 85 allowlisted (to-migrate 0, frozen-wire 49, history 2, registration 34), 51 entries` | passes |
 | 6 | setup/unsetup agy, launch/handoff agy through bootstrap V2 | `tests/harness/agy_setup.rs`, `agy_launch.rs`, `tests/handoff_agy.rs` (`handoff_kind_agy_composes_through_bootstrap_v2_and_starts`, `..._without_the_plugin_is_refused_with_the_setup_hint`), `scripts/agy-gate` offline suites | passes |
@@ -118,7 +118,10 @@ No unwired interface found. The two "by design" rows are the only values without
 
 - `nice cargo clippy --locked --all-targets --all-features -- -D warnings`: clean.
 - `nice scripts/check-default-features`: clean. `scripts/check-harness-neutral`: ok, 0 violations.
-- DP10: `git diff f3431b31 HEAD` and `git diff d342add2 HEAD` over the DP10 file list are empty. Suites
+- DP10: `git diff f3431b31 HEAD` and `git diff d342add2 HEAD` over the DP10 file list are empty except for
+  `integrations/claude/mod/hooks/register.js` and `integrations/claude/mod/tests/delivery.test.ts`, which changed on
+  purpose under R18 (9be243ee, ht-poh.14: the idle path appends frames, then submits `herdr-threads: wake up`); so
+  "unchanged" holds for the wire and every other DP10 file, not for those two. Suites
   `watch mod_ack mod_channel mod_digest hook bridge cooperative attention agy delivery wake_on golden_surfaces::`
   plus the whole `hook_entrypoint` binary pass (combined 74, hook_entrypoint 27, integration 42, service 3).
 - `scripts/agy-*` offline Python suites under python3.9 and python3.11: fake-gemini 88, gate 128, relay 92,

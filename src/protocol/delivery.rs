@@ -1,8 +1,8 @@
 //! Hook-pull delivery wire (delivery-policy spec DP4): `DeliveryPull` and
 //! `DeliveryConfirm` with their replies. Both are ordinary one-shot
-//! `Command`s on protocol version 6 behind the not-yet-advertised capability
-//! [`super::capabilities::DELIVERY_PULL`]; the daemon answers `Unsupported`
-//! until the handlers land.
+//! `Command`s on protocol version 6 behind the capability
+//! [`super::capabilities::DELIVERY_PULL`] (`delivery.pull_v1`), which the daemon
+//! advertises and serves.
 use crate::protocol::{
     authority::CallerClaim,
     ids::{MessageId, OperationId},
@@ -75,7 +75,8 @@ pub struct DeliveryConfirm {
     pub claim: CallerClaim,
     /// 1..=`MAX_BATCH_ITEMS` (100), no duplicates.
     pub ids: Vec<MessageId>,
-    /// Accountable transaction and idempotent replay key.
+    /// Accountable transaction key. A replay after the ids settled answers `not_offered`
+    /// (the process-local offer ledger no longer holds them).
     pub operation: OperationId,
 }
 impl DeliveryConfirm {
