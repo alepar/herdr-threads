@@ -364,6 +364,18 @@ where
     })
 }
 
+fn resolve_automatic_new_selectors<C: LocalClient + ?Sized>(
+    parsed: &mut commands::ParsedCli,
+    client: &C,
+    clock: &dyn Clock,
+    topology: impl FnOnce() -> Result<crate::host::observation::HostTopology, ApiError>,
+    caller: impl FnOnce() -> Result<Option<crate::protocol::ids::HostTargetId>, ApiError>,
+) -> Result<(), RunError> {
+    topology_runtime::require_automatic_capability(client, clock)?;
+    panes::resolve_cli_targets(parsed, topology, caller)?;
+    Ok(())
+}
+
 fn run_parsed_in_pane<W: Write>(
     mut parsed: commands::ParsedCli,
     caller_pane: Option<&str>,
@@ -549,18 +561,36 @@ fn run_parsed_in_pane<W: Write>(
     if historical_retry && try_completed(&parsed, writer)? {
         return Ok(());
     }
-    let resolved_targets = panes::resolve_cli_targets(
-        &mut parsed,
-        || host.topology(&budget()),
-        || {
-            caller_pane
-                .filter(|pane| !pane.is_empty())
-                .map(|pane| host.current_pane(pane, &budget()))
-                .transpose()
-        },
-    );
-    resolved_targets
-        .map_err(|error| direct_send::pre_executor_error(error.into(), &parsed, &paths))?;
+    let automatic_new = matches!(&parsed.action, CliAction::TopologyHandoff(request)
+        if request.automatic && request.new_tab.is_some() && !request.existing);
+    let resolved_targets = if automatic_new {
+        let (_, _, client) = connect(&paths, &clock)?;
+        resolve_automatic_new_selectors(
+            &mut parsed,
+            &client,
+            clock.as_ref(),
+            || host.topology(&budget()),
+            || {
+                caller_pane
+                    .filter(|pane| !pane.is_empty())
+                    .map(|pane| host.current_pane(pane, &budget()))
+                    .transpose()
+            },
+        )
+    } else {
+        panes::resolve_cli_targets(
+            &mut parsed,
+            || host.topology(&budget()),
+            || {
+                caller_pane
+                    .filter(|pane| !pane.is_empty())
+                    .map(|pane| host.current_pane(pane, &budget()))
+                    .transpose()
+            },
+        )
+        .map_err(RunError::from)
+    };
+    resolved_targets.map_err(|error| direct_send::pre_executor_error(error, &parsed, &paths))?;
     // A deferred name now denotes an exact canonical target; terminal replay
     // still precedes every live caller/SeatInspect/binding-generation guard.
     if historical_retry && deferred_locator && try_completed(&parsed, writer)? {
@@ -3151,6 +3181,70 @@ mod topology_contract_retry_tests {
     use super::*;
     use crate::protocol::handoff::topology_contract_tests as fixture;
     use crate::protocol::results::ErrorCode;
+    struct NoAutomaticCapability;
+    impl LocalClient for NoAutomaticCapability {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            assert!(matches!(command, Command::Capabilities));
+            Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: vec![],
+                },
+            ))
+        }
+    }
+    #[test]
+    fn parsed_non_direct_new_tab_requires_capability_before_selector_host_reads() {
+        let mut parsed = commands::parse_argv([
+            "ht",
+            "--cooperative-seat",
+            "sender",
+            "--cooperative-target",
+            "named pane",
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+            "handoff",
+            "--new-tab",
+            "new peer",
+            "--kind",
+            "codex",
+            "--",
+            "literal work",
+        ])
+        .unwrap();
+        assert!(
+            matches!(&parsed.action, CliAction::TopologyHandoff(request) if request.automatic && request.new_tab.is_some())
+        );
+        assert!(
+            parsed
+                .cooperative_selector
+                .as_ref()
+                .is_some_and(|selector| selector.direct_id().is_none())
+        );
+        let result = resolve_automatic_new_selectors(
+            &mut parsed,
+            &NoAutomaticCapability,
+            &SystemClock::new(),
+            || panic!("capability refusal must precede topology"),
+            || panic!("capability refusal must precede caller pane read"),
+        );
+        assert!(matches!(
+            result,
+            Err(RunError::Api(ApiError {
+                code: ErrorCode::Unsupported,
+                ..
+            }))
+        ));
+    }
     #[test]
     fn topology_contract_retry_refuses_unavailable_or_unconfigured_runtime_before_presentation() {
         let root = std::env::temp_dir().join(format!("topology-retry-{}", uuid::Uuid::new_v4()));
