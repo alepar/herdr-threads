@@ -22,11 +22,11 @@ Split the compilable schema/protocol contract from its canonical transaction and
 
 ### Contract ownership
 
-The contract leaf owns the next additive migration with pair uniqueness and FKs, strict EnsureDirectThread command/result/permit/hash types, capability token, dispatch adapter signature and compatibility fixtures. Its default runtime returns unsupported until the guarded implementation is installed; it must not advertise support early. Existing serialized commands/results remain unchanged. Use the ordinary ThreadCreated/ID result if its semantics fit; no new result fields are needed just for presentation.
+The contract leaf owns the next additive migration with pair uniqueness and FKs, strict EnsureDirectThread command/result/permit/hash types and default-omitted SendMessage.direct_recipient field, capability token, dispatch adapter signature and compatibility fixtures. Its default runtime returns unsupported until the guarded implementation is installed; it must not advertise support early. Existing serialized commands/results remain unchanged. Use the ordinary ThreadCreated/ID result if its semantics fit; no new result fields are needed just for presentation.
 
 ### Transaction and enrollment
 
-The mechanism leaf owns the actual accountable transaction using the contract, create/invite event/projection wiring, reversed concurrency convergence, archived/left/rejected guidance and historical replay. It also owns every pair-only check in ordinary/service/operator enrollment and send preparation/publication, plus TRUST-POLICY A5. Resolve all membership through canonical effective/voluntary semantics, not stale raw state. All checks and activation land together so no advertised resolver can create a porous pair. Existing ordinary APIs stay unchanged for unmarked threads.
+The mechanism leaf owns the actual accountable transaction using the contract, create/invite event/projection wiring, reversed concurrency convergence, archived/left/rejected guidance and historical replay. It also owns every pair-only check in ordinary/service/operator enrollment and send preparation/publication, including direct_recipient validation/audience staging independent of ACK-only invited_recipients, plus TRUST-POLICY A5. Resolve all membership through canonical effective/voluntary semantics, not stale raw state. All checks and activation land together so no advertised resolver can create a porous pair. Existing ordinary APIs stay unchanged for unmarked threads.
 
 ### Acceptance and retention
 
