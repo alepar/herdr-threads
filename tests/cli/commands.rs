@@ -2192,7 +2192,7 @@ impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
     type Admission = ();
     fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
         use crate::harness::adapter::*;
-        static METADATA: AdapterMetadata = AdapterMetadata {
+        static METADATA: AdapterMetadata = AdapterMetadata { agent_env_markers: &[],
             id: "selectorfixture",
             display_label: "Synthetic SelectorFixture",
             context_spelling: "SelectorFixture",
@@ -2206,7 +2206,7 @@ impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
             },
             runtime_sources: &[],
         };
-        static FOURTH: AdapterMetadata = AdapterMetadata {
+        static FOURTH: AdapterMetadata = AdapterMetadata { agent_env_markers: &[],
             id: "fourth",
             display_label: "Fourth",
             context_spelling: "Fourth",

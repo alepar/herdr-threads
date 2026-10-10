@@ -68,8 +68,8 @@ impl AdmissionState {
         match self {
             AdmissionState::ContractDeclared => "contract_declared",
             AdmissionState::Listed => "listed",
-            AdmissionState::SchemaMatched => crate::harness::codex::SCHEMA_MATCHED_LABEL,
-            AdmissionState::Optimistic => crate::harness::codex::OPTIMISTIC_LABEL,
+            AdmissionState::SchemaMatched => crate::harness::recipe::SCHEMA_MATCHED_LABEL,
+            AdmissionState::Optimistic => crate::harness::recipe::OPTIMISTIC_LABEL,
             AdmissionState::Refused => "refused",
             AdmissionState::NotFound => "not_found",
         }
@@ -120,7 +120,7 @@ fn claude_installed_with_warning(
     path: Option<&std::ffi::OsStr>,
     lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> (InstalledHarnessJson, Option<String>) {
-    claude_installed_with_warning_budget(path, lookup, crate::harness::codex::VERSION_TIMEOUT)
+    claude_installed_with_warning_budget(path, lookup, crate::harness::process::VERSION_TIMEOUT)
 }
 #[cfg(test)]
 fn claude_installed_with_warning_budget(
@@ -135,7 +135,7 @@ fn claude_installed_with_warning_budget(
     let version = if timeout.is_zero() {
         None
     } else {
-        crate::harness::codex::version_output(&binary, timeout)
+        crate::harness::process::version_output(&binary, timeout)
             .ok()
             .and_then(|stdout| claude::version_from_output(&stdout))
     };

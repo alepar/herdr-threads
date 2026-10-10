@@ -451,11 +451,11 @@ impl HarnessStatus {
             HarnessStatus::Cooperative {
                 live_unverified: true,
                 ..
-            } => crate::harness::codex::SCHEMA_MATCHED_LABEL,
+            } => crate::harness::recipe::SCHEMA_MATCHED_LABEL,
             HarnessStatus::ContractDeclared { .. } => "contract_declared",
             HarnessStatus::Cooperative { .. } => "listed",
             HarnessStatus::Supported(_) => "listed",
-            HarnessStatus::Optimistic(_) => crate::harness::codex::OPTIMISTIC_LABEL,
+            HarnessStatus::Optimistic(_) => crate::harness::recipe::OPTIMISTIC_LABEL,
         }
     }
 
@@ -1492,7 +1492,7 @@ where
             let observer_store = Arc::clone(&store);
             let reobserver = AdmissionReobserver::new(
                 std::env::var_os("PATH"),
-                crate::harness::codex::VERSION_TIMEOUT,
+                crate::harness::process::VERSION_TIMEOUT,
                 {
                     let log = Arc::clone(&rate_limited_log);
                     Arc::new(move |line: &str| log.write_line(line))
@@ -2051,6 +2051,7 @@ pub(crate) mod health_v2_observer_tests {
     ) -> &'static CountingAdapter {
         Box::leak(Box::new(CountingAdapter {
             metadata: Box::leak(Box::new(AdapterMetadata {
+                agent_env_markers: &[],
                 id,
                 display_label: id,
                 context_spelling: id,

@@ -68,6 +68,7 @@ pub mod synthetic_fourth {
     pub static ADAPTER: Fourth = Fourth;
     pub struct Fourth;
     static METADATA: AdapterMetadata = AdapterMetadata {
+        agent_env_markers: &[],
         id: ID,
         display_label: "Synthetic fourth (test-support only)",
         context_spelling: "SyntheticFourth",
@@ -463,7 +464,7 @@ pub mod synthetic_fourth {
         fn resolve_scope(
             &self,
             request: &LaunchRequest,
-            _: &dyn crate::harness::launch::CodexShellProbe,
+            _: &dyn crate::harness::launch::PaneShellProbe,
             _: &CallBudget,
         ) -> Result<LaunchScope, crate::protocol::results::ApiError> {
             let root = root(&request.environment).map_err(|error| {
@@ -501,7 +502,7 @@ pub mod synthetic_fourth {
             scope: &LaunchScope,
             _: &crate::harness::registry::AdmittedHandle,
             status: &LocalSetupStatus,
-            _: &dyn crate::harness::launch::CodexShellProbe,
+            _: &dyn crate::harness::launch::PaneShellProbe,
             _: &CallBudget,
         ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
             Ok(LaunchPreparation {

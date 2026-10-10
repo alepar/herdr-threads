@@ -3,10 +3,10 @@
 //! followed by embedded schema text the shell never executes. The matching
 //! fixture embeds the committed 0.158.0 schema extraction.
 use crate::harness::codex::{
-    self, Admission, HOOKS_V1_SCHEMA_FINGERPRINT, InstalledVersion, SCHEMA_MATCHED_LABEL,
-    VersionError,
+    self, Admission, HOOKS_V1_SCHEMA_FINGERPRINT, InstalledVersion, VersionError,
 };
 use crate::harness::codex_schema::{self, Unextractable};
+use crate::harness::recipe::{OPTIMISTIC_LABEL, SCHEMA_MATCHED_LABEL};
 use crate::harness::{Capability, setup::plan_codex_for_version};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -227,7 +227,7 @@ fn unlisted_version_with_mismatched_schemas_is_optimistic_with_drift() {
             result: Ok(version.clone()),
         }
         .state();
-        assert_eq!(state, codex::OPTIMISTIC_LABEL);
+        assert_eq!(state, OPTIMISTIC_LABEL);
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -635,7 +635,7 @@ fn diagnostic_observation_uses_a_private_persistent_cache_and_stores_evidence() 
         drifted.admission()
     );
     let record = codex_evidence::read(&record_path).unwrap();
-    assert_eq!(record.admission, codex::OPTIMISTIC_LABEL);
+    assert_eq!(record.admission, OPTIMISTIC_LABEL);
     assert!(
         record.optimistic() && !record.schema_matched(),
         "{record:?}"

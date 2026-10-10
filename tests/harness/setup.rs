@@ -13,7 +13,13 @@ fn install_claude_user(
     argv: &[String],
     base: &[u8],
 ) -> Result<OwnershipManifest, SetupError> {
-    install_user_settings(SettingsKind::ClaudeUser, config, manifest, argv, base)
+    install_user_settings(
+        crate::harness::claude::settings_kind(),
+        config,
+        manifest,
+        argv,
+        base,
+    )
 }
 fn install_claude_user_with_fault<F: FnOnce()>(
     config: &std::path::Path,
@@ -24,7 +30,7 @@ fn install_claude_user_with_fault<F: FnOnce()>(
     action: F,
 ) -> Result<OwnershipManifest, SetupError> {
     install_user_settings_with_fault(
-        SettingsKind::ClaudeUser,
+        crate::harness::claude::settings_kind(),
         config,
         manifest,
         argv,
@@ -38,13 +44,18 @@ fn inspect_claude_user(
     manifest: &std::path::Path,
     observed: NativeObservation,
 ) -> Result<HookInspection, SetupError> {
-    inspect_user_settings(SettingsKind::ClaudeUser, config, manifest, observed)
+    inspect_user_settings(
+        crate::harness::claude::settings_kind(),
+        config,
+        manifest,
+        observed,
+    )
 }
 fn remove_claude_user(
     config: &std::path::Path,
     manifest: &std::path::Path,
 ) -> Result<(), SetupError> {
-    remove_user_settings(SettingsKind::ClaudeUser, config, manifest)
+    remove_user_settings(crate::harness::claude::settings_kind(), config, manifest)
 }
 #[test]
 fn claude_composes_preserves_permissions_and_is_idempotent() {
@@ -94,7 +105,7 @@ fn codex_inline_flags_preserve_groups_and_do_not_invent_trust() {
     let plan = plan_codex_for_contract(
         &groups,
         &["/tmp/space 雪/owned".into()],
-        &crate::harness::operational::CodexContract::registered(),
+        &crate::harness::codex::CodexContract::registered(),
     )
     .unwrap();
     assert_eq!(plan.launch_argv[0], "-c");
@@ -108,7 +119,7 @@ fn codex_inline_flags_preserve_groups_and_do_not_invent_trust() {
         plan_codex_for_contract(
             &plan.events,
             &["/tmp/space 雪/owned".into()],
-            &crate::harness::operational::CodexContract::registered()
+            &crate::harness::codex::CodexContract::registered()
         )
         .unwrap()
         .events,
@@ -362,10 +373,13 @@ fn user_install_rejects_any_other_settings_file() {
     fs::create_dir(&dir).unwrap();
     let manifest = dir.join("manifest.json");
     for (kind, name) in [
-        (SettingsKind::ClaudeUser, "settings.local.json"),
-        (SettingsKind::ClaudeUser, "hooks.json"),
-        (SettingsKind::CodexUser, "settings.json"),
-        (SettingsKind::CodexUser, "config.toml"),
+        (
+            crate::harness::claude::settings_kind(),
+            "settings.local.json",
+        ),
+        (crate::harness::claude::settings_kind(), "hooks.json"),
+        (crate::harness::codex::settings_kind(), "settings.json"),
+        (crate::harness::codex::settings_kind(), "config.toml"),
     ] {
         let config = dir.join(name);
         fs::write(&config, b"{}").unwrap();
@@ -396,7 +410,7 @@ fn codex_user_hooks_install_inspect_and_remove_keep_existing_groups() {
         "hook".to_owned(),
         "codex".to_owned(),
     ];
-    let kind = SettingsKind::CodexUser;
+    let kind = crate::harness::codex::settings_kind();
     let installed = install_user_settings(kind, &config, &manifest, &argv, original).unwrap();
     assert!(installed.permission.is_none());
     assert_eq!(installed.scope, "user");
@@ -428,7 +442,7 @@ fn codex_user_hooks_install_inspect_and_remove_keep_existing_groups() {
     // A Claude manifest never inspects a Codex file and vice versa.
     assert_eq!(
         inspect_user_settings(
-            SettingsKind::ClaudeUser,
+            crate::harness::claude::settings_kind(),
             &config,
             &manifest,
             NativeObservation::Unknown
@@ -2959,7 +2973,7 @@ fn codex_setup_registers_event_per_group() {
     fs::write(&config, b"{}").unwrap();
     let argv = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
     let manifest = install_user_settings(
-        SettingsKind::CodexUser,
+        crate::harness::codex::settings_kind(),
         &config,
         &manifest_path,
         &argv,
@@ -3052,10 +3066,10 @@ fn downgrade_to_legacy_registration(config: &std::path::Path, manifest_path: &st
 #[test]
 fn legacy_install_is_installed_but_flagged() {
     for (kind, harness_word) in [
-        (SettingsKind::ClaudeUser, "claude"),
-        (SettingsKind::CodexUser, "codex"),
+        (crate::harness::claude::settings_kind(), "claude"),
+        (crate::harness::codex::settings_kind(), "codex"),
     ] {
-        let (dir, config, manifest_path) = if kind == SettingsKind::ClaudeUser {
+        let (dir, config, manifest_path) = if kind == crate::harness::claude::settings_kind() {
             claude_scope()
         } else {
             codex_scope()
@@ -3119,13 +3133,17 @@ fn a_mixed_event_registration_is_neither_current_nor_legacy() {
 fn setup_upgrades_legacy_registration() {
     for (kind, harness_word, user_hooks) in [
         (
-            SettingsKind::ClaudeUser,
+            crate::harness::claude::settings_kind(),
             "claude",
             &br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user"}]}]},"other":1}"#[..],
         ),
-        (SettingsKind::CodexUser, "codex", &br#"{"other":1}"#[..]),
+        (
+            crate::harness::codex::settings_kind(),
+            "codex",
+            &br#"{"other":1}"#[..],
+        ),
     ] {
-        let (dir, config, manifest_path) = if kind == SettingsKind::ClaudeUser {
+        let (dir, config, manifest_path) = if kind == crate::harness::claude::settings_kind() {
             claude_scope()
         } else {
             codex_scope()
@@ -3196,7 +3214,7 @@ fn adoption_finds_evented_marked_copy() {
     fs::write(&config, b"{}").unwrap();
     let argv: Vec<String> = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
     let installed = install_user_settings(
-        SettingsKind::CodexUser,
+        crate::harness::codex::settings_kind(),
         &config,
         &manifest_path,
         &argv,
@@ -3205,9 +3223,10 @@ fn adoption_finds_evented_marked_copy() {
     .unwrap();
     // A second CODEX_HOME holding a byte copy of the hooks file (trust travels with it).
     fs::copy(&config, &other_config).unwrap();
-    let adoptable = adoptable_user_settings(SettingsKind::CodexUser, &other_config, &argv)
-        .unwrap()
-        .expect("an exact evented marked copy is adoptable");
+    let adoptable =
+        adoptable_user_settings(crate::harness::codex::settings_kind(), &other_config, &argv)
+            .unwrap()
+            .expect("an exact evented marked copy is adoptable");
     assert_eq!(adoptable.installation_id, installed.installation_id);
     assert_event_per_group(
         &adoptable.owned,
@@ -3219,7 +3238,7 @@ fn adoption_finds_evented_marked_copy() {
     );
     let before = fs::read(&other_config).unwrap();
     let adopted = adopt_user_settings(
-        SettingsKind::CodexUser,
+        crate::harness::codex::settings_kind(),
         &other_config,
         &other_manifest,
         &argv,
@@ -3238,7 +3257,7 @@ fn adoption_finds_evented_marked_copy() {
         .replace(" '--event' 'SessionStart'", "");
     fs::write(&other_config, text).unwrap();
     assert!(
-        adoptable_user_settings(SettingsKind::CodexUser, &other_config, &argv)
+        adoptable_user_settings(crate::harness::codex::settings_kind(), &other_config, &argv)
             .unwrap()
             .is_none()
     );

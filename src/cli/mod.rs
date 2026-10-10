@@ -262,7 +262,7 @@ where
 /// No local `codex` was available to confirm the list with
 /// `codex exec ... 'env | grep ^CODEX_'`; it follows codex-rs's documented
 /// spawn environment.
-const AGENT_ENV_MARKERS: [&str; 3] = [
+pub(crate) const AGENT_ENV_MARKERS: [&str; 3] = [
     "CLAUDECODE",
     "CODEX_SANDBOX",
     "CODEX_SANDBOX_NETWORK_DISABLED",

@@ -326,3 +326,10 @@ pub fn refusal_message<P>(
         LookupError::Unsupported(_) => unsupported_message(harness, installed, table),
     }
 }
+
+/// The fixed evidence label for a schema-matched admission.
+pub const SCHEMA_MATCHED_LABEL: &str = "schema-matched, live-unverified";
+
+/// The fixed state label for an optimistic admission. The operator-facing
+/// wording rendered from `admission::OptimisticAdmission` is the doctor's.
+pub const OPTIMISTIC_LABEL: &str = "optimistic";

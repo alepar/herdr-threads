@@ -844,6 +844,7 @@ impl crate::harness::adapter::HarnessAdapter for FourthEvidenceAdapter {
     fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
         use crate::harness::adapter::*;
         static META: AdapterMetadata = AdapterMetadata {
+            agent_env_markers: &[],
             id: "fourth",
             display_label: "Fourth fixture",
             context_spelling: "Fourth",

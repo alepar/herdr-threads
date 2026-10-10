@@ -1208,7 +1208,7 @@ fn claude_docs_list_exactly_the_declared_installed_hook_groups() {
 // Catches runtime-free parsing that grants optional compact handling or native capability.
 #[test]
 fn versionless_claude_contract_validates_core_input_without_compact_qualification() {
-    let contract = crate::harness::operational::ClaudeContract::registered();
+    let contract = crate::harness::claude::ClaudeContract::registered();
     for source in ["startup", "clear", "resume"] {
         let payload = serde_json::to_vec(
             &json!({"hook_event_name":"SessionStart","source":source,"session_id":"s"}),

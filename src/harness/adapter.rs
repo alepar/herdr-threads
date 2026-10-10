@@ -184,6 +184,135 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         None
     }
+    /// Static text fragments the neutral core splices into help and reports.
+    fn text(&self) -> &'static AdapterText {
+        &AdapterText::NONE
+    }
+    /// The config root when the environment names none explicitly: the declared
+    /// environment variable when non-empty, else a directory under `home`.
+    fn default_config_root(&self, _environment: &SetupEnvironment) -> Option<std::path::PathBuf> {
+        None
+    }
+    /// The user settings file this adapter's installation edits through the shared JSON engine.
+    fn settings_kind(&self) -> Option<&'static super::setup::SettingsKindSpec> {
+        None
+    }
+    fn foreground_advice(&self) -> Option<&'static ForegroundAdvice> {
+        None
+    }
+    /// `setup-status` only (never doctor/launch status): adapter-local enrichments.
+    fn setup_status_extras(&self, _: &StatusRequest, _: &mut serde_json::Value) {}
+    /// Extra `setup` text lines rendered as `<id>: <line>` after the outcome line.
+    fn setup_report_lines(&self, _: &serde_json::Value) -> Vec<String> {
+        Vec::new()
+    }
+    /// Text for this adapter's `report.hooks.<id>` object; empty renders nothing.
+    fn doctor_text(&self, _: &serde_json::Value, _: DoctorTextForm) -> String {
+        String::new()
+    }
+    /// Prefixes of report-level limitations the Summary text already printed.
+    fn doctor_summary_claims(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn version_syntax(&self) -> Option<&'static VersionSyntax> {
+        None
+    }
+    fn transcript_version(&self) -> Option<&'static TranscriptVersionSpec> {
+        None
+    }
+}
+
+/// One environment variable that marks an agent process of this harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentEnvMarker {
+    /// Exact env var name, `[A-Z][A-Z0-9_]{0,63}`. A non-empty value marks an agent process
+    /// (output form).
+    pub name: &'static str,
+    /// Also TRUST-POLICY A4 person-pane refusal evidence (presence suffices).
+    pub person_guard: bool,
+}
+
+/// Static text fragments of one adapter. Adding a field later touches no adapter: every
+/// adapter spells `..AdapterText::NONE`.
+#[derive(Debug, Clone, Copy)]
+pub struct AdapterText {
+    /// Verbatim block under the setup help "Scope:" heading (its own indentation).
+    pub setup_scope: &'static str,
+    /// Sentence(s) in the setup help "Foreground agents" paragraph.
+    pub setup_foreground: &'static str,
+    /// Own paragraph(s) after it (Claude prompt suggestions).
+    pub setup_notes: &'static str,
+    /// Paragraph(s) appended to the launch help.
+    pub launch_notes: &'static str,
+    /// For example `CLAUDE_CONFIG_DIR`; used in launch and setup messages.
+    pub config_root_hint: &'static str,
+    /// For example `codex hook trust`; empty renders `<id> setup trust`.
+    pub trust_reminder_label: &'static str,
+    /// The per-version note of the harness-state report; empty renders none.
+    pub version_history_note: &'static str,
+}
+impl AdapterText {
+    pub const NONE: Self = Self {
+        setup_scope: "",
+        setup_foreground: "",
+        setup_notes: "",
+        launch_notes: "",
+        config_root_hint: "",
+        trust_reminder_label: "",
+        version_history_note: "",
+    };
+    /// Every field, for registry validation.
+    pub fn fields(&self) -> [&'static str; 7] {
+        [
+            self.setup_scope,
+            self.setup_foreground,
+            self.setup_notes,
+            self.launch_notes,
+            self.config_root_hint,
+            self.trust_reminder_label,
+            self.version_history_note,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoctorTextForm {
+    Debug,
+    Summary,
+}
+
+/// Read-only foreground-agent advice of one harness (`setup`/`setup-status` reports).
+pub struct ForegroundAdvice {
+    /// Relative to the adapter's config root.
+    pub settings_file: &'static str,
+    pub advice: &'static str,
+    /// For example `("persistent_opt_out", "unavailable (Codex 0.160.1)")`.
+    pub fixed_fields: &'static [(&'static str, &'static str)],
+    pub inspect: fn(&[u8], &mut serde_json::Value) -> Result<(), String>,
+}
+
+/// How `--version` output of one harness is normalized to `X.Y.Z`.
+pub struct VersionSyntax {
+    /// Stripped when present: Codex `codex-cli `.
+    pub prefix: &'static str,
+    /// Stripped when present: Claude ` (Claude Code)`.
+    pub suffix: &'static str,
+    /// `(raw, normalized)` examples; the contract-id listing renders them.
+    pub examples: &'static [(&'static str, &'static str)],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptRead {
+    NewestEntry,
+    HeadLine,
+}
+/// Where a transcript names the runtime version of its harness.
+pub struct TranscriptVersionSpec {
+    pub read: TranscriptRead,
+    pub extract: fn(&serde_json::Value) -> Option<&str>,
+    /// `false`: the transcript names only its creator (Codex): payload attribution is
+    /// `CreatorOnly`, a known resume `ResumedCreator`. `true`: resume is `ResumeBeforeFirstEntry`.
+    pub current_runtime: bool,
 }
 
 /// How a harness receives pending items (delivery-policy DP1).
@@ -217,6 +346,8 @@ pub struct AdapterMetadata {
     pub setup_scopes: &'static [SetupScopeKind],
     pub budget: EventBudgetPolicy,
     pub runtime_sources: &'static [&'static str],
+    /// Environment variables that mark an agent process of this harness.
+    pub agent_env_markers: &'static [AgentEnvMarker],
 }
 pub enum ExecutableLookup {
     Path(&'static str),
@@ -789,7 +920,7 @@ pub trait LaunchPolicy: Send + Sync {
         _: &LaunchScope,
         _: &(dyn std::any::Any + Send + Sync),
         _: &LocalSetupStatus,
-        _: &dyn super::launch::CodexShellProbe,
+        _: &dyn super::launch::PaneShellProbe,
         _: &CallBudget,
     ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
         Err(crate::protocol::results::ApiError::unsupported(
@@ -810,7 +941,7 @@ pub trait LaunchPolicy: Send + Sync {
     fn resolve_scope(
         &self,
         request: &LaunchRequest,
-        probe: &dyn super::launch::CodexShellProbe,
+        probe: &dyn super::launch::PaneShellProbe,
         budget: &CallBudget,
     ) -> Result<LaunchScope, crate::protocol::results::ApiError>;
     fn validate_native_argv(
@@ -828,7 +959,7 @@ pub trait LaunchPolicy: Send + Sync {
         scope: &LaunchScope,
         admitted: &super::registry::AdmittedHandle,
         status: &LocalSetupStatus,
-        probe: &dyn super::launch::CodexShellProbe,
+        probe: &dyn super::launch::PaneShellProbe,
         budget: &CallBudget,
     ) -> Result<LaunchPreparation, crate::protocol::results::ApiError>;
     fn configuration_fingerprint(

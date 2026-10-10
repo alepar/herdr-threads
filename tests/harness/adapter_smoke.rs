@@ -457,7 +457,7 @@ fn fourth_author_consumers() {
 }
 
 struct NoShell;
-impl herdr_threads::harness::launch::CodexShellProbe for NoShell {}
+impl herdr_threads::harness::launch::PaneShellProbe for NoShell {}
 
 fn settings_conservation() {
     use herdr_threads::{protocol::results::HealthSettings, service::config::ServiceConfig};

@@ -10,7 +10,8 @@ use crate::app::{claude_status, claude_status_in, codex_status, supports_native_
 use crate::harness::{
     admission::{self, Refusal, Row},
     claude,
-    codex::{InstalledAdmission, VERSION_TIMEOUT, VersionError},
+    codex::{InstalledAdmission, VersionError},
+    process::VERSION_TIMEOUT,
     recipe::Version,
     stub_binaries::write_stub_harness,
 };

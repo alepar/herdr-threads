@@ -12,7 +12,8 @@
 //! `harness/` is a 0700 directory the hook creates under an existing, owned
 //! state root; it never creates the state root itself. Everything here is best
 //! effort: a failure leaves the hook on its in-process cache and never blocks.
-use super::codex::{InstalledAdmission, OPTIMISTIC_LABEL, SCHEMA_MATCHED_LABEL};
+use super::codex::InstalledAdmission;
+use super::recipe::{OPTIMISTIC_LABEL, SCHEMA_MATCHED_LABEL};
 use std::{
     io::{self, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
