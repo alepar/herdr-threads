@@ -230,9 +230,17 @@ impl CodexPermissions {
         let current = self.fingerprint()?;
         let target = render().into_bytes();
         match &manifest {
-            None if current != ABSENT => return Err(SetupError::Conflict),
-            Some(m) if current != ABSENT && Self::recorded(m) != Some(current.as_str()) => {
+            // A foreign or edited file is left alone: reported, refused only when the person
+            // explicitly asked for the grant.
+            None if current != ABSENT && consent == PermissionConsent::Granted => {
                 return Err(SetupError::Conflict);
+            }
+            Some(m) if current != ABSENT && Self::recorded(m) != Some(current.as_str()) => {
+                if consent == PermissionConsent::Granted {
+                    return Err(SetupError::Conflict);
+                }
+                drop(guard);
+                return self.status();
             }
             Some(_) if current == ABSENT && consent != PermissionConsent::Granted => {
                 // The person deleted it: forget the record rather than re-grant.
@@ -251,7 +259,8 @@ impl CodexPermissions {
         self.status()
     }
 
-    /// Remove the owned file (kept as a backup); an edited one is refused and left.
+    /// Remove the owned file (kept as a backup). An edited one is left in place and its record
+    /// forgotten: the result is then `Edited`.
     pub fn remove(&self) -> Result<CodexPermissionState, SetupError> {
         if self.read()?.is_none() {
             return self.status();
@@ -264,7 +273,8 @@ impl CodexPermissions {
         };
         let current = self.fingerprint()?;
         if current != ABSENT && Self::recorded(&manifest) != Some(current.as_str()) {
-            return Err(SetupError::Conflict);
+            self.remove_manifest()?;
+            return Ok(CodexPermissionState::Edited);
         }
         let created = manifest.created.clone();
         self.publish(&guard, Some(manifest), None, created)?;

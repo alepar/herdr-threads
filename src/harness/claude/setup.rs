@@ -409,9 +409,7 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
         prompt_suggestion::revert(&settings, &prompt_suggestion_manifest(env, &settings)?)
             .map_err(|error| prompt_suggestion_error(error, &settings))?;
     // The component's own rules; a historical hook-recorded rule goes with the hooks below.
-    let permissions = permission_component(env, &settings)?
-        .remove()
-        .map_err(|error| permission_error(error, env, &settings))?;
+    let permissions = permission_component(env, &settings)?.remove();
     let mut report = json!({
         "harness": "claude",
         "scope": "user",
@@ -419,7 +417,14 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
         "manifest": manifest.display().to_string(),
         "prompt_suggestions": reverted.as_str(),
         "mod": mod_reverted.as_str(),
-        "permissions": permissions_json(env, &settings, &permissions),
+        // Never let the permission component keep the hooks installed: its failure is reported.
+        "permissions": match &permissions {
+            Ok(status) => permissions_json(env, &settings, status),
+            Err(error) => json!({
+                "state": "error",
+                "error": permission_error(error.clone(), env, &settings).to_string(),
+            }),
+        },
     });
     let mut recorded = read_settings_manifest(&manifest)
         .map_err(|e| settings_error(e, SetupVerb::Remove, kind, &settings, &manifest))?;

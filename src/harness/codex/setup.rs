@@ -670,9 +670,15 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
     }
     prepare_state(env)?;
     let permissions = permission_component(env)?;
-    let permission_state = permissions
-        .apply(PermissionConsent::Undecided)
-        .map_err(|error| permission_error(error, permissions.rules_file()))?;
+    // The rules file is independent of the hooks: a problem with it is reported, never a
+    // reason to leave the hooks out.
+    let permission_report = match permissions.apply(PermissionConsent::Undecided) {
+        Ok(state) => permissions_json(&permissions, state),
+        Err(error) => json!({
+            "state": "error",
+            "error": permission_error(error, permissions.rules_file()).to_string(),
+        }),
+    };
     let mut warnings = Vec::new();
     let mut hooks_file = OwnedFile::new(paths.hooks.clone(), paths.hooks_manifest.clone(), b"{}");
     let (installed, already, adopted) = install_settings(
@@ -727,7 +733,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
             unmeasured
         ),
         "trust": codex_trust_json(&paths, command.as_deref()),
-        "permissions": permissions_json(&permissions, permission_state),
+        "permissions": permission_report,
         "harness_version": observation_json(&Ok((observed, None))),
         "codex_config": codex_config_json(env, &layers),
         "observed": "unknown",
@@ -758,11 +764,15 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
             &paths.hooks_manifest,
         )
     };
+    // Never let the permission component keep the hooks installed: its failure is reported.
     let permissions = permission_component(env)?;
-    let permission_state = permissions
-        .remove()
-        .map_err(|error| permission_error(error, permissions.rules_file()))?;
-    report["permissions"] = permissions_json(&permissions, permission_state);
+    report["permissions"] = match permissions.remove() {
+        Ok(state) => permissions_json(&permissions, state),
+        Err(error) => json!({
+            "state": "error",
+            "error": permission_error(error, permissions.rules_file()).to_string(),
+        }),
+    };
     let mut recorded = read_settings_manifest(&paths.hooks_manifest).map_err(map)?;
     if recorded.is_none() {
         recorded = adopt_for_removal(kind, env, &paths.hooks, &paths.hooks_manifest)?;

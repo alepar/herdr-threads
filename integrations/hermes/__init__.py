@@ -661,26 +661,35 @@ class Bridge:
 PERSON_GATED = (("human",), ("setup",), ("unsetup",), ("doctor", "fix"),
                 ("internal", "installer-integrations"))
 SPELLINGS = ("herdr-threads", "ht")
-SHELL_OPERATORS = frozenset((";", "&", "&&", "|", "||", "(", ")", "\n"))
+SHELL_OPERATORS = frozenset((";", "&", "&&", "|", "||", "(", ")"))
+
+
+# Shell words that may lead a simple command without being the command itself.
+COMMAND_PREFIXES = frozenset(("then", "else", "do", "{", "!", "time", "exec", "nohup", "env", "command"))
 
 
 def gated_command(command):
     """The person-gated herdr-threads command a shell command line runs, or None."""
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        tokens = command.split()
+    tokens = []
+    for line in command.splitlines():
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            tokens.extend(lexer)
+        except ValueError:
+            tokens.extend(line.split())
+        tokens.append(";")
     segment = []
-    for token in tokens + [";"]:
+    for token in tokens:
         if token not in SHELL_OPERATORS and not set(token) <= set(";&|()"):
             segment.append(token)
             continue
         words = segment
         segment = []
-        while words and "=" in words[0] and not words[0].startswith("="):
-            words = words[1:]  # leading VAR=value assignments
+        # Leading VAR=value assignments and shell keywords/wrappers.
+        while words and (words[0] in COMMAND_PREFIXES
+                         or ("=" in words[0] and not words[0].startswith("="))):
+            words = words[1:]
         if not words or os.path.basename(words[0]) not in SPELLINGS:
             continue
         for gated in PERSON_GATED:

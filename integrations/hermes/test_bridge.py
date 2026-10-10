@@ -1145,6 +1145,10 @@ class PersonGateTests(unittest.TestCase):
             ("herdr-threads doctor fix", "doctor fix"),
             ("echo hi; ht internal installer-integrations x", "internal installer-integrations"),
             ("ht inbox|herdr-threads human retry r", "human"),
+            ("cd /tmp\nht human me init", "human"),
+            ("if true; then ht human; fi", "human"),
+            ("{ herdr-threads setup codex; }", "setup"),
+            ("! env X=1 ht doctor fix", "doctor fix"),
         ):
             self.assertEqual(self.decide(command), ("approve", f"herdr-threads:{gated}"), command)
 

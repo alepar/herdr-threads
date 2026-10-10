@@ -74,12 +74,18 @@ fn codex_rules_never_touch_foreign_or_edited_files() {
     component.apply(PermissionConsent::Granted).unwrap();
     fs::write(scope.rules(), b"# edited\n").unwrap();
     assert_eq!(component.status(), Ok(CodexPermissionState::Edited));
-    assert_eq!(component.remove(), Err(SetupError::Conflict));
+    // Plain setup reports it; an explicit grant refuses; removal leaves it and forgets it.
+    assert_eq!(
+        component.apply(PermissionConsent::Undecided),
+        Ok(CodexPermissionState::Edited)
+    );
     assert_eq!(
         component.apply(PermissionConsent::Granted),
         Err(SetupError::Conflict)
     );
+    assert_eq!(component.remove(), Ok(CodexPermissionState::Edited));
     assert_eq!(fs::read(scope.rules()).unwrap(), b"# edited\n");
+    assert_eq!(component.status(), Ok(CodexPermissionState::Foreign));
 }
 
 // A deleted owned file is not re-granted without consent: the record is forgotten.
