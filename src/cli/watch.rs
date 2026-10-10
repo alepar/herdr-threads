@@ -549,6 +549,8 @@ pub(crate) fn drain(
         clock,
         seat,
     };
+    let attention_text =
+        crate::protocol::watch::attention_marker_for(&state.assembler.command_prefix);
     drain_pages(
         &mut source,
         &mut state.assembler,
@@ -570,7 +572,7 @@ pub(crate) fn drain(
                     format!("attention:{version}"),
                     WatchItem::Attention(WatchAttention {
                         attention_version: version,
-                        text: crate::notification::policy::MARKER.to_owned(),
+                        text: attention_text.clone(),
                     }),
                 ),
                 DrainEvent::AttentionCleared { version } => WatchLine::new(

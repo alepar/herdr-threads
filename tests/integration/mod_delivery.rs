@@ -1864,7 +1864,11 @@ fn attention_marker_line_for_invitation() {
     .data("invite");
     let line = watch.wait_attention_marker();
     assert_eq!(
-        line["text"], "herdr-threads: attention pending; run herdr-threads inbox",
+        line["text"],
+        format!(
+            "herdr-threads: attention pending; run herdr-threads --state-dir {} inbox",
+            rig.state.display()
+        ),
         "{line}"
     );
     assert!(line["attention_version"].as_u64().is_some());
