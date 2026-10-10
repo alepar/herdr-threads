@@ -125,6 +125,8 @@ const DEADLINE_TABLES: &[&str] = &[
 /// lane). A new table must be added to one list; the exhaustive
 /// classification test fails until it is.
 pub const KNOWN_UNMAPPED: &[&str] = &[
+    // Pair identity is passive; its ordinary invitation/membership writes kick their own lanes.
+    "direct_threads",
     // Bootstrap proof/history transitions also update the archival barrier parent.
     "bootstrap_child_keys",
     "bootstrap_attempts",

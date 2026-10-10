@@ -9411,3 +9411,6 @@ fn invitation_rejection_human_retains_declared_human_provenance() {
 
 #[path = "topology_attachment_guard.rs"]
 mod topology_attachment;
+
+#[path = "direct_threads.rs"]
+mod direct_threads;

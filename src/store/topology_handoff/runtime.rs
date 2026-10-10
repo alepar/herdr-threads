@@ -111,7 +111,6 @@ impl BootstrapStorePort for SqliteStore {
         admission: crate::ports::DurableWorkAdmission,
         budget: &CallBudget,
     ) -> Result<crate::ports::SendPreparationProgress, ApiError> {
-        require_legacy_send_marker(command)?;
         crate::store::messages::prepare_bootstrap_send_step(
             &self.context,
             &mut *self.writer(budget)?,

@@ -784,7 +784,7 @@ fn direct_marker_delivery_refuses_before_preparation_and_preserves_original_send
             )
             .unwrap_err()
             .code,
-        ErrorCode::Unsupported
+        ErrorCode::InvalidRequest
     );
     assert_eq!(snapshot(), before);
     request.action = DeliveryAction::Send(send);
@@ -792,4 +792,62 @@ fn direct_marker_delivery_refuses_before_preparation_and_preserves_original_send
         f.call(Command::HandoffDelivery(Box::new(request))).unwrap(),
         CommandResult::MessageSent(_)
     ));
+}
+
+#[test]
+fn ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime() {
+    use herdr_threads::protocol::{
+        commands::{DeliveryMode, EnsureDirectThread, SendMessage},
+        ids::{OperationId, SeatId},
+    };
+    let f = Fixture::new();
+    let caller = super::topology_handoff::identity().claim;
+    f.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','i','resolved','native','peer-pane',1,1,0)",[]).unwrap();
+    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
+    let ensure = Command::EnsureDirectThread(EnsureDirectThread {
+        recipient: SeatId::new("peer"),
+        operation: OperationId::new("direct-runtime-ensure"),
+        claim: caller.clone(),
+    });
+    let CommandResult::ThreadCreated(t) = f.call(ensure).unwrap() else {
+        panic!("missing pair")
+    };
+    let send = Command::SendMessage(SendMessage {
+        delivery_mode: DeliveryMode::Lazy,
+        thread: t,
+        body: "unlinked direct".into(),
+        direct_recipient: Some(SeatId::new("peer")),
+        invited_recipients: vec![],
+        deadline_millis: None,
+        operation: OperationId::new("direct-runtime-send"),
+        claim: caller,
+        relays_user: false,
+        user_intent: None,
+    });
+    assert!(matches!(
+        f.call(send.clone()).unwrap(),
+        CommandResult::MessageSent(_)
+    ));
+    assert!(matches!(
+        f.call(send).unwrap(),
+        CommandResult::MessageSent(_)
+    ));
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='peer'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM invitations WHERE seat_id='peer' AND state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
 }

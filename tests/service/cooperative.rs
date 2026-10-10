@@ -1532,13 +1532,27 @@ fn lazy_inbox_fix_real_service_completion() {
 }
 
 #[test]
-fn direct_thread_contract_refuses_before_effects_until_guarded_runtime() {
+fn direct_thread_guarded_runtime_refuses_missing_target_without_effects() {
     use crate::protocol::commands::{EnsureDirectThread, SendMessage};
     let (service, db) = fixture();
+    let caller = checked(&service, lifecycle(claim(), "invalid-direct-checkin")).context;
+    let tables = [
+        "threads",
+        "invitations",
+        "messages",
+        "send_preparations",
+        "operations",
+    ];
+    let before = tables.map(|table| {
+        db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    });
     let ensure = Command::EnsureDirectThread(EnsureDirectThread {
         recipient: SeatId::new("peer"),
         operation: OperationId::new("ensure"),
-        claim: claim(),
+        claim: caller.clone(),
     });
     let send = Command::SendMessage(SendMessage {
         delivery_mode: crate::protocol::commands::DeliveryMode::Lazy,
@@ -1548,29 +1562,82 @@ fn direct_thread_contract_refuses_before_effects_until_guarded_runtime() {
         invited_recipients: vec![],
         deadline_millis: None,
         operation: OperationId::new("send"),
-        claim: claim(),
+        claim: caller.clone(),
         relays_user: false,
         user_intent: None,
     });
-    for command in [ensure, send] {
+    for (command, expected) in [
+        (ensure, ErrorCode::TargetUnresolved),
+        (send, ErrorCode::NotFound),
+    ] {
         assert_eq!(
             service
                 .handle(command, PeerIdentity::from_kernel(501), &budget())
                 .unwrap_err()
                 .code,
-            ErrorCode::Unsupported
+            expected
         );
     }
-    for table in [
-        "threads",
-        "invitations",
-        "messages",
-        "send_preparations",
-        "operations",
-    ] {
+    for (index, table) in tables.into_iter().enumerate() {
         let count: i64 = db
             .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 0, "{table}");
+        assert_eq!(count, before[index], "{table}");
     }
+}
+
+#[test]
+fn direct_thread_real_service_ensure_and_lazy_send() {
+    use crate::protocol::commands::{DeliveryMode, EnsureDirectThread, SendMessage};
+    let (service, db) = fixture();
+    let caller = checked(&service, lifecycle(claim(), "direct-checkin")).context;
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','i','resolved','native','peer-pane',1,1,0)",[]).unwrap();
+    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
+    let ensure = Command::EnsureDirectThread(EnsureDirectThread {
+        recipient: SeatId::new("peer"),
+        operation: OperationId::new("service-direct"),
+        claim: caller.clone(),
+    });
+    let CommandResult::ThreadCreated(thread) = service
+        .handle(ensure, PeerIdentity::from_kernel(501), &budget())
+        .unwrap()
+    else {
+        panic!("no direct thread")
+    };
+    let send = Command::SendMessage(SendMessage {
+        delivery_mode: DeliveryMode::Lazy,
+        thread,
+        body: "quiet peer".into(),
+        direct_recipient: Some(SeatId::new("peer")),
+        invited_recipients: vec![],
+        deadline_millis: None,
+        operation: OperationId::new("service-direct-send"),
+        claim: caller,
+        relays_user: false,
+        user_intent: None,
+    });
+    assert!(matches!(
+        service
+            .handle(send, PeerIdentity::from_kernel(501), &budget())
+            .unwrap(),
+        CommandResult::MessageSent(_)
+    ));
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='peer'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM invitations WHERE state='accepted'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
 }

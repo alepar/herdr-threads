@@ -1512,13 +1512,6 @@ impl StorePort for SqliteStore {
                 "cooperative permit instance mismatch",
             ));
         }
-        if matches!(&command, PermitMutation::SendMessage(send) if send.direct_recipient.is_some())
-        {
-            return Err(api_error(
-                ErrorCode::Unsupported,
-                "direct sends require guarded canonical audience",
-            ));
-        }
         let mut writer = self.writer(budget)?;
         match command {
             PermitMutation::BeginBootstrap(_)
@@ -1545,10 +1538,14 @@ impl StorePort for SqliteStore {
             PermitMutation::CompleteHandoff(v) => {
                 handoff::mutate(&self.context, &mut writer, budget, &v, permit, true)
             }
-            PermitMutation::EnsureDirectThread(_) => Err(api_error(
-                ErrorCode::Unsupported,
-                "direct threads require guarded canonical resolver",
-            )),
+            PermitMutation::EnsureDirectThread(v) => control::ensure_direct_thread(
+                &self.context,
+                &mut writer,
+                budget,
+                &v,
+                permit,
+                self.settings.invitation_default_ms,
+            ),
             PermitMutation::CreateThread(v) => {
                 control::create_thread(&self.context, &mut writer, budget, &v, permit)
             }
@@ -1614,12 +1611,6 @@ impl StorePort for SqliteStore {
         admission: DurableWorkAdmission,
         budget: &CallBudget,
     ) -> Result<SendPreparationProgress, ApiError> {
-        if request.direct_recipient.is_some() {
-            return Err(api_error(
-                ErrorCode::Unsupported,
-                "direct sends require guarded canonical audience",
-            ));
-        }
         if request.claim.instance != self.instance {
             return Err(api_error(
                 ErrorCode::CallerUnverified,

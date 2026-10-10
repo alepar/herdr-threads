@@ -664,7 +664,7 @@ pub struct CreateThread {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// Resolve the immutable canonical pair; returns the ordinary ThreadCreated ID.
-/// Inert until the guarded thread.direct_v1 runtime is installed.
+/// Resolves the immutable canonical pair through the guarded thread.direct_v1 runtime.
 pub struct EnsureDirectThread {
     pub recipient: SeatId,
     pub operation: OperationId,
