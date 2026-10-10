@@ -891,7 +891,11 @@ class Driver:
         if coop:
             prefix += ["--cooperative-seat", self.facts["coordinator_seat"], "--cooperative-target", self.facts["coordinator_pane"],
                        "--cooperative-harness", "claude", "--cooperative-role", "top-level"]
-        return self.run(prefix + list(argv), env=env, stdin=stdin, timeout=timeout, tag=tag)
+        argv = list(argv)
+        # The CLI accepts a self-granting command only with its words first, every option after.
+        if argv[:1] in (["setup"], ["unsetup"]) or argv[:2] == ["doctor", "fix"]:
+            return self.run([self.bin] + argv + prefix[1:], env=env, stdin=stdin, timeout=timeout, tag=tag)
+        return self.run(prefix + argv, env=env, stdin=stdin, timeout=timeout, tag=tag)
 
     def herdr(self, *argv, tag, timeout=30):
         rc, out, err = self.run(["herdr", *argv], tag=tag, timeout=timeout)
@@ -1361,7 +1365,8 @@ class Driver:
             if self.args.setup_argv:
                 argv = shlex.split(self.args.setup_argv.format(harness=self.harness, project=str(self.project)))
             else:
-                argv = ["setup", self.harness]
+                # The demo needs the ready commands allowed: grant the permission rules explicitly.
+                argv = ["setup", self.harness, "--with-permissions"]
             rc, out, err = self.ht(*argv, tag="setup:cli", timeout=30, extra_env=env)
             (self.ev / "setup-cli-output.txt").write_text(out + err)
             if rc != 0:

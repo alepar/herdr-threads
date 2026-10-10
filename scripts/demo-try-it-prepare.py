@@ -464,7 +464,7 @@ def prepare(args):
         "# We will create a new thread and invite Alice and Bob.\n"
         "# They will debate spaces versus tabs through the thread.\n"
         "# We will observe their work above and follow the conversation below.\n"
-        "herdr-threads me init",
+        "herdr-threads human me init",
         {"command": alice_command + shlex.quote(alice), "fast_from": len(alice_command)},
         {"command": bob_command + shlex.quote(bob), "fast_from": len(bob_command)},
         "herdr-threads send review --require-ack-pane alice --require-ack-pane bob \\\n  --body \"Please settle on one recommendation and explain the tradeoff, after three replies each.\"",

@@ -4895,6 +4895,19 @@ fn permission_consent_grants_revokes_and_unsetup_restores() {
 
     let plain = json(&s.run(&["setup", "claude", "--json"]));
     assert_eq!(plain["permissions"]["action"], "advised", "{plain}");
+    // Hooks, the delivery mod and prompt-suggestion advice all touch settings.json in this one
+    // run; it keeps a single pre-image.
+    let first_run_backups = fs::read_dir(&s.claude_config)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".herdr-threads")
+        })
+        .count();
+    assert_eq!(first_run_backups, 1);
     assert!(
         plain["permissions"]["note"]
             .as_str()
@@ -4938,7 +4951,22 @@ fn permission_consent_grants_revokes_and_unsetup_restores() {
     let settings = text(&fs::read(s.settings()).unwrap());
     assert!(!settings.contains("Bash(herdr-threads"), "{settings}");
 
+    // One run keeps one pre-image per file, however many components write it.
+    let backups = || {
+        fs::read_dir(&s.claude_config)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".herdr-threads")
+            })
+            .count()
+    };
+    let before = backups();
     let regrant = s.run(&["setup", "claude", "--with-permissions"]);
+    assert_eq!(backups(), before + 1);
     assert_eq!(regrant.status.code(), Some(0), "{}", text(&regrant.stderr));
     let unsetup = s.run(&["unsetup", "claude"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));

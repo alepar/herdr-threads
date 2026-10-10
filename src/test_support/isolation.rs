@@ -203,8 +203,7 @@ pub fn routed_argv<S: AsRef<OsStr>>(routing: &[S], args: &[&str]) -> Vec<std::ff
         .count();
     let rest = &args[flags..];
     let routing = routing.iter().map(|r| r.as_ref().to_os_string());
-    if crate::cli::commands::ordinary_catalog()
-        .escalating
+    if crate::cli::commands::ESCALATING_COMMANDS
         .iter()
         .any(|words| rest.starts_with(words))
     {

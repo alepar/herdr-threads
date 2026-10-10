@@ -1,7 +1,7 @@
 //! Claude Bash rules: allow each spelling outright; ask for the immediate `human` namespace and
 //! for every escalating (self-granting) command. Claude applies ask before allow.
 use super::SPELLINGS;
-use crate::cli::commands::ordinary_catalog;
+use crate::cli::commands::ESCALATING_COMMANDS;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClaudePermissionRules {
@@ -22,7 +22,7 @@ pub fn render() -> ClaudePermissionRules {
         prefix(&mut rules.allow, &[spelling]);
         prefix(&mut rules.ask, &[spelling, "human"]);
         // The CLI accepts an agent's escalating command only as its exact leading words.
-        for command in ordinary_catalog().escalating {
+        for command in ESCALATING_COMMANDS {
             let mut words = vec![spelling];
             words.extend(command.iter().copied());
             prefix(&mut rules.ask, &words);

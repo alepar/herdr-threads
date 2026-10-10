@@ -102,9 +102,26 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
     let mut warnings = Vec::new();
     // Permissions first: a historical broad rule an earlier hook setup recorded is narrowed (and
     // its record retired) before the hook installer reads its manifest.
-    let permissions = permission_component(env, &settings)?
-        .apply(PermissionConsent::Undecided)
-        .map_err(|error| permission_error(error, env, &settings))?;
+    // A failure here keeps the hooks out only while the hook record still holds a rule, which
+    // the hook installer cannot proceed past; otherwise it is reported and setup carries on.
+    // A recorded hook command for another executable is refused by the hook installer below
+    // with "nothing was changed": leave the permissions alone so that stays true.
+    let command_moved = shell_command(&env.hook_argv(Harness::Claude)?)
+        .ok()
+        .zip(recorded_command(&manifest))
+        .is_some_and(|(expected, recorded)| !recorded.starts_with(&format!("{expected} # ")));
+    let component = permission_component(env, &settings)?;
+    let permissions = if command_moved {
+        component.status()
+    } else {
+        component.apply(PermissionConsent::Undecided)
+    };
+    if let Err(error) = &permissions
+        && crate::harness::setup::recorded_hook_permission(&settings, &manifest)
+            .map_or(true, |record| record.is_some())
+    {
+        return Err(permission_error(error.clone(), env, &settings));
+    }
     // The hook installer's byte-exact restore needs the file as it left it.
     // When it is about to rewrite the hooks, take the mod's settings entry
     // out first (the files stay) and put it back afterwards.
@@ -262,16 +279,24 @@ fn permission_step(
     policy: PermissionPolicy,
     env: &SetupEnv,
     settings: &Path,
-    existing: &ClaudePermissionStatus,
+    existing: &Result<ClaudePermissionStatus, SetupError>,
 ) -> Result<Value, RunError> {
     let component = permission_component(env, settings)?;
-    let (status, action) = match policy {
-        PermissionPolicy::Grant => (component.apply(PermissionConsent::Granted), "granted"),
-        PermissionPolicy::Decline => (component.remove(), "removed"),
-        PermissionPolicy::Ask if existing.state == ClaudePermissionState::Missing => {
+    let (status, action) = match (policy, existing) {
+        (PermissionPolicy::Grant, _) => (component.apply(PermissionConsent::Granted), "granted"),
+        (PermissionPolicy::Decline, _) => (component.remove(), "removed"),
+        (PermissionPolicy::Ask, Err(error)) => {
+            return Ok(json!({
+                "state": "error",
+                "error": permission_error(error.clone(), env, settings).to_string(),
+            }));
+        }
+        (PermissionPolicy::Ask, Ok(existing))
+            if existing.state == ClaudePermissionState::Missing =>
+        {
             (Ok(existing.clone()), "advised")
         }
-        PermissionPolicy::Ask => (Ok(existing.clone()), "kept"),
+        (PermissionPolicy::Ask, Ok(existing)) => (Ok(existing.clone()), "kept"),
     };
     let status = status.map_err(|error| permission_error(error, env, settings))?;
     let mut report = permissions_json(env, settings, &status);
@@ -298,7 +323,7 @@ pub(crate) fn permissions_granted(env: &SetupEnv) -> Result<bool, RunError> {
     let settings = env.claude_settings()?;
     permission_component(env, &settings)?
         .status()
-        .map(|status| status.state == ClaudePermissionState::Installed)
+        .map(|status| status.state == ClaudePermissionState::Installed && status.complete)
         .map_err(|error| permission_error(error, env, &settings))
 }
 

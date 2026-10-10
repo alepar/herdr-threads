@@ -166,8 +166,16 @@ fn owned_historical_broad_rule_is_taken_over_without_consent() {
         .unwrap();
     assert_eq!(fs::read(&scope.settings).unwrap(), settled);
     assert_eq!(scope.backups().len(), backups + 1);
-    // Consent adds the `ht` rules.
-    scope.component().apply(PermissionConsent::Granted).unwrap();
+    // Taken over, but only part of the full grant: setup still asks about the rest.
+    assert!(!scope.component().status().unwrap().complete);
+    // Consent adds the `ht` rules; the component's own broad rules are never "foreign".
+    let granted = scope.component().apply(PermissionConsent::Granted).unwrap();
+    assert!(granted.complete);
+    assert!(
+        granted.foreign_broad.is_empty(),
+        "{:?}",
+        granted.foreign_broad
+    );
     assert!(rules(&scope.value(), "allow").contains(&"Bash(ht *)".to_owned()));
     assert!(rules(&scope.value(), "ask").contains(&"Bash(ht human *)".to_owned()));
 }
@@ -391,4 +399,62 @@ fn permission_answer_defaults_yes_and_eof_declines() {
             "{typed:?}"
         );
     }
+}
+
+// A hook declaration upgrade after a grant (here: an installation recorded with only the Bash
+// hook) must still let unsetup (permissions, then hooks) restore the original bytes exactly.
+#[test]
+fn grant_then_hook_upgrade_then_removal_restores_bytes() {
+    use crate::harness::setup::{remove_user_settings, uninstall_json};
+    let original = b"{\n  \"model\": \"x\",\n  \"permissions\": {\"deny\": [\"Bash(rm *)\"]}\n}\n";
+    let scope = Scope::new(original);
+    let argv = vec!["/private/tmp/herdr-threads".to_owned(), "hook".to_owned()];
+    install_user_settings(
+        SettingsKind::ClaudeUser,
+        &scope.settings,
+        &scope.hooks,
+        &argv,
+        original,
+    )
+    .unwrap();
+    scope.component().apply(PermissionConsent::Granted).unwrap();
+    // Rewrite the hook installation into an earlier declaration: only the Bash hook owned.
+    let mut manifest: OwnershipManifest =
+        serde_json::from_slice(&fs::read(&scope.hooks).unwrap()).unwrap();
+    let dropped: Vec<_> = manifest
+        .owned
+        .iter()
+        .filter(|entry| entry.event != "PreToolUse")
+        .cloned()
+        .collect();
+    let bytes = uninstall_json(&fs::read(&scope.settings).unwrap(), &dropped).unwrap();
+    let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+    for entry in &dropped {
+        if value["hooks"][&entry.event]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+        {
+            value["hooks"].as_object_mut().unwrap().remove(&entry.event);
+        }
+    }
+    let bytes = serde_json::to_vec(&value).unwrap();
+    fs::write(&scope.settings, &bytes).unwrap();
+    manifest.owned.retain(|entry| entry.event == "PreToolUse");
+    manifest.installed_fingerprint = crate::harness::setup::fingerprint(&bytes);
+    fs::write(&scope.hooks, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    // The upgrade, then unsetup in its order.
+    install_user_settings(
+        SettingsKind::ClaudeUser,
+        &scope.settings,
+        &scope.hooks,
+        &argv,
+        original,
+    )
+    .unwrap();
+    scope.component().remove().unwrap();
+    remove_user_settings(SettingsKind::ClaudeUser, &scope.settings, &scope.hooks).unwrap();
+    assert_eq!(
+        String::from_utf8(fs::read(&scope.settings).unwrap()).unwrap(),
+        String::from_utf8(original.to_vec()).unwrap()
+    );
 }

@@ -57,6 +57,8 @@ pub struct ClaudePermissionStatus {
     pub historical: Vec<String>,
     /// Broad `herdr-threads` / `ht` allow rules nobody here owns: they still grant everything.
     pub foreign_broad: Vec<String>,
+    /// Every rendered rule (both spellings) is present: nothing is left to grant.
+    pub complete: bool,
 }
 
 pub struct ClaudePermissions {
@@ -313,6 +315,7 @@ impl ClaudePermissions {
             ask: Vec::new(),
             historical: Vec::new(),
             foreign_broad: Vec::new(),
+            complete: false,
         };
         let mut owned_broad = BTreeSet::new();
         if let Some(manifest) = &manifest {
@@ -325,6 +328,9 @@ impl ClaudePermissions {
                 let (Some(list), Some(rule)) = (resource_list(resource), &resource.rule) else {
                     continue;
                 };
+                if !resource.pre_existing {
+                    owned_broad.insert(rule.clone());
+                }
                 if present(&value, list, rule)? {
                     let entry = (rule.clone(), resource.pre_existing);
                     if list == "allow" {
@@ -345,6 +351,15 @@ impl ClaudePermissions {
                 status.state = ClaudePermissionState::Historical;
             }
         }
+        let rendered = render();
+        status.complete = rendered
+            .allow
+            .iter()
+            .all(|r| present(&value, "allow", r).unwrap_or(false))
+            && rendered
+                .ask
+                .iter()
+                .all(|r| present(&value, "ask", r).unwrap_or(false));
         status.foreign_broad = native(&value, "allow")?
             .into_iter()
             .filter(|rule| {

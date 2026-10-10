@@ -2066,6 +2066,7 @@ fn apply_owned_repairs(
 }
 
 pub(crate) fn run<W: Write>(parsed: &ParsedCli, writer: &mut W) -> Result<(), RunError> {
+    let _backups = crate::harness::setup::BackupSession::start();
     run_registered(parsed, crate::harness::registry::builtins(), None, writer)
 }
 

@@ -538,6 +538,7 @@ pub fn run<W: Write>(
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    let _backups = crate::harness::setup::BackupSession::start();
     let env = SetupEnv::from_process(output)?;
     let mut report = execute(request, &env)?;
     if request.verb == SetupVerb::Install
@@ -822,6 +823,7 @@ pub fn run_all<W: Write>(
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    let _backups = crate::harness::setup::BackupSession::start();
     let env = SetupEnv::from_process(output)?;
     let mut report = execute_all(verb, prompt_suggestions, permissions, &env)?;
     if verb == SetupVerb::Install

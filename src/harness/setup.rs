@@ -500,6 +500,33 @@ fn restoration_base(
     Ok(stripped)
 }
 
+/// `current` without the permission component's rendered rules, dropping a list or
+/// `permissions` object they alone left when the recorded base held none: the file as the hook
+/// installation would see it with no grant in place. `None` when either is not composable.
+fn without_permission_rules(current: &[u8], recorded_base: &[u8]) -> Option<Vec<u8>> {
+    let mut value = root(current).ok()?;
+    let base = root(recorded_base).ok()?;
+    let rendered = super::permissions::claude::render();
+    if let Some(permissions) = value.get_mut("permissions").and_then(Value::as_object_mut) {
+        for (list, rules) in [("allow", &rendered.allow), ("ask", &rendered.ask)] {
+            if let Some(entries) = permissions.get_mut(list).and_then(Value::as_array_mut) {
+                entries.retain(|entry| {
+                    entry
+                        .as_str()
+                        .is_none_or(|rule| !rules.iter().any(|r| r == rule))
+                });
+                if entries.is_empty() && base["permissions"].get(list).is_none() {
+                    permissions.remove(list);
+                }
+            }
+        }
+        if permissions.is_empty() && base.get("permissions").is_none() {
+            value.as_object_mut()?.remove("permissions");
+        }
+    }
+    serde_json::to_vec(&value).ok()
+}
+
 struct Resume {
     bytes: Vec<u8>,
     base: Vec<u8>,
@@ -581,7 +608,18 @@ fn plan_resume(
             compose_json(recorded_base, &manifest.owned, &target_rules)?.proposed_bytes,
         )
     } else {
-        let base = if recorded.is_empty() && rules_present.is_empty() {
+        // Apart from the permission component's own rules, the file may still be exactly the
+        // recorded base plus recorded groups: keep that base, so removal (permissions first,
+        // then hooks) still restores it byte for byte.
+        let base_plus_grant = !recorded.is_empty()
+            && !recorded_base.is_empty()
+            && without_permission_rules(current, recorded_base).is_some_and(|plain| {
+                compose_json(recorded_base, &recorded, &rules_present)
+                    .is_ok_and(|plan| plan.proposed_bytes == plain)
+            });
+        let base = if base_plus_grant {
+            recorded_base.clone()
+        } else if recorded.is_empty() && rules_present.is_empty() {
             current.to_vec()
         } else {
             prune_emptied_recorded_events(
@@ -1031,10 +1069,46 @@ pub(crate) fn write_user_config(
     if current == bytes {
         return Ok(());
     }
-    if !holds_no_settings(current) {
+    back_up_before_change(path, current)?;
+    write_replacement(path, bytes, false)
+}
+
+thread_local! {
+    static BACKUP_SESSION: std::cell::RefCell<Option<std::collections::HashSet<std::path::PathBuf>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// One command run: while a session is open, each user configuration file is backed up once,
+/// before its first change, so one run leaves one pre-image per file however many components
+/// write it. Without a session every change is backed up.
+pub struct BackupSession(());
+impl BackupSession {
+    pub fn start() -> Self {
+        BACKUP_SESSION.with(|session| *session.borrow_mut() = Some(Default::default()));
+        Self(())
+    }
+}
+impl Drop for BackupSession {
+    fn drop(&mut self) {
+        BACKUP_SESSION.with(|session| *session.borrow_mut() = None);
+    }
+}
+
+/// Back up `current` unless it holds no settings or this session already kept a pre-image.
+fn back_up_before_change(path: &Path, current: &[u8]) -> Result<(), SetupError> {
+    if holds_no_settings(current) {
+        return Ok(());
+    }
+    let first = BACKUP_SESSION.with(|session| {
+        session
+            .borrow_mut()
+            .as_mut()
+            .is_none_or(|seen| seen.insert(path.to_path_buf()))
+    });
+    if first {
         backup_user_config(path, current)?;
     }
-    write_replacement(path, bytes, false)
+    Ok(())
 }
 
 /// Delete a user configuration file whose bytes the caller just validated as `current`, keeping
@@ -1043,9 +1117,7 @@ pub(crate) fn remove_user_config(path: &Path, current: &[u8]) -> Result<(), Setu
     if config_bytes(path)? != current {
         return Err(SetupError::Conflict);
     }
-    if !holds_no_settings(current) {
-        backup_user_config(path, current)?;
-    }
+    back_up_before_change(path, current)?;
     fs::remove_file(path).map_err(|_| SetupError::Io)?;
     fs::File::open(path.parent().ok_or(SetupError::Invalid)?)
         .and_then(|dir| dir.sync_all())
@@ -1673,8 +1745,9 @@ pub fn remove_user_settings(
     // retired one it was replacing.
     let rules: Vec<&str> = rule.into_iter().chain(superseded_rule(&manifest)).collect();
     let base = &manifest.installation_base_bytes;
+    // A file exactly the recorded base plus the owned groups restores the base byte for byte,
+    // even when its fingerprint changed in between (a permission grant added and removed).
     let removed = if manifest.phase == InstallPhase::Installed
-        && fingerprint(&current) == manifest.installed_fingerprint
         && !manifest.installation_base_bytes.is_empty()
     {
         let structurally_removed = uninstall_claude(&current, &manifest.owned, &rules, base)?;

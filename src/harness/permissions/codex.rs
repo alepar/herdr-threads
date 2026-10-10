@@ -15,7 +15,7 @@ pub fn render() -> String {
         "# herdr-threads owned execpolicy v1; exact argv prefixes\nprefix_rule(pattern = [{union}], decision = \"allow\")\nprefix_rule(pattern = [{union}, \"human\"], decision = \"prompt\")\n"
     );
     // The CLI accepts an agent's escalating command only as its exact leading words.
-    for command in crate::cli::commands::ordinary_catalog().escalating {
+    for command in crate::cli::commands::ESCALATING_COMMANDS {
         let rest: String = command
             .iter()
             .map(|token| format!(", {}", serde_json::to_string(token).expect("string")))

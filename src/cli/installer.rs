@@ -141,12 +141,14 @@ fn execute_for_registry_with<F: FnMut(&str) -> io::Result<bool>>(
                         ));
                     }
                     let mut options = SetupOptions::new();
-                    if registration
-                        .setup_options()
-                        .iter()
-                        .any(|o| o.name == "keep-prompt-suggestions")
-                    {
-                        options.insert("keep-prompt-suggestions".into(), true);
+                    for option in registration.setup_options() {
+                        // --without-permissions also undoes the takeover of an earlier grant.
+                        if option.name == "keep-prompt-suggestions"
+                            || (without_permissions
+                                && option.name == crate::cli::setup::WITHOUT_PERMISSIONS)
+                        {
+                            options.insert(option.name.into(), true);
+                        }
                     }
                     let report = setup::execute_registered_with_expected_scope(
                         registration,
@@ -317,6 +319,7 @@ pub fn run<W: Write>(
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    let _backups = crate::harness::setup::BackupSession::start();
     let env = SetupEnv::from_process(output)?;
     // The controlling terminal works with curl | bash; redirected stdout never prompts.
     let terminal = io::stdout().is_terminal() && output.format != OutputFormat::Json;

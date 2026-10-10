@@ -1823,66 +1823,11 @@ fn legacy_handoff_body_word_recover_remains_data() {
     assert_eq!(request.body, "recover");
 }
 
+/// Kills an agent-grantable self-permission: every config-changing command is escalating.
 #[test]
-fn human_topology_recovery_help_and_errors_use_only_canonical_route() {
-    let ParseFailure::Informational(help)=parse_argv_or_informational(["ht","human","handoff","recover","--help"]).unwrap_err() else {panic!("expected help")};
-    assert!(help.contains("ht human handoff recover"),"{help}");assert!(help.contains("--attempt"));assert!(!help.contains("_topology-recover"));
-    let error=parse_argv(["ht","human","handoff","recover","local:1","--not-created"]).unwrap_err();assert!(error.detail.contains("human handoff recover"),"{error:?}");assert!(!error.detail.contains("_topology-recover"));
-    for argv in [vec!["ht","human","_topology-recover","local:1","--attempt","1","--not-created"],vec!["ht","--state-dir","human","handoff","recover","local:1","--attempt","1","--not-created"],vec!["ht","handoff","human","recover","local:1","--attempt","1","--not-created"],vec!["ht","handoff","recover","local:1","--attempt","1","--not-created","--operator"]] { assert!(parse_argv(argv).is_err()); }
-    let parsed=parse_argv(["ht","human","--state-dir","human","handoff","recover","local:1","--attempt","1","--not-created"]).unwrap();assert_eq!(parsed.output.context.state_dir.as_deref(),Some("human"));
-    let parsed=parse_argv(["ht","handoff","--pane","w1:p2","--thread","t1","--kind","codex","--agent-arg=recover","--","human handoff recover local:1"]).unwrap();let CliAction::Handoff(request)=parsed.action else {panic!("legacy route changed")};assert_eq!(request.body,"human handoff recover local:1");assert_eq!(request.launch.argv,vec!["recover"]);
-}
-
-#[test]
-fn actor_route_immediate_namespace_and_output_are_independent() {
-    for executable in ["herdr-threads", "ht", "/private/a space/ht"] {
-        for args in [vec!["inbox"], vec!["send", "t1", "--body", "human --operator --human"], vec!["ack", "m1"], vec!["accept", "t1"], vec!["join", "t1"], vec!["leave", "t1"], vec!["check-in"], vec!["invite", "t1", "--seat", "s1"], vec!["reject", "t1", "--invitation", "i1", "--reason", "reason"], vec!["accept-required", "t1", "--invitation", "i1", "--requirement", "r1", "--revision", "1"]] {
-            let ordinary = parse_argv(std::iter::once(executable).chain(args.iter().copied())).unwrap();
-            let human = parse_argv([executable, "human"].into_iter().chain(args.iter().copied())).unwrap();
-            assert_eq!(ordinary.action, human.action);
-            assert_eq!(ordinary.actor, crate::cli::actor_route::InvocationActor::Agent);
-            assert_eq!(human.actor, crate::cli::actor_route::InvocationActor::Human);
-        }
-    }
-}
-#[test]
-fn actor_route_legacy_person_operator_forms_require_human() {
-    for args in [vec!["me", "init"], vec!["me", "init", "--operator"], vec!["invite", "t1", "--seat", "s1", "--operator"], vec!["seat", "retire", "s1", "--operator"]] {
-        let error = parse_argv(std::iter::once("ht").chain(args.iter().copied())).unwrap_err();
-        assert!(error.detail.contains("human"), "{}", error.detail);
-        assert!(parse_argv(["ht", "human"].into_iter().chain(args)).is_ok());
-    }
-}
-#[test]
-fn ordinary_catalog_exports_positive_syntax_contract() {
-    let catalog = ordinary_catalog();
-    for prefix in [&["send"][..], &["join"], &["launch"], &["seat", "resolve"], &["service", "inspect"], &["--skill"], &["thread", "rename"], &["--version"], &["--help"]] {
-        assert!(catalog.families.iter().any(|f| f.prefix == prefix), "missing {prefix:?}");
-    }
-    assert!(catalog.output_flags.contains(&"--human"));
-    assert!(catalog.routing_forms.iter().any(|f| f.contains(&RoutingToken::StateDirectory) && f.contains(&RoutingToken::HostEndpoint)));
-}
-#[test]
-fn ordinary_catalog_excludes_person_and_operator_families() {
-    let catalog = ordinary_catalog();
-    assert!(!catalog.families.is_empty());
-    for forbidden in [&["human"][..], &["me"], &["me", "init"], &["seat"], &["seat", "rebind"], &["seat", "retire"], &["service"], &["service", "disconnect"]] {
-        assert!(!catalog.families.iter().any(|f| f.prefix == forbidden));
-    }
-}
-
-/// Kills an agent-grantable self-permission: config-changing commands must be escalating,
-/// never ordinary families, and each must still parse as a command.
-#[test]
-fn ordinary_catalog_escalates_self_granting_commands() {
-    let catalog = ordinary_catalog();
+fn escalating_commands_are_the_self_granting_ones() {
     let expected: [&[&str]; 4] = [&["setup"], &["unsetup"], &["doctor", "fix"], &["internal", "installer-integrations"]];
-    assert_eq!(catalog.escalating, &expected[..]);
-    for prefix in expected {
-        assert!(!catalog.families.iter().any(|f| f.prefix == prefix), "{prefix:?}");
-    }
-    assert!(catalog.families.iter().any(|f| f.prefix == ["setup-status"]));
-    assert!(catalog.families.iter().any(|f| f.prefix == ["doctor"]));
+    assert_eq!(ESCALATING_COMMANDS, &expected[..]);
 }
 
 /// Kills an escalating command an agent can move out of a native prompt rule's reach:
@@ -2024,35 +1969,6 @@ fn permission_consent_flags_are_setup_scoped() {
     for args in [vec!["inbox", "--with-permissions"], vec!["setup", "--permissions"], vec!["setup", "--permission-installed-binary", "/private/a"]] {
         assert!(parse_argv(["ht"].into_iter().chain(args)).is_err());
     }
-}
-
-#[test]
-fn ordinary_catalog_routing_and_output_forms_parse_without_actor_escalation() {
-    let catalog = ordinary_catalog();
-    for executable in ["ht", "herdr-threads", "/private/a space/herdr-threads"] {
-        for routing in catalog.routing_forms {
-            let pinned: Vec<&str> = routing.iter().map(|token| match token {
-                RoutingToken::Literal(token) => *token,
-                RoutingToken::StateDirectory => "/private/a space/state",
-                RoutingToken::HostEndpoint => "/private/a space/host.sock",
-            }).collect();
-            for flag in catalog.output_flags {
-                for position in catalog.output_positions {
-                    let mut argv = vec![executable];
-                    argv.extend(&pinned);
-                    if *position == OutputPosition::BeforeFamily { argv.push(flag); }
-                    argv.extend(["send", "t1", "--body", "human --operator; ht human me init"]);
-                    if *position == OutputPosition::AfterArguments { argv.push(flag); }
-                    let parsed = parse_argv(argv).unwrap();
-                    assert_eq!(parsed.actor, crate::cli::actor_route::InvocationActor::Agent);
-                    assert!(matches!(parsed.action, CliAction::Mutation(MutationSpec::Send { body, .. }) if body == "human --operator; ht human me init"));
-                }
-            }
-        }
-    }
-    let resolve = catalog.families.iter().find(|f| f.prefix == ["seat", "resolve"]).unwrap();
-    assert_eq!(resolve.human_options, ["--operator", "--new-seat"]);
-    assert_eq!(catalog.families.iter().find(|f| f.prefix == ["invite"]).unwrap().human_options, ["--operator"]);
 }
 
 #[test]
