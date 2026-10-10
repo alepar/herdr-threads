@@ -33,6 +33,17 @@ and operator repair. Read it before changing anything in `src/identity/`, `src/s
 - Core is `src/cli`, `src/client`, `src/service`, `src/daemon`, `src/store`, `src/host`, `src/protocol`, `src/app` and the neutral `src/harness/*.rs` files. Adapter-owned paths are `src/harness/<id>.rs`, `src/harness/<id>/**` and `src/harness/<id>_*.rs` for the ids in `builtins()`.
 - `scripts/check-harness-neutral` enforces this, with `scripts/harness-neutral-allowlist.txt` as the exception list. Permanent entries are only frozen wire shapes, historical migrations and registration. See "Development rules" for how to run the checks.
 
+## Harness and Herdr versions
+
+Herdr and the harnesses (Claude Code, Codex, Hermes, agy) release too often to track, and pinning them would force updates on plugin users. So:
+
+- Assume backward compatibility: what was designed and captured on an older version is assumed to work on newer ones until breakage is detected at runtime.
+- On detected breakage, degrade only the broken capability, keyed on what was observed (for example agy's `systemMessage` → `userMessage` downgrade, keyed on the executable identity); everything else keeps working.
+- Never gate admission, setup, launch or a feature on an exact version, never ship an exact-version recipe as a gate, and never make a version probe an operational prerequisite.
+- Record version facts only as historical evidence and diagnostics.
+
+Worked examples: `docs/superpowers/specs/2026-10-05-harness-versionless-design.md` and the agy design (`docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter-design.md`, "Version handling" and "Downgrade").
+
 ## Delivery contract
 
 The goal is token efficiency. Sessions that are done and idle stay idle, spinning sessions get efficient delivery, and nudges are rare, because excessive nudges disorient some models. Every delivery policy must keep these invariants:
