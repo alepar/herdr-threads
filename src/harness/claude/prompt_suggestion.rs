@@ -8,16 +8,14 @@
 //! it never changes it without a yes or an explicit flag.
 //!
 //! The edit follows the hook installer's rules
-//! ([`super::setup`]): a private manifest under `<state>/setup/` records the
+//! ([`crate::harness::setup`]): a private manifest under `<state>/setup/` records the
 //! key's previous value (absent or a JSON value) and the file's exact bytes
 //! before and after the write; the file is replaced atomically after an
 //! unchanged-baseline check. [`revert`] restores the key only when setup set
 //! it and it still reads `false` (byte for byte when nothing else changed);
 //! a value changed by hand since is left alone.
-use super::{
-    claude::PROMPT_SUGGESTION_SETTING,
-    setup::{SetupError, config_bytes, publish_manifest, write_replacement},
-};
+use super::PROMPT_SUGGESTION_SETTING;
+use crate::harness::setup::{SetupError, config_bytes, publish_manifest, write_replacement};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{fs, path::Path};

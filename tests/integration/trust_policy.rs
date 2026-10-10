@@ -15,7 +15,7 @@ use super::sweep::{Scratch, agent_pane, host_reply, pane};
 use herdr_threads::test_support::spawn::SpawnOwned;
 use herdr_threads::{
     cli::hook::installed_argv,
-    harness::{context::Harness, setup::plan_claude},
+    harness::{claude::setup::plan_claude, context::Harness},
 };
 use serde_json::{Value, json};
 use std::{

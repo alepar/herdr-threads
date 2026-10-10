@@ -12,7 +12,7 @@ use super::sweep::{FakeHost, Scratch, agent_pane, pane};
 use herdr_threads::{
     cli::hook::installed_argv,
     daemon::paths::{InstancePaths, RuntimeContext},
-    harness::{context::Harness, setup::plan_claude},
+    harness::{claude::setup::plan_claude, context::Harness},
     test_support::spawn::SpawnOwned,
 };
 use serde_json::{Value, json};

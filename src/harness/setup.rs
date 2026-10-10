@@ -1,6 +1,5 @@
 //! Scoped hook proposals and explicit user-settings installation (Claude `settings.json`, Codex
 //! `hooks.json`). No process launch or trust change.
-use super::{codex, launch::compose_native_argv};
 use crate::ports::ConfiguredHook;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -40,28 +39,6 @@ pub struct JsonSetupPlan {
 pub struct EventGroups {
     pub event: String,
     pub groups: Vec<Value>,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexSetupPlan {
-    pub base_fingerprint: String,
-    pub events: Vec<EventGroups>,
-    /// The owned session overrides for a launch with no caller arguments.
-    pub launch_argv: Vec<String>,
-    /// The session `-c hooks.*=...` overrides alone.
-    pub session_config: Vec<String>,
-    pub owned: Vec<OwnedEntry>,
-}
-
-impl CodexSetupPlan {
-    /// Compose owned overrides with caller arguments using the launch rule.
-    pub fn launch_argv_for(&self, caller: Vec<String>) -> Result<Vec<String>, SetupError> {
-        compose_native_argv(
-            crate::protocol::authority::Harness::Codex,
-            caller,
-            self.session_config.clone(),
-        )
-        .map_err(|_| SetupError::Invalid)
-    }
 }
 /// Quote only at the command-hook shell boundary; native launch remains an argv vector.
 pub fn shell_command(argv: &[String]) -> Result<String, SetupError> {
@@ -303,7 +280,7 @@ fn remove_allow(bytes: &[u8], rule: &str, recorded_base: &[u8]) -> Result<Vec<u8
     serde_json::to_vec(&value).map_err(|_| SetupError::Invalid)
 }
 /// Strip exact owned hook groups and the given owned allow rules (each one occurrence, if present).
-fn uninstall_claude(
+fn uninstall_settings(
     bytes: &[u8],
     entries: &[OwnedEntry],
     rules: &[&str],
@@ -315,7 +292,7 @@ fn uninstall_claude(
     }
     Ok(stripped)
 }
-fn owned(event: &str, group: Value) -> Result<OwnedEntry, SetupError> {
+pub(crate) fn owned(event: &str, group: Value) -> Result<OwnedEntry, SetupError> {
     let bytes = serde_json::to_vec(&group).map_err(|_| SetupError::Invalid)?;
     Ok(OwnedEntry {
         event: event.into(),
@@ -343,7 +320,7 @@ fn contains_command(group: &Value, command: &str) -> bool {
                 .any(|hook| hook.get("command").and_then(Value::as_str) == Some(command))
         })
 }
-fn merge(groups: &mut Vec<Value>, entry: &OwnedEntry) -> Result<(), SetupError> {
+pub(crate) fn merge(groups: &mut Vec<Value>, entry: &OwnedEntry) -> Result<(), SetupError> {
     let command = entry.group["hooks"][0]["command"]
         .as_str()
         .ok_or(SetupError::Invalid)?;
@@ -360,23 +337,15 @@ fn merge(groups: &mut Vec<Value>, entry: &OwnedEntry) -> Result<(), SetupError> 
     }
     Err(SetupError::Conflict)
 }
-/// Compose every hook group the Claude adapter declares (SessionStart and Bash PreToolUse).
+/// Compose every hook group a settings kind's adapter declares, in declaration order.
 /// Declaring a hook claims neither native observation nor model-visible delivery.
-pub fn plan_claude(bytes: &[u8], hook_argv: &[String]) -> Result<JsonSetupPlan, SetupError> {
+pub fn plan_settings(
+    kind: SettingsKind,
+    bytes: &[u8],
+    hook_argv: &[String],
+) -> Result<JsonSetupPlan, SetupError> {
     let command = shell_command(hook_argv)?;
-    plan_claude_command(bytes, &command)
-}
-
-/// Owned entries derived from the adapter declaration, in declaration order.
-fn claude_entries(command: &str) -> Result<Vec<OwnedEntry>, SetupError> {
-    super::claude::declared_hook_groups(command)
-        .into_iter()
-        .map(|(event, group)| owned(event, group))
-        .collect()
-}
-
-fn plan_claude_command(bytes: &[u8], command: &str) -> Result<JsonSetupPlan, SetupError> {
-    compose_json(bytes, &claude_entries(command)?, &[])
+    compose_json(bytes, &kind.entries(&command)?, &[])
 }
 
 /// Compose hook groups and ensure each given allow rule is present (never duplicated).
@@ -537,7 +506,7 @@ fn restoration_base(
     rule: Option<&str>,
 ) -> Result<Vec<u8>, SetupError> {
     let rules: Vec<&str> = rule.into_iter().collect();
-    let stripped = uninstall_claude(current, entries, &rules, base)?;
+    let stripped = uninstall_settings(current, entries, &rules, base)?;
     if !base.is_empty()
         && compose_json(base, entries, &rules).is_ok_and(|plan| plan.proposed_bytes == current)
     {
@@ -631,7 +600,7 @@ fn plan_resume(
             current.to_vec()
         } else {
             prune_emptied_recorded_events(
-                &uninstall_claude(current, &recorded, &rules_present, recorded_base)?,
+                &uninstall_settings(current, &recorded, &rules_present, recorded_base)?,
                 manifest,
                 recorded_base,
             )?
@@ -641,7 +610,7 @@ fn plan_resume(
             current.to_vec()
         } else {
             prune_emptied_recorded_events(
-                &uninstall_claude(current, &superseded, &retiring, recorded_base)?,
+                &uninstall_settings(current, &superseded, &retiring, recorded_base)?,
                 manifest,
                 recorded_base,
             )?
@@ -752,131 +721,6 @@ pub fn uninstall_json(bytes: &[u8], entries: &[OwnedEntry]) -> Result<Vec<u8>, S
     }
     serde_json::to_vec(&v).map_err(|_| SetupError::Invalid)
 }
-/// `existing` is the session-flags layer the printed launch line owns (the
-/// public CLI passes it empty): Codex discovers the hooks of config.toml,
-/// hooks.json and trusted project layers separately and runs them alongside
-/// these `-c` values (hooks/list on 0.157.1, 0.158.0 and 0.159.2), so copying
-/// them in would register them twice. Each session override includes the
-/// supplied existing groups. hooks.state is untouched and must be measured separately.
-/// Internal composition shared by contract planning and historical diagnostics.
-fn plan_codex(
-    existing: &[EventGroups],
-    hook_argv: &[String],
-) -> Result<CodexSetupPlan, SetupError> {
-    let command = shell_command(hook_argv)?;
-    if existing.len() > 64 {
-        return Err(SetupError::TooLarge);
-    }
-    let mut events = existing.to_vec();
-    let mut seen = std::collections::BTreeSet::new();
-    for event in &events {
-        if !valid_event(&event.event)
-            || !seen.insert(event.event.clone())
-            || event.groups.len() > 128
-        {
-            return Err(SetupError::Invalid);
-        }
-    }
-    let mut owned_entries = Vec::new();
-    // Exactly the adapter's declared context-only hook groups. The Bash
-    // PreToolUse group carries tool-boundary attention context; the gated
-    // invocation rewrite is never part of any installed group.
-    for hook in codex::DECLARATION.owned_hooks {
-        let name = hook.event;
-        let mut group =
-            json!({"hooks":[{"type":"command","command":event_command(&command, name)}]});
-        if let Some(matcher) = hook.matcher {
-            group["matcher"] = json!(matcher);
-        }
-        let entry = owned(name, group)?;
-        if let Some(event) = events.iter_mut().find(|event| event.event == name) {
-            merge(&mut event.groups, &entry)?;
-        } else {
-            events.push(EventGroups {
-                event: name.into(),
-                groups: vec![entry.group.clone()],
-            });
-        }
-        owned_entries.push(entry);
-    }
-    let mut session_config: Vec<String> = Vec::new();
-    for entry in &owned_entries {
-        let event = events
-            .iter()
-            .find(|e| e.event == entry.event)
-            .ok_or(SetupError::Invalid)?;
-        session_config.push("-c".into());
-        session_config.push(format!(
-            "hooks.{}={}",
-            event.event,
-            toml_inline(&json!(event.groups))?
-        ));
-    }
-    if session_config.iter().map(String::len).sum::<usize>() > 65536 {
-        return Err(SetupError::TooLarge);
-    }
-    let mut plan = CodexSetupPlan {
-        base_fingerprint: groups_fingerprint(existing)?,
-        events,
-        launch_argv: Vec::new(),
-        session_config,
-        owned: owned_entries,
-    };
-    plan.launch_argv = plan.launch_argv_for(Vec::new())?;
-    Ok(plan)
-}
-
-/// Compose the registered Codex setup contract without executable metadata.
-/// The handle declares registration, never runtime support or native delivery.
-pub fn plan_codex_for_contract(
-    existing: &[EventGroups],
-    hook_argv: &[String],
-    _: &super::codex::CodexContract,
-) -> Result<CodexSetupPlan, SetupError> {
-    plan_codex(existing, hook_argv)
-}
-
-/// Diagnostic/fixture compatibility for historical installed-version callers.
-pub fn plan_codex_for_version(
-    existing: &[EventGroups],
-    hook_argv: &[String],
-    version: &codex::InstalledVersion,
-) -> Result<CodexSetupPlan, SetupError> {
-    if !codex::DECLARATION.recipes.contains(version.recipe()) {
-        return Err(SetupError::Invalid);
-    }
-    plan_codex(existing, hook_argv)
-}
-fn valid_event(s: &str) -> bool {
-    !s.is_empty() && s.len() < 64 && s.chars().all(|c| c.is_ascii_alphanumeric())
-}
-/// Serialize the bounded JSON-compatible hook schema into TOML inline values; null is rejected.
-fn toml_inline(v: &Value) -> Result<String, SetupError> {
-    match v {
-        Value::String(s) => serde_json::to_string(s).map_err(|_| SetupError::Invalid),
-        Value::Bool(b) => Ok(b.to_string()),
-        Value::Number(n) => Ok(n.to_string()),
-        Value::Array(items) => {
-            let values: Result<Vec<_>, _> = items.iter().map(toml_inline).collect();
-            Ok(format!("[{}]", values?.join(",")))
-        }
-        Value::Object(map) => {
-            let values: Result<Vec<_>, _> = map
-                .iter()
-                .map(|(k, v)| {
-                    Ok(format!(
-                        "{}={}",
-                        serde_json::to_string(k).map_err(|_| SetupError::Invalid)?,
-                        toml_inline(v)?
-                    ))
-                })
-                .collect();
-            Ok(format!("{{{}}}", values?.join(",")))
-        }
-        Value::Null => Err(SetupError::Invalid),
-    }
-}
-
 /// Check exact supplied configuration bytes again immediately before a future installer publishes.
 pub fn verify_base(plan: &JsonSetupPlan, current: &[u8]) -> Result<(), SetupError> {
     if fingerprint(current) == plan.base_fingerprint {
@@ -885,36 +729,6 @@ pub fn verify_base(plan: &JsonSetupPlan, current: &[u8]) -> Result<(), SetupErro
         Err(SetupError::Conflict)
     }
 }
-/// Typed Codex counterpart of exact-entry uninstall. Missing/edited entries are conservatively refused.
-pub fn uninstall_codex(
-    existing: &[EventGroups],
-    entries: &[OwnedEntry],
-) -> Result<Vec<EventGroups>, SetupError> {
-    let mut root = serde_json::Map::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for event in existing {
-        if !valid_event(&event.event) || !seen.insert(event.event.clone()) {
-            return Err(SetupError::Invalid);
-        }
-        root.insert(event.event.clone(), json!(event.groups));
-    }
-    let bytes = serde_json::to_vec(&json!({"hooks":root})).map_err(|_| SetupError::Invalid)?;
-    let removed: Value = serde_json::from_slice(&uninstall_json(&bytes, entries)?)
-        .map_err(|_| SetupError::Invalid)?;
-    existing
-        .iter()
-        .map(|event| {
-            Ok(EventGroups {
-                event: event.event.clone(),
-                groups: removed["hooks"][&event.event]
-                    .as_array()
-                    .ok_or(SetupError::Invalid)?
-                    .clone(),
-            })
-        })
-        .collect()
-}
-
 impl JsonSetupPlan {
     /// Settings path stays a native argv value. This is a proposal, not a launch or installation.
     pub fn launch_argv(&self, settings_path: &str) -> Result<Vec<String>, SetupError> {
@@ -927,7 +741,7 @@ impl JsonSetupPlan {
         Ok(vec!["--settings".into(), settings_path.into()])
     }
 }
-fn groups_fingerprint(groups: &[EventGroups]) -> Result<String, SetupError> {
+pub(crate) fn groups_fingerprint(groups: &[EventGroups]) -> Result<String, SetupError> {
     let bytes = serde_json::to_vec(groups).map_err(|_| SetupError::Invalid)?;
     if bytes.len() > 1_048_576 {
         return Err(SetupError::TooLarge);
@@ -979,8 +793,8 @@ pub enum AllowRuleOwnership {
     PreExisting,
     /// The manifest records no rule (installed before the rule was declared): re-run setup.
     NotRecorded,
-    /// The manifest records only the retired `claude::CALLER_CONTEXT_ALLOW_RULE`: re-run setup
-    /// to replace it (an owned copy is removed) with the declared rule.
+    /// The manifest records only a retired rule of the kind: re-run setup to replace it (an
+    /// owned copy is removed) with the declared rule.
     Superseded,
 }
 
@@ -990,6 +804,41 @@ pub struct AllowRuleInspection {
     pub ownership: AllowRuleOwnership,
     /// The rule currently appears in `permissions.allow`.
     pub present: bool,
+}
+
+/// Report form of the recorded allow rule of a settings kind; `null` when no manifest is recorded.
+pub fn allow_rule_json(kind: SettingsKind, allow_rule: Option<&AllowRuleInspection>) -> Value {
+    match allow_rule {
+        None => Value::Null,
+        Some(rule) => {
+            let mut report = json!({
+                "rule": rule.rule,
+                "ownership": match rule.ownership {
+                    AllowRuleOwnership::Owned => "owned",
+                    AllowRuleOwnership::PreExisting => "pre_existing",
+                    AllowRuleOwnership::NotRecorded => "not_recorded",
+                    AllowRuleOwnership::Superseded => "superseded",
+                },
+                "present": rule.present,
+            });
+            if rule.ownership == AllowRuleOwnership::Superseded {
+                let retired = kind
+                    .spec()
+                    .owned_allow
+                    .as_ref()
+                    .and_then(|allow| allow.retired.first())
+                    .copied()
+                    .unwrap_or_default();
+                report["note"] = json!(format!(
+                    "recorded with the retired rule `{retired}`; re-run `herdr-threads setup {}` \
+                     to replace it with `{}`",
+                    kind.harness(),
+                    rule.rule
+                ));
+            }
+            report
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1817,7 +1666,7 @@ pub fn remove_user_settings(
         && fingerprint(&current) == manifest.installed_fingerprint
         && !manifest.installation_base_bytes.is_empty()
     {
-        let structurally_removed = uninstall_claude(&current, &manifest.owned, &rules, base)?;
+        let structurally_removed = uninstall_settings(&current, &manifest.owned, &rules, base)?;
         if compose_json(&manifest.installation_base_bytes, &manifest.owned, &rules)
             .is_ok_and(|plan| plan.proposed_bytes == current)
         {
@@ -1842,7 +1691,7 @@ pub fn remove_user_settings(
         let removed = if present.is_empty() && !rule_present {
             current.clone()
         } else {
-            uninstall_claude(&current, &present, &rules, base)?
+            uninstall_settings(&current, &present, &rules, base)?
         };
         let remaining = root(&removed)?;
         if recorded
@@ -1853,7 +1702,7 @@ pub fn remove_user_settings(
         }
         removed
     } else {
-        uninstall_claude(&current, &manifest.owned, &rules, base)?
+        uninstall_settings(&current, &manifest.owned, &rules, base)?
     };
     if config_bytes(config)? != current {
         return Err(SetupError::Conflict);
@@ -2028,91 +1877,6 @@ pub fn adopt_user_settings(
     Ok(Some(manifest))
 }
 
-/// Codex hooks are session `-c` arguments; this records ownership without a global write.
-pub fn codex_session_manifest(plan: &CodexSetupPlan) -> Result<OwnershipManifest, SetupError> {
-    Ok(OwnershipManifest {
-        version: 1,
-        harness: "codex".into(),
-        scope: "session".into(),
-        path: "codex:-c".into(),
-        original_bytes: Vec::new(),
-        installation_base_bytes: Vec::new(),
-        installation_id: String::new(),
-        owned: plan.owned.clone(),
-        installed_fingerprint: groups_fingerprint(&plan.events)?,
-        phase: InstallPhase::Installed,
-        superseded: Vec::new(),
-        permission: None,
-        superseded_permission: None,
-        adopted: false,
-    })
-}
-
-pub fn inspect_codex_session(
-    events: &[EventGroups],
-    manifest: &OwnershipManifest,
-    observed: NativeObservation,
-) -> Result<HookInspection, SetupError> {
-    if manifest.version != 1
-        || manifest.harness != "codex"
-        || manifest.scope != "session"
-        || manifest.path != "codex:-c"
-    {
-        return Err(SetupError::Invalid);
-    }
-    let owned_hooks = codex::DECLARATION.owned_hooks;
-    let declaration_valid = manifest.owned.len() == owned_hooks.len()
-        && owned_hooks
-            .iter()
-            .zip(&manifest.owned)
-            .all(|(hook, entry)| {
-                entry.event == hook.event
-                    && entry.group["hooks"]
-                        .as_array()
-                        .is_some_and(|hooks| hooks.len() == 1)
-                    && entry.group["hooks"][0]["type"] == "command"
-                    && entry.group["hooks"][0]["command"]
-                        .as_str()
-                        .is_some_and(|s| !s.is_empty())
-                    && entry.group.get("matcher").and_then(Value::as_str) == hook.matcher
-                    && entry.group.get("matcher").is_none_or(Value::is_string)
-            });
-    let installed = declaration_valid
-        && manifest.owned.iter().all(|entry| {
-            events
-                .iter()
-                .find(|event| event.event == entry.event)
-                .is_some_and(|event| event.groups.contains(&entry.group))
-                && owned(&entry.event, entry.group.clone())
-                    .is_ok_and(|actual| actual.fingerprint == entry.fingerprint)
-        });
-    let current_fingerprint = if installed {
-        Some(groups_fingerprint(events)?)
-    } else {
-        None
-    };
-    Ok(HookInspection {
-        installed,
-        observed,
-        configured_hook: current_fingerprint.map(|fingerprint| ConfiguredHook {
-            scope: "session".into(),
-            path: "codex:-c".into(),
-            fingerprint,
-        }),
-        allow_rule: None,
-        adopted: None,
-        legacy_event_registration: false,
-    })
-}
-/// Check the typed reader's exact structural input before future session overrides are published.
-pub fn verify_codex_base(plan: &CodexSetupPlan, current: &[EventGroups]) -> Result<(), SetupError> {
-    if groups_fingerprint(current)? == plan.base_fingerprint {
-        Ok(())
-    } else {
-        Err(SetupError::Conflict)
-    }
-}
-
 /// Validate local selectors before any adapter resolver or filesystem write.
 pub fn validate_local_request(
     registration: Option<&super::registry::Registration>,
@@ -2173,6 +1937,7 @@ pub fn validate_local_request(
 #[cfg(test)]
 mod adoption_tests {
     use super::*;
+    use crate::harness::codex;
 
     fn argv() -> Vec<String> {
         ["/x/herdr-threads", "--state-dir", "/s", "hook", "codex"]
@@ -2262,12 +2027,12 @@ pub(crate) mod legacy {
     use crate::{
         daemon::paths::{ensure_owned_state_root, ensure_private_dir},
         harness::{
-            claude, codex,
             context::Harness,
             setup::{
                 self as lib, NativeObservation, SettingsKind, SetupError, adopt_user_settings,
-                adoptable_user_settings, inspect_user_settings, inspect_user_settings_for,
-                install_user_settings, read_settings_manifest, shared_command, shell_command,
+                adoptable_user_settings, allow_rule_json, inspect_user_settings,
+                inspect_user_settings_for, install_user_settings, read_settings_manifest,
+                shared_command, shell_command,
             },
         },
         protocol::results::{ApiError, ErrorCode},
@@ -2305,40 +2070,46 @@ pub(crate) mod legacy {
     fn installer_failure(detail: impl Into<String>) -> crate::cli::RunError {
         crate::cli::RunError::Io(std::io::Error::other(detail.into()))
     }
+    /// The settings kind `harness`'s adapter registers, if it registers one.
+    pub(crate) fn registered_kind(harness: Harness) -> Option<SettingsKind> {
+        registered_kind_in(crate::harness::registry::builtins(), harness.as_str())
+    }
+
+    /// The settings kind adapter `id` of `registry` registers, if it registers one.
+    pub(crate) fn registered_kind_in(
+        registry: &crate::harness::registry::Registry,
+        id: &str,
+    ) -> Option<SettingsKind> {
+        let registration = registry.by_id(registry.agent(id).ok()?).ok()?;
+        registration.settings_kind().map(SettingsKind::new)
+    }
+
+    /// The user settings file of `kind` (under its adapter's config root) and its manifest.
+    pub(crate) fn settings_paths(
+        env: &SetupEnv,
+        kind: SettingsKind,
+    ) -> Result<(PathBuf, PathBuf), RunError> {
+        let file = env.config_root(kind.harness())?.join(kind.file_name());
+        let manifest = manifest_path(env.state_dir()?, &format!("{}-user", kind.harness()), &file);
+        Ok((file, manifest))
+    }
+
     pub(crate) fn installer_hooks_installed(
         env: &SetupEnv,
         harness: Harness,
     ) -> Result<bool, crate::cli::RunError> {
         use crate::{
-            cli::{installer_skill::read_optional, setup},
-            harness::{
-                codex_config,
-                setup::{self as owned, NativeObservation},
-            },
+            cli::installer_skill::read_optional,
+            harness::setup::{self as owned, NativeObservation},
         };
-        let (kind, path, manifest) = match harness {
-            Harness::Claude => {
-                let (path, manifest) = setup::claude_paths(env)?;
-                (claude::settings_kind(), path, manifest)
-            }
-            Harness::Codex => {
-                let paths = setup::codex_paths(env)?;
-                let allowance = codex_config::inspect(&paths.config, &paths.config_manifest)
-                    .map_err(|error| {
-                        installer_failure(format!("invalid Codex allowance ownership: {error:?}"))
-                    })?;
-                if allowance.recorded.as_ref().is_some_and(|manifest| {
-                    manifest.phase != owned::InstallPhase::Installed || !allowance.present
-                }) {
-                    return Err(installer_failure(
-                        "recorded Codex allowance is partial or edited; preserved",
-                    ));
-                }
-                (codex::settings_kind(), paths.hooks, paths.hooks_manifest)
-            }
+        let kind = match harness {
             Harness::Human => return Err(installer_failure("human panes have no hooks")),
-            _ => return Err(installer_failure("installer policy unavailable")),
+            _ => registered_kind(harness)
+                .ok_or_else(|| installer_failure("installer policy unavailable"))?,
         };
+        let (path, manifest) = settings_paths(env, kind)?;
+        // An adapter's own pre-checks (for example historical ownership records beside the
+        // hook file) run at its installer call site, before this generic inspection.
         let bytes = read_optional(&path)?;
         let argv = env.hook_argv(harness)?;
         let recorded = owned::read_settings_manifest(&manifest).map_err(|error| {
@@ -2437,11 +2208,8 @@ pub(crate) mod legacy {
             )));
         };
         let mut env = SetupEnv::from_snapshot(snapshot);
-        match harness {
-            Harness::Claude => env.claude_config_dir = Some(root.clone()),
-            Harness::Codex => env.codex_home = Some(root.clone()),
-            _ => {}
-        }
+        env.config_roots
+            .insert(harness.as_str().to_owned(), root.clone());
         Ok(env)
     }
     pub(crate) fn legacy_diagnostics(
@@ -2480,6 +2248,7 @@ pub(crate) mod legacy {
         request: &crate::harness::adapter::SetupRequest,
         install: fn(&SetupRequest, &SetupEnv) -> Result<Value, RunError>,
         prompt_suggestions: PromptSuggestionPolicy,
+        hooks_only: bool,
     ) -> Result<crate::harness::adapter::SetupOutcome, crate::harness::adapter::SetupFailure> {
         let mut env = scoped_legacy_environment(harness, &request.scope, &request.environment)?;
         env.executable = request.executable.clone();
@@ -2489,11 +2258,7 @@ pub(crate) mod legacy {
             request.native_binary.as_deref(),
             prompt_suggestions,
         )?;
-        // Only an adapter that declares the option (Claude) can receive it.
-        legacy.hooks_only = request
-            .options
-            .get(crate::harness::claude::setup::HOOKS_ONLY_OPTION)
-            == Some(&true);
+        legacy.hooks_only = hooks_only;
         harness_binary(&legacy, &env).map_err(adapter_failure)?;
         if let Some(leftover) = env.instance_source["state_dir_leftover"].as_str() {
             return Err(adapter_failure(invalid(format!(
@@ -2619,9 +2384,7 @@ pub(crate) mod legacy {
         pub(crate) recipe: &'static str,
     }
 
-    pub(crate) fn observation_json(
-        result: &Result<(Observed, Option<crate::harness::codex::CodexContract>), String>,
-    ) -> Value {
+    pub(crate) fn observation_json<C>(result: &Result<(Observed, Option<C>), String>) -> Value {
         match result {
             Ok((observed, _)) => json!({
                 "admission": "contract_declared",
@@ -2816,9 +2579,16 @@ pub(crate) mod legacy {
         let harness = kind.harness();
         match (error, verb) {
             (SetupError::Invalid, _) => invalid(format!(
-                "{settings} is not a JSON object with an object `hooks` (and, for Claude, \
-             `permissions` with an array `allow`), or it or the ownership manifest is a symlink \
-             or damaged; nothing was changed"
+                "{settings} is not a JSON object with an object `hooks`{permissions}, or it or the \
+             ownership manifest is a symlink or damaged; nothing was changed",
+                permissions = if kind.manages_permission() {
+                    format!(
+                        " (and, for {}, `permissions` with an array `allow`)",
+                        display_label(kind)
+                    )
+                } else {
+                    String::new()
+                }
             )),
             (SetupError::TooLarge, _) => invalid(format!(
                 "{settings} or its ownership manifest exceeds the setup size bound; nothing was changed"
@@ -2854,6 +2624,18 @@ pub(crate) mod legacy {
              recorded, re-run the same command to resume"
             )),
         }
+    }
+
+    /// The display label of the adapter a settings kind belongs to.
+    fn display_label(kind: SettingsKind) -> &'static str {
+        let registry = crate::harness::registry::builtins();
+        registry
+            .agent(kind.harness())
+            .ok()
+            .and_then(|id| registry.by_id(id).ok())
+            .map_or(kind.harness(), |registration| {
+                registration.metadata().display_label
+            })
     }
 
     pub(crate) fn adopted_warning(kind: SettingsKind, file: &Path, owner: &str) -> String {
@@ -3071,7 +2853,7 @@ pub(crate) mod legacy {
         report["installed"] = json!(inspection.installed);
         report["adopted"] = adoption_json(inspection.adopted.as_ref());
         if kind.manages_permission() {
-            report["allow_rule"] = claude::setup::allow_rule_json(inspection.allow_rule.as_ref());
+            report["allow_rule"] = allow_rule_json(kind, inspection.allow_rule.as_ref());
         }
         report["observed"] = json!("unknown");
         if let Some(recorded) = read_settings_manifest(&manifest).ok().flatten() {
@@ -3107,23 +2889,15 @@ pub(crate) mod legacy {
         harness: Harness,
         env: &SetupEnv,
     ) -> Result<(PathBuf, lib::HookInspection), String> {
-        let (kind, file) = match harness {
-            Harness::Claude => (
-                claude::settings_kind(),
-                env.claude_settings().map_err(|e| e.to_string())?,
-            ),
-            Harness::Codex => (
-                codex::settings_kind(),
-                env.codex_file("hooks.json").map_err(|e| e.to_string())?,
-            ),
+        let kind = match harness {
             Harness::Human => return Err(NO_HUMAN_SETUP.to_owned()),
-            _ => {
-                return Err(format!(
-                    "{}: setup inspection is unsupported",
-                    harness.as_str()
-                ));
-            }
+            _ => registered_kind(harness)
+                .ok_or_else(|| format!("{}: setup inspection is unsupported", harness.as_str()))?,
         };
+        let file = env
+            .config_root(kind.harness())
+            .map(|root| root.join(kind.file_name()))
+            .map_err(|e| e.to_string())?;
         let state = env.state_dir().map_err(|e| e.to_string())?;
         let manifest = manifest_path(state, &format!("{}-user", kind.harness()), &file);
         let argv = env.hook_argv(harness).ok();

@@ -265,8 +265,11 @@ impl Scratch {
             state_dir: Some(root.join("state")),
             cwd: root.clone(),
             path: Some(root.join("bin").into_os_string()),
-            codex_home: Some(root.join("codex home")),
-            claude_config_dir: Some(root.join("claude config")),
+            config_roots: [
+                ("codex".into(), root.join("codex home")),
+                ("claude".into(), root.join("claude config")),
+            ]
+            .into(),
             host_endpoint: Some(root.join("herdr.sock")),
             instance_source: Value::Null,
         };
@@ -482,7 +485,9 @@ fn claude_launch_inspects_the_resolved_config_dir_only() {
     let mut s = Scratch::new();
     s.harness("claude", "2.1.285 (Claude Code)", b"");
     s.setup_claude();
-    s.env.claude_config_dir = Some(s.root.join("other config"));
+    s.env
+        .config_roots
+        .insert("claude".into(), s.root.join("other config"));
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     assert_eq!(
         code(s.launch(
@@ -637,7 +642,7 @@ fn codex_launch_needs_the_user_installation_without_injected_daemon_flags() {
     assert_eq!(host.submitted()[0].argv, ["--no-daemon"]);
 
     // A socket policy edit does not prevent approved command execution.
-    let config = s.env.codex_home.clone().unwrap().join("config.toml");
+    let config = s.env.config_roots["codex"].clone().join("config.toml");
     let denied = "sandbox_workspace_write.network_access = false\n";
     fs::write(&config, denied).unwrap();
     let host = FakeHost::new();
@@ -800,7 +805,7 @@ fn future_codex_launch_uses_command_approvals_without_network_allowance() {
     s.harness("codex", "codex-cli 0.160.0", &committed_codex_schemas());
     let setup = s.setup(ContextHarness::Codex);
     assert_eq!(setup["sandbox"]["validation"], "unvalidated", "{setup}");
-    let config = s.env.codex_home.as_ref().unwrap().join("config.toml");
+    let config = &s.env.config_roots["codex"].join("config.toml");
     assert!(!config.exists());
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     let caller = ["-a", "on-request", "You are Bob."];
@@ -1156,7 +1161,7 @@ fn launch_checks_the_config_dir_it_hands_the_pane() {
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
     s.setup(ContextHarness::Codex);
-    let a = s.env.codex_home.clone().unwrap();
+    let a = s.env.config_roots["codex"].clone();
     let b = s.root.join("pane codex home");
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     let pane_b = PaneExports {
@@ -1256,7 +1261,7 @@ fn launch_reports_the_effective_codex_profile_and_config() {
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
     s.setup(ContextHarness::Codex);
-    let home = s.env.codex_home.clone().unwrap();
+    let home = s.env.config_roots["codex"].clone();
     let config = home.join("config.toml");
     let original = fs::read_to_string(&config).unwrap_or_default();
     fs::write(&config, format!("profile = \"work\"\n{original}")).unwrap();
@@ -1656,15 +1661,7 @@ fn adapter_launch_configuration_mutation_before_submit_refuses() {
         false,
         &mut |boundary| {
             if matches!(boundary, LaunchBoundary::BeforeSubmit(_)) {
-                fs::write(
-                    s.env
-                        .claude_config_dir
-                        .as_ref()
-                        .unwrap()
-                        .join("settings.json"),
-                    b"{}",
-                )
-                .unwrap();
+                fs::write(s.env.config_roots["claude"].join("settings.json"), b"{}").unwrap();
             }
             Ok(())
         },

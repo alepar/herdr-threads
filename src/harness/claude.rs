@@ -10,6 +10,7 @@
 //! only the 2.1.287 recipe admits compact (spec §9). Model receipt and
 //! durable receipts remain separate, unqualified gates.
 pub mod doctor;
+pub mod prompt_suggestion;
 pub mod setup;
 
 pub(crate) mod composer;
@@ -959,7 +960,7 @@ impl HarnessAdapter for ClaudeAdapter {
     }
     fn setup_report_lines(&self, report: &Value) -> Vec<String> {
         [
-            crate::cli::setup::prompt_suggestion_line(&report["prompt_suggestions"]),
+            setup::prompt_suggestion_line(&report["prompt_suggestions"]),
             setup::mod_line(&report["mod"]),
         ]
         .into_iter()
@@ -1088,6 +1089,7 @@ impl HarnessAdapter for ClaudeAdapter {
     }
     fn setup_environment_inputs(&self) -> &'static [&'static str] {
         &[
+            "CLAUDE_CONFIG_DIR",
             "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION",
             PLUGIN_DIRS_ENV,
             crate::protocol::watch::MOD_DELIVERY_ENV,

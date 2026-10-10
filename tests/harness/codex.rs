@@ -1,4 +1,5 @@
-use crate::harness::setup::{EventGroups, SetupError, plan_codex_for_version};
+use crate::harness::codex::setup::plan_codex_for_version;
+use crate::harness::setup::{EventGroups, SetupError};
 use crate::harness::{
     Capability, MailSummary,
     admission::Placement,

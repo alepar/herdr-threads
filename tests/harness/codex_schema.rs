@@ -7,7 +7,7 @@ use crate::harness::codex::{
 };
 use crate::harness::codex_schema::{self, Unextractable};
 use crate::harness::recipe::{OPTIMISTIC_LABEL, SCHEMA_MATCHED_LABEL};
-use crate::harness::{Capability, setup::plan_codex_for_version};
+use crate::harness::{Capability, codex::setup::plan_codex_for_version};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

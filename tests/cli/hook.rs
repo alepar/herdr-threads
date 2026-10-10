@@ -1,5 +1,6 @@
 use super::*;
-use crate::harness::setup::{plan_claude, shell_command};
+use crate::harness::claude::setup::plan_claude;
+use crate::harness::setup::shell_command;
 use crate::harness::{
     MAX_OPTIONAL_ACCEPTS, OPTIONAL_ACCEPT_LABEL, READY_HEADER, REQUIRED_INVITATION_INSTRUCTION,
 };
@@ -59,7 +60,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
                 Some(entry.event.as_str())
             );
         }
-        let codex = crate::harness::setup::plan_codex_for_version(
+        let codex = crate::harness::codex::setup::plan_codex_for_version(
             &[],
             &argv,
             &crate::harness::codex::InstalledVersion::pinned_for_test(),

@@ -384,8 +384,11 @@ fn adapter_seam_foreground_advice_reproduces_the_core_report() {
         state_dir: None,
         cwd: PathBuf::from("/"),
         path: None,
-        codex_home: Some(home.join("codex")),
-        claude_config_dir: Some(home.join("claude")),
+        config_roots: [
+            ("codex".into(), home.join("codex")),
+            ("claude".into(), home.join("claude")),
+        ]
+        .into(),
         host_endpoint: None,
         instance_source: Value::Null,
     };

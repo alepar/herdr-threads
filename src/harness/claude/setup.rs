@@ -3,17 +3,17 @@ use crate::cli::{
     RunError,
     setup::{PromptSuggestionPolicy, SetupEnv, SetupRequest, SetupVerb},
 };
+use crate::harness::claude::prompt_suggestion::{self, SuggestionState};
 use crate::harness::setup::legacy::*;
 use crate::harness::{
     claude,
     claude_mod::{self, ManagedPolicy, ManagedPolicySources},
     context::Harness,
-    prompt_suggestion::{self, SuggestionState},
     recipe,
     setup::{
-        AllowRuleInspection, AllowRuleOwnership, NativeObservation, SetupError,
-        inspect_user_settings, inspect_user_settings_for, read_settings_manifest,
-        remove_user_settings, shared_command, shell_command,
+        JsonSetupPlan, NativeObservation, SetupError, allow_rule_json, inspect_user_settings,
+        inspect_user_settings_for, plan_settings, read_settings_manifest, remove_user_settings,
+        shared_command, shell_command,
     },
 };
 use crate::protocol::results::ErrorCode;
@@ -42,6 +42,11 @@ pub(crate) fn prompt_suggestion_advice(settings: &Path) -> String {
     )
 }
 
+/// The hook groups Claude declares, composed into `bytes` (a proposal; nothing is written).
+pub fn plan_claude(bytes: &[u8], hook_argv: &[String]) -> Result<JsonSetupPlan, SetupError> {
+    plan_settings(claude::settings_kind(), bytes, hook_argv)
+}
+
 pub fn claude_config_dir_from(
     config_dir: Option<OsString>,
     home: Option<OsString>,
@@ -54,6 +59,18 @@ pub fn claude_config_dir_from(
     }
 }
 
+/// Claude's user settings file, under its config root.
+pub(crate) fn claude_settings(env: &SetupEnv) -> Result<PathBuf, RunError> {
+    Ok(env
+        .config_root("claude")?
+        .join(claude::SETTINGS_KIND.file_name))
+}
+
+/// Claude's config root, when one resolved.
+fn claude_root(env: &SetupEnv) -> Option<&Path> {
+    env.config_roots.get("claude").map(PathBuf::as_path)
+}
+
 /// Ownership-manifest location for one owned file: private plugin state,
 /// keyed by the file's path, never beside the file.
 pub(crate) fn claude_manifest(env: &SetupEnv, settings: &Path) -> Result<PathBuf, RunError> {
@@ -62,7 +79,7 @@ pub(crate) fn claude_manifest(env: &SetupEnv, settings: &Path) -> Result<PathBuf
 
 /// The user-level Claude installation's file and manifest paths.
 pub fn claude_paths(env: &SetupEnv) -> Result<(PathBuf, PathBuf), RunError> {
-    let settings = env.claude_settings()?;
+    let settings = claude_settings(env)?;
     let manifest = claude_manifest(env, &settings)?;
     Ok((settings, manifest))
 }
@@ -89,7 +106,7 @@ fn hooks_current(env: &SetupEnv, settings: &Path, manifest: &Path) -> bool {
 }
 
 pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
-    let settings = env.claude_settings()?;
+    let settings = claude_settings(env)?;
     env.hook_argv(Harness::Claude)?;
     let (observed, _) = observe(request, env).map_err(refuse_executable)?;
     prepare_state(env)?;
@@ -142,8 +159,8 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
             "hook_argv": env.hook_argv(Harness::Claude)?,
             "command": command,
             "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
-            "allow_rule": allow_rule_json(allow_rule.as_ref()),
-            "harness_version": observation_json(&Ok((observed, None))),
+            "allow_rule": allow_rule_json(claude::settings_kind(), allow_rule.as_ref()),
+            "harness_version": observation_json::<()>(&Ok((observed, None))),
             "prompt_suggestions": prompt_suggestions,
             "mod": delivery_mod,
             "observed": "unknown",
@@ -159,32 +176,32 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
     result
 }
 
-/// Report form of the recorded allow rule; `null` when no manifest is recorded.
-pub fn allow_rule_json(allow_rule: Option<&AllowRuleInspection>) -> Value {
-    match allow_rule {
-        None => Value::Null,
-        Some(rule) => {
-            let mut report = json!({
-                "rule": rule.rule,
-                "ownership": match rule.ownership {
-                    AllowRuleOwnership::Owned => "owned",
-                    AllowRuleOwnership::PreExisting => "pre_existing",
-                    AllowRuleOwnership::NotRecorded => "not_recorded",
-                    AllowRuleOwnership::Superseded => "superseded",
-                },
-                "present": rule.present,
-            });
-            if rule.ownership == AllowRuleOwnership::Superseded {
-                report["note"] = json!(format!(
-                    "recorded with the retired rule `{}`; re-run `herdr-threads setup claude` to \
-                     replace it with `{}`",
-                    claude::CALLER_CONTEXT_ALLOW_RULE,
-                    rule.rule
-                ));
+/// The one-line summary `setup`/`unsetup` with no harness print for Claude's
+/// prompt suggestions; `None` when there is nothing to say (the advice is a
+/// warning).
+pub(crate) fn prompt_suggestion_line(value: &Value) -> Option<String> {
+    let setting = claude::PROMPT_SUGGESTION_SETTING;
+    Some(match value {
+        Value::String(outcome) => match outcome.as_str() {
+            "reverted" => format!("prompt suggestions: reverted `{setting}` (setup had set it)"),
+            "left_changed" => {
+                format!(
+                    "prompt suggestions: `{setting}` was changed by hand since setup; left as is"
+                )
             }
-            report
-        }
-    }
+            _ => return None,
+        },
+        Value::Object(_) => match value["action"].as_str()? {
+            "disabled" => format!("prompt suggestions: disabled (`{setting}: false`)"),
+            "already_disabled" => "prompt suggestions: already disabled".to_owned(),
+            "kept" => format!(
+                "prompt suggestions: kept ({}); Claude pokes skip a pane that shows one",
+                crate::cli::setup::scalar(&value["state"])
+            ),
+            _ => return None,
+        },
+        _ => return None,
+    })
 }
 
 /// Where setup records that it set Claude's prompt-suggestion key.
@@ -276,7 +293,7 @@ pub fn settle_prompt_suggestions<R: io::BufRead + ?Sized, W: Write + ?Sized>(
     if report["prompt_suggestions"]["action"] != "advised" {
         return Ok(());
     }
-    let settings = env.claude_settings()?;
+    let settings = claude_settings(env)?;
     writeln!(out, "{PROMPT_SUGGESTION_EXPLANATION}")?;
     write!(out, "Disable prompt suggestions? [y/N] ")?;
     out.flush()?;
@@ -356,9 +373,9 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
 
 fn claude_status(
     env: &SetupEnv,
-    observation: Result<(Observed, Option<crate::harness::codex::CodexContract>), String>,
+    observation: Result<(Observed, Option<()>), String>,
 ) -> Result<Value, RunError> {
-    let settings = env.claude_settings()?;
+    let settings = claude_settings(env)?;
     let mut report = json!({
         "action": "status",
         "harness": "claude",
@@ -433,7 +450,8 @@ pub(crate) fn setup(
     } else {
         PromptSuggestionPolicy::Ask
     };
-    legacy_adapter_setup(Harness::Claude, request, claude_install, policy)
+    let hooks_only = request.options.get(HOOKS_ONLY_OPTION) == Some(&true);
+    legacy_adapter_setup(Harness::Claude, request, claude_install, policy, hooks_only)
 }
 pub(crate) fn status(
     request: &crate::harness::adapter::StatusRequest,
@@ -462,14 +480,14 @@ pub(crate) fn unsetup(
 pub(crate) fn observe(
     request: &SetupRequest,
     env: &SetupEnv,
-) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
+) -> Result<(Observed, Option<()>), String> {
     observe_with_cache(request, env, None)
 }
 pub(crate) fn observe_with_cache(
     request: &SetupRequest,
     env: &SetupEnv,
     _codex_cache: Option<&Path>,
-) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
+) -> Result<(Observed, Option<()>), String> {
     observe_bounded(
         request,
         env,
@@ -485,7 +503,7 @@ fn observe_bounded(
     _codex_cache: Option<&Path>,
     timeout: Duration,
     cancellation: &crate::protocol::time::Cancellation,
-) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
+) -> Result<(Observed, Option<()>), String> {
     if timeout.is_zero() || cancellation.is_cancelled() {
         return Err("native status observation budget exhausted or cancelled".into());
     }
@@ -669,7 +687,7 @@ fn mod_install_step(
     } else {
         Vec::new()
     };
-    let sources = ManagedPolicySources::platform(env.claude_config_dir.as_deref());
+    let sources = ManagedPolicySources::platform(claude_root(env));
     // The mod launches `watch` exactly the way the hooks run.
     let launch = claude_mod::launch_prefix(&env.hook_argv(Harness::Claude)?).map_err(error)?;
     let outcome = claude_mod::install(&claude_mod::InstallInput {
@@ -738,7 +756,7 @@ fn mod_status(env: &SetupEnv, settings: &Path) -> Value {
         .ok()
         .and_then(|argv| claude_mod::launch_prefix(&argv).ok());
     let inspection = claude_mod::inspect(settings, &manifest, state, expected_launch.as_deref());
-    let policy = ManagedPolicySources::platform(env.claude_config_dir.as_deref()).check();
+    let policy = ManagedPolicySources::platform(claude_root(env)).check();
     let mut report = json!({
         "installed": inspection.installed(),
         "dir": claude_mod::mod_dir(state).display().to_string(),
