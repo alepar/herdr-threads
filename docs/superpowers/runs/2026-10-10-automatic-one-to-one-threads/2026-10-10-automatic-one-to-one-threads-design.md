@@ -1,0 +1,73 @@
+# Automatic one-to-one threads
+
+## Goal
+
+An agent sends work using only a target seat ID, and a handoff without an explicit channel automatically uses the same reusable one-to-one channel. Each automatic channel reserves exactly the sender and recipient seats; messages, invitations, history, summaries, receipts and wake otherwise follow ordinary thread behavior.
+
+## Problem description
+
+Today send requires a thread, and handoff requires explicit existing/new channel intent. Agents repeatedly create and invite the same peer. Automatic routing should remove that setup while preserving exact identity, cooperative attribution, invitation acceptance and retry safety.
+
+## Main challenges
+
+Selection must converge for opposite-direction concurrent calls, remain durable across response loss, and never broadcast private work to a third participant. The current send path includes all joined members; a client-only two-member check is insufficient. Handoff has immutable V1 records, canonical fences, native possible-start recovery and new-tab bootstrap attachment; automatic routing must extend these without rewriting historical semantics.
+
+## Key decisions made
+
+Use an additive canonical pair registry and an accountable EnsureDirectThread operation. Direct send has its own frozen compound CLI intent with independent stable ensure/send keys; it then invokes ordinary send, rather than inventing a second delivery engine. Handoff gains an explicit automatic channel representation/version used only for new automatic plans. Existing explicit forms and V1 journals keep their bytes, hashes and behavior. Creation joins the caller and ordinarily invites the peer; reservation is not invitation acceptance. The two seats are immutable and third-seat enrollment is rejected.
+
+## Decision points
+
+### Interface and recipient intent
+
+Add `ht send --seat SEAT --body TEXT`, with existing --file/--stdin body sources. The positional THREAD becomes optional and mutually exclusive with --seat; neither is invalid. Keep `send THREAD` behavior unchanged. Do not overload the positional token by guessing whether it names a seat or thread, and do not add pane-target send in this change. --seat selects the recipient, never the caller. Reject self-target, missing, retired, foreign-instance, unresolved or held recipient before pair creation. A resolved unbound seat is valid, as in handoff delivery. Existing sender A2 guards still decide every fresh effect.
+
+Preserve default lazy send. --nudge enables ordinary delivery; --require-ack remains explicit and may name only the target seat in direct mode (duplicates deduplicate). Reject sender/third-seat ACK requests and --require-ack-pane in direct mode, rather than silently broadening or retargeting. Existing deadline, relay and user-intent validation remains. Direct lazy send must explicitly include the invited target in its frozen audience; lazy delivery does not imply joining, attention or receipt. Direct --nudge without explicit ACK follows ordinary thread-send recipient/obligation rules, including the invited target as an explicit addressed recipient. Preserve ordinary human send through immediate `human send --seat`; handoff retains its existing Agent-only restrictions.
+
+Omitting --thread and --new-thread in handoff selects automatic routing for all supported destinations: --existing --seat, --existing with pane resolution, launch into an existing pane, and --new-tab after its guarded recipient seat exists. Explicit --thread and --new-thread retain ordinary behavior. --thread-name/--topic/--goal continue to require --new-thread. No changes to target qualification, kind/native argument grammar, body source or recovery namespace.
+
+### Canonical identity and storage
+
+Allocate the next unused additive schema migration at implementation time (never reuse a historical number). Store one row per canonical `(instance_id, min(seat_a,seat_b), max(seat_a,seat_b))`, with a unique unordered pair and unique thread reference, foreign keys, and distinct-seat checks. Names/topics are presentation, never identity. Automatic thread name may be absent; topic and goal default deterministically to `1:1 SEAT_A SEAT_B` using canonical sorted IDs. Rename/topic changes do not affect reuse.
+
+Never adopt an arbitrary existing two-member thread: a manually scoped conversation may be unrelated. Only the registry identifies an automatic pair. No backfill of ordinary channels, no seat merge, no transfer when a seat retires or rebinds, and no pair generation rollover. Pair rows remain with their thread history and participate in normal retention/FK policy; cleanup must not leave a live mapping to a missing thread or silently permit a duplicate logical channel. The registry lookup is indexed and constant-size, not a directory scan.
+
+EnsureDirectThread is an additive capability-gated command with caller claim, operation key and exact recipient. It executes in the ordinary accountable BEGIN IMMEDIATE transaction: replay exact saved result first through established historical rules; for a new effect decide A2, recipient eligibility, registry lookup and creation/reuse atomically. Creation inserts the thread, caller joined membership/interval, recipient ordinary invitation episode and pair row together, including ordinary revision bumps, timeline and attention projections. Reversed simultaneous A→B/B→A converge to one thread. Both joined and invited pair members qualify as the same pair; a reverse sender whose invitation is pending is told to accept rather than silently enrolled. A saved Ensure result never authorizes a new send; the normal send rechecks current state.
+
+Use existing cooperative_top_level/operator_human actor provenance, record initiator and target honestly in the create/invite events, and never claim that the recipient joined or accepted. No new receipt provenance. Update TRUST-POLICY.md A5 with automatic pair reservation and the two-seat enrollment restriction in the same implementation commit.
+
+### Membership and lifecycle
+
+An automatic channel's participant universe is the immutable pair, with invited seats counted as reserved participants. It may have fewer than two joined members until acceptance or after leaving; the term 1:1 never claims both joined. Enforce this in every canonical enrollment path, including ordinary invite, self-join, service ensure/invite/ownership conversion and any operator invitation recovery. Either pair seat may use ordinary accept/join/leave and required-invitation rules; no operation may add a third seat, and services cannot adopt/own automatic channels. Non-pair membership attempts fail before effects. Ordinary unmarked threads retain existing enrollment.
+
+No automatic resurrection after explicit lifecycle decisions. An archived pair returns the exact existing channel and actionable reopen guidance, without creating another pair or reopening it. A caller who left must explicitly join before direct send; an invited caller explicitly accepts. A target who left or rejected must be explicitly reinvited through the ordinary pair channel before further direct send. Ensure does not reinvite, settle old episodes or synthesize acceptance. Retired or unresolved target refusal never remaps to another seat. Existing addressed messages/obligations survive all these transitions normally. Reopening/joining/reinviting then reuses the same pair. Pair metadata stays immutable even after leaving/archival. This retains normal lifecycle semantics rather than surprising users by undoing leave/reject/archive.
+
+Pair enforcement is permanent, eliminating the ensure→send third-member race. Direct-message preparation and publication also validate registry pair identity and reject inconsistent legacy/corrupt membership rather than broadcast. Group recipients supplied through raw protocol cannot bypass the restriction. Membership revisions and canonical audience validation retain their existing race checks. No privacy claim against same-user database edits is made.
+
+### Durable direct send
+
+Introduce an additive DirectSend semantic containing original frozen caller, namespace (instance plus canonical state directory/host endpoint), target seat, body/options, ensure key and send key. Persist the whole immutable intent before Ensure. A private bounded progress record stores the selected thread and exact ordinary send request after Ensure; protect execution with the journal's existing per-operation lock and atomic/synced publication patterns. Retry obtains the exact ensure result by its original key, verifies saved thread equality and resumes the same ordinary send key. It never resolves a new recipient, changes binding/actor claims or replaces a selected thread. Expose pending-ops and one `retry REF` recovery command with normal intent-kind/status presentation. Original actor classification happens before connection, presentation or cleanup.
+
+Validate syntax, body, direct-recipient flags, caller/target and feature capability before publishing or creating a pair wherever the existing read-only preflight supports it. Authoritative validation remains transactional. The ensure and send are deliberately separate durable effects: a later send refusal/crash can leave an empty pair/invitation; report that staged thread and retain the compound intent. Never roll back committed invitations or messages. Retries do not duplicate creation/invitation/send, including lost responses and restart. An exact completed retry presents historical output and cleans up its own recovery files, without creating/reopening/joining/sending again; retain existing completed-result/binding rules. The final output names the ordinary thread and message IDs and preserves current presentation budgets.
+
+This is preferred over a single new direct-delivery engine because ordinary send already implements bounded preparation, lazy audience freezing, receipt deadlines and publication. A client directory scan or sequential unjournaled create/invite/send was rejected for races and lost-body recovery.
+
+### Handoff integration and compatibility
+
+Add automatic channel intent as an explicit new serialized variant, with new plan versions only where current strict validators require them. Preserve exact V1 absent-field bytes, digests, accepted launch-report grammar, child keys and historical presentation. Do not reinterpret HandoffChannel::New or an old missing thread field as automatic. Negotiate the new capability before journal publication and first effects; an old daemon refuses safely without a client-only fallback. Capability constants, descriptor documentation and strict wire fixtures are owned with the resolver protocol; raise the wire version only if the actual compatibility rules require it, not speculatively.
+
+Automatic existing-peer plans freeze the recipient and Ensure key before effects. The canonical handoff fence registers/validates this ensure child as the channel-selection phase and attaches its exact result inside the resolver transaction, before invite/send. Every restricted child effect/replay must match original caller, payload, namespace and canonical fence.thread; never accept an arbitrary child thread merely because the plan initially had none. The ensure's ordinary invitation may make a subsequent ordinary invite an idempotent no-op, but the frozen steps remain exact.
+
+For --new-tab, topology creation/unknown/recovery stays unchanged. Once guarded attachment yields the recipient seat, the downstream automatic plan resolves the pair and registers the selected thread with the existing bootstrap/child fence. Preserve downstream-complete/outer-incomplete recovery and at-most-one possible native submission; automatic thread selection grants no topology creation/start permission. Startup remains managed_launch rather than check-in, invitation acceptance, ACK or task completion. Existing archival fences protect staged work until canonical completion; completed history never revives protection. No host mutation is needed for pair resolution alone.
+
+### Testing, documentation and finish
+
+Focused store tests exercise migration from the current schema, exact pair identity and indexed selection, reversed concurrency, response-loss replay, binding/namespace mismatch, corrupt membership, third-seat enrollment via all entry points, lifecycle refusal/reuse, human/unbound recipients, ordinary thread isolation and normal history. CLI tests exercise both send forms/body sources, lazy/nudge/ACK/deadline/relay/intent matrix and pending retry at every stage. Handoff tests exercise each of the four destination configurations early, old V1 golden journals/reports, restricted child equality, lost ensure/invite/send replies, restart and topology downstream completion recovery. Use existing fake host seams; any process test uses isolated HOME/config and spawn ownership helpers.
+
+Update README, embedded agent skill/manual/help with target-seat send, threadless handoff, lazy default, invitations, pair membership/lifecycle and exact recovery examples. Do not edit real user configuration. No routine full-suite run while ht-zo4 remains open. Per-change cargo fmt, nice cargo clippy --locked --all-targets --all-features -- -D warnings, relevant target-selected focused tests; before merge also nice scripts/check-default-features. Stop owned helpers and run scoped leak checks after any full/integration sweep. Keep five-minute suite/one-minute incremental lint budgets visible; do not raise them.
+
+The caller owns the requested `join dev-herdr-threads` and integration-ready --nudge announcement when the reviewed integration branch is ready. Never push or stash; no shared Herdr server or unowned workspace/pane changes.
+
+## Post-Implementation Notes
+
+*As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
