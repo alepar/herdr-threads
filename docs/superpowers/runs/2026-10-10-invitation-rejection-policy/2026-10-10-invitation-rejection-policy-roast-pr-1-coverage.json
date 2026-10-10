@@ -1,0 +1,29 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 11,
+  "scoutsDead": 0,
+  "rawFindings": 2,
+  "dedupedFindings": 1,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 1,
+  "spotCount": 0,
+  "promotedCount": 0,
+  "judgeCompletionPct": 100,
+  "lanes": [
+    "correctness",
+    "security",
+    "premortem",
+    "simplicity-design",
+    "hot-path-perf",
+    "concurrency-async",
+    "data-migrations",
+    "api-contract",
+    "observability",
+    "testing",
+    "hygiene-docs"
+  ],
+  "independence": "same-family (OpenAI GPT) — seat-differentiated panel",
+  "mechanism": "native manual subagent fanout"
+}

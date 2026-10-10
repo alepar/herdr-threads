@@ -3154,6 +3154,40 @@ fn enqueue_transition_warning(
     Ok(())
 }
 
+/// Freeze the native rejection's audience in its deciding transaction. Reuse
+/// the bounded transition fanout without creating an open warning condition.
+pub(crate) fn enqueue_invitation_rejection_notice(
+    tx: &Connection,
+    warning: &str,
+    thread: &str,
+    actor: &str,
+) -> Result<(), ApiError> {
+    let seq: i64 = tx
+        .query_row(
+            "SELECT decision_seq FROM messages WHERE id=?1",
+            [warning],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let high_water: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(ordinal),0) FROM membership_intervals WHERE thread_id=?1",
+            [thread],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    enqueue_transition_warning(
+        tx,
+        warning,
+        seq,
+        thread,
+        high_water,
+        actor,
+        "invitation",
+        Some(seq),
+    )
+}
+
 /// Manifest publication fixes the unavailable warning's logical event and
 /// recipient high water. Persist its transition before a projection worker can
 /// lag or the seat's episode can close.
