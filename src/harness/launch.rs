@@ -1043,7 +1043,14 @@ pub(crate) fn owned_launch_hook(
     status.configured_hook.clone().filter(|_| status.installed && status.enabled != Some(false) && status.admitted != Some(false))
         .ok_or_else(|| {
             let file = status.projection["settings"].as_str().or_else(|| status.projection["hooks_file"].as_str()).unwrap_or("the selected scope");
-            error(ErrorCode::MissingHook, &format!("supported hook is not configured in {file}; run `herdr-threads setup` first with the config directory the agent uses"))
+            // A disabled integration is repaired by the harness's own manual step, which the
+            // status diagnostics carry; `setup` alone would not help.
+            let repair = if status.enabled == Some(false) {
+                status.diagnostics.iter().filter(|d| d.manual_argv().is_some()).map(|d| format!(" ({})", d.text)).collect::<String>()
+            } else {
+                String::new()
+            };
+            error(ErrorCode::MissingHook, &format!("supported hook is not configured in {file}{repair}; run `herdr-threads setup` first with the config directory the agent uses"))
         })
 }
 

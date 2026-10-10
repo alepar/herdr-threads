@@ -610,9 +610,17 @@ fn stubbed_surfaces_refuse_or_read_unreadable() {
     );
     let launch = AgyAdapter.launch_policy().unwrap();
     assert_eq!(launch.expected_host_kinds(), ["agy"]);
-    let error = launch.validate_native_argv(&[]).unwrap_err();
-    assert!(error.detail.contains("not yet supported"), "{error:?}");
-    assert!(launch.compose_argv(vec![], vec![]).is_err());
+    // Launch is real (L5): `tests/harness/agy_launch.rs` covers the grammar and the plugin gate.
+    launch.validate_native_argv(&[]).unwrap();
+    assert_eq!(
+        launch.compose_argv(vec![], vec![]).unwrap(),
+        Vec::<String>::new()
+    );
+    assert!(
+        launch
+            .validate_native_argv(&["--print".to_owned()])
+            .is_err()
+    );
     // Setup, status and unsetup are real (L3): `tests/harness/agy_setup.rs` covers them.
     assert!(AgyAdapter.settings_kind().is_some());
     assert!(
