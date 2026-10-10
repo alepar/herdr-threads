@@ -1,0 +1,22 @@
+{
+  "round": 2,
+  "passes": [
+    "ROOT",
+    "receipts",
+    "invitations",
+    "handoff"
+  ],
+  "hooks_local_skipped": "unchanged",
+  "tree_source": "bd list --label sp:ht-0lo --json --status all",
+  "requirement_source": "round1requirements read verbatim; appended R36 from coverage-changes.md",
+  "requirements": 36,
+  "sha256": "9566c0c2892e848d6d24e330cd7cb09e74836801f8cfae5ce4e924a92409d3a2",
+  "valid_reviews_per_pass": 3,
+  "degraded": false,
+  "reviewer_tools_called": false,
+  "literal_delivery": {
+    "review1": "Full files7chunks plus transcription correction before trigger",
+    "review2": "All396packetlines+212templatelines before trigger",
+    "review3": "Bothfullfiles before trigger"
+  }
+}

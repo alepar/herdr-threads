@@ -1,0 +1,190 @@
+{
+  "reviewer": "round2_review3",
+  "input_repair": false,
+  "tools_called": false,
+  "requirements": {
+    "R1": [
+      "ht-0lo.1.1"
+    ],
+    "R2": [
+      "ht-0lo.1.1",
+      "ht-0lo.1.3"
+    ],
+    "R3": [
+      "ht-0lo.1.1",
+      "ht-0lo.1.3"
+    ],
+    "R4": [
+      "ht-0lo.1.1",
+      "ht-0lo.1.2",
+      "ht-0lo.1.3"
+    ],
+    "R5": [
+      "ht-0lo.1.3"
+    ],
+    "R6": [
+      "ht-0lo.1.2",
+      "ht-0lo.1.3"
+    ],
+    "R7": [
+      "ht-0lo.1.1"
+    ],
+    "R8": [
+      "ht-0lo.1.2"
+    ],
+    "R9": [
+      "ht-0lo.2.2",
+      "ht-0lo.2.3"
+    ],
+    "R10": [
+      "ht-0lo.2.1",
+      "ht-0lo.2.3"
+    ],
+    "R11": [
+      "ht-0lo.2.1",
+      "ht-0lo.2.2"
+    ],
+    "R12": [
+      "ht-0lo.2.2"
+    ],
+    "R13": [
+      "ht-0lo.2.2"
+    ],
+    "R14": [
+      "ht-0lo.2.1",
+      "ht-0lo.2.2",
+      "ht-0lo.2.3"
+    ],
+    "R15": [
+      "ht-0lo.2.1",
+      "ht-0lo.2.2",
+      "ht-0lo.2.3"
+    ],
+    "R16": [
+      "ht-0lo.2.2",
+      "ht-0lo.2.3"
+    ],
+    "R17": [
+      "ht-0lo.2.2",
+      "ht-0lo.2.3"
+    ],
+    "R18": [
+      "ht-0lo.2.1"
+    ],
+    "R19": [
+      "ht-0lo.3.1"
+    ],
+    "R20": [
+      "ht-0lo.3.1",
+      "ht-0lo.3.2"
+    ],
+    "R21": [
+      "ht-0lo.3.1",
+      "ht-0lo.3.2"
+    ],
+    "R22": [
+      "ht-0lo.3.2"
+    ],
+    "R23": [
+      "ht-0lo.3.2"
+    ],
+    "R24": [
+      "ht-0lo.3.2"
+    ],
+    "R25": [
+      "ht-0lo.3.1",
+      "ht-0lo.3.2"
+    ],
+    "R26": [
+      "ht-0lo.3.2"
+    ],
+    "R27": [
+      "ht-0lo.1.2",
+      "ht-0lo.2.2",
+      "ht-0lo.3.2"
+    ],
+    "R28": [
+      "ht-0lo.4.1"
+    ],
+    "R29": [
+      "ht-0lo.4.1",
+      "ht-0lo.4.2"
+    ],
+    "R30": [
+      "ht-0lo.4.2"
+    ],
+    "R31": [
+      "ht-0lo.4.2"
+    ],
+    "R32": [
+      "ht-0lo.4.2"
+    ],
+    "R33": [
+      "ht-0lo.4.1",
+      "ht-0lo.4.2"
+    ],
+    "R34": [
+      "ht-0lo.1.1",
+      "ht-0lo.1.2",
+      "ht-0lo.2.2",
+      "ht-0lo.2.3",
+      "ht-0lo.3.1",
+      "ht-0lo.3.2",
+      "ht-0lo.4.1",
+      "ht-0lo.4.2"
+    ],
+    "R35": [
+      "ht-0lo",
+      "ht-0lo.1.1",
+      "ht-0lo.1.2",
+      "ht-0lo.1.3",
+      "ht-0lo.2.1",
+      "ht-0lo.2.2",
+      "ht-0lo.2.3",
+      "ht-0lo.3.1",
+      "ht-0lo.3.2",
+      "ht-0lo.4.1",
+      "ht-0lo.4.2"
+    ],
+    "R36": [
+      "ht-0lo.3.1"
+    ]
+  },
+  "requirements_notes": {
+    "R35": "Four subepics and ten leaves own focused checks; root Acceptance and validation supplies merge-readiness contract."
+  },
+  "R_new": [],
+  "passes": {
+    "ROOT": {
+      "valid": true,
+      "findings": []
+    },
+    "receipts": {
+      "valid": true,
+      "findings": []
+    },
+    "invitations": {
+      "valid": true,
+      "findings": []
+    },
+    "handoff": {
+      "valid": true,
+      "findings": []
+    }
+  },
+  "findings": [],
+  "audits": {
+    "mapping": "All36mapped; no R-new.",
+    "forward_backward": "No gap/orphan; local and root goals complete.",
+    "walking_skeleton": "Receipt due+invitation lifecycle+handoff actual sender-to-durable-message-to-timeout slice.",
+    "seams": "All named producer/consumer exchanges explicitly owned.",
+    "mechanical_acceptance": "Sole(needs: ht-0lo.1.2)in ht-0lo.3.2 acceptance resolves direct blocker.",
+    "prose_acceptance": "No criterion requires dependent artifact.",
+    "edges": "All existing blocker reasons resolvable; no epic edges.3receipt+2invite+5handoff+1hooks(root).",
+    "configurations": "Recipient states/invitation modes/paths/sources/harness setup run in nonterminal leaves, plus deferred wake/max escaped bodies/retained replay/profile cases.",
+    "fixes": "Explicitly confirms C1direct .1.2edge+needs, A1guarded waking open/passive clear/A7/frozen inviter, A2serialized capacity/preflight/body validation, A3conditional owned config/readiness/safety all closed without introduced problems.",
+    "flags": "None.",
+    "sweep": "Absence excluded; hooks local skipped, included root."
+  },
+  "round": 2
+}

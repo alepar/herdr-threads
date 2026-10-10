@@ -1,0 +1,59 @@
+{
+  "blocking_edge_count": 11,
+  "edges": [
+    [
+      "ht-0lo.1.3",
+      "ht-0lo.1.1"
+    ],
+    [
+      "ht-0lo.3.2",
+      "ht-0lo.1.1"
+    ],
+    [
+      "ht-0lo.3.2",
+      "ht-0lo.2.2"
+    ],
+    [
+      "ht-0lo.3.2",
+      "ht-0lo.2.1"
+    ],
+    [
+      "ht-0lo.3.2",
+      "ht-0lo.1.2"
+    ],
+    [
+      "ht-0lo.3.2",
+      "ht-0lo.3.1"
+    ],
+    [
+      "ht-0lo.4.2",
+      "ht-0lo.4.1"
+    ],
+    [
+      "ht-0lo.2.3",
+      "ht-0lo.2.2"
+    ],
+    [
+      "ht-0lo.2.2",
+      "ht-0lo.2.1"
+    ],
+    [
+      "ht-0lo.1.2",
+      "ht-0lo.1.3"
+    ],
+    [
+      "ht-0lo.1.2",
+      "ht-0lo.1.1"
+    ]
+  ],
+  "matching_reason_line_all": true,
+  "needs_citations": [
+    [
+      "ht-0lo.3.2",
+      "ht-0lo.1.2"
+    ]
+  ],
+  "needs_direct_blocker_all": true,
+  "epic_blocking_edges": [],
+  "requirement_ids_stable": true
+}
