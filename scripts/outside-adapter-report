@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+"""outside-adapter-report: R13 accounting of the diff outside the agy adapter.
+
+Usage: scripts/outside-adapter-report --base SHA --head SHA [--repo DIR] [--json]
+
+Partitions `git diff base head` into adapter paths (src/harness/agy/**, tests/fixtures/agy/**,
+tests/harness/agy_*.rs and the agy builtins() row of src/harness/registry.rs) and everything
+else. The diff is authoritative; the `Outside-adapter:` commit trailers only annotate.
+See docs/dev/outside-adapter-report.md. Exit 0 on success, 2 on bad args or unknown SHAs.
+"""
+
+import argparse
+import fnmatch
+import json
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import os
+
+REGISTRY = "src/harness/registry.rs"
+ROW_NEEDLE = "Registration::new(&crate::harness::agy::"
+CORE_SWEEP = re.compile(r"ht-poh\.(2|3)(\.\d+)*|ht-poh\.8(\.\d+)*")
+BEAD = re.compile(r"ht-poh(\.\d+)*")
+NEUTRAL = "scripts/check-harness-neutral"
+ALLOWLIST = "scripts/harness-neutral-allowlist.txt"
+CATEGORIES = ["trait-extension", "reworked", "callers", "test-infra", "tests", "docs", "other"]
+
+
+class Usage(Exception):
+    pass
+
+
+def git(repo, *args, check=True):
+    return subprocess.run(
+        ["git"] + list(args), cwd=repo, check=check, capture_output=True, text=True
+    )
+
+
+def is_adapter_path(path):
+    return (
+        path.startswith("src/harness/agy/")
+        or path.startswith("tests/fixtures/agy/")
+        or fnmatch.fnmatch(path, "tests/harness/agy_*.rs")
+    )
+
+
+def path_category(path):
+    """Category by path alone; src/** paths other than the trait files return None."""
+    if path in ("src/harness/adapter.rs", REGISTRY):
+        return "trait-extension"
+    if (
+        path.startswith("scripts/agy-")
+        or path in ("scripts/agy-native-gate", "scripts/agy-live-smoke", "docs/validation/agy-native.md")
+        or path.startswith("docs/evidence/agy-")
+    ):
+        return "test-infra"
+    if (
+        path in ("README.md", "TRUST-POLICY.md", "AGENTS.md")
+        or path.startswith("docs/")
+        or fnmatch.fnmatch(path, "integrations/*/README.md")
+    ):
+        return "docs"
+    if path.startswith("tests/"):
+        return "tests"
+    if path.startswith("src/"):
+        return None
+    return "other"
+
+
+def parse_numstat(raw):
+    """Parse `--numstat -z` output into [(path, added, removed)] (new path for renames)."""
+    out = []
+    parts = raw.split("\0")
+    i = 0
+    while i < len(parts):
+        tok = parts[i]
+        i += 1
+        if not tok:
+            continue
+        a, d, p = tok.split("\t", 2)
+        if p == "":  # rename: old and new path follow
+            p = parts[i + 1]
+            i += 2
+        out.append((p, 0 if a == "-" else int(a), 0 if d == "-" else int(d)))
+    return out
+
+
+def diff_files(repo, mode, ref):
+    """File entries for a diff. mode 'range': ref=(base, head); mode 'commit': ref=sha."""
+    if mode == "range":
+        cmd = ["diff", "-M", ref[0], ref[1]]
+    else:
+        cmd = ["diff-tree", "--no-commit-id", "--root", "-r", "-M", ref]
+    stats = parse_numstat(git(repo, *cmd, "--numstat", "-z").stdout)
+    files = []
+    for path, added, removed in stats:
+        if path == REGISTRY:
+            patch = git(repo, *cmd, "-U0", "--", REGISTRY).stdout
+            ra = rr = 0
+            for line in patch.splitlines():
+                if line.startswith("+++") or line.startswith("---"):
+                    continue
+                if ROW_NEEDLE in line and line[:1] == "+":
+                    ra += 1
+                elif ROW_NEEDLE in line and line[:1] == "-":
+                    rr += 1
+            if ra or rr:
+                files.append(
+                    {"path": REGISTRY + " (builtins row)", "added": ra, "removed": rr, "bucket": "adapter"}
+                )
+                added -= ra
+                removed -= rr
+                if added == 0 and removed == 0:
+                    continue
+        bucket = "adapter" if is_adapter_path(path) else "outside"
+        files.append({"path": path, "added": added, "removed": removed, "bucket": bucket})
+    return files
+
+
+def commits(repo, base, head):
+    raw = git(
+        repo,
+        "log",
+        "--no-merges",
+        "--reverse",
+        "--format=%x1e%H%x00%s%x00%(trailers:key=Outside-adapter,valueonly)",
+        base + ".." + head,
+    ).stdout
+    res = []
+    for rec in raw.split("\x1e"):
+        if not rec.strip():
+            continue
+        sha, subject, trailer = (rec.split("\0") + ["", ""])[:3]
+        res.append({"sha": sha.strip(), "subject": subject, "trailer": " ".join(trailer.split())})
+    return res
+
+
+def subepic(subject):
+    m = BEAD.search(subject)
+    if not m or m.group(0) == "ht-poh":
+        return "unattributed"
+    return ".".join(m.group(0).split(".")[:2])
+
+
+def totals(entries):
+    return {
+        "files": len(entries),
+        "added": sum(e["added"] for e in entries),
+        "removed": sum(e["removed"] for e in entries),
+    }
+
+
+def neutral_counts(repo, sha):
+    exists = git(repo, "cat-file", "-e", sha + ":" + NEUTRAL, check=False).returncode == 0
+    if not exists:
+        return None
+    tmp = tempfile.mkdtemp(prefix="oar-")
+    wt = os.path.join(tmp, "wt")
+    try:
+        git(repo, "worktree", "add", "--detach", wt, sha)
+        res = subprocess.run(
+            [os.path.join(wt, NEUTRAL), "--root", wt, "--json"],
+            cwd=wt,
+            capture_output=True,
+            text=True,
+        )
+        try:
+            return json.loads(res.stdout)
+        except ValueError:
+            raise Usage("check-harness-neutral at %s printed no JSON: %s" % (sha[:8], res.stderr.strip()))
+    finally:
+        git(repo, "worktree", "remove", "--force", wt, check=False)
+        shutil.rmtree(tmp, ignore_errors=True)
+        git(repo, "worktree", "prune", check=False)
+
+
+def neutral_delta(b, h):
+    if b is None or h is None:
+        return None
+    d = {}
+    for k in ("violations", "stale", "allowlisted", "entries"):
+        d[k] = h.get(k, 0) - b.get(k, 0)
+    for k in ("allowlisted_by_category", "entries_by_category"):
+        bk, hk = b.get(k, {}), h.get(k, {})
+        d[k] = {c: hk.get(c, 0) - bk.get(c, 0) for c in sorted(set(bk) | set(hk))}
+    return d
+
+
+def allowlist_delta(repo, base, head):
+    patch = git(repo, "diff", "-U0", base, head, "--", ALLOWLIST).stdout
+    delta = {"added": {}, "removed": {}}
+    for line in patch.splitlines():
+        if line.startswith("+++") or line.startswith("---") or line[:1] not in "+-":
+            continue
+        body = line[1:]
+        if not body.strip() or body.startswith("#"):
+            continue
+        m = re.search(r" — ([a-z-]+):", body)
+        cat = m.group(1) if m else "unknown"
+        key = "added" if line[0] == "+" else "removed"
+        delta[key][cat] = delta[key].get(cat, 0) + 1
+    return delta
+
+
+def build(repo, base, head):
+    base = git(repo, "rev-parse", "--verify", base + "^{commit}").stdout.strip()
+    head = git(repo, "rev-parse", "--verify", head + "^{commit}").stdout.strip()
+    files = diff_files(repo, "range", (base, head))
+    cms = commits(repo, base, head)
+    per_commit = {}
+    path_commits = {}
+    for c in cms:
+        c["files"] = diff_files(repo, "commit", c["sha"])
+        per_commit[c["sha"]] = c
+        for f in c["files"]:
+            if f["bucket"] == "outside":
+                path_commits.setdefault(f["path"], []).append(c)
+
+    def core_sweep(c):
+        return bool(CORE_SWEEP.search(c["subject"]) or CORE_SWEEP.search(c["trailer"]))
+
+    for f in files:
+        if f["bucket"] != "outside":
+            f["category"] = None
+            continue
+        cat = path_category(f["path"])
+        if cat is None:
+            touching = path_commits.get(f["path"], [])
+            cat = "reworked" if f["removed"] > 0 or any(core_sweep(c) for c in touching) else "callers"
+        f["category"] = cat
+
+    adapter = [f for f in files if f["bucket"] == "adapter"]
+    outside = [f for f in files if f["bucket"] == "outside"]
+    by_category = {}
+    for cat in CATEGORIES:
+        sel = [f for f in outside if f["category"] == cat]
+        if sel:
+            by_category[cat] = totals(sel)
+
+    by_subepic = {}
+    for c in cms:
+        g = by_subepic.setdefault(
+            subepic(c["subject"]),
+            {"commits": 0, "outside_paths": [], "added": 0, "removed": 0, "trailers": []},
+        )
+        g["commits"] += 1
+        for f in c["files"]:
+            if f["bucket"] == "outside":
+                if f["path"] not in g["outside_paths"]:
+                    g["outside_paths"].append(f["path"])
+                g["added"] += f["added"]
+                g["removed"] += f["removed"]
+        g["trailers"].append(c["trailer"] if c["trailer"] else "(missing)")
+
+    nb, nh = neutral_counts(repo, base), neutral_counts(repo, head)
+    return {
+        "base": base,
+        "head": head,
+        "summary": {"adapter": totals(adapter), "outside": totals(outside)},
+        "files": files,
+        "by_category": by_category,
+        "by_subepic": by_subepic,
+        "neutral": {"base": nb, "head": nh, "delta": neutral_delta(nb, nh)},
+        "allowlist_delta": allowlist_delta(repo, base, head),
+        "missing_trailers": [
+            {"sha": c["sha"], "subject": c["subject"]} for c in cms if not c["trailer"]
+        ],
+    }
+
+
+def fmt_counts(t):
+    return "%d files, +%d/-%d" % (t["files"], t["added"], t["removed"])
+
+
+def render(d):
+    o = []
+    o.append("# Outside-adapter report")
+    o.append("")
+    o.append("Range: `%s..%s`" % (d["base"][:8], d["head"][:8]))
+    o.append("")
+    o.append("## Summary")
+    o.append("")
+    o.append("| Bucket | Files | Added | Removed |")
+    o.append("|---|---|---|---|")
+    for b in ("adapter", "outside"):
+        t = d["summary"][b]
+        o.append("| %s | %d | %d | %d |" % (b, t["files"], t["added"], t["removed"]))
+    o.append("")
+    o.append("## By category")
+    o.append("")
+    if d["by_category"]:
+        o.append("| Category | Files | Added | Removed |")
+        o.append("|---|---|---|---|")
+        for c, t in d["by_category"].items():
+            o.append("| %s | %d | %d | %d |" % (c, t["files"], t["added"], t["removed"]))
+        o.append("")
+        for f in d["files"]:
+            if f["bucket"] == "outside":
+                o.append("- `%s` (%s) +%d/-%d" % (f["path"], f["category"], f["added"], f["removed"]))
+    else:
+        o.append("No outside-adapter changes.")
+    o.append("")
+    o.append("## By subepic")
+    o.append("")
+    if d["by_subepic"]:
+        for k in sorted(d["by_subepic"]):
+            g = d["by_subepic"][k]
+            o.append("### %s" % k)
+            o.append("")
+            o.append(
+                "- commits: %d; outside lines +%d/-%d; outside paths: %s"
+                % (
+                    g["commits"],
+                    g["added"],
+                    g["removed"],
+                    ", ".join("`%s`" % p for p in g["outside_paths"]) or "none",
+                )
+            )
+            for t in g["trailers"]:
+                o.append("- trailer: %s" % t)
+            o.append("")
+    else:
+        o.append("No commits in range.")
+        o.append("")
+    o.append("## Neutral check counts")
+    o.append("")
+    for label, sha in (("base", d["base"]), ("head", d["head"])):
+        v = d["neutral"][label]
+        if v is None:
+            o.append("- %s: not present at %s" % (label, sha[:8]))
+        else:
+            o.append("- %s (%s): `%s`" % (label, sha[:8], json.dumps(v, sort_keys=True)))
+    dl = d["neutral"]["delta"]
+    if dl is not None:
+        o.append("- delta: " + ", ".join(
+            "%s %+d" % (k, dl[k]) for k in ("violations", "stale", "allowlisted", "entries")))
+        for k in ("allowlisted_by_category", "entries_by_category"):
+            o.append("  - %s: %s" % (k, ", ".join("%s %+d" % (c, n) for c, n in dl[k].items()) or "none"))
+    o.append("")
+    o.append("## Allowlist delta")
+    o.append("")
+    al = d["allowlist_delta"]
+    if not al["added"] and not al["removed"]:
+        o.append("No allowlist changes.")
+    else:
+        for c in sorted(set(al["added"]) | set(al["removed"])):
+            parts = []
+            if al["removed"].get(c):
+                parts.append("-%d %s" % (al["removed"][c], c))
+            if al["added"].get(c):
+                parts.append("+%d %s" % (al["added"][c], c))
+            o.append("- " + ", ".join(parts))
+    o.append("")
+    o.append("## Missing trailers")
+    o.append("")
+    if d["missing_trailers"]:
+        for m in d["missing_trailers"]:
+            o.append("- `%s` %s" % (m["sha"][:8], m["subject"]))
+    else:
+        o.append("None.")
+    o.append("")
+    return "\n".join(o)
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise Usage(message)
+
+
+def main(argv):
+    p = Parser(prog="outside-adapter-report", add_help=True)
+    p.add_argument("--base", required=True)
+    p.add_argument("--head", required=True)
+    p.add_argument("--repo", default=".")
+    p.add_argument("--json", action="store_true")
+    try:
+        args = p.parse_args(argv)
+        try:
+            data = build(args.repo, args.base, args.head)
+        except subprocess.CalledProcessError as e:
+            raise Usage("unknown revision or git failure: %s" % (e.stderr or "").strip())
+    except Usage as e:
+        sys.stderr.write("outside-adapter-report: %s\n" % e)
+        return 2
+    sys.stdout.write(json.dumps(data, indent=2, sort_keys=True) + "\n" if args.json else render(data))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
