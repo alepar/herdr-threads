@@ -23,6 +23,8 @@ owns: handoff --deadline/--require-invite-ack/--invite-deadline parsing/freeze/p
 
 Also owns: separating hook/setup/trust/profile readiness diagnostics from launch admission; src/cli/launch.rs prepare_launch and src/harness/launch.rs configuration checks. Missing/untrusted/wrong-profile hooks do not block staged work or otherwise structurally safe launch. Preserve empty-shell/seat/caller/native argv and owned launch-configuration fingerprint safety, and truthful native trust refusal; never auto-approve. Test missing/stale profile hooks through guarded handoff and observe durable ACK deadline warning without registration.
 
+Policy integration also consumes canonical invitation lifecycle ht-0lo.2.2; its existing wire edge ht-0lo.2.1 remains for the frozen representation.
+
 ## Validation and failure handling
 
 Each task runs its listed configurations before terminal integration with isolated config/daemon/host fixtures and owned test-support children. Preserve immutable keyed historical requests and terminal outcomes; new incompatible fields negotiate before durable effects. All implementation follows AGENTS.md lint/format/test and TRUST-POLICY cooperative canonical authority. No real user config edits, automatic trust or shared server management.

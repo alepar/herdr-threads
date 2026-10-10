@@ -12,9 +12,9 @@ The parent spec is the normative behavioral contract for this subtree. It specif
 
 ## Tasks
 
-### Canonical receipt deadline projection and upgrade
+### Canonical send-time receipt projection
 
-owns: receipt original deadline semantics and transactional upgrade of formerly dormant obligations, preserving running deadlines and terminal provenance; consumes: existing immutable send timestamps/durations. Files: src/store/{effective,materialization,schema,messages}.rs and preparation modules, TRUST-POLICY deadline clauses, focused store tests. Cover sparse and physical receipts, restart, lazy/human waiver, registration not resetting and explicit A6 extension distinction.
+owns: receipt original deadline semantics, preserving running deadlines and terminal provenance; consumes: existing immutable send timestamps/durations. Files: src/store/{effective,materialization,schema,messages}.rs and preparation modules, TRUST-POLICY deadline clauses, focused store tests. Cover sparse and physical receipts, restart, lazy/human waiver, registration not resetting and explicit A6 extension distinction.
 
 ### Due discovery and originating-seat warning lifecycle
 
@@ -23,6 +23,10 @@ owns: bounded indexed due discovery plus sender-addressed open/clear warning rou
 ## Validation and failure handling
 
 Each task runs its listed configurations before terminal integration with isolated config/daemon/host fixtures and owned test-support children. Preserve immutable keyed historical requests and terminal outcomes; new incompatible fields negotiate before durable effects. All implementation follows AGENTS.md lint/format/test and TRUST-POLICY cooperative canonical authority. No real user config edits, automatic trust or shared server management.
+
+## Promotion refinement
+
+Historical upgrade is a separate leaf ht-0lo.1.3 consuming ht-0lo.1.1. Due discovery ht-0lo.1.2 consumes both the projection and upgrade so its historical discovery scenarios are satisfiable. Handoff ht-0lo.3.2 still depends on ht-0lo.1.1 unchanged: it consumes only new-send semantics, not historical migration.
 
 ## Post-Implementation Notes
 

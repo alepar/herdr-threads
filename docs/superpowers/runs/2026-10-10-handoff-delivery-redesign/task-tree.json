@@ -1,8 +1,46 @@
 [
   {
+    "id": "ht-0lo.1.3",
+    "title": "Upgrade dormant historical receipt obligations",
+    "description": "owns: transactional upgrade/backfill of formerly dormant historical ACK obligations, sparse/physical due projection consistency and idempotent schema marker; consumes: canonical send-time receipt projection. Preserve already running deadlines, terminal states/provenance and immutable request/result digests. Files: src/store/{schema,effective,materialization}.rs and focused migration/store tests. Exercise legacy unavailable receipts upgrade/restart/replay and overdue indexed discovery, bounded warning burst.\nblocked-by ht-0lo.1.1: consumes canonical send-time receipt projection",
+    "acceptance_criteria": "Legacy dormant physical/manifest ACK obligations receive send-time deadlines while existing started/terminal/waived obligations remain unchanged. Idempotent restart and focused migration tests pass.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:49:48Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:49:48Z",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.1.3",
+        "depends_on_id": "ht-0lo.1.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:49:49Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.1.3",
+        "depends_on_id": "ht-0lo.1",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:49:48Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo.1"
+  },
+  {
     "id": "ht-0lo.3.2",
     "title": "Handoff confirmation policy wiring and recovery documentation",
-    "description": "owns: handoff --deadline/--require-invite-ack/--invite-deadline parsing/freeze/pass-through, modern lazy invitation plus addressed ACK-required body staging across new-tab/empty-pane/existing paths, retained child digest compatibility and source/help/skill docs; consumes: frozen handoff payload, invitation confirmation wire contract and send-time receipt semantics. Files: src/cli/{handoff,handoff_delivery,topology_handoff,mod}.rs, src/protocol/handoff.rs, src/store/{handoff,topology_handoff}.rs and related tests/help/skill. Run isolated actual handoff per all three paths/body sources; crash/retry after stage and possible-start/unknown-create never duplicates/restages/relaunches. Older plans absent new fields replay original keyed requests, modern deadlines freeze before staging; routing exact3field fallback and no auto trust/accept/ACK.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md\nblocked-by ht-0lo.3.1: consumes frozen handoff payload\nblocked-by ht-0lo.2.1: consumes invitation confirmation wire contract\nblocked-by ht-0lo.1.1: consumes send-time receipt semantics\nAlso owns: separating hook/setup/trust/profile readiness diagnostics from launch admission; src/cli/launch.rs prepare_launch and src/harness/launch.rs configuration checks. Missing/untrusted/wrong-profile hooks do not block staged work or otherwise structurally safe launch. Preserve empty-shell/seat/caller/native argv and owned launch-configuration fingerprint safety, and truthful native trust refusal; never auto-approve. Test missing/stale profile hooks through guarded handoff and observe durable ACK deadline warning without registration.",
+    "description": "owns: handoff --deadline/--require-invite-ack/--invite-deadline parsing/freeze/pass-through, modern lazy invitation plus addressed ACK-required body staging across new-tab/empty-pane/existing paths, retained child digest compatibility and source/help/skill docs; consumes: frozen handoff payload, invitation confirmation wire contract and send-time receipt semantics. Files: src/cli/{handoff,handoff_delivery,topology_handoff,mod}.rs, src/protocol/handoff.rs, src/store/{handoff,topology_handoff}.rs and related tests/help/skill. Run isolated actual handoff per all three paths/body sources; crash/retry after stage and possible-start/unknown-create never duplicates/restages/relaunches. Older plans absent new fields replay original keyed requests, modern deadlines freeze before staging; routing exact3field fallback and no auto trust/accept/ACK.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md\nblocked-by ht-0lo.3.1: consumes frozen handoff payload\nblocked-by ht-0lo.2.1: consumes invitation confirmation wire contract\nblocked-by ht-0lo.1.1: consumes send-time receipt semantics\nAlso owns: separating hook/setup/trust/profile readiness diagnostics from launch admission; src/cli/launch.rs prepare_launch and src/harness/launch.rs configuration checks. Missing/untrusted/wrong-profile hooks do not block staged work or otherwise structurally safe launch. Preserve empty-shell/seat/caller/native argv and owned launch-configuration fingerprint safety, and truthful native trust refusal; never auto-approve. Test missing/stale profile hooks through guarded handoff and observe durable ACK deadline warning without registration.\nblocked-by ht-0lo.2.2: consumes canonical invitation lifecycle",
     "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
     "status": "open",
     "priority": 2,
@@ -10,7 +48,7 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T22:48:20Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T22:49:12Z",
+    "updated_at": "2026-10-10T22:49:53Z",
     "labels": [
       "sp:ht-0lo"
     ],
@@ -33,6 +71,14 @@
       },
       {
         "issue_id": "ht-0lo.3.2",
+        "depends_on_id": "ht-0lo.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:49:52Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.3.2",
         "depends_on_id": "ht-0lo.2.1",
         "type": "blocks",
         "created_at": "2026-10-10T22:48:29Z",
@@ -48,7 +94,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 3,
+    "dependency_count": 4,
     "dependent_count": 0,
     "comment_count": 0,
     "parent": "ht-0lo.3"
@@ -223,7 +269,7 @@
       }
     ],
     "dependency_count": 1,
-    "dependent_count": 1,
+    "dependent_count": 2,
     "comment_count": 0,
     "parent": "ht-0lo.2"
   },
@@ -260,7 +306,7 @@
   {
     "id": "ht-0lo.1.2",
     "title": "Due discovery and originating-seat warning lifecycle",
-    "description": "owns: bounded indexed due discovery plus sender-addressed open/clear warning routing and guarded poke/wake calculations; consumes: send-anchored canonical receipt projection. Files: src/store/{receipts,poke,wake,queries,schema}.rs, scheduler tests. Exercise unbound/unregistered/unavailable/pending-invite recipient sends through expiry and late ACK; originator leaving does not lose notification.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md\nblocked-by ht-0lo.1.1: consumes send-anchored canonical receipt projection",
+    "description": "owns: bounded indexed due discovery plus sender-addressed open/clear warning routing and guarded poke/wake calculations; consumes: send-anchored canonical receipt projection. Files: src/store/{receipts,poke,wake,queries,schema}.rs, scheduler tests. Exercise unbound/unregistered/unavailable/pending-invite recipient sends through expiry and late ACK; originator leaving does not lose notification.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md\nblocked-by ht-0lo.1.1: consumes send-anchored canonical receipt projection\nblocked-by ht-0lo.1.3: consumes historical dormant receipt upgrade",
     "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
     "status": "open",
     "priority": 2,
@@ -268,11 +314,19 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T22:48:11Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T22:48:34Z",
+    "updated_at": "2026-10-10T22:49:51Z",
     "labels": [
       "sp:ht-0lo"
     ],
     "dependencies": [
+      {
+        "issue_id": "ht-0lo.1.2",
+        "depends_on_id": "ht-0lo.1.3",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:49:50Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
       {
         "issue_id": "ht-0lo.1.2",
         "depends_on_id": "ht-0lo.1.1",
@@ -290,15 +344,15 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 1,
+    "dependency_count": 2,
     "dependent_count": 0,
     "comment_count": 0,
     "parent": "ht-0lo.1"
   },
   {
     "id": "ht-0lo.1.1",
-    "title": "Canonical receipt deadline projection and upgrade",
-    "description": "owns: receipt original deadline semantics and transactional upgrade of formerly dormant obligations, preserving running deadlines and terminal provenance; consumes: existing immutable send timestamps/durations. Files: src/store/{effective,materialization,schema,messages}.rs and preparation modules, TRUST-POLICY deadline clauses, focused store tests. Cover sparse and physical receipts, restart, lazy/human waiver, registration not resetting and explicit A6 extension distinction.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md",
+    "title": "Canonical send-time receipt projection",
+    "description": "owns: receipt original deadline semantics, preserving running deadlines and terminal provenance; consumes: existing immutable send timestamps/durations. Files: src/store/{effective,materialization,schema,messages}.rs and preparation modules, TRUST-POLICY deadline clauses, focused store tests. Cover sparse and physical receipts, restart, lazy/human waiver, registration not resetting and explicit A6 extension distinction.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md",
     "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
     "status": "open",
     "priority": 2,
@@ -306,7 +360,7 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T22:48:10Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T22:48:10Z",
+    "updated_at": "2026-10-10T22:49:47Z",
     "labels": [
       "sp:ht-0lo"
     ],
@@ -321,7 +375,7 @@
       }
     ],
     "dependency_count": 0,
-    "dependent_count": 2,
+    "dependent_count": 3,
     "comment_count": 0,
     "parent": "ht-0lo.1"
   },
@@ -342,8 +396,7 @@
       "sp_order": 3
     },
     "labels": [
-      "sp:ht-0lo",
-      "sp:needs-design"
+      "sp:ht-0lo"
     ],
     "dependencies": [
       {
@@ -377,8 +430,7 @@
       "sp_order": 4
     },
     "labels": [
-      "sp:ht-0lo",
-      "sp:needs-design"
+      "sp:ht-0lo"
     ],
     "dependencies": [
       {
@@ -412,8 +464,7 @@
       "sp_order": 2
     },
     "labels": [
-      "sp:ht-0lo",
-      "sp:needs-design"
+      "sp:ht-0lo"
     ],
     "dependencies": [
       {
@@ -447,8 +498,7 @@
       "sp_order": 1
     },
     "labels": [
-      "sp:ht-0lo",
-      "sp:needs-design"
+      "sp:ht-0lo"
     ],
     "dependencies": [
       {
