@@ -119,6 +119,10 @@ def bounded_capture(argv, timeout=60, env=None, cwd=None, stdout_limit=65536, st
 # Default discovery builds share the repository's one-minute incremental build budget.
 BUILD_TIMEOUT = 60
 
+# `npm view PKG versions --json` lists every published version; @openai/codex alone passed 64 KiB
+# (about 160 KB in October 2026), so the listing gets its own bound instead of the companion default.
+NPM_VIEW_LIMIT = 4 * 1024 * 1024
+
 
 def build_discovery():
     """Build before output allocation; explicitly override Cargo's configured target directory."""
@@ -575,17 +579,20 @@ def run_strategy(adapter, out, binary, root, model_tier="off", runtime_command=N
         env = isolated_env(view_dir, strategy, "no_model")
         env["npm_config_cache"] = str(view_dir / "npm-cache")
         env["npm_config_update_notifier"] = "false"
+        failure = None
         for _ in range(3):
             try:
-                rc, raw, _ = bounded_capture(["npm", "view", strategy["npm_package"], "versions", "--json"],
-                                             timeout=60, env=env)
+                rc, raw, err = bounded_capture(["npm", "view", strategy["npm_package"], "versions", "--json"],
+                                               timeout=60, env=env, stdout_limit=NPM_VIEW_LIMIT)
                 if rc == 0:
-                    published = _json(raw, 65536)
+                    published = _json(raw, NPM_VIEW_LIMIT)
                     break
-            except (ValueError, OSError):
-                pass
+                failure = "exit %d: %s" % (rc, " ".join(err.decode("utf-8", "replace").split())[-200:])
+            except (ValueError, OSError) as e:
+                failure = str(e)
         else:
-            return dict(block, status="infra_error", reason="npm view failed after three attempts")
+            return dict(block, status="infra_error",
+                        reason="npm view failed after three attempts (last: %s)" % failure)
         if isinstance(published, str):
             published = [published]
         versions = _sibling("versions")

@@ -163,7 +163,7 @@ A version newer than every recipe is therefore never `broken` just for being unl
 
 ## Harness canary
 
-`scripts/harness-canary.sh` installs each newer Claude Code and Codex release into a throwaway home and checks that herdr-threads still works with it. It runs daily from `.github/workflows/harness-canary.yml` (cron `17 6 * * *`) and on manual dispatch. It never touches `~/.claude`, `~/.codex` or aisw profiles.
+`scripts/harness-canary.sh` installs each newer Claude Code and Codex release into a throwaway home and checks that herdr-threads still works with it. It runs daily from `.github/workflows/harness-canary.yml` (cron `17 6 * * *`) and on manual dispatch. The workflow selects `--harness both` (Claude Code and Codex) unless a dispatch names another selector: `all` also selects exact-runtime adapters (Hermes), which need a `--runtime-command-file` the workflow never supplies, so they always end inconclusive and fail the run. A new npm-release adapter joins the daily run only when the workflow default names it. It never touches `~/.claude`, `~/.codex` or aisw profiles.
 
 ### What each tier checks
 
