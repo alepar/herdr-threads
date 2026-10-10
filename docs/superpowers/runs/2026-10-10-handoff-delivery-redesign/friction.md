@@ -7,3 +7,5 @@
 
 - [2026-10-10 code preflight] Git worktree add denied writing shared .git refs under workspace sandbox; exact CLI-only require_escalated git worktree rule succeeded. No implementation scope lost.
 - [2026-10-10 code planning] Installed SDD helper scripts lack executable mode, including nested sdd-workspace calls; unchanged helpers work via bash with explicit OUTFILE, preserving extraction/review-package behavior.
+- [2026-10-10 code execution] Maxbody serializer inventory uncovered SQLCHECK constraints requiring Task4 schema expansion, creating third concurrent schema.rs declaration. Parent authorized hotFileCap3 (concurrency3 unchanged); independent provisional migration29 additions require serial renumber and fresh schema seam review.
+- [2026-10-10 code build] Shared warmed Cargo target serializes first RED builds; external active compilers/fullsuite increase wallclock beyond incremental1min budget. Approved process inspection shows active compiler, no deadlock; retain focused checks and record measurement instead of relaxing tests.
