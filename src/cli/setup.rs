@@ -65,18 +65,26 @@ installed or skipped (not on PATH);
 every registered harness. The Codex hook-trust reminder is printed once at the end. The exit status is that
 of the first harness that failed; skipped harnesses are not failures.
 
+Agent permissions: --with-permissions grants them, --without-permissions removes them and
+keeps the hooks; otherwise setup asks on a terminal and keeps an existing grant current.
+Every changed configuration file is first backed up beside it as
+<name>.<UTC timestamp>-<uuid>.herdr-threads.
+
 Scope (user level, like Herdr's own agent hooks):
   claude  $CLAUDE_CONFIG_DIR/settings.json (default ~/.claude/settings.json), created as `{}`
           when absent. Adds the hook groups (SessionStart, Bash PreToolUse) beside the hooks
-          already there, and the permission allow rule `Bash(herdr-threads *)`: Claude may then
-          run any single `herdr-threads ...` command (including the ready commands the hook
-          suggests) without asking; chained commands are still checked separately. A rule you
-          already have is left as yours. Re-running setup on an older installation replaces its
-          owned `Bash(export HERDR_THREADS_CALLER_CONTEXT=*)` rule, which allowed nothing in use.
+          already there. Agent permissions are a separate component, written only with
+          consent: allow rules for `herdr-threads` and `ht`, and ask rules for `human`, `setup`,
+          `unsetup`, `doctor fix` and `internal installer-integrations`. An older installation's
+          owned `Bash(herdr-threads *)` rule is kept and gains the ask rules. A rule you already
+          have is left as yours.
   codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
-          (SessionStart, SubagentStart, Bash PreToolUse). Setup installs no sandbox socket,
-          writable-root or network allowance. Run herdr-threads commands through Codex's
-          approved outside-sandbox execution; a denied approval is a policy refusal.
+          (SessionStart, SubagentStart, Bash PreToolUse). With consent, agent permissions go
+          in their own file, $CODEX_HOME/rules/herdr-threads.rules: an allow rule for
+          `herdr-threads` and `ht` and prompt rules for the same human and setup commands.
+          Setup installs no sandbox socket, writable-root or network allowance. Run
+          herdr-threads commands through Codex's approved outside-sandbox execution; a
+          denied approval is a policy refusal.
           Historical owned allowances remain inspectable; unsetup removes only unchanged
           owned values and refuses edited ownership records. Codex runs user hooks only once
           you trust them: the next interactive `codex` start lists them for review (or use

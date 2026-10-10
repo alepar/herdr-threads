@@ -146,3 +146,26 @@ fn codex_rules_interrupted_intent_restores_the_previous_record() {
     );
     assert_eq!(component.read().unwrap(), Some(installed));
 }
+
+// A rules file that appears after the absent baseline is never replaced: the exclusive publish
+// refuses, the foreign bytes stay, nothing is recorded as owned and nothing is pending.
+#[test]
+fn codex_rules_first_publish_never_replaces_a_file_created_meanwhile() {
+    let scope = Scope::new();
+    let component = scope.component();
+    let rules = scope.rules();
+    BEFORE_RULES_WRITE.with(|hook| {
+        let rules = rules.clone();
+        hook.set(Some(Box::new(move || {
+            fs::write(&rules, b"# foreign\n").unwrap();
+        })));
+    });
+    assert_eq!(
+        component.apply(PermissionConsent::Granted),
+        Err(SetupError::Conflict)
+    );
+    assert_eq!(fs::read(&rules).unwrap(), b"# foreign\n");
+    assert!(user_config_backups(&rules).is_empty());
+    assert!(!scope.dir.join("permissions.json").exists());
+    assert_eq!(component.status(), Ok(CodexPermissionState::Foreign));
+}

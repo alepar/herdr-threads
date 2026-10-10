@@ -2857,9 +2857,9 @@ fn hook_install_and_removal_back_up_each_prior_version() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-/// Kills backing up a file that holds no settings, such as setup's own `{}` placeholder.
+/// Kills skipping the backup of an existing file that holds no settings: every pre-image is kept.
 #[test]
-fn user_config_without_settings_is_replaced_without_backup() {
+fn user_config_without_settings_is_still_backed_up() {
     let dir = std::env::temp_dir().join(format!("herdr-setup-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).unwrap();
     let config = dir.join("settings.json");
@@ -2868,6 +2868,8 @@ fn user_config_without_settings_is_replaced_without_backup() {
         write_user_config(&config, empty, b"{\"a\":1}").unwrap();
         assert_eq!(fs::read(&config).unwrap(), b"{\"a\":1}");
     }
-    assert!(user_config_backups(&config).is_empty());
+    let mut expected = vec![b"".to_vec(), b"{}".to_vec(), b" {\n}\n".to_vec()];
+    expected.sort();
+    assert_eq!(user_config_backups(&config), expected);
     fs::remove_dir_all(dir).unwrap();
 }

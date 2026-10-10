@@ -1055,7 +1055,7 @@ pub(crate) fn config_bytes(path: &Path) -> Result<Vec<u8>, SetupError> {
 
 /// Replace a user configuration file whose bytes the caller just validated as `current`.
 /// An unchanged result writes nothing; otherwise `current` is first kept as a private sibling
-/// backup (see [`backup_user_config`]) unless it holds no settings. A backup stays even when
+/// backup (see [`backup_user_config`]), whatever it holds. A backup stays even when
 /// the replacement then fails. herdr-threads state and manifests use
 /// [`write_replacement`] directly and are never backed up.
 pub(crate) fn write_user_config(
@@ -1094,11 +1094,18 @@ impl Drop for BackupSession {
     }
 }
 
-/// Back up `current` unless it holds no settings or this session already kept a pre-image.
+/// This run created `path` (setup's own placeholder): it has no pre-image to keep, so its
+/// later changes in the same session are not backed up.
+pub(crate) fn note_created_user_config(path: &Path) {
+    BACKUP_SESSION.with(|session| {
+        if let Some(seen) = session.borrow_mut().as_mut() {
+            seen.insert(path.to_path_buf());
+        }
+    });
+}
+
+/// Back up `current` unless this session already kept a pre-image of `path` or created it.
 fn back_up_before_change(path: &Path, current: &[u8]) -> Result<(), SetupError> {
-    if holds_no_settings(current) {
-        return Ok(());
-    }
     let first = BACKUP_SESSION.with(|session| {
         session
             .borrow_mut()
@@ -1112,7 +1119,7 @@ fn back_up_before_change(path: &Path, current: &[u8]) -> Result<(), SetupError> 
 }
 
 /// Delete a user configuration file whose bytes the caller just validated as `current`, keeping
-/// them first as a backup (see [`backup_user_config`]) unless they hold no settings.
+/// them first as a backup (see [`backup_user_config`]).
 pub(crate) fn remove_user_config(path: &Path, current: &[u8]) -> Result<(), SetupError> {
     if config_bytes(path)? != current {
         return Err(SetupError::Conflict);
@@ -1122,16 +1129,6 @@ pub(crate) fn remove_user_config(path: &Path, current: &[u8]) -> Result<(), Setu
     fs::File::open(path.parent().ok_or(SetupError::Invalid)?)
         .and_then(|dir| dir.sync_all())
         .map_err(|_| SetupError::Io)
-}
-
-/// An empty file or empty JSON object (setup's own placeholder among them) has nothing to keep.
-fn holds_no_settings(current: &[u8]) -> bool {
-    let trimmed: Vec<u8> = current
-        .iter()
-        .copied()
-        .filter(|b| !b.is_ascii_whitespace())
-        .collect();
-    trimmed.is_empty() || trimmed == b"{}"
 }
 
 /// Keep `current` beside `path` as `<name>.<UTC timestamp>-<uuid>.herdr-threads`: mode 0600,
@@ -2631,6 +2628,7 @@ pub(crate) mod legacy {
                         .open(&self.path)?
                         .write_all(self.initial)?;
                     self.created_file = true;
+                    crate::harness::setup::note_created_user_config(&self.path);
                 }
                 Err(error) => return Err(error.into()),
             }

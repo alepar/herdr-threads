@@ -13,7 +13,8 @@ use super::{
     VerifiedConfigIdentity, codex::render,
 };
 use crate::harness::setup::{
-    SetupError, config_bytes, remove_user_config, write_replacement, write_user_config,
+    SetupError, config_bytes, publish_manifest, remove_user_config, write_replacement,
+    write_user_config,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -204,12 +205,25 @@ impl CodexPermissions {
         }
         intent.created = created;
         self.write(&intent)?;
-        match (current, after) {
-            (Some(current), Some(after)) => write_user_config(&self.rules, &current, after)?,
-            (None, Some(after)) => write_replacement(&self.rules, after, true)?,
-            (Some(current), None) => remove_user_config(&self.rules, &current)?,
-            (None, None) => {}
+        #[cfg(test)]
+        BEFORE_RULES_WRITE.with(|hook| hook.take().map(|hook| hook()));
+        let previous = intent.pending.and_then(|pending| pending.previous);
+        let written = match (current, after) {
+            (Some(current), Some(after)) => write_user_config(&self.rules, &current, after),
+            // Exclusive: a file created after the absent baseline is refused, never replaced.
+            (None, Some(after)) => publish_manifest(&self.rules, after, false),
+            (Some(current), None) => remove_user_config(&self.rules, &current),
+            (None, None) => Ok(()),
+        };
+        if written == Err(SetupError::Conflict) {
+            // The file changed before the write and was left alone: the intent never happened.
+            match previous {
+                Some(previous) => self.write(&previous)?,
+                None => self.remove_manifest()?,
+            }
+            return Err(SetupError::Conflict);
         }
+        written?;
         if after.is_none() && intent.created.iter().any(|c| c == "rules") {
             // Only an empty directory the component created goes.
             let _ = fs::remove_dir(dir);
@@ -281,6 +295,13 @@ impl CodexPermissions {
         drop(guard);
         self.status()
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook: runs once after the intent is recorded, before the rules file is written.
+    static BEFORE_RULES_WRITE: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
