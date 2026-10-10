@@ -21,18 +21,16 @@ pub enum NativeSupport {
 /// Per-harness soft-deadline poke capabilities (spec §10). A recipe declares a
 /// capability only from captured evidence; every harness reports `NONE` until
 /// such evidence lands, so an undeclared capability means the poke is skipped.
+/// An active turn never admits a poke; there is no turn-time capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PokeCapabilities {
     /// The adapter can stash and later restore the composer's typed text.
     pub composer_stash: NativeSupport,
-    /// A prompt submitted during an active turn is queued and safe.
-    pub poke_during_turn: NativeSupport,
 }
 
 impl PokeCapabilities {
     pub const NONE: Self = Self {
         composer_stash: NativeSupport::Unsupported,
-        poke_during_turn: NativeSupport::Unsupported,
     };
 }
 

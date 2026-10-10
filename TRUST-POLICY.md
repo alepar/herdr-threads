@@ -223,13 +223,12 @@ model open work, and summary closure never changes receipt state or installs glo
   `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
   submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound
   harness. It is decided from a fresh observation immediately before the prompt, only when the pane is not
-  focused, the composer is empty, and the agent is idle/done. Working agents are deferred even
-  where a historical recipe declares `poke_during_turn` from captured evidence
-  (`docs/evidence/poke-spike/findings.md`). Existing exact-version recipe declarations remain
+  focused, the composer is empty, and the agent is idle/done. Working agents are
+  always deferred; there is no turn-time poke capability (ht-poh.42). Existing exact-version recipe declarations remain
   historical captured qualification, not operational admission. Ordinary daemon observation resolves
   executables without probing runtime metadata; absent current-runtime qualification declares neither
   capability. Valid contract input, historical version evidence and manifest/release ladders cannot
-  qualify the current runtime or grant compact recovery, composer stash, turn-time poke or native
+  qualify the current runtime or grant compact recovery, composer stash or native
   receipts. Until a separately safe current-runtime qualifier exists, richer behavior remains unavailable.
   It is never sent in an approval or
   question state or an unknown state. A poke carries no authority and changes no receipt state other than
@@ -277,8 +276,7 @@ model open work, and summary closure never changes receipt state or installs glo
   - *Verification is read-only.* A held marker yields an unsubmitted diagnostic/uncertain delivery;
     verification never sends an additional Enter, which could submit newly typed user text.
   - *During a turn.* Unsolicited attention never queues into a reported active turn. The dispatcher
-    refuses ActiveTurn and both native prompt entry points require idle/done, regardless of an old
-    turn-time capability declaration. Pending obligations wait for a later eligible observation.
+    refuses ActiveTurn and both native prompt entry points require idle/done. Pending obligations wait for a later eligible observation.
     Composer emptiness never establishes idle status. These host status observations are sampled
     screen/lifecycle inference, not independent proof of physical turn completion.
   - *Post-send verification.* The read-only check never changes the composer or sends keys.

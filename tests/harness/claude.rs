@@ -201,15 +201,7 @@ fn claude_version_gate_is_the_exact_evidence_backed_set() {
         claude::NativeSupport::Supported
     );
     assert_eq!(
-        recipe_287.profile.poke_during_turn,
-        claude::NativeSupport::Supported
-    );
-    assert_eq!(
         recipe.profile.composer_stash,
-        claude::NativeSupport::Unsupported
-    );
-    assert_eq!(
-        recipe.profile.poke_during_turn,
         claude::NativeSupport::Unsupported
     );
     assert_eq!(recipe.id, "claude-hooks-2.1.283");

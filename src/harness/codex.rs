@@ -119,9 +119,8 @@ pub struct CodexProfile {
     pub invocation_transport: NativeSupport,
     pub model_receipt: NativeSupport,
     /// Poke capabilities (spec §10). The spike tested Codex 0.160.0 only, and
-    /// no recipe covers it, so every recipe leaves both unsupported.
+    /// no recipe covers it, so every recipe leaves it unsupported.
     pub composer_stash: NativeSupport,
-    pub poke_during_turn: NativeSupport,
 }
 
 pub type CodexRecipe = Recipe<CodexProfile>;
@@ -172,7 +171,6 @@ pub const RECIPES: &[CodexRecipe] = &[Recipe {
         invocation_transport: NativeSupport::Unsupported,
         model_receipt: NativeSupport::Unsupported,
         composer_stash: NativeSupport::Unsupported,
-        poke_during_turn: NativeSupport::Unsupported,
     },
 }];
 
