@@ -27,6 +27,7 @@ baseAbsorbed: f3431b31 → d342add2, 14 conflicted files (main v0.6.0 absorbed m
 
 baseAbsorbed: 7c40c83c → cc885360, 1 conflicted files (main v0.6.1/v0.6.2 after the fix loop exited; SKILL.md resolved, mechanical)
 
+feedback: herdr prompt to superpowers workspace pane wB:p8 (2026-10-10), draft upstream-feedback-draft.md
 friction: 6 events
 
 codeBuckets:
