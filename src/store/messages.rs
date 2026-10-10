@@ -72,6 +72,9 @@ impl Default for MessageLimits {
 pub fn send_payload(request: &SendMessage) -> Value {
     let mut payload = json!({"kind":"send_message","thread":request.thread,"body":request.body,
         "invited_recipients":request.invited_recipients,"deadline_millis":request.deadline_millis,"claim":request.claim});
+    if let Some(recipient) = &request.direct_recipient {
+        payload["direct_recipient"] = json!(recipient);
+    }
     if !request.delivery_mode.is_ordinary() {
         payload["delivery_mode"] = json!(request.delivery_mode);
     }

@@ -86,6 +86,7 @@ pub enum Command {
     BeginHandoff(crate::protocol::handoff::HandoffMutation),
     CompleteHandoff(crate::protocol::handoff::HandoffMutation),
     CreateThread(CreateThread),
+    EnsureDirectThread(EnsureDirectThread),
     Invite(Invite),
     Join(Join),
     Accept(Accept),
@@ -662,6 +663,15 @@ pub struct CreateThread {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Resolve the immutable canonical pair; returns the ordinary ThreadCreated ID.
+/// Inert until the guarded thread.direct_v1 runtime is installed.
+pub struct EnsureDirectThread {
+    pub recipient: SeatId,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Invite {
     pub thread: ThreadId,
     pub seat: SeatId,
@@ -800,6 +810,9 @@ pub struct SendMessage {
     pub user_intent: Option<crate::protocol::summary::UserIntent>,
     pub thread: ThreadId,
     pub body: String,
+    /// Explicit direct audience intent; never an ACK request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_recipient: Option<SeatId>,
     pub invited_recipients: Vec<SeatId>,
     pub deadline_millis: Option<u64>,
     pub operation: OperationId,
@@ -1028,6 +1041,7 @@ impl Command {
             Self::CheckIn(v) | Self::OperatorCheckIn(v) => Some(&v.claim),
             Self::BeginHandoff(v) | Self::CompleteHandoff(v) => Some(&v.identity.claim),
             Self::CreateThread(v) => Some(&v.claim),
+            Self::EnsureDirectThread(v) => Some(&v.claim),
             Self::Invite(v) => Some(&v.claim),
             Self::Join(v) => Some(&v.claim),
             Self::Accept(v) => Some(&v.claim),
@@ -1236,6 +1250,7 @@ pub enum PermitMutation {
     BeginHandoff(crate::protocol::handoff::HandoffMutation),
     CompleteHandoff(crate::protocol::handoff::HandoffMutation),
     CreateThread(CreateThread),
+    EnsureDirectThread(EnsureDirectThread),
     Invite(Invite),
     Join(Join),
     Accept(Accept),
@@ -1271,6 +1286,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::BeginHandoff(v) => Ok(Self::BeginHandoff(v)),
             Command::CompleteHandoff(v) => Ok(Self::CompleteHandoff(v)),
             Command::CreateThread(v) => Ok(Self::CreateThread(v)),
+            Command::EnsureDirectThread(v) => Ok(Self::EnsureDirectThread(v)),
             Command::Invite(v) => Ok(Self::Invite(v)),
             Command::Join(v) => Ok(Self::Join(v)),
             Command::Accept(v) => Ok(Self::Accept(v)),

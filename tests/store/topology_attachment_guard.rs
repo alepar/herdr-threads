@@ -623,6 +623,7 @@ fn actual_main_linked_phase_preserves_ordinary_and_rejects_lazy_mode() {
         delivery_mode: DeliveryMode::Ordinary,
         thread,
         body: id.payload.handoff.body.clone(),
+        direct_recipient: None,
         invited_recipients: vec![child.recipient.clone()],
         deadline_millis: None,
         operation: id.payload.handoff.keys.send.clone(),

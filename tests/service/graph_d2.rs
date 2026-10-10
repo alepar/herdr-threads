@@ -330,6 +330,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         for (key, claim) in [("claim-service-author", service_claim), ("claim-built-in-author", builtin_claim)] {
             let denied = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage {
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
+                direct_recipient: None,
                 thread: thread.clone(), body: "forged authority".into(), invited_recipients: vec![],
                 deadline_millis: None, operation: OperationId::new(key), claim, relays_user: false, user_intent: None,
             }), &budget())).join().unwrap()).unwrap_err();
@@ -404,6 +405,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let CommandResult::CheckedIn(checked_recipient) = checked_recipient else { panic!("missing recipient check-in") };
         let sent = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage {
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
+            direct_recipient: None,
             thread: thread.clone(), body: "native system mail".into(), invited_recipients: vec![],
             deadline_millis: None, operation: OperationId::new("native-system-send"), claim: native.clone(), relays_user: false, user_intent: None,
         }), &budget())).join().unwrap()).unwrap();

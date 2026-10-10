@@ -35,6 +35,7 @@ fn send() -> SemanticMutation {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("thread-1"),
         body: "body secret\n".into(),
+        direct_recipient: None,
         invited_recipients: vec![],
         deadline_millis: None,
         relays_user: false,
@@ -854,6 +855,7 @@ fn invalid_semantic_batch_does_not_reserve_ordinal_or_publish_intent() {
                     delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                     thread: ThreadId::new("thread-1"),
                     body: "hello".into(),
+                    direct_recipient: None,
                     invited_recipients: (0..101)
                         .map(|n| SeatId::new(format!("seat-{n}")))
                         .collect(),
@@ -1313,6 +1315,7 @@ fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
         SemanticMutation::SendMessage {
             thread,
             body,
+            direct_recipient,
             invited_recipients,
             deadline_millis,
             user_intent,
@@ -1321,6 +1324,7 @@ fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread,
             body,
+            direct_recipient,
             invited_recipients,
             deadline_millis,
             relays_user: true,
@@ -2348,4 +2352,38 @@ fn human_guidance_original_retry_ignores_opposite_rendering_view() {
         );
     }
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn direct_recipient_semantic_preserves_absent_bytes_and_roundtrips() {
+    use sha2::{Digest, Sha256};
+    let historical=r#"{"kind":"send_message","thread":"thread-1","body":"body secret\n","invited_recipients":[],"deadline_millis":null}"#.to_owned();
+    assert_eq!(serde_json::to_string(&send()).unwrap(), historical);
+    assert!(!historical.contains("direct_recipient"));
+    let mut direct = serde_json::to_value(send()).unwrap();
+    direct["direct_recipient"] = serde_json::json!("b");
+    let semantic: SemanticMutation = serde_json::from_value(direct).unwrap();
+    let SemanticMutation::SendMessage {
+        direct_recipient, ..
+    } = &semantic
+    else {
+        panic!("send")
+    };
+    assert_eq!(direct_recipient.as_ref().unwrap().as_str(), "b");
+    let Command::SendMessage(request) = semantic
+        .to_command(
+            crate::protocol::ids::OperationId::new("direct"),
+            Some(claim()),
+        )
+        .unwrap()
+    else {
+        panic!("send command")
+    };
+    assert_eq!(request.direct_recipient.as_ref().unwrap().as_str(), "b");
+    let decoded: SemanticMutation = serde_json::from_str(&historical).unwrap();
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), historical);
+    assert_eq!(
+        Sha256::digest(serde_json::to_vec(&decoded).unwrap()),
+        Sha256::digest(historical)
+    );
 }
