@@ -473,8 +473,14 @@ pub struct DowngradeRecord {
     pub downgraded_at: Option<u64>,
     /// `"abort"` or `"misses"`.
     pub reason: Option<String>,
-    /// A probation turn (one `systemMessage` retry) is under way.
+    /// A probation turn (one `systemMessage` retry) is under way. It is exactly one turn and ends
+    /// at that turn's `Stop`: a confirm clears the record, a miss or an inconclusive end
+    /// re-downgrades with a fresh timestamp; a probation with no `Stop` for 24 h re-downgrades at
+    /// the next injection.
     pub probation: bool,
+    /// When the probation turn opened (ms). `None` for a record written before this field existed.
+    #[serde(default)]
+    pub probation_at: Option<u64>,
 }
 impl DowngradeRecord {
     fn blank(identity: &Identity) -> Self {
@@ -485,12 +491,14 @@ impl DowngradeRecord {
             downgraded_at: None,
             reason: None,
             probation: false,
+            probation_at: None,
         }
     }
     fn downgrade(&mut self, reason: &str, now: u64) {
         self.downgraded_at = Some(now);
         self.reason = Some(reason.to_owned());
         self.probation = false;
+        self.probation_at = None;
         self.misses.clear();
     }
     /// The step to inject with at `now`: a downgraded identity gets `userMessage` except on its
@@ -838,13 +846,25 @@ impl Step<'_> {
                 state.seen_attention_version = Some(page.attention_version);
                 state.generation = Some(claim.binding_generation);
                 let mut record = self.downgrade();
-                let step = record.step(self.runtime.now_ms);
+                let now = self.runtime.now_ms;
+                // A probation turn that never reached a `Stop` (agy killed) ends after 24 h.
+                if record.probation
+                    && record
+                        .probation_at
+                        .is_none_or(|at| now >= at.saturating_add(PROBATION_AFTER_MS))
+                {
+                    let reason = record.reason.clone().unwrap_or_else(|| "misses".to_owned());
+                    record.downgrade(&reason, now);
+                    save_downgrade(self.state_dir, &record);
+                }
+                let step = record.step(now);
                 if record.downgraded_at.is_some()
                     && !record.probation
                     && step == InjectionStep::SystemMessage
                 {
                     // The probation turn opens: one systemMessage retry.
                     record.probation = true;
+                    record.probation_at = Some(now);
                     save_downgrade(self.state_dir, &record);
                 }
                 let user = step == InjectionStep::UserMessage;
@@ -889,6 +909,13 @@ impl Step<'_> {
                     record.downgrade("misses", self.runtime.now_ms);
                 }
             }
+            save_downgrade(self.state_dir, &record);
+        } else if existed && record.probation && state.injected_this_turn {
+            // The probation turn ended without a confirm and without a miss (cancelled, an
+            // unrelated error, an unreadable or incomplete scan): it proved nothing, and
+            // userMessage is known to work, so fail safe with a fresh wait.
+            let reason = record.reason.clone().unwrap_or_else(|| "misses".to_owned());
+            record.downgrade(&reason, self.runtime.now_ms);
             save_downgrade(self.state_dir, &record);
         }
         if existed {

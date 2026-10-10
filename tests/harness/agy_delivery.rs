@@ -881,6 +881,87 @@ fn a_confirmed_probation_frame_clears_the_downgrade() {
     assert_eq!(fake.confirmed().len(), 1);
 }
 
+/// A downgrade at 1000 and the probation turn opened 24 h later; returns the probation time.
+fn open_probation(rig: &Rig) -> u64 {
+    let a = ident("a");
+    missing_turn(rig, "stop-error-unknown-step.json", &runtime(1000, &a));
+    let at = 1000 + 24 * HOUR;
+    let out = rig.pre(0, &offering(), &runtime(at, &a));
+    assert_eq!(out, fixture_bytes("output-system-message.json"));
+    assert!(rig.record().unwrap().probation);
+    at
+}
+
+#[test]
+fn a_probation_confirmed_at_a_later_pre_invocation_clears_the_downgrade() {
+    let rig = Rig::new();
+    let at = open_probation(&rig);
+    rig.append(&frame_line());
+    let fake = Fake::with(vec![
+        confirmed(&["msg-a1"]),
+        pulled(DeliveryPullReply::Unchanged {
+            attention_version: 11,
+        }),
+    ]);
+    rig.pre(1, &fake, &runtime(at + 1, &ident("a")));
+    assert!(rig.record().is_none(), "the downgrade file is gone");
+}
+
+fn an_inconclusive_probation_stop_re_downgrades(stop_fixture: &str) {
+    let rig = Rig::new();
+    let at = open_probation(&rig);
+    let a = ident("a");
+    rig.stop(stop_fixture, &Fake::default(), &runtime(at, &a));
+    let record = rig.record().unwrap();
+    assert_eq!(record.downgraded_at, Some(at), "{stop_fixture}");
+    assert!(!record.probation, "{stop_fixture}");
+    assert_eq!(record.reason.as_deref(), Some("abort"), "{stop_fixture}");
+    assert_eq!(record.step(at + 1), InjectionStep::UserMessage);
+    assert_eq!(record.step(at + 24 * HOUR), InjectionStep::SystemMessage);
+}
+
+#[test]
+fn a_cancelled_probation_turn_re_downgrades_with_a_fresh_timestamp() {
+    an_inconclusive_probation_stop_re_downgrades("stop-cancelled.json");
+}
+
+#[test]
+fn an_errored_probation_turn_re_downgrades_with_a_fresh_timestamp() {
+    an_inconclusive_probation_stop_re_downgrades("stop-error-unrelated.json");
+}
+
+#[test]
+fn an_unreadable_transcript_ends_the_probation_turn() {
+    let rig = Rig::new();
+    let at = open_probation(&rig);
+    std::fs::remove_file(&rig.transcript).unwrap();
+    rig.stop(
+        "stop-no-tool-call.json",
+        &Fake::default(),
+        &runtime(at, &ident("a")),
+    );
+    let record = rig.record().unwrap();
+    assert_eq!(record.downgraded_at, Some(at));
+    assert!(!record.probation);
+}
+
+#[test]
+fn a_probation_with_no_stop_re_downgrades_at_the_next_injection_after_24_hours() {
+    let rig = Rig::new();
+    let at = open_probation(&rig);
+    let a = ident("a");
+    // Still inside the probation window: the turn continues with systemMessage.
+    let out = rig.pre(1, &offering(), &runtime(at + 24 * HOUR - 1, &a));
+    assert_eq!(out, fixture_bytes("output-system-message.json"));
+    assert_eq!(rig.record().unwrap().downgraded_at, Some(1000));
+    // 24 h with no Stop: the probation is over, and the injection is a userMessage.
+    let out = rig.pre(1, &offering(), &runtime(at + 24 * HOUR, &a));
+    assert_eq!(out, fixture_bytes("output-user-message.json"));
+    let record = rig.record().unwrap();
+    assert_eq!(record.downgraded_at, Some(at + 24 * HOUR));
+    assert!(!record.probation);
+}
+
 #[test]
 fn setup_clears_the_downgrade_record() {
     let temp = Temp::new();
