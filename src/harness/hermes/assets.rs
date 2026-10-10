@@ -1610,10 +1610,15 @@ mod tests {
         let lock = IndexLock::acquire(&f.state, false).unwrap();
         let mut oversized = lock.read().unwrap();
         oversized.selectors.clear();
+        // 32 selectors (the count cap) whose bytes exceed INDEX_MAX whatever
+        // the temp root's length: pad each row past INDEX_MAX / 32.
+        let mut long_row = row.clone();
+        long_row.home = long_row.home.join("y".repeat(300));
+        long_row.physical_home = long_row.physical_home.join("y".repeat(300));
         for i in 0..32 {
             oversized
                 .selectors
-                .insert(format!("{}-{i}", "x".repeat(250)), row.clone());
+                .insert(format!("{}-{i}", "x".repeat(250)), long_row.clone());
         }
         assert!(index_bytes(&oversized).is_err());
         let value = serde_json::to_string(&row).unwrap();

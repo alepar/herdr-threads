@@ -690,7 +690,8 @@ fn serialized() -> std::sync::MutexGuard<'static, ()> {
 fn private_root() -> PathBuf {
     // Short path: the host endpoint must stay a valid opaque id (<=128 bytes).
     let root = PathBuf::from(format!(
-        "/private/tmp/hk-{}",
+        "{}/hk-{}",
+        herdr_threads::test_support::SHORT_TMP,
         &Uuid::new_v4().simple().to_string()[..12]
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();

@@ -867,7 +867,7 @@ pub struct WitnessedResponse {
 /// when the ping itself was not answered.
 pub(crate) type PingObserver<'a> = dyn Fn(Option<HostRelease>) + Sync + 'a;
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod process_hint_tests {
     use super::*;
     use crate::{
@@ -1378,10 +1378,10 @@ fn witness_error(error_value: super::continuity::CaptureError) -> ApiError {
     )
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 #[path = "../../tests/host/witness_transport.rs"]
 mod witness_tests;
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 #[path = "../../tests/host/topology_creation.rs"]
 mod topology_creation;

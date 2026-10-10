@@ -1594,7 +1594,7 @@ struct ActualNativeFixture {
     /// Kicks the daemon's lanes for rows written on a separate connection.
     lanes: herdr_threads::app::LaneProbe,
     endpoint: std::path::PathBuf,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
     /// Live panes served by the private endpoint's snapshot and pane reads.
     panes: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
     _stdio: std::sync::MutexGuard<'static, ()>,
@@ -1612,7 +1612,7 @@ impl ActualNativeFixture {
         let stdio = super::IN_PROCESS_DAEMON
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let root = std::path::PathBuf::from("/private/tmp")
+        let root = std::path::PathBuf::from(herdr_threads::test_support::SHORT_TMP)
             .join(format!("herdr-actual-native-{}", Uuid::new_v4()));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let root_cleanup = ActualNativeRoot(root.clone());
@@ -1830,9 +1830,9 @@ impl ActualNativeFixture {
         };
         if let Some(snapshot) = probe {
             // The private endpoint is served by this process, so its response
-            // connections carry a kernel-witnessed server incarnation (macOS).
+            // connections carry a kernel-witnessed server incarnation (macOS, Linux).
             let snapshot = snapshot.unwrap();
-            let verified = cfg!(target_os = "macos");
+            let verified = herdr_threads::host::continuity::PEER_WITNESS_SUPPORTED;
             assert_eq!(
                 snapshot.enumeration,
                 if verified {
@@ -1852,7 +1852,7 @@ impl ActualNativeFixture {
         }
         fixture
     }
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
     /// Stop the elected daemon and start a new boot with a fresh production
     /// NativeCli (connection epoch 1) against the same private endpoint.
     fn restart(&mut self) {
@@ -1891,7 +1891,7 @@ impl ActualNativeFixture {
         }));
         self.descriptor = received.recv_timeout(Duration::from_secs(30)).unwrap();
     }
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
     fn resolve(
         &self,
         pane: &str,
@@ -1906,7 +1906,7 @@ impl ActualNativeFixture {
             &self.budget(),
         )
     }
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
     fn wait_for(&self, what: &str, mut done: impl FnMut(&rusqlite::Connection) -> bool) {
         let db = self.db();
         let until = Instant::now() + Duration::from_secs(30);
@@ -2103,7 +2103,7 @@ fn actual_native_snapshot_cancellation_closes_peer_before_elected_worker_join_an
 /// capture cannot retire proofless seats, and the unclaimed baseline target
 /// stays held for repair instead of being allocated. Kills: publishing a
 /// verified snapshot that retires saved seats or releases the recovery hold.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn actual_native_verified_baseline_holds_targets_and_cannot_retire_proofless_seats() {
     let mut fixture =
@@ -2139,7 +2139,7 @@ fn actual_native_verified_baseline_holds_targets_and_cannot_retire_proofless_sea
     );
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 fn host_state(db: &rusqlite::Connection) -> (Option<String>, i64, i64) {
     db.query_row(
         "SELECT active_snapshot_id,host_epoch,invalidation_revision FROM host_instances",
@@ -2156,7 +2156,7 @@ fn host_state(db: &rusqlite::Connection) -> (Option<String>, i64, i64) {
 /// StaleHostObservation), (3) invalidating the lane when Herdr says a
 /// mistyped pane does not exist, and (4) retirement never following a
 /// coherent same-incarnation absence.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn actual_native_verified_snapshot_resolves_live_pane_and_retires_it_after_close() {
     let fixture = ActualNativeFixture::start_with(false, 0, vec![actual_pane("w4:p1", "term_a")]);
@@ -2218,7 +2218,7 @@ fn actual_native_verified_snapshot_resolves_live_pane_and_retires_it_after_close
 /// `last_reconciliation_at = None`). Health must report the evidence the
 /// actual NativeCli observed: a verified coherent publication in the current
 /// server incarnation, and the time its reconciliation pass completed.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn actual_native_health_reports_observed_verified_host_evidence() {
     use herdr_threads::protocol::results::{CapabilityState, ComponentState};
@@ -2301,7 +2301,7 @@ fn actual_native_health_reports_observed_verified_host_evidence() {
 /// previous boot's publication, so nothing publishes after restart), and
 /// (2) strict structural-epoch equality for an existing owner (resolve of the
 /// same live terminal after restart is TargetUnresolved).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn actual_native_daemon_restart_keeps_same_terminal_seat_resolvable() {
     let mut fixture =
@@ -2343,7 +2343,7 @@ fn actual_native_daemon_restart_keeps_same_terminal_seat_resolvable() {
 /// rejection, never UnknownOutcome, and nothing is recorded.
 /// Kills: no `expected_boot` on the wire (the resolve would create a seat) and
 /// the client treating the refusal as an identity mismatch (UnknownOutcome).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn request_with_previous_boot_after_restart_is_daemon_boot_changed() {
     use herdr_threads::protocol::results::ErrorCode;
@@ -2387,7 +2387,7 @@ fn request_with_previous_boot_after_restart_is_daemon_boot_changed() {
 /// it, so the send-time availability projection (the one `stage_recipient`
 /// uses) still confirms the seat and the first send does not warn.
 /// Kills: no carry-forward on a resolved seat whose binding lags the epoch.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn restart_keeps_registered_seat_available(provenance: &str) {
     let mut fixture =
         ActualNativeFixture::start_with(false, 0, vec![actual_pane("w4:p1", "term_a")]);
@@ -2435,13 +2435,13 @@ fn restart_keeps_registered_seat_available(provenance: &str) {
     assert_eq!(ended, None);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn daemon_restart_keeps_joined_cooperative_seat_available_without_warning() {
     restart_keeps_registered_seat_available("cooperative_top_level");
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn daemon_restart_keeps_joined_human_seat_available() {
     restart_keeps_registered_seat_available("operator_human");

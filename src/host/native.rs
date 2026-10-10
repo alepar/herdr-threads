@@ -805,7 +805,7 @@ impl NativeCli {
             &["api", "snapshot"],
             budget,
             Duration::from_secs(2),
-            cfg!(target_os = "macos"),
+            super::continuity::PEER_WITNESS_SUPPORTED,
             false,
             false,
         )?;
@@ -915,7 +915,7 @@ impl NativeCli {
     }
 
     /// Identity reads carry the server-process witness of their own response
-    /// connections where the platform supports it (macOS). Elsewhere the
+    /// connections where the platform supports it (macOS, Linux). Elsewhere the
     /// witness is absent and incarnation stays Unknown.
     fn run_witnessed(
         &self,
@@ -923,7 +923,14 @@ impl NativeCli {
         budget: &CallBudget,
         limit: Duration,
     ) -> Result<(String, Option<LocalEndpointWitness>), ApiError> {
-        self.dispatch(args, budget, limit, cfg!(target_os = "macos"), true, false)
+        self.dispatch(
+            args,
+            budget,
+            limit,
+            super::continuity::PEER_WITNESS_SUPPORTED,
+            true,
+            false,
+        )
     }
 
     /// `None` (a ping refused by the floor) clears the observation.
@@ -1140,9 +1147,9 @@ impl HostPort for NativeCli {
     fn native_launch_capability(&self) -> NativeLaunchCapability {
         // Herdr 0.9.1 `agent.start` checks shell ownership and prompt
         // readiness itself. The same-incarnation preflight needs the kernel
-        // peer witness, which exists only on macOS; elsewhere every
-        // observation is unverified and launch stays unsupported.
-        if cfg!(target_os = "macos") {
+        // peer witness (macOS and Linux); elsewhere every observation is
+        // unverified and launch stays unsupported.
+        if super::continuity::PEER_WITNESS_SUPPORTED {
             NativeLaunchCapability::HostGuardedStart
         } else {
             NativeLaunchCapability::Unsupported
@@ -1543,10 +1550,10 @@ impl HostPort for NativeCli {
         NativeCli::resume_after_epoch(self, persisted);
     }
 
-    /// Cooperative safe prompt needs the kernel peer witness (macOS) for its
+    /// Cooperative safe prompt needs the kernel peer witness (macOS, Linux) for its
     /// same-incarnation recheck and submission.
     fn safe_prompt_capability(&self) -> CapabilityState {
-        if cfg!(target_os = "macos") {
+        if super::continuity::PEER_WITNESS_SUPPORTED {
             CapabilityState::Supported
         } else {
             CapabilityState::Unsupported
@@ -1558,9 +1565,9 @@ impl HostPort for NativeCli {
     }
 
     fn incarnation_witness(&self) -> crate::protocol::results::CapabilityState {
-        // The kernel peer PID/start-time witness exists only on macOS; other
-        // platforms report Unknown incarnation on every read.
-        if cfg!(target_os = "macos") {
+        // The kernel peer PID/start-time witness exists on macOS and Linux;
+        // other platforms report Unknown incarnation on every read.
+        if super::continuity::PEER_WITNESS_SUPPORTED {
             crate::protocol::results::CapabilityState::Unknown
         } else {
             crate::protocol::results::CapabilityState::Unsupported
@@ -2490,7 +2497,7 @@ pub(crate) mod tests {
         (request, context, observation)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) struct HintSocketFixture {
         cli: NativeCli,
         socket: PathBuf,
@@ -2501,7 +2508,7 @@ pub(crate) mod tests {
         listener: Arc<std::sync::Mutex<Option<UnixListener>>>,
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     impl HintSocketFixture {
         pub(crate) fn new<F>(mut response: F) -> Self
         where
@@ -2653,14 +2660,14 @@ pub(crate) mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     impl Drop for HintSocketFixture {
         fn drop(&mut self) {
             self.close();
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn process_hint_old_host_receives_zero_start_frames() {
         for capabilities in [
@@ -2713,7 +2720,7 @@ pub(crate) mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn process_hint_default_route_omits_field() {
         let (mut request, mut context, mut observation) = launch_fixture();
@@ -2752,7 +2759,7 @@ pub(crate) mod tests {
         assert!(correlation.matches_request(&request, &context));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn process_hint_policy_mode_mismatch_is_not_submitted() {
         for required in [false, true] {
@@ -2792,7 +2799,7 @@ pub(crate) mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn process_hint_actual_peer_must_match_preflight_before_start_write() {
         let (mut request, mut context, mut observation) = launch_fixture();
@@ -2841,7 +2848,7 @@ pub(crate) mod tests {
         assert_eq!(failure.submission, ports::NativeSubmission::NotSubmitted);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn process_hint_native_start_preserves_argv_and_ready_working_correlation() {
         for readiness in ["ready", "working", "pending"] {
@@ -2913,7 +2920,7 @@ pub(crate) mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn task48_default_and_required_native_start_preserve_empty_correlation() {
         let mut observations = vec![];
@@ -2981,7 +2988,7 @@ pub(crate) mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn process_hint_retry_renegotiates_and_unknown_write_is_possible() {
         for case in [
@@ -3109,7 +3116,7 @@ pub(crate) mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn process_hint_invalid_native_argv_is_not_submitted_in_either_mode() {
         for required in [false, true] {
@@ -3158,7 +3165,7 @@ pub(crate) mod tests {
             }
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn task48_empty_return_mismatches_and_prewrite_internal_mode_budget_fences() {
         for required in [false, true] {
@@ -4042,7 +4049,7 @@ pub(crate) mod tests {
             assert_eq!(observation.focused, focused);
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn recheck_exchange(agent: Value) -> Exchange {
         Box::new(move |stream: &mut UnixStream, request: Value| {
             assert_eq!(request["method"], "agent.get");
@@ -4060,7 +4067,7 @@ pub(crate) mod tests {
             expected_epoch: Some(observation.epoch),
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     /// Reads the target with a real witnessed `pane.get`, derives the
     /// cooperative target, then submits with the remaining exchanges.
     fn cooperative_wake(
@@ -4074,7 +4081,7 @@ pub(crate) mod tests {
     /// A slot through which an exchange reaches the adapter under test (to
     /// change its state mid-call, as a concurrent host call would).
     type CliSlot = Arc<std::sync::OnceLock<Arc<NativeCli>>>;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     /// [`cooperative_wake`] with the adapter published into `slot` before
     /// submission and `tamper` applied to the derived target and context.
     fn cooperative_wake_with(
@@ -4087,7 +4094,7 @@ pub(crate) mod tests {
     ) {
         cooperative_wake_in(registry::builtins(), rest, slot, tamper)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn cooperative_wake_in(
         registry: &'static Registry,
         rest: Vec<Exchange>,
@@ -4147,7 +4154,7 @@ pub(crate) mod tests {
     }
 
     /// Catches an ordinary native wake bypassing the composer and submitting a draft.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn nudge_safety_refuses_nonempty_or_unreadable_composer() {
         for text in [
@@ -4176,7 +4183,7 @@ pub(crate) mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn nudge_safety_focused_empty_composer_starts_waiting_without_prompt() {
         let mut agent = wake_agent("idle", Some("claude"), "term_1");
@@ -4246,7 +4253,7 @@ pub(crate) mod tests {
         assert!(!sample(180_003, &moved, true), "refocus starts a new wait");
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn nudge_safety_focused_empty_wakes_after_one_minute() {
         let clock = Arc::new(NudgeClock(AtomicU64::new(0)));
@@ -4486,7 +4493,7 @@ pub(crate) mod tests {
         ))
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn injected_registry_alias_reaches_actual_wake_submission_and_refuses_busy_or_mismatch() {
         for status in ["idle", "done"] {
@@ -4548,7 +4555,7 @@ pub(crate) mod tests {
     }
 
     // Kills a composer consumer that ignores its injected registry or switches on legacy IDs.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn injected_fourth_composer_reads_clears_and_restores_without_submitting_a_draft() {
         let (saved, methods) = poke_session_in(
@@ -4653,7 +4660,7 @@ pub(crate) mod tests {
             cli.send_submit_key(&target, &context).unwrap_err().code,
             ErrorCode::UnsupportedHarness
         );
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             assert_eq!(
                 cli.stash_composer(&target, &context).unwrap(),
@@ -4670,7 +4677,7 @@ pub(crate) mod tests {
 
     /// Idle and done agents of a recognized harness are prompted only after
     /// a fresh recheck, and `Submitted` is transport submission only.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn cooperative_wake_prompts_recognized_idle_or_done_agent_after_recheck() {
         for (status, kind) in [
@@ -4720,19 +4727,19 @@ pub(crate) mod tests {
     /// TRUST-POLICY A4 wake rule: the pane's detected agent kind must equal
     /// the seat's bound harness; a different kind (both directions) or no
     /// detected kind refuses before any prompt, a matching kind is prompted.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn cooperative_wake_refuses_claude_bound_seat_with_codex_agent() {
         bound_harness_wake_refused("claude", Some("codex"));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn cooperative_wake_refuses_codex_bound_seat_with_claude_agent() {
         bound_harness_wake_refused("codex", Some("claude"));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn cooperative_wake_refuses_codex_bound_seat_without_detected_agent() {
         bound_harness_wake_refused("codex", None);
@@ -4740,7 +4747,7 @@ pub(crate) mod tests {
 
     /// A cooperative target with no bound harness is refused, never compared
     /// with the detected agent kind as "any recognized kind".
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn cooperative_wake_refuses_target_without_bound_harness() {
         let (result, methods) = cooperative_wake_with(
@@ -4762,7 +4769,7 @@ pub(crate) mod tests {
         assert_eq!(*methods.lock().unwrap(), ["pane.get", "agent.get"]);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn bound_harness_wake_refused(bound: &'static str, detected: Option<&str>) {
         let (result, methods) = cooperative_wake_with(
             vec![recheck_exchange(wake_agent("idle", detected, "term_1"))],
@@ -4783,7 +4790,7 @@ pub(crate) mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn cooperative_wake_prompts_matching_bound_harness() {
         for kind in ["claude", "codex"] {
@@ -4820,7 +4827,7 @@ pub(crate) mod tests {
     /// Eligibility matrix at the recheck: working, blocked and unknown
     /// statuses, a shell (no agent), an unrecognized program and a different
     /// terminal are refused before any prompt is sent.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn cooperative_wake_refuses_ineligible_agents_before_any_prompt() {
         let cases: Vec<(&str, Exchange)> = vec![
@@ -4878,7 +4885,7 @@ pub(crate) mod tests {
 
     /// Herdr's own pre-input refusal is a refusal; a submission without a
     /// correlated answer is honestly unknown and never retried here.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn cooperative_wake_classifies_refused_and_unknown_submissions() {
         let blocked: Exchange = Box::new(|stream: &mut UnixStream, request: Value| {
@@ -4949,7 +4956,7 @@ pub(crate) mod tests {
     /// method to `HT_FAKE_HOST_LOG`, answers `ping` and `agent.get` (an idle
     /// claude agent in `term_1`), refuses anything else, and exits when its
     /// stdin closes. Without the variable it is a no-op test.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn restarted_host_process() {
         let Ok(socket) = std::env::var("HT_FAKE_HOST_SOCKET") else {
@@ -4999,7 +5006,7 @@ pub(crate) mod tests {
     /// different process (incarnation B) listens on the same endpoint and
     /// answers the `agent.get` recheck. Returns the submission result and the
     /// methods server B saw.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn cooperative_wake_after_host_restart() -> (Result<ports::PromptOutcome, ApiError>, Vec<String>)
     {
         let (socket, cli, worker) = serve_sequence(vec![pane_exchange()]);
@@ -5069,7 +5076,7 @@ pub(crate) mod tests {
     /// `agent.prompt` is never sent. The host really changes: nothing here
     /// edits the target. Kills: dropping the post-recheck
     /// `same_incarnation`/epoch check.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn cooperative_wake_refuses_when_incarnation_or_epoch_moves_during_recheck() {
         let (result, seen) = cooperative_wake_after_host_restart();
@@ -5106,7 +5113,7 @@ pub(crate) mod tests {
     /// may have been answered after typing began, so it is OutcomeUnknown,
     /// never a refusal, and it is never replayed. Kills: mapping unknown
     /// codes to a pre-input refusal or retrying the prompt.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn cooperative_wake_unrecognised_prompt_error_is_unknown_without_replay() {
         let weird: Exchange = Box::new(|stream: &mut UnixStream, request: Value| {
@@ -5145,7 +5152,10 @@ pub(crate) mod tests {
         cli.epoch.store(3, Ordering::Release);
         let seat = SeatId::new("seat_1");
         let target = cli.safe_wake_target(&seat, &observation);
-        assert_eq!(target.is_some(), cfg!(target_os = "macos"));
+        assert_eq!(
+            target.is_some(),
+            crate::host::continuity::PEER_WITNESS_SUPPORTED
+        );
         type Change = Box<dyn Fn(&mut HostObservation)>;
         let refused: Vec<(&str, Change)> = vec![
             (
@@ -5186,7 +5196,7 @@ pub(crate) mod tests {
         typed.ui = HostUiState::HumanInput;
         assert_eq!(
             cli.safe_wake_target(&seat, &typed).is_some(),
-            cfg!(target_os = "macos"),
+            crate::host::continuity::PEER_WITNESS_SUPPORTED,
             "typed input is a safe wake target"
         );
         let Some(target) = target else { return };
@@ -5224,7 +5234,7 @@ pub(crate) mod tests {
     const CLAUDE_DRAFT: &str = include_str!(
         "../../docs/evidence/poke-spike/captures/claude-q1-q2-single.read-detection.txt"
     );
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     const CLAUDE_IMAGE: &str = include_str!(
         "../../docs/evidence/poke-spike/captures/claude-q2-image-placeholder.read-detection.txt"
     );
@@ -5265,7 +5275,7 @@ pub(crate) mod tests {
             refuse(stream, &request, "agent_not_found");
         })
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn clear_exchange() -> Exchange {
         Box::new(|stream: &mut UnixStream, request: Value| {
             assert_eq!(request["method"], "pane.send_keys");
@@ -5276,7 +5286,7 @@ pub(crate) mod tests {
             answer(stream, &request, json!({"type":"ok"}));
         })
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn retype_exchange(text: &'static str, ok: bool) -> Exchange {
         Box::new(move |stream: &mut UnixStream, request: Value| {
             assert_eq!(request["method"], "pane.send_text");
@@ -5288,7 +5298,7 @@ pub(crate) mod tests {
             }
         })
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn prompt_exchange(text: &'static str) -> Exchange {
         Box::new(move |stream: &mut UnixStream, request: Value| {
             assert_eq!(request["method"], "agent.prompt");
@@ -5305,14 +5315,14 @@ pub(crate) mod tests {
     /// derives the poke target for a claude-bound seat, and hands the adapter,
     /// target and context to `act` while the scripted exchanges serve. Returns
     /// `act`'s result and the methods the host saw, in order.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn poke_session<T>(
         rest: Vec<Exchange>,
         act: impl FnOnce(&NativeCli, &SafeWakeTarget, &HostCallContext) -> T,
     ) -> (T, Vec<String>) {
         poke_session_in(registry::builtins(), rest, act)
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn poke_session_in<T>(
         registry: &'static Registry,
         rest: Vec<Exchange>,
@@ -5362,7 +5372,7 @@ pub(crate) mod tests {
     /// Kills: a clear that skips the verifying read, sends the poke before
     /// the composer is empty, retypes with a different text or presses Enter
     /// after retyping.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn clear_verifies_before_the_poke() {
         let ((stash, prompt, restore), methods) = poke_session(
@@ -5405,7 +5415,7 @@ pub(crate) mod tests {
 
     /// A multi-line draft needs one clear per line; the stash keeps clearing
     /// until a read shows the composer empty. Kills: a single fixed clear.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn stash_clears_until_the_composer_reads_empty() {
         let (stash, methods) = poke_session(
@@ -5432,7 +5442,7 @@ pub(crate) mod tests {
     }
 
     /// Kills: a stash that continues after a failed composer read.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn read_failure_aborts_before_any_input() {
         let (stash, methods) = poke_session(
@@ -5446,7 +5456,7 @@ pub(crate) mod tests {
     /// Kills: treating a composer that never empties as stashed (the poke
     /// would merge into the person's text). The cap is one clear per line
     /// plus the slack, and the typed text is not lost silently.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn clear_not_verified_aborts() {
         let mut exchanges = vec![];
@@ -5469,7 +5479,7 @@ pub(crate) mod tests {
     }
 
     /// A failed clear key is a stash failure, not a skipped step.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn clear_key_failure_aborts() {
         let failing_keys: Exchange = Box::new(|stream: &mut UnixStream, request: Value| {
@@ -5488,7 +5498,7 @@ pub(crate) mod tests {
 
     /// Claude text may be a prompt suggestion, so the stash refuses before
     /// any key (the poke is skipped for that poke only).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn claude_text_fails_stash_before_any_key() {
         for screen in [
@@ -5509,7 +5519,7 @@ pub(crate) mod tests {
 
     /// Findings Q4: a retyped image placeholder comes back as literal text, so
     /// the stash refuses before sending any key. Kills: stashing past it.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn unsafe_condition_from_findings_fails_stash() {
         let (stash, methods) = poke_session(
@@ -5525,7 +5535,7 @@ pub(crate) mod tests {
 
     /// A failed retype is an error for the dispatcher, which logs the saved
     /// text and keeps the poke counted (see the dispatcher's own test).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn retype_failure_is_returned_for_the_dispatcher_to_log() {
         let (restore, methods) = poke_session(
@@ -5538,7 +5548,7 @@ pub(crate) mod tests {
 
     /// Kills: an unfenced stash or restore (a changed host epoch must refuse
     /// before any input).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn stash_and_restore_refuse_a_changed_host_context() {
         let (results, methods) = poke_session(vec![], |cli, target, context| {
@@ -5556,7 +5566,7 @@ pub(crate) mod tests {
 
     /// Empty composer is not idle evidence: both prompt entry points refuse
     /// a working agent before composer I/O or any submitted input.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn active_turn_attention_is_refused_for_codex_and_claude() {
         for kind in ["codex", "claude"] {
@@ -5580,7 +5590,7 @@ pub(crate) mod tests {
     }
 
     /// Blocked UI is refused even in the during-turn mode.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn during_turn_mode_still_refuses_a_blocked_agent() {
         let (result, methods) = poke_session(
@@ -5992,7 +6002,7 @@ pub(crate) mod tests {
         let labels = outcome.unwrap();
         assert_eq!(wires.len(), 1);
         assert_eq!(labels[0].terminal, "term_1");
-        if cfg!(target_os = "macos") {
+        if crate::host::continuity::PEER_WITNESS_SUPPORTED {
             assert!(
                 labels[0]
                     .incarnation

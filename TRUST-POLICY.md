@@ -585,6 +585,12 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   or stale cursor; scope, direction and order are still compared exactly). Send-preparation ids are drawn from
   62^8 ≈ 2^47.6; reuse of a retired id has probability about (retired ids) × 2^-47.6 and is harmless once
   nothing references it.
+- **The Herdr incarnation is a same-process inference.** The daemon names a Herdr incarnation by the kernel
+  peer of its API socket: PID, effective UID and process start time (macOS `proc_pidinfo`, microseconds;
+  Linux `SO_PEERCRED` and procfs, boot time plus clock-tick start, typically 10 ms). A new process reusing
+  the PID within the same start tick would read as the same incarnation. On Linux a wall-clock step moves
+  the boot time, so the same server then reads as a new incarnation: holds (C2), never a false match.
+  Other platforms have no witness: every observation is unverified and host-observed flows refuse.
 - **Mod delivery claims are cooperative.** A same-user process could run `herdr-threads watch ack` and settle
   receipts as `cooperative_mod_delivery`; the daemon checks the canonical binding, its generation and a live
   channel, not the process.

@@ -349,7 +349,8 @@ impl Rig {
     fn with_settings(settings: Option<Value>) -> Self {
         let guard = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
         let root = PathBuf::from(format!(
-            "/private/tmp/htmd-{}",
+            "{}/htmd-{}",
+            herdr_threads::test_support::SHORT_TMP,
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();

@@ -190,7 +190,8 @@ struct HookRun {
 impl Rig {
     fn new(version: Option<&str>) -> Self {
         let root = PathBuf::from(format!(
-            "/private/tmp/ht-hve-{}",
+            "{}/ht-hve-{}",
+            herdr_threads::test_support::SHORT_TMP,
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         ));
         for dir in ["", "st", "bin", "home", "work"] {

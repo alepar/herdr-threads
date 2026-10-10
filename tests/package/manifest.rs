@@ -101,8 +101,16 @@ fn installed_herdr() -> PathBuf {
         "herdr 0.9.1"
     );
     let hash = format!("{:x}", Sha256::digest(fs::read(&path).unwrap()));
+    // GitHub release asset digests of Herdr 0.9.1, per platform.
+    let pinned = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "5fc7a7e7adfaca56fa80aa89dcb025693357268dab8285b9ce2d08a2313c89de",
+        ("macos", "x86_64") => "053be0639935fe54ab5efbdb46651054e4f6a753a5b43153c88bd6912bce1e94",
+        ("linux", "x86_64") => "2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7",
+        ("linux", "aarch64") => "f4ccf4de745f2cb9a39a983e9ba3703dad50ec2a58dea83026ceab721bbd8d9e",
+        other => panic!("no pinned Herdr 0.9.1 digest for {other:?}"),
+    };
     assert_eq!(
-        hash, "5fc7a7e7adfaca56fa80aa89dcb025693357268dab8285b9ce2d08a2313c89de",
+        hash, pinned,
         "installed Herdr differs from the pinned 0.9.1 binary"
     );
     eprintln!(

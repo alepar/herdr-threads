@@ -136,7 +136,8 @@ impl Fixture {
         lose_create_reply: bool,
         original_harness: Harness,
     ) -> Self {
-        let root = PathBuf::from("/private/tmp").join(format!("ht-a-{}", Uuid::new_v4()));
+        let root = PathBuf::from(herdr_threads::test_support::SHORT_TMP)
+            .join(format!("ht-a-{}", Uuid::new_v4()));
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)

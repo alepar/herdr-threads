@@ -8,7 +8,8 @@ use std::{
 use uuid::Uuid;
 
 fn dir() -> std::path::PathBuf {
-    let p = std::path::PathBuf::from("/private/tmp").join(format!("ht-context-{}", Uuid::new_v4()));
+    let p = std::path::PathBuf::from(crate::test_support::SHORT_TMP)
+        .join(format!("ht-context-{}", Uuid::new_v4()));
     fs::create_dir(&p).unwrap();
     #[cfg(unix)]
     {
