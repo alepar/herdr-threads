@@ -2,6 +2,7 @@
 pub mod attention_oracle;
 pub mod counting_client;
 pub mod failpoints;
+pub mod harness_shim;
 pub mod history;
 #[cfg(feature = "test-support")]
 pub mod isolated_herdr;

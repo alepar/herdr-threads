@@ -9,6 +9,7 @@ pub mod attribution;
 #[cfg(test)]
 #[path = "../../tests/harness/attribution.rs"]
 mod attribution_tests;
+pub mod caller_env;
 #[cfg(test)]
 #[path = "../../tests/harness/canary_payloads.rs"]
 mod canary_payloads;

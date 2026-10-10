@@ -246,6 +246,26 @@ pub(crate) fn recheck_witness(
     Ok(after)
 }
 
+/// `(ppid, start ticks)` from a `/proc/<pid>/stat` line: fields 4 and 22. The command name
+/// (field 2) is parenthesized and may itself contain spaces and parentheses, so fields are
+/// counted after its last `)`. Pure, so it is testable on every OS.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn parse_proc_stat(stat: &str) -> Result<(u32, u64), CaptureError> {
+    let rest = stat
+        .rfind(')')
+        .map(|end| &stat[end + 1..])
+        .ok_or(CaptureError::InvalidProcessInfo)?;
+    let mut fields = rest.split_ascii_whitespace();
+    let ppid = fields
+        .nth(1)
+        .and_then(|field| field.parse().ok())
+        .ok_or(CaptureError::InvalidProcessInfo)?;
+    let start = fields
+        .nth(17)
+        .and_then(|field| field.parse().ok())
+        .ok_or(CaptureError::InvalidProcessInfo)?;
+    Ok((ppid, start))
+}
 /// Linux process records from procfs. The start time is `btime` plus the
 /// process's start in clock ticks since boot (tick granularity, typically
 /// 10 ms). A wall-clock step moves `btime`, so a stepped clock reads as a new
@@ -293,18 +313,8 @@ mod linux {
         parse_start_ticks(&std::fs::read_to_string(dir.join("stat")).map_err(read_error)?)
     }
 
-    /// Field 22 of `/proc/<pid>/stat`. The command name (field 2) is
-    /// parenthesized and may itself contain spaces and parentheses, so fields
-    /// are counted after its last `)`.
     pub(super) fn parse_start_ticks(stat: &str) -> Result<u64, CaptureError> {
-        let rest = stat
-            .rfind(')')
-            .map(|end| &stat[end + 1..])
-            .ok_or(CaptureError::InvalidProcessInfo)?;
-        rest.split_ascii_whitespace()
-            .nth(19)
-            .and_then(|field| field.parse().ok())
-            .ok_or(CaptureError::InvalidProcessInfo)
+        super::parse_proc_stat(stat).map(|(_, start)| start)
     }
 
     /// The effective uid: the second value of the `Uid:` line, the identity
