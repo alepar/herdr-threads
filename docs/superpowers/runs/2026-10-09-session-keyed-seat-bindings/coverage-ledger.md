@@ -30,3 +30,11 @@ c2-14 · r2 · UNOWNED-SEAM · Codex/Hermes hook registration · applied — own
 c2-15 · r2 · UNOWNED-SEAM · migrated-binding marker · applied — .1 owns marker + session key; .22/.24 consume
 c2-16 · r2 · UNOWNED-SEAM · readers sweep scope · applied — .21 owns exactly its enumerated list, hits listed with owners
 c2-17 · r2 · UNOWNED-SEAM · launch placeholder replace · applied — .4 owns enroll-hook replace via .1 registry and sole disconnect
+g-01 · graph · GRAPH-EDGE · ht-54r.8 <- ht-54r.20 · applied — obligations come via .7's inbox page
+g-02 · graph · GRAPH-EDGE · ht-54r.22 <- ht-54r.7 · applied (repoint to .1) — contract stubs + has_unread signature
+g-03 · graph · GRAPH-EDGE · ht-54r.17 <- ht-54r.20 · applied (repoint to .7) — lineage copy is read_cursors::seed
+g-04 · graph · GRAPH-EDGE · ht-54r.16 <- ht-54r.23 · applied — presence reads seat_active
+g-05 · graph · GRAPH-EDGE · ht-54r.13 <- ht-54r.12 · applied (repoint to .1) — mod-channel lookup signature in contract
+g-06 · graph · GRAPH-EDGE · ht-54r.24 <- ht-54r.11 · applied (repoint to .1) — REQUIRED_HOOK_EVENTS constants in contract
+g-07 · graph · GRAPH-EDGE · ht-54r.12 <- ht-54r.7 · applied (repoint to .1) — has_unread signature in contract
+g-08 · graph · PROPOSAL · split src/store/summary.rs · declined — optional, human chose the depth-6 set without it
