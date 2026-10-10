@@ -232,10 +232,6 @@ model open work, and summary closure never changes receipt state or installs glo
   itself more than 10 minutes old; the daemon closes it (`stalled`) and refuses re-registration of that
   binding generation for 10 minutes, so the native ladder with its composer guards is the only delivery path
   during the cooldown (contract; implemented by ht-j16.2 and ht-j16.4).
-- *Hook-pull delivery*: a harness whose adapter declares `HookPull` has no channel and no wake change: the
-  existing native wake applies, and its turn's `PreInvocation` pull delivers. Tool-boundary check-ins of such a
-  seat omit the attention digest and ready commands; its lifecycle check-in keeps them. Pending attention stays
-  pending, and deadlines and hard-deadline warnings keep running.
   - *Idle is read, not assumed.* Herdr's `agent_status` does not show typed input, so the adapter also reads
     the composer (`agent read --source detection`). The state is idle only when `agent_status` is `idle` or
     `done` and the composer is empty; composer text is typed input (human input); a `working` status with an
@@ -277,6 +273,10 @@ model open work, and summary closure never changes receipt state or installs glo
   - *Retry spacing.* A seat whose poke was skipped or failed is re-evaluated no sooner than the wake retry
     spacing afterwards, so an ineligible seat costs one observation per spacing rather than one per tick.
     The spacing is in memory; a restart re-evaluates once.
+- *Hook-pull delivery*: a harness whose adapter declares `HookPull` has no channel and no wake change: the
+  existing native wake applies, and its turn's `PreInvocation` pull delivers. Tool-boundary check-ins of such a
+  seat omit the attention digest and ready commands; its lifecycle check-in keeps them. Pending attention stays
+  pending, and deadlines and hard-deadline warnings keep running.
 
 **A5. Who may do what.**
 
