@@ -89,11 +89,14 @@ jobs:
         # cargo build selects dev, so it would not warm optimized test artifacts.
         run: cargo test --locked --all-targets --all-features --no-run
 
-      - name: Build release proof fixture
-        # The package suite builds/checks both feature configurations and
-        # preserves each binary for its proof; prepare the test-support
-        # release build before the timer, as Locked build does for the tests.
-        run: cargo build --locked --release --features test-support
+      - name: Build release proof fixtures
+        # tests/service/check_failpoints_absent.sh (package suite) builds the
+        # ordinary and the test-support release and compares them. Build both
+        # before the timer, as Locked build does for the tests; otherwise the
+        # suite compiles a release mid-run and starves timing-bound tests.
+        run: |
+          cargo build --locked --release
+          cargo build --locked --release --features test-support
 
       - name: Tests (parallel, shard ${{ matrix.shard }}/2)
         # cargo-nextest, one process per test, every binary in one pool; the

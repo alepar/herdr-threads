@@ -39,7 +39,7 @@ Nothing in this repository establishes an inference-interruption guarantee, exac
 
 The `tests` job runs in two parallel shards. Each shard:
 
-1. `cargo test --locked --all-targets --all-features --no-run` and the `test-support` release build, before the timer.
+1. `cargo test --locked --all-targets --all-features --no-run` and the ordinary and `test-support` release builds (the package suite compares them), before the timer.
 2. `cargo nextest run --locked --all-targets --all-features --profile ci --partition slice:N/2` (one process per test; test groups in `.config/nextest.toml`; the two slices split the sorted test list round-robin, about half the test time each). `--all-features` enables `test-support`. The package suite runs `check_failpoints_absent.sh`, which makes two extra release builds. Ignored tests (the package lifecycle gate and the 10^5 to 10^6 scale tests) do not run. Each shard fails at 300 s wall clock.
 3. `scripts/check-no-leaked-processes`, even after a failure.
 
