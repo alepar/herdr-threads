@@ -283,6 +283,8 @@ trait ErasedAdapter: Send + Sync {
     fn installer_policy(&self) -> Option<&dyn InstallerPolicy>;
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy>;
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy>;
+    fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence;
+    fn hook_step(&self) -> Option<&dyn HookStep>;
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy>;
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
     fn text(&self) -> &'static AdapterText;
@@ -480,6 +482,12 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         self.0.composer_policy()
+    }
+    fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+        self.0.local_evidence(request)
+    }
+    fn hook_step(&self) -> Option<&dyn HookStep> {
+        self.0.hook_step()
     }
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         self.0.delivery_policy()
@@ -1080,6 +1088,12 @@ impl Registration {
     }
     pub fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         self.adapter.composer_policy()
+    }
+    pub fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+        self.adapter.local_evidence(request)
+    }
+    pub fn hook_step(&self) -> Option<&dyn HookStep> {
+        self.adapter.hook_step()
     }
     pub fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         self.adapter.delivery_policy()

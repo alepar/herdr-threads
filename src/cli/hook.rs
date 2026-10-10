@@ -1443,6 +1443,30 @@ fn bridge_failure(error: bridge::BridgeError) -> Failure {
     }
 }
 
+/// The client of an already running daemon of this instance: namespace, descriptor, protocol
+/// check, socket client. It never starts a daemon.
+fn connect_existing(
+    paths: &InstancePaths,
+    clock: Arc<dyn Clock>,
+) -> Result<(uuid::Uuid, LocalSocketClient), Failure> {
+    let instance = read_existing_namespace(paths)
+        .map_err(|e| Failure::Unavailable(format!("daemon namespace: {:?}", e.kind())))?
+        .ok_or_else(|| Failure::Unavailable("daemon namespace unavailable".into()))?;
+    let descriptor = read_descriptor(paths, instance)
+        .map_err(|e| Failure::Unavailable(format!("daemon endpoint: {:?}", e.kind())))?;
+    // Under version skew the daemon would drop this request at decode and the
+    // hook would wait out its whole budget; fail fast like every CLI client.
+    crate::daemon::lifecycle::check_protocol(&descriptor)
+        .map_err(|error| api_failure("daemon protocol", &error))?;
+    let client = LocalSocketClient::new(
+        descriptor.endpoint,
+        clock,
+        instance,
+        Some(descriptor.boot_id),
+    );
+    Ok((instance, client))
+}
+
 /// Composition over the existing daemon/client/bridge APIs. Returns bridge text.
 #[allow(clippy::too_many_arguments)]
 fn check_in(
@@ -1493,21 +1517,7 @@ fn check_in(
             });
         }
     }
-    let instance = read_existing_namespace(&paths)
-        .map_err(|e| Failure::Unavailable(format!("daemon namespace: {:?}", e.kind())))?
-        .ok_or_else(|| Failure::Unavailable("daemon namespace unavailable".into()))?;
-    let descriptor = read_descriptor(&paths, instance)
-        .map_err(|e| Failure::Unavailable(format!("daemon endpoint: {:?}", e.kind())))?;
-    // Under version skew the daemon would drop this request at decode and the
-    // hook would wait out its whole budget; fail fast like every CLI client.
-    crate::daemon::lifecycle::check_protocol(&descriptor)
-        .map_err(|error| api_failure("daemon protocol", &error))?;
-    let client = LocalSocketClient::new(
-        descriptor.endpoint,
-        Arc::clone(&clock),
-        instance,
-        Some(descriptor.boot_id),
-    );
+    let (instance, client) = connect_existing(&paths, Arc::clone(&clock))?;
     let stamp = |mut done: CheckedIn| {
         done.command_routing = CommandRouting::from_context(
             &instance.to_string(),
@@ -2603,7 +2613,7 @@ pub(crate) fn run_hook_registered(
         Ok(handle) => handle,
         Err(error) => return quiet_outcome(error.to_string()),
     };
-    let decoded = match registration.decode(&admitted, &input) {
+    let decoded = match decode_refined(registration, &admitted, &input, args, env, Instant::now()) {
         Ok(event) => event,
         Err(error) => {
             {
@@ -2621,16 +2631,149 @@ pub(crate) fn run_hook_registered(
             ));
         }
     };
-    run_admitted_hook(
+    run_admitted_hook_since(
         args,
         registration,
         &admitted,
         &decoded,
+        Some(&input),
         env,
         deadline,
+        Instant::now(),
+        None,
         clock,
         ensure_executable,
     )
+}
+/// The end-to-end bound of one event: the lifecycle budget for a lifecycle or qualified-turn
+/// intent, else the observer budget. Derived from the (refined) intent.
+fn event_bound(registration: &Registration, decoded: &DecodedEvent) -> Duration {
+    let lifecycle = matches!(
+        decoded.intent,
+        EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_)
+    );
+    crate::protocol::time::external_bound(event_budget(registration, lifecycle, None))
+}
+/// Decode, then fold the adapter's local evidence (D4). The decode stays pure; the evidence call
+/// gets half of the event's own provisional bound, and the refined intent and role are in place
+/// before any budget or branch uses them.
+fn decode_refined(
+    registration: &'static Registration,
+    admitted: &AdmittedHandle,
+    input: &HookInput,
+    args: &HookArgs,
+    env: &HookEnv,
+    started: Instant,
+) -> Result<DecodedEvent, DecodeFailure> {
+    let mut decoded = registration.decode(admitted, input)?;
+    let deadline = started + event_bound(registration, &decoded) / 2;
+    let harness: Harness = crate::harness::registry::OccupantHarness::Agent(decoded.harness).into();
+    let state_dir = adapter_state_dir(args, registration, false);
+    let home = std::env::var_os("HOME");
+    let pane_session = || {
+        pane_context_snapshot(args, env, harness, deadline).and_then(|context| {
+            match context.session {
+                SessionReference::Native(session) => Some(session),
+                SessionReference::PluginContext(_) => None,
+            }
+        })
+    };
+    let evidence = registration.local_evidence(&LocalEvidenceRequest {
+        input,
+        home: home.as_deref(),
+        state_dir: state_dir.as_deref(),
+        pane_session: &pane_session,
+        deadline,
+    });
+    evidence.refine(&mut decoded);
+    Ok(decoded)
+}
+/// `<instance_dir>/adapter-state/<id>/`. With `create`, every missing level is made private
+/// (0700); a level that is not a private directory yields `None`.
+fn adapter_state_dir(
+    args: &HookArgs,
+    registration: &Registration,
+    create: bool,
+) -> Option<PathBuf> {
+    let context =
+        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
+            .ok()?;
+    let instance_dir = crate::daemon::paths::instance_dir(&context);
+    let dir = instance_dir
+        .join("adapter-state")
+        .join(registration.metadata().id);
+    if create {
+        for level in [
+            context.state_dir.join("instances"),
+            instance_dir.clone(),
+            instance_dir.join("adapter-state"),
+            dir.clone(),
+        ] {
+            crate::daemon::paths::ensure_private_dir(&level).ok()?;
+        }
+    }
+    Some(dir)
+}
+struct HookStepClient<'a> {
+    client: &'a LocalSocketClient,
+    clock: &'a dyn Clock,
+    deadline: Instant,
+}
+impl HookStepDaemon for HookStepClient<'_> {
+    fn call(&self, command: Command) -> Result<CommandResult, ApiError> {
+        self.client
+            .call(command, &budget(self.deadline, self.clock))
+    }
+}
+/// Run the adapter's declared step for a top-level `Observer` event. It never starts a daemon.
+#[allow(clippy::too_many_arguments)]
+fn run_hook_step(
+    step: &dyn HookStep,
+    args: &HookArgs,
+    registration: &Registration,
+    decoded: &DecodedEvent,
+    input: &HookInput,
+    env: &HookEnv,
+    deadline: Instant,
+    clock: &dyn Clock,
+) -> HookOutcome {
+    let harness: Harness = crate::harness::registry::OccupantHarness::Agent(decoded.harness).into();
+    let claim = pane_context_snapshot(args, env, harness, deadline)
+        .filter(|context| {
+            matches!(
+                (&context.session, &decoded.native_session),
+                (SessionReference::Native(session), Some(native)) if session == native
+            )
+        })
+        .and_then(|context| bridge::caller_claim(&context).ok());
+    let connected =
+        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
+            .ok()
+            .and_then(|context| InstancePaths::resolve_read_only(&context).ok())
+            .and_then(|paths| connect_existing(&paths, Arc::new(SystemClock::new())).ok())
+            .map(|(_, client)| client);
+    let daemon = connected.as_ref().map(|client| HookStepClient {
+        client,
+        clock,
+        deadline,
+    });
+    let pane = pane_inputs();
+    let state = args.state_dir.clone().or_else(|| pane.env_state.clone());
+    let host = args.host_endpoint.clone().or_else(|| pane.env_host.clone());
+    let stdout = step.run(&HookStepContext {
+        input,
+        decoded,
+        claim,
+        daemon: daemon.as_ref().map(|daemon| daemon as &dyn HookStepDaemon),
+        state_dir: adapter_state_dir(args, registration, true),
+        command_prefix: cli_prefix(&pane_selectors(state.as_deref(), host.as_deref(), &pane)),
+        deadline,
+    });
+    HookOutcome {
+        stdout,
+        diagnostic: None,
+        attention: None,
+    }
 }
 fn decode_failure_detail(registration: &Registration, error: &DecodeFailure) -> String {
     match error {
@@ -2708,6 +2851,59 @@ fn child_endpoint_available(args: &HookArgs) -> bool {
     read_descriptor(&paths, instance)
         .is_ok_and(|descriptor| crate::daemon::lifecycle::check_protocol(&descriptor).is_ok())
 }
+/// The one context journal of this pane for `harness`, with its current snapshot. A bounded
+/// scan (at most 256 entries, within `deadline`); ambiguous or unreadable state is `None`.
+fn pane_context_journal(
+    args: &HookArgs,
+    env: &HookEnv,
+    harness: Harness,
+    deadline: Instant,
+) -> Option<(crate::harness::context::ContextJournal, OccupantContext)> {
+    let target = env.pane.as_deref()?;
+    let context =
+        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
+            .ok()?;
+    let paths = InstancePaths::resolve_read_only(&context).ok()?;
+    let instance = read_existing_namespace(&paths).ok()??;
+    let entries = std::fs::read_dir(paths.instance_dir.join("contexts")).ok()?;
+    let mut matching = None;
+    for (index, entry) in entries.enumerate() {
+        if index >= 256 || Instant::now() >= deadline {
+            return None;
+        }
+        let entry = entry.ok()?;
+        let Ok(Some(journal)) = crate::harness::context::ContextJournal::open_existing(
+            &entry.path(),
+            instance,
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(50)),
+        ) else {
+            continue;
+        };
+        if let Some(snapshot) = journal
+            .current_snapshot()
+            .ok()
+            .flatten()
+            .filter(|c| c.harness == harness && c.target == target)
+        {
+            if matching.is_some() {
+                return None;
+            }
+            matching = Some((journal, snapshot));
+        }
+    }
+    matching
+}
+/// The current context of this pane for `harness` (a client-local hint, never authority).
+fn pane_context_snapshot(
+    args: &HookArgs,
+    env: &HookEnv,
+    harness: Harness,
+    deadline: Instant,
+) -> Option<OccupantContext> {
+    pane_context_journal(args, env, harness, deadline).map(|(_, snapshot)| snapshot)
+}
 fn record_observer_reset(
     args: &HookArgs,
     decoded: &DecodedEvent,
@@ -2721,50 +2917,7 @@ fn record_observer_reset(
     let Some(target) = env.pane.as_deref() else {
         return;
     };
-    let Ok(context) =
-        RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
-    else {
-        return;
-    };
-    let Ok(paths) = InstancePaths::resolve_read_only(&context) else {
-        return;
-    };
-    let Ok(Some(instance)) = read_existing_namespace(&paths) else {
-        return;
-    };
-    let Ok(entries) = std::fs::read_dir(paths.instance_dir.join("contexts")) else {
-        return;
-    };
-    let mut matching = None;
-    for (index, entry) in entries.enumerate() {
-        if index >= 256 || Instant::now() >= deadline {
-            return;
-        }
-        let Ok(entry) = entry else {
-            return;
-        };
-        let Ok(Some(journal)) = crate::harness::context::ContextJournal::open_existing(
-            &entry.path(),
-            instance,
-            deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(50)),
-        ) else {
-            continue;
-        };
-        if journal
-            .current_snapshot()
-            .ok()
-            .flatten()
-            .is_some_and(|c| c.harness == args.harness && c.target == target)
-        {
-            if matching.is_some() {
-                return;
-            }
-            matching = Some(journal);
-        }
-    }
-    if let Some(journal) = matching {
+    if let Some((journal, _)) = pane_context_journal(args, env, args.harness, deadline) {
         let _ =
             bridge::record_declared_reset(&journal, args.harness, target, reset, clock.utc_now().0);
     }
@@ -2786,6 +2939,7 @@ pub fn run_admitted_hook(
         registration,
         admitted,
         decoded,
+        None,
         env,
         deadline,
         Instant::now(),
@@ -2800,6 +2954,7 @@ fn run_admitted_hook_since(
     registration: &'static Registration,
     admitted: &AdmittedHandle,
     decoded: &DecodedEvent,
+    input: Option<&HookInput>,
     env: &HookEnv,
     deadline: Instant,
     started: Instant,
@@ -2810,11 +2965,7 @@ fn run_admitted_hook_since(
     if let Err(error) = registration.validate_event(admitted, decoded) {
         return quiet_outcome(error.to_string());
     }
-    let lifecycle = matches!(
-        decoded.intent,
-        EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_)
-    );
-    let bound = crate::protocol::time::external_bound(event_budget(registration, lifecycle, None));
+    let bound = event_bound(registration, decoded);
     let deadline = deadline.min(Instant::now() + bound);
     let deadline = decoded
         .metadata
@@ -2849,6 +3000,23 @@ fn run_admitted_hook_since(
         || matches!(decoded.delivery, DeliveryEligibility::Ineligible)
     {
         return HookOutcome::default();
+    }
+    if let (EventRole::TopLevel, EventIntent::Observer, Some(step), Some(input)) = (
+        decoded.role,
+        &decoded.intent,
+        registration.hook_step(),
+        input,
+    ) {
+        return run_hook_step(
+            step,
+            args,
+            registration,
+            decoded,
+            input,
+            env,
+            deadline,
+            clock.as_ref(),
+        );
     }
     if !decoded.can_check_in() || !matches!(decoded.delivery, DeliveryEligibility::Context) {
         if matches!(decoded.role, EventRole::Subagent)
@@ -3217,33 +3385,26 @@ pub fn run_process_with(
                     Ok(admitted) => admitted,
                     Err(error) => return quiet_outcome(error.to_string()),
                 };
-                let event = match registration.decode(&admitted, &input) {
-                    Ok(event) => event,
-                    Err(error) => {
-                        {
-                            report_parse_failure_to_daemon(
-                                &args,
-                                &native_decode_error(&error),
-                                env,
-                                observation_deadline,
-                                Arc::clone(&clock),
-                            );
+                let event =
+                    match decode_refined(registration, &admitted, &input, &args, env, started) {
+                        Ok(event) => event,
+                        Err(error) => {
+                            {
+                                report_parse_failure_to_daemon(
+                                    &args,
+                                    &native_decode_error(&error),
+                                    env,
+                                    observation_deadline,
+                                    Arc::clone(&clock),
+                                );
+                            }
+                            return quiet_outcome(format!(
+                                "unsupported hook payload: {}",
+                                decode_failure_detail(registration, &error)
+                            ));
                         }
-                        return quiet_outcome(format!(
-                            "unsupported hook payload: {}",
-                            decode_failure_detail(registration, &error)
-                        ));
-                    }
-                };
-                let lifecycle = matches!(
-                    event.intent,
-                    EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_)
-                );
-                let event_bound = crate::protocol::time::external_bound(event_budget(
-                    registration,
-                    lifecycle,
-                    None,
-                ));
+                    };
+                let event_bound = event_bound(registration, &event);
                 let event_bound = event
                     .metadata
                     .callback_deadline
@@ -3259,6 +3420,7 @@ pub fn run_process_with(
                         registration,
                         &admitted,
                         &event,
+                        Some(&input),
                         env,
                         deadline,
                         started,
@@ -3356,6 +3518,10 @@ mod tests;
 #[cfg(test)]
 #[path = "../../tests/cli/hook_neutral.rs"]
 mod neutral_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "../../tests/cli/hook_local_evidence.rs"]
+mod local_evidence_tests;
 
 #[cfg(test)]
 fn native_event_name(event: &LifecycleEvent) -> &'static str {
