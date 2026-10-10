@@ -2,7 +2,7 @@
 
 flags: planOneShot=false skipPlanRoast=false skipCodeRoast=false autonomous=true
 resumeChange: 2026-10-09 · "let's /super-auto this. Fully autonomouns from now, both roasts on" · autonomous on after interactive root design approval; nested brainstorms Mode B; both roasts on (unchanged)
-phase: roast-design
+phase: code
 codeMechanism: Workflow
 
 spec: 2026-10-09-agy-harness-adapter-design.md
