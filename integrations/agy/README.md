@@ -123,6 +123,14 @@ Herdr installs its own `herdr` hook block in agy's global `~/.gemini/config/hook
 herdr-threads uses its own plugin (`hooks.json` inside the plugin directory) and leaves that
 global file and block untouched, so Herdr's agent detection and the plugin run side by side.
 
+## Hook output
+
+The plugin's hooks print one `injectSteps` step or nothing. A turn's later `PreInvocation` hooks
+and `Stop` print nothing when there is nothing to deliver, on any internal error and when the daemon is down. The
+lifecycle events — `SessionStart` and the first `PreInvocation` of a fresh, resumed or cleared session — run the
+shared check-in; with the daemon down they print the same one-line `herdr-threads: check-in unavailable (…)`
+notice Claude and Codex print, as one `systemMessage` step, and enroll nothing.
+
 ## Doctor
 
 `herdr-threads doctor` reports for agy:
