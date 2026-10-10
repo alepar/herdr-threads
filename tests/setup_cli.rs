@@ -4853,3 +4853,27 @@ fn stage_a_handoff_malformed_options_refuse_before_caller_connection() {
         assert!(!s.hooks().exists());
     }
 }
+
+/// Codex permissions are their own component: without consent setup writes
+/// no rules file, and a rules file at the owned name that setup did not write
+/// is reported foreign and survives setup and unsetup. Kills: granting without
+/// consent, or adopting or deleting a person's own rules file.
+#[test]
+fn codex_setup_writes_no_rules_without_consent_and_leaves_foreign_rules() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    let setup = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    assert_eq!(json(&setup)["permissions"]["state"], "not_installed");
+    assert!(!s.codex_home.join("rules").exists());
+    let rules = s.codex_home.join("rules/herdr-threads.rules");
+    fs::create_dir_all(rules.parent().unwrap()).unwrap();
+    fs::write(&rules, b"# mine\n").unwrap();
+    let status = json(&s.run(&["--json", "setup-status", "codex"]));
+    assert_eq!(status["permissions"]["state"], "foreign", "{status}");
+    let again = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    let unsetup = s.run(&["unsetup", "codex", "--json"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    assert_eq!(fs::read(&rules).unwrap(), b"# mine\n");
+}

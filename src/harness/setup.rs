@@ -1037,6 +1037,21 @@ pub(crate) fn write_user_config(
     write_replacement(path, bytes, false)
 }
 
+/// Delete a user configuration file whose bytes the caller just validated as `current`, keeping
+/// them first as a backup (see [`backup_user_config`]) unless they hold no settings.
+pub(crate) fn remove_user_config(path: &Path, current: &[u8]) -> Result<(), SetupError> {
+    if config_bytes(path)? != current {
+        return Err(SetupError::Conflict);
+    }
+    if !holds_no_settings(current) {
+        backup_user_config(path, current)?;
+    }
+    fs::remove_file(path).map_err(|_| SetupError::Io)?;
+    fs::File::open(path.parent().ok_or(SetupError::Invalid)?)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|_| SetupError::Io)
+}
+
 /// An empty file or empty JSON object (setup's own placeholder among them) has nothing to keep.
 fn holds_no_settings(current: &[u8]) -> bool {
     let trimmed: Vec<u8> = current

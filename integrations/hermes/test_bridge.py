@@ -371,7 +371,8 @@ class BridgeTests(unittest.TestCase):
 
     def test_bridge_callback_privacy_role_cache_deadlines_and_owned_child_reaping(self):
         self.load()
-        self.assertEqual(set(self.ctx.hooks), {"pre_llm_call", "post_tool_call", "on_session_start", "on_session_reset"})
+        self.assertEqual(set(self.ctx.hooks), {"pre_tool_call", "pre_llm_call", "post_tool_call",
+                                              "on_session_start", "on_session_reset"})
         self.assertEqual(self.request(), {"context": "bounded cooperative context"})
         captured = self.requests()[0]
         self.assertEqual(captured["argv"], ["--state-dir", str(self.state), "--host-endpoint", self.settings["host_endpoint"], "hook", "hermes"])
@@ -850,7 +851,7 @@ class BridgeTests(unittest.TestCase):
         failed.thread.join(2)
         self.assertFalse(failed.thread.is_alive())
         self.assertTrue(failed.bridge.closed)
-        self.assertEqual(context.hooks, {})
+        self.assertEqual(set(context.hooks), {"pre_tool_call"})
         self.assertEqual(self.children, [])
         self.load()
         self.assertIsNot(self.reader(), failed)
@@ -870,11 +871,11 @@ class BridgeTests(unittest.TestCase):
                          {**self.settings, "installation_token":"x"*257}):
             (self.asset / "bridge_config.json").write_text(json.dumps(settings))
             self.load(wait=False)
-            self.assertEqual(self.ctx.hooks, {})
+            self.assertEqual(set(self.ctx.hooks), {"pre_tool_call"})
             self.assertEqual(self.reads, [])
         (self.asset / "bridge_config.json").write_text(" " * 65537)
         self.load(wait=False)
-        self.assertEqual(self.ctx.hooks, {})
+        self.assertEqual(set(self.ctx.hooks), {"pre_tool_call"})
         self.assertEqual(self.reads, [])
         self.assertEqual(self.requests(), [])
 
@@ -954,7 +955,7 @@ class BridgeTests(unittest.TestCase):
     def test_missing_initialized_native_api_does_not_start_reader(self):
         del self.modules["hermes_cli.config"].load_config_readonly
         self.load(wait=False)
-        self.assertEqual(self.ctx.hooks, {})
+        self.assertEqual(set(self.ctx.hooks), {"pre_tool_call"})
         self.assertEqual(self.reads, [])
         self.assertEqual(self.requests(), [])
 
@@ -1117,6 +1118,43 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("PRIVATE", json.dumps(self.requests()))
         self.assertIsNotNone(reader.snapshot())
         self.assertEqual(reader.observed_at, 100.0)
+
+
+class PersonGateTests(unittest.TestCase):
+    """The pre_tool_call gate: Hermes asks the person before an agent's terminal command runs
+    the human namespace or a permission-changing command; everything else passes untouched."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("person_gate_under_test", SOURCE)
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def decide(self, command, tool="terminal"):
+        result = self.module.pre_tool_call(tool_name=tool, args={"command": command}, task_id="t")
+        return None if result is None else (result["action"], result["rule_key"])
+
+    def test_gated_commands_ask_the_person(self):
+        for command, gated in (
+            ("herdr-threads human me init", "human"),
+            ("ht human", "human"),
+            ("/usr/local/bin/herdr-threads human send t --body x", "human"),
+            ("herdr-threads 'human' me init", "human"),
+            ("cd /tmp && ht setup claude --json", "setup"),
+            ("X=1 herdr-threads unsetup codex", "unsetup"),
+            ("herdr-threads doctor fix", "doctor fix"),
+            ("echo hi; ht internal installer-integrations x", "internal installer-integrations"),
+            ("ht inbox|herdr-threads human retry r", "human"),
+        ):
+            self.assertEqual(self.decide(command), ("approve", f"herdr-threads:{gated}"), command)
+
+    def test_ordinary_and_unrelated_commands_pass(self):
+        for command in ("herdr-threads inbox", "ht send t --body 'human setup'", "herdr-threads doctor",
+                        "herdr-threads doctor --debug", "echo herdr-threads human", "ls human",
+                        "herdr-threadsx human", "herdr-threads --json inbox"):
+            self.assertIsNone(self.decide(command), command)
+        self.assertIsNone(self.decide("herdr-threads human", tool="read_file"))
+        self.assertIsNone(self.module.pre_tool_call(tool_name="terminal", args=None))
 
 
 if __name__ == "__main__":

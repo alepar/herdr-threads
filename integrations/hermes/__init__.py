@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import selectors
+import shlex
 import subprocess
 import sys
 import threading
@@ -655,8 +656,56 @@ class Bridge:
                         raise
 
 
+# Commands an agent must not run unasked: the immediate human namespace (acting as the person)
+# and the commands that change agent permissions. Hermes asks the person before each one.
+PERSON_GATED = (("human",), ("setup",), ("unsetup",), ("doctor", "fix"),
+                ("internal", "installer-integrations"))
+SPELLINGS = ("herdr-threads", "ht")
+SHELL_OPERATORS = frozenset((";", "&", "&&", "|", "||", "(", ")", "\n"))
+
+
+def gated_command(command):
+    """The person-gated herdr-threads command a shell command line runs, or None."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        tokens = command.split()
+    segment = []
+    for token in tokens + [";"]:
+        if token not in SHELL_OPERATORS and not set(token) <= set(";&|()"):
+            segment.append(token)
+            continue
+        words = segment
+        segment = []
+        while words and "=" in words[0] and not words[0].startswith("="):
+            words = words[1:]  # leading VAR=value assignments
+        if not words or os.path.basename(words[0]) not in SPELLINGS:
+            continue
+        for gated in PERSON_GATED:
+            if tuple(words[1:1 + len(gated)]) == gated:
+                return " ".join(gated)
+    return None
+
+
+def pre_tool_call(tool_name=None, args=None, **_):
+    """Ask the person before a terminal command runs a person-gated herdr-threads command."""
+    if tool_name != "terminal" or not isinstance(args, dict) or not isinstance(args.get("command"), str):
+        return None
+    gated = gated_command(args["command"])
+    if gated is None:
+        return None
+    return {"action": "approve", "rule_key": f"herdr-threads:{gated}",
+            "message": f"`herdr-threads {gated}` acts for the person or changes agent permissions"}
+
+
 def register(ctx):
-    """Register exactly four fail-open/cooperative hooks in the native context."""
+    """Register the person-approval gate, then four fail-open/cooperative bridge hooks.
+
+    The gate needs no bridge, so it stays registered when the bridge cannot start.
+    """
+    ctx.register_hook("pre_tool_call", pre_tool_call)
     asset = Path(__file__).parent
     reader = None
     bridge = None

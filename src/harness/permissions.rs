@@ -7,6 +7,7 @@
 pub mod claude;
 pub mod claude_settings;
 pub mod codex;
+pub mod codex_rules;
 
 use serde::{Deserialize, Serialize};
 use std::{
