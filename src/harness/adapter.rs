@@ -177,6 +177,15 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         None
     }
+    /// Native runtime artifacts about the event's session, read by the runner after the pure
+    /// decode and folded with [`LocalEvidence::refine`]. Default: none.
+    fn local_evidence(&self, _: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+        LocalEvidence::default()
+    }
+    /// A step the runner runs for a top-level `Observer` event in place of the neutral output.
+    fn hook_step(&self) -> Option<&dyn HookStep> {
+        None
+    }
     /// `None`: hooks deliver and the native wake applies (delivery-policy DP1).
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
         None
@@ -508,6 +517,99 @@ pub struct DecodedEvent {
     pub metadata: EventMetadata,
     pub delivery: DeliveryEligibility,
     pub runtime: RuntimeAttribution,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Witness {
+    Present,
+    Absent,
+    Unchecked,
+    Unreadable,
+}
+/// Native runtime artifacts about one session's role, mapped by its adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoleWitness {
+    /// The runtime's own top-level marker for this session exists.
+    pub top_level_marker: Witness,
+    /// A runtime child listing names this session under a candidate parent session.
+    pub child_listing: Witness,
+}
+impl RoleWitness {
+    /// Fails toward child: top-level only on a present marker and an examined, absent listing.
+    pub fn decide(&self) -> EventRole {
+        if self.top_level_marker == Witness::Present && self.child_listing == Witness::Absent {
+            EventRole::TopLevel
+        } else {
+            EventRole::Subagent
+        }
+    }
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalEvidence {
+    pub role: Option<RoleWitness>,
+    /// Adapter reading of a turn-start that fires no session-start: Startup | Clear | Resume only.
+    pub lifecycle: Option<crate::harness::context::EventKind>,
+}
+impl LocalEvidence {
+    /// Pure fold applied by the runner. It never raises `Subagent`, and `Unknown` becomes
+    /// `TopLevel` only on positive witnesses.
+    pub fn refine(&self, event: &mut DecodedEvent) {
+        use crate::harness::context::EventKind;
+        if let Some(witness) = &self.role
+            && event.role != EventRole::Subagent
+        {
+            event.role = witness.decide();
+        }
+        if let Some(kind) = self.lifecycle
+            && matches!(
+                kind,
+                EventKind::Startup | EventKind::Clear | EventKind::Resume
+            )
+            && event.role == EventRole::TopLevel
+            && matches!(
+                event.intent,
+                EventIntent::Observer | EventIntent::Lifecycle(_)
+            )
+        {
+            event.intent = EventIntent::Lifecycle(kind);
+            event.delivery = DeliveryEligibility::Context;
+        }
+    }
+}
+pub struct LocalEvidenceRequest<'a> {
+    pub input: &'a HookInput,
+    /// The hook process's HOME (the harness's own environment).
+    pub home: Option<&'a std::ffi::OsStr>,
+    /// `<instance_dir>/adapter-state/<id>/` (read-only here).
+    pub state_dir: Option<&'a std::path::Path>,
+    /// Lazy client-local hint (A2: selects what to ask, never authorizes): the native session of
+    /// the pane's current context for this harness, or None.
+    pub pane_session: &'a dyn Fn() -> Option<String>,
+    pub deadline: std::time::Instant,
+}
+pub trait HookStep: Send + Sync {
+    /// Complete native stdout for one top-level `Observer` event; empty means none.
+    /// Fails open: every internal error returns empty bytes. Must finish by `context.deadline`.
+    fn run(&self, context: &HookStepContext<'_>) -> Vec<u8>;
+}
+pub struct HookStepContext<'a> {
+    pub input: &'a HookInput,
+    pub decoded: &'a DecodedEvent,
+    /// `bridge::caller_claim` of the pane context when its harness and native session equal the
+    /// event's (client-local hint; the daemon re-decides each request against A2).
+    pub claim: Option<crate::protocol::authority::CallerClaim>,
+    /// A running daemon of this instance, or None. Never starts one.
+    pub daemon: Option<&'a dyn HookStepDaemon>,
+    /// `<instance_dir>/adapter-state/<id>/`, created 0700 by the runner on first use.
+    pub state_dir: Option<std::path::PathBuf>,
+    /// `cli::hook::cli_prefix` argv for commands printed to the model.
+    pub command_prefix: Vec<String>,
+    pub deadline: std::time::Instant,
+}
+pub trait HookStepDaemon {
+    fn call(
+        &self,
+        command: crate::protocol::commands::Command,
+    ) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError>;
 }
 pub struct NeutralOffer {
     pub fixed_guidance: String,

@@ -59,6 +59,9 @@ pub mod recipe;
 #[path = "../../tests/harness/recipe.rs"]
 mod recipe_tests;
 pub mod registry;
+#[cfg(test)]
+#[path = "../../tests/harness/role_witness.rs"]
+mod role_witness;
 pub mod runtime;
 pub mod setup;
 pub mod state;
