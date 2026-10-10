@@ -13,5 +13,6 @@ The full evidence of the herdr-threads development run (native demo, matrix and 
 | [`codex-1593-sandbox-probe/`](codex-1593-sandbox-probe/README.md), [`codex-sandbox-writes-probe/`](codex-sandbox-writes-probe/README.md) | Codex sandbox allowance measurements ([install](../install.md), `src/cli/setup.rs`) |
 | [`native-claude-demo-2/`](native-claude-demo-2/report.md), [`native-codex-demo-2/`](native-codex-demo-2/report.md) | Reports only, cited by the integration READMEs and the install guide |
 | [`host-recovery-validation-tip/`](host-recovery-validation-tip/report.md), [`package-validation-tip/`](package-validation-tip/report.md) | Reports only, cited by the [validation report](../validation/report.md), [operations](../operations.md) and [release](../release.md) |
+| [`agy-live-smoke/`](agy-live-smoke/README.md) | Format and pass rule of the agy live-smoke record (`scripts/agy-live-smoke`, test-infra D11); the orchestrator commits one `<date>-<sha12>/` record per final SHA |
 
 Files a kept report names but that are not here are in the archive tag at the same relative path.
