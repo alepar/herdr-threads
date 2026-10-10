@@ -376,8 +376,8 @@ pub(super) fn setup(request: &SetupRequest) -> Result<SetupOutcome, SetupFailure
     let policy = crate::cli::setup::PermissionPolicy::from_options(&request.options);
     let before = allow_entry_state(&roots, env);
     let report = plugin::install(&roots, env)?;
-    // The allow member stays owned by the shared settings engine: its write is already a
-    // compare-and-swap against the validated bytes, so there is no permission backend or
+    // The allow member stays owned by the shared settings engine: its write byte-compares
+    // the validated bytes and then renames (not an atomic CAS; TRUST-POLICY accepts that limit), so there is no permission backend or
     // write guard here (a lock file would be left in `~/.gemini` that unsetup never removes).
     let (action, note, failed) = match policy {
         crate::cli::setup::PermissionPolicy::Grant => {

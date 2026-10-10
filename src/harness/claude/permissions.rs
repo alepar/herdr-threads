@@ -35,9 +35,10 @@ use std::{
 const LISTS: [&str; 2] = ["allow", "ask"];
 const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Where the component stands, as `setup-status` reports it./// This component's backend: its manifest tag and lock name.
+/// This component's backend: its manifest tag and lock name.
 pub const BACKEND: PermissionBackend = PermissionBackend::new("Claude");
 
+/// Where the component stands, as `setup-status` reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaudePermissionState {
     /// Nothing is owned or recorded.
