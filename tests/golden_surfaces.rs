@@ -1401,3 +1401,47 @@ fn handoff_bootstrap_plans() {
         }
     }
 }
+
+/// The healthy hook stdout: the same installed-hook invocation as
+/// `hook_stdout_per_event`, but against a daemon whose host is the fake
+/// Herdr of the launch topology, so SessionStart enrolls the pane and prints
+/// the per-harness check-in context instead of the "unavailable" text.
+#[test]
+fn hook_stdout_healthy_checkin() {
+    let t = Topology::new();
+    // The topology's `sender` seat (w4:p1) is a codex occupant; claude
+    // enrolls on the unbound `recipient` pane.
+    for (harness, pane) in [("claude", "w4:p2"), ("codex", "w4:p1")] {
+        {
+            let event = "SessionStart";
+            let mut cmd = t.iso.command(BIN);
+            cmd.arg("--state-dir")
+                .arg(&t.context.state_dir)
+                .arg("--host-endpoint")
+                .arg(&t.context.host_endpoint)
+                .args(["hook", harness, "--event", event])
+                .env("HERDR_ENV", "1")
+                .env("HERDR_PANE_ID", pane)
+                .env("HERDR_SOCKET_PATH", &t.context.host_endpoint)
+                .env("CLAUDE_CONFIG_DIR", t.iso.path("claude-config"))
+                .env("CODEX_HOME", t.iso.path("codex-home"))
+                .current_dir(t.iso.path("cwd"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = cmd.spawn_owned().unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(&hook_payload(event))
+                .unwrap();
+            let out = child.wait_with_output().unwrap();
+            record(
+                &t.norm(),
+                &format!("hook-healthy/{harness}.{event}.stdout"),
+                &out,
+            );
+        }
+    }
+}
