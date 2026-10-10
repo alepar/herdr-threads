@@ -2254,6 +2254,9 @@ mod pane_seat_selection {
             generation: 3,
             created_at: UtcMillis(0),
             retired_at: None,
+            active: false,
+            bindings: Vec::new(),
+            availability: None,
         }
     }
 
@@ -2666,6 +2669,9 @@ mod continuity_gate {
                                 generation: 1,
                                 created_at: crate::protocol::time::UtcMillis(0),
                                 retired_at: None,
+                                active: false,
+                                bindings: Vec::new(),
+                                availability: None,
                             })
                             .collect(),
                         next_cursor: None,
@@ -5577,6 +5583,9 @@ mod enum_callback {
                     + 1,
                 created_at: crate::protocol::time::UtcMillis(0),
                 retired_at: None,
+                active: false,
+                bindings: Vec::new(),
+                availability: None,
             };
             match c {
                 Command::Seats(_) => {
@@ -6183,6 +6192,9 @@ mod registered_resume {
                 generation: *self.generation.lock().unwrap(),
                 created_at: crate::protocol::time::UtcMillis(0),
                 retired_at: None,
+                active: false,
+                bindings: Vec::new(),
+                availability: None,
             }
         }
     }

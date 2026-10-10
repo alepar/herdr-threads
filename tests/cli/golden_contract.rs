@@ -14,10 +14,10 @@ use crate::protocol::{
     output::{ContinuationContext, OutputFormat, OutputSpec, encode_selected, with_render_now},
     pagination::{Consistency, Page, StopReason},
     results::{
-        AckResult, AlreadyJoined, CheckInContextDisposition, CheckInResult, CommandResult,
-        InboxItem, MembershipStatus, MessageContent, MessageDetails, MessageKind, MessageSummary,
-        NoticeOffer, Participant, PendingReceipt, SearchHit, SearchPage, ThreadDetails,
-        ThreadSummary, WarningRef,
+        AckResult, AlreadyJoined, BindingPresence, CheckInContextDisposition, CheckInResult,
+        CommandResult, InboxItem, MembershipStatus, MessageContent, MessageDetails, MessageKind,
+        MessageSummary, NoticeOffer, Participant, PendingReceipt, SearchHit, SearchPage,
+        ThreadDetails, ThreadSummary, WarningRef,
     },
     service::{EventAuthor, RequiredMembership, RequirementState},
     time::UtcMillis,
@@ -145,6 +145,23 @@ mod fixtures {
         )
     }
 
+    pub fn presence_bindings(seat: &str) -> Vec<BindingPresence> {
+        let binding = |role: &str, connected: bool, agent: Option<&str>| BindingPresence {
+            harness: "claude".to_owned(),
+            role: role.to_owned(),
+            connected,
+            agent_id: agent.map(str::to_owned),
+        };
+        if seat == "seat-b" {
+            vec![
+                binding("top_level", true, None),
+                binding("subagent", true, Some("agent-7")),
+            ]
+        } else {
+            vec![binding("top_level", false, None)]
+        }
+    }
+
     pub fn participant(seat: &str, state: MembershipStatus, is_self: bool) -> Participant {
         Participant {
             seat: SeatId::new(seat),
@@ -160,6 +177,9 @@ mod fixtures {
             retirement_cutover: None,
             cleanup_state: None,
             accepted_invitation: None,
+            active: seat == "seat-b",
+            bindings: presence_bindings(seat),
+            availability: None,
         }
     }
 

@@ -156,8 +156,8 @@ Timestamps: a time on the render-time UTC date prints bare (`09:30Z`, `[09:30]`)
 | `inbox` | `human` | thread, topic (when known, else `-`), counts, membership with invitation id and revision | `accept-required:`, `more:` |
 | `directory` | `human` | thread, state, counts, created, topic | `more:` |
 | `history` | `human` | time, author, body | `more:`, `full message:` |
-| `thread` | `human` | thread, topic, goal, counts, participants, pending receipts | `more:`, `list:` |
-| `participants` | `human` | seat, state, self | `more:` |
+| `thread` | `human` | thread, topic, goal, counts, participants (active marker, bindings), pending receipts | `more:`, `list:` |
+| `participants` | `human` | seat, state, self, active marker, bindings | `more:` |
 | `message` | `human` | message, thread, author, time, body | `continued:` |
 | `pending_receipts` | `human` | message, thread, sender, sent, deadline | `more:` |
 | `search` | `human` | kind, thread, topic or message | `more:` |
@@ -165,6 +165,8 @@ Timestamps: a time on the render-time UTC date prints bare (`09:30Z`, `[09:30]`)
 | `already_joined` | `human` | seat, thread | |
 | `acknowledged` | `human` | acknowledged and already-acknowledged ids | |
 <!-- presentation-contract:end -->
+
+**Presence fields.** Every participant row of `thread participants` and `thread show` (JSON `participants.items[]`) and every `seat list` item carries `active` (boolean: the seat has an open connected binding, or an open human binding on a seat still resolved onto its pane), `bindings[]` (the seat's open bindings in ordinal order) and, once the liveness worker fills it, `availability` (a string; omitted while unset). A `bindings[]` entry is `{"harness": "claude", "role": "top_level" | "subagent", "connected": true | false, "agent_id": "..."}`; `agent_id` appears only for subagents and session ids are never shown. Human form: active members are listed first with a leading `+`, inactive ones after them with a leading `-`, and each open binding is an indented line `claude top_level connected` (a subagent adds ` agent=ID`; a dropped one reads `disconnected`); `seat list` adds a PRESENCE column (`active` or `inactive`) and the same binding lines below the table. The compact text form leaves presence out to keep rows small; use `--json` or `--human` to see it.
 
 ## Lifecycle, diagnostics and exit status
 

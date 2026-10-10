@@ -5558,3 +5558,134 @@ fn human_guidance_canonical_requesting_caller_before_page_fit() {
         assert_eq!(result.items.len(), 1);
     }
 }
+
+/// Presence fixture: seat `s` (two connected bindings, one a subagent), `d` (only a disconnected
+/// binding) and `h` (a human binding on a resolved seat), all joined to thread `t`.
+fn presence_fixture() -> (super::super::connection::StoreContext, rusqlite::Connection) {
+    let (store, db) = fixture();
+    for seat in ["d", "h"] {
+        db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES (?1, 'i', 'resolved', 'native', 1, 0)", [seat]).unwrap();
+    }
+    for seat in ["s", "d", "h"] {
+        db.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',1)",
+            [seat],
+        )
+        .unwrap();
+    }
+    let bind = |seat: &str, harness: &str, session: &str, role: &str, agent: &str, live: &str| {
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,agent_id,role,liveness,disconnected_at,disconnect_reason,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,1,'w:p1','host',1,?2,?3,?5,?4,?6,CASE WHEN ?6='disconnected' THEN 1 END,CASE WHEN ?6='disconnected' THEN 'superseded' END,'exec','cooperative_top_level',0,0,'term','inc')", params![seat, harness, session, role, agent, live]).unwrap();
+    };
+    bind("s", "claude", "sess-1", "top_level", "", "connected");
+    bind("s", "claude", "sess-1", "subagent", "agent-7", "connected");
+    bind("d", "codex", "sess-2", "top_level", "", "disconnected");
+    bind("h", "human", "sess-3", "top_level", "", "connected");
+    (store, db)
+}
+
+type BindingShape = (&'static str, &'static str, bool, Option<&'static str>);
+
+fn expected_presence() -> Vec<(&'static str, bool, Vec<BindingShape>)> {
+    vec![
+        (
+            "s",
+            true,
+            vec![
+                ("claude", "top_level", true, None),
+                ("claude", "subagent", true, Some("agent-7")),
+            ],
+        ),
+        ("d", false, vec![("codex", "top_level", false, None)]),
+        ("h", true, vec![("human", "top_level", true, None)]),
+    ]
+}
+
+fn shape(
+    bindings: &[crate::protocol::results::BindingPresence],
+) -> Vec<(&str, &str, bool, Option<&str>)> {
+    bindings
+        .iter()
+        .map(|b| {
+            (
+                b.harness.as_str(),
+                b.role.as_str(),
+                b.connected,
+                b.agent_id.as_deref(),
+            )
+        })
+        .collect()
+}
+
+/// Kills: `active` copied from membership instead of the seat-active predicate (a disconnected
+/// binding must read inactive), bindings missing or unordered, a session id leaking in.
+#[test]
+fn participants_report_active_and_open_bindings() {
+    let (store, _db) = presence_fixture();
+    let CommandResult::Participants(participants) = query(
+        &store,
+        "i",
+        &Command::Participants(ParticipantsQuery {
+            thread: ThreadId::new("t"),
+            page: page(None),
+            caller: None,
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let got: Vec<_> = participants
+        .items
+        .iter()
+        .map(|p| (p.seat.as_str(), p.active, shape(&p.bindings)))
+        .collect();
+    let want = expected_presence();
+    assert_eq!(got.len(), want.len());
+    for (g, w) in got.iter().zip(&want) {
+        assert_eq!((g.0, g.1, &g.2), (w.0, w.1, &w.2));
+    }
+    assert!(participants.items.iter().all(|p| p.availability.is_none()));
+}
+
+#[test]
+fn seat_list_reports_the_same() {
+    let (store, db) = presence_fixture();
+    // An ended binding is not open and must not be listed.
+    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,terminal_id,incarnation) VALUES ('d',1,1,'w:p1','host',1,'gone','sess-9','exec','cooperative_top_level',0,0,5,'term','inc')", []).unwrap();
+    let CommandResult::Seats(seats) = query(
+        &store,
+        "i",
+        &Command::Seats(SeatsQuery {
+            page: page(None),
+            target: None,
+            include_retired: false,
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    for (seat, active, bindings) in expected_presence() {
+        let item = seats
+            .items
+            .iter()
+            .find(|i| i.seat.as_str() == seat)
+            .unwrap_or_else(|| panic!("seat {seat} listed"));
+        assert_eq!(
+            (item.active, shape(&item.bindings)),
+            (active, bindings),
+            "{seat}"
+        );
+    }
+    let json = serde_json::to_value(&seats.items[0]).unwrap();
+    assert!(json.get("active").is_some() && json.get("bindings").is_some());
+    assert!(
+        json.get("availability").is_none(),
+        "unset availability stays off the wire"
+    );
+}
+
+// presence_adds_one_query_per_page_not_per_member: skipped. The store has no query-count
+// harness, and participants/seat rows are produced one candidate at a time (two small indexed
+// reads per member, bounded by the page limit and CANDIDATE_LIMIT), so the page-fit accounting
+// already bounds the added work.

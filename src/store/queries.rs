@@ -33,9 +33,9 @@ use crate::protocol::{
         StopReason,
     },
     results::{
-        AckProvenance, ApiError, BindingHistory, BoundedError, CleanupState, CommandResult,
-        ContinuityStatus, DeliveryAggregates, DeliveryInspection, Diagnostic, ErrorCode,
-        HoldSummary, InboxBatchItem, InboxItem, InvitationAcceptance, MappingStatus,
+        AckProvenance, ApiError, BindingHistory, BindingPresence, BoundedError, CleanupState,
+        CommandResult, ContinuityStatus, DeliveryAggregates, DeliveryInspection, Diagnostic,
+        ErrorCode, HoldSummary, InboxBatchItem, InboxItem, InvitationAcceptance, MappingStatus,
         MembershipStatus, MessageContent, MessageDetails, MessageKind, MessageSummary,
         OpenBindingSummary, OperationStatus, Participant, PendingReceipt, ReceiptStatus, Recipient,
         RepairHistory, RetirementStatus, SearchHit, SearchPage, SeatHistoryItem, SeatInspection,
@@ -915,6 +915,8 @@ fn seat_inspect(
         row.3,
         row.4,
     )?;
+    let mut summary = summary;
+    (summary.active, summary.bindings) = presence(db, q.seat.as_str())?;
     let mapping = MappingStatus {
         state: summary.continuity,
         target: summary.target.clone(),
@@ -1279,7 +1281,7 @@ fn seats(
         let Some((ordinal, id, state, target, generation, created_at, retired_at)) = row else {
             break;
         };
-        let item = seat_summary(
+        let mut item = seat_summary(
             &id,
             &state,
             target.as_deref(),
@@ -1287,6 +1289,7 @@ fn seats(
             created_at,
             retired_at,
         )?;
+        (item.active, item.bindings) = presence(db, &id)?;
         let raw = cursor_for(
             instance,
             CursorScope::Seats,
@@ -1372,7 +1375,38 @@ fn seat_summary(
         generation: generation as u64,
         created_at: UtcMillis(created_at),
         retired_at: retired_at.map(UtcMillis),
+        active: false,
+        bindings: Vec::new(),
+        availability: None,
     })
+}
+
+/// Presence of one seat (spec §3): `active` from the seat-active predicate, plus its open
+/// bindings in ordinal order.
+fn presence(db: &QueryConnection, seat: &str) -> Result<(bool, Vec<BindingPresence>), ApiError> {
+    let active = super::bindings::seat_active(db, &SeatId::new(seat))?;
+    let mut stmt = db
+        .prepare_cached(
+            "SELECT harness,role,liveness,agent_id FROM occupant_bindings \
+             WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal",
+        )
+        .map_err(|e| db.map_error(e))?;
+    let bindings = stmt
+        .query_map([seat], |r| {
+            let role: String = r.get(1)?;
+            let liveness: String = r.get(2)?;
+            let agent_id: String = r.get(3)?;
+            Ok(BindingPresence {
+                harness: r.get(0)?,
+                connected: liveness == "connected",
+                agent_id: (role == "subagent").then_some(agent_id),
+                role,
+            })
+        })
+        .map_err(|e| db.map_error(e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| db.map_error(e))?;
+    Ok((active, bindings))
 }
 
 fn participants(
@@ -1509,6 +1543,7 @@ fn participants(
                     accepted_at: UtcMillis(at),
                 },
             );
+        let (active, bindings) = presence(db, &seat)?;
         let item = Participant {
             is_self: q
                 .caller
@@ -1538,6 +1573,9 @@ fn participants(
             retirement_cutover: retired_at.or(materialized_retired).map(UtcMillis),
             cleanup_state,
             accepted_invitation,
+            active,
+            bindings,
+            availability: None,
         };
         let mut next_cursor = cursor_for(
             instance,
