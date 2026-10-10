@@ -8,6 +8,7 @@ idea: Goal: implement the new herdr-threads seat-bindings model we designed in t
 branch: super-auto/session-keyed-seat-bindings
 base: main
 spec: 2026-10-10-session-keyed-seat-bindings-design.md
+epic: ht-54r
 
 approvals:
 - design-mode · human · Mode A interactive design by user request at launch; autonomy from phase 3 (reserved: design questions asked, not parked)

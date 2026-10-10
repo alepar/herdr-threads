@@ -190,11 +190,13 @@ carries an unknown session on an existing seat.
   - the seat's open invitations;
   - the seat's still-pending ACK obligations, including ones that predate the binding.
 - **Display:** fully displaying a message advances only *this* binding's cursor.
-- **State that becomes per binding or is replaced by the cursor:**
-  - the per-seat `lazy_recipients` display state;
-  - the `warning_offer` and `digest_notice_offer` frontiers;
-  - `catch_up` rows;
-  - client `attention.json` marks.
+- **What happens to today's per-seat delivery state:**
+  - `lazy_recipients` display state is replaced by the cursor. A lazy message is unread for a binding
+    until its cursor passes it. `CompleteInboxDelivery` advances the cursor.
+  - The `warning_offer` and `digest_notice_offer` frontiers become per binding, keyed by
+    `binding_id`.
+  - `catch_up` rows become per binding: `binding_id` replaces the binding generation and execution.
+  - Client `attention.json` marks become per binding.
 
 **ACK.**
 - A top-level binding's display ACK (or an explicit `ack`) settles the seat's obligation. The
@@ -252,6 +254,11 @@ There is no timeout. A binding without a fingerprint is never admitted (decision
 **Managed launch.** `record_managed_launch` no longer requires "no open binding". It records a
 launch placeholder binding for the launched harness. The launched agent's first lifecycle check-in
 replaces that placeholder, and only that one.
+
+The placeholder's key is (harness, `launch:<uuid>` session). Its liveness fingerprint is the process
+Herdr's guarded `agent.start` observed starting in the pane: its PID and start time, from
+host process info. If no such process is observable, the launch is refused, consistent with
+decision 9.
 
 **Pane-close retirement.**
 - A pane absent from a same-incarnation snapshot retires its seat through the existing
