@@ -309,8 +309,25 @@ pub(crate) const PERMISSION_ADVICE: &str = "agents are asked before each herdr-t
     --without-permissions to keep it this way";
 
 /// The question an interactive setup asks when nothing is granted.
-pub(crate) const PERMISSION_QUESTION: &str = "Let agents run herdr-threads commands without \
-    prompting? Person and setup commands still ask [Y/n] ";
+pub(crate) fn permission_question(harness: &str) -> String {
+    format!(
+        "Let {harness} agents run herdr-threads commands without prompting? Person and setup \
+         commands still ask [Y/n] "
+    )
+}
+
+/// A typed answer to [`permission_question`]: an empty line takes the default yes; end of
+/// input (nothing typed at all) declines.
+pub(crate) fn permission_answer<R: io::BufRead + ?Sized>(input: &mut R) -> io::Result<bool> {
+    let mut answer = String::new();
+    if input.read_line(&mut answer)? == 0 {
+        return Ok(false);
+    }
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "" | "y" | "yes"
+    ))
+}
 
 /// Ask on a terminal when setup only advised; a yes (the default) grants.
 pub fn settle_permissions<R: io::BufRead + ?Sized, W: Write + ?Sized>(
@@ -322,15 +339,11 @@ pub fn settle_permissions<R: io::BufRead + ?Sized, W: Write + ?Sized>(
     if report["permissions"]["action"] != "advised" {
         return Ok(());
     }
-    write!(out, "{PERMISSION_QUESTION}")?;
+    write!(out, "{}", permission_question("claude"))?;
     out.flush()?;
-    let mut answer = String::new();
-    input.read_line(&mut answer)?;
+    let yes = permission_answer(input)?;
     let settings = env.claude_settings()?;
-    if matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "" | "y" | "yes"
-    ) {
+    if yes {
         let status = permission_component(env, &settings)?
             .apply(PermissionConsent::Granted)
             .map_err(|error| permission_error(error, env, &settings))?;

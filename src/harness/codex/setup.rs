@@ -658,16 +658,12 @@ pub fn settle_permissions<R: io::BufRead + ?Sized, W: io::Write + ?Sized>(
     write!(
         out,
         "{}",
-        crate::harness::claude::setup::PERMISSION_QUESTION
+        crate::harness::claude::setup::permission_question("codex")
     )?;
     out.flush()?;
-    let mut answer = String::new();
-    input.read_line(&mut answer)?;
+    let yes = crate::harness::claude::setup::permission_answer(input)?;
     let permissions = permission_component(env)?;
-    if matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "" | "y" | "yes"
-    ) {
+    if yes {
         let state = permissions
             .apply(PermissionConsent::Granted)
             .map_err(|error| permission_error(error, permissions.rules_file()))?;

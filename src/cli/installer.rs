@@ -190,6 +190,12 @@ fn execute_for_registry_with<F: FnMut(&str) -> io::Result<bool>>(
         // permissions entry.
         let granted = match granted {
             Ok(None) => continue,
+            // Asked for no permissions: nothing to inspect or fail on.
+            _ if without_permissions => {
+                entries.push(json!({"harness":name,"component":"permissions",
+                    "outcome":"skipped","detail":"--without-permissions"}));
+                continue;
+            }
             Ok(Some(granted)) => Ok(granted),
             Err(error) => Err(error),
         };
@@ -197,11 +203,6 @@ fn execute_for_registry_with<F: FnMut(&str) -> io::Result<bool>>(
         let result = granted.and_then(|granted| {
             if granted {
                 entry["outcome"] = json!("kept");
-                return Ok(());
-            }
-            if without_permissions {
-                entry["outcome"] = json!("skipped");
-                entry["detail"] = json!("--without-permissions");
                 return Ok(());
             }
             if !hooks_ready {

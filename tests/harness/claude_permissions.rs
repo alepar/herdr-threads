@@ -373,3 +373,22 @@ fn missing_settings_forget_the_component() {
         );
     }
 }
+
+// The setup question: a bare Enter takes the default yes, end of input declines.
+#[test]
+fn permission_answer_defaults_yes_and_eof_declines() {
+    use crate::harness::claude::setup::permission_answer;
+    for (typed, yes) in [
+        ("\n", true),
+        ("y\n", true),
+        ("YES\n", true),
+        ("n\n", false),
+        ("", false),
+    ] {
+        assert_eq!(
+            permission_answer(&mut typed.as_bytes()).unwrap(),
+            yes,
+            "{typed:?}"
+        );
+    }
+}
