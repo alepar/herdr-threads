@@ -50,6 +50,10 @@ No automatic resurrection after explicit lifecycle decisions. An archived pair r
 
 Pair enforcement is permanent, eliminating the ensure→send third-member race. Direct-message preparation and publication also validate registry pair identity and reject inconsistent legacy/corrupt membership rather than broadcast. Group recipients supplied through raw protocol cannot bypass the restriction. Membership revisions and canonical audience validation retain their existing race checks. No privacy claim against same-user database edits is made.
 
+### Direct audience marker
+
+Existing `SendMessage.invited_recipients` is ACK-oriented: lazy mode rejects it. Add optional `direct_recipient: Option<SeatId>` to ordinary SendMessage and its frozen journal semantic, default None and omitted from serialization/hash payload when absent. It is set only by direct-send composition, canonically validated against the pair registry and current original sender, and contributes the target to the common audience independently from invited_recipients. It is not an ACK request. Lazy mode permits this marker while still rejecting ordinary ACK recipients/deadlines; ordinary mode uses unchanged human/agent obligation rules. Deduplicate joined and explicit target paths, exclude sender, freeze recipient normally, and revalidate the pair marker at preparation/publication. For an explicit ordinary send to a marked pair, default thread semantics remain; the marker is not inferred for unrelated requests. New-capability negotiation protects old strict daemons before this field is sent. The schema/protocol contract leaf owns this additive type, and the guarded pair mechanism leaf owns validation/audience integration; the DirectSend CLI consumes it.
+
 ### Durable direct send
 
 Introduce an additive DirectSend semantic containing original frozen caller, namespace (instance plus canonical state directory/host endpoint), target seat, body/options, ensure key and send key. Persist the whole immutable intent before Ensure. A private bounded progress record stores the selected thread and exact ordinary send request after Ensure; protect execution with the journal's existing per-operation lock and atomic/synced publication patterns. Retry obtains the exact ensure result by its original key, verifies saved thread equality and resumes the same ordinary send key. It never resolves a new recipient, changes binding/actor claims or replaces a selected thread. Expose pending-ops and one `retry REF` recovery command with normal intent-kind/status presentation. Original actor classification happens before connection, presentation or cleanup.
@@ -102,11 +106,11 @@ Split the compilable schema/protocol contract from its canonical transaction and
 
 ### Contract ownership
 
-The contract leaf owns the next additive migration with pair uniqueness and FKs, strict EnsureDirectThread command/result/permit/hash types, capability token, dispatch adapter signature and compatibility fixtures. Its default runtime returns unsupported until the guarded implementation is installed; it must not advertise support early. Existing serialized commands/results remain unchanged. Use the ordinary ThreadCreated/ID result if its semantics fit; no new result fields are needed just for presentation.
+The contract leaf owns the next additive migration with pair uniqueness and FKs, strict EnsureDirectThread command/result/permit/hash types and default-omitted SendMessage.direct_recipient field, capability token, dispatch adapter signature and compatibility fixtures. Its default runtime returns unsupported until the guarded implementation is installed; it must not advertise support early. Existing serialized commands/results remain unchanged. Use the ordinary ThreadCreated/ID result if its semantics fit; no new result fields are needed just for presentation.
 
 ### Transaction and enrollment
 
-The mechanism leaf owns the actual accountable transaction using the contract, create/invite event/projection wiring, reversed concurrency convergence, archived/left/rejected guidance and historical replay. It also owns every pair-only check in ordinary/service/operator enrollment and send preparation/publication, plus TRUST-POLICY A5. Resolve all membership through canonical effective/voluntary semantics, not stale raw state. All checks and activation land together so no advertised resolver can create a porous pair. Existing ordinary APIs stay unchanged for unmarked threads.
+The mechanism leaf owns the actual accountable transaction using the contract, create/invite event/projection wiring, reversed concurrency convergence, archived/left/rejected guidance and historical replay. It also owns every pair-only check in ordinary/service/operator enrollment and send preparation/publication, including direct_recipient validation/audience staging independent of ACK-only invited_recipients, plus TRUST-POLICY A5. Resolve all membership through canonical effective/voluntary semantics, not stale raw state. All checks and activation land together so no advertised resolver can create a porous pair. Existing ordinary APIs stay unchanged for unmarked threads.
 
 ### Acceptance and retention
 
@@ -174,6 +178,7 @@ parent: ht-e99.1
 blocking deps: (none)
 description:
 Own the next additive pair migration, sorted unique pair/index/FKs, EnsureDirectThread command/result/permit/hash/capability, inert dispatch adapter and old-wire compatibility fixtures. owns: pair schema and EnsureDirectThread compilable interface; consumes: ordinary protocol/accountability conventions. Files: migrations, src/protocol/{commands,results,authority,capabilities}.rs, src/store/schema.rs and inert src/store/mod.rs adapter, focused schema/protocol tests. Acceptance: schema upgrades/current data intact, strict roundtrip and old fixtures pass, unsupported default does not advertise resolver. No usable pair creation until guarded mechanism lands. Spec: docs/superpowers/runs/2026-10-10-automatic-one-to-one-threads/2026-10-10-automatic-one-to-one-threads-design.md and parent nested spec.
+Also owns additive default-omitted SendMessage.direct_recipient optional marker and absent-field byte/hash fixtures; this is not an ACK recipient.
 
 ht-e99.1.2 (task) Atomic pair resolver and permanent audience guards
 parent: ht-e99.1
@@ -181,6 +186,7 @@ blocking deps: ht-e99.1.1
 description:
 Implement accountable EnsureDirectThread atomic creation/reuse/replay and create/invite projections, canonical recipient checks, pair-only ordinary/service/operator enrollment and raw-send preparation/publication checks; activate capability only with full mechanism. owns: canonical pair resolver implementation and immutable pair guard; consumes: pair schema and EnsureDirectThread interface. Files: src/store/{control,mod,messages,service_substrate}.rs and related service entry points, TRUST-POLICY.md, focused store tests. Acceptance: reverse concurrency one pair, invalid caller/target no effects, invited reverse caller guidance, archived/left/rejected explicit recovery, binding and namespace revalidation, no third participant/send audience, existing normal channels unchanged, operation replay historical, indexed bounded lookup. Schema contract is prerequisite (needs: ht-e99.1.1). Spec: docs/superpowers/runs/2026-10-10-automatic-one-to-one-threads/2026-10-10-automatic-one-to-one-threads-design.md and parent nested spec.
 blocked-by ht-e99.1.1: consumes pair schema and EnsureDirectThread interface
+Also owns direct_recipient canonical pair validation and common audience staging/deduplication in lazy/ordinary preparation/publication; keep ordinary lazy ACK-argument refusal unchanged. Tests exercise invited-target lazy delivery without receipt/wake and ordinary human waiver.
 
 ht-e99.2 (task) Durable target-seat-only send CLI
 parent: ht-e99
@@ -189,6 +195,7 @@ description:
 Spec: docs/superpowers/runs/2026-10-10-automatic-one-to-one-threads/2026-10-10-automatic-one-to-one-threads-design.md. Deliver send --seat SEAT, preserved positional ordinary send, lazy/nudge/ACK/body matrix and frozen DirectSend compound journal with ensure/send keys, original caller/namespace, progress equality, pending-ops and exact retry/completed presentation. owns: DirectSend semantic/CLI coordinator and normal-send adapter; consumes: EnsureDirectThread protocol and canonical pair invariant. Files: src/cli/{commands,mod,journal,retry}.rs, src/cli/direct_send.rs if cohesive, tests/cli/{commands,journal,direct_send}.rs, tests/combined.rs. Acceptance: all body sources/modes, invited lazy target frozen audience, nudge target addressed, extra recipients/self invalid before effects, human send retained, lost ensure/send replies and restart do not duplicate, cleanup/historical replay preserve original actor, old journals unchanged; focused checks pass.
 Promotion override: sp:demoted-by-session — parser/journal/coordinator/recovery are inseparable parts of one reviewable compound CLI behavior, not five independent merge-worthy deliverables; root spec fixes each decision, so further split would create ceremony below the cohesion floor.
 blocked-by ht-e99.1.2: consumes EnsureDirectThread protocol and canonical pair invariant
+Supply frozen direct_recipient marker to ordinary send; never place lazy target in ACK-only invited_recipients. Marker schema/guard is produced by ht-e99.1.2 (needs: ht-e99.1.2).
 
 ht-e99.3 (epic) Automatic channel handoff composition
 parent: ht-e99

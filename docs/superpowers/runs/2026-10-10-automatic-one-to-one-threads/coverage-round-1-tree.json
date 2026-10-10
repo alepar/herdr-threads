@@ -113,14 +113,14 @@
   {
     "id": "ht-e99.1.2",
     "title": "Atomic pair resolver and permanent audience guards",
-    "description": "Implement accountable EnsureDirectThread atomic creation/reuse/replay and create/invite projections, canonical recipient checks, pair-only ordinary/service/operator enrollment and raw-send preparation/publication checks; activate capability only with full mechanism. owns: canonical pair resolver implementation and immutable pair guard; consumes: pair schema and EnsureDirectThread interface. Files: src/store/{control,mod,messages,service_substrate}.rs and related service entry points, TRUST-POLICY.md, focused store tests. Acceptance: reverse concurrency one pair, invalid caller/target no effects, invited reverse caller guidance, archived/left/rejected explicit recovery, binding and namespace revalidation, no third participant/send audience, existing normal channels unchanged, operation replay historical, indexed bounded lookup. Schema contract is prerequisite (needs: ht-e99.1.1). Spec: docs/superpowers/runs/2026-10-10-automatic-one-to-one-threads/2026-10-10-automatic-one-to-one-threads-design.md and parent nested spec.\nblocked-by ht-e99.1.1: consumes pair schema and EnsureDirectThread interface",
+    "description": "Implement accountable EnsureDirectThread atomic creation/reuse/replay and create/invite projections, canonical recipient checks, pair-only ordinary/service/operator enrollment and raw-send preparation/publication checks; activate capability only with full mechanism. owns: canonical pair resolver implementation and immutable pair guard; consumes: pair schema and EnsureDirectThread interface. Files: src/store/{control,mod,messages,service_substrate}.rs and related service entry points, TRUST-POLICY.md, focused store tests. Acceptance: reverse concurrency one pair, invalid caller/target no effects, invited reverse caller guidance, archived/left/rejected explicit recovery, binding and namespace revalidation, no third participant/send audience, existing normal channels unchanged, operation replay historical, indexed bounded lookup. Schema contract is prerequisite (needs: ht-e99.1.1). Spec: docs/superpowers/runs/2026-10-10-automatic-one-to-one-threads/2026-10-10-automatic-one-to-one-threads-design.md and parent nested spec.\nblocked-by ht-e99.1.1: consumes pair schema and EnsureDirectThread interface\nAlso owns direct_recipient canonical pair validation and common audience staging/deduplication in lazy/ordinary preparation/publication; keep ordinary lazy ACK-argument refusal unchanged. Tests exercise invited-target lazy delivery without receipt/wake and ordinary human waiver.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T17:23:09Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T17:23:15Z",
+    "updated_at": "2026-10-10T17:25:54Z",
     "labels": [
       "sp:ht-e99"
     ],
@@ -150,14 +150,14 @@
   {
     "id": "ht-e99.1.1",
     "title": "Pair schema and compilable resolver protocol contract",
-    "description": "Own the next additive pair migration, sorted unique pair/index/FKs, EnsureDirectThread command/result/permit/hash/capability, inert dispatch adapter and old-wire compatibility fixtures. owns: pair schema and EnsureDirectThread compilable interface; consumes: ordinary protocol/accountability conventions. Files: migrations, src/protocol/{commands,results,authority,capabilities}.rs, src/store/schema.rs and inert src/store/mod.rs adapter, focused schema/protocol tests. Acceptance: schema upgrades/current data intact, strict roundtrip and old fixtures pass, unsupported default does not advertise resolver. No usable pair creation until guarded mechanism lands. Spec: docs/superpowers/runs/2026-10-10-automatic-one-to-one-threads/2026-10-10-automatic-one-to-one-threads-design.md and parent nested spec.",
+    "description": "Own the next additive pair migration, sorted unique pair/index/FKs, EnsureDirectThread command/result/permit/hash/capability, inert dispatch adapter and old-wire compatibility fixtures. owns: pair schema and EnsureDirectThread compilable interface; consumes: ordinary protocol/accountability conventions. Files: migrations, src/protocol/{commands,results,authority,capabilities}.rs, src/store/schema.rs and inert src/store/mod.rs adapter, focused schema/protocol tests. Acceptance: schema upgrades/current data intact, strict roundtrip and old fixtures pass, unsupported default does not advertise resolver. No usable pair creation until guarded mechanism lands. Spec: docs/superpowers/runs/2026-10-10-automatic-one-to-one-threads/2026-10-10-automatic-one-to-one-threads-design.md and parent nested spec.\nAlso owns additive default-omitted SendMessage.direct_recipient optional marker and absent-field byte/hash fixtures; this is not an ACK recipient.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T17:23:08Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T17:23:08Z",
+    "updated_at": "2026-10-10T17:25:52Z",
     "labels": [
       "sp:ht-e99"
     ],
@@ -242,14 +242,14 @@
   {
     "id": "ht-e99.2",
     "title": "Durable target-seat-only send CLI",
-    "description": "Spec: docs/superpowers/runs/2026-10-10-automatic-one-to-one-threads/2026-10-10-automatic-one-to-one-threads-design.md. Deliver send --seat SEAT, preserved positional ordinary send, lazy/nudge/ACK/body matrix and frozen DirectSend compound journal with ensure/send keys, original caller/namespace, progress equality, pending-ops and exact retry/completed presentation. owns: DirectSend semantic/CLI coordinator and normal-send adapter; consumes: EnsureDirectThread protocol and canonical pair invariant. Files: src/cli/{commands,mod,journal,retry}.rs, src/cli/direct_send.rs if cohesive, tests/cli/{commands,journal,direct_send}.rs, tests/combined.rs. Acceptance: all body sources/modes, invited lazy target frozen audience, nudge target addressed, extra recipients/self invalid before effects, human send retained, lost ensure/send replies and restart do not duplicate, cleanup/historical replay preserve original actor, old journals unchanged; focused checks pass.\nPromotion override: sp:demoted-by-session \u2014 parser/journal/coordinator/recovery are inseparable parts of one reviewable compound CLI behavior, not five independent merge-worthy deliverables; root spec fixes each decision, so further split would create ceremony below the cohesion floor.\nblocked-by ht-e99.1.2: consumes EnsureDirectThread protocol and canonical pair invariant",
+    "description": "Spec: docs/superpowers/runs/2026-10-10-automatic-one-to-one-threads/2026-10-10-automatic-one-to-one-threads-design.md. Deliver send --seat SEAT, preserved positional ordinary send, lazy/nudge/ACK/body matrix and frozen DirectSend compound journal with ensure/send keys, original caller/namespace, progress equality, pending-ops and exact retry/completed presentation. owns: DirectSend semantic/CLI coordinator and normal-send adapter; consumes: EnsureDirectThread protocol and canonical pair invariant. Files: src/cli/{commands,mod,journal,retry}.rs, src/cli/direct_send.rs if cohesive, tests/cli/{commands,journal,direct_send}.rs, tests/combined.rs. Acceptance: all body sources/modes, invited lazy target frozen audience, nudge target addressed, extra recipients/self invalid before effects, human send retained, lost ensure/send replies and restart do not duplicate, cleanup/historical replay preserve original actor, old journals unchanged; focused checks pass.\nPromotion override: sp:demoted-by-session \u2014 parser/journal/coordinator/recovery are inseparable parts of one reviewable compound CLI behavior, not five independent merge-worthy deliverables; root spec fixes each decision, so further split would create ceremony below the cohesion floor.\nblocked-by ht-e99.1.2: consumes EnsureDirectThread protocol and canonical pair invariant\nSupply frozen direct_recipient marker to ordinary send; never place lazy target in ACK-only invited_recipients. Marker schema/guard is produced by ht-e99.1.2 (needs: ht-e99.1.2).",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T17:20:39Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T17:23:27Z",
+    "updated_at": "2026-10-10T17:25:55Z",
     "labels": [
       "sp:demoted-by-session",
       "sp:ht-e99"
