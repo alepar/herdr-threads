@@ -11,7 +11,6 @@ import json
 import re
 import shlex
 import sys
-import time
 from pathlib import Path
 
 GATE_DIR = Path(__file__).resolve().parent.parent
@@ -21,6 +20,7 @@ for _dir in (GATE_DIR, GATE_DIR / "flows", GATE_DIR.parent / "agy-sandbox"):
 
 import _l4  # noqa: E402
 import _l5  # noqa: E402
+import agyenv  # noqa: E402
 import observe  # noqa: E402
 
 MUTATOR = GATE_DIR / "step_mutator.py"
@@ -54,59 +54,27 @@ def screen_tail(pane, lines=30):
     return "\n".join(pane.read_pane(80).splitlines()[-lines:])
 
 
+SURVEY = agyenv.SURVEY
+
+
 def dismiss_onboarding(pane, limit=10):
-    """Walk a first-run wizard (color scheme, then Terms of Service) until the prompt footer shows.
-
-    The genuine agy 1.3.2 shows it on every fresh HOME and Herdr reports the wizard as ``idle``, so a
-    prompt typed into it is lost. Returns the pages it dismissed (empty when there was none)."""
-    pages = []
-    for _ in range(limit):
-        tail = screen_tail(pane)
-        if "? for shortcuts" in tail:
-            break
-        if "Choose your color scheme" in tail:
-            pages.append("color")
-            pane.keys("Enter")
-        elif "Terms of Service" in tail and "[Done]" in tail:
-            pages.append("terms")
-            pane.keys("Down")
-            pane.keys("Right")
-            pane.keys("Enter")
-        elif "Done" in tail and "Navigate" in tail:
-            pages.append("confirm")
-            pane.keys("Enter")
-        else:
-            break
-        time.sleep(1.5)
-    return pages
-
-
-SURVEY = "How's the CLI experience so far"
+    """Walk agy's first-run wizard (see ``AgyPane.dismiss_onboarding``)."""
+    return pane.dismiss_onboarding(limit)
 
 
 def dismiss_survey(pane):
-    """Skip agy's feedback survey (``[0] Skip``), which appears after an executor error and swallows the
-    next typed prompt. True when it was showing."""
-    if SURVEY not in screen_tail(pane, 20):
-        return False
-    pane.keys("0")
-    time.sleep(1)
-    return True
+    """Skip agy's feedback survey (see ``AgyPane.dismiss_survey``)."""
+    return pane.dismiss_survey()
 
 
 def start_agy(world, **kwargs):
-    """``world.start_agy`` followed by the onboarding walk."""
-    pane = world.start_agy(**kwargs)
-    pages = dismiss_onboarding(pane)
-    if pages:
-        world.artifact("onboarding-pages.txt", ",".join(pages))
-    return pane
+    """``world.start_agy``, which already walks the first-run wizard."""
+    return world.start_agy(**kwargs)
 
 
 def setup(world):
-    """``setup agy --with-permissions`` as a person (an agent caller must write ``setup`` first and is
-    refused ``--state-dir`` ahead of it, which ``World.ht`` always does)."""
-    return world.ht(["setup", "agy", "--with-permissions"], check=False, human=True)
+    """``setup agy --with-permissions`` as the operator of the isolated world (``World.setup_agy``)."""
+    return world.setup_agy()
 
 
 def first_id(data, keys):

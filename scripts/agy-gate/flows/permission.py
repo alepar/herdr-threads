@@ -2,8 +2,9 @@
 
 The scenario calls ``run_command "herdr-threads --version"``: the agent never reaches ``blocked`` and
 the next request carries a ``functionResponse`` holding the version. Then it calls
-``"herdr-threads --version; true"``: the compound command is outside the rule, the agent goes
+``"herdr-threads --version; touch gate-marker"``: the compound command is outside the rule, the agent goes
 ``blocked``, and the gate denies it with keys (the screen is kept as an artifact).
+The second command ends in ``touch`` and not ``true``: genuine agy 1.3.2 runs ``; true`` unprompted.
 """
 from __future__ import annotations
 
@@ -24,8 +25,7 @@ DENY_KEYS = ("Escape",)
 
 
 def run(world):
-    scenario = _l4.load_scenario(SCENARIO)
-    world.backend.load(scenario)
+    scenario = _l4.load_into(world, SCENARIO)
     world.check("setup agy succeeds", world.setup_agy().returncode == 0)
     pane = world.start_agy()
 

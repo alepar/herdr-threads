@@ -50,12 +50,22 @@ class L5ScenarioTests(unittest.TestCase):
 
     def test_subagent_routing_gives_each_request_its_own_step(self):
         cursor = scenario.Cursor(load("subagent"))
-        parent = "PARENT-GO start"
+        self.assertEqual(cursor.select("PARENT-ENROLL hello")["label"], "enroll")
+        parent = "PARENT-ENROLL hello\nPARENT-GO start"
         self.assertEqual(cursor.select(parent)["label"], "parent-call")
         # The parent's follow-up may arrive before the child's first request (research B interleave).
         self.assertEqual(cursor.select(parent + "\nCHILD-OK")["label"], "parent-final")
         self.assertEqual(cursor.select("CHILD-PROMPT say hi")["label"], "child")
+        # Once the child reports, agy wakes the parent for one more request.
+        self.assertEqual(cursor.select(parent + "\nCHILD-OK")["label"], "parent-report")
         self.assertEqual(cursor.remaining_labels(), [])
+
+    def test_invoke_subagent_carries_the_required_properties(self):
+        # agy 1.3.2 `invoke_subagent` declaration, captured by the native gate.
+        args = {s["label"]: s for s in load("subagent")["steps"]}["parent-call"]["reply"]["args"]
+        self.assertTrue({"Subagents", "toolSummary", "toolAction"} <= set(args), sorted(args))
+        for entry in args["Subagents"]:
+            self.assertTrue({"TypeName", "Role", "Prompt"} <= set(entry), sorted(entry))
 
     def test_prompt_markers_are_distinct_per_step(self):
         for name in ("clear", "resume"):

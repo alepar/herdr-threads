@@ -44,10 +44,15 @@ def run(world):
         world.check("launch with %s starts no agy process" % label, not world.agy_running())
 
     target = _l4.shell_pane(world, "launched")
-    result = sender.ht(launch_argv(target, wrapper), check=False)
+    # launch admits `--harness-binary` only when it is the `agy` the caller's PATH resolves to.
+    path = "%s:%s" % (Path(wrapper).parent, world.herdr_env().get("PATH", "/usr/bin:/bin"))
+    result = world.ht(launch_argv(target, wrapper), pane=sender.pane_id, check=False, env={"PATH": path})
     world.check("launch --kind agy succeeds", result.returncode == 0, (result.stderr or result.stdout).strip()[:300])
     pane = _l4.adopt_agy_pane(world, target)
     world.check("the launched pane reaches idle", pane.wait("idle", 60), "status=%s" % pane.agent_status())
+    pages = pane.dismiss_onboarding()
+    if pages:
+        world.artifact("onboarding-pages.txt", ",".join(pages))
     world.check("herdr detects the agent as agy", pane.agent_name() == "agy", "agent=%s" % pane.agent_name())
     request, settled = _l5.run_turn(world, pane, "LAUNCH-PROMPT hello", "launch")
     world.check("the scripted launch step was served", request is not None)

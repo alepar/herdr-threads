@@ -5,6 +5,9 @@
   "default": {
     "text": "HANDOFF-UNEXPECTED"
   },
+  "vars": {
+    "cwd": "/unset"
+  },
   "steps": [
     {
       "label": "handoff-call",
@@ -16,7 +19,11 @@
       "reply": {
         "call": "run_command",
         "args": {
-          "CommandLine": "herdr-threads handoff --new-thread --new-tab gate-child --kind agy --harness-binary {var.AGY} -- \"HANDOFF-BODY please say hi\""
+          "CommandLine": "herdr-threads handoff --new-thread --new-tab gate-child --kind agy --harness-binary {var.AGY} -- \"HANDOFF-BODY please say hi\"",
+          "Cwd": "{var.cwd}",
+          "WaitMsBeforeAsync": 5000,
+          "toolAction": "gate",
+          "toolSummary": "gate"
         }
       }
     },
