@@ -35,6 +35,9 @@ use uuid::Uuid;
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 
+#[path = "hook_entrypoint/agy.rs"]
+mod agy;
+
 /// A real `curl` fetch of an unreachable loopback URL, whatever URL the
 /// manifest service asks for: the fetch fails after the recorder has already
 /// answered.

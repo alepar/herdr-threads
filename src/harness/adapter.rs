@@ -572,6 +572,14 @@ impl LocalEvidence {
         {
             event.intent = EventIntent::Lifecycle(kind);
             event.delivery = DeliveryEligibility::Context;
+            // The lifecycle source a session start would have carried; only `resume` can
+            // reattach a seat (C1), so a resume read from a turn start must say so.
+            event.metadata.context_source = match kind {
+                EventKind::Clear => "clear",
+                EventKind::Resume => crate::protocol::commands::ContinuityCheckIn::RESUME_SOURCE,
+                _ => "startup",
+            }
+            .into();
         }
     }
 }

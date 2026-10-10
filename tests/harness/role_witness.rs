@@ -162,6 +162,13 @@ fn lifecycle_converts_observer_and_lifecycle_intents_for_startup_clear_resume_on
                 "{kind:?}"
             );
             assert!(matches!(turn.delivery, DeliveryEligibility::Context));
+            // Only a `resume` source can reattach a seat (C1): the converted event says so.
+            let source = match kind {
+                EventKind::Startup => "startup",
+                EventKind::Clear => "clear",
+                _ => "resume",
+            };
+            assert_eq!(turn.metadata.context_source, source, "{kind:?}");
         }
         let mut current = event(
             EventRole::TopLevel,
@@ -170,6 +177,7 @@ fn lifecycle_converts_observer_and_lifecycle_intents_for_startup_clear_resume_on
         );
         evidence(None, Some(kind)).refine(&mut current);
         assert!(matches!(current.intent, EventIntent::Current));
+        assert_eq!(current.metadata.context_source, "test", "{kind:?}");
         assert!(matches!(
             current.delivery,
             DeliveryEligibility::ObserverOnly
