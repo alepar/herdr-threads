@@ -47,18 +47,18 @@ fn view_reports_open_claude_binding_generation_and_native_session() {
         ),
     )
     .unwrap();
-    assert_eq!(result.context.binding_generation, 1);
+    assert_eq!(result.context.binding_generation, 0);
     let after = view(&store);
     assert_eq!(
         after.binding,
         Some(ModBindingView {
-            generation: 1,
+            generation: 0,
             provenance: "cooperative_top_level".into(),
             harness: "claude".into(),
             native_session: "session-X".into(),
         })
     );
-    assert_eq!(after.fingerprint.binding_generation, Some(1));
+    assert_eq!(after.fingerprint.binding_generation, Some(0));
     assert_eq!(after.state, "resolved");
     // An unknown seat has no view.
     assert_eq!(
@@ -343,15 +343,15 @@ fn fingerprint_changes_when_a_lifecycle_check_in_rebinds() {
     )
     .unwrap();
     let first = fp(&store);
-    assert_eq!(first.binding_generation, Some(1));
-    // SessionStart of a new execution of the same seat: generation 2.
+    assert_eq!(first.binding_generation, Some(0));
+    // SessionStart of a new execution of the same session (ht-54r.3: the binding is
+    // re-registered in place and the seat's mapping generation stays 0).
     let mut context = claude_claim("session-X", "00000000-0000-4000-8000-000000000002");
-    context.binding_generation = 1;
+    context.binding_generation = 0;
     check_in(&store, lifecycle(context, "op-2")).unwrap();
     let second = view(&store);
-    assert_ne!(first, second.fingerprint);
-    assert_eq!(second.binding.as_ref().unwrap().generation, 2);
-    assert_eq!(second.fingerprint.binding_generation, Some(2));
+    assert_eq!(second.binding.as_ref().unwrap().generation, 0);
+    assert_eq!(second.fingerprint.binding_generation, Some(0));
 }
 
 fn seed_stall_receipt(

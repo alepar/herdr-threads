@@ -467,6 +467,472 @@ pub fn get(db: &Connection, binding: &BindingId) -> Result<Option<BindingRow>, A
     .next())
 }
 
+/// Whether the daemon refuses agent claims that carry no liveness fingerprint (decision 9/15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FingerprintRule {
+    Transitional,
+    Required,
+}
+/// ht-54r.5 switches this to Required in the commit where every client claim carries a
+/// fingerprint, and deletes `Transitional`. Until then the daemon admits fingerprint-less agent
+/// claims so the pre-ht-54r.5 clients keep working (the rule and its codes are fully tested here).
+pub const AGENT_FINGERPRINT_RULE: FingerprintRule = FingerprintRule::Transitional;
+
+/// Decision 15 / decision 9. Human claims are exempt. `launch:` sessions are never a caller
+/// (SessionClaimRequired). Under Required: a `plugin_context:` session is SessionClaimRequired,
+/// and a missing fingerprint is LivenessFingerprintRequired when the claim would enroll,
+/// reconnect or reopen a binding (a plain touch of an open binding needs none: `touch(None)`).
+pub fn admit_agent_claim(
+    claim: &CallerClaim,
+    creates_or_connects: bool,
+    rule: FingerprintRule,
+) -> Result<(), ApiError> {
+    if claim.harness == crate::protocol::authority::Harness::Human {
+        return Ok(());
+    }
+    let session = claim.native_session.as_str();
+    let placeholder = session.is_empty()
+        || session.starts_with(crate::protocol::authority::MANAGED_LAUNCH_PLACEHOLDER_PREFIX)
+        || (rule == FingerprintRule::Required && session.starts_with(PLUGIN_CONTEXT_PREFIX));
+    if placeholder {
+        return Err(api_error(
+            ErrorCode::SessionClaimRequired,
+            "agent call without a harness session id",
+        ));
+    }
+    if rule == FingerprintRule::Required && creates_or_connects && claim.liveness.is_none() {
+        return Err(api_error(
+            ErrorCode::LivenessFingerprintRequired,
+            "agent call without a liveness fingerprint",
+        ));
+    }
+    Ok(())
+}
+/// Placeholder session prefix of a caller without a harness session id.
+const PLUGIN_CONTEXT_PREFIX: &str = "plugin_context:";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    Existing {
+        binding: BindingRow,
+        reconnected: bool,
+    },
+    Enrolled {
+        binding: BindingRow,
+        first_contact: bool,
+    },
+    Reopened(BindingRow),
+}
+impl Resolution {
+    pub fn binding(&self) -> &BindingRow {
+        match self {
+            Self::Existing { binding, .. }
+            | Self::Enrolled { binding, .. }
+            | Self::Reopened(binding) => binding,
+        }
+    }
+}
+
+pub struct ResolveRequest<'a> {
+    pub claim: &'a CallerClaim,
+    /// A lifecycle check-in: the only claim that (re)connects and supersedes (r2).
+    pub lifecycle: bool,
+    pub placement: &'a BindingPlacement,
+    /// Lineage predecessor (spec §1). Always None in this task; ht-54r.20 / ht-54r.17 pass it.
+    pub lineage: Option<&'a BindingId>,
+}
+
+/// The open top-level binding (seat, harness, native_session, agent '') a subagent claim attaches to.
+pub fn resolve_parent(
+    db: &Connection,
+    claim: &CallerClaim,
+) -> Result<Option<BindingRow>, ApiError> {
+    let mut key = BindingKey::from_claim(claim);
+    key.agent_id = None;
+    match_claim(db, &key)
+}
+
+/// Attach a subagent binding to its (open) parent. Attachment only; it never ends a binding.
+pub fn attach_subagent(
+    tx: &Connection,
+    claim: &CallerClaim,
+    parent: &BindingRow,
+    placement: &BindingPlacement,
+    now: UtcMillis,
+) -> Result<EnrollOutcome, ApiError> {
+    attach_subagent_with_hooks(tx, claim, parent, placement, now, ENROLL_HOOKS)
+}
+
+fn attach_subagent_with_hooks(
+    tx: &Connection,
+    claim: &CallerClaim,
+    parent: &BindingRow,
+    placement: &BindingPlacement,
+    now: UtcMillis,
+    hooks: &[(&str, EnrollHook)],
+) -> Result<EnrollOutcome, ApiError> {
+    if claim.agent_id.is_none() {
+        return Err(subagent_shape_error());
+    }
+    enroll_with_hooks(
+        tx,
+        &EnrollRequest {
+            key: &BindingKey::from_claim(claim),
+            role: BindingRole::Subagent,
+            parent: Some(&parent.binding_id),
+            lineage: None,
+            fingerprint: claim.liveness,
+            placement,
+            trigger: EnrollTrigger::PlainCall,
+        },
+        now,
+        hooks,
+    )
+}
+
+fn subagent_shape_error() -> ApiError {
+    api_error(
+        ErrorCode::InvalidRequest,
+        "subagent claims carry an agent id".to_owned(),
+    )
+}
+
+/// Minimal reconnect (lifecycle only): disconnected -> connected, fingerprint set to the given
+/// one (None clears a stale one: an old process is not evidence about the new one). ht-54r.10
+/// replaces it with `connect` (keep the call sites; it renames them). Returns whether it changed
+/// the row.
+pub fn reconnect(
+    tx: &Connection,
+    binding: &BindingId,
+    fingerprint: Option<LivenessFingerprint>,
+    _now: UtcMillis,
+) -> Result<bool, ApiError> {
+    let (pid, start) = match fingerprint {
+        Some(f) => (
+            Some(i64::from(f.pid)),
+            Some(to_i64(f.start, "liveness start")?),
+        ),
+        None => (None, None),
+    };
+    let changed = tx
+        .execute(
+            "UPDATE occupant_bindings SET liveness='connected', disconnected_at=NULL, disconnect_reason=NULL, liveness_pid=?2, liveness_start=?3 \
+             WHERE binding_id=?1 AND ended_at IS NULL AND liveness='disconnected'",
+            params![binding.as_str(), pid, start],
+        )
+        .map_err(store_error)?;
+    Ok(changed > 0)
+}
+
+/// Ends every open binding of the seat: connected ones go through `disconnect(reason)` first (so
+/// ht-54r.10's side-effect hooks run), then `ended_at` is set. Used by unresolve here, and by
+/// retirement (ht-54r.14) and human exclusivity (ht-54r.4).
+pub fn end_open_bindings(
+    tx: &Connection,
+    seat: &SeatId,
+    reason: DisconnectReason,
+    now: UtcMillis,
+) -> Result<usize, ApiError> {
+    let open = query_rows(
+        tx,
+        &format!(
+            "SELECT {COLUMNS} FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal"
+        ),
+        &[&seat.as_str()],
+    )?;
+    for binding in &open {
+        disconnect(tx, &binding.binding_id, reason, now)?;
+    }
+    tx.execute(
+        "UPDATE occupant_bindings SET ended_at=?2 WHERE seat_id=?1 AND ended_at IS NULL",
+        params![seat.as_str(), now.0],
+    )
+    .map_err(store_error)?;
+    Ok(open.len())
+}
+
+/// Which kind of lifecycle check-in replaces which bindings (TRUST-POLICY A4). Transitional
+/// until ht-54r.4 moves human exclusivity and the `managed_launch` placeholder replacement into
+/// enroll hooks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplacedBy {
+    /// A person's check-in replaces the seat's agent bindings (operator override only).
+    Human,
+    /// An agent's lifecycle check-in replaces the seat's human binding and its
+    /// `managed_launch` placeholder.
+    Agent,
+}
+
+/// Ends (reason `replaced`) the open bindings of `seat`, other than `keep`, that `by` replaces.
+pub fn end_replaced_bindings(
+    tx: &Connection,
+    seat: &SeatId,
+    keep: &BindingId,
+    by: ReplacedBy,
+    now: UtcMillis,
+) -> Result<usize, ApiError> {
+    let replaced = match by {
+        ReplacedBy::Human => "harness<>'human'",
+        ReplacedBy::Agent => "(harness='human' OR observation_provenance='managed_launch')",
+    };
+    let doomed = query_rows(
+        tx,
+        &format!(
+            "SELECT {COLUMNS} FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND binding_id<>?2 AND {replaced} ORDER BY ordinal"
+        ),
+        &[&seat.as_str(), &keep.as_str()],
+    )?;
+    for binding in &doomed {
+        disconnect(tx, &binding.binding_id, DisconnectReason::Replaced, now)?;
+        tx.execute(
+            "UPDATE occupant_bindings SET ended_at=?2 WHERE binding_id=?1",
+            params![binding.binding_id.as_str(), now.0],
+        )
+        .map_err(store_error)?;
+    }
+    Ok(doomed.len())
+}
+
+pub fn resolve_claim(
+    tx: &Connection,
+    request: &ResolveRequest<'_>,
+    rule: FingerprintRule,
+    now: UtcMillis,
+) -> Result<Resolution, ApiError> {
+    resolve_claim_with_hooks(tx, request, rule, now, ENROLL_HOOKS)
+}
+
+/// Rewrites the placement columns of an open binding from the deciding mapping.
+fn refresh_placement(
+    tx: &Connection,
+    binding: &BindingId,
+    place: &BindingPlacement,
+    provenance: Option<&str>,
+) -> Result<(), ApiError> {
+    tx.execute(
+        "UPDATE occupant_bindings SET generation=?2,target_generation=?3,target_id=?4,terminal_id=?5,incarnation=?6,host_boot=?7,host_epoch=?8,execution_id=?9,observation_provenance=COALESCE(?10,observation_provenance),observed_at=?11,registered_at=?12 \
+         WHERE binding_id=?1",
+        params![
+            binding.as_str(),
+            to_i64(place.generation, "generation")?,
+            to_i64(place.target_generation, "target generation")?,
+            place.target,
+            place.terminal,
+            place.incarnation,
+            place.host_boot,
+            to_i64(place.host_epoch, "host epoch")?,
+            place.execution,
+            provenance,
+            place.observed_at.0,
+            place.registered_at.map(|t| t.0),
+        ],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
+/// The binding resolution of one cooperative claim, inside the caller's deciding transaction
+/// (spec §1, §2 Enrollment). Never ends another binding.
+pub(crate) fn resolve_claim_with_hooks(
+    tx: &Connection,
+    request: &ResolveRequest<'_>,
+    rule: FingerprintRule,
+    now: UtcMillis,
+    hooks: &[(&str, EnrollHook)],
+) -> Result<Resolution, ApiError> {
+    let claim = request.claim;
+    let human = claim.harness == crate::protocol::authority::Harness::Human;
+    let subagent = claim.role == crate::protocol::authority::CallerRole::Subagent;
+    if claim.agent_id.is_some() != subagent {
+        return Err(subagent_shape_error());
+    }
+    let key = BindingKey::from_claim(claim);
+    let found = match_claim(tx, &key)?;
+    // A person's binding comes only from the person's own lifecycle check-in (`me init`, with
+    // its A4 guards); a plain human call never enrolls one.
+    if human && !request.lifecycle && found.is_none() {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative occupant context changed".to_owned(),
+        ));
+    }
+    let creates_or_connects = request.lifecycle || found.is_none();
+    if !human {
+        admit_agent_claim(claim, creates_or_connects, rule)?;
+    }
+    let harness = claim.harness;
+    let top_provenance = if request.lifecycle || human {
+        harness.cooperative_provenance()
+    } else {
+        crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE
+    };
+    let sub_provenance = if harness == crate::protocol::authority::Harness::Claude {
+        crate::protocol::authority::COOPERATIVE_HOOK_AGENT_PROVENANCE
+    } else {
+        crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE
+    };
+    let placed = |provenance: &str| BindingPlacement {
+        provenance: provenance.to_owned(),
+        ..request.placement.clone()
+    };
+    if let Some(existing) = found {
+        if !request.lifecycle {
+            touch(tx, &existing.binding_id, claim.liveness, now)?;
+            let binding = get(tx, &existing.binding_id)?
+                .ok_or_else(|| corrupt("touched binding vanished"))?;
+            return Ok(Resolution::Existing {
+                binding,
+                reconnected: false,
+            });
+        }
+        let reconnected = existing.liveness == Liveness::Disconnected
+            && reconnect(tx, &existing.binding_id, claim.liveness, now)?;
+        if !reconnected {
+            touch(tx, &existing.binding_id, claim.liveness, now)?;
+        }
+        let provenance = (existing.role == BindingRole::TopLevel).then_some(top_provenance);
+        refresh_placement(tx, &existing.binding_id, request.placement, provenance)?;
+        let binding = get(tx, &existing.binding_id)?
+            .ok_or_else(|| corrupt("reconnected binding vanished"))?;
+        run_enroll_hooks(
+            tx,
+            &EnrollEvent {
+                binding: &binding,
+                trigger: EnrollTrigger::Lifecycle,
+                created: false,
+            },
+            now,
+            hooks,
+        )?;
+        return Ok(Resolution::Existing {
+            binding,
+            reconnected,
+        });
+    }
+    // No open row. A session unresolved with its seat and seen again after the rebind reopens
+    // its own binding; rows ended any other way are never reopened.
+    let ended = query_rows(
+        tx,
+        &format!(
+            "SELECT {COLUMNS} FROM occupant_bindings WHERE seat_id=?1 AND harness=?2 AND native_session=?3 AND agent_id=?4 AND ended_at IS NOT NULL ORDER BY ordinal DESC LIMIT 1"
+        ),
+        &[
+            &key.seat.as_str(),
+            &key.harness,
+            &key.native_session.as_str(),
+            &key.agent_column(),
+        ],
+    )?
+    .into_iter()
+    .next();
+    if let Some(ended) = ended
+        && ended.disconnect_reason.as_deref() == Some(DisconnectReason::SeatUnresolved.as_str())
+        && seat_is_resolved(tx, &key.seat)?
+    {
+        tx.execute(
+            "UPDATE occupant_bindings SET ended_at=NULL WHERE binding_id=?1",
+            [ended.binding_id.as_str()],
+        )
+        .map_err(store_error)?;
+        reconnect(tx, &ended.binding_id, claim.liveness, now)?;
+        let provenance = if subagent { None } else { Some(top_provenance) };
+        refresh_placement(tx, &ended.binding_id, request.placement, provenance)?;
+        read_cursors::seed(tx, &ended.binding_id, SeedMode::Readopt)?;
+        let binding =
+            get(tx, &ended.binding_id)?.ok_or_else(|| corrupt("reopened binding vanished"))?;
+        run_enroll_hooks(
+            tx,
+            &EnrollEvent {
+                binding: &binding,
+                trigger: if request.lifecycle {
+                    EnrollTrigger::Lifecycle
+                } else {
+                    EnrollTrigger::PlainCall
+                },
+                created: false,
+            },
+            now,
+            hooks,
+        )?;
+        return Ok(Resolution::Reopened(binding));
+    }
+    let trigger = if request.lifecycle {
+        EnrollTrigger::Lifecycle
+    } else {
+        EnrollTrigger::PlainCall
+    };
+    let outcome = if subagent {
+        let parent = match resolve_parent(tx, claim)? {
+            Some(parent) => parent,
+            None => {
+                let parent_key = BindingKey {
+                    agent_id: None,
+                    ..key.clone()
+                };
+                let parent_place =
+                    placed(crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE);
+                match enroll_with_hooks(
+                    tx,
+                    &EnrollRequest {
+                        key: &parent_key,
+                        role: BindingRole::TopLevel,
+                        parent: None,
+                        lineage: None,
+                        fingerprint: claim.liveness,
+                        placement: &parent_place,
+                        trigger: EnrollTrigger::PlainCall,
+                    },
+                    now,
+                    hooks,
+                )? {
+                    EnrollOutcome::Enrolled { binding, .. } | EnrollOutcome::Existing(binding) => {
+                        binding
+                    }
+                }
+            }
+        };
+        attach_subagent_with_hooks(tx, claim, &parent, &placed(sub_provenance), now, hooks)?
+    } else {
+        let place = placed(top_provenance);
+        enroll_with_hooks(
+            tx,
+            &EnrollRequest {
+                key: &key,
+                role: BindingRole::TopLevel,
+                parent: None,
+                lineage: request.lineage,
+                fingerprint: claim.liveness,
+                placement: &place,
+                trigger,
+            },
+            now,
+            hooks,
+        )?
+    };
+    Ok(match outcome {
+        EnrollOutcome::Enrolled {
+            binding,
+            first_contact,
+        } => Resolution::Enrolled {
+            binding,
+            first_contact,
+        },
+        EnrollOutcome::Existing(binding) => Resolution::Existing {
+            binding,
+            reconnected: false,
+        },
+    })
+}
+
+fn seat_is_resolved(db: &Connection, seat: &SeatId) -> Result<bool, ApiError> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND state='resolved')",
+        [seat.as_str()],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
 #[cfg(test)]
 #[path = "../../tests/store/bindings.rs"]
 pub(crate) mod tests;

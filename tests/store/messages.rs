@@ -499,9 +499,10 @@ fn user_intent_send_canonical_eligibility_refuses_unrelayed_agent() {
 fn user_intent_send_rechecks_live_role() {
     use crate::protocol::summary::UserIntent;
     for (change, expected) in [
+        // ht-54r.3: a claim names its own binding and an unknown session of an agent enrolls
+        // one, so a closed or re-roled stored binding no longer refuses an agent's send; only
+        // a person's claim must already hold a binding.
         ("mismatched_human_hint", ErrorCode::CallerUnverified),
-        ("closed_binding", ErrorCode::CallerUnverified),
-        ("role_replaced", ErrorCode::CallerUnverified),
         ("revision_changed", ErrorCode::Conflict),
         ("stale_generation", ErrorCode::CallerUnverified),
     ] {

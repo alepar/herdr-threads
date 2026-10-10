@@ -3529,6 +3529,8 @@ mod continuity_gate {
                 | ErrorCode::StaleServiceGeneration
                 | ErrorCode::IncompatibleOwnership
                 | ErrorCode::RequiredInvitationNeedsManagedThread
+                | ErrorCode::SessionClaimRequired
+                | ErrorCode::LivenessFingerprintRequired
                 | ErrorCode::TransportDenied => false,
             }
         }
@@ -3574,6 +3576,8 @@ mod continuity_gate {
             ErrorCode::MembershipRequired,
             ErrorCode::StaleRequirementAcceptance,
             ErrorCode::TransportDenied,
+            ErrorCode::SessionClaimRequired,
+            ErrorCode::LivenessFingerprintRequired,
         ];
         for code in &all {
             assert_eq!(

@@ -104,7 +104,7 @@ pub(crate) fn validate_live(
     identity: &HandoffIdentity,
     thread: Option<&ThreadId>,
 ) -> Result<(), ApiError> {
-    super::seats::cooperative_mapping(db, &identity.claim, None)?;
+    super::seats::cooperative_bound_mapping(db, &identity.claim, None)?;
     if let Some(thread) = thread {
         let row:Option<(bool,bool)>=db.query_row("SELECT archived,EXISTS(SELECT 1 FROM memberships m WHERE m.thread_id=t.id AND m.seat_id=?2 AND m.state='joined') FROM threads t WHERE id=?1 AND instance_id=?3",params![thread.as_str(),identity.claim.seat.as_str(),identity.claim.instance],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
         match row {
@@ -327,7 +327,7 @@ pub(crate) fn complete_linked_child(
     if result.state == HandoffState::Completed {
         return Ok(result);
     }
-    super::seats::cooperative_mapping(tx, &identity.claim, None)?;
+    super::seats::cooperative_bound_mapping(tx, &identity.claim, None)?;
     if result.thread.is_none() {
         return Err(api_error(
             ErrorCode::Conflict,

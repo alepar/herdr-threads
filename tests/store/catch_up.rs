@@ -931,12 +931,14 @@ const EXEC_2: &str = "00000000-0000-4000-8000-000000000002";
 fn binding_replacement_supersedes() {
     let mut f = store();
     let generation = check_in(&f.store, EXEC_1, 0);
-    assert_eq!(generation, 1);
+    // ht-54r.3: a check-in keeps the seat's mapping generation; it never bumps it.
+    assert_eq!(generation, 0);
     enter_in_store(&mut f.conn, EXEC_1, generation);
     assert_eq!(row(&f.conn, "s").state, "active");
     let before = decision_seq(&f.conn);
-    // A fresh lifecycle check-in with a new execution replaces the binding.
-    assert_eq!(check_in(&f.store, EXEC_2, 1), 2);
+    // A fresh lifecycle check-in with a new execution re-registers the session's binding on the
+    // new execution, so the catch-up row of the old execution is superseded.
+    assert_eq!(check_in(&f.store, EXEC_2, 0), 0);
     let superseded = row(&f.conn, "s");
     assert_eq!(superseded.state, "ended");
     assert_eq!(superseded.end_reason.as_deref(), Some("superseded"));

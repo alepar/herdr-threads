@@ -2895,14 +2895,16 @@ pub fn carry_pending(db: &Connection, seat: &str, instance: &str) -> Result<bool
          WHERE s.id=?1 AND h.id=?2 AND s.state='resolved' \
            AND (h.reconciled_boot IS NOT h.recovery_boot OR h.reconciled_epoch IS NOT h.recovery_epoch) \
            AND b.ended_at IS NULL AND b.registered_at IS NOT NULL \
-           AND b.observation_provenance IN (?3,?4) \
+           AND b.observation_provenance IN (?3,?4,?5,?6) \
            AND b.host_boot=h.host_boot AND b.host_epoch<h.host_epoch \
            AND b.incarnation IS NOT NULL AND b.incarnation=s.structural_incarnation)",
         params![
             seat,
             instance,
             CARRIED_BINDING_PROVENANCES[0],
-            CARRIED_BINDING_PROVENANCES[1]
+            CARRIED_BINDING_PROVENANCES[1],
+            CARRIED_BINDING_PROVENANCES[2],
+            CARRIED_BINDING_PROVENANCES[3]
         ],
         |r| r.get(0),
     )

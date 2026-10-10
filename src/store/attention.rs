@@ -618,10 +618,12 @@ fn judged_warning(
 /// ordinal of the last informational notice carried by a committed check-in
 /// offer to that exact occupant (binding generation and execution), else 0.
 /// A frontier recorded for another occupant (a predecessor) covers nothing.
+/// The seat holds one notice frontier, scoped to its latest open binding (a seat may hold
+/// several, ht-54r.3); per-binding frontiers arrive with the per-binding cursors (ht-54r.7).
 pub fn notice_frontier(db: &Connection, seat_id: &str) -> Result<i64, ApiError> {
     let frontier: Option<i64> = db
         .query_row(
-            "SELECT o.offered_ordinal FROM digest_notice_offer o JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND o.execution_id=b.execution_id",
+            "SELECT o.offered_ordinal FROM digest_notice_offer o JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL AND b.ordinal=(SELECT MAX(l.ordinal) FROM occupant_bindings l WHERE l.seat_id=s.id AND l.generation=s.generation AND l.ended_at IS NULL) WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND o.execution_id=b.execution_id",
             [seat_id],
             |r| r.get(0),
         )

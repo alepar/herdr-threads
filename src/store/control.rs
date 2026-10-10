@@ -1901,7 +1901,7 @@ pub(crate) fn decide_accountable(
             operation.as_str(),
         )?;
     }
-    let mapping = super::seats::decide_cooperative(
+    let (mapping, _binding) = super::seats::decide_cooperative(
         tx,
         at,
         &claim.instance,

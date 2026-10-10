@@ -715,7 +715,7 @@ impl ContextJournal {
                         && requested.binding_generation != returned.binding_generation)
                     || (done.request.mode == CheckInMode::Lifecycle
                         && returned.binding_generation
-                            <= done.request.expected_generation.unwrap_or(0))
+                            < done.request.expected_generation.unwrap_or(0))
                 {
                     return Err(ContextError::Corrupt.into());
                 }
@@ -1232,6 +1232,8 @@ impl ContextJournal {
         if response.output.len() > MAX_PAYLOAD {
             return Err(ContextError::TooLarge);
         }
+        // A lifecycle check-in adds or refreshes the session's binding and leaves the seat's
+        // mapping generation as it is (ht-54r.3), so the returned generation is never lower.
         if !response.historical {
             let a = &request.context;
             let b = &response.context;
@@ -1242,7 +1244,7 @@ impl ContextJournal {
                 || (request.mode == CheckInMode::Current
                     && a.binding_generation != b.binding_generation)
                 || (request.mode == CheckInMode::Lifecycle
-                    && b.binding_generation <= request.expected_generation.unwrap_or(0))
+                    && b.binding_generation < request.expected_generation.unwrap_or(0))
             {
                 return Err(ContextError::Conflict);
             }

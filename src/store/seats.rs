@@ -23,7 +23,7 @@ use crate::{
         time::{CallBudget, UtcMillis},
     },
     store::{
-        catch_up,
+        bindings, catch_up,
         connection::{DecisionInstant, StoreContext, api_error, store_error},
         control,
         effective::{self, EffectiveObservationSource, EffectiveRecoveryDisposition},
@@ -1698,11 +1698,9 @@ fn mark_seat_unresolved(
     if changed != 1 {
         return Ok(ReconciliationOutcome::Stale);
     }
-    tx.execute(
-        "UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL",
-        params![at.utc.0, seat.as_str()],
-    )
-    .map_err(store_error)?;
+    // The binding end is honest (disconnect reason `seat_unresolved`), which is what lets the
+    // same session reopen its binding after a rebind (ht-54r.3).
+    bindings::end_open_bindings(tx, seat, bindings::DisconnectReason::SeatUnresolved, at.utc)?;
     catch_up::supersede_stale(tx, seat, at.utc)?;
     tx.execute(
         "DELETE FROM warning_offer WHERE seat_id=?1",
@@ -1811,7 +1809,7 @@ fn carry_binding_forward(
     target_generation: i64,
 ) -> Result<bool, ApiError> {
     let changed = tx.execute(
-        "UPDATE occupant_bindings SET host_epoch=?1,target_generation=?2 WHERE seat_id=?3 AND generation=?4 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?5 AND target_id=?6 AND incarnation=?7 AND observation_provenance IN (?8,?9) AND (host_epoch!=?1 OR target_generation!=?2)",
+        "UPDATE occupant_bindings SET host_epoch=?1,target_generation=?2 WHERE seat_id=?3 AND generation=?4 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?5 AND target_id=?6 AND incarnation=?7 AND observation_provenance IN (?8,?9,?10,?11) AND (host_epoch!=?1 OR target_generation!=?2)",
         params![
             checked_host_number(publication.epoch)?,
             target_generation,
@@ -1821,10 +1819,13 @@ fn carry_binding_forward(
             target,
             publication.incarnation,
             CARRIED_BINDING_PROVENANCES[0],
-            CARRIED_BINDING_PROVENANCES[1]
+            CARRIED_BINDING_PROVENANCES[1],
+            CARRIED_BINDING_PROVENANCES[2],
+            CARRIED_BINDING_PROVENANCES[3]
         ],
     ).map_err(store_error)?;
-    if changed != 1 {
+    // A seat may hold several bindings of the carried generation (ht-54r.3).
+    if changed == 0 {
         return Ok(false);
     }
     let (binding_generation, provenance): (i64, String) = tx
@@ -3879,8 +3880,14 @@ pub(crate) fn cooperative_instance(
     instance: &str,
     claim: &crate::protocol::authority::CallerClaim,
 ) -> Result<(), ApiError> {
-    if claim.instance != instance || claim.role != crate::protocol::authority::CallerRole::TopLevel
-    {
+    use crate::protocol::authority::CallerRole;
+    // A subagent claim carries its agent id and resolves to a binding attached to its parent
+    // (ht-54r.3); refusing it a write is `Command::validate`'s and dispatch's job (ht-54r.20).
+    let role_matches = match claim.role {
+        CallerRole::TopLevel => claim.agent_id.is_none(),
+        CallerRole::Subagent => claim.agent_id.is_some(),
+    };
+    if claim.instance != instance || !role_matches {
         return Err(api_error(
             ErrorCode::CallerUnverified,
             "cooperative instance or declared role mismatch",
@@ -4041,26 +4048,13 @@ pub(crate) fn cooperative_mapping(
             }
         }
         _ => {
-            let stored_harness: Option<String> = db.query_row(
-                "SELECT harness FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL",
-                params![claim.seat.as_str(),generation],|r|r.get(0)
-            ).optional().map_err(store_error)?;
-            if stored_harness.as_deref().is_some_and(|id| {
-                id != "human" && crate::harness::registry::builtins().agent(id).is_err()
-            }) {
+            // Which binding the claim names is the daemon's resolution inside the deciding
+            // transaction (`decide_cooperative`); there is no single occupant to compare to.
+            let harness = claim.harness.as_str();
+            if harness != "human" && crate::harness::registry::builtins().agent(harness).is_err() {
                 return Err(api_error(
                     ErrorCode::Unsupported,
-                    "stored binding harness has no registered adapter",
-                ));
-            }
-            // A `managed_launch` binding is never a caller's context (A2/A3):
-            // only a lifecycle check-in replaces it.
-            let exact: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND target_id=?3 AND harness=?4 AND native_session=?5 AND execution_id=?6 AND ended_at IS NULL AND observation_provenance<>?7)",
-                params![claim.seat.as_str(),generation,claim.target.as_str(),claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str(),crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE], |r|r.get(0)).map_err(store_error)?;
-            if !exact {
-                return Err(api_error(
-                    ErrorCode::CallerUnverified,
-                    "cooperative occupant context changed",
+                    "claim harness has no registered adapter",
                 ));
             }
         }
@@ -4075,6 +4069,25 @@ pub(crate) fn cooperative_mapping(
         terminal: observation.as_ref().and_then(|o| o.terminal_id.clone()),
         incarnation: observation.and_then(|o| o.incarnation),
     })
+}
+
+/// [`cooperative_mapping`] plus: the claim's own binding (seat, harness, session, agent id) is
+/// open. For validators that re-check authority a bound session already holds (a handoff, an
+/// observation ticket) and never enroll; a claim resolved by `decide_cooperative` may enroll
+/// instead and uses `cooperative_mapping`.
+pub(crate) fn cooperative_bound_mapping(
+    db: &Connection,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+) -> Result<CooperativeMapping, ApiError> {
+    let mapping = cooperative_mapping(db, claim, mode)?;
+    if super::queries::open_binding_for(db, &bindings::BindingKey::from_claim(claim))?.is_none() {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative occupant context changed",
+        ));
+    }
+    Ok(mapping)
 }
 
 /// Parent Begin is canonically retained separately from the legacy child Begin
@@ -4186,6 +4199,28 @@ pub(crate) fn decide_cooperative(
     operation: &crate::protocol::ids::OperationId,
     obligation: &ObligationRef,
     digest: &[u8; 32],
+) -> Result<(CooperativeMapping, bindings::Resolution), ApiError> {
+    let mapping = decide_cooperative_fence(
+        tx, at, instance, permit, claim, mode, operation, obligation, digest,
+    )?;
+    let resolution = resolve_cooperative(tx, at, claim, mode, &mapping)?;
+    Ok((mapping, resolution))
+}
+
+/// The deciding fence of a cooperative call: the mapping against the canonical view (A2) and the
+/// permit it consumes. Resolves no binding; callers that must act between the fence and the
+/// binding write (`register_available`) call this and [`resolve_cooperative`] separately.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decide_cooperative_fence(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    instance: &str,
+    permit: &mut MutationPermit,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+    operation: &crate::protocol::ids::OperationId,
+    obligation: &ObligationRef,
+    digest: &[u8; 32],
 ) -> Result<CooperativeMapping, ApiError> {
     cooperative_instance(tx, instance, claim)?;
     let mapping = cooperative_mapping(tx, claim, mode)?;
@@ -4211,6 +4246,58 @@ pub(crate) fn decide_cooperative(
         ));
     }
     Ok(mapping)
+}
+
+/// Resolve the claim to its own binding (ht-54r.3): enroll, reconnect, reopen, attach or touch.
+/// Never ends another binding.
+pub(crate) fn resolve_cooperative(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+    mapping: &CooperativeMapping,
+) -> Result<bindings::Resolution, ApiError> {
+    let lifecycle = matches!(
+        mode,
+        Some(crate::protocol::commands::CheckInMode::Lifecycle { .. })
+    );
+    let key = bindings::BindingKey::from_claim(claim);
+    // Reconfirmation evidence is needed only to write a placement: a plain touch of an open
+    // binding writes none, so a missing observation does not refuse it.
+    let evidence = mapping.reconfirmation_evidence();
+    let placement = match evidence {
+        Ok((terminal, incarnation)) => (terminal.to_owned(), incarnation.to_owned()),
+        Err(error) => {
+            if lifecycle || super::queries::open_binding_for(tx, &key)?.is_none() {
+                return Err(error);
+            }
+            (String::new(), String::new())
+        }
+    };
+    let placement = bindings::BindingPlacement {
+        generation: mapping.generation,
+        target_generation: mapping.revision,
+        target: claim.target.as_str().to_owned(),
+        terminal: placement.0,
+        incarnation: placement.1,
+        host_boot: mapping.boot.clone(),
+        host_epoch: mapping.epoch,
+        execution: claim.execution.as_str().to_owned(),
+        provenance: claim.harness.cooperative_provenance().to_owned(),
+        observed_at: at.utc,
+        registered_at: Some(at.utc),
+    };
+    bindings::resolve_claim(
+        tx,
+        &bindings::ResolveRequest {
+            claim,
+            lifecycle,
+            placement: &placement,
+            lineage: None,
+        },
+        bindings::AGENT_FINGERPRINT_RULE,
+        at.utc,
+    )
 }
 
 /// A cooperative check-in constructs its bounded offer inside the deciding SQLite
@@ -4243,7 +4330,7 @@ pub fn register_available(
         |tx| cooperative_instance(tx, &claim.instance, claim),
         |tx| cooperative_mapping(tx, claim, Some(command.mode)).map(|_| ()),
         |tx, at| {
-            let mapping = decide_cooperative(
+            let mapping = decide_cooperative_fence(
                 tx,
                 at,
                 &claim.instance,
@@ -4256,6 +4343,8 @@ pub fn register_available(
             )?;
             let seat = &claim.seat;
             let (terminal, incarnation) = mapping.reconfirmation_evidence()?;
+            // Evaluated before the claim's binding is resolved, so a binding this very call
+            // enrolls does not count. ht-54r.23 redoes availability from liveness.
             let previously_available:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND generation=?2 AND host_boot=?3 AND host_epoch=?4 AND target_generation=?5)",
                 params![seat.as_str(),mapping.generation as i64,mapping.boot,mapping.epoch as i64,mapping.revision as i64],|r|r.get(0)).map_err(store_error)?;
             if !previously_available {
@@ -4287,31 +4376,27 @@ pub fn register_available(
                     ),
                 ));
             }
-            let generation = if lifecycle {
-                let maximum:i64=tx.query_row("SELECT MAX(?2,COALESCE(MAX(generation),0)) FROM occupant_bindings WHERE seat_id=?1",
-                    params![seat.as_str(),mapping.generation as i64],|r|r.get(0)).map_err(store_error)?;
-                let next = maximum.checked_add(1).ok_or_else(|| {
-                    api_error(
-                        ErrorCode::SequenceExhausted,
-                        "seat binding generation exhausted",
-                    )
-                })?;
-                let changed = tx
-                    .execute(
-                        "UPDATE seats SET generation=?1 WHERE id=?2 AND generation=?3",
-                        params![next, seat.as_str(), mapping.generation as i64],
-                    )
-                    .map_err(store_error)?;
-                if changed != 1 {
-                    return Err(api_error(
-                        ErrorCode::Conflict,
-                        "lifecycle generation CAS failed",
-                    ));
-                }
-                tx.execute("UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL",params![at.utc.0,seat.as_str()]).map_err(store_error)?;
-                tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?13,?10,?10,?11,?12)",
-                    params![seat.as_str(),next,claim.target.as_str(),mapping.boot,mapping.epoch as i64,mapping.revision as i64,
-                        claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str(),at.utc.0,terminal,incarnation,claim.harness.cooperative_provenance()]).map_err(store_error)?;
+            let binding_id = resolve_cooperative(tx, at, claim, Some(command.mode), &mapping)?
+                .binding()
+                .binding_id
+                .clone();
+            // The seat's mapping generation: check-ins add and refresh bindings, they never
+            // bump it (only rebind, unresolve and retire do).
+            let generation = mapping.generation as i64;
+            if lifecycle {
+                // TRUST-POLICY A4, transitional until ht-54r.4: a person and an agent never
+                // hold a seat together, and the first agent check-in replaces `managed_launch`.
+                bindings::end_replaced_bindings(
+                    tx,
+                    seat,
+                    &binding_id,
+                    if claim.harness == crate::protocol::authority::Harness::Human {
+                        bindings::ReplacedBy::Human
+                    } else {
+                        bindings::ReplacedBy::Agent
+                    },
+                    at.utc,
+                )?;
                 catch_up::supersede_stale(tx, seat, at.utc)?;
                 if let Some(actor) = operator {
                     tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_human_override',?4,?5,?6,?7,?8)",
@@ -4322,14 +4407,11 @@ pub fn register_available(
                     [seat.as_str()],
                 )
                 .map_err(store_error)?;
-                tx.execute("UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",params![next,seat.as_str()]).map_err(store_error)?;
-                next
             } else {
                 // Restoring availability does not replace the occupant or its generation.
-                tx.execute("UPDATE occupant_bindings SET registered_at=?1,host_boot=?2,host_epoch=?3,target_generation=?4,observation_provenance=?9,terminal_id=?7,incarnation=?8 WHERE seat_id=?5 AND generation=?6 AND ended_at IS NULL",
-                    params![at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,seat.as_str(),mapping.generation as i64,terminal,incarnation,claim.harness.cooperative_provenance()]).map_err(store_error)?;
-                mapping.generation as i64
-            };
+                tx.execute("UPDATE occupant_bindings SET registered_at=?1,host_boot=?2,host_epoch=?3,target_generation=?4,observation_provenance=?8,terminal_id=?6,incarnation=?7 WHERE binding_id=?5",
+                    params![at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,binding_id.as_str(),terminal,incarnation,claim.harness.cooperative_provenance()]).map_err(store_error)?;
+            }
             let seq = schema::next_decision_seq(tx, &claim.instance)?;
             if lifecycle && claim.harness == crate::protocol::authority::Harness::Human {
                 // One durable cutoff waives all still-pending seat obligations

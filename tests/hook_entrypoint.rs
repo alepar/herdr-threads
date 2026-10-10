@@ -1073,7 +1073,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     );
     assert_eq!(
         count(&db, "SELECT generation FROM seats WHERE id='seat'"),
-        2
+        1
     );
     assert_eq!(
         count(
@@ -1098,7 +1098,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     assert_eq!(fx.digests.load(Ordering::SeqCst), digests_before + 1);
     assert_eq!(
         count(&db, "SELECT generation FROM seats WHERE id='seat'"),
-        2
+        1
     );
 
     // 3. A peer (registered by its own hook) invites the seat and sends mail.
@@ -1214,13 +1214,13 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     assert!(other.stderr.contains("lifecycle"), "{}", other.stderr);
     assert_eq!(
         count(&db, "SELECT generation FROM seats WHERE id='seat'"),
-        2
+        1
     );
     let other = run_hook(&command, "w9:p1", &host, &start("sess-2"));
     assert_eq!(other.code, Some(0), "{}", other.stderr);
     assert_eq!(
         count(&db, "SELECT generation FROM seats WHERE id='seat'"),
-        3
+        1
     );
     assert_eq!(
         count(
@@ -1526,7 +1526,7 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
         fresh.stderr
     );
     assert_eq!(
-        fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND generation=3 AND native_session='a-2'"),
+        fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND generation=2 AND native_session='a-2'"),
         1
     );
 
@@ -1553,12 +1553,12 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
         fresh.stderr
     );
     assert_eq!(
-        fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND generation=5 AND native_session='b-2'"),
+        fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND generation=3 AND native_session='b-2'"),
         1
     );
     let state = fx.context_json("seat");
     assert!(state["pending"].is_null());
-    assert_eq!(state["current"]["binding_generation"], 5);
+    assert_eq!(state["current"]["binding_generation"], 3);
     assert_eq!(state["abandoned"].as_array().map(Vec::len), Some(2));
     assert_eq!(fx.intents(), 0);
     // Tool calls in the new execution are healthy.
@@ -1570,13 +1570,18 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
 /// check-ins on its resolved target always replace its binding. None is
 /// refused and none records a continuity decision.
 #[test]
-fn cooperative_seat_on_own_target_startup_clear_resume_always_replace_binding() {
+fn cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings() {
     let fx = Fixture::start();
     let session_start = |session: &str, source: &str| {
         format!(r#"{{"session_id":"{session}","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"{source}"}}"#).into_bytes()
     };
-    let mut generation = fx.count("SELECT generation FROM seats WHERE id='seat'");
-    for (session, source) in [("s-a", "startup"), ("s-b", "clear"), ("s-a", "resume")] {
+    // ht-54r.3: each session is a binding of its own and a resume re-registers its session's
+    // binding; no lifecycle check-in bumps the seat's mapping generation or ends another binding.
+    let generation = fx.count("SELECT generation FROM seats WHERE id='seat'");
+    for (index, (session, source)) in [("s-a", "startup"), ("s-b", "clear"), ("s-a", "resume")]
+        .into_iter()
+        .enumerate()
+    {
         let hook = fx.hook("w9:p1", &session_start(session, source));
         assert_eq!(hook.code, Some(0), "{source}: {}", hook.stderr);
         let context = context_of(&hook);
@@ -1586,13 +1591,12 @@ fn cooperative_seat_on_own_target_startup_clear_resume_always_replace_binding() 
         );
         assert!(!context.contains("unavailable"), "{source}: {context}");
         let next = fx.count("SELECT generation FROM seats WHERE id='seat'");
-        assert!(next > generation, "{source}: {generation} -> {next}");
-        generation = next;
+        assert_eq!(next, generation, "{source}: {generation} -> {next}");
         assert_eq!(
             fx.count(
                 "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL"
             ),
-            1,
+            [1, 2, 2][index],
             "{source}"
         );
         assert_eq!(
@@ -1603,7 +1607,7 @@ fn cooperative_seat_on_own_target_startup_clear_resume_always_replace_binding() 
     }
     assert_eq!(
         fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat'"),
-        3
+        2
     );
     assert_eq!(
         fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
@@ -3391,7 +3395,8 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
     assert_eq!(carried_notices("clear", &text), (fx.notice_page(0), true));
     timings.push(("clear", cleared.elapsed));
     let successor = fx.count("SELECT generation FROM seats WHERE id='seat'");
-    assert!(successor > generation);
+    // ht-54r.3: a new session adds a binding; the mapping generation holds.
+    assert_eq!(successor, generation);
     assert_eq!(
         fx.notice_frontier(),
         (successor, fx.nth_notice_ordinal(16), n as i64 - 16)
@@ -4418,7 +4423,7 @@ fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
     );
     assert_eq!(
         fx.count(&format!(
-            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND harness='claude' AND native_session='agent-2' AND generation>{bound}"
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND harness='claude' AND native_session='agent-2' AND generation>={bound}"
         )),
         1
     );
@@ -4433,7 +4438,7 @@ fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
     let after = fx.context_json("seat");
     assert_eq!(after["current"]["harness"], "Claude");
     assert_ne!(after["current"]["execution"], human_execution);
-    assert!(after["current"]["binding_generation"].as_u64().unwrap() > bound as u64);
+    assert!(after["current"]["binding_generation"].as_u64().unwrap() >= bound as u64);
     // Tool calls in the agent's execution are healthy.
     let routine = fx.hook("w9:p1", &tool("agent-2"));
     assert!(routine.stderr.is_empty(), "{}", routine.stderr);
