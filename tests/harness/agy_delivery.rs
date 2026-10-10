@@ -1353,6 +1353,77 @@ mod daemon {
                 .turn
         );
     }
+    /// ht-poh.11 (c): a `/clear` (a new conversation, so a new binding generation) discards the
+    /// pull ledger. The offered message is `not_offered` for the new generation, the old claim is
+    /// `stale_generation`, nothing settled, and the next pull offers the message afresh.
+    #[test]
+    fn a_clear_rotation_discards_the_agy_pull_ledger() {
+        use crate::protocol::delivery::{
+            DeliveryConfirm, DeliveryConfirmOutcome, DeliveryPull, DeliveryPullReply,
+        };
+        let world = world();
+        let first = world.check_in();
+        let pull = |claim: &CallerClaim| {
+            let command = Command::DeliveryPull(DeliveryPull {
+                claim: claim.clone(),
+                seen_attention_version: None,
+                marker_prefix: vec![],
+            });
+            match world.service.handle(command, peer(), &budget()).unwrap() {
+                CommandResult::DeliveryPulled(reply) => reply,
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        let confirm = |claim: &CallerClaim, operation: &str| {
+            let command = Command::DeliveryConfirm(DeliveryConfirm {
+                claim: claim.clone(),
+                ids: vec![crate::protocol::ids::MessageId::new("m1")],
+                operation: crate::protocol::ids::OperationId::new(operation),
+            });
+            match world.service.handle(command, peer(), &budget()).unwrap() {
+                CommandResult::DeliveryConfirmed(report) => {
+                    report.results.into_iter().next().unwrap().result
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        let DeliveryPullReply::Page(page) = pull(&first) else {
+            panic!("the first pull offers m1");
+        };
+        assert_eq!(page.offered.len(), 1);
+
+        // `/clear`: the same pane, another conversation.
+        let mut next = first.clone();
+        next.native_session = NativeSessionId::new("e806a19d-b316-4599-b4c5-a56db668fb4a");
+        next.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+        let command = Command::CheckIn(CheckIn {
+            mode: CheckInMode::Lifecycle {
+                expected_binding_generation: first.binding_generation,
+            },
+            claim: next,
+            operation: crate::protocol::ids::OperationId::new("ci-2"),
+        });
+        let CommandResult::CheckedIn(result) =
+            world.service.handle(command, peer(), &budget()).unwrap()
+        else {
+            panic!("the /clear check-in");
+        };
+        let second = result.context;
+        assert!(second.binding_generation > first.binding_generation);
+
+        assert_eq!(confirm(&second, "op-1"), DeliveryConfirmOutcome::NotOffered);
+        assert_eq!(
+            confirm(&first, "op-2"),
+            DeliveryConfirmOutcome::StaleGeneration
+        );
+        assert_eq!(world.receipt().0, "pending");
+        let DeliveryPullReply::Page(again) = pull(&second) else {
+            panic!("the new generation is offered m1 afresh");
+        };
+        assert_eq!(again.offered, page.offered);
+        assert_eq!(confirm(&second, "op-3"), DeliveryConfirmOutcome::Settled);
+        assert_eq!(world.receipt().0, "acked");
+    }
 }
 
 // --- stale tracked ids and old state files (ht-poh.36) ---------------------------------------------

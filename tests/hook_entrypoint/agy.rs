@@ -4,6 +4,7 @@
 //! The seeded seat `seat` on pane `w9:p1` is the pane under test.
 use super::*;
 use herdr_threads::harness::registry::{OccupantHarness, builtins};
+use serde_json::{Value, json};
 
 const TOP: &str = "534e47d6-64b3-4fd6-bd7f-446ceec4d86c";
 const CLEAR: &str = "e806a19d-b316-4599-b4c5-a56db668fb4a";
@@ -46,6 +47,14 @@ fn command(fx: &Fixture, event: &str) -> String {
 /// One agy hook as the harness runs it: `sh -c <command>`, the payload on stdin, the pane
 /// identity and `HOME` in the environment.
 fn run(fx: &Fixture, home: &Path, event: &str, name: &str) -> Hook {
+    run_payload(fx, home, event, &payload(name))
+}
+fn run_payload(fx: &Fixture, home: &Path, event: &str, bytes: &[u8]) -> Hook {
+    run_payload_with(fx, home, event, bytes, true)
+}
+/// `scaled: false` runs the hook with the production wall-clock budgets (no
+/// `HT_TEST_TIMEOUT_SCALE`), for the test that pins the lifecycle bound itself.
+fn run_payload_with(fx: &Fixture, home: &Path, event: &str, bytes: &[u8], scaled: bool) -> Hook {
     let started = Instant::now();
     let mut line = scrubbed_command("/bin/sh");
     line.arg("-c")
@@ -61,14 +70,12 @@ fn run(fx: &Fixture, home: &Path, event: &str, name: &str) -> Hook {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if !scaled {
+        line.env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV);
+    }
     herdr_threads::test_support::spawn::tag(&mut line);
     let mut child = line.spawn_owned().unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&payload(name))
-        .unwrap();
+    child.stdin.take().unwrap().write_all(bytes).unwrap();
     let output = child.wait_with_output().unwrap();
     Hook {
         code: output.status.code(),
@@ -338,4 +345,182 @@ fn with_the_daemon_down_a_routine_hook_prints_nothing_and_exits_zero() {
             String::from_utf8_lossy(&hook.stdout)
         );
     }
+}
+
+/// With the daemon stopped, a lifecycle hook (a top-level `SessionStart`, a `/clear`, and the inv0
+/// turn starts that carry a fresh start or a resume) still exits 0 (ht-poh.11), inside its
+/// production 5 s lifecycle budget (the hook runs unscaled). Unlike the routine `hook_step` events
+/// these run the core check-in, which ensures a daemon within that budget; with no Herdr behind
+/// it the check-in is refused and the one step the hook may print is the locked-shape "check-in
+/// unavailable" notice: never the startup context, never a binding.
+#[test]
+fn with_the_daemon_down_the_lifecycle_hooks_exit_zero_and_enroll_nothing() {
+    for (layout, event, name) in [
+        ("top-level", "SessionStart", "session-start-top"),
+        ("clear", "SessionStart", "session-start-after-clear"),
+        ("top-level", "PreInvocation", "pre-invocation-inv0-fresh"),
+        (
+            "resume-stale-lock",
+            "PreInvocation",
+            "pre-invocation-inv0-resume",
+        ),
+    ] {
+        let mut fx = Fixture::start();
+        let home = home_with(&fx, layout);
+        fx.stop();
+        let hook = run_payload_with(&fx, &home, event, &payload(name), false);
+        assert_eq!(
+            hook.code,
+            Some(0),
+            "{layout} {event} {name}: {}",
+            hook.stderr
+        );
+        assert!(
+            hook.elapsed < Duration::from_secs(5) + Duration::from_secs(5),
+            "{layout} {event} {name}: the lifecycle bound is 5 s, took {:?}",
+            hook.elapsed
+        );
+        if !hook.stdout.is_empty() {
+            let text = system_message(&hook);
+            assert!(
+                text.contains("check-in unavailable"),
+                "{layout} {name}: {text}"
+            );
+            assert!(!text.contains("Use inbox"), "{layout} {name}: {text}");
+        }
+        assert_eq!(
+            live_bindings(&fx),
+            0,
+            "{layout} {name}: nothing was enrolled"
+        );
+    }
+}
+
+/// `herdr-threads --json <command>` as the cooperative stand-in caller `seat` on `pane`, whose
+/// binding is `harness` (the shared `cooperative` helper always claims Claude).
+fn cooperative_as(fx: &Fixture, harness: &str, seat: &str, pane: &str, command: &[&str]) -> Value {
+    let mut args = vec![
+        "herdr-threads",
+        "--json",
+        "--state-dir",
+        fx.state.to_str().unwrap(),
+        "--host-endpoint",
+        fx.host.to_str().unwrap(),
+        "--cooperative-seat",
+        seat,
+        "--cooperative-target",
+        pane,
+        "--cooperative-harness",
+        harness,
+        "--cooperative-role",
+        "top-level",
+    ];
+    args.extend_from_slice(command);
+    let mut out = Vec::new();
+    herdr_threads::cli::run(args, &mut out).unwrap();
+    serde_json::from_slice(&out).unwrap()
+}
+fn lazy_row_state(fx: &Fixture, message: &str) -> String {
+    let db = rusqlite::Connection::open(&fx.db).unwrap();
+    db.query_row(
+        "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='seat'",
+        [message],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+/// agy declares `HookPull`, so a standard hook never reads an inbox page or completes a lazy row
+/// (the `cooperative_hook_context` path of ht-poh.17): a `SessionStart` with a lazy row pending
+/// shows no inbox block and leaves it `pending`; the routine turn start pulls it into one
+/// `systemMessage` (still `pending`: a pull settles nothing); only the transcript-confirmed
+/// `Stop` completes it.
+#[test]
+fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context() {
+    let fx = Fixture::start();
+    let home = home_with(&fx, "clear");
+    // The pane's first conversation, then a peer (Claude) that shares a thread with the seat.
+    system_message(&run(&fx, &home, "SessionStart", "session-start-top"));
+    let peer = fx.hook("w9:p2", &start("peer-sess"));
+    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
+    let thread = data(cooperative_as(
+        &fx,
+        "claude",
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "agy-lazy"],
+    ));
+    cooperative_as(
+        &fx,
+        "claude",
+        "peer",
+        "w9:p2",
+        &["invite", &thread, "--seat", "seat"],
+    );
+    cooperative_as(&fx, "agy", "seat", PANE, &["accept", &thread]);
+    let lazy = data(cooperative_as(
+        &fx,
+        "claude",
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--lazy", "--body", "passive hello"],
+    ));
+    assert_eq!(lazy_row_state(&fx, &lazy), "pending");
+
+    // `/clear` starts a new conversation while the row is pending: its SessionStart shows no
+    // inbox block and completes nothing.
+    let text = system_message(&run(
+        &fx,
+        &home,
+        "SessionStart",
+        "session-start-after-clear",
+    ));
+    assert!(text.starts_with("Use inbox"), "{text}");
+    assert!(
+        !text.contains("passive hello") && !text.contains(INBOX_HEADER),
+        "the lifecycle context carries no lazy body or inbox block: {text}"
+    );
+    assert_eq!(live_binding(&fx, CLEAR), 1);
+    assert_eq!(
+        lazy_row_state(&fx, &lazy),
+        "pending",
+        "SessionStart must not settle a hook-pull seat's lazy row"
+    );
+
+    // The routine turn start pulls: one systemMessage with the body, nothing settled.
+    let transcript = fx.root.join("transcript_full.jsonl");
+    let for_clear = |name: &str| {
+        let mut value: Value = serde_json::from_slice(&payload(name)).unwrap();
+        value["conversationId"] = json!(CLEAR);
+        value["transcriptPath"] = json!(transcript.to_str().unwrap());
+        serde_json::to_vec(&value).unwrap()
+    };
+    let pulled = system_message(&run_payload(
+        &fx,
+        &home,
+        "PreInvocation",
+        &for_clear("pre-invocation-inv1"),
+    ));
+    assert!(pulled.contains("passive hello"), "{pulled}");
+    assert!(
+        !pulled.contains(INBOX_HEADER),
+        "a pull is not the text inbox page: {pulled}"
+    );
+    assert_eq!(
+        lazy_row_state(&fx, &lazy),
+        "pending",
+        "a pull settles nothing"
+    );
+
+    // agy writes the injected message into its transcript; the Stop hook finds it and confirms.
+    let mut line = serde_json::to_vec(&json!({"step_index": 2, "source": "SYSTEM_SDK",
+        "type": "SYSTEM_MESSAGE", "status": "DONE", "content": format!(
+        "<SYSTEM_MESSAGE>\nThe following system message was injected by a PreInvocation hook:\n{pulled}\n</SYSTEM_MESSAGE>")}))
+    .unwrap();
+    line.push(b'\n');
+    fs::write(&transcript, &line).unwrap();
+    let stop = run_payload(&fx, &home, "Stop", &for_clear("stop-no-tool-call"));
+    assert_eq!(stop.code, Some(0), "{}", stop.stderr);
+    assert!(stop.stdout.is_empty(), "{:?}", stop.stdout);
+    assert_eq!(lazy_row_state(&fx, &lazy), "displayed");
 }

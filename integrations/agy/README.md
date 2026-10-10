@@ -8,7 +8,8 @@ messages. An idle wake is typed by Herdr (`Native`): it types `herdr-threads: wa
 into the empty composer, and the turn's first `PreInvocation` injects the messages. `launch` and `handoff` are supported.
 
 agy has no tool-event hooks, so nothing is delivered mid-tool. A busy session receives its
-messages at the next turn start; an idle one receives only nudge-class messages (see the
+messages at the next turn start; an idle one is woken only by nudge-class messages, or by a
+lazy message when the seat ran `herdr-threads wake-on all` (see the
 [delivery contract](../../AGENTS.md#delivery-contract)).
 
 ## Setup
