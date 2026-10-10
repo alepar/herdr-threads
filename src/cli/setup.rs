@@ -65,18 +65,26 @@ installed or skipped (not on PATH);
 every registered harness. The Codex hook-trust reminder is printed once at the end. The exit status is that
 of the first harness that failed; skipped harnesses are not failures.
 
+Agent permissions: --with-permissions grants them, --without-permissions removes them and
+keeps the hooks; otherwise setup asks on a terminal and keeps an existing grant current.
+Every changed configuration file is first backed up beside it as
+<name>.<UTC timestamp>-<uuid>.herdr-threads.
+
 Scope (user level, like Herdr's own agent hooks):
   claude  $CLAUDE_CONFIG_DIR/settings.json (default ~/.claude/settings.json), created as `{}`
           when absent. Adds the hook groups (SessionStart, Bash PreToolUse) beside the hooks
-          already there, and the permission allow rule `Bash(herdr-threads *)`: Claude may then
-          run any single `herdr-threads ...` command (including the ready commands the hook
-          suggests) without asking; chained commands are still checked separately. A rule you
-          already have is left as yours. Re-running setup on an older installation replaces its
-          owned `Bash(export HERDR_THREADS_CALLER_CONTEXT=*)` rule, which allowed nothing in use.
+          already there. Agent permissions are a separate component, written only with
+          consent: allow rules for `herdr-threads` and `ht`, and ask rules for `human`, `setup`,
+          `unsetup`, `doctor fix` and `internal installer-integrations`. An older installation's
+          owned `Bash(herdr-threads *)` rule is kept and gains the ask rules. A rule you already
+          have is left as yours.
   codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
-          (SessionStart, SubagentStart, Bash PreToolUse). Setup installs no sandbox socket,
-          writable-root or network allowance. Run herdr-threads commands through Codex's
-          approved outside-sandbox execution; a denied approval is a policy refusal.
+          (SessionStart, SubagentStart, Bash PreToolUse). With consent, agent permissions go
+          in their own file, $CODEX_HOME/rules/herdr-threads.rules: an allow rule for
+          `herdr-threads` and `ht` and prompt rules for the same human and setup commands.
+          Setup installs no sandbox socket, writable-root or network allowance. Run
+          herdr-threads commands through Codex's approved outside-sandbox execution; a
+          denied approval is a policy refusal.
           Historical owned allowances remain inspectable; unsetup removes only unchanged
           owned values and refuses edited ownership records. Codex runs user hooks only once
           you trust them: the next interactive `codex` start lists them for review (or use
@@ -161,6 +169,46 @@ pub struct SetupRequest {
     /// `setup claude --hooks-only`: install or keep the hooks, and remove the
     /// delivery mod's `CLAUDE_CODE_PLUGIN_DIRS` path and files.
     pub hooks_only: bool,
+    /// `setup`: what to do about the harness's herdr-threads permission rules.
+    pub permissions: PermissionPolicy,
+}
+
+/// `setup`: whether agents may run herdr-threads commands without prompting
+/// (the person and setup commands always keep asking).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionPolicy {
+    /// Keep what is there; ask on an interactive terminal when nothing is
+    /// granted, otherwise advise.
+    #[default]
+    Ask,
+    /// `--with-permissions`: grant without asking.
+    Grant,
+    /// `--without-permissions`: remove an owned grant, keeping the hooks.
+    Decline,
+}
+
+/// Setup options carrying a [`PermissionPolicy`] to the adapters that own
+/// permission rules.
+pub const WITH_PERMISSIONS: &str = "with-permissions";
+pub const WITHOUT_PERMISSIONS: &str = "without-permissions";
+
+impl PermissionPolicy {
+    pub fn option(self) -> Option<&'static str> {
+        match self {
+            Self::Ask => None,
+            Self::Grant => Some(WITH_PERMISSIONS),
+            Self::Decline => Some(WITHOUT_PERMISSIONS),
+        }
+    }
+    pub fn from_options(options: &crate::harness::adapter::SetupOptions) -> Self {
+        if options.get(WITH_PERMISSIONS) == Some(&true) {
+            Self::Grant
+        } else if options.get(WITHOUT_PERMISSIONS) == Some(&true) {
+            Self::Decline
+        } else {
+            Self::Ask
+        }
+    }
 }
 
 /// `setup claude`: whether to set Claude's [`claude::PROMPT_SUGGESTION_SETTING`]
@@ -179,7 +227,7 @@ pub enum PromptSuggestionPolicy {
 
 /// A person's pane identity (`me init`) has no hooks to set up.
 const NO_HUMAN_SETUP: &str =
-    "setup manages agent hooks only; a person uses `herdr-threads me init`";
+    "setup manages agent hooks only; a person uses `herdr-threads human me init`";
 
 fn harness_name(harness: Harness) -> &'static str {
     harness.as_str()
@@ -498,10 +546,12 @@ pub fn run<W: Write>(
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    let _backups = crate::harness::setup::BackupSession::start();
     let env = SetupEnv::from_process(output)?;
     let mut report = execute(request, &env)?;
     if request.verb == SetupVerb::Install
-        && request.prompt_suggestions == PromptSuggestionPolicy::Ask
+        && (request.prompt_suggestions == PromptSuggestionPolicy::Ask
+            || request.permissions == PermissionPolicy::Ask)
         && interactive()
     {
         let registry = crate::harness::registry::builtins();
@@ -609,6 +659,14 @@ pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError
             crate::harness::claude::setup::HOOKS_ONLY_OPTION.into(),
             true,
         );
+    }
+    if let Some(option) = request.permissions.option()
+        && registration
+            .setup_options()
+            .iter()
+            .any(|declared| declared.name == option)
+    {
+        options.insert(option.into(), true);
     }
     execute_registered(
         registration,
@@ -769,13 +827,16 @@ pub(crate) fn execute_registered_with_expected_scope(
 pub fn run_all<W: Write>(
     verb: SetupVerb,
     prompt_suggestions: PromptSuggestionPolicy,
+    permissions: PermissionPolicy,
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    let _backups = crate::harness::setup::BackupSession::start();
     let env = SetupEnv::from_process(output)?;
-    let mut report = execute_all(verb, prompt_suggestions, &env)?;
+    let mut report = execute_all(verb, prompt_suggestions, permissions, &env)?;
     if verb == SetupVerb::Install
-        && prompt_suggestions == PromptSuggestionPolicy::Ask
+        && (prompt_suggestions == PromptSuggestionPolicy::Ask
+            || permissions == PermissionPolicy::Ask)
         && interactive()
         && let Some(entries) = report["harnesses"].as_array_mut()
     {
@@ -849,12 +910,14 @@ fn verb_name(verb: SetupVerb) -> &'static str {
 pub fn execute_all(
     verb: SetupVerb,
     prompt_suggestions: PromptSuggestionPolicy,
+    permissions: PermissionPolicy,
     env: &SetupEnv,
 ) -> Result<Value, RunError> {
-    execute_all_registered(
+    execute_all_registered_with(
         crate::harness::registry::builtins(),
         verb,
         prompt_suggestions,
+        permissions,
         &env.snapshot(),
     )
 }
@@ -863,6 +926,22 @@ pub fn execute_all_registered(
     registry: &crate::harness::registry::Registry,
     verb: SetupVerb,
     prompt_suggestions: PromptSuggestionPolicy,
+    snapshot: &crate::harness::adapter::SetupEnvironment,
+) -> Result<Value, RunError> {
+    execute_all_registered_with(
+        registry,
+        verb,
+        prompt_suggestions,
+        PermissionPolicy::Ask,
+        snapshot,
+    )
+}
+
+pub fn execute_all_registered_with(
+    registry: &crate::harness::registry::Registry,
+    verb: SetupVerb,
+    prompt_suggestions: PromptSuggestionPolicy,
+    permissions: PermissionPolicy,
     snapshot: &crate::harness::adapter::SetupEnvironment,
 ) -> Result<Value, RunError> {
     let env = &SetupEnv::from_snapshot(snapshot);
@@ -934,7 +1013,7 @@ pub fn execute_all_registered(
                     prompt_suggestions == PromptSuggestionPolicy::Disable
                 }
                 "keep-prompt-suggestions" => prompt_suggestions == PromptSuggestionPolicy::Keep,
-                _ => false,
+                name => permissions.option() == Some(name),
             };
             if enabled {
                 options.insert(option.name.into(), true);

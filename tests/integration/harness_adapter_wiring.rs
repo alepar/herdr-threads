@@ -91,11 +91,7 @@ impl World {
                 c.env_remove(key);
             }
         }
-        c.args(["--state-dir"])
-            .arg(&self.state)
-            .arg("--host-endpoint")
-            .arg(&self.endpoint)
-            .env("PATH", format!("{}:/usr/bin:/bin", self.fourth.display()))
+        c.env("PATH", format!("{}:/usr/bin:/bin", self.fourth.display()))
             .env("HT_SYNTHETIC_FOURTH_ROOT", &self.fourth)
             .env("CLAUDE_CONFIG_DIR", self.isolation.path("home/claude"))
             .env("CODEX_HOME", self.isolation.path("home/codex"))
@@ -103,9 +99,20 @@ impl World {
             .env("HERDR_THREADS_OFFLINE", "1");
         c
     }
+    fn routed(&self, args: &[&str]) -> Vec<std::ffi::OsString> {
+        herdr_threads::test_support::isolation::routed_argv(
+            &[
+                std::ffi::OsStr::new("--state-dir"),
+                self.state.as_os_str(),
+                std::ffi::OsStr::new("--host-endpoint"),
+                self.endpoint.as_os_str(),
+            ],
+            args,
+        )
+    }
     fn raw(&self, args: &[&str]) -> Output {
         self.command()
-            .args(args)
+            .args(self.routed(args))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn_owned()
@@ -128,7 +135,7 @@ impl World {
     fn hook(&self, harness: &str, pane: &str, payload: &Value) -> Value {
         let mut child = self
             .command()
-            .args(["hook", harness])
+            .args(self.routed(&["hook", harness]))
             .env("HERDR_ENV", "1")
             .env("HERDR_PANE_ID", pane)
             .env("HERDR_SOCKET_PATH", &self.endpoint)

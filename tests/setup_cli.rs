@@ -101,11 +101,15 @@ impl Scratch {
             None => command.env_remove("CODEX_HOME"),
         };
         command
-            .arg("--state-dir")
-            .arg(&self.state)
-            .arg("--host-endpoint")
-            .arg(self.host())
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.state),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&self.host()),
+                ],
+                args,
+            ))
             .output()
             .unwrap()
     }
@@ -146,11 +150,15 @@ impl Scratch {
             command.env(name, value);
         }
         command
-            .arg("--state-dir")
-            .arg(&self.state)
-            .arg("--host-endpoint")
-            .arg(self.host())
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.state),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&self.host()),
+                ],
+                args,
+            ))
             .output()
             .unwrap()
     }
@@ -227,7 +235,7 @@ fn doctor_fix_refuses_unsafe_state_without_touching_harness_config() {
     s.harness("claude", "2.1.284 (Claude Code)");
     fs::create_dir(&s.state).unwrap();
     fs::set_permissions(&s.state, fs::Permissions::from_mode(0o777)).unwrap();
-    let out = s.run(&["--json", "doctor", "fix"]);
+    let out = s.run(&["doctor", "fix", "--json"]);
     assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let doctor = &report["doctor"];
@@ -248,7 +256,7 @@ fn doctor_fix_installs_missing_owned_hooks_idempotently_in_scratch_home() {
     let _stop = Stop(&s);
     s.harness("claude", "2.1.284 (Claude Code)");
     fs::create_dir(&s.state).unwrap();
-    let first = s.run(&["--json", "doctor", "fix"]);
+    let first = s.run(&["doctor", "fix", "--json"]);
     let first: serde_json::Value = serde_json::from_slice(&first.stdout)
         .unwrap_or_else(|e| panic!("{e}: {}", text(&first.stderr)));
     assert_eq!(
@@ -263,7 +271,7 @@ fn doctor_fix_installs_missing_owned_hooks_idempotently_in_scratch_home() {
             .any(|row| row["action"] == "setup claude" && row["outcome"] == "attempted"),
         "{first}"
     );
-    let second = s.run(&["--json", "doctor", "fix"]);
+    let second = s.run(&["doctor", "fix", "--json"]);
     let second: serde_json::Value = serde_json::from_slice(&second.stdout)
         .unwrap_or_else(|e| panic!("{e}: {}", text(&second.stderr)));
     assert!(
@@ -293,7 +301,7 @@ fn doctor_fix_reports_manual_codex_review_without_writing_trust() {
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
     let config = s.codex_home.join("config.toml");
     let before = fs::read(&config).ok();
-    let fix = s.run(&["--json", "doctor", "fix"]);
+    let fix = s.run(&["doctor", "fix", "--json"]);
     let fix: serde_json::Value = serde_json::from_slice(&fix.stdout).unwrap();
     assert!(
         fix["doctor"]["repairs"]
@@ -318,7 +326,7 @@ fn doctor_fix_does_not_install_codex_or_global_sandbox_allowance() {
     let _stop = Stop(&s);
     s.harness("codex", "codex-cli 0.158.0");
     fs::create_dir(&s.state).unwrap();
-    let fix = s.run(&["--json", "doctor", "fix"]);
+    let fix = s.run(&["doctor", "fix", "--json"]);
     let report: serde_json::Value = serde_json::from_slice(&fix.stdout).unwrap();
     assert!(
         report["doctor"]["repairs"]
@@ -357,15 +365,15 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
     assert!(report.contains("observed: unknown\n"), "{report}");
     let installed: serde_json::Value =
         serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+    // Hook setup grants nothing: permissions are their own component, consented separately.
     assert_eq!(
-        installed["permissions"]["allow"],
-        serde_json::json!(["Bash(ls:*)", RULE])
+        installed["permissions"],
+        serde_json::json!({"allow": ["Bash(ls:*)"]})
     );
     assert!(
-        report.contains(&format!("allow_rule.rule: {RULE}\n")),
+        report.contains("permissions.state: not_installed\n"),
         "{report}"
     );
-    assert!(report.contains("allow_rule.ownership: owned\n"), "{report}");
     assert_eq!(installed["model"], "x");
     assert_eq!(
         installed["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
@@ -377,7 +385,7 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
         0o640
     );
 
-    let again = s.run(&["--json", "setup", "claude"]);
+    let again = s.run(&["setup", "claude", "--json"]);
     assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
     assert_eq!(json(&again)["action"], "already_installed");
 
@@ -385,10 +393,8 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
     assert_eq!(status.status.code(), Some(0), "{}", text(&status.stderr));
     let status = json(&status);
     assert_eq!(status["installed"], true);
-    assert_eq!(
-        status["allow_rule"],
-        serde_json::json!({"rule": RULE, "ownership": "owned", "present": true})
-    );
+    assert!(status["allow_rule"].is_null(), "{status}");
+    assert_eq!(status["permissions"]["state"], "not_installed");
     assert_eq!(status["current_command_matches"], true);
     assert_eq!(status["harness_version"]["admission"], "contract_declared");
 
@@ -399,10 +405,7 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
         report.contains("hooks.claude.setup_installed: yes\n"),
         "{report}"
     );
-    assert!(
-        report.contains(&format!("hooks.claude.allow_rule.rule: {RULE}\n")),
-        "{report}"
-    );
+    assert!(!report.contains("hooks.claude.allow_rule"), "{report}");
     assert!(
         report.contains(&format!(
             "hooks.claude.settings: {}\n",
@@ -414,14 +417,14 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
     let unsetup = s.run(&["unsetup", "claude"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
     assert!(text(&unsetup.stdout).contains("action: removed\n"));
-    assert!(text(&unsetup.stdout).contains("allow_rule: removed\n"));
+    assert!(text(&unsetup.stdout).contains("allow_rule: not_recorded\n"));
     assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
 
     let status = s.run(&["--json", "setup-status", "claude"]);
     assert_eq!(status.status.code(), Some(0));
     assert_eq!(json(&status)["installed"], false);
 
-    let twice = s.run(&["--json", "unsetup", "claude"]);
+    let twice = s.run(&["unsetup", "claude", "--json"]);
     assert_eq!(twice.status.code(), Some(0), "{}", text(&twice.stderr));
     assert_eq!(json(&twice)["action"], "not_installed");
     assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
@@ -438,7 +441,7 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
 fn installed_command_is_the_hook_entrypoint_argv() {
     let s = Scratch::new();
     s.harness("claude", "2.1.283 (Claude Code)");
-    let setup = s.run(&["--json", "setup", "claude"]);
+    let setup = s.run(&["setup", "claude", "--json"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
     let exe = Path::new(BIN).canonicalize().unwrap();
     let state = s.state.display().to_string();
@@ -481,14 +484,25 @@ fn installed_command_is_the_hook_entrypoint_argv() {
 fn created_settings_are_deleted_by_unsetup() {
     let s = Scratch::new();
     s.harness("claude", "2.1.284 (Claude Code)");
-    let setup = s.run(&["--json", "setup", "claude"]);
+    let setup = s.run(&["setup", "claude", "--json"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
     assert_eq!(json(&setup)["created_settings"], true);
     assert!(s.settings().exists());
-    let unsetup = s.run(&["--json", "unsetup", "claude"]);
+    let unsetup = s.run(&["unsetup", "claude", "--json"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
     assert_eq!(json(&unsetup)["deleted_created_settings"], true);
-    assert!(!s.claude_config.exists());
+    assert!(!s.settings().exists());
+    // Backups of every mutation are retained, so the created directory stays with only them.
+    let left: Vec<String> = fs::read_dir(&s.claude_config)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(!left.is_empty());
+    assert!(
+        left.iter()
+            .all(|name| name.starts_with("settings.json.") && name.ends_with(".herdr-threads")),
+        "{left:?}"
+    );
 }
 
 /// Kills setup writing config when no executable is available.
@@ -511,7 +525,7 @@ fn executable_metadata_does_not_select_an_optimistic_recipe() {
     s.harness("claude", "2.1.288 (Claude Code)");
     fs::create_dir(&s.claude_config).unwrap();
     fs::write(s.settings(), ORIGINAL).unwrap();
-    let out = s.run(&["--json", "setup", "claude"]);
+    let out = s.run(&["setup", "claude", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let report = json(&out);
     assert_eq!(
@@ -645,7 +659,7 @@ fn setup_detects_the_herdr_instance_with_the_herdr_cli() {
     let out = s
         .command(&s.root)
         .env("XDG_STATE_HOME", &xdg)
-        .args(["--json", "setup", "claude"])
+        .args(["setup", "claude", "--json"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
@@ -680,7 +694,7 @@ fn setup_detects_the_herdr_instance_with_the_herdr_cli() {
     let out = fast
         .command(&fast.root)
         .env("XDG_STATE_HOME", &xdg)
-        .args(["--json", "setup", "claude"])
+        .args(["setup", "claude", "--json"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
@@ -728,7 +742,7 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
     fs::create_dir(&s.codex_home).unwrap();
     let original = br#"{"hooks":{"SessionStart":[{"hooks":[{"command":"bash '/h/herdr-agent-state.sh' session","timeout":10,"type":"command"}]}]}}"#;
     fs::write(s.hooks(), original).unwrap();
-    let setup = s.run(&["--json", "setup", "codex"]);
+    let setup = s.run(&["setup", "codex", "--json"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
     let report = json(&setup);
     assert_eq!(report["scope"], "user");
@@ -776,7 +790,7 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
     assert!(!s.codex_home.join("config.toml").exists());
     assert!(!s.home.join(".codex").exists());
 
-    let again = s.run(&["--json", "setup", "codex"]);
+    let again = s.run(&["setup", "codex", "--json"]);
     assert_eq!(json(&again)["action"], "already_installed");
     let status = json(&s.run(&["--json", "setup-status", "codex"]));
     assert_eq!(status["installed"], true);
@@ -808,11 +822,11 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
     s.harness("codex", "codex-cli 0.150.0");
     assert_eq!(s.run(&["setup", "codex"]).status.code(), Some(0));
 
-    let unsetup = s.run(&["--json", "unsetup", "codex"]);
+    let unsetup = s.run(&["unsetup", "codex", "--json"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
     assert_eq!(json(&unsetup)["action"], "removed");
     assert_eq!(fs::read(s.hooks()).unwrap(), original);
-    let twice = s.run(&["--json", "unsetup", "codex"]);
+    let twice = s.run(&["unsetup", "codex", "--json"]);
     assert_eq!(json(&twice)["action"], "not_installed");
     let status = json(&s.run(&["--json", "setup-status", "codex"]));
     assert_eq!(status["installed"], false);
@@ -885,7 +899,7 @@ fn codex_setup_keeps_existing_user_hooks_in_their_own_layers() {
     .unwrap();
     let before_repo = tree(&repo);
 
-    let setup = s.run_env(&sub, Some(&codex_home), &["--json", "setup", "codex"]);
+    let setup = s.run_env(&sub, Some(&codex_home), &["setup", "codex", "--json"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
     let report = json(&setup);
     let config = &report["codex_config"];
@@ -957,7 +971,7 @@ fn codex_setup_keeps_existing_user_hooks_in_their_own_layers() {
         r#"{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[{"type":"command","command":"u"}]}]}}"#,
     )
     .unwrap();
-    let fallback = s.run_env(&s.root, None, &["--json", "setup", "codex"]);
+    let fallback = s.run_env(&s.root, None, &["setup", "codex", "--json"]);
     assert_eq!(
         fallback.status.code(),
         Some(0),
@@ -1029,7 +1043,7 @@ fn codex_setup_refuses_a_hook_command_a_config_layer_already_runs() {
         ),
     )
     .unwrap();
-    let warned = s.run_env(&s.root, Some(&codex_home), &["--json", "setup", "codex"]);
+    let warned = s.run_env(&s.root, Some(&codex_home), &["setup", "codex", "--json"]);
     assert_eq!(warned.status.code(), Some(0), "{}", text(&warned.stderr));
     let report = json(&warned);
     assert_eq!(
@@ -1082,21 +1096,26 @@ fn setup_help_documents_scope_and_exit_statuses() {
     assert!(!stdout.contains("no adapter recipe covers"), "{stdout}");
 }
 
-/// A user who already allows the identical rule keeps exactly one copy, and
-/// it survives unsetup; setup-status and doctor report it as pre-existing.
-/// Kills: duplicating the user's rule, recording it as owned, or removing it
-/// on unsetup.
+/// A user who already allows the broad rule keeps it: setup and unsetup never
+/// touch it, and setup-status reports it as a foreign broad grant. Kills:
+/// recording the user's rule as owned, or removing or duplicating it.
 #[test]
-fn preexisting_identical_allow_rule_is_not_duplicated_or_removed() {
+fn preexisting_broad_rule_is_reported_and_left_alone() {
     let s = Scratch::new();
     s.harness("claude", "2.1.284 (Claude Code)");
     fs::create_dir(&s.claude_config).unwrap();
     let original = format!("{{\"permissions\": {{\"allow\": [\"{RULE}\", \"Read\"]}}}}\n");
     fs::write(s.settings(), &original).unwrap();
 
-    let setup = s.run(&["--json", "setup", "claude"]);
+    let setup = s.run(&["setup", "claude", "--json"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
-    assert_eq!(json(&setup)["allow_rule"]["ownership"], "pre_existing");
+    let report = json(&setup);
+    assert!(report["allow_rule"].is_null(), "{report}");
+    assert_eq!(report["permissions"]["state"], "not_installed");
+    assert_eq!(
+        report["permissions"]["foreign_broad_rules"],
+        serde_json::json!([RULE])
+    );
     let installed: serde_json::Value =
         serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
     assert_eq!(
@@ -1104,130 +1123,132 @@ fn preexisting_identical_allow_rule_is_not_duplicated_or_removed() {
         serde_json::json!([RULE, "Read"])
     );
 
-    let status = s.run(&["--json", "setup-status", "claude"]);
-    let status = json(&status);
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
     assert_eq!(status["installed"], true);
     assert_eq!(
-        status["allow_rule"],
-        serde_json::json!({"rule": RULE, "ownership": "pre_existing", "present": true})
+        status["permissions"]["foreign_broad_rules"],
+        serde_json::json!([RULE])
     );
 
-    let unsetup = s.run(&["--json", "unsetup", "claude"]);
+    let unsetup = s.run(&["unsetup", "claude", "--json"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
-    assert_eq!(json(&unsetup)["allow_rule"], "left_pre_existing");
     assert_eq!(fs::read(s.settings()).unwrap(), original.as_bytes());
 }
 
-/// A recorded rule removed by hand is reported, re-setup refuses (status 1)
-/// without re-adding it, and unsetup still removes the owned hooks. Kills:
-/// silently re-adding the rule, reporting installed without it, or unsetup
-/// refusing because the owned rule is already gone.
-#[test]
-fn hand_removed_allow_rule_is_reported_and_refused_but_unsetup_works() {
-    let s = Scratch::new();
-    s.harness("claude", "2.1.284 (Claude Code)");
-    let setup = s.run(&["setup", "claude"]);
-    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
-    let mut v: serde_json::Value =
+/// Rewrite a current installation into the shape an earlier setup recorded:
+/// `rule` added to `permissions.allow` and recorded as owned in the hook
+/// manifest.
+fn record_earlier_grant(s: &Scratch, manifest_path: &Path, rule: &str) {
+    use sha2::Digest;
+    let mut settings: serde_json::Value =
         serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
-    v["permissions"]["allow"] = serde_json::json!([]);
-    fs::write(s.settings(), serde_json::to_vec(&v).unwrap()).unwrap();
-    let edited = fs::read(s.settings()).unwrap();
-
-    let status = json(&s.run(&["--json", "setup-status", "claude"]));
-    assert_eq!(status["installed"], false);
-    assert_eq!(status["allow_rule"]["present"], false);
-    assert_eq!(status["allow_rule"]["ownership"], "owned");
-
-    let again = s.run(&["setup", "claude"]);
-    assert_eq!(again.status.code(), Some(1), "{}", text(&again.stdout));
-    assert!(
-        text(&again.stderr).contains(RULE),
-        "{}",
-        text(&again.stderr)
-    );
-    assert_eq!(fs::read(s.settings()).unwrap(), edited);
-
-    let unsetup = s.run(&["unsetup", "claude"]);
-    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
-    let after = text(&fs::read(s.settings()).unwrap());
-    assert!(!after.contains("herdr-threads-owner"), "{after}");
-    assert!(!after.contains(RULE), "{after}");
+    settings["permissions"]["allow"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!(rule));
+    let bytes = serde_json::to_vec(&settings).unwrap();
+    fs::write(s.settings(), &bytes).unwrap();
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest_path).unwrap()).unwrap();
+    manifest["permission"] = serde_json::json!({
+        "rule": rule,
+        "fingerprint": format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&serde_json::json!({ "allow": rule })).unwrap())
+        ),
+        "pre_existing": false,
+    });
+    manifest["installed_fingerprint"] =
+        serde_json::json!(format!("sha256:{:x}", sha2::Sha256::digest(&bytes)));
+    fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 }
 
-/// P6 upgrade path: an installation made by the previous setup (manifest and
-/// settings holding the retired `Bash(export HERDR_THREADS_CALLER_CONTEXT=*)`
-/// rule) is reported as superseded by setup-status and doctor; re-running
-/// setup replaces the owned export rule with `Bash(herdr-threads *)`; unsetup
-/// then restores the original bytes. Kills: reporting the old installation as
-/// installed, keeping the dead export rule after re-setup, and an upgrade that
-/// breaks byte-exact unsetup.
+/// Upgrade path (user decision 2026-10-09): an installation whose earlier
+/// setup granted the broad `Bash(herdr-threads *)` (or the retired export
+/// rule) is reported as historical; a plain re-setup, with no consent, gives
+/// the permission component the `herdr-threads` allow rule (replacing the
+/// export rule) and makes human and self-granting commands ask. Unsetup then leaves
+/// the user's settings byte for byte. Kills: human commands still allowed, widening
+/// to other spellings without consent, losing the backup, or a migration that
+/// strands rules on unsetup.
 #[test]
-fn resetup_replaces_the_retired_export_rule_and_unsetup_restores_bytes() {
-    use sha2::Digest;
-    const RETIRED: &str = "Bash(export HERDR_THREADS_CALLER_CONTEXT=*)";
-    let s = Scratch::new();
-    s.harness("claude", "2.1.285 (Claude Code)");
-    fs::create_dir(&s.claude_config).unwrap();
-    fs::write(s.settings(), ORIGINAL).unwrap();
-    let setup = s.run(&["--json", "setup", "claude"]);
-    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
-    let manifest_path = PathBuf::from(json(&setup)["manifest"].as_str().unwrap());
+fn resetup_takes_over_an_earlier_broad_grant_and_unsetup_restores() {
+    for rule in [RULE, "Bash(export HERDR_THREADS_CALLER_CONTEXT=*)"] {
+        let s = Scratch::new();
+        s.harness("claude", "2.1.285 (Claude Code)");
+        fs::create_dir(&s.claude_config).unwrap();
+        fs::write(s.settings(), ORIGINAL).unwrap();
+        let setup = s.run(&["setup", "claude", "--json"]);
+        assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+        let manifest_path = PathBuf::from(json(&setup)["manifest"].as_str().unwrap());
+        record_earlier_grant(&s, &manifest_path, rule);
+        let earlier = fs::read(s.settings()).unwrap();
 
-    // Rewrite into the previous setup's shape.
-    let settings = text(&fs::read(s.settings()).unwrap());
-    assert_eq!(settings.matches(RULE).count(), 1, "{settings}");
-    let old = settings.replace(RULE, RETIRED);
-    fs::write(s.settings(), &old).unwrap();
-    let mut manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    manifest["permission"]["rule"] = serde_json::json!(RETIRED);
-    manifest["permission"]["fingerprint"] = serde_json::json!(format!(
-        "sha256:{:x}",
-        sha2::Sha256::digest(serde_json::to_vec(&serde_json::json!({ "allow": RETIRED })).unwrap())
-    ));
-    manifest["installed_fingerprint"] =
-        serde_json::json!(format!("sha256:{:x}", sha2::Sha256::digest(old.as_bytes())));
-    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let status = json(&s.run(&["--json", "setup-status", "claude"]));
+        assert_eq!(status["installed"], true, "{status}");
+        assert_eq!(status["permissions"]["state"], "historical", "{status}");
+        assert_eq!(
+            status["permissions"]["historical"],
+            serde_json::json!([rule])
+        );
 
-    let status = json(&s.run(&["--json", "setup-status", "claude"]));
-    assert_eq!(status["installed"], false);
-    assert_eq!(status["allow_rule"]["rule"], RULE);
-    assert_eq!(status["allow_rule"]["ownership"], "superseded");
-    assert_eq!(status["allow_rule"]["present"], false);
-    assert!(
-        status["allow_rule"]["note"]
-            .as_str()
-            .is_some_and(|n| n.contains(RETIRED) && n.contains("setup claude")),
-        "{status}"
-    );
-    let doctor = s.run(&["doctor", "--debug"]);
-    let report = text(&doctor.stdout);
-    assert!(
-        report.contains("hooks.claude.allow_rule.ownership: superseded\n"),
-        "{report}"
-    );
-    assert!(
-        report.contains("hooks.claude.allow_rule.note: "),
-        "{report}"
-    );
+        let again = s.run(&["setup", "claude", "--json"]);
+        assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+        let report = json(&again);
+        assert!(report["allow_rule"].is_null(), "{report}");
+        assert_eq!(report["permissions"]["state"], "installed", "{report}");
+        let settings: serde_json::Value =
+            serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+        let allow: Vec<&str> = settings["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        let ask: Vec<&str> = settings["permissions"]["ask"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        let mut sorted = allow.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            ["Bash(herdr-threads *)", "Bash(herdr-threads)", "Bash(ls:*)"]
+        );
+        assert_eq!(allow[0], "Bash(ls:*)", "{settings}");
+        assert!(ask.contains(&"Bash(herdr-threads human *)"), "{settings}");
+        assert!(ask.contains(&"Bash(herdr-threads setup *)"), "{settings}");
+        assert!(
+            ask.iter().all(|r| r.starts_with("Bash(herdr-threads ")),
+            "{settings}"
+        );
+        let backups: Vec<Vec<u8>> = fs::read_dir(&s.claude_config)
+            .unwrap()
+            .map(|e| e.unwrap())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".herdr-threads"))
+            .map(|e| fs::read(e.path()).unwrap())
+            .collect();
+        assert!(
+            backups.contains(&earlier),
+            "the pre-migration settings are kept"
+        );
+        // A re-run changes nothing.
+        let settled = fs::read(s.settings()).unwrap();
+        let rerun = s.run(&["setup", "claude", "--json"]);
+        assert_eq!(rerun.status.code(), Some(0), "{}", text(&rerun.stderr));
+        assert_eq!(json(&rerun)["action"], "already_installed");
+        assert_eq!(fs::read(s.settings()).unwrap(), settled);
 
-    let again = s.run(&["--json", "setup", "claude"]);
-    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
-    assert_eq!(json(&again)["action"], "installed");
-    assert_eq!(json(&again)["allow_rule"]["ownership"], "owned");
-    let upgraded: serde_json::Value =
-        serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
-    assert_eq!(
-        upgraded["permissions"]["allow"],
-        serde_json::json!(["Bash(ls:*)", RULE])
-    );
-    let status = json(&s.run(&["--json", "setup-status", "claude"]));
-    assert_eq!(status["installed"], true);
-
-    let unsetup = s.run(&["unsetup", "claude"]);
-    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
-    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+        let unsetup = s.run(&["unsetup", "claude", "--json"]);
+        assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+        assert_eq!(
+            fs::read(s.settings()).unwrap(),
+            ORIGINAL,
+            "{rule}: byte-exact"
+        );
+    }
 }
 
 fn outcomes(report: &serde_json::Value) -> Vec<(String, String)> {
@@ -1259,7 +1280,7 @@ fn aggregate_codex_trust_collection_preserves_scalar_and_text_compatibility() {
     fs::create_dir_all(&s.codex_home).unwrap();
     let config = s.codex_home.join("config.toml");
     fs::write(&config, b"model = \"user choice\"\n").unwrap();
-    let installed = s.run(&["--json", "setup"]);
+    let installed = s.run(&["setup", "--json"]);
     assert_eq!(
         installed.status.code(),
         Some(0),
@@ -1341,7 +1362,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             .ends_with("Editing or moving a trusted group asks for review again")
     );
 
-    let again = s.run(&["--json", "setup"]);
+    let again = s.run(&["setup", "--json"]);
     assert_eq!(again.status.code(), Some(0));
     let report = json(&again);
     assert_eq!(report["action"], "install_all");
@@ -1412,7 +1433,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
     );
     assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
     assert_eq!(fs::read(s.hooks()).unwrap(), codex_original);
-    let twice = json(&s.run(&["--json", "unsetup"]));
+    let twice = json(&s.run(&["unsetup", "--json"]));
     assert_eq!(
         outcomes(&twice),
         pairs(&[
@@ -1450,7 +1471,7 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
     // Only codex present: claude skipped, codex installed.
     fs::remove_file(s.bin.join("claude")).unwrap();
     s.harness("codex", "codex-cli 0.158.0");
-    let report = json(&s.run(&["--json", "setup"]));
+    let report = json(&s.run(&["setup", "--json"]));
     assert_eq!(
         outcomes(&report),
         pairs(&[
@@ -1464,7 +1485,7 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
 
     // Bare unsetup removes it even after codex left PATH.
     fs::remove_file(s.bin.join("codex")).unwrap();
-    let removed = json(&s.run(&["--json", "unsetup"]));
+    let removed = json(&s.run(&["unsetup", "--json"]));
     assert_eq!(
         outcomes(&removed),
         pairs(&[
@@ -1496,7 +1517,7 @@ fn bare_setup_exits_nonzero_only_for_a_failed_harness() {
     s.harness("codex", "codex-cli 0.158.0");
     fs::create_dir(&s.claude_config).unwrap();
     fs::write(s.settings(), b"[1, 2]").unwrap();
-    let out = s.run(&["--json", "setup"]);
+    let out = s.run(&["setup", "--json"]);
     assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
     let report = json(&out);
     assert_eq!(
@@ -1553,7 +1574,7 @@ fn copied_codex_hooks_are_adopted_without_changing_bytes() {
     let mine =
         br#"{"hooks":{"SessionStart":[{"hooks":[{"command":"echo mine","type":"command"}]}]}}"#;
     fs::write(s.hooks(), mine).unwrap();
-    let setup = s.run(&["--json", "setup", "codex"]);
+    let setup = s.run(&["setup", "codex", "--json"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
     let first = fs::read(s.hooks()).unwrap();
 
@@ -1599,20 +1620,20 @@ fn copied_codex_hooks_are_adopted_without_changing_bytes() {
         "{doctor}"
     );
 
-    let adopt = run(&["--json", "setup", "codex"]);
+    let adopt = run(&["setup", "codex", "--json"]);
     assert_eq!(adopt.status.code(), Some(0), "{}", text(&adopt.stderr));
     let adopt = json(&adopt);
     assert_eq!(adopt["action"], "adopted", "{adopt}");
     assert_eq!(adopt["adopted"], owner);
     assert_eq!(fs::read(&copied).unwrap(), first);
-    let again = json(&run(&["--json", "setup", "codex"]));
+    let again = json(&run(&["setup", "codex", "--json"]));
     assert_eq!(again["action"], "already_installed", "{again}");
     assert_eq!(fs::read(&copied).unwrap(), first);
     let status = json(&run(&["--json", "setup-status", "codex"]));
     assert_eq!(status["installed"], true);
     assert_eq!(status["adopted"]["recorded"], true);
 
-    let unsetup = run(&["--json", "unsetup", "codex"]);
+    let unsetup = run(&["unsetup", "codex", "--json"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
     let unsetup = json(&unsetup);
     assert_eq!(unsetup["action"], "removed");
@@ -1635,7 +1656,7 @@ fn copied_codex_hooks_are_adopted_without_changing_bytes() {
 
     // Unsetup with no prior setup in the profile also removes only the copy.
     fs::write(&copied, &first).unwrap();
-    let direct = json(&run(&["--json", "unsetup", "codex"]));
+    let direct = json(&run(&["unsetup", "codex", "--json"]));
     assert_eq!(direct["action"], "removed", "{direct}");
     assert_eq!(fs::read(&copied).unwrap(), mine);
     assert_eq!(fs::read(s.hooks()).unwrap(), first);
@@ -1656,26 +1677,25 @@ fn copied_codex_hooks_are_adopted_without_changing_bytes() {
         false
     );
     assert!(doctor["doctor"]["hooks"]["codex"]["setup"]["adopted"].is_null());
-    let installed = json(&run(&["--json", "setup", "codex"]));
+    let installed = json(&run(&["setup", "codex", "--json"]));
     assert_eq!(installed["action"], "installed", "{installed}");
     assert!(installed["adopted"].is_null());
-    let unsetup = json(&run(&["--json", "unsetup", "codex"]));
+    let unsetup = json(&run(&["unsetup", "codex", "--json"]));
     assert_eq!(unsetup["action"], "removed");
     assert_eq!(fs::read(&copied).unwrap(), foreign.as_bytes());
     assert_eq!(fs::read(s.hooks()).unwrap(), first);
 }
 
-/// The Claude counterpart: a copied settings.json (with the allow rule) is
-/// reported installed (adopted), adopted byte-identically with the rule
-/// recorded as pre-existing, and unsetup removes only its hook groups.
-/// Kills: Claude adoption duplicating groups or removing the rule.
+/// The Claude counterpart: a copied settings.json is reported installed
+/// (adopted), adopted byte-identically, and unsetup removes only its hook
+/// groups. Kills: Claude adoption duplicating groups or touching user rules.
 #[test]
 fn copied_claude_settings_are_adopted_without_changing_bytes() {
     let s = Scratch::new();
     s.harness("claude", "2.1.284 (Claude Code)");
     fs::create_dir(&s.claude_config).unwrap();
     fs::write(s.settings(), ORIGINAL).unwrap();
-    let setup = s.run(&["--json", "setup", "claude"]);
+    let setup = s.run(&["setup", "claude", "--json"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
     let first = fs::read(s.settings()).unwrap();
 
@@ -1686,28 +1706,32 @@ fn copied_claude_settings_are_adopted_without_changing_bytes() {
     let run = |args: &[&str]| {
         s.command(&s.root)
             .env("CLAUDE_CONFIG_DIR", &profile)
-            .arg("--state-dir")
-            .arg(&s.state)
-            .arg("--host-endpoint")
-            .arg(s.host())
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&s.state),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&s.host()),
+                ],
+                args,
+            ))
             .output()
             .unwrap()
     };
     let status = json(&run(&["--json", "setup-status", "claude"]));
     assert_eq!(status["installed"], true, "{status}");
     assert_eq!(status["adopted"]["recorded"], false);
-    let adopt = json(&run(&["--json", "setup", "claude"]));
+    let adopt = json(&run(&["setup", "claude", "--json"]));
     assert_eq!(adopt["action"], "adopted", "{adopt}");
-    assert_eq!(adopt["allow_rule"]["ownership"], "pre_existing");
+    assert!(adopt["allow_rule"].is_null(), "{adopt}");
     assert_eq!(fs::read(&copied).unwrap(), first);
-    let unsetup = json(&run(&["--json", "unsetup", "claude"]));
+    let unsetup = json(&run(&["unsetup", "claude", "--json"]));
     assert_eq!(unsetup["action"], "removed", "{unsetup}");
-    assert_eq!(unsetup["allow_rule"], "left_pre_existing");
+    assert_eq!(unsetup["allow_rule"], "not_recorded");
     let left: serde_json::Value = serde_json::from_slice(&fs::read(&copied).unwrap()).unwrap();
     assert_eq!(
         left["permissions"]["allow"],
-        serde_json::json!(["Bash(ls:*)", RULE])
+        serde_json::json!(["Bash(ls:*)"])
     );
     assert!(
         !String::from_utf8(fs::read(&copied).unwrap())
@@ -1734,7 +1758,7 @@ fn legacy_codex_allowance_status_and_unsetup_preserve_foreign_bytes() {
     assert_eq!(status["sandbox"]["present"], true);
     assert_eq!(s.run(&["setup", "codex"]).status.code(), Some(0));
     assert_eq!(fs::read(&config).unwrap(), before);
-    let removed = json(&s.run(&["--json", "unsetup", "codex"]));
+    let removed = json(&s.run(&["unsetup", "codex", "--json"]));
     assert_eq!(removed["allowance_removed"], true);
     assert_eq!(removed["hooks_removed"], true);
     assert_eq!(fs::read_to_string(&config).unwrap(), original);
@@ -1783,7 +1807,7 @@ fn versionless_setup_upgrades_owned_hooks_with_large_legacy_allowance_manifest()
     assert!(inspection.present);
     assert_eq!(inspection.recorded.unwrap().phase, InstallPhase::Installed);
 
-    let out = s.run(&["--json", "setup", "codex"]);
+    let out = s.run(&["setup", "codex", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     assert_eq!(fs::read(&config).unwrap(), config_before);
     assert_eq!(fs::read(&manifest).unwrap(), manifest_before);
@@ -1828,7 +1852,7 @@ fn preexisting_network_proxy_keys_are_warned_by_setup_status_and_doctor() {
             );
         }
     };
-    let setup = s.run(&["--json", "setup", "codex"]);
+    let setup = s.run(&["setup", "codex", "--json"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
     want(&json(&setup)["warnings"].to_string());
     let after = fs::read_to_string(&config).unwrap();
@@ -1905,9 +1929,9 @@ fn setup_refuses_a_leftover_fast_state_dir_but_other_commands_work() {
     fs::write(&registry, "[]").unwrap();
     let run = |args: &[&str]| {
         s.command(&s.root)
+            .args(args)
             .arg("--host-endpoint")
             .arg(s.host())
-            .args(args)
             .output()
             .unwrap()
     };
@@ -1923,12 +1947,12 @@ fn setup_refuses_a_leftover_fast_state_dir_but_other_commands_work() {
         "{stderr}"
     );
     assert!(!s.settings().exists(), "a refused setup must write nothing");
-    let all = run(&["--json", "setup"]);
+    let all = run(&["setup", "--json"]);
     assert_eq!(all.status.code(), Some(2), "{}", text(&all.stderr));
 
     let status = run(&["--json", "setup-status", "claude"]);
     assert_eq!(status.status.code(), Some(0), "{}", text(&status.stderr));
-    let unsetup = run(&["--json", "unsetup", "claude"]);
+    let unsetup = run(&["unsetup", "claude", "--json"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
     let doctor: serde_json::Value =
         serde_json::from_slice(&run(&["--json", "doctor"]).stdout).unwrap();
@@ -1949,7 +1973,7 @@ fn setup_refuses_a_leftover_fast_state_dir_but_other_commands_work() {
         r#"[{"plugin_id":"herdr-threads","enabled":true}]"#,
     )
     .unwrap();
-    let setup = run(&["--json", "setup", "claude"]);
+    let setup = run(&["setup", "claude", "--json"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
     assert!(s.settings().exists());
 }
@@ -1968,7 +1992,7 @@ fn moved_binary_conflict_names_both_paths() {
         } else {
             s.harness("codex", "codex-cli 0.158.0");
         }
-        let first = s.run(&["--json", "setup", harness]);
+        let first = s.run(&["setup", harness, "--json"]);
         assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
 
         let moved_dir = s.root.join("moved bin");
@@ -1993,11 +2017,11 @@ fn moved_binary_conflict_names_both_paths() {
                 };
             }
             let out = command
+                .args([verb, harness])
                 .arg("--state-dir")
                 .arg(&s.state)
                 .arg("--host-endpoint")
                 .arg(s.host())
-                .args([verb, harness])
                 .output()
                 .unwrap();
             (out.status.code(), text(&out.stderr))
@@ -2327,7 +2351,7 @@ fn non_interactive_setup_advises_and_leaves_prompt_suggestions() {
     assert!(!text(&out.stderr).contains("[y/N]"), "never asks off a TTY");
     assert!(settings_json(&s).get(SUGGESTION_KEY).is_none());
     // unsetup restores the original bytes: nothing of the setting to revert.
-    let unsetup = s.run(&["--json", "unsetup", "claude"]);
+    let unsetup = s.run(&["unsetup", "claude", "--json"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
     assert_eq!(json(&unsetup)["prompt_suggestions"], "not_recorded");
     assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
@@ -2351,7 +2375,7 @@ fn disable_flag_sets_false_and_unsetup_reverts_it() {
         "{before}"
     );
 
-    let out = s.run(&["--json", "setup", "claude", "--disable-prompt-suggestions"]);
+    let out = s.run(&["setup", "claude", "--disable-prompt-suggestions", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let report = json(&out);
     assert_eq!(
@@ -2386,7 +2410,7 @@ fn disable_flag_sets_false_and_unsetup_reverts_it() {
     assert_eq!(status["prompt_suggestions"]["state"], "disabled");
     assert_eq!(status["prompt_suggestions"]["set_by_setup"], true);
 
-    let again = s.run(&["--json", "setup", "claude", "--disable-prompt-suggestions"]);
+    let again = s.run(&["setup", "claude", "--disable-prompt-suggestions", "--json"]);
     assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
     assert_eq!(
         json(&again)["prompt_suggestions"]["action"],
@@ -2443,7 +2467,7 @@ fn keep_flag_and_an_existing_false_are_left_alone() {
     s.harness("claude", "2.1.284 (Claude Code)");
     fs::create_dir(&s.claude_config).unwrap();
     fs::write(s.settings(), ORIGINAL).unwrap();
-    let out = s.run(&["--json", "setup", "claude", "--keep-prompt-suggestions"]);
+    let out = s.run(&["setup", "claude", "--keep-prompt-suggestions", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let report = json(&out);
     assert_eq!(report["prompt_suggestions"]["action"], "kept");
@@ -2458,7 +2482,7 @@ fn keep_flag_and_an_existing_false_are_left_alone() {
 
     let own = b"{\"promptSuggestionEnabled\": false}\n";
     fs::write(s.settings(), own).unwrap();
-    let out = s.run(&["--json", "setup", "claude"]);
+    let out = s.run(&["setup", "claude", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let report = json(&out);
     assert_eq!(report["prompt_suggestions"]["action"], "already_disabled");
@@ -2468,7 +2492,7 @@ fn keep_flag_and_an_existing_false_are_left_alone() {
         doctor.contains("hooks.claude.prompt_suggestions: disabled ("),
         "{doctor}"
     );
-    let unsetup = s.run(&["--json", "unsetup", "claude"]);
+    let unsetup = s.run(&["unsetup", "claude", "--json"]);
     assert_eq!(unsetup.status.code(), Some(0));
     assert_eq!(json(&unsetup)["prompt_suggestions"], "not_recorded");
     assert_eq!(fs::read(s.settings()).unwrap(), own);
@@ -2561,12 +2585,15 @@ fn local_profile_refusals_and_status_leave_native_and_instance_directories_absen
         vec!["doctor", "--harness", "codex", "--profile", "work"],
     ] {
         let mut command = s.command(&s.root);
-        command
-            .arg("--state-dir")
-            .arg(&s.state)
-            .arg("--host-endpoint")
-            .arg(s.host())
-            .args(args);
+        command.args(herdr_threads::test_support::isolation::routed_argv(
+            &[
+                std::ffi::OsStr::new("--state-dir"),
+                AsRef::<std::ffi::OsStr>::as_ref(&&s.state),
+                std::ffi::OsStr::new("--host-endpoint"),
+                AsRef::<std::ffi::OsStr>::as_ref(&s.host()),
+            ],
+            &args,
+        ));
         herdr_threads::test_support::spawn::tag(&mut command);
         let out = command.output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
@@ -2784,7 +2811,7 @@ fn versionless_setup_and_status_preserve_foreign_config_without_invoking_wrapper
         let original =
             "# foreign\nsandbox_workspace_write.network_access = false\nmodel = \"company\"\n";
         fs::write(&config, original).unwrap();
-        let out = s.run(&["--json", "setup", name]);
+        let out = s.run(&["setup", name, "--json"]);
         assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
         let report = json(&out);
         assert_eq!(
@@ -2807,11 +2834,11 @@ fn versionless_setup_and_status_preserve_foreign_config_without_invoking_wrapper
         let alias = s.root.join("wrapper alias");
         std::os::unix::fs::symlink(&wrapper, &alias).unwrap();
         let again = s.run(&[
-            "--json",
             "setup",
             name,
             "--harness-binary",
             alias.to_str().unwrap(),
+            "--json",
         ]);
         assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
         assert_eq!(
@@ -2830,7 +2857,7 @@ fn versionless_setup_and_status_preserve_foreign_config_without_invoking_wrapper
 fn versionless_setup_never_creates_codex_sandbox_config() {
     let s = Scratch::new();
     s.codex_with_schemas("0.159.3");
-    let out = s.run(&["--json", "setup", "codex"]);
+    let out = s.run(&["setup", "codex", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     assert!(s.hooks().exists());
     assert!(!s.codex_home.join("config.toml").exists());
@@ -2969,11 +2996,11 @@ impl HermesScopeFixture {
         command
             .env("PATH", &self.scratch.bin)
             .env("HERMES_HOME", &self.native_home)
+            .args([verb, "hermes", "--json"])
             .arg("--state-dir")
             .arg(&self.scratch.state)
             .arg("--host-endpoint")
-            .arg(self.scratch.host())
-            .args(["--json", verb, "hermes"]);
+            .arg(self.scratch.host());
         if profile != "default" {
             command.args(["--profile", profile]);
         }
@@ -3251,6 +3278,7 @@ fn task51_command(f: &HermesScopeFixture, verb: &str, json_format: bool) -> Comm
     command
         .env("PATH", &f.scratch.bin)
         .env("HERMES_HOME", &f.native_home)
+        .args([verb, "hermes", "--profile", "work"])
         .arg("--state-dir")
         .arg(&f.scratch.state)
         .arg("--host-endpoint")
@@ -3258,7 +3286,6 @@ fn task51_command(f: &HermesScopeFixture, verb: &str, json_format: bool) -> Comm
     if json_format {
         command.arg("--json");
     }
-    command.args([verb, "hermes", "--profile", "work"]);
     if verb != "unsetup" {
         command.arg("--harness-binary").arg(&f.launcher);
     }
@@ -4258,7 +4285,7 @@ fn mod_records(s: &Scratch) -> Vec<String> {
 #[test]
 fn setup_claude_installs_mod_and_status_reports_it() {
     let s = claude_scratch(ORIGINAL);
-    let out = s.run(&["--json", "setup", "claude"]);
+    let out = s.run(&["setup", "claude", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let report = json(&out);
     assert_eq!(report["mod"]["action"], "installed", "{report}");
@@ -4329,7 +4356,7 @@ fn setup_claude_hands_the_mod_the_hooks_invocation() {
             .to_owned()
     };
     let s = claude_scratch(ORIGINAL);
-    let out = s.run(&["--json", "setup", "claude"]);
+    let out = s.run(&["setup", "claude", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let report = json(&out);
     let mut hooks: Vec<String> = serde_json::from_value(report["hook_argv"].clone()).unwrap();
@@ -4380,7 +4407,7 @@ fn setup_claude_hands_the_mod_the_hooks_invocation() {
     assert_eq!(status["mod"]["installed"], false);
 
     // Setup again repairs it (upgraded), and unsetup removes it with the mod.
-    let again = json(&s.run(&["--json", "setup", "claude"]));
+    let again = json(&s.run(&["setup", "claude", "--json"]));
     assert_eq!(again["mod"]["action"], "upgraded", "{again}");
     assert_eq!(launch_line(&s), line);
     assert!(s.run(&["unsetup", "claude"]).status.success());
@@ -4425,7 +4452,7 @@ fn setup_claude_twice_is_idempotent() {
     let register = s.mod_dir().join("hooks/register.js");
     let before = fs::metadata(&register).unwrap().modified().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
-    let again = json(&s.run(&["--json", "setup", "claude"]));
+    let again = json(&s.run(&["setup", "claude", "--json"]));
     assert_eq!(again["mod"]["action"], "already_installed");
     assert_eq!(again["mod"]["files_written"], serde_json::json!([]));
     assert_eq!(fs::read(s.settings()).unwrap(), settings);
@@ -4434,7 +4461,7 @@ fn setup_claude_twice_is_idempotent() {
 
     // Upgrade: a stale file is rewritten, the settings value is not.
     fs::write(&register, b"// older").unwrap();
-    let upgraded = json(&s.run(&["--json", "setup", "claude"]));
+    let upgraded = json(&s.run(&["setup", "claude", "--json"]));
     assert_eq!(upgraded["mod"]["action"], "upgraded");
     assert_eq!(
         upgraded["mod"]["files_written"],
@@ -4449,7 +4476,7 @@ fn unsetup_claude_removes_mod_path_files_and_manifest() {
     let s = claude_scratch(br#"{"env":{"CLAUDE_CODE_PLUGIN_DIRS":"/opt/a"}}"#);
     assert_eq!(s.run(&["setup", "claude"]).status.code(), Some(0));
     assert!(s.mod_dir().is_dir());
-    let removed = json(&s.run(&["--json", "unsetup", "claude"]));
+    let removed = json(&s.run(&["unsetup", "claude", "--json"]));
     assert_eq!(removed["mod"], "reverted", "{removed}");
     assert_eq!(removed["action"], "removed");
     assert_eq!(plugin_dirs(&s), Some("/opt/a".to_owned()));
@@ -4470,7 +4497,7 @@ fn setup_claude_hooks_only_removes_mod_path() {
     let s = claude_scratch(ORIGINAL);
     assert_eq!(s.run(&["setup", "claude"]).status.code(), Some(0));
     assert!(plugin_dirs(&s).is_some());
-    let hooks_only = json(&s.run(&["--json", "setup", "claude", "--hooks-only"]));
+    let hooks_only = json(&s.run(&["setup", "claude", "--hooks-only", "--json"]));
     assert_eq!(hooks_only["mod"]["action"], "removed_hooks_only");
     assert_eq!(hooks_only["mod"]["settings_entry"], "reverted");
     assert_eq!(plugin_dirs(&s), None);
@@ -4484,7 +4511,7 @@ fn setup_claude_hooks_only_removes_mod_path() {
 
     // On a fresh machine --hooks-only installs hooks and no mod.
     let fresh = claude_scratch(ORIGINAL);
-    let report = json(&fresh.run(&["--json", "setup", "claude", "--hooks-only"]));
+    let report = json(&fresh.run(&["setup", "claude", "--hooks-only", "--json"]));
     assert_eq!(report["action"], "installed");
     assert_eq!(report["mod"]["settings_entry"], "not_recorded");
     assert_eq!(plugin_dirs(&fresh), None);
@@ -4524,7 +4551,7 @@ fn setup_status_reports_managed_policy_and_offers_hooks_only() {
     )];
 
     // A fresh install under the policy is hooks-only and says so.
-    let out = s.run_with(&vars, &["--json", "setup", "claude"]);
+    let out = s.run_with(&vars, &["setup", "claude", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let report = json(&out);
     assert_eq!(report["mod"]["action"], "skipped_managed_policy");
@@ -4557,7 +4584,7 @@ fn setup_status_reports_managed_policy_and_offers_hooks_only() {
             && advice.contains("herdr-threads setup claude --hooks-only"),
         "{advice}"
     );
-    let rerun = json(&s.run_with(&vars, &["--json", "setup", "claude"]));
+    let rerun = json(&s.run_with(&vars, &["setup", "claude", "--json"]));
     assert_eq!(rerun["mod"]["action"], "skipped_managed_policy");
     assert!(
         rerun["warnings"]
@@ -4569,7 +4596,7 @@ fn setup_status_reports_managed_policy_and_offers_hooks_only() {
     let text_status = text(&s.run_with(&vars, &["setup-status"]).stdout);
     assert!(text_status.contains("blocks it"), "{text_status}");
 
-    let fixed = json(&s.run_with(&vars, &["--json", "setup", "claude", "--hooks-only"]));
+    let fixed = json(&s.run_with(&vars, &["setup", "claude", "--hooks-only", "--json"]));
     assert_eq!(fixed["mod"]["settings_entry"], "reverted");
     assert_eq!(plugin_dirs(&s), None);
     assert!(!s.mod_dir().exists());
@@ -4587,7 +4614,7 @@ fn setup_status_reports_shell_env_and_session_override() {
             off.as_os_str(),
         ),
     ];
-    let out = s.run_with(&vars, &["--json", "setup", "claude"]);
+    let out = s.run_with(&vars, &["setup", "claude", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let report = json(&out);
     // Non-interactive: the shell's directories are carried over, once.
@@ -4641,7 +4668,7 @@ fn dropin_managed_policy_skips_the_mod_write() {
             herdr_threads::harness::claude_mod::TEST_MANAGED_SETTINGS_DIRS_ENV,
             dir.as_os_str(),
         )];
-        let out = s.run_with(&vars, &["--json", "setup", "claude"]);
+        let out = s.run_with(&vars, &["setup", "claude", "--json"]);
         assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
         let report = json(&out);
         assert_eq!(
@@ -4825,4 +4852,123 @@ fn stage_a_handoff_malformed_options_refuse_before_caller_connection() {
         assert!(!s.settings().exists());
         assert!(!s.hooks().exists());
     }
+}
+
+/// Codex permissions are their own component: without consent setup writes
+/// no rules file, and a rules file at the owned name that setup did not write
+/// is reported foreign and survives setup and unsetup. Kills: granting without
+/// consent, or adopting or deleting a person's own rules file.
+#[test]
+fn codex_setup_writes_no_rules_without_consent_and_leaves_foreign_rules() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    let setup = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    assert_eq!(json(&setup)["permissions"]["state"], "not_installed");
+    assert!(!s.codex_home.join("rules").exists());
+    let rules = s.codex_home.join("rules/herdr-threads.rules");
+    fs::create_dir_all(rules.parent().unwrap()).unwrap();
+    fs::write(&rules, b"# mine\n").unwrap();
+    let status = json(&s.run(&["--json", "setup-status", "codex"]));
+    assert_eq!(status["permissions"]["state"], "foreign", "{status}");
+    let again = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    let unsetup = s.run(&["unsetup", "codex", "--json"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    assert_eq!(fs::read(&rules).unwrap(), b"# mine\n");
+}
+
+/// Consent round trip: plain setup only advises; `--with-permissions` grants
+/// the Claude rules (both spellings, person and setup commands asking) and the
+/// Codex rules file; `--without-permissions` takes them back and keeps the
+/// hooks; unsetup after a grant restores Claude settings byte for byte.
+/// Kills: granting without consent, a grant that misses `ht` or lets `human`
+/// through, revocation that drops the hooks, and an inexact unsetup.
+#[test]
+fn permission_consent_grants_revokes_and_unsetup_restores() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::write(s.settings(), ORIGINAL).unwrap();
+    let rules = s.codex_home.join("rules/herdr-threads.rules");
+
+    let plain = json(&s.run(&["setup", "claude", "--json"]));
+    assert_eq!(plain["permissions"]["action"], "advised", "{plain}");
+    // Hooks, the delivery mod and prompt-suggestion advice all touch settings.json in this one
+    // run; it keeps a single pre-image.
+    let first_run_backups = fs::read_dir(&s.claude_config)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".herdr-threads")
+        })
+        .count();
+    assert_eq!(first_run_backups, 1);
+    assert!(
+        plain["permissions"]["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("setup claude --with-permissions")),
+        "{plain}"
+    );
+
+    for harness in ["claude", "codex"] {
+        let grant = s.run(&["setup", harness, "--with-permissions", "--json"]);
+        assert_eq!(grant.status.code(), Some(0), "{}", text(&grant.stderr));
+        let report = json(&grant);
+        assert_eq!(report["permissions"]["action"], "granted", "{report}");
+        assert_eq!(report["permissions"]["state"], "installed", "{report}");
+    }
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+    for (list, rule) in [
+        ("allow", "Bash(herdr-threads *)"),
+        ("allow", "Bash(ht *)"),
+        ("ask", "Bash(herdr-threads human *)"),
+        ("ask", "Bash(ht setup *)"),
+    ] {
+        assert!(
+            settings["permissions"][list]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(rule)),
+            "{list} {rule}: {settings}"
+        );
+    }
+    assert!(text(&fs::read(&rules).unwrap()).contains("\"human\"], decision = \"prompt\""));
+
+    for harness in ["claude", "codex"] {
+        let revoke = json(&s.run(&["setup", harness, "--without-permissions", "--json"]));
+        assert_eq!(revoke["permissions"]["action"], "removed", "{revoke}");
+        assert_eq!(revoke["permissions"]["state"], "not_installed", "{revoke}");
+        let status = json(&s.run(&["--json", "setup-status", harness]));
+        assert_eq!(status["installed"], true, "hooks stay: {status}");
+    }
+    assert!(!rules.exists());
+    let settings = text(&fs::read(s.settings()).unwrap());
+    assert!(!settings.contains("Bash(herdr-threads"), "{settings}");
+
+    // One run keeps one pre-image per file, however many components write it.
+    let backups = || {
+        fs::read_dir(&s.claude_config)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".herdr-threads")
+            })
+            .count()
+    };
+    let before = backups();
+    let regrant = s.run(&["setup", "claude", "--with-permissions"]);
+    assert_eq!(backups(), before + 1);
+    assert_eq!(regrant.status.code(), Some(0), "{}", text(&regrant.stderr));
+    let unsetup = s.run(&["unsetup", "claude"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
 }

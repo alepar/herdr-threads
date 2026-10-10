@@ -817,7 +817,7 @@ class SetupModeTests(unittest.TestCase):
         self.assertEqual(status, demo.PASS, detail)
         self.assertEqual(d.facts["setup_mode"], "cli")
         call = [c for c in host.calls if c[1] == "setup:cli"][0]
-        self.assertEqual(list(call[2]), ["setup", "claude"])
+        self.assertEqual(list(call[2]), ["setup", "claude", "--with-permissions"])
         env = call[3]["extra_env"]
         for key in ("HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"):
             self.assertTrue(env[key].startswith(str(d.root)), (key, env))
@@ -837,7 +837,7 @@ class SetupModeTests(unittest.TestCase):
         status, detail, _ = d.s_hooks()
         self.assertEqual(status, demo.PASS, detail)
         argv = [c for c in host.calls if c[1] == "setup:cli"][0][2]
-        self.assertEqual(list(argv), ["setup", "codex"])
+        self.assertEqual(list(argv), ["setup", "codex", "--with-permissions"])
         self.assertEqual(d.facts["codex_hook_args"], ["-c", "sandbox_workspace_write.network_access=false"])
         shell, _, _ = d.launch_command("initial")
         self.assertIn(f"CODEX_HOME={d.codex_setup_home()}", shell)

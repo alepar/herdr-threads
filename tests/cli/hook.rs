@@ -1946,10 +1946,10 @@ fn hook_deadline_window_never_waits_past_the_deadline() {
 // P6 (native Claude demo 2): print mode denied the ready commands because
 // setup granted nothing that covered them. Every command form the hook tells
 // an agent to run, rendered by the hook's own renderers (`cli_prefix`,
-// `next_actions`, `encode_native`, `diagnose_argv`), must be covered by the
-// owned rule `Bash(herdr-threads *)` under Claude's documented Bash rule
-// matching (modelled by `claude::bash_rule_covers`), and none by the retired
-// export rule. Kills: an absolute-path argv0 in ready commands, a rule that
+// `next_actions`, `encode_native`, `diagnose_argv`), must be allowed (and not
+// asked) by the rules setup renders under Claude's documented Bash rule
+// matching (modelled by `claude::bash_rule_covers`), and none is covered by
+// the retired export rule. Kills: an absolute-path argv0 in ready commands, a rule that
 // misses a subcommand form or a quoted state dir, a label/separator leaking
 // into a command, and reinstating the dead export rule as the only grant.
 #[test]
@@ -1957,6 +1957,7 @@ fn owned_claude_allow_rule_covers_every_ready_command_form() {
     use crate::harness::claude::{
         CALLER_CONTEXT_ALLOW_RULE, HERDR_THREADS_ALLOW_RULE, bash_rule_covers,
     };
+    use crate::harness::permissions::claude::render;
     use crate::protocol::attention::AttentionRequirement;
     let mut digest = digest(
         &[("invitation-a", "thread-1"), ("invitation-r", "thread-r")],
@@ -2055,10 +2056,16 @@ fn owned_claude_allow_rule_covers_every_ready_command_form() {
             command.starts_with("herdr-threads "),
             "not a bare herdr-threads command: {command}"
         );
+        let rules = render();
         assert!(
-            bash_rule_covers(HERDR_THREADS_ALLOW_RULE, command),
-            "owned rule does not cover {command}"
+            rules
+                .allow
+                .iter()
+                .any(|rule| bash_rule_covers(rule, command))
+                && !rules.ask.iter().any(|rule| bash_rule_covers(rule, command)),
+            "setup's rules do not allow {command}"
         );
+        assert!(bash_rule_covers(HERDR_THREADS_ALLOW_RULE, command));
         assert!(!bash_rule_covers(CALLER_CONTEXT_ALLOW_RULE, command));
     }
     // The model of Claude's matcher is not vacuous: word boundary, whole

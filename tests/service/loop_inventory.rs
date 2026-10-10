@@ -12,6 +12,18 @@ use std::path::{Path, PathBuf};
 /// trimmed source line.
 const ALLOWLIST: &[(&str, &str, &str)] = &[
     (
+        "src/harness/permissions.rs",
+        "std::thread::sleep(remaining.min(Duration::from_millis(2)))",
+        "setup's bounded wait for another cooperating config writer's advisory \
+         lock, ending at the caller's deadline; a one-shot CLI wait, not daemon code",
+    ),
+    (
+        "src/harness/permissions.rs",
+        "std::thread::sleep(Duration::from_millis(2))",
+        "a unit-test child process holding the config lock until its barrier \
+         file appears (5 s cap); not daemon code",
+    ),
+    (
         "src/host/native.rs",
         "thread::sleep(Duration::from_millis(600))",
         "a unit-test fixture inside native.rs (B5 pane-agent read): the fake \

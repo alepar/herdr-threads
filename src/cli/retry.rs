@@ -541,12 +541,12 @@ fn matches_result(request: &SemanticMutation, result: &CommandResult) -> bool {
 }
 
 /// Read the immutable origin before any service, selection or completion effects.
-pub fn preflight_original_actor(
+fn preflight_original_intent(
     root: impl AsRef<std::path::Path>,
     recovery: &str,
     actor: super::actor_route::InvocationActor,
     context: &crate::protocol::output::ContinuationContext,
-) -> io::Result<super::journal::OriginalActor> {
+) -> io::Result<(super::journal::OriginalActor, super::journal::PendingIntent)> {
     let journal = Journal::read_only(root)?;
     let pending = load_original_for_actor(&journal, recovery)?;
     let original =
@@ -571,7 +571,27 @@ pub fn preflight_original_actor(
             format!("person/operator retry requires immediate human namespace; use {command}"),
         ));
     }
-    Ok(original)
+    Ok((original, pending))
+}
+
+/// Validate namespace routing before using any saved caller as a replay selector.
+pub fn preflight_original_actor(
+    root: impl AsRef<std::path::Path>,
+    recovery: &str,
+    actor: super::actor_route::InvocationActor,
+    context: &crate::protocol::output::ContinuationContext,
+) -> io::Result<super::journal::OriginalActor> {
+    preflight_original_intent(root, recovery, actor, context).map(|(actor, _)| actor)
+}
+
+pub(crate) fn preflight_ordinary_claim(
+    root: impl AsRef<std::path::Path>,
+    recovery: &str,
+    actor: super::actor_route::InvocationActor,
+    context: &crate::protocol::output::ContinuationContext,
+) -> io::Result<Option<CallerClaim>> {
+    let (_, pending) = preflight_original_intent(root, recovery, actor, context)?;
+    Ok(pending.ordinary_replay_claim().cloned())
 }
 
 // Ordinary intents and retained delivery/bootstrap terminals share the exact local ordinal.

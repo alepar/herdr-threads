@@ -16,7 +16,7 @@
 //! a value changed by hand since is left alone.
 use super::{
     claude::PROMPT_SUGGESTION_SETTING,
-    setup::{SetupError, config_bytes, publish_manifest, write_replacement},
+    setup::{SetupError, config_bytes, publish_manifest, write_replacement, write_user_config},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -162,7 +162,7 @@ pub fn disable(config: &Path, manifest_path: &Path) -> Result<DisableOutcome, Se
         if config_bytes(config)? != current {
             return Err(SetupError::Conflict);
         }
-        write_replacement(config, &written, false)
+        write_user_config(config, &current, &written)
     })();
     if let Err(error) = published {
         // Nothing was written: drop a record this run created, keep an earlier one.
@@ -231,7 +231,7 @@ pub fn revert(config: &Path, manifest_path: &Path) -> Result<RevertOutcome, Setu
     if config_bytes(config)? != current {
         return Err(SetupError::Conflict);
     }
-    write_replacement(config, &restored, false)?;
+    write_user_config(config, &current, &restored)?;
     fs::remove_file(manifest_path).map_err(|_| SetupError::Io)?;
     Ok(RevertOutcome::Reverted)
 }
@@ -274,6 +274,29 @@ mod tests {
             read_state(&d.0.join("settings.json")).unwrap(),
             SuggestionState::Default
         );
+    }
+
+    /// Kills a prompt-suggestion disable or revert without keeping the prior version.
+    #[test]
+    fn disable_and_revert_back_up_settings() {
+        use crate::harness::setup::user_config_backups;
+        let d = dir();
+        let (config, manifest) = (d.0.join("settings.json"), d.0.join("m.json"));
+        let original = b"{\"model\":\"x\"}".to_vec();
+        fs::write(&config, &original).unwrap();
+        assert_eq!(
+            disable(&config, &manifest).unwrap(),
+            DisableOutcome::Disabled
+        );
+        let disabled = fs::read(&config).unwrap();
+        assert_eq!(
+            user_config_backups(&config),
+            std::slice::from_ref(&original)
+        );
+        assert_eq!(revert(&config, &manifest).unwrap(), RevertOutcome::Reverted);
+        let mut expected = vec![original, disabled];
+        expected.sort();
+        assert_eq!(user_config_backups(&config), expected);
     }
 
     #[test]

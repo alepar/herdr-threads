@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::cli::{
     RunError,
-    setup::{SetupEnv, SetupRequest, SetupVerb},
+    setup::{PermissionPolicy, SetupEnv, SetupRequest, SetupVerb},
 };
 use crate::harness::setup::legacy::*;
 use crate::{
@@ -11,6 +11,10 @@ use crate::{
     harness::{
         codex, codex_config,
         context::Harness,
+        permissions::{
+            PermissionConsent,
+            codex_rules::{CodexPermissionState, CodexPermissions},
+        },
         recipe,
         setup::{
             self as lib, SettingsKind, SetupError, read_settings_manifest, remove_user_settings,
@@ -558,6 +562,122 @@ pub(crate) fn with_unmeasured(mut sandbox: Value, warning: Option<String>) -> Va
     sandbox
 }
 
+/// The permission component of this CODEX_HOME and state directory.
+fn permission_component(env: &SetupEnv) -> Result<CodexPermissions, RunError> {
+    let home = env
+        .codex_home
+        .as_ref()
+        .ok_or_else(|| invalid("neither CODEX_HOME nor HOME is set"))?;
+    let rules = home.join("rules").join("herdr-threads.rules");
+    Ok(CodexPermissions::new(
+        home,
+        manifest_path(env.state_dir()?, "codex-permissions", &rules),
+    ))
+}
+
+fn permission_error(error: SetupError, rules: &Path) -> RunError {
+    let rules = rules.display();
+    match error {
+        SetupError::Conflict => api(
+            ErrorCode::Conflict,
+            format!(
+                "{rules} was not written by herdr-threads or was edited since, or changed while \
+                 an update was interrupted; review it and remove it (or move it aside) to let \
+                 setup manage it. Nothing was changed"
+            ),
+        ),
+        SetupError::Invalid | SetupError::TooLarge => invalid(format!(
+            "cannot manage {rules}: CODEX_HOME must be a directory you own that is not group- \
+             or world-writable; nothing was changed"
+        )),
+        SetupError::Io => failed(format!(
+            "could not update {rules} (another setup may hold its lock); re-run the command"
+        )),
+    }
+}
+
+fn permissions_json(component: &CodexPermissions, state: CodexPermissionState) -> Value {
+    let mut report = json!({
+        "state": match state {
+            CodexPermissionState::Missing => "not_installed",
+            CodexPermissionState::Installed => "installed",
+            CodexPermissionState::Edited => "edited",
+            CodexPermissionState::Foreign => "foreign",
+            CodexPermissionState::Pending => "interrupted",
+        },
+        "rules_file": component.rules_file().display().to_string(),
+    });
+    match state {
+        CodexPermissionState::Edited | CodexPermissionState::Foreign => {
+            report["note"] = json!(
+                "herdr-threads leaves this rules file alone: it was edited or not written by \
+                 setup"
+            );
+        }
+        CodexPermissionState::Pending => {
+            report["note"] = json!(
+                "a permission update was interrupted; re-run `herdr-threads setup codex` (or \
+                 unsetup) to settle it"
+            );
+        }
+        _ => {}
+    }
+    report
+}
+
+/// The permission component as doctor reports it; best effort.
+pub(crate) fn permission_status_json(env: &SetupEnv) -> Value {
+    match permission_component(env) {
+        Ok(permissions) => match permissions.status() {
+            Ok(state) => permissions_json(&permissions, state),
+            Err(_) => json!({"state": "unreadable"}),
+        },
+        Err(_) => json!({"state": "unreadable"}),
+    }
+}
+
+/// Whether the permission grant is installed (the installer's permissions component).
+pub(crate) fn permissions_granted(env: &SetupEnv) -> Result<bool, RunError> {
+    let permissions = permission_component(env)?;
+    permissions
+        .status()
+        .map(|state| state == CodexPermissionState::Installed)
+        .map_err(|error| permission_error(error, permissions.rules_file()))
+}
+
+/// Ask on a terminal when setup only advised; a yes (the default) grants.
+pub fn settle_permissions<R: io::BufRead + ?Sized, W: io::Write + ?Sized>(
+    env: &SetupEnv,
+    report: &mut Value,
+    input: &mut R,
+    out: &mut W,
+) -> Result<(), RunError> {
+    if report["permissions"]["action"] != "advised" {
+        return Ok(());
+    }
+    write!(
+        out,
+        "{}",
+        crate::harness::claude::setup::permission_question("codex")
+    )?;
+    out.flush()?;
+    let yes = crate::harness::claude::setup::permission_answer(input)?;
+    let permissions = permission_component(env)?;
+    if yes {
+        let state = permissions
+            .apply(PermissionConsent::Granted)
+            .map_err(|error| permission_error(error, permissions.rules_file()))?;
+        report["permissions"] = permissions_json(&permissions, state);
+        report["permissions"]["action"] = json!("granted");
+    } else {
+        report["permissions"]["action"] = json!("declined");
+        if let Some(note) = report["permissions"].as_object_mut() {
+            note.remove("note");
+        }
+    }
+    Ok(())
+}
+
 fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
     env.hook_argv(Harness::Codex)?;
     let paths = codex_paths(env)?;
@@ -611,6 +731,41 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         &mut hooks_file,
         &mut warnings,
     )?;
+    let permissions = permission_component(env)?;
+    // After the hooks (which create CODEX_HOME). The rules file is independent of the hooks: a problem with it is reported, never a
+    // reason to leave the hooks out.
+    let (result, action) = match request.permissions {
+        PermissionPolicy::Grant => (permissions.apply(PermissionConsent::Granted), "granted"),
+        PermissionPolicy::Decline => (permissions.remove(), "removed"),
+        PermissionPolicy::Ask => (permissions.apply(PermissionConsent::Undecided), "kept"),
+    };
+    let permission_report = match result {
+        // An explicit grant that cannot be honoured fails the command; otherwise the rules
+        // file never keeps the hooks out.
+        Err(error) if request.permissions == PermissionPolicy::Grant => {
+            return Err(permission_error(error, permissions.rules_file()));
+        }
+        Ok(state) => {
+            let mut report = permissions_json(&permissions, state);
+            report["action"] = json!(
+                if action == "kept" && state == CodexPermissionState::Missing {
+                    "advised"
+                } else {
+                    action
+                }
+            );
+            if report["action"] == "advised" {
+                report["note"] = json!(
+                    crate::harness::claude::setup::PERMISSION_ADVICE.replace("<harness>", "codex")
+                );
+            }
+            report
+        }
+        Err(error) => json!({
+            "state": "error",
+            "error": permission_error(error, permissions.rules_file()).to_string(),
+        }),
+    };
     for layer in &layers {
         if layer.has_other_herdr_threads_hook && layer.path != paths.hooks {
             warnings.push(format!(
@@ -656,6 +811,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
             unmeasured
         ),
         "trust": codex_trust_json(&paths, command.as_deref()),
+        "permissions": permission_report,
         "harness_version": observation_json(&Ok((observed, None))),
         "codex_config": codex_config_json(env, &layers),
         "observed": "unknown",
@@ -685,6 +841,15 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
             &paths.hooks,
             &paths.hooks_manifest,
         )
+    };
+    // Never let the permission component keep the hooks installed: its failure is reported.
+    let permissions = permission_component(env)?;
+    report["permissions"] = match permissions.remove() {
+        Ok(state) => permissions_json(&permissions, state),
+        Err(error) => json!({
+            "state": "error",
+            "error": permission_error(error, permissions.rules_file()).to_string(),
+        }),
     };
     let mut recorded = read_settings_manifest(&paths.hooks_manifest).map_err(map)?;
     if recorded.is_none() {
@@ -787,6 +952,12 @@ fn codex_status(
         report["warnings"] = json!(warnings);
     }
     report["trust"] = codex_trust_json(&paths, report["command"].as_str());
+    if let Ok(permissions) = permission_component(env) {
+        report["permissions"] = match permissions.status() {
+            Ok(state) => permissions_json(&permissions, state),
+            Err(_) => json!({"state": "unreadable"}),
+        };
+    }
     if let Ok(owned_command) = codex_owned_command(env) {
         let layers = observe_codex_config(env, &owned_command);
         report["duplicate_hook"] = json!(

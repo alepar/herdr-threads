@@ -302,7 +302,7 @@ pub(crate) fn agent_evidence_refusal(pane: &str, evidence: &str) -> RunError {
     invalid_request(&format!(
         "pane {pane}: `me init` and person-pane commands never act as an agent ({evidence}). \
          Run them in your own shell pane, or override as the local account with \
-         `herdr-threads me init --operator` (later commands in this pane then run as you)"
+         `herdr-threads human me init --operator` (later commands in this pane then run as you)"
     ))
 }
 
@@ -343,7 +343,7 @@ where
     T: Into<OsString> + Clone,
     W: Write,
 {
-    let mut parsed = match commands::parse_argv_or_informational(argv) {
+    let parsed = match commands::parse_argv_or_informational(argv) {
         Ok(parsed) => parsed,
         Err(commands::ParseFailure::Informational(text)) => {
             writer.write_all(text.as_bytes())?;
@@ -353,6 +353,21 @@ where
         Err(commands::ParseFailure::Usage(text)) => return Err(RunError::Usage(text)),
         Err(commands::ParseFailure::Invalid(error)) => return Err(error.into()),
     };
+    let _namespace = human::invocation_scope(parsed.actor);
+    let retry = matches!(parsed.action, CliAction::Retry(_));
+    run_parsed_in_pane(parsed, caller_pane, writer).map_err(|mut error| {
+        if !retry && let RunError::Api(api) = &mut error {
+            crate::protocol::output::namespace_error(api);
+        }
+        error
+    })
+}
+
+fn run_parsed_in_pane<W: Write>(
+    mut parsed: commands::ParsedCli,
+    caller_pane: Option<&str>,
+    writer: &mut W,
+) -> Result<(), RunError> {
     let _presentation = output::PresentationGuard::enter(parsed.presentation, &parsed.output);
     if let CliAction::Skill = &parsed.action {
         writer.write_all(skill::SKILL_MD.as_bytes())?;
@@ -394,8 +409,17 @@ where
         writer.flush()?;
         return Ok(());
     }
-    if let CliAction::InstallerIntegrations { confirm_missing } = &parsed.action {
-        return installer::run(*confirm_missing, &parsed.output, writer);
+    if let CliAction::InstallerIntegrations {
+        confirm_missing,
+        without_permissions,
+    } = &parsed.action
+    {
+        return installer::run(
+            *confirm_missing,
+            *without_permissions,
+            &parsed.output,
+            writer,
+        );
     }
     if let CliAction::InternalJsonField { path } = &parsed.action {
         let mut input = String::new();
@@ -408,8 +432,14 @@ where
     if let CliAction::Setup(request) = &parsed.action {
         return setup::run(request, &parsed.output, writer);
     }
-    if let CliAction::SetupAll(verb, prompt_suggestions) = &parsed.action {
-        return setup::run_all(*verb, *prompt_suggestions, &parsed.output, writer);
+    if let CliAction::SetupAll(verb, prompt_suggestions, permissions) = &parsed.action {
+        return setup::run_all(
+            *verb,
+            *prompt_suggestions,
+            *permissions,
+            &parsed.output,
+            writer,
+        );
     }
     // Fresh native options are data: resolve them once before host locators,
     // caller mapping, connection, journal creation or any durable work. Retry
@@ -428,9 +458,9 @@ where
         parsed.output.context.host.as_ref().map(PathBuf::from),
     ))
     .map_err(context_error)?;
-    if let CliAction::Retry(recovery) = &parsed.action {
+    let original_actor = if let CliAction::Retry(recovery) = &parsed.action {
         let paths = InstancePaths::resolve_read_only(&context)?;
-        retry::preflight_original_actor(
+        Some(retry::preflight_original_actor(
             paths.instance_dir.join("intents"),
             recovery.as_str(),
             parsed.actor,
@@ -438,8 +468,16 @@ where
                 state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
                 host: Some(context.host_endpoint.to_string_lossy().into_owned()),
             },
-        )?;
-    }
+        )?)
+    } else {
+        None
+    };
+    let _retry_namespace = original_actor.map(|original| {
+        human::invocation_scope(match original {
+            journal::OriginalActor::Agent => actor_route::InvocationActor::Agent,
+            journal::OriginalActor::HumanOrOperator => actor_route::InvocationActor::Human,
+        })
+    });
     let paths = InstancePaths::resolve(&context)?;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let budget = || CallBudget {
@@ -1464,6 +1502,46 @@ fn inbox_topics<C: LocalClient + ?Sized>(
     }
 }
 
+/// Read-only frozen routing; this is a replay selector, never a current claim.
+fn ordinary_retry_claim(
+    parsed: &commands::ParsedCli,
+    root: &std::path::Path,
+) -> Result<Option<crate::protocol::authority::CallerClaim>, RunError> {
+    let CliAction::Retry(recovery) = &parsed.action else {
+        return Ok(None);
+    };
+    Ok(retry::preflight_ordinary_claim(
+        root,
+        recovery.as_str(),
+        parsed.actor,
+        &parsed.output.context,
+    )?)
+}
+
+/// The frozen caller a same-location retry replays as. Any other location, role or instance
+/// keeps the live selection, whose own original-caller checks then refuse the retry.
+fn replay_selection(
+    selection: &CooperativeSelection,
+    claim: &crate::protocol::authority::CallerClaim,
+    instance: uuid::Uuid,
+) -> Option<CooperativeSelection> {
+    use crate::protocol::authority::CallerRole;
+    if selection.seat != claim.seat
+        || selection.target != claim.target
+        || selection.role != crate::harness::context::Role::TopLevel
+        || claim.role != CallerRole::TopLevel
+        || claim.instance != instance.to_string()
+    {
+        return None;
+    }
+    Some(CooperativeSelection {
+        seat: claim.seat.clone(),
+        target: claim.target.clone(),
+        role: selection.role,
+        harness: claim.harness.into(),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     parsed: commands::ParsedCli,
@@ -1478,16 +1556,18 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         harness::context::{OccupantContext, SessionReference},
         protocol::{commands::SeatInspectQuery, pagination::PageRequest, results::CommandResult},
     };
-    if let CliAction::Retry(recovery) = &parsed.action {
-        retry::preflight_original_actor(
-            paths.instance_dir.join("intents"),
-            recovery.as_str(),
-            parsed.actor,
-            &parsed.output.context,
-        )?;
+    let replay = ordinary_retry_claim(&parsed, &paths.instance_dir.join("intents"))?;
+    let historical = replay
+        .as_ref()
+        .and_then(|claim| replay_selection(selection, claim, instance));
+    let selection = if let Some(historical) = &historical {
+        historical
     } else {
-        validate_actor_harness(parsed.actor, selection.harness)?;
-    }
+        if !matches!(&parsed.action, CliAction::Retry(_)) {
+            validate_actor_harness(parsed.actor, selection.harness)?;
+        }
+        selection
+    };
     if matches!(&parsed.action, CliAction::Summary(_)) {
         return summary::run(parsed, selection, paths, instance, client, clock, writer);
     }
@@ -1562,7 +1642,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         if context.instance != instance
             || context.seat != selection.seat.as_str()
             || context.target != selection.target.as_str()
-            || context.harness != selection.harness
+            || (replay.is_none() && context.harness != selection.harness)
         {
             return Err(mapping_error(
                 "local context differs from current service mapping",
@@ -1855,7 +1935,7 @@ pub(crate) fn seat_context_dir(paths: &InstancePaths, seat: &str) -> Result<Path
 }
 
 const CALLER_HELP: &str = "run it inside the agent's own Herdr pane (HERDR_PANE_ID) after that \
-     seat's lifecycle check-in (a person runs `herdr-threads me init` once in their own pane), or pass --cooperative-seat SEAT --cooperative-target PANE \
+     seat's lifecycle check-in (a person runs `herdr-threads human me init` once in their own pane), or pass --cooperative-seat SEAT --cooperative-target PANE \
      --cooperative-harness HARNESS --cooperative-role top-level; choose a registered agent harness. Operator repair uses the \
      explicit --operator forms and cannot send, accept, ACK or check in";
 
@@ -2073,10 +2153,21 @@ where
     C: LocalClient,
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
 {
-    if let Some(selection) = &parsed.cooperative
-        && !matches!(&parsed.action, CliAction::Retry(_))
-    {
-        validate_actor_harness(parsed.actor, selection.harness)?;
+    let replay = ordinary_retry_claim(parsed, &paths.instance_dir.join("intents"))?;
+    if let Some(selection) = &parsed.cooperative {
+        let instance = match replay {
+            Some(_) => read_existing_namespace(paths)?,
+            None => None,
+        };
+        if let Some(historical) = replay
+            .as_ref()
+            .zip(instance)
+            .and_then(|(claim, instance)| replay_selection(selection, claim, instance))
+        {
+            parsed.cooperative = Some(historical);
+        } else if !matches!(&parsed.action, CliAction::Retry(_)) {
+            validate_actor_harness(parsed.actor, selection.harness)?;
+        }
     }
     match caller_need(parsed, paths)? {
         CallerNeed::None => Ok(parsed.cooperative.clone()),
@@ -2152,7 +2243,7 @@ fn caller_not_located(detail: &str) -> RunError {
 fn no_seat_for_pane(pane: &crate::protocol::ids::HostTargetId) -> RunError {
     caller_not_located(&format!(
         "no resolved seat is mapped to pane {}; use `seat list`, `seat resolve --pane {0}` or \
-         operator repair, then check in (a person in their own pane: `herdr-threads me init`); \
+         operator repair, then check in (a person in their own pane: `herdr-threads human me init`); \
          reads may pass --seat SEAT",
         pane.as_str()
     ))
@@ -2267,6 +2358,7 @@ where
     C: LocalClient,
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
 {
+    let replay = ordinary_retry_claim(parsed, &paths.instance_dir.join("intents"))?;
     let pane = caller_pane.filter(|pane| !pane.is_empty()).ok_or_else(|| {
         caller_not_located(&format!("this command acts as a seat: {CALLER_HELP}"))
     })?;
@@ -2286,12 +2378,29 @@ where
                 caller_not_located(&format!(
                     "seat {} on pane {} has no lifecycle check-in context yet; the launch driver \
                      or hook runs `check-in --lifecycle-event ID` with --cooperative-* selection; \
-                     a person in their own pane runs `herdr-threads me init`",
+                     a person in their own pane runs `herdr-threads human me init`",
                     seat.as_str(),
                     pane.as_str()
                 ))
             })?,
     };
+    if let Some(claim) = replay
+        && context.instance == instance
+        && context.seat == seat.as_str()
+        && context.target == pane.as_str()
+        && let Some(historical) = replay_selection(
+            &CooperativeSelection {
+                seat: seat.clone(),
+                target: pane.clone(),
+                harness: context.harness,
+                role: context.role,
+            },
+            &claim,
+            instance,
+        )
+    {
+        return Ok(historical);
+    }
     if !matches!(&parsed.action, CliAction::Retry(_)) {
         validate_actor_harness(parsed.actor, context.harness)?;
     }
@@ -2459,6 +2568,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     clock: &dyn Clock,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    let _namespace = human::invocation_scope(parsed.actor);
     if let CliAction::Retry(recovery) = &parsed.action {
         retry::preflight_original_actor(
             journal.root(),
@@ -2512,14 +2622,15 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         && matches!(&parsed.action, CliAction::Wire(Command::Inbox(query)) if query.seat.is_none())
         && parsed.output.format == OutputFormat::Text
         && parsed.presentation != output::Presentation::Machine;
-    if let CliAction::Retry(recovery) = &parsed.action {
-        retry::preflight_original_actor(
-            journal.root(),
-            recovery.as_str(),
-            parsed.actor,
-            &parsed.output.context,
-        )?;
-    }
+    // Preflights the original actor for every retry; an ordinary frozen intent
+    // replays under its saved caller's namespace rather than the live binding.
+    let replay = ordinary_retry_claim(&parsed, journal.root())?;
+    let _retry_namespace = replay.as_ref().map(|claim| {
+        human::invocation_scope(match claim.harness {
+            crate::protocol::authority::Harness::Human => actor_route::InvocationActor::Human,
+            crate::protocol::authority::Harness::Agent(_) => actor_route::InvocationActor::Agent,
+        })
+    });
     if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
         && own_text_inbox
         && role == Role::TopLevel
@@ -2670,6 +2781,14 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             };
             if pending.header.scope != scope {
                 return Err(unsupported("retry belongs to a different instance or seat"));
+            }
+            if let Some(claim) = &replay
+                && (claim.target.as_str() != seed.target
+                    || claim.role != crate::protocol::authority::CallerRole::TopLevel)
+            {
+                return Err(mapping_error(
+                    "retry belongs to a different caller location or role",
+                ));
             }
             if let SemanticMutation::CooperativeCheckIn {
                 claim,

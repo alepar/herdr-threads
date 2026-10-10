@@ -15,7 +15,6 @@ use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCli {
     pub actor: super::actor_route::InvocationActor,
-    pub permissions: PermissionCliInputs,
     pub output: OutputSpec,
     /// Terminal presentation of text output; never sent to the daemon.
     pub presentation: crate::cli::output::Presentation,
@@ -31,331 +30,15 @@ pub struct ParsedCli {
     pub require_ack_panes: Vec<super::panes::PaneSelector>,
 }
 
-/// Literal positive command prefixes. Trailing arguments remain subject to semantic parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OrdinaryFamily {
-    pub prefix: &'static [&'static str],
-    /// These flags change the action to Human and are refused on the root route.
-    pub human_options: &'static [&'static str],
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RoutingToken {
-    Literal(&'static str),
-    StateDirectory,
-    HostEndpoint,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputPosition {
-    BeforeFamily,
-    AfterArguments,
-}
-#[derive(Debug, Clone, Copy)]
-pub struct OrdinaryCatalog {
-    pub families: &'static [OrdinaryFamily],
-    /// Leading pinned routing forms; consumers bind slots to validated exact values.
-    pub routing_forms: &'static [&'static [RoutingToken]],
-    pub output_flags: &'static [&'static str],
-    pub output_positions: &'static [OutputPosition],
-    pub omissions: &'static [(&'static [&'static str], &'static str)],
-}
-pub fn ordinary_catalog() -> OrdinaryCatalog {
-    OrdinaryCatalog {
-        families: &[
-            OrdinaryFamily {
-                prefix: &["--version"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["--help"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["doctor", "fix"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["summary", "job"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["summary", "submit"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["thread", "create"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["thread", "topic"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["thread", "name"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["thread", "rename"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["thread", "list"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["thread", "show"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["thread", "participants"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["participants"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["invite"],
-                human_options: &["--operator"],
-            },
-            OrdinaryFamily {
-                prefix: &["join"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["accept"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["reject"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["accept-required"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["leave"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["send"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["ack"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["archive"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["reopen"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["inbox"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["warnings"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["check-in"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["cached-check-in"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["pending-receipts"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["read"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["follow"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["body"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["search"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["seat", "list"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["seat", "inspect"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["seat", "resolve"],
-                human_options: &["--operator", "--new-seat"],
-            },
-            OrdinaryFamily {
-                prefix: &["delivery", "recipients"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["delivery", "inspect"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["overdue"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["diagnostics"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["daemon", "health"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["daemon", "ensure"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["daemon", "stop"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["service", "inspect"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["doctor"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["setup"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["unsetup"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["setup-status"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["pending-ops"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["retry"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["view"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["launch"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["handoff"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["skill"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["--skill"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["summary"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["contract-id"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["harness-version", "normalize"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["internal", "json-field"],
-                human_options: &[],
-            },
-            OrdinaryFamily {
-                prefix: &["internal", "installer-integrations"],
-                human_options: &[],
-            },
-        ],
-        routing_forms: &[
-            &[],
-            &[
-                RoutingToken::Literal("--state-dir"),
-                RoutingToken::StateDirectory,
-            ],
-            &[
-                RoutingToken::Literal("--host-endpoint"),
-                RoutingToken::HostEndpoint,
-            ],
-            &[
-                RoutingToken::Literal("--state-dir"),
-                RoutingToken::StateDirectory,
-                RoutingToken::Literal("--host-endpoint"),
-                RoutingToken::HostEndpoint,
-            ],
-            &[
-                RoutingToken::Literal("--host-endpoint"),
-                RoutingToken::HostEndpoint,
-                RoutingToken::Literal("--state-dir"),
-                RoutingToken::StateDirectory,
-            ],
-        ],
-        output_flags: &["--human", "--machine", "--json"],
-        output_positions: &[OutputPosition::BeforeFamily, OutputPosition::AfterArguments],
-        omissions: &[(
-            &["seat", "retirements"],
-            "operator cleanup inventory omitted from native ordinary coverage",
-        )],
-    }
-}
-
-/// Syntactic inputs only; neither executable ownership nor consent attestation.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Args)]
-pub struct PermissionCliInputs {
-    #[arg(long)]
-    pub permissions: bool,
-    #[arg(long, conflicts_with = "without_permissions")]
-    pub with_permissions: bool,
-    #[arg(long)]
-    pub without_permissions: bool,
-    #[arg(long, value_parser = permission_path)]
-    pub permission_installed_binary: Option<String>,
-    #[arg(long, requires = "permission_installed_binary", value_parser = permission_path)]
-    pub permission_link_path: Option<String>,
-    #[arg(long, requires = "permission_installed_binary", value_parser = permission_path)]
-    pub permission_alias_path: Option<String>,
-}
-fn permission_path(value: &str) -> Result<String, String> {
-    if value.is_empty()
-        || value.len() > 4096
-        || value.chars().any(char::is_control)
-        || !std::path::Path::new(value).is_absolute()
-    {
-        return Err("permission inventory must be a nonempty absolute path without controls, at most 4096 UTF-8 bytes".into());
-    }
-    Ok(value.to_owned())
-}
+/// Commands that change native configuration or herdr-threads' own grants. Native policy asks
+/// before each one, so an agent can never grant itself permissions silently; the CLI accepts
+/// them only with their words first.
+pub const ESCALATING_COMMANDS: &[&[&str]] = &[
+    &["setup"],
+    &["unsetup"],
+    &["doctor", "fix"],
+    &["internal", "installer-integrations"],
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CooperativeSelection {
@@ -391,6 +74,7 @@ pub enum CliAction {
     SetupAll(
         super::setup::SetupVerb,
         super::setup::PromptSuggestionPolicy,
+        super::setup::PermissionPolicy,
     ),
     /// Managed native launch into one explicit existing empty shell pane.
     Launch(super::launch::LaunchRequest),
@@ -424,6 +108,7 @@ pub enum CliAction {
     /// Hidden `internal json-field PATH`: print a field of the JSON on stdin.
     InstallerIntegrations {
         confirm_missing: bool,
+        without_permissions: bool,
     },
     InternalJsonField {
         path: String,
@@ -1166,8 +851,9 @@ enum InternalSub {
         /// Explicitly confirm installation of every missing integration (installer --setup).
         #[arg(long)]
         confirm_missing: bool,
-        #[command(flatten)]
-        permissions: PermissionCliInputs,
+        /// Skip the permissions component (installer --without-permissions).
+        #[arg(long)]
+        without_permissions: bool,
     },
     /// Read JSON on stdin and print the value at a dotted path (exit 1 when absent).
     JsonField { path: String },
@@ -1541,8 +1227,13 @@ struct SearchArgs {
 }
 #[derive(Args)]
 struct SetupArgs {
-    #[command(flatten)]
-    permissions: PermissionCliInputs,
+    /// setup: let agents run herdr-threads commands without prompting (person and setup
+    /// commands keep asking). Default: keep what is there, asking on a terminal when missing.
+    #[arg(long, conflicts_with = "without_permissions")]
+    with_permissions: bool,
+    /// setup: remove the permission rules setup owns, keeping the hooks.
+    #[arg(long)]
+    without_permissions: bool,
     /// Harness whose hooks to manage. Omitted: every harness (setup: each
     /// one found on PATH; unsetup and setup-status: both).
     harness: Option<String>,
@@ -1659,7 +1350,22 @@ fn setup_action(
     args: SetupArgs,
     registry: &crate::harness::registry::Registry,
 ) -> Result<CliAction, ApiError> {
-    use super::setup::PromptSuggestionPolicy;
+    use super::setup::{PermissionPolicy, PromptSuggestionPolicy};
+    if verb != super::setup::SetupVerb::Install
+        && (args.with_permissions || args.without_permissions)
+    {
+        return Err(invalid(
+            "--with-permissions and --without-permissions apply to setup only (unsetup removes \
+             the permission rules with the hooks)",
+        ));
+    }
+    let permissions = if args.with_permissions {
+        PermissionPolicy::Grant
+    } else if args.without_permissions {
+        PermissionPolicy::Decline
+    } else {
+        PermissionPolicy::Ask
+    };
     let prompt_suggestions = if args.disable_prompt_suggestions {
         PromptSuggestionPolicy::Disable
     } else if args.keep_prompt_suggestions {
@@ -1722,7 +1428,7 @@ fn setup_action(
                 "--harness-binary needs a harness: `setup claude|codex --harness-binary PATH`",
             ));
         }
-        return Ok(CliAction::SetupAll(verb, prompt_suggestions));
+        return Ok(CliAction::SetupAll(verb, prompt_suggestions, permissions));
     };
     let harness = crate::harness::registry::OccupantHarness::Agent(
         registry
@@ -1742,6 +1448,7 @@ fn setup_action(
         harness_binary: args.harness_binary,
         prompt_suggestions,
         hooks_only: args.hooks_only,
+        permissions,
     }))
 }
 
@@ -2004,6 +1711,35 @@ where
             "human namespace cannot be mixed with cooperative agent selectors",
         )));
     }
+    // Native permission rules prompt for an escalating command by its exact leading words
+    // (see [`ESCALATING_COMMANDS`]). An agent therefore writes those words first, with
+    // every option after them, so no flag can move the command out of a prompt rule's reach.
+    let escalating: Option<&[&str]> = match &parsed.action {
+        CliAction::Setup(request) => match request.verb {
+            super::setup::SetupVerb::Install => Some(&["setup"]),
+            super::setup::SetupVerb::Remove => Some(&["unsetup"]),
+            super::setup::SetupVerb::Status => None,
+        },
+        CliAction::SetupAll(verb, ..) => match verb {
+            super::setup::SetupVerb::Install => Some(&["setup"]),
+            super::setup::SetupVerb::Remove => Some(&["unsetup"]),
+            super::setup::SetupVerb::Status => None,
+        },
+        CliAction::Doctor { fix: true, .. } => Some(&["doctor", "fix"]),
+        CliAction::InstallerIntegrations { .. } => Some(&["internal", "installer-integrations"]),
+        _ => None,
+    };
+    if actor == InvocationActor::Agent
+        && let Some(words) = escalating
+        && retained
+            .get(1..=words.len())
+            .is_none_or(|leading| leading.iter().zip(words).any(|(a, b)| a != b))
+    {
+        return Err(ParseFailure::Invalid(invalid(format!(
+            "write `herdr-threads {}` first and put every option after it",
+            words.join(" ")
+        ))));
+    }
     let requires_human = matches!(
         &parsed.action,
         CliAction::MeInit { .. }
@@ -2100,21 +1836,6 @@ fn parse_cli_in_registry(
             },
         }),
         command => command,
-    };
-    let permissions = match &cli.command {
-        Top::Setup(args) => args.permissions.clone(),
-        Top::Unsetup(args) | Top::SetupStatus(args) => {
-            if args.permissions.with_permissions || args.permissions.without_permissions {
-                return Err(invalid(
-                    "permission consent flags are only valid for setup or installer-integrations",
-                ));
-            }
-            args.permissions.clone()
-        }
-        Top::Internal {
-            command: InternalSub::InstallerIntegrations { permissions, .. },
-        } => permissions.clone(),
-        _ => PermissionCliInputs::default(),
     };
     let cooperative_selector =
         cli.cooperative_target
@@ -2952,9 +2673,13 @@ fn parse_cli_in_registry(
         Top::Internal {
             command:
                 InternalSub::InstallerIntegrations {
-                    confirm_missing, ..
+                    confirm_missing,
+                    without_permissions,
                 },
-        } => CliAction::InstallerIntegrations { confirm_missing },
+        } => CliAction::InstallerIntegrations {
+            confirm_missing,
+            without_permissions,
+        },
         Top::Internal {
             command: InternalSub::JsonField { path },
         } => CliAction::InternalJsonField { path },
@@ -3002,7 +2727,6 @@ fn parse_cli_in_registry(
     }
     Ok(ParsedCli {
         actor: super::actor_route::InvocationActor::Agent,
-        permissions,
         output,
         presentation: if cli.human {
             crate::cli::output::Presentation::Human

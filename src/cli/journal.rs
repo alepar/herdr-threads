@@ -756,6 +756,20 @@ pub struct PendingIntent {
     pub semantic: SemanticMutation,
     pub operation: OperationId,
 }
+impl PendingIntent {
+    /// Ordinary replay can select its frozen caller without adopting the live binding.
+    /// Lifecycle and compound intents retain their separate replay algorithms.
+    pub(crate) fn ordinary_replay_claim(&self) -> Option<&CallerClaim> {
+        match &self.semantic {
+            SemanticMutation::Frozen { claim, mutation }
+                if !matches!(mutation.as_ref(), SemanticMutation::Handoff(_)) =>
+            {
+                Some(claim)
+            }
+            _ => None,
+        }
+    }
+}
 pub type PendingPage = Page<LocalIntent>;
 // Compact published semantic and header each fit the canonical identity envelope;
 // fixed reference/digest/header fields have 4096 bytes of additional headroom.
@@ -1693,7 +1707,7 @@ impl Journal {
                 ErrorCode::ReadBudgetExhausted,
                 "intent page changed during traversal; retry same cursor",
             );
-            let mut argv = prefix.to_vec();
+            let mut argv = pending_command_argv(prefix);
             if let Some(cursor) = &request.cursor {
                 argv.extend(["--cursor".into(), cursor.clone()]);
             }
@@ -1787,7 +1801,7 @@ fn set_cursor(
     }
     .encode()
     .map_err(|e| api(ErrorCode::InvalidCursor, e))?;
-    let mut argv = prefix.to_vec();
+    let mut argv = pending_command_argv(prefix);
     argv.extend([
         "--cursor".into(),
         cursor.clone(),
@@ -1802,6 +1816,18 @@ fn set_cursor(
     page.stop_reason = reason;
     Ok(())
 }
+// Rendering only: the cursor identity above retains the original prefix.
+fn pending_command_argv(prefix: &[String]) -> Vec<String> {
+    let mut argv = prefix.to_vec();
+    if argv.first().is_some_and(|first| {
+        first.starts_with("--") || matches!(first.as_str(), "pending-ops" | "human")
+    }) {
+        argv.insert(0, "herdr-threads".into());
+    }
+    crate::protocol::output::namespace_argv(&mut argv);
+    argv
+}
+
 fn selected_len(page: &PendingPage, output: &OutputSpec) -> Result<usize, ApiError> {
     Ok(encode_selected(&CommandResult::LocalIntents(page.clone()), output)?.len())
 }

@@ -62,7 +62,7 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 |---|---|---|
 | Structural reconfirm | Same terminal, same Herdr boot and incarnation | automatic, no new provenance |
 | Cooperative continuity | A resumed top-level session (SessionStart source `resume`) whose harness session id uniquely matches an unresolved seat's last binding | `cooperative_continuity` |
-| Operator decision | `seat rebind`, `seat resolve --new-seat`, `seat retire`, `seat rebind --replace` | `operator:local-user:<uid>` |
+| Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
 
 Seats are never merged. Pane labels, saved addresses, terminal-id hints and Herdr's agent field may *suggest*
 candidates in diagnostics; they never move a seat, allocate one, or end a binding.
@@ -70,7 +70,7 @@ candidates in diagnostics; they never move a seat, allocate one, or end a bindin
 **C2. Restore holds.** After a new or unknown Herdr incarnation while nonretired seats exist, every saved
 seat whose continuity is not structurally proven becomes unresolved, and the daemon takes a coherent baseline
 of current targets. Every unowned target in that baseline is **held**: ordinary resolution (`seat resolve`,
-`launch`, top-level `SessionStart` enrollment, `me init`) refuses it with inspect / rebind / fresh-seat guidance. Panes authoritatively created
+`launch`, top-level `SessionStart` enrollment, `ht human me init`) refuses it with inspect / rebind / fresh-seat guidance. Panes authoritatively created
 after the baseline are not held. Holds are durable and survive daemon restart. A hold is released by:
 operator rebind or fresh seat on that target; cooperative continuity on that target (C1); or, instance-wide,
 when no unresolved nonretired seats remain (implemented, nothing left to protect).
@@ -92,8 +92,8 @@ registration must match the native payload before service or journal access.
 
 **C3. Collisions resolve by abandonment, never by merge.** When a rebind finds its target owned by another
 live seat, the refusal offers exactly two resolutions, each as ready argv:
-- abandon the old seat: `seat retire OLD --operator` (implemented);
-- abandon the new role: `seat rebind OLD --pane P --replace NEW --operator` (implemented), which retires NEW
+- abandon the old seat: `ht human seat retire OLD --operator` (implemented);
+- abandon the new role: `ht human seat rebind OLD --pane P --replace NEW --operator` (implemented), which retires NEW
   and rebinds OLD in one decision so the target cannot be claimed in between. NEW's pending obligations settle
   as recipient-retired; nothing moves from NEW to OLD.
 
@@ -122,6 +122,21 @@ exits back to its shell stays bound until a check-in replaces it or its pane dis
 act as any seat: a child agent, a script, another seat's agent writing the shared client directories. This is
 in-contract (see Accepted limits).
 
+**Invocation spelling.** Ordinary root commands act as agents. Person and local-operator
+commands require immediate argv[1] `human`: `ht human me init [--operator]`,
+`ht human send THREAD --body TEXT`, and `ht human seat rebind ... --operator`.
+Put `--state-dir`, `--host-endpoint` and output flags after `human`. `--human` changes
+output formatting only; relay, user-intent and delivery flags do not declare a person.
+Root accountable actions refuse inferred Human contexts. The namespace records no new
+provenance and confers no canonical authority. Subagents read with `--machine` or `--json`
+and never mutate, accept or ACK.
+
+Retry classification reads the original validated frozen semantic and scope before
+state creation, connection, completed presentation or cleanup. Retained person/operator
+intents use `ht human retry REF`. A historical Agent intent remains Agent after a binding
+change. Presentation may clone known command argv fields, but never changes the original
+claim, operation key, digest, response bytes, cursor or rows, or rewrites peer text.
+
 **A2. One canonical decision view.** Every accountable mutation is decided by the daemon, in its deciding
 transaction, against:
 - the daemon boot the client addressed: a request carrying a different expected boot is refused before
@@ -142,7 +157,7 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | `cooperative_mod_channel` | mod channel registrations only (process-local) | The pane's top-level Claude session, through the bundled herdr-threads mod's `watch` child, opened a delivery channel for the seat's current binding generation. The daemon decides it against A2 (seat resolved and not held, open `cooperative_top_level` binding with harness `claude`, native session equal to the claim's, no stall cooldown, `mod_delivery` on). It grants nothing but receiving deliveries and making `cooperative_mod_delivery` claims for that binding generation. Never on bindings or receipts. |
 | `cooperative_mod_delivery` | receipt action observation; lazy completion claim | The mod reported that a delivery path's predicate held (spec D6): for an ordinary message, that its full body entered the model's context through the mod (an answered tool result carrying the mod's context, or a `$.prompt.submit` that resolved without `drop`; or, after a plugin reload disposed the instance whose submit was still in flight, a main turn whose prompt carries the mod's frame naming the id, or the completion of the turn that was open when the successor loaded (the engine does not report the disposed instance's submit outcome)); for a lazy row, that it was appended to the transcript (`$.session.append` resolved without `deny`). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's `cooperative_top_level` provenance separately. A truncated item never carries it. |
 | `cooperative_hook_context` | lazy completion claim | A top-level standard native hook wrote and flushed output whose context carried the lazy message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`, which is part of the accountable operation's payload digest (as `AckModDelivered` carries the mod claim); no per-row source is stored. Not proof that the harness ingested it or the model read it. A prefix never carries it. |
-| `operator_human` | bindings, receipts | A person declared this pane human with `me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
+| `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
 | `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), only on a seat with no open binding, decided against the effective observation (A2). Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, and it starts no availability or receipt timer. |
@@ -191,7 +206,7 @@ model open work, and summary closure never changes receipt state or installs glo
   generation before the launch was recorded (the launched agent checking in while `launch` reports it) is
   accepted against that binding (implemented, ht-5n6).
 - *Agent to human*: the daemon refuses a human lifecycle check-in while the open binding is
-  `cooperative_top_level` or `managed_launch`, unless the request is `--operator` (implemented). `me init` additionally refuses
+  `cooperative_top_level` or `managed_launch`, unless the request is `--operator` (implemented). `ht human me init` additionally refuses
   when agent evidence is present: one of the three allowlisted environment markers (`CLAUDECODE`,
   `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), or Herdr reporting a registered adapter's recognized native host kind in the
   pane. Registry metadata alone never establishes native recognition, continuity or caller authority.
@@ -281,7 +296,7 @@ model open work, and summary closure never changes receipt state or installs glo
 | display ACK after text inbox output | the current top-level agent binding, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
 | open a mod delivery channel (`watch`) | the pane's top-level Claude session through its mod, for the current `cooperative_top_level` binding with the matching native session; recorded as `cooperative_mod_channel`; it grants no other row |
 | mod delivery ACK (`watch ack`) | the current top-level Claude binding with a live channel (grace included) for its binding generation, or, on resume, for ids delivered under the immediately previous generation of the same native session; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
-| check in | the pane's top-level agent (hook) or a human via `me init` |
+| check in | the pane's top-level agent (hook) or a human via `ht human me init` |
 | record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup, on a seat with no open binding; it grants no row above |
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
 | service-authored send, notify, and managed-thread controls (ensure, invite, topic, release, archive, reopen) | the registered service connection |
@@ -519,6 +534,30 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   `HERDR_THREADS_CODEX_OPTS` and `HERDR_THREADS_CLAUDE_OPTS` add user-selected launch
   arguments, with no automatic daemon argument by default. No argument or settings check
   grants receipt authority, moves a seat or relaxes the canonical binding checks in A2.
+- **Native permission rules are cooperative matching limits.** Owned Claude rules allow
+  the bare `herdr-threads` / `ht` command text and ask for `human`, `setup`, `unsetup`,
+  `doctor fix` and `internal installer-integrations`; owned Codex rules use a literal
+  executable-prefix allow with `prompt` prefixes for the same words. The CLI refuses an
+  agent that does not write those words first, but quoting or rearranging words to dodge
+  a text rule is outside the model. Stronger deny/ask/managed policy remains effective.
+  Foreign broad allowances are preserved and can still cover Human commands. Bare names
+  cannot attest later PATH, alias or function resolution. Generated matching and native
+  checker evidence never prove a live classifier verdict or installed wrapper support.
+  Setup changes no general shell, network, sandbox or approval-mode setting.
+- **Unattributed public reads retain ordinary daemon spelling.** Public read requests
+  carry no invocation actor; a Human subject seat or peer label cannot identify the
+  requesting viewer. Known current caller/action producers include Human spelling before
+  page fitting. For an explicit Human invocation of a generic public read, the client
+  renders a clone of known argv fields and measures its final selected encoding against
+  the original byte budget. Namespace overhead that cannot fit reports the exact required
+  minimum, including framing and newline, without changing cursor or rows or refitting a
+  historical response. Frozen check-in claims determine their own historical ready spelling.
+- **Owned configuration locks coordinate participating writers only.** A stable advisory
+  lock serializes owned writers, which refresh and revalidate under the guard before each
+  replacement. A noncooperating editor changing a file after the final check and before
+  rename can escape detection; the guard is not atomic compare-and-swap. Historical
+  ownership transfer recovery covers process termination on a functioning filesystem,
+  not every power loss or storage failure.
 - **Child agents can ACK.** Subagents are instructed not to; the plugin cannot tell them from their parent.
 - **Same-user spoofing.** Any same-user process can select another seat, set `HERDR_PANE_ID`, or write another
   seat's files under the instance `contexts/` and `intents/` directories (writable from the Codex sandbox by
@@ -701,8 +740,8 @@ only the marker.
 | P35 request crosses daemon boot | expected boot in the request envelope | A2 |
 | O1 unavailable after daemon restart | carry binding forward on structural reconfirm | C4 |
 | ht-yms Herdr timeout ended every binding | unavailability freezes state, writes no invalidation | C4 |
-| Wave 18 `me init` as `operator_human` | env-marker and Herdr-agent refusal | A3, A4 |
-| Wave 18 `me init` replaces agent binding | daemon refuses agent-to-human without `--operator` | A4 |
+| Wave 18 `ht human me init` as `operator_human` | env-marker and Herdr-agent refusal | A3, A4 |
+| Wave 18 `ht human me init` replaces agent binding | daemon refuses agent-to-human without `--operator` | A4 |
 | Wave 30 shared client directories | accepted, documented | A1, Accepted limits |
 | `allocator.lock` without `O_NOFOLLOW` | open without following symlinks | Accepted limits |
 | Wave 28 second agent via name retry | launch refuses while bound agent is live | A4 |

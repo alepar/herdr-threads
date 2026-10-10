@@ -2217,3 +2217,135 @@ fn retry_preflight_legacy_operator_preserves_replay_keys() {
     assert!(!journal.path(&reference).exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+// Kills a rendering namespace changing the local cursor scope or saved intents.
+#[test]
+fn human_guidance_pending_page_keeps_cursor_and_frozen_records() {
+    use crate::protocol::output::{CommandNamespaceGuard, ContinuationContext};
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let first = journal.record(scope(), send(), 1).unwrap();
+    journal.record(scope(), send(), 2).unwrap();
+    let frozen = std::fs::read(journal.path(&first)).unwrap();
+    let prefix = [
+        "herdr-threads",
+        "--state-dir",
+        "state",
+        "--host-endpoint",
+        "socket",
+        "--json",
+        "pending-ops",
+    ]
+    .map(String::from);
+    let spec = OutputSpec {
+        format: OutputFormat::Json,
+        context: ContinuationContext {
+            state_dir: Some("state".into()),
+            host: Some("socket".into()),
+        },
+    };
+    let request = crate::protocol::pagination::PageRequest {
+        limit: 1,
+        max_bytes: 4096,
+        cursor: None,
+    };
+    let ordinary = journal.page_with_output(&request, &prefix, &spec).unwrap();
+    let _namespace = CommandNamespaceGuard::enter(true);
+    let human = journal.page_with_output(&request, &prefix, &spec).unwrap();
+    assert_eq!(human.next_cursor, ordinary.next_cursor);
+    assert_eq!(human.items, ordinary.items);
+    assert_eq!(
+        &human.next_argv.as_ref().unwrap()[..8],
+        [
+            "herdr-threads",
+            "human",
+            "--state-dir",
+            "state",
+            "--host-endpoint",
+            "socket",
+            "--json",
+            "pending-ops"
+        ]
+    );
+    let parsed = crate::cli::commands::parse_argv(human.next_argv.clone().unwrap()).unwrap();
+    assert_eq!(
+        parsed.actor,
+        crate::cli::actor_route::InvocationActor::Human
+    );
+    assert_eq!(std::fs::read(journal.path(&first)).unwrap(), frozen);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn human_guidance_original_retry_ignores_opposite_rendering_view() {
+    use crate::{
+        cli::actor_route::InvocationActor,
+        protocol::output::{CommandNamespaceGuard, ContinuationContext},
+    };
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let context = ContinuationContext {
+        state_dir: Some("pinned state".into()),
+        host: Some("pinned socket".into()),
+    };
+    for harness in [Harness::Human, Harness::Codex] {
+        let mut original = claim();
+        original.harness = harness;
+        let authority = IntentScope::Cooperative {
+            instance: original.instance.clone(),
+            seat: original.seat.clone(),
+        };
+        let reference = journal
+            .record(
+                authority,
+                SemanticMutation::freeze(send(), original).unwrap(),
+                1,
+            )
+            .unwrap();
+        let frozen = std::fs::read(journal.path(&reference)).unwrap();
+        let _opposite = CommandNamespaceGuard::enter(harness != Harness::Human);
+        let outcome = crate::cli::retry::preflight_original_actor(
+            &dir,
+            &reference.recovery_ref(),
+            InvocationActor::Agent,
+            &context,
+        );
+        if harness == Harness::Human {
+            let failure = outcome.unwrap_err();
+            assert_eq!(failure.kind(), io::ErrorKind::PermissionDenied);
+            let failure = failure.to_string();
+            let argv = shlex::split(failure.split_once("; use ").unwrap().1).unwrap();
+            assert_eq!(
+                argv,
+                [
+                    "herdr-threads",
+                    "human",
+                    "--state-dir",
+                    "pinned state",
+                    "--host-endpoint",
+                    "pinned socket",
+                    "retry",
+                    reference.recovery_ref().as_str()
+                ]
+            );
+            assert_eq!(
+                crate::cli::retry::preflight_original_actor(
+                    &dir,
+                    &reference.recovery_ref(),
+                    InvocationActor::Human,
+                    &context
+                )
+                .unwrap(),
+                OriginalActor::HumanOrOperator
+            );
+        } else {
+            assert_eq!(outcome.unwrap(), OriginalActor::Agent);
+        }
+        assert_eq!(std::fs::read(journal.path(&reference)).unwrap(), frozen);
+        assert_eq!(
+            journal.load(&reference).unwrap().operation,
+            reference.operation
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -2853,7 +2853,9 @@ fn human_lifecycle_check_in_over_cooperative_top_level_binding_is_refused() {
     .unwrap_err();
     assert_eq!(refused.code, ErrorCode::Unauthorized);
     assert!(
-        refused.detail.contains("herdr-threads me init --operator"),
+        refused
+            .detail
+            .contains("herdr-threads human me init --operator"),
         "{}",
         refused.detail
     );
@@ -3406,4 +3408,30 @@ fn adapter_unknown_stored_harness_is_unsupported_without_ending_binding() {
             .unwrap(),
         1
     );
+}
+
+// Kills adding Human only after the canonical check-in offer has been fitted.
+#[test]
+fn human_guidance_check_in_continuation_before_page_fit() {
+    for harness in [Harness::Human, Harness::Codex] {
+        let (store, conn, _) = fixture();
+        for n in 0..21 {
+            let thread = format!("human-guidance-{n}");
+            conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','peer ht human --operator','goal',0,0)", [&thread]).unwrap();
+            conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES (?1,?2,'s',1,'pending',0,300,300,1)", rusqlite::params![format!("inv-{n}"), thread]).unwrap();
+        }
+        conn.execute("UPDATE host_instances SET decision_seq=1 WHERE id='i'", [])
+            .unwrap();
+        let mut caller = claim();
+        caller.harness = harness;
+        let command = lifecycle(caller, "human-guidance-check-in");
+        let result = check_in(&store, command.clone()).unwrap();
+        let argv = result.inbox.next_argv.as_ref().unwrap();
+        if harness == Harness::Human {
+            assert_eq!(argv[1], "human");
+        } else {
+            assert_ne!(argv[1], "human");
+        }
+        assert_eq!(check_in(&store, command).unwrap(), result);
+    }
 }
