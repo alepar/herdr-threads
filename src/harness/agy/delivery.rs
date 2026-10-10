@@ -342,44 +342,59 @@ pub struct Scan {
     pub complete: bool,
 }
 
+/// The step source agy logs for a step a hook injected (genuine agy 1.3.2 capture,
+/// `tests/fixtures/agy/delivery/transcript-genuine-*.jsonl`).
+const INJECTED_SOURCE: &str = "SYSTEM_SDK";
+/// The step types of a hook injection: `systemMessage` is logged as `SYSTEM_MESSAGE`, and
+/// `userMessage` as `USER_INPUT` (same capture fixtures).
+const INJECTED_TYPES: [&str; 2] = ["SYSTEM_MESSAGE", "USER_INPUT"];
+
+/// An enum spelling without its proto prefix, upper-cased: `CORTEX_STEP_SOURCE_SYSTEM_SDK` and
+/// `system_sdk` both read `SYSTEM_SDK`.
+fn normalized(value: &str) -> String {
+    let bare = value
+        .strip_prefix("CORTEX_STEP_TYPE_")
+        .or_else(|| value.strip_prefix("CORTEX_STEP_SOURCE_"))
+        .unwrap_or(value);
+    bare.to_ascii_uppercase()
+}
+
+/// The decoded text of a transcript record, only when the record is a step a hook injected
+/// (source `SYSTEM_SDK`, type `SYSTEM_MESSAGE` or `USER_INPUT`). Tool output, model output and
+/// user-typed input are never injected steps.
+fn injected_text(record: &serde_json::Value) -> Option<&str> {
+    let source = normalized(record.get("source")?.as_str()?);
+    let kind = normalized(record.get("type")?.as_str()?);
+    if source != INJECTED_SOURCE || !INJECTED_TYPES.contains(&kind.as_str()) {
+        return None;
+    }
+    record.get("content")?.as_str()
+}
+
 /// A frame header line: `[herdr-threads] message <id> in …` or `[herdr-threads] lazy <id> in …`,
-/// at the start of a line. The transcript is JSON, so a line start is a real newline, a JSON
-/// `\n` escape or the opening quote of the string holding the injected text. A body line is
-/// indented by two spaces, so a forged header inside a body never starts a line.
-fn header_ids(buffer: &[u8], wanted: &BTreeSet<&str>, found: &mut BTreeSet<String>) {
-    const PREFIX: &[u8] = b"[herdr-threads] ";
-    let mut at = 0;
-    while let Some(position) = buffer[at..].iter().position(|byte| *byte == b'[') {
-        let start = at + position;
-        at = start + 1;
-        if !buffer[start..].starts_with(PREFIX) {
+/// at column 0 of a line of the decoded `text` (split on real newlines only). A body line is
+/// indented by two spaces, so a header quoted inside a body never starts a line.
+fn header_ids(text: &str, wanted: &BTreeSet<&str>, found: &mut BTreeSet<String>) {
+    for line in text.split('\n') {
+        let Some(rest) = line
+            .strip_prefix("[herdr-threads] message ")
+            .or_else(|| line.strip_prefix("[herdr-threads] lazy "))
+        else {
             continue;
-        }
-        let anchored = start == 0
-            || matches!(buffer[start - 1], b'\n' | b'"')
-            || (start >= 2 && buffer[start - 2] == b'\\' && buffer[start - 1] == b'n');
-        if !anchored {
-            continue;
-        }
-        let rest = &buffer[start + PREFIX.len()..];
-        let rest = match (rest.strip_prefix(b"message "), rest.strip_prefix(b"lazy ")) {
-            (Some(rest), _) | (_, Some(rest)) => rest,
-            _ => continue,
         };
-        let end = rest
-            .iter()
-            .position(|byte| *byte == b' ')
-            .unwrap_or(rest.len());
-        if let Ok(id) = std::str::from_utf8(&rest[..end])
-            && wanted.contains(id)
-        {
+        let id = rest.split(' ').next().unwrap_or(rest);
+        if wanted.contains(id) {
             found.insert(id.to_owned());
         }
     }
 }
 
 /// Scan `path` from byte `from` (bounded to [`TRANSCRIPT_WINDOW`]) for the frame headers of
-/// `wanted`. A transcript shorter than `from` was replaced: it is scanned from its start.
+/// `wanted`. The window is decoded record by record (one JSON object per line): only
+/// hook-injected steps are read, and a header counts only at column 0 of a line of a step's
+/// decoded text. A record that does not decode (garbage, invalid UTF-8, not an object, or cut
+/// by the window end) is skipped, as is a first record the window starts inside of. A
+/// transcript shorter than `from` was replaced: it is scanned from its start.
 pub fn scan_transcript(path: &Path, from: u64, wanted: &BTreeSet<&str>) -> Scan {
     let mut scan = Scan::default();
     let Ok(mut file) = std::fs::File::open(path) else {
@@ -395,12 +410,41 @@ pub fn scan_transcript(path: &Path, from: u64, wanted: &BTreeSet<&str>) -> Scan 
     let remaining = meta.len() - start;
     let window = remaining.min(TRANSCRIPT_WINDOW);
     let mut buffer = vec![0u8; window as usize];
-    if file.seek(SeekFrom::Start(start)).is_err() || file.read_exact(&mut buffer).is_err() {
+    // A window that starts mid-line begins inside a record: that first segment is partial.
+    let mut partial_first = false;
+    if start > 0 {
+        let mut previous = [0u8; 1];
+        if file.seek(SeekFrom::Start(start - 1)).is_err() || file.read_exact(&mut previous).is_err()
+        {
+            return scan;
+        }
+        partial_first = previous[0] != b'\n';
+    } else if file.seek(SeekFrom::Start(0)).is_err() {
+        return scan;
+    }
+    if file.read_exact(&mut buffer).is_err() {
         return scan;
     }
     scan.readable = true;
     scan.complete = remaining <= TRANSCRIPT_WINDOW;
-    header_ids(&buffer, wanted, &mut scan.found);
+    for (index, segment) in buffer.split(|byte| *byte == b'\n').enumerate() {
+        if index == 0 && partial_first {
+            continue;
+        }
+        // `-` and ASCII letters are never JSON-escaped: a record with a header contains this.
+        if !segment
+            .windows(b"herdr-threads".len())
+            .any(|window| window == b"herdr-threads")
+        {
+            continue;
+        }
+        let Ok(record) = serde_json::from_slice::<serde_json::Value>(segment) else {
+            continue;
+        };
+        if let Some(text) = injected_text(&record) {
+            header_ids(text, wanted, &mut scan.found);
+        }
+    }
     scan
 }
 

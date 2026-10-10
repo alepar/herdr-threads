@@ -151,6 +151,128 @@ fn a_header_quoted_inside_a_body_is_not_a_frame_and_an_id_prefix_is_not_the_id()
     assert_eq!(scan.found, ["msg-a1".to_owned()].into_iter().collect());
 }
 
+/// Scan a fixture from offset 0 for `ids`; the scan must have read all of it.
+fn scan_fixture(name: &str, ids: &[&str]) -> BTreeSet<String> {
+    let temp = Temp::new();
+    let path = temp.0.join("t.jsonl");
+    std::fs::copy(fixture(name), &path).unwrap();
+    let scan = scan_transcript(&path, 0, &wanted(ids));
+    assert!(scan.readable && scan.complete, "{name}");
+    scan.found
+}
+fn ids_of(ids: &[&str]) -> BTreeSet<String> {
+    ids.iter().map(|id| (*id).to_owned()).collect()
+}
+
+#[test]
+fn a_forged_header_after_a_literal_backslash_n_in_a_body_does_not_confirm() {
+    let found = scan_fixture(
+        "transcript-forged-escaped-newline.jsonl",
+        &["msg-a1", "msg-forged"],
+    );
+    assert_eq!(found, ids_of(&["msg-a1"]));
+}
+
+#[test]
+fn a_header_in_a_tool_result_does_not_confirm() {
+    let found = scan_fixture(
+        "transcript-header-in-tool-output.jsonl",
+        &["msg-a1", "msg-tool"],
+    );
+    assert_eq!(found, ids_of(&["msg-a1"]));
+}
+
+#[test]
+fn a_header_in_model_output_does_not_confirm() {
+    let found = scan_fixture(
+        "transcript-header-in-model-output.jsonl",
+        &["msg-a1", "msg-model"],
+    );
+    assert_eq!(found, ids_of(&["msg-a1"]));
+}
+
+#[test]
+fn a_header_in_a_step_with_a_user_source_does_not_confirm() {
+    let found = scan_fixture("transcript-header-in-user-input.jsonl", &["msg-user"]);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+/// The frame ids of a genuine capture, read independently of the scan: the `SYSTEM_SDK` record's
+/// decoded text, split on real newlines, lines that start at column 0 with a frame header.
+fn genuine_ids(name: &str) -> BTreeSet<String> {
+    let text = String::from_utf8(fixture_bytes(name)).unwrap();
+    let mut ids = BTreeSet::new();
+    for line in text.lines() {
+        let record: serde_json::Value = serde_json::from_str(line).unwrap();
+        if record["source"] != "SYSTEM_SDK" {
+            continue;
+        }
+        for row in record["content"].as_str().unwrap().split('\n') {
+            if let Some(rest) = row
+                .strip_prefix("[herdr-threads] message ")
+                .or_else(|| row.strip_prefix("[herdr-threads] lazy "))
+            {
+                ids.insert(rest.split(' ').next().unwrap().to_owned());
+            }
+        }
+    }
+    ids
+}
+
+fn genuine_capture_confirms(name: &str) {
+    let expected = genuine_ids(name);
+    assert!(!expected.is_empty(), "{name} holds no frame");
+    let wanted_ids: Vec<&str> = expected.iter().map(String::as_str).collect();
+    assert_eq!(scan_fixture(name, &wanted_ids), expected);
+}
+
+#[test]
+fn a_genuine_system_message_frame_confirms() {
+    genuine_capture_confirms("transcript-genuine-system-message.jsonl");
+}
+
+#[test]
+fn a_genuine_user_message_frame_confirms() {
+    genuine_capture_confirms("transcript-genuine-user-message.jsonl");
+}
+
+#[test]
+fn malformed_and_truncated_lines_are_skipped() {
+    let found = scan_fixture("transcript-malformed-lines.jsonl", &["msg-a1", "msg-trunc"]);
+    assert_eq!(found, ids_of(&["msg-a1"]));
+}
+
+#[test]
+fn a_window_that_starts_inside_a_record_skips_that_record() {
+    let first = fixture_bytes("transcript-frame.jsonl");
+    let second = String::from_utf8(first.clone())
+        .unwrap()
+        .replace("msg-a1", "msg-b1")
+        .replace("msg-lz1", "msg-lz2")
+        .into_bytes();
+    let mut both = first.clone();
+    both.extend_from_slice(&second);
+    // The offset of the second copy's injected record: the start of its second line.
+    let second_start = first.len();
+    let injected_start = first.iter().position(|b| *b == b'\n').unwrap() + 1;
+    let temp = Temp::new();
+    let path = temp.0.join("t.jsonl");
+    std::fs::write(&path, &both).unwrap();
+    let all = wanted(&["msg-a1", "msg-lz1", "msg-b1", "msg-lz2"]);
+    let from = |offset: usize| scan_transcript(&path, offset as u64, &all).found;
+    // Offset 0 reads everything.
+    assert_eq!(from(0), ids_of(&["msg-a1", "msg-lz1", "msg-b1", "msg-lz2"]));
+    // One byte into the first copy's injected record: that record is partial and skipped.
+    assert_eq!(from(injected_start + 1), ids_of(&["msg-b1", "msg-lz2"]));
+    // Exactly at the start of the second copy.
+    assert_eq!(from(second_start), ids_of(&["msg-b1", "msg-lz2"]));
+    // Exactly at the start of the first copy's injected record: a whole record.
+    assert_eq!(
+        from(injected_start),
+        ids_of(&["msg-a1", "msg-lz1", "msg-b1", "msg-lz2"])
+    );
+}
+
 #[test]
 fn unparseable_missing_and_non_file_transcripts_find_nothing() {
     let temp = Temp::new();
@@ -1166,8 +1288,8 @@ mod daemon {
         assert_eq!(world.receipt().0, "pending", "a pull settles nothing");
 
         // agy writes the injected message into the transcript (fixture shape, real frame text).
-        let mut line = serde_json::to_vec(&json!({"step": 2, "type": "SYSTEM_MESSAGE",
-            "content": format!("<SYSTEM_MESSAGE>\nThe following system message was injected by a PreInvocation hook:\n{text}\n</SYSTEM_MESSAGE>")})).unwrap();
+        let mut line = serde_json::to_vec(&json!({"step_index": 2, "source": "SYSTEM_SDK", "type": "SYSTEM_MESSAGE",
+            "status": "DONE", "content": format!("<SYSTEM_MESSAGE>\nThe following system message was injected by a PreInvocation hook:\n{text}\n</SYSTEM_MESSAGE>")})).unwrap();
         line.push(b'\n');
         rig.append(&line);
 
