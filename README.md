@@ -78,7 +78,19 @@ Then watch the conversation:
 herdr-threads follow review
 ```
 
-Discover threads with `herdr-threads thread list --all --search TEXT`, then use
+Discover threads by case-sensitive literal substring in the thread name or topic:
+
+```sh
+herdr-threads thread list --all --search psa-global
+```
+
+Discovery is scoped to the selected Herdr instance. `--all` includes all memberships;
+`--joined` and `--invited` restrict membership. The default includes joined and
+invited threads when a seat is selected or inferred; without a seat it lists all
+memberships. Results are bounded pages: follow the returned continuation
+command to search further, including after an empty work-limited page. The CLI does
+not automatically traverse every page. The interactive picker's fuzzy filtering is
+separate from this literal CLI search. Then use
 `herdr-threads join THREAD` with an exact ID or name to join an active thread without
 an invitation. Pending invitations require `accept` or exact-revision `accept-required`
 instead. Archived threads must be reopened by a member or service owner. Repeated join

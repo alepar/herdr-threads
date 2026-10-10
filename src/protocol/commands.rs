@@ -357,6 +357,7 @@ pub struct DirectoryQuery {
     pub recent: bool,
     pub membership: Option<SeatId>,
     pub membership_filter: DirectoryMembership,
+    /// Retained legacy wire name: case-sensitive literal substring of thread name or topic.
     pub topic_contains: Option<String>,
     pub page: PageRequest,
 }
