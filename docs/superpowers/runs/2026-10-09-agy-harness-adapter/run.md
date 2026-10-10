@@ -36,7 +36,7 @@ codeBuckets:
   parked:
   stalled: false
   review: not ready (invocation 8 final review: no Critical; Important S1 agy informational notices only at lifecycle check-ins; unmeasured branch; flaky ht-01s + two unclassified flakes) — code-final-review-8.md
-  sweep: SWEEP DEFERRED (caller-owned)
+  sweep: 417c534 — 4904 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (272 s, host quiet; an earlier run under other tabs' build load timed out manifest::failpoints_are_compiled_out_of_release_builds at 340 s, which passed alone in 98 s) @ 417c534f
   slowness: round 1 allowlist hot-file cap raised to 4; round 2 graph-bound, edge audit armed; audit 1 left ht-poh.5 <- ht-poh.4.5 drop for an operator (parked)
   worktreesKept: task-ht-poh.13 — uncommitted partial R17 work (BLOCKED-AUTH), task-ht-poh.4.5 — unmerged (blocked on agy binary, since resolved)
   processSweep: stopped 0 · survived 0
