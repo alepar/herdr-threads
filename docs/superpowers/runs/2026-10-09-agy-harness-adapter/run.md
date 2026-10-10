@@ -5,7 +5,7 @@ resumeChange: 2026-10-09 · "let's /super-auto this. Fully autonomouns from now,
 resumeChange: 2026-10-10 · "I think this is way too much text… marks everything as 'untrusted'… I want that corrected… create a new bead task under our epic and handle it ourselves" · added leaf for compact cooperative framing (R17) after the Claude re-fit; supersedes R9 byte-identity for the mod's model-visible frame text only
 resumeChange: 2026-10-10 · "the nudge should probably say something minimal, like 'wake up' and then let hook inject the actual message" · added leaf for adapter-declared minimal wake text (R18): agy and Claude mod wake with 'wake up', bodies injected at turn start
 resumeChange: 2026-10-10 · "also let's add to AGENTS.md that when designing comms, we strive to design the protocols to be token efficient as much as possible" · folded into ht-poh.13: AGENTS.md 'Token-efficient communication' rule (no dedicated token-efficiency research found in ~/Documents)
-phase: roast-code
+phase: fix-loop
 codeMechanism: Workflow
 
 spec: 2026-10-09-agy-harness-adapter-design.md
@@ -16,6 +16,7 @@ base: main
 
 roastDesignRound: 2
 roastCodeRound: 1
+roast-code: 2026-10-10-agy-harness-adapter-roast-pr-1.md
 roast-design: 2026-10-10-agy-harness-adapter-roast-design-1.md, 2026-10-10-agy-harness-adapter-roast-design-2.md
 
 stepBackDesign-round-1: patch — two findings share one cause (transcript-confirm read only at next PreInvocation; Stop used only for error-string detection); cluster C1 rule applied in root + subspecs; executable-identity source patched separately
