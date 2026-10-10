@@ -9411,3 +9411,219 @@ fn invitation_rejection_human_retains_declared_human_provenance() {
 
 #[path = "topology_attachment_guard.rs"]
 mod topology_attachment;
+
+#[test]
+fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() {
+    use crate::{
+        ports::StorePort,
+        protocol::{
+            commands::{DirectoryMembership, DirectoryQuery, PermitMutation, SetThreadName},
+            pagination::PageRequest,
+        },
+        store::{SqliteStore, StoreSettings},
+    };
+    for recent in [false, true] {
+        for changed in ["first", "later"] {
+            let (context, conn, path, clock) = bound_fixture(100);
+            conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('first','i','needle','goal',0,0),('later','i','needle','goal',0,0);
+                INSERT INTO memberships(thread_id,seat_id,state) VALUES ('first','s1','joined'),('later','s1','joined');").unwrap();
+            conn.execute(
+                "UPDATE threads SET topic='unrelated' WHERE id=?1",
+                [changed],
+            )
+            .unwrap();
+            conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('anchor-a','i','needle','goal',0,0),('anchor-b','i','needle','goal',0,0);").unwrap();
+            let store = SqliteStore::new(
+                StoreContext::new(path.clone(), clock),
+                "i",
+                StoreSettings::default(),
+            )
+            .unwrap();
+            let budget = crate::protocol::time::CallBudget {
+                deadline: MonoInstant(u64::MAX),
+                cancellation: Default::default(),
+            };
+            let directory = |cursor, filtered: bool| {
+                crate::protocol::commands::Command::Directory(DirectoryQuery {
+                    recent,
+                    membership: None,
+                    membership_filter: DirectoryMembership::All,
+                    topic_contains: filtered.then(|| "needle".into()),
+                    page: PageRequest {
+                        cursor,
+                        limit: 1,
+                        max_bytes: 65536,
+                    },
+                })
+            };
+            let first = |filtered| {
+                let CommandResult::Directory(page) = super::super::queries::query(
+                    &context,
+                    "i",
+                    &directory(None, filtered),
+                    &budget,
+                )
+                .unwrap() else {
+                    panic!()
+                };
+                page.next_cursor.expect("continuation")
+            };
+            let mutate = |operation: &str, name: Option<&str>| {
+                let mutation = PermitMutation::SetThreadName(SetThreadName {
+                    thread: ThreadId::new(changed),
+                    name: name.map(str::to_owned),
+                    operation: OperationId::new(operation),
+                    claim: claim("s1"),
+                });
+                let permit = store
+                    .issue_cooperative_permit(
+                        crate::store::cooperative_permit_request(&mutation).unwrap(),
+                        &budget,
+                    )
+                    .unwrap();
+                store.mutate(mutation, permit, &budget).unwrap();
+            };
+            for (op, name, expected_match) in [
+                ("set", Some("needle"), true),
+                ("rename-out", Some("elsewhere"), false),
+                ("rename-in", Some("needle again"), true),
+                ("clear", None, false),
+            ] {
+                let cursor = first(true);
+                let unfiltered = first(false);
+                mutate(op, name);
+                let error = super::super::queries::query(
+                    &context,
+                    "i",
+                    &directory(Some(cursor), true),
+                    &budget,
+                )
+                .unwrap_err();
+                assert_eq!(
+                    error.code,
+                    crate::protocol::results::ErrorCode::CursorStale,
+                    "{recent} {changed} {op}"
+                );
+                let argv = error.restart_argv.unwrap();
+                assert!(argv.windows(2).any(|pair| pair == ["--search", "needle"]));
+                if !recent {
+                    assert!(
+                        super::super::queries::query(
+                            &context,
+                            "i",
+                            &directory(Some(unfiltered.clone()), false),
+                            &budget
+                        )
+                        .is_ok()
+                    );
+                }
+                if recent {
+                    assert_eq!(
+                        super::super::queries::query(
+                            &context,
+                            "i",
+                            &directory(Some(unfiltered), false),
+                            &budget
+                        )
+                        .unwrap_err()
+                        .code,
+                        crate::protocol::results::ErrorCode::CursorStale
+                    );
+                }
+                let mut fresh = directory(None, true);
+                if let crate::protocol::commands::Command::Directory(q) = &mut fresh {
+                    q.page.limit = 10;
+                }
+                let CommandResult::Directory(matches) =
+                    super::super::queries::query(&context, "i", &fresh, &budget).unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(
+                    matches
+                        .items
+                        .iter()
+                        .any(|item| item.thread.as_str() == changed),
+                    expected_match
+                );
+                let cursor = first(true);
+                mutate(op, name); // exact historical replay
+                assert!(
+                    super::super::queries::query(
+                        &context,
+                        "i",
+                        &directory(Some(cursor), true),
+                        &budget
+                    )
+                    .is_ok()
+                );
+                let cursor = first(true);
+                mutate(&format!("noop-{op}"), name);
+                assert!(
+                    super::super::queries::query(
+                        &context,
+                        "i",
+                        &directory(Some(cursor), true),
+                        &budget
+                    )
+                    .is_ok()
+                );
+            }
+            assert_eq!(conn.query_row("SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='directory' AND scope_key='name/all'",[],|r|r.get::<_,i64>(0)).unwrap(),4);
+            if !recent {
+                let cursor = first(true);
+                let mutation = PermitMutation::Join(crate::protocol::commands::Join {
+                    thread: ThreadId::new("first"),
+                    operation: OperationId::new("unrelated-join"),
+                    claim: claim("s2"),
+                });
+                let permit = store
+                    .issue_cooperative_permit(
+                        crate::store::cooperative_permit_request(&mutation).unwrap(),
+                        &budget,
+                    )
+                    .unwrap();
+                store.mutate(mutation, permit, &budget).unwrap();
+                assert!(
+                    super::super::queries::query(
+                        &context,
+                        "i",
+                        &directory(Some(cursor), true),
+                        &budget
+                    )
+                    .is_ok()
+                );
+            }
+            let cursor = first(true);
+            let mutation = PermitMutation::SetTopic(crate::protocol::commands::SetTopic {
+                thread: ThreadId::new(changed),
+                topic: "new topic".into(),
+                operation: OperationId::new("topic-change"),
+                claim: claim("s1"),
+            });
+            let permit = store
+                .issue_cooperative_permit(
+                    crate::store::cooperative_permit_request(&mutation).unwrap(),
+                    &budget,
+                )
+                .unwrap();
+            store.mutate(mutation, permit, &budget).unwrap();
+            assert_eq!(
+                super::super::queries::query(
+                    &context,
+                    "i",
+                    &directory(Some(cursor), true),
+                    &budget
+                )
+                .unwrap_err()
+                .code,
+                crate::protocol::results::ErrorCode::CursorStale
+            );
+
+            drop(store);
+            drop(conn);
+            drop(context);
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
