@@ -1,2 +1,2 @@
-{"step":1,"type":"USER_INPUT","content":"hello"}
-{"step":2,"type":"SYSTEM_MESSAGE","content":"The following system message was injÿþ
+{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-10T15:03:50Z","content":"<USER_REQUEST>\nhello\n</USER_REQUEST>"}
+{"step_index":1,"source":"SYSTEM_SDK","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-10-10T15:03:50Z","content":"The following iÿþ
