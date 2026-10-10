@@ -480,7 +480,12 @@ pub mod synthetic_fourth {
             &self,
             argv: &[String],
         ) -> Result<(), crate::protocol::results::ApiError> {
-            if argv.iter().any(|word| word != "synthetic-prompt") {
+            // The fixture's one native prompt word, or the generated handoff bootstrap
+            // prompt a bootstrap plan appends to the caller arguments.
+            if argv.iter().any(|word| {
+                word != "synthetic-prompt"
+                    && !word.starts_with("Expected handoff command routing (JSON data): ")
+            }) {
                 Err(crate::protocol::results::ApiError::invalid_request(
                     "synthetic fourth: unsupported argv",
                 ))

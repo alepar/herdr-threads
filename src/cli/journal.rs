@@ -247,7 +247,8 @@ pub struct DeliveryPlan {
 }
 impl BootstrapPlan {
     pub fn validate(&self) -> io::Result<()> {
-        if self.version != 1 {
+        // V1 is the frozen Claude/Codex grammar; V2 freezes the adapter's own composition.
+        if !matches!(self.version, 1 | 2) || self.version != self.payload.plan_version() {
             return Err(invalid("unsupported bootstrap plan version"));
         }
         self.payload.validate().map_err(invalid)

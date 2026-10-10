@@ -1005,11 +1005,24 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
                 &claim.instance,
             ));
             let harness = request.harness.into();
-            if crate::harness::launch::compose_native_argv(harness, request.argv.clone(), vec![])?
-                != crate::harness::launch::compose_bootstrap_v1_argv(harness, request.argv.clone())?
+            let current =
+                crate::harness::launch::compose_native_argv(harness, request.argv.clone(), vec![])?;
+            if crate::harness::launch::bootstrap_v1_harness(harness) {
+                if current
+                    != crate::harness::launch::compose_bootstrap_v1_argv(
+                        harness,
+                        request.argv.clone(),
+                    )?
+                {
+                    return Err(super::invalid_request(
+                        "current launch composition differs from bootstrap plan V1; a new bootstrap plan version is required",
+                    ));
+                }
+            } else if current
+                != crate::harness::launch::compose_bootstrap_v2_argv(harness, request.argv.clone())?
             {
                 return Err(super::invalid_request(
-                    "current launch composition differs from bootstrap plan V1; a new bootstrap plan version is required",
+                    "current launch composition differs from bootstrap plan V2; a new bootstrap plan version is required",
                 ));
             }
             request
@@ -1533,6 +1546,69 @@ pub(crate) mod bootstrap_v1 {
             }
         }
         Ok(false)
+    }
+}
+/// Bootstrap plan V2 retained-launch validation: the adapter's own composition, frozen into the
+/// plan. The caller arguments must still compose to the frozen `composed` argv (else the
+/// adapter drifted and the plan is refused), and the retained successful report's `argv` must
+/// be that composition of the caller arguments plus one generated bootstrap prompt. The
+/// prompt text is harness-neutral and shared with V1.
+pub(crate) fn retained_argv_matches_v2(
+    harness: crate::protocol::authority::Harness,
+    caller: &[String],
+    composed: &[String],
+    thread: &str,
+    context: &crate::protocol::output::ContinuationContext,
+    instance: &str,
+    retained: Option<&serde_json::Value>,
+) -> Result<bool, crate::protocol::results::ApiError> {
+    if crate::harness::launch::compose_bootstrap_v2_argv(harness, caller.to_vec())? != composed {
+        return Err(crate::protocol::results::ApiError::new(
+            crate::protocol::results::ErrorCode::Conflict,
+            format!(
+                "bootstrap plan V2: {} now composes its launch arguments differently from the frozen plan",
+                harness.as_str()
+            ),
+        ));
+    }
+    for prompt in bootstrap_v1::retained_prompts(thread, context, instance) {
+        let mut argv = caller.to_vec();
+        argv.push(prompt);
+        let expected = crate::harness::launch::compose_bootstrap_v2_argv(harness, argv)?;
+        if retained == Some(&serde_json::json!(expected)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Retained-launch validation for a bootstrap launch of either plan version: V2 when the plan
+/// froze the adapter's composition, else the frozen V1 grammar.
+pub(crate) fn retained_launch_argv_matches(
+    launch: &crate::protocol::handoff::BootstrapLaunch,
+    thread: &str,
+    context: &crate::protocol::output::ContinuationContext,
+    instance: &str,
+    retained: Option<&serde_json::Value>,
+) -> Result<bool, crate::protocol::results::ApiError> {
+    match &launch.composed_argv {
+        Some(composed) => retained_argv_matches_v2(
+            launch.harness,
+            &launch.argv,
+            composed,
+            thread,
+            context,
+            instance,
+            retained,
+        ),
+        None => bootstrap_v1::retained_argv_matches(
+            launch.harness,
+            &launch.argv,
+            thread,
+            context,
+            instance,
+            retained,
+        ),
     }
 }
 fn bootstrap_text(

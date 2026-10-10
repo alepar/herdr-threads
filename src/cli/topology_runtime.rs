@@ -242,7 +242,7 @@ pub(crate) fn run(
             let Some(harness) = request
                 .kind
                 .as_deref()
-                .and_then(|kind| crate::harness::launch::bootstrap_v1_target(registry, kind))
+                .and_then(|kind| crate::harness::launch::bootstrap_target(registry, kind))
             else {
                 return Err(super::invalid_request("invalid bootstrap harness"));
             };

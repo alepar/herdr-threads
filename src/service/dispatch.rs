@@ -222,7 +222,7 @@ impl DomainService {
                     claim: identity.claim.clone(),
                     mutation: Box::new(crate::cli::journal::SemanticMutation::HandoffBootstrap(
                         Box::new(crate::cli::journal::BootstrapPlan {
-                            version: 1,
+                            version: identity.payload.plan_version(),
                             payload: identity.payload.clone(),
                         }),
                     )),

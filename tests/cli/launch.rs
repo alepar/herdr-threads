@@ -2569,6 +2569,38 @@ fn stage_a_bootstrap_v1_target_admits_only_the_frozen_pair() {
     }
 }
 
+/// V2 selection: every launch-capable adapter V1 does not admit, never a V1 kind, no human or unknown.
+#[test]
+fn bootstrap_v2_target_is_every_launch_capable_adapter_v1_refuses() {
+    let registry = crate::harness::registry::builtins();
+    for kind in ["hermes", "synthetic_fourth"] {
+        assert_eq!(
+            crate::harness::launch::bootstrap_v2_target(registry, kind).map(|h| h.as_str()),
+            Some(kind),
+            "{kind}"
+        );
+        assert_eq!(
+            crate::harness::launch::bootstrap_target(registry, kind).map(|h| h.as_str()),
+            Some(kind),
+            "{kind}"
+        );
+        assert!(crate::harness::launch::bootstrap_v1_target(registry, kind).is_none());
+    }
+    for kind in ["claude", "codex"] {
+        assert!(
+            crate::harness::launch::bootstrap_v2_target(registry, kind).is_none(),
+            "a V1 kind never gets V2: {kind}"
+        );
+        assert!(crate::harness::launch::bootstrap_target(registry, kind).is_some());
+    }
+    for kind in ["human", "Claude", "nope", ""] {
+        assert!(
+            crate::harness::launch::bootstrap_target(registry, kind).is_none(),
+            "{kind}"
+        );
+    }
+}
+
 /// Catches unsafe declarations reaching getenv, implicit brand fallbacks, and lost literal tokens.
 #[test]
 fn stage_a_registered_options_validate_keys_and_preserve_literal_tokens() {
