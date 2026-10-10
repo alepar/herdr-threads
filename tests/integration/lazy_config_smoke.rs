@@ -513,16 +513,23 @@ fn lazy_config_current_cli_inbox_v1_daemon_refuses_lazy_before_intent() {
     );
     let body = w.text(1, false, &["body", &ordinary]);
     assert!(body.contains("ordinary legacy fallback"), "{body}");
-    assert_eq!(
-        w.db()
-            .query_row(
-                "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2",
-                [&ordinary, &w.seats[1]],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-        "pending"
-    );
+    // The daemon's materialization work projects the receipt row after the
+    // send commits, so under load it can still be absent here: wait for it.
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let receipt = loop {
+        let state = w.db().query_row(
+            "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2",
+            [&ordinary, &w.seats[1]],
+            |r| r.get::<_, String>(0),
+        );
+        match state {
+            Err(rusqlite::Error::QueryReturnedNoRows) if std::time::Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            state => break state.unwrap(),
+        }
+    };
+    assert_eq!(receipt, "pending");
     let kinds: Vec<_> = p
         .requests()
         .iter()

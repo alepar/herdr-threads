@@ -3352,7 +3352,9 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
     let (_, text) = context
         .split_once("\nuntrusted_peer_data: ")
         .unwrap_or_else(|| panic!("clear: {context}"));
-    let text: String = serde_json::from_str(text).unwrap();
+    // The peer data is one JSON line; an inbox pointer can follow it when it
+    // still fits the context budget (shorter state paths leave room for it).
+    let text: String = serde_json::from_str(text.lines().next().unwrap_or(text)).unwrap();
     assert_eq!(carried_notices("clear", &text), (fx.notice_page(0), true));
     timings.push(("clear", cleared.elapsed));
     let successor = fx.count("SELECT generation FROM seats WHERE id='seat'");
