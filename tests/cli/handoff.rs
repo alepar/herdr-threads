@@ -13,6 +13,9 @@ struct AutomaticClient {
     calls: Mutex<Vec<Command>>,
     thread: Mutex<Option<ThreadId>>,
     sent: Mutex<bool>,
+    send_count: Mutex<usize>,
+    lose_ensure: Mutex<bool>,
+    binding_changed: Mutex<bool>,
     completed: Mutex<bool>,
     lose_complete: Mutex<bool>,
 }
@@ -23,6 +26,9 @@ impl AutomaticClient {
             calls: Mutex::new(vec![]),
             thread: Mutex::new(None),
             sent: Mutex::new(false),
+            send_count: Mutex::new(0),
+            lose_ensure: Mutex::new(false),
+            binding_changed: Mutex::new(false),
             completed: Mutex::new(false),
             lose_complete: Mutex::new(false),
         }
@@ -51,6 +57,14 @@ impl LocalClient for AutomaticClient {
             )),
             Command::AutomaticHandoffDelivery(request) => {
                 use crate::protocol::handoff::AutomaticDeliveryAction;
+                if *self.binding_changed.lock().unwrap()
+                    && !matches!(request.action, AutomaticDeliveryAction::Status)
+                {
+                    return Err(ApiError::new(
+                        ErrorCode::CallerUnverified,
+                        "original binding changed; only history may replay",
+                    ));
+                }
                 assert_eq!(request.plan().recipient.as_str(), "recipient");
                 assert_eq!(request.plan().payload.body, "secret durable task");
                 let keys = &request.plan().payload.keys;
@@ -78,6 +92,9 @@ impl LocalClient for AutomaticClient {
                     AutomaticDeliveryAction::Ensure(ensure) => {
                         assert_eq!(ensure.operation, keys.ensure);
                         *self.thread.lock().unwrap() = Some(ThreadId::new("t-pair"));
+                        if std::mem::take(&mut *self.lose_ensure.lock().unwrap()) {
+                            return Err(ApiError::unknown_outcome("Ensure committed; reply lost"));
+                        }
                         Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
                     }
                     AutomaticDeliveryAction::Send(send) => {
@@ -88,6 +105,7 @@ impl LocalClient for AutomaticClient {
                             "recipient"
                         );
                         *self.sent.lock().unwrap() = true;
+                        *self.send_count.lock().unwrap() += 1;
                         Ok(CommandResult::MessageSent(MessageId::new("m-pair")))
                     }
                     AutomaticDeliveryAction::Complete { operation } => {
@@ -368,6 +386,148 @@ fn automatic_launched_pane_lost_complete_retries_terminal_without_relaunch() {
     )
     .unwrap();
     assert_eq!(report["outcome"], "started");
+    assert_eq!(launcher.starts, 1);
+}
+
+#[test]
+fn automatic_launched_pane_live_retry_requires_original_current_caller() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong parser route")
+    };
+    let (temp, journal) = journal();
+    let selected = crate::daemon::paths::RuntimeContext::explicit(
+        temp.0.clone(),
+        temp.0.join("host.sock"),
+        None,
+    )
+    .unwrap();
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: claim().instance,
+        state_dir: selected.state_dir.clone(),
+        host_endpoint: selected.host_endpoint.clone(),
+    };
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some(selected.state_dir.to_string_lossy().into_owned());
+    output.context.host = Some(selected.host_endpoint.to_string_lossy().into_owned());
+    let client = AutomaticClient::new();
+    *client.lose_ensure.lock().unwrap() = true;
+    let mut launcher = AutomaticLauncher::default();
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let first = start(
+        &journal,
+        request,
+        original_claim.clone(),
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(
+        matches!(first, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{first:?}"
+    );
+    assert_eq!(*client.send_count.lock().unwrap(), 0);
+    assert_eq!(launcher.starts, 0);
+    assert!(journal.resolve_recovery_ref("local:1").is_ok());
+
+    let mut other_current = original_claim.clone();
+    other_current.seat = SeatId::new("other-current-seat");
+    other_current.target = HostTargetId::new("w1:p3");
+    let before = client.calls.lock().unwrap().len();
+    let mut rejected_output = vec![];
+    let rejected = retry_automatic_live(
+        &journal,
+        "local:1",
+        &other_current,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut rejected_output,
+    );
+    assert!(
+        matches!(rejected, Err(RunError::Api(ref e)) if e.code == ErrorCode::InvalidRequest),
+        "{rejected:?}"
+    );
+    assert_eq!(client.calls.lock().unwrap().len(), before);
+    assert_eq!(*client.send_count.lock().unwrap(), 0);
+    assert_eq!(launcher.starts, 0);
+    assert!(rejected_output.is_empty());
+    assert!(journal.resolve_recovery_ref("local:1").is_ok());
+
+    let mut changed_binding = original_claim.clone();
+    changed_binding.binding_generation += 1;
+    let rejected_binding = retry_automatic_live(
+        &journal,
+        "local:1",
+        &changed_binding,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(
+        matches!(rejected_binding, Err(RunError::Api(ref e)) if e.code == ErrorCode::InvalidRequest),
+        "{rejected_binding:?}"
+    );
+    assert_eq!(client.calls.lock().unwrap().len(), before);
+    assert_eq!(*client.send_count.lock().unwrap(), 0);
+    assert_eq!(launcher.starts, 0);
+
+    let resumed = retry_automatic_live(
+        &journal,
+        "local:1",
+        &original_claim,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(matches!(resumed, Ok(true)), "{resumed:?}");
+    assert_eq!(*client.send_count.lock().unwrap(), 1);
+    assert_eq!(launcher.starts, 1);
+
+    // Public dispatch probes completed history before selecting a current seat.
+    *client.binding_changed.lock().unwrap() = true;
+    let mut parsed_retry = crate::cli::commands::parse_argv(["ht", "retry", "local:1"]).unwrap();
+    parsed_retry.output = output;
+    let mut historical = vec![];
+    assert!(
+        crate::cli::topology_runtime::try_completed(
+            &parsed_retry,
+            &journal,
+            uuid::Uuid::parse_str(&namespace.instance).unwrap(),
+            &selected,
+            &client,
+            &TestClock,
+            &mut historical,
+        )
+        .unwrap()
+    );
+    assert!(!historical.is_empty());
+    assert_eq!(*client.send_count.lock().unwrap(), 1);
     assert_eq!(launcher.starts, 1);
 }
 struct TestClock;

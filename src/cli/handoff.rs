@@ -2052,6 +2052,51 @@ fn retained_retry_phase(journal: &Journal, reference: &IntentRef) -> io::Result<
     };
     Ok(classify_progress(&plan, &load(journal, reference)?))
 }
+#[allow(clippy::too_many_arguments)]
+fn retry_automatic_live<C: LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    recovery: &str,
+    current_claim: &CallerClaim,
+    actor: super::actor_route::InvocationActor,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    launcher: &mut dyn HandoffLauncher,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<bool, RunError> {
+    let original = super::retry::load_original_for_actor(journal, recovery)?;
+    if !matches!(&original.semantic,
+        SemanticMutation::Frozen { mutation, .. }
+            if matches!(mutation.as_ref(), SemanticMutation::AutomaticHandoff(_))
+    ) {
+        return Ok(false);
+    }
+    if original.header.scope
+        != (IntentScope::Cooperative {
+            instance: current_claim.instance.clone(),
+            seat: current_claim.seat.clone(),
+        })
+        || original.semantic.frozen_claim() != Some(current_claim)
+    {
+        return Err(super::invalid_request(
+            "live retry differs from original caller",
+        ));
+    }
+    super::handoff_delivery::require_automatic_capability(client, clock)?;
+    super::handoff_delivery::retry_automatic_to_writer(
+        journal,
+        &original.header.reference,
+        actor,
+        namespace,
+        client,
+        Some(launcher),
+        clock,
+        output,
+        writer,
+    )?;
+    Ok(true)
+}
 /// Called only after the shared caller mapping/context checks in run_selected.
 pub(crate) fn run<W: Write>(
     parsed: super::commands::ParsedCli,
@@ -2164,25 +2209,21 @@ pub(crate) fn run<W: Write>(
             )
         }
         super::commands::CliAction::Retry(recovery) => {
-            let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
-            if matches!(&original.semantic,
-                SemanticMutation::Frozen { mutation, .. }
-                    if matches!(mutation.as_ref(), SemanticMutation::AutomaticHandoff(_))
-            ) {
-                super::handoff_delivery::require_automatic_capability(&client, clock.as_ref())?;
-                super::handoff_delivery::retry_automatic_to_writer(
-                    journal,
-                    &original.header.reference,
-                    parsed.actor,
-                    &namespace,
-                    &client,
-                    Some(&mut launcher),
-                    clock.as_ref(),
-                    &output,
-                    writer,
-                )?;
+            if retry_automatic_live(
+                journal,
+                recovery.as_str(),
+                &claim,
+                parsed.actor,
+                &namespace,
+                &client,
+                &mut launcher,
+                clock.as_ref(),
+                &output,
+                writer,
+            )? {
                 return Ok(());
             }
+            let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
             let reference = original.header.reference;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance,
