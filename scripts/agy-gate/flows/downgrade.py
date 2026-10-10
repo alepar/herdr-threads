@@ -41,9 +41,11 @@ def load(world, name):
     return scenario
 
 
-def busy_then(world, pane, sender, thread, label, busy_prompt, busy_step, body, go_prompt, arm=None):
+def busy_then(world, pane, sender, thread, label, busy_prompt, busy_step, body, go_prompt, arm=None, arm_late=None):
     """A scripted busy turn during which ``body`` is sent (``arm`` arms the mutator once the busy
-    request is served, so the busy turn's own empty hook output cannot consume it); then the turn
+    request is served, so the busy turn's own empty hook output cannot consume it; ``arm_late`` arms it
+    after the busy turn has ended and before ``go_prompt`` is typed, so the go turn's first hook
+    invocation is guaranteed to find it armed, ht-poh.46); then the turn
     ``go_prompt`` starts, whose first invocation finds the item pending. Returns the message id."""
     if _l6.dismiss_survey(pane):
         world.check("%s: the feedback survey was dismissed" % label, _l6.SURVEY not in _l6.screen_tail(pane, 20))
@@ -55,6 +57,8 @@ def busy_then(world, pane, sender, thread, label, busy_prompt, busy_step, body, 
     message = _l6.send(world, sender, thread, body, "--nudge")
     world.check("%s: the send succeeded" % label, bool(message))
     world.check("%s: the busy turn ended" % label, pane.wait("idle", 40))
+    if arm_late:
+        _l6.arm(world, arm_late)
     pane.prompt(go_prompt)
     return message
 
@@ -145,10 +149,9 @@ def ignore_phase(world, pane, sender, thread):
     world.check("ignored-1: M4's frame is absent from the transcript",
                 not _l6.frame_in_transcript(_l6.transcript_text(pane), m4))
     world.check("ignored-1: doctor reports no downgrade", not delivery_downgrade(world))
-    # The second busy turn runs unarmed, so M4 is delivered normally there; the miss comes from IGO2.
+    # The second busy turn runs unarmed; the mutator is armed between that turn's end and IGO2, so the miss comes from IGO2.
     m5 = busy_then(world, pane, sender, thread, "ignored-2", "DOWN-IBUSY2 start", "ign-busy2",
-                   "DOWN-M5 ignored twice", "DOWN-IGO2 now")
-    _l6.arm(world, "ignore")
+                   "DOWN-M5 ignored twice", "DOWN-IGO2 now", arm_late="ignore")
     request = _l5.await_step(world, "ign-go2", 40)
     world.check("ignored-2: the second turn was served", request is not None)
     world.check("ignored-2: the agent returned to idle", pane.wait("idle", 30))
@@ -180,12 +183,15 @@ def run(world):
         return
     seat, conversation = binding["seat_id"], binding["native_session"]
     thread = _l6.create_thread(world, sender, "gate-downgrade")
-    invite, accept = _l6.join(world, sender, pane, thread, seat)
-    world.check("the sender invited the agy seat and it accepted", invite.returncode == 0 and accept.returncode == 0,
-                "invite=%s accept=%s" % (invite.stderr.strip(), accept.stderr.strip()))
+    # The idle wake exists only while the invitation is pending: an accept that lands first removes the
+    # reason to wake (ht-poh.46), so the wake is awaited between the invite and the accept.
+    invite = world.ht(["invite", thread, "--seat", seat], pane=sender.pane_id, check=False, human=True)
     joined = _l5.await_step(world, "wake-join", 45)
     world.check("the join's idle wake was served (wake-join on 'herdr-threads: wake up')", joined is not None)
     pane.wait("idle", 30)
+    accept = world.ht(["accept", thread], pane=pane.pane_id, check=False)
+    world.check("the sender invited the agy seat and it accepted", invite.returncode == 0 and accept.returncode == 0,
+                "invite=%s accept=%s" % (invite.stderr.strip(), accept.stderr.strip()))
 
     abort_phase(world, pane, sender, thread, scenario)
     user_message_phase(world, pane, sender, thread, scenario)
