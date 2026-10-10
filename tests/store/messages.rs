@@ -667,13 +667,13 @@ fn direct_recipient_hash_binds_target_and_preserves_absent_payload() {
 }
 
 #[test]
-fn direct_recipient_inert_store_refuses_preparation_and_publication() {
+fn direct_recipient_nonpair_store_refuses_preparation_and_publication() {
     use crate::{
         ports::StorePort,
         protocol::commands::PermitMutation,
         store::{SqliteStore, StoreSettings},
     };
-    let iso = TestIsolation::new("direct-inert-store");
+    let iso = TestIsolation::new("direct-nonpair-store");
     let (context, db) = setup(&iso);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let mut request = send_request();
@@ -687,7 +687,7 @@ fn direct_recipient_inert_store_refuses_preparation_and_publication() {
             )
             .unwrap_err()
             .code,
-        ErrorCode::Unsupported
+        ErrorCode::InvalidRequest
     );
     assert_eq!(
         store
@@ -698,7 +698,7 @@ fn direct_recipient_inert_store_refuses_preparation_and_publication() {
             )
             .unwrap_err()
             .code,
-        ErrorCode::Unsupported
+        ErrorCode::InvalidRequest
     );
     for table in ["messages", "send_preparations", "operations"] {
         assert_eq!(

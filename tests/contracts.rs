@@ -2624,7 +2624,7 @@ fn task48_native_empty_data_retains_internal_field_fences() {
 }
 
 #[test]
-fn direct_thread_protocol_is_strict_accountable_and_unadvertised() {
+fn direct_thread_protocol_is_strict_accountable_and_guarded() {
     use herdr_threads::protocol::{
         capabilities::{ADVERTISED, AUTOMATIC_HANDOFF_V1, DIRECT_THREADS_V1},
         commands::PermitMutation,
@@ -2677,7 +2677,7 @@ fn direct_thread_protocol_is_strict_accountable_and_unadvertised() {
         );
         assert!(WireRequest::decode(wire_fixture(invalid).to_string().as_bytes()).is_err());
     }
-    assert!(!ADVERTISED.contains(&DIRECT_THREADS_V1));
+    assert!(ADVERTISED.contains(&DIRECT_THREADS_V1));
     assert!(!ADVERTISED.contains(&AUTOMATIC_HANDOFF_V1));
 }
 

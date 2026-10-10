@@ -325,6 +325,20 @@ Declared subagents cannot reject. Required invitations remain service-owner cont
 ask that owner to release the requirement and reread its current state before attempting rejection.
 Reinvitation creates a fresh episode; replay of an old rejection cannot reject that new invitation.
 
+**Automatic pair reservation.** `EnsureDirectThread` resolves one immutable canonical channel for
+exactly the caller and recipient seats, under the caller's ordinary `cooperative_top_level` or
+`operator_human` claim and the A2 deciding transaction. Initial creation joins only the caller and
+creates an ordinary invitation for the recipient; reservation is never acceptance, check-in or ACK.
+All ordinary, operator and service enrollment paths preserve the two-seat participant universe;
+services cannot adopt or own these channels. Invited seats remain reserved even before acceptance.
+Explicit leave, rejection and archival require ordinary join/accept/reinvite/reopen repair, never
+automatic resurrection or replacement. Exact operation replay returns historical selection before
+fresh A2/lifecycle checks; it grants no permission for a new send. Direct markers freeze the exact
+other pair seat independently of ACK requests and are validated at preparation and publication,
+including corrupt participant/audience refusal. Lazy messages retain A8; a first Ensure may separately
+produce ordinary invitation attention and wake. Pair identity remains with its channel history;
+there is no seat merge, remapping or generation rollover and no new provenance value.
+
 **Voluntary self-join.** An explicit `join THREAD` enrolls the caller's seat in an active
 thread of its instance under the ordinary A2 deciding transaction and its existing
 `cooperative_top_level` or `operator_human` claim. The immutable native-authored join

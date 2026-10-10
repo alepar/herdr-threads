@@ -245,6 +245,10 @@ fn prepare_send_step_impl(
             format!("thread {} not found", request.thread.as_str()),
         )
     })?;
+    super::control::validate_pair_send(&tx, request)?;
+    if request.direct_recipient.is_some() {
+        super::seats::cooperative_mapping(&tx, &request.claim, None)?;
+    }
     if archived {
         return Err(api_error(ErrorCode::Archived, "thread is archived"));
     }
@@ -391,6 +395,7 @@ fn prepare_send_step_impl(
     let explicit: Vec<_> = request
         .invited_recipients
         .iter()
+        .chain(request.direct_recipient.iter())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -640,6 +645,10 @@ pub(super) fn stage_recipient(
         )
         .map_err(store_error)?;
     if lazy {
+        let already: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM lazy_recipients WHERE preparation_id=?1 AND seat_id=?2)",params![prep_id,recipient],|r|r.get(0)).map_err(store_error)?;
+        if already {
+            return Ok(());
+        }
         let message =
             MessageId::new(send_message_id_for_preparation(prep_id).ok_or_else(|| {
                 api_error(ErrorCode::StoreCorrupt, "invalid send preparation ID")
@@ -896,6 +905,16 @@ pub fn publish_send(
         request.operation.as_str(),
         digest,
         |tx| {
+            super::control::validate_pair_send(tx, request)?;
+            if let Some((a, b)) = super::control::direct_pair(tx, &request.thread)? {
+                let extra: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM prepared_recipients p JOIN send_preparations s ON s.id=p.preparation_id WHERE s.operation_scope=?1 AND s.operation_key=?2 AND p.seat_id NOT IN (?3,?4)) OR EXISTS(SELECT 1 FROM lazy_recipients p JOIN send_preparations s ON s.id=p.preparation_id WHERE s.operation_scope=?1 AND s.operation_key=?2 AND p.seat_id NOT IN (?3,?4))",params![scope,request.operation.as_str(),a.as_str(),b.as_str()],|r|r.get(0)).map_err(store_error)?;
+                if extra {
+                    return Err(api_error(
+                        ErrorCode::StoreCorrupt,
+                        "prepared audience outside automatic pair",
+                    ));
+                }
+            }
             type CurrentColumns =
                 Option<(String, String, i64, i64, i64, i64, i64, i64, i64, String)>;
             let current:CurrentColumns = tx.query_row(
