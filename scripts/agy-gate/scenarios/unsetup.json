@@ -1,0 +1,9 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "unsetup",
+  "aux_text": "Gate unsetup title",
+  "default": {
+    "text": "UNSETUP-UNEXPECTED"
+  },
+  "steps": []
+}

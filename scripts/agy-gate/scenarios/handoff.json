@@ -1,0 +1,35 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "handoff",
+  "aux_text": "Gate handoff title",
+  "default": {
+    "text": "HANDOFF-UNEXPECTED"
+  },
+  "steps": [
+    {
+      "label": "handoff-call",
+      "match": {
+        "contains": [
+          "HANDOFF-PROMPT"
+        ]
+      },
+      "reply": {
+        "call": "run_command",
+        "args": {
+          "CommandLine": "herdr-threads handoff --new-thread --new-tab gate-child --kind agy --harness-binary {var.AGY} -- \"HANDOFF-BODY please say hi\""
+        }
+      }
+    },
+    {
+      "label": "handoff-final",
+      "match": {
+        "contains": [
+          "HANDOFF-PROMPT"
+        ]
+      },
+      "reply": {
+        "text": "HANDOFF-DONE"
+      }
+    }
+  ]
+}
