@@ -35,16 +35,22 @@ Nothing in this repository establishes an inference-interruption guarantee, exac
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push and pull request on `macos-15` (arm64), with Rust 1.94.0 and Python 3.11.9. The `deterministic` job:
+`.github/workflows/ci.yml` runs on every push and pull request with Rust 1.94.0 and Python 3.11.9. The test jobs run on `ubuntu-24.04` (Linux x86_64); macOS arm64 runs the same suite locally before a merge (`scripts/full-suite-gate`). Both jobs download the [official Herdr v0.9.1 Linux x86_64 asset](https://github.com/herdrdev/herdr/releases/tag/v0.9.1) and check its architecture, `herdr --version` and SHA-256 `2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7` (GitHub's asset digest), so the real-parser package tests run in the ordinary suite.
 
-1. Downloads the [official Herdr v0.9.1 macOS arm64 asset](https://github.com/herdrdev/herdr/releases/tag/v0.9.1) and checks its architecture, `herdr --version`, and SHA-256 `5fc7a7e7adfaca56fa80aa89dcb025693357268dab8285b9ce2d08a2313c89de` (the same hash as the locally installed 0.9.1 used for development and by the package gate), so the real-parser package tests run in the ordinary suite.
-2. Points `TMPDIR` at a short private directory, because tests bind Unix sockets and macOS limits socket paths to 104 bytes.
-3. `cargo build --locked --all-targets --all-features`.
-4. `cargo fmt --all -- --check`.
-5. `./scripts/build.sh`, then checks that every command in `herdr-plugin.toml` resolves to an executable file.
+The `tests` job runs in two parallel shards. Each shard:
+
+1. `cargo test --locked --all-targets --all-features --no-run` and the `test-support` release build, before the timer.
+2. `cargo nextest run --locked --all-targets --all-features --profile ci --partition slice:N/2` (one process per test; test groups in `.config/nextest.toml`; the two slices split the sorted test list round-robin, about half the test time each). `--all-features` enables `test-support`. The package suite runs `check_failpoints_absent.sh`, which makes two extra release builds. Ignored tests (the package lifecycle gate and the 10^5 to 10^6 scale tests) do not run. Each shard fails at 300 s wall clock.
+3. `scripts/check-no-leaked-processes`, even after a failure.
+
+The `deterministic` job:
+
+1. `cargo fmt --all -- --check`.
+2. `./scripts/build.sh`, then checks that every command in `herdr-plugin.toml` resolves to an executable file.
    Then `tests/release/install_test.sh bin/herdr-threads` drives `scripts/install.sh` offline against fake releases (stub Herdr, scratch HOME).
-6. `cargo nextest run --locked --all-targets --all-features` (one process per test, no thread pin; test groups in `.config/nextest.toml`). `--all-features` enables `test-support`, which `hook_entrypoint` requires. The package suite runs `check_failpoints_absent.sh`, which makes two extra release builds. Ignored tests (the package lifecycle gate and the 10^5 to 10^6 scale tests) do not run.
-7. The Python fixture tests under `tests/native/` with `unittest`.
+3. The Python fixture tests under `tests/native/` and `scripts/` with `unittest`, then the leak check.
+
+`clippy` runs `-D warnings` with default and all features on both `macos-15` and `ubuntu-24.04`, so each platform's gated code is linted.
 
 The `package-lifecycle` job runs the ignored package gate (`install::clean_package_install_lifecycle`) with the same pinned Herdr. It runs **only on manual dispatch** (`workflow_dispatch`) because it takes several minutes and starts private Herdr servers. It has never run on GitHub. It has passed only locally (see [validation/package.md](validation/package.md)).
 
@@ -94,7 +100,7 @@ Done by a person after this work merges; nothing here has been done. Every step 
 3. **Tag.** Push the tag `v0.1.0`. Confirm the release workflow creates a draft, uploads all five assets, verifies the checksums and then publishes.
 4. **Clean-machine rehearsal, macOS and Linux.** `curl | bash` install, upgrade from the tag's own artifact, and uninstall, each with Herdr up and with Herdr down. Confirm the final status lines and exit codes match the [installer contract](install.md#installer-contract-final-status-and-exit-codes).
 5. **Linux link.** If Herdr refuses the Linux link, flip `platforms` back to `["macos"]` or file an upstream Herdr issue, and update the README and these docs accordingly.
-6. **Parallel tests on CI.** Done for macOS locally (ht-zo4: CI runs the suite with no thread pin, 5 consecutive green unpinned runs; it now runs under cargo-nextest). Confirm it on CI's two OSes (macOS and Linux); a failure is filed as a test-isolation bug against the merged suite.
+6. **Parallel tests on CI.** Done for macOS locally (ht-zo4: 5 consecutive green unpinned runs; it now runs under cargo-nextest) and for Linux in a local Ubuntu 24.04 container; CI runs the suite on Linux in two shards. A failure is filed as a test-isolation bug against the merged suite.
 
 ## Marketplace prerequisites (follow-on, not done)
 

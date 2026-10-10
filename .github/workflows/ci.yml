@@ -1,8 +1,10 @@
 name: CI
 
-# Deterministic checks on macOS arm64 (Herdr 0.9.1), plus release-target build
-# checks (macOS and Linux musl) and workflow lint. herdr-plugin.toml declares
-# platforms ["macos", "linux"].
+# Deterministic checks on Linux x86_64 (Ubuntu 24.04, Herdr 0.9.1): the test
+# suite in two parallel shards, plus format, packaging, installer and Python
+# suites; clippy on macOS and Linux; release-target build checks (macOS and
+# Linux musl) and workflow lint. macOS arm64 runs the same suite locally
+# before a merge. herdr-plugin.toml declares platforms ["macos", "linux"].
 # Native Codex/Claude model-receipt validation needs an authenticated, isolated
 # Herdr environment and is NOT run here; a green run says nothing about it.
 # The setup CLI, managed launch and Codex fingerprint admission are covered
@@ -21,16 +23,22 @@ env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.94.0
   HERDR_VERSION: 0.9.1
+  # macos-aarch64 (manual gates) and linux-x86_64 release assets.
   HERDR_SHA256: 5fc7a7e7adfaca56fa80aa89dcb025693357268dab8285b9ce2d08a2313c89de
+  HERDR_LINUX_SHA256: 2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7
 
 jobs:
-  deterministic:
-    name: Build, format, test (macOS arm64)
-    runs-on: macos-15
+  tests:
+    name: Tests ${{ matrix.shard }}/2 (Linux x86_64)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     env:
       # ht-p03.131: every process a step starts carries this id, so the final
       # leak check can tell this run's leftovers from anyone else's.
-      HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-tests-${{ matrix.shard }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -38,11 +46,15 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.11.9'
-          architecture: arm64
+
+      - name: zsh for shell round-trip tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zsh
 
       - name: Rust toolchain
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
           cargo --version
           rustc --version
@@ -51,8 +63,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -LsSf https://get.nexte.st/0.9.146/mac -o nextest.tar.gz
-          echo "39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8  nextest.tar.gz" | shasum -a 256 -c -
+          curl -LsSf https://get.nexte.st/0.9.146/linux -o nextest.tar.gz
+          echo "682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428  nextest.tar.gz" | sha256sum -c -
           tar zxf nextest.tar.gz -C "$HOME/.cargo/bin"
           rm nextest.tar.gz
           cargo nextest --version
@@ -61,35 +73,120 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(uname -m)" = arm64
-          python3 -c 'import sys, tomllib; assert sys.version_info >= (3, 11)'
-          for tool in sh which id file curl shasum; do command -v "$tool"; done
+          test "$(uname -m)" = x86_64
           tool_dir=$(mktemp -d "$RUNNER_TEMP/herdr-$HERDR_VERSION.XXXXXX")
           curl -fsSL --retry 3 --max-time 120 \
-            "https://github.com/herdrdev/herdr/releases/download/v$HERDR_VERSION/herdr-macos-aarch64" \
+            "https://github.com/herdrdev/herdr/releases/download/v$HERDR_VERSION/herdr-linux-x86_64" \
             -o "$tool_dir/herdr"
-          printf '%s  %s\n' "$HERDR_SHA256" "$tool_dir/herdr" | shasum -a 256 --check
-          file "$tool_dir/herdr" | grep -F 'Mach-O 64-bit executable arm64'
+          printf '%s  %s\n' "$HERDR_LINUX_SHA256" "$tool_dir/herdr" | sha256sum --check
+          file "$tool_dir/herdr" | grep -F 'ELF 64-bit LSB pie executable, x86-64'
           chmod 755 "$tool_dir/herdr"
           test "$("$tool_dir/herdr" --version)" = "herdr $HERDR_VERSION"
           printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
-
-      - name: Short TMPDIR for Unix socket tests
-        # macOS limits socket paths to 104 bytes; tests bind sockets under TMPDIR.
-        shell: bash
-        run: |
-          set -euo pipefail
-          short=$(mktemp -d /private/tmp/htci.XXXXXX)
-          printf 'TMPDIR=%s\n' "$short" >> "$GITHUB_ENV"
 
       - name: Locked build
         # Match nextest's test profile before the strict suite timer starts.
         # cargo build selects dev, so it would not warm optimized test artifacts.
         run: cargo test --locked --all-targets --all-features --no-run
 
+      - name: Build release proof fixture
+        # The package suite builds/checks both feature configurations and
+        # preserves each binary for its proof; prepare the test-support
+        # release build before the timer, as Locked build does for the tests.
+        run: cargo build --locked --release --features test-support
+
+      - name: Tests (parallel, shard ${{ matrix.shard }}/2)
+        # cargo-nextest, one process per test, every binary in one pool; the
+        # serialized chains are test groups in .config/nextest.toml. Every test
+        # isolates its own state (ht-zo4, scripts/full-suite-gate). The suite
+        # is split round-robin over the sorted test list (slice), so each shard
+        # carries about half the test time; each shard has the five-minute
+        # wall-clock budget. --all-features enables `test-support`.
+        # The package suite runs tests/service/check_failpoints_absent.sh (two
+        # extra release builds). #[ignore] tests (package lifecycle gate,
+        # 10^5..10^6 scale tests) do not run here. Herdr policy: provisioned,
+        # not skipped (HT_SKIP_HERDR_TESTS is deliberately unset).
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          cargo nextest run --locked --all-targets --all-features --profile ci \
+            --partition "slice:$SHARD/2" 2>&1 | tee test.log
+          elapsed=$(( $(date +%s) - start ))
+          echo "Shard $SHARD/2 wall time: ${elapsed}s (budget: under 300s)"
+          if [ "$elapsed" -ge 300 ]; then
+            echo "::error::Test shard $SHARD/2 exceeded the five-minute budget"
+            exit 1
+          fi
+
+      - name: Skipped Herdr tests (job summary)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Isolated-Herdr tests (shard ${{ matrix.shard }}/2)"
+            echo "Pinned Herdr $HERDR_VERSION provisioned; HT_SKIP_HERDR_TESTS=${HT_SKIP_HERDR_TESTS:-unset}."
+            echo 'Skipped by name (empty means none skipped):'
+            echo '```'
+            grep -ho 'skipped: no herdr[^<&]*' test.log target/nextest/ci/junit.xml 2>/dev/null | sort -u || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: No leaked test processes
+        # ht-p03.131: every daemon, private Herdr server and helper a test
+        # started is gone once its run ends (owner tag, process groups,
+        # reaper). Runs even when an earlier step failed.
+        if: always()
+        shell: bash
+        run: scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID" --grace 15
+
+  deterministic:
+    name: Format, package, installer, Python suites (Linux x86_64)
+    runs-on: ubuntu-24.04
+    env:
+      HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Python for TOML and fixture tests
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11.9'
+
+      - name: zsh for shell round-trip tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zsh
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+          rustup default "$RUST_TOOLCHAIN"
+          cargo --version
+          rustc --version
+
+      - name: Provision pinned Herdr 0.9.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          python3 -c 'import sys, tomllib; assert sys.version_info >= (3, 11)'
+          for tool in sh which id file curl sha256sum; do command -v "$tool"; done
+          tool_dir=$(mktemp -d "$RUNNER_TEMP/herdr-$HERDR_VERSION.XXXXXX")
+          curl -fsSL --retry 3 --max-time 120 \
+            "https://github.com/herdrdev/herdr/releases/download/v$HERDR_VERSION/herdr-linux-x86_64" \
+            -o "$tool_dir/herdr"
+          printf '%s  %s\n' "$HERDR_LINUX_SHA256" "$tool_dir/herdr" | sha256sum --check
+          file "$tool_dir/herdr" | grep -F 'ELF 64-bit LSB pie executable, x86-64'
+          chmod 755 "$tool_dir/herdr"
+          test "$("$tool_dir/herdr" --version)" = "herdr $HERDR_VERSION"
+          printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+
       - name: Format
         run: cargo fmt --all -- --check
-
       - name: Package build script and manifest paths
         shell: bash
         run: |
@@ -127,34 +224,6 @@ jobs:
           python3 tests/release/installer_terminal_test.py bin/herdr-threads
           tests/release/install_test.sh bin/herdr-threads 2>&1 | tee install_test.log
 
-      - name: Build release proof fixture
-        # The ordinary release is already built for the installer. Prepare
-        # its test-support counterpart before the suite, just as Locked build
-        # prepares the debug tests. The package test still builds/checks both
-        # feature configurations and preserves each binary for its proof.
-        run: cargo build --locked --release --features test-support
-
-      - name: Tests (parallel)
-        # cargo-nextest, one process per test, every binary in one pool; the
-        # serialized chains are test groups in .config/nextest.toml. Every test
-        # isolates its own state (ht-zo4, scripts/full-suite-gate).
-        # --all-features enables `test-support`, which tests/hook_entrypoint.rs
-        # requires. The package suite runs
-        # tests/service/check_failpoints_absent.sh (two extra release builds).
-        # #[ignore] tests (package lifecycle gate, 10^5..10^6 scale tests) do
-        # not run here. Herdr policy as above: provisioned, not skipped.
-        shell: bash
-        run: |
-          set -euo pipefail
-          start=$(date +%s)
-          cargo nextest run --locked --all-targets --all-features --profile ci 2>&1 | tee test.log
-          elapsed=$(( $(date +%s) - start ))
-          echo "Full suite wall time: ${elapsed}s (budget: under 300s)"
-          if [ "$elapsed" -ge 300 ]; then
-            echo "::error::Full suite exceeded the five-minute budget"
-            exit 1
-          fi
-
       - name: Python demo, validator and canary suites
         shell: bash
         run: |
@@ -173,6 +242,8 @@ jobs:
           done
           python3 -m unittest discover -s scripts/tests -p 'test_check_no_leaked_processes.py'
           python3 -m unittest discover -s scripts/tests -p 'test_cell_ran_versions.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_demo_try_it_camera.py'
+          python3 -m unittest discover -s scripts -p 'test_native_hermes_probe.py'
 
       - name: Skipped Herdr tests (job summary)
         if: always()
@@ -184,8 +255,7 @@ jobs:
             echo "Pinned Herdr $HERDR_VERSION provisioned; HT_SKIP_HERDR_TESTS=${HT_SKIP_HERDR_TESTS:-unset}."
             echo 'Skipped by name (empty means none skipped):'
             echo '```'
-            grep -ho 'skipped: no herdr[^<&]*' test.log install_test.log \
-              target/nextest/ci/junit.xml 2>/dev/null | sort -u || true
+            grep -ho 'skipped: no herdr[^<&]*' install_test.log 2>/dev/null | sort -u || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -294,8 +364,13 @@ jobs:
         run: cat "$RUNNER_TEMP/herdr-releases.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
   clippy:
-    name: Clippy -D warnings
-    runs-on: macos-15
+    # Both OSes: each lints its own platform-gated code.
+    name: Clippy -D warnings (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-24.04]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain
