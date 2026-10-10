@@ -174,7 +174,8 @@ class BudgetUnit(Base):
         self.assertEqual(st["requests"], 1)
         self.assertEqual(st["cost_usd"], 0.0)
         self.assertEqual(sorted(st), sorted(["max_requests", "max_cost_usd", "requests", "cost_usd",
-                                             "cost_estimated", "exhausted", "refusals"]))
+                                             "cost_estimated", "exhausted", "refusals",
+                                             "reserved_usd"]))
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "budget.json.tmp")))
 
     def test_settle_with_and_without_cost(self):
@@ -215,6 +216,36 @@ class BudgetUnit(Base):
             t.join()
         self.assertEqual(results.count(True), 10)
         self.assertEqual(self.budget_json()["requests"], 10)
+
+    def test_concurrent_cost_reservations_never_exceed_the_ceiling(self):
+        w = budget_mod.worst_case(1000, 100)
+        b = budget_mod.Budget(self.run_dir, max_cost_usd=w * 3 + w / 2)
+        results = []
+
+        def go():
+            results.append(b.reserve(1000, 100)[0])
+        threads = [threading.Thread(target=go) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(results.count(True), 3)
+        st = self.budget_json()
+        self.assertAlmostEqual(st["reserved_usd"], 3 * w)
+        self.assertEqual(st["requests"], 3)
+        self.assertLessEqual(st["cost_usd"] + st["reserved_usd"], st["max_cost_usd"] + 1e-12)
+
+    def test_settle_releases_the_reservation(self):
+        w = budget_mod.worst_case(1000, 100)
+        b = budget_mod.Budget(self.run_dir, max_cost_usd=w * 1.5)
+        ok, worst, _ = b.reserve(1000, 100)
+        self.assertTrue(ok)
+        self.assertFalse(b.reserve(1000, 100)[0])  # the reservation still holds the room
+        b.settle(0.0001, worst)
+        st = self.budget_json()
+        self.assertEqual(st["reserved_usd"], 0)
+        self.assertEqual(st["cost_usd"], 0.0001)
+        self.assertTrue(b.reserve(1000, 100)[0])  # passes against the actual cost
 
 
 class KeyAndRedaction(Base):
@@ -375,6 +406,59 @@ class RelayEndToEnd(Base):
         rest = resp.read()
         self.assertEqual(event_text(sse_events(rest)), "SECOND")
         self.assertEqual(first_seen, [True])
+
+    def test_parallel_requests_never_overrun_the_cost_ceiling(self):
+        n, m = 3, 9
+        gate = threading.Event()
+        lock = threading.Lock()
+        seen = []
+
+        class Block(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                with lock:
+                    seen.append(1)
+                gate.wait(15)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                ev = {"choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}],
+                      "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.0001}}
+                self.wfile.write(b"data: " + json.dumps(ev).encode() + b"\n\ndata: [DONE]\n\n")
+                self.wfile.flush()
+
+        self.addCleanup(gate.set)
+        blocked = self.serve(ThreadingHTTPServer(("127.0.0.1", 0), Block))
+        translated = translate.gemini_to_openai(simple_body())
+        input_bytes = len(json.dumps(translated, ensure_ascii=False).encode("utf-8"))
+        w = budget_mod.worst_case(input_bytes, translated["max_tokens"])
+        self.start_relay(upstream_url="http://127.0.0.1:%d/x" % blocked.server_address[1],
+                         max_cost_usd=w * n + w / 2)
+        statuses = []
+
+        def fire():
+            statuses.append(self.post(MAIN_PATH, simple_body())[0])
+        threads = [threading.Thread(target=fire) for _ in range(m)]
+        for t in threads:
+            t.start()
+        deadline = time.time() + 10
+        while time.time() < deadline and (len(seen) < n or statuses.count(429) < m - n):
+            time.sleep(0.02)
+        self.assertEqual(len(seen), n)  # at most N reached the blocked upstream
+        self.assertEqual(statuses.count(429), m - n)
+        gate.set()
+        for t in threads:
+            t.join(15)
+        self.assertEqual(sorted(statuses), [200] * n + [429] * (m - n))
+        st = self.budget_json()
+        self.assertLessEqual(st["cost_usd"], st["max_cost_usd"])
+        self.assertEqual(st["reserved_usd"], 0)
+        self.assertEqual(st["requests"], n)
+        self.assertEqual(len(seen), n)
 
     def test_non_streaming_generate_content_is_aggregated(self):
         self.start_fake([{"text": "abcdef", "chunks": 3, "cost": 0.0004}])

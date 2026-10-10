@@ -48,6 +48,7 @@ class Budget(object):
             "max_cost_usd": float(max_cost_usd),
             "requests": 0,
             "cost_usd": 0.0,
+            "reserved_usd": 0.0,
             "cost_estimated": False,
             "exhausted": False,
             "refusals": 0,
@@ -69,14 +70,17 @@ class Budget(object):
         _fsync_dir(self.run_dir)
 
     def reserve(self, input_bytes, max_tokens):
-        """Return (ok, worst, reason). A True result is already persisted."""
+        """Return (ok, worst, reason). A True result is already persisted.
+
+        The worst-case cost is held in ``reserved_usd`` until ``settle`` releases it, so
+        in-flight requests count against the ceiling, not only settled spend."""
         worst = worst_case(input_bytes, min(max_tokens, MAX_TOKENS))
         with self._lock:
             st = self._state
             reason = None
             if st["requests"] >= st["max_requests"]:
                 reason = "request ceiling reached"
-            elif st["cost_usd"] + worst > st["max_cost_usd"]:
+            elif st["cost_usd"] + st["reserved_usd"] + worst > st["max_cost_usd"]:
                 reason = "cost ceiling would be exceeded"
             if reason is not None:
                 st["exhausted"] = True
@@ -84,12 +88,14 @@ class Budget(object):
                 self._persist()
                 return False, worst, reason
             st["requests"] += 1
+            st["reserved_usd"] += worst
             self._persist()
             return True, worst, None
 
     def settle(self, cost_usd, worst):
         with self._lock:
             st = self._state
+            st["reserved_usd"] = max(0.0, st["reserved_usd"] - worst)
             if isinstance(cost_usd, (int, float)) and not isinstance(cost_usd, bool) and cost_usd >= 0:
                 st["cost_usd"] += float(cost_usd)
             else:
