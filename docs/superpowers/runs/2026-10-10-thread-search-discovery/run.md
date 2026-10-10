@@ -18,7 +18,7 @@ roastDesignRound: 1
 roast-design: 2026-10-10-thread-search-discovery-roast-design-1.md
 
 codeBuckets:
-  completed:
+  completed: ht-akx.1, ht-akx.2
   escalated:
   pendingRetry:
   parked:

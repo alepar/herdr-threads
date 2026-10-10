@@ -1,0 +1,29 @@
+## Task 3: Integration sweep: bounded CLI thread-name discovery
+
+filesTouched: ["tests/store/queries.rs", "tests/cli/read_cost_names.rs", "docs/superpowers/runs/2026-10-10-thread-search-discovery/2026-10-10-thread-search-discovery-design.md", "src/store/queries.rs", "src/store/control.rs", "src/cli/commands.rs", "src/protocol/commands.rs"]
+
+Bead: `ht-akx.3`. Spec: `docs/superpowers/runs/2026-10-10-thread-search-discovery/2026-10-10-thread-search-discovery-design.md`. Dependencies: ht-akx.1 and ht-akx.2 integrated.
+
+### Verbatim bead requirements and acceptance
+
+Verify the combined CLI name-or-topic search main flow and docs against the settled spec. Use isolated existing harnesses, never shared Herdr service/config writes. Exercise actual CLI thread list --search psa-global on an isolated named thread with unrelated announcement topic, and production rename/set/clear cursor staleness; inspect missing integration coverage not already owned by the leaf regressions, add meaningful tests only for gaps, fix small integration errors inline and file blockers for larger gaps. Sweep for unwired name revisions, candidate projections or help/legacy field semantics. Review exact combined tree, run focused relevant tests, cargo fmt, prescribed clippy and scripts/check-default-features as needed; final expensive once-per-branch checks belong to super-auto after code roast, do not run full suite routinely. Files-touched: focused existing tests/store/queries.rs and tests/cli/read_cost_names.rs if uncovered seams need tests, implementation files only for small integration gaps, spec Post-Implementation Notes and verification evidence. owns: integrated goal verification and uncovered integration tests; consumes: implemented bounded discovery behavior and public CLI/protocol contract. Acceptance: exact CLI discovery and bounded rename-safe continuation satisfy spec using behavior (needs: ht-akx.1) and public help/contracts (needs: ht-akx.2). blocked-by ht-akx.1: consumes all leaves (integration sweep). blocked-by ht-akx.2: consumes all leaves (integration sweep).
+
+### Global Constraints
+
+- Never restart, stop or kill the shared Herdr server, and never close Herdr workspaces/panes you did not create. Tests that need Herdr up/down use an isolated named Herdr test session (see `scripts/lib/isolated-herdr.sh`).
+- Never write to the real user config: `~/.claude`, `~/.codex`, `~/.aisw`. Tests use isolated HOME / CLAUDE_CONFIG_DIR / CODEX_HOME under a temp dir.
+- Never run `git push` or `git stash` (the stash stack is shared across worktrees). Commit on your own branch.
+- A finished task stops its processes: every daemon, private Herdr server and helper process a test or script starts is stopped before the task reports done. Spawn test children with `herdr_threads::test_support::spawn` (`spawn_owned` / `command` / `tag`); never a bare `Command::spawn` in `tests/`.
+- Until the flakiness side quest (ht-zo4) lands, do not run the full suite routinely; run focused tests for what you changed.
+
+One store-focused leaf can own candidate projection, the predicate, dedicated name revision publication/binding, and focused store regressions because those changes share a correctness invariant. A documentation/CLI-contract leaf may follow that seam for help, protocol field comments, normative amendment and parser/contract verification. Shared `src/store/queries.rs` edits must remain serialized. Do not refactor the picker, add fuzzy CLI search, search message bodies/goals/IDs, alter name resolution, change membership/archival policy, restart the shared daemon, or deploy/install the branch as part of this run.
+
+Required verification is `cargo fmt`, `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, and relevant `nice cargo test --locked --all-features <filter>` runs. Before integration run `nice scripts/check-default-features`. Do not run the full suite routinely while ht-zo4 remains open. Tests use isolated storage, user configuration and private servers only; any owned processes must stop before reporting completion, and a full-suite run if separately required must use the prescribed leak-run ID/check.
+
+### Implementation and verification steps
+
+1. Wait for both leaf integrations. Read their reports and the exact integrated diff against the binding spec. Build evidence for matching semantics, candidate limits, all name-write sites, cursor revisions, exact CLI behavior and public/wire contracts. Reuse leaf regressions rather than duplicate them.
+2. Verify actual CLI thread list --search psa-global with unrelated announcement topic through the isolated harness. Inspect both traversal projections and production-dispatch set/rename/clear stale tests, replay/no-op stability, selected-instance isolation, legacy filtered cursor rejection and unchanged unfiltered semantics. Check help and legacy field/argv round-trip evidence together.
+3. For genuine uncovered seams, first add failing tests in tests/store/queries.rs or tests/cli/read_cost_names.rs, then make small integration fixes within declared source files and rerun. Source files declared here form a conditional repair envelope, not required edits. Report new file scope before expansion; ask the coordinator to handle larger blocker gaps.
+4. Run relevant nice cargo test --locked --all-features <filter> selections on the combined tree, cargo fmt, nice cargo clippy --locked --all-targets --all-features -- -D warnings, and nice scripts/check-default-features. Stop owned processes. No routine full suite: upstream owns final expensive once-per-branch checks after code roast.
+5. Append dated Post-Implementation Notes in the design recording discovered facts, deviations or confirmed assumptions. Record exact verification commands/results and test references in the SDD task report. Deliver integrated goal evidence and any small seam corrections.
