@@ -40,6 +40,8 @@ pub enum Command {
     /// Read-only v2 inbox contract; advertised only when its handler lands.
     InboxBatchV2(InboxQuery),
     MessageDeliveryModes(MessageDeliveryModesQuery),
+    /// Read a seat's `wake_on` preference; gated by `seat.wake_on_v1`.
+    WakeOn(WakeOnQuery),
     Warnings(WarningsQuery),
     /// Bounded read-only active warning conditions for one thread.
     ActiveWarnings(ActiveWarningsQuery),
@@ -104,6 +106,9 @@ pub enum Command {
     DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
+    /// Set the caller seat's `wake_on` preference (TRUST-POLICY A5); gated by
+    /// `seat.wake_on_v1`.
+    SetWakeOn(SetWakeOn),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -764,6 +769,45 @@ impl DeliveryMode {
     }
 }
 
+/// Which pending work wakes an idle seat: `nudge` keeps the ordinary wake
+/// policy, `all` also wakes for pending lazy messages (spec DP8).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeOn {
+    #[default]
+    Nudge,
+    All,
+}
+impl WakeOn {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Nudge => "nudge",
+            Self::All => "all",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "nudge" => Some(Self::Nudge),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetWakeOn {
+    pub value: WakeOn,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WakeOnQuery {
+    pub seat: SeatId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageDeliveryModesQuery {
@@ -1026,6 +1070,7 @@ impl Command {
             Self::DeliveryPull(v) => Some(&v.claim),
             Self::DeliveryConfirm(v) => Some(&v.claim),
             Self::CompleteInboxDelivery(v) => Some(&v.claim),
+            Self::SetWakeOn(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
             Self::SetThreadName(v) => Some(&v.claim),
@@ -1241,6 +1286,8 @@ pub enum PermitMutation {
     DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
+    /// Wake preference of the caller's own seat; wake eligibility only.
+    SetWakeOn(SetWakeOn),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -1275,6 +1322,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::AckModDelivered(v) => Ok(Self::AckModDelivered(v)),
             Command::DeliveryConfirm(v) => Ok(Self::DeliveryConfirm(v)),
             Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
+            Command::SetWakeOn(v) => Ok(Self::SetWakeOn(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
             Command::SetThreadName(v) => Ok(Self::SetThreadName(v)),

@@ -284,7 +284,8 @@ fn capability_constants_are_stable() {
             "messages.delivery_modes_v1",
             "send.lazy_v1",
             "inbox.batch_v2",
-            "mod.watch_v1"
+            "mod.watch_v1",
+            "seat.wake_on_v1"
         ]
     );
 }
@@ -364,6 +365,24 @@ fn every_advertised_capability_has_a_handler() {
                 );
             }
             MOD_WATCH => probe_mod_watch(),
+            SEAT_WAKE_ON_V1 => {
+                // The daemon serves the read: an unknown seat is NotFound (a
+                // daemon without the handler would refuse the command itself).
+                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let command = Command::WakeOn(crate::protocol::commands::WakeOnQuery {
+                    seat: crate::protocol::ids::SeatId::new("nobody"),
+                });
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }
@@ -478,7 +497,8 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "messages.delivery_modes_v1",
             "send.lazy_v1",
             "inbox.batch_v2",
-            "mod.watch_v1"
+            "mod.watch_v1",
+            "seat.wake_on_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);

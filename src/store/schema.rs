@@ -64,7 +64,8 @@ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sq
 const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
 const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
 const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
-pub(crate) const LATEST_VERSION: i64 = 28;
+const V29: &str = include_str!("../../migrations/0029_seat_wake_on.sql");
+pub(crate) const LATEST_VERSION: i64 = 29;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -166,6 +167,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V26))
                 .and_then(|_| conn.execute_batch(V27))
                 .and_then(|_| conn.execute_batch(V28))
+                .and_then(|_| conn.execute_batch(V29))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -406,7 +408,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=28 => verify_existing(conn),
+        18..=29 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -574,7 +576,51 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_existing_v28(conn)
+    verify_existing_v28(conn)?;
+    if (1..=28).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V29)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v29(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 29)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_existing_v29(conn)
+}
+
+/// The two DP8 columns: type, nullability and default are part of the contract
+/// (a fresh seat reads `nudge`; the lazy frontier starts absent).
+fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+    for (table, column, kind, not_null, default) in [
+        ("seats", "wake_on", "TEXT", true, Some("'nudge'")),
+        ("wake_work", "last_lazy_ordinal", "INTEGER", false, None),
+    ] {
+        let found: Option<(String, bool, Option<String>)> = conn
+            .query_row(
+                &format!("SELECT type,\"notnull\",dflt_value FROM pragma_table_info('{table}') WHERE name=?1"),
+                [column],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if found != Some((kind.to_owned(), not_null, default.map(str::to_owned))) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered wake_on column {table}.{column}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {

@@ -39,6 +39,8 @@ pub enum CommandResult {
     InboxBatchV2(Page<InboxBatchV2Item>),
     MessageDeliveryModes(Vec<MessageDeliveryMode>),
     InboxDeliveryCompleted(Vec<MessageId>),
+    /// A seat's `wake_on` preference (read, or the outcome of a set).
+    WakeOn(WakeOnState),
     Warnings(Page<WarningRef>),
     ActiveWarnings(Page<WarningRef>),
     Thread(ThreadDetails),
@@ -1153,6 +1155,16 @@ pub enum InboxBatchV2Item {
 pub struct MessageDeliveryMode {
     pub message: MessageId,
     pub delivery_mode: crate::protocol::commands::DeliveryMode,
+}
+
+/// A seat's `wake_on` preference. `changed` is true only when a set altered the
+/// stored value; a read, or a set to the value already stored, reports false.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WakeOnState {
+    pub seat: SeatId,
+    pub wake_on: crate::protocol::commands::WakeOn,
+    pub changed: bool,
 }
 
 fn is_false(value: &bool) -> bool {
