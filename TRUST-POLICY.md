@@ -388,8 +388,13 @@ never on heuristic evidence, so a stall and re-entry cycle cannot postpone a war
 never rewritten: they stay stored and displayed beside the effective one. Overdue classification, warnings, pending receipts and the soft-deadline poke use the
 effective deadline.
 
-**A7. Informational warning delivery.** Service notices and canonical built-in warning open/clear
-events have separate delivery rows for their frozen recipients. A committed check-in settles only
+**A7. Informational warning delivery.** Service notices, canonical built-in warning open/clear
+events, and native ordinary-invitation rejection notices have separate delivery rows for their frozen
+recipients. A rejection notice retains its native seat author, exact invitation source and reason;
+its audience is the members at the rejection decision plus the rejecting seat, never later members.
+Only the exact native warning backed by the retained rejection record is classified this way.
+Historical info rejection events remain unchanged on replay. Rejection notices are passive for every
+recipient: they create no wake, poke, receipt or ACK obligation. A committed check-in settles only
 the bounded prefix of attributed events it carries to the exact current binding generation and
 execution. A global decision watermark cannot settle uncarried events, including late attribution.
 History and immutable operation results remain readable. A successor occupant gets its own offers;

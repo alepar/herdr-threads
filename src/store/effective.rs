@@ -1660,12 +1660,27 @@ fn warning_recipient_cutoff(
         .unwrap_or(event_seq))
 }
 
+/// Only the exact native event backed by a retained refusal is a passive
+/// rejection notice. Peer JSON alone never classifies an informational event.
+pub(crate) fn is_invitation_rejection_notice(
+    db: &Connection,
+    warning_id: &str,
+) -> Result<bool, ApiError> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM messages m JOIN invitation_rejections r ON r.invitation_id=m.source_invitation_id JOIN invitations i ON i.id=r.invitation_id WHERE m.id=?1 AND m.kind='warn' AND m.author_kind='native' AND m.actor_seat_id=r.actor_seat_id AND m.author_service_id IS NULL AND m.thread_id=i.thread_id AND m.event_key='reject:'||r.invitation_id AND m.source_message_id IS NULL AND m.decision_at=r.rejected_at AND json_extract(m.event_json,'$.action')='reject' AND json_extract(m.event_json,'$.seat')=r.actor_seat_id AND json_extract(m.event_json,'$.invitation')=r.invitation_id AND json_extract(m.event_json,'$.reason')=r.reason)",
+        [warning_id], |r| r.get(0),
+    ).map_err(store_error)
+}
+
 /// Historical recipients remain discoverable after source settlement, while
 /// warning-only wake uses the exact source condition frozen by the event.
 pub fn warning_condition_actionable(
     db: &Connection,
     warning: &EffectiveWarning,
 ) -> Result<bool, ApiError> {
+    if is_invitation_rejection_notice(db, &warning.id)? {
+        return Ok(true);
+    }
     let transition: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 OR clear_warning_id=?1)",
         [&warning.id], |r| r.get(0),

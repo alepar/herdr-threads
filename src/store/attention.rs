@@ -568,7 +568,13 @@ fn judged_warning(
             "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings d WHERE d.seat_id=?1 AND d.warning_id=?2 AND EXISTS(SELECT 1 FROM warning_conditions c WHERE c.open_warning_id=d.warning_id OR c.clear_warning_id=d.warning_id))",
             params![seat_id,warning_id], |r| r.get(0),
         ).map_err(store_error)?;
-        if projected_transition {
+        if projected_transition
+            || (effective::is_invitation_rejection_notice(db, warning_id)?
+                && db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings WHERE seat_id=?1 AND warning_id=?2)",
+                    params![seat_id, warning_id], |r| r.get::<_, bool>(0),
+                ).map_err(store_error)?)
+        {
             return Ok(None);
         }
     }
@@ -642,7 +648,7 @@ pub fn informational_notice_pending(
         "SELECT EXISTS(SELECT 1 FROM warning_conditions c WHERE c.open_warning_id=?1 OR c.clear_warning_id=?1) OR EXISTS(SELECT 1 FROM messages m JOIN service_notification_publications p ON p.message_id=m.id WHERE m.id=?1 AND m.kind='warn' AND m.author_kind='programmatic')",
         [warning_id], |r| r.get(0),
     ).map_err(store_error)?;
-    if !informational {
+    if !informational && !effective::is_invitation_rejection_notice(db, warning_id)? {
         return Ok(None);
     }
     let ordinal: Option<i64> = db
@@ -1089,6 +1095,9 @@ pub fn warning_wakes_seat(
     seat_id: &str,
     warning_id: &str,
 ) -> Result<bool, ApiError> {
+    if effective::is_invitation_rejection_notice(db, warning_id)? {
+        return Ok(false);
+    }
     db.query_row(
         "SELECT CASE WHEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1) OR EXISTS(SELECT 1 FROM warning_conditions WHERE clear_warning_id=?1) THEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND affected_seat_id=?2 AND clear_warning_id IS NULL) ELSE 1 END",
         params![warning_id, seat_id],
