@@ -482,6 +482,7 @@ pub fn join(
                 params![command.thread.as_str(),caller.as_str(),episode,decision.utc.0]).map_err(store_error)?;
             tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
                 params![command.thread.as_str(),caller.as_str(),episode,seq as i64]).map_err(store_error)?;
+            super::read_cursors::init_for_join(tx, &caller, &command.thread)?;
             let payload = serde_json::json!({"action":"join", "seat":caller.as_str(),
                 "generation":actor.binding_generation,"observation":actor.provenance})
             .to_string();
@@ -649,6 +650,7 @@ pub fn accept(
                     params![episode,decision.utc.0,thread.as_str(),caller.as_str()]).map_err(store_error)?;
                 tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
                     params![thread.as_str(),caller.as_str(),episode,event_seq as i64]).map_err(store_error)?;
+                super::read_cursors::init_for_join(tx, &caller, &thread)?;
             }
             let payload = serde_json::json!({"action":"accept", "seat":caller.as_str(), "invitation":invitation.as_str()}).to_string();
             schema::append_event_once_with_decision_seq(
@@ -942,6 +944,7 @@ pub fn accept_required(
                     params![episode,decision.utc.0,command.thread.as_str(),caller.as_str()]).map_err(store_error)?;
                 tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
                     params![command.thread.as_str(),caller.as_str(),episode,seq as i64]).map_err(store_error)?;
+                super::read_cursors::init_for_join(tx, &caller, &command.thread)?;
             }
             let payload = serde_json::json!({"action":"accept_required","seat":caller.as_str(),
                 "requirement":command.requirement.as_str(),"invitation":command.invitation.as_str()}).to_string();
@@ -1483,6 +1486,7 @@ fn create_thread_impl(
                 params![thread.as_str(), seat.as_str(), decision.utc.0]).map_err(store_error)?;
             tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,?3)",
                 params![thread.as_str(),seat.as_str(),joined_seq as i64]).map_err(store_error)?;
+            super::read_cursors::init_for_join(tx, &seat, &thread)?;
             let payload = serde_json::json!({"action":"create_thread", "goal":command.goal,
                 "actor_seat":seat.as_str()})
             .to_string();
@@ -2007,5 +2011,70 @@ pub fn complete_inbox_delivery(
                 request.messages.clone(),
             ))
         },
+    )
+}
+
+/// Advance the caller binding's own cursors over the messages it fully displayed (spec §2). The
+/// claim resolves with the plain trigger (it may enroll); only that binding's cursor moves, so a
+/// subagent claim is accepted: no seat state changes and no receipt is settled. Idempotent per
+/// operation key. Messages of threads the seat has not joined are ignored.
+pub fn advance_cursors(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    request: &crate::protocol::commands::AdvanceCursors,
+) -> Result<CommandResult, ApiError> {
+    let claim = &request.claim;
+    let digest = cooperative_payload_hash("advance_cursors", request)?;
+    schema::execute_budgeted_idempotent_transaction(
+        context,
+        conn,
+        budget,
+        &format!("seat:{}", claim.seat.as_str()),
+        request.operation.as_str(),
+        digest,
+        |tx| super::seats::cooperative_instance(tx, &claim.instance, claim),
+        |tx| super::seats::cooperative_mapping(tx, claim, None).map(|_| ()),
+        |tx, at| {
+            let mapping = super::seats::cooperative_mapping(tx, claim, None)?;
+            let binding = super::seats::resolve_cooperative(tx, at, claim, None, &mapping)?
+                .binding()
+                .binding_id
+                .clone();
+            let mut by_thread: std::collections::BTreeMap<String, Vec<u64>> = Default::default();
+            for id in &request.displayed {
+                let row: Option<(String, i64)> = tx
+                    .query_row(
+                        "SELECT thread_id,sequence FROM messages WHERE id=?1 AND instance_id=?2",
+                        params![id.as_str(), claim.instance],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(store_error)?;
+                let (thread, sequence) = row.ok_or_else(|| {
+                    api_error(ErrorCode::InvalidRequest, "displayed message not found")
+                })?;
+                by_thread.entry(thread).or_default().push(sequence as u64);
+            }
+            for (thread, sequences) in by_thread {
+                let joined: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM memberships WHERE thread_id=?1 AND seat_id=?2 AND state='joined')",
+                        params![thread, claim.seat.as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+                if joined {
+                    super::read_cursors::advance_through_displayed(
+                        tx,
+                        &binding,
+                        &ThreadId::new(thread),
+                        &sequences,
+                    )?;
+                }
+            }
+            Ok(CommandResult::CursorsAdvanced(request.displayed.clone()))
+        },
+        |_tx, result| Ok(result),
     )
 }

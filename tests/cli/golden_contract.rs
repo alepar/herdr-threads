@@ -762,6 +762,7 @@ fn run_inbox(presentation: crate::cli::output::Presentation) -> (String, Vec<Str
     let spec = text_spec();
     let _guard = crate::cli::output::PresentationGuard::enter(presentation, &spec);
     let query = InboxQuery {
+        claim: None,
         seat: Some(SeatId::new("seat-a")),
         page: Default::default(),
     };

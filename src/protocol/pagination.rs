@@ -170,6 +170,19 @@ pub struct InboxBatchV2CursorState {
     pub publication_decision_high_water: u64,
     #[serde(rename = "b", default, skip_serializing_if = "Option::is_none")]
     pub body: Option<InboxBatchV2BodyPosition>,
+    /// Present only on a per-binding read (`InboxQuery.claim`, ht-54r.7): the walk over the
+    /// binding's unread ordinary messages, by the seat's recipient ordinal.
+    #[serde(rename = "u", default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<InboxBatchV2UnreadPosition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InboxBatchV2UnreadPosition {
+    #[serde(rename = "a")]
+    pub after_ordinal: u64,
+    #[serde(rename = "h")]
+    pub high_water_ordinal: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +195,9 @@ pub enum InboxBatchV2Source {
     Warnings,
     #[serde(rename = "l")]
     Lazy,
+    /// Only on a per-binding read.
+    #[serde(rename = "u")]
+    Unread,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,10 +281,11 @@ impl InboxBatchV2CursorState {
             1 => InboxBatchV2Source::Invitations,
             2 => InboxBatchV2Source::Receipts,
             3 => InboxBatchV2Source::Warnings,
+            4 => InboxBatchV2Source::Unread,
             _ => return Err("invalid v2 source"),
         };
         let flags = input.byte()?;
-        if flags & !63 != 0 {
+        if flags & !127 != 0 {
             return Err("invalid v2 flags");
         }
         let seat = crate::protocol::ids::SeatId::new(v2_string(&mut input)?);
@@ -311,6 +328,17 @@ impl InboxBatchV2CursorState {
         } else {
             None
         };
+        let unread = if flags & 64 != 0 {
+            let after_ordinal = input.unsigned()?;
+            Some(InboxBatchV2UnreadPosition {
+                after_ordinal,
+                high_water_ordinal: after_ordinal
+                    .checked_add(input.unsigned()?)
+                    .ok_or("invalid v2 bound")?,
+            })
+        } else {
+            None
+        };
         let state = Self {
             seat,
             binding_generation,
@@ -320,6 +348,7 @@ impl InboxBatchV2CursorState {
             lazy_high_water_ordinal,
             publication_decision_high_water,
             body,
+            unread,
             attention: SeatAttentionCursorState {
                 invitation_after_seq: invitation_after_ordinal,
                 invitation_after_ordinal,
@@ -359,13 +388,15 @@ impl InboxBatchV2CursorState {
             InboxBatchV2Source::Invitations => 1,
             InboxBatchV2Source::Receipts => 2,
             InboxBatchV2Source::Warnings => 3,
+            InboxBatchV2Source::Unread => 4,
         };
         let flags = u8::from(self.binding_generation.is_some())
             | (u8::from(self.body.is_some()) << 1)
             | (u8::from(a.invitations_done) << 2)
             | (u8::from(a.receipts_done) << 3)
             | (u8::from(a.next_manifest_warning) << 4)
-            | (u8::from(r.next_manifest) << 5);
+            | (u8::from(r.next_manifest) << 5)
+            | (u8::from(self.unread.is_some()) << 6);
         let mut out = Compact(vec![1, source, flags]);
         v2_write_string(&mut out, self.seat.as_str())?;
         if let Some(generation) = self.binding_generation {
@@ -394,6 +425,10 @@ impl InboxBatchV2CursorState {
             v2_write_string(&mut out, body.message.as_str())?;
             out.unsigned(body.offset);
             out.unsigned(body.body_len);
+        }
+        if let Some(unread) = &self.unread {
+            out.unsigned(unread.after_ordinal);
+            out.unsigned(unread.high_water_ordinal - unread.after_ordinal);
         }
         Ok(out.0)
     }
@@ -426,15 +461,25 @@ impl InboxBatchV2CursorState {
             || a.has_pending_receipt
             || a.latest_warning_seq.is_some()
             || a.latest_warning_offset.is_none_or(|n| n < 0)
+            || self.unread.is_some_and(|u| {
+                u.after_ordinal > u.high_water_ordinal || u.high_water_ordinal > i64::MAX as u64
+            })
+            || (self.source == InboxBatchV2Source::Unread && self.unread.is_none())
             || self.body.as_ref().is_some_and(|b| {
                 b.validate().is_err()
                     || b.message.as_str().is_empty()
                     || (self.source == InboxBatchV2Source::Lazy
                         && self.lazy_after_ordinal >= self.lazy_high_water_ordinal)
                     || (self.source == InboxBatchV2Source::Receipts && a.receipts_done)
+                    || (self.source == InboxBatchV2Source::Unread
+                        && self
+                            .unread
+                            .is_some_and(|u| u.after_ordinal >= u.high_water_ordinal))
                     || !matches!(
                         self.source,
-                        InboxBatchV2Source::Receipts | InboxBatchV2Source::Lazy
+                        InboxBatchV2Source::Receipts
+                            | InboxBatchV2Source::Lazy
+                            | InboxBatchV2Source::Unread
                     )
             })
         {

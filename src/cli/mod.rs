@@ -1328,6 +1328,15 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         && capabilities
             .iter()
             .any(|name| name == crate::protocol::capabilities::INBOX_BATCH_V2);
+    // Spec §2: an agent reads its own binding's stream and advances only its own cursors.
+    let binding_cursors = v2
+        && claim.harness != crate::protocol::authority::Harness::Human
+        && capabilities
+            .iter()
+            .any(|name| name == crate::protocol::capabilities::BINDING_CURSORS);
+    if binding_cursors {
+        request.claim = Some(claim.clone());
+    }
     let supported = capabilities
         .iter()
         .any(|name| name == crate::protocol::capabilities::INBOX_BATCH);
@@ -1351,6 +1360,26 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
             &claim,
             lazy_display::DisplaySelection::OwnDefaultText,
         )?;
+        // After the whole page was flushed: this binding's cursors move over what it displayed
+        // (every role, subagents included), before any top-level settlement. A failure only means
+        // the messages are offered again.
+        if binding_cursors {
+            for batch in candidates
+                .displayed
+                .chunks(crate::protocol::commands::MAX_BATCH_ITEMS)
+            {
+                let _ = client.call(
+                    Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+                        claim: claim.clone(),
+                        operation: crate::protocol::ids::OperationId::new(
+                            uuid::Uuid::new_v4().to_string(),
+                        ),
+                        displayed: batch.to_vec(),
+                    }),
+                    &cooperative_budget(clock),
+                );
+            }
+        }
         return lazy_display::settle(
             candidates,
             journal,

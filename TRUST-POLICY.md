@@ -532,6 +532,17 @@ context, not that the harness ingested it or the model read it. The hook never A
 messages it shows stay pending, with an exact `ack` command for the agent. It writes no local journal
 record. A failed or unknown completion leaves the rows pending and they are shown again (at least once).
 
+**Per-binding read position (`AdvanceCursors`, `InboxQuery.claim`).** An inbox read that carries the caller's
+claim is that binding's own stream: the messages of the seat's joined threads past the binding's cursors, plus
+the seat's open invitations and its still-pending ACK obligations. A display moves only the displaying
+binding's cursors, with the exact message IDs it showed whole. The command is decided in the daemon against
+the canonical view (A2) and resolves the claim to its own binding like any plain cooperative call (it may
+enroll). It is the one write a declared subagent may send, because it changes no seat state: it records no ACK
+actor, creates no receipt, settles no obligation and attributes no action. A cursor never moves backwards,
+never moves past an unshown message the seat can receive, and a read never enrolls. A client that fails to
+send it only causes redisplay (at least once). Only a top-level binding's display ACK settles the seat's
+obligation; other bindings see that message in their own stream marked settled.
+
 ## Accepted limits
 
 Delivery-only cleanup recovery retains a private, bounded versioned terminal record after

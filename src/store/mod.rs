@@ -1619,6 +1619,20 @@ impl StorePort for SqliteStore {
             }
         }
     }
+    fn advance_cursors(
+        &self,
+        request: &crate::protocol::commands::AdvanceCursors,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        if request.claim.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::CallerUnverified,
+                "cursor advance instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        control::advance_cursors(&self.context, &mut writer, budget, request)
+    }
     fn prepare_send_step(
         &self,
         request: &SendMessage,

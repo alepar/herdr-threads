@@ -132,8 +132,9 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "bootstrap_attachments",
     "bootstrap_reports",
     "allocation_decisions",
-    // Per-binding read cursors (ht-54r.1): inert until ht-54r.7 reads them; kicks are
-    // classified with their delivery behaviour.
+    // Per-binding read cursors (ht-54r.1, read by the per-binding inbox, ht-54r.7): a cursor
+    // only moves forward over mail the binding already displayed, so a write retires unread
+    // mail and never creates work for a lane.
     "binding_cursors",
     "delivery_observations",
     "digest_notice_offer",

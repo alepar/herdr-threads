@@ -5470,7 +5470,7 @@ fn adapter_migration_v2_tables_enforce_bounded_keys_and_references() {
     );
 }
 
-fn adapter_historical_database(version: usize) -> Connection {
+pub(crate) fn adapter_historical_database(version: usize) -> Connection {
     let migrations = [
         include_str!("../../migrations/0001_initial.sql"),
         include_str!("../../migrations/0002_service_substrate.sql"),
