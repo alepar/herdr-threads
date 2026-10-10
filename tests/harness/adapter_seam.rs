@@ -1,7 +1,7 @@
 //! The adapter hook seam (core-sweep D1/D6): registry validation, the neutral defaults, the
-//! Claude/Codex/Hermes values (pinned against the core text they will replace) and the
+//! Claude/Codex/Hermes values (pinned against the core text they feed) and the
 //! allow-member-only settings engine.
-use crate::cli::setup::{SETUP_HELP, SetupEnv, foreground};
+use crate::cli::setup::{SetupEnv, foreground};
 use crate::harness::{
     adapter::*,
     claude, codex,
@@ -290,7 +290,7 @@ fn names<'a>(markers: impl Iterator<Item = &'a AgentEnvMarker>) -> Vec<&'static 
 }
 
 #[test]
-fn adapter_seam_registry_lists_markers_in_registry_order_and_matches_core_constants() {
+fn adapter_seam_registry_lists_markers_in_registry_order_and_splits_guards() {
     let registry = builtins();
     assert_eq!(
         names(registry.env_markers()),
@@ -301,17 +301,17 @@ fn adapter_seam_registry_lists_markers_in_registry_order_and_matches_core_consta
             "CODEX_SANDBOX_NETWORK_DISABLED"
         ]
     );
-    let all: std::collections::BTreeSet<_> = registry.env_markers().map(|m| m.name).collect();
-    let core_output: std::collections::BTreeSet<_> =
-        crate::cli::output::HARNESS_MARKERS.into_iter().collect();
-    assert_eq!(all, core_output);
-    let guards: std::collections::BTreeSet<_> =
-        registry.person_guard_markers().map(|m| m.name).collect();
-    let core_guards: std::collections::BTreeSet<_> =
-        crate::cli::AGENT_ENV_MARKERS.into_iter().collect();
-    assert_eq!(guards, core_guards);
+    let guards: Vec<_> = names(registry.person_guard_markers());
+    assert_eq!(
+        guards,
+        [
+            "CLAUDECODE",
+            "CODEX_SANDBOX",
+            "CODEX_SANDBOX_NETWORK_DISABLED"
+        ]
+    );
     // CODEX_THREAD_ID is output evidence only; widening A4 to it would change behaviour.
-    assert!(!guards.contains("CODEX_THREAD_ID") && all.contains("CODEX_THREAD_ID"));
+    assert!(!guards.contains(&"CODEX_THREAD_ID"));
 }
 
 // ---------------------------------------------------------------- values
@@ -323,35 +323,38 @@ fn registration(id: &str) -> &'static Registration {
         .expect("registration")
 }
 
-/// Every non-empty fragment is a substring of the core text it will replace, which pins the
-/// temporary copy until the core constant goes away.
+/// Every non-empty fragment reaches the help or source text it feeds, verbatim.
 #[test]
-fn adapter_seam_text_fragments_are_substrings_of_the_core_text() {
-    let launch_help = crate::cli::launch::LAUNCH_HELP;
+fn adapter_seam_text_fragments_reach_the_assembled_help() {
+    let registry = builtins();
+    let launch_help = crate::cli::help::launch_help_in(registry);
+    let setup_help = crate::cli::help::setup_help_in(registry);
     let setup_source = include_str!("../../src/cli/setup.rs");
-    let states_source = include_str!("../../src/daemon/harness_states.rs");
     for id in ["claude", "codex", "hermes"] {
         let text = registration(id).text();
         for (name, fragment, haystack) in [
-            ("setup_scope", text.setup_scope, SETUP_HELP),
-            ("setup_foreground", text.setup_foreground, SETUP_HELP),
-            ("setup_notes", text.setup_notes, SETUP_HELP),
-            ("launch_notes", text.launch_notes, launch_help),
-            ("config_root_hint", text.config_root_hint, launch_help),
+            ("setup_scope", text.setup_scope, setup_help.as_str()),
+            (
+                "setup_foreground",
+                text.setup_foreground,
+                setup_help.as_str(),
+            ),
+            ("setup_notes", text.setup_notes, setup_help.as_str()),
+            ("launch_notes", text.launch_notes, launch_help.as_str()),
+            (
+                "config_root_hint",
+                text.config_root_hint,
+                launch_help.as_str(),
+            ),
             (
                 "trust_reminder_label",
                 text.trust_reminder_label,
                 setup_source,
             ),
-            (
-                "version_history_note",
-                text.version_history_note,
-                states_source,
-            ),
         ] {
             assert!(
                 haystack.contains(fragment),
-                "{id}.{name} {fragment:?} is not a substring of the core text"
+                "{id}.{name} {fragment:?} is not in the text it feeds"
             );
         }
     }
@@ -370,6 +373,127 @@ fn adapter_seam_text_fragments_are_substrings_of_the_core_text() {
     assert!(hermes.setup_scope.starts_with("  hermes  ") && !hermes.launch_notes.is_empty());
     assert!(hermes.setup_foreground.is_empty() && hermes.setup_notes.is_empty());
     assert!(hermes.version_history_note.is_empty() && hermes.trust_reminder_label.is_empty());
+}
+
+// ---------------------------------------------------------------- extension proof
+
+fn env_of(
+    set: &'static [(&'static str, &'static str)],
+) -> impl Fn(&str) -> Option<std::ffi::OsString> {
+    move |name| {
+        set.iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| std::ffi::OsString::from(value))
+    }
+}
+
+/// One test-only adapter in a test registry reaches the markers and the assembled help with no
+/// core edit: its guard marker refuses by presence, its output marker needs a value and never
+/// refuses, and its fragments appear after the built-in ones' position in registry order.
+#[test]
+fn adapter_seam_test_adapter_reaches_markers_and_help_without_core_edits() {
+    use crate::cli::{agent_env_marker_in, help, output::harness_marked_in};
+    let registry = validate(vec![
+        probe(
+            "probe",
+            vec![
+                marker("HT_TEST_MARKER", true),
+                marker("HT_TEST_OUTPUT", false),
+            ],
+            AdapterText {
+                setup_scope: "  probe   $PROBE_HOME/hooks (default ~/.probe/hooks)",
+                setup_foreground: "Probe: turn off its daemon.",
+                setup_notes: "Probe notes: confirm trust.",
+                launch_notes: "Probe launches report `probe`.",
+                config_root_hint: "PROBE_HOME",
+                ..AdapterText::NONE
+            },
+            None,
+        ),
+        probe(
+            "second",
+            vec![],
+            AdapterText {
+                setup_scope: "  second  $SECOND_HOME/hooks",
+                setup_foreground: "Second: nothing to do.",
+                ..AdapterText::NONE
+            },
+            None,
+        ),
+    ])
+    .unwrap();
+
+    assert!(harness_marked_in(
+        &registry,
+        env_of(&[("HT_TEST_MARKER", "1")])
+    ));
+    assert!(harness_marked_in(
+        &registry,
+        env_of(&[("HT_TEST_OUTPUT", "1")])
+    ));
+    assert!(!harness_marked_in(
+        &registry,
+        env_of(&[("HT_TEST_MARKER", "")])
+    ));
+    // A built-in marker means nothing to a registry that does not declare it.
+    assert!(!harness_marked_in(
+        &registry,
+        env_of(&[("CLAUDECODE", "1")])
+    ));
+
+    assert_eq!(
+        agent_env_marker_in(&registry, [("HT_TEST_MARKER", "")]),
+        Some("HT_TEST_MARKER".to_owned())
+    );
+    assert_eq!(
+        agent_env_marker_in(&registry, [("HT_TEST_OUTPUT", "1")]),
+        None
+    );
+    assert_eq!(agent_env_marker_in(&registry, [("CLAUDECODE", "1")]), None);
+
+    let me = help::me_init_help_in(&registry);
+    assert!(
+        me.contains("agent markers (HT_TEST_MARKER) or a registered agent harness"),
+        "{me}"
+    );
+    assert!(
+        !me.contains("HT_TEST_OUTPUT") && !me.contains("CLAUDECODE"),
+        "{me}"
+    );
+
+    let setup = help::setup_help_in(&registry);
+    let at = |needle: &str| {
+        setup
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing"))
+    };
+    assert!(at("  probe   $PROBE_HOME/hooks") < at("  second  $SECOND_HOME/hooks"));
+    assert!(at("Probe: turn off its daemon. Second: nothing to do.") > at("Foreground agents"));
+    assert!(at("Probe notes: confirm trust.") > at("Second: nothing to do."));
+    assert!(at("Probe notes: confirm trust.") < at("Herdr instance:"));
+    let launch = help::launch_help_in(&registry);
+    assert!(
+        launch.contains("settings or hook file of the PROBE_HOME the agent"),
+        "{launch}"
+    );
+    assert!(
+        launch.contains("registry.\n\nProbe launches report `probe`.\n\nExit status:"),
+        "{launch}"
+    );
+}
+
+/// The built-in help carries each marker class exactly: guards are named, the output-only
+/// `CODEX_THREAD_ID` is not.
+#[test]
+fn adapter_seam_builtin_me_init_help_names_the_guard_markers_only() {
+    let me = crate::cli::help::me_init_help();
+    assert!(
+        me.contains(
+            "agent markers (CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED) or a registered agent harness reported by Herdr are present"
+        ),
+        "{me}"
+    );
+    assert!(!me.contains("CODEX_THREAD_ID"));
 }
 
 /// The foreground hook reassembles exactly the report core builds today: same keys, same values,

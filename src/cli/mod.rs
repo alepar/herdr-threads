@@ -6,6 +6,7 @@ pub mod exit;
 pub mod follow;
 pub mod handoff;
 pub mod handoff_delivery;
+pub mod help;
 pub mod hook;
 pub mod hook_evidence;
 pub mod human;
@@ -238,7 +239,7 @@ where
 /// text output defaults to the human form for a person and stays in the
 /// machine form for pipes, hooks, and models running the CLI through a tool
 /// (including a harness that gives its shell tool a PTY: see
-/// [`output::HARNESS_MARKERS`]).
+/// [`output::harness_marked`]).
 pub fn run_terminal<I, T, W>(
     argv: I,
     writer: &mut W,
@@ -254,27 +255,28 @@ where
     run(argv, writer)
 }
 
-/// Environment variables an agent harness sets inside its own process
-/// (TRUST-POLICY A4, best effort): `CLAUDECODE` (Claude Code) and
-/// `CODEX_SANDBOX` / `CODEX_SANDBOX_NETWORK_DISABLED` (set by codex-rs on the
-/// commands it spawns). An explicit allowlist, never a prefix: user
-/// configuration such as `CODEX_HOME` or `CODEX_API_KEY` is not evidence.
-/// No local `codex` was available to confirm the list with
-/// `codex exec ... 'env | grep ^CODEX_'`; it follows codex-rs's documented
-/// spawn environment.
-pub(crate) const AGENT_ENV_MARKERS: [&str; 3] = [
-    "CLAUDECODE",
-    "CODEX_SANDBOX",
-    "CODEX_SANDBOX_NETWORK_DISABLED",
-];
-
-/// First agent environment marker present, by name.
+/// First person-guard environment marker present, by name (TRUST-POLICY A4, best effort).
+/// The markers are the `person_guard` ones registered adapters declare, matched by presence:
+/// an explicit allowlist, never a prefix, so user configuration such as a config-root
+/// variable is not evidence. Output-form markers that are not guards stay out of it.
 pub(crate) fn agent_env_marker<K: AsRef<str>, V>(
+    vars: impl IntoIterator<Item = (K, V)>,
+) -> Option<String> {
+    agent_env_marker_in(crate::harness::registry::builtins(), vars)
+}
+
+/// [`agent_env_marker`] against an explicit registry.
+pub(crate) fn agent_env_marker_in<K: AsRef<str>, V>(
+    registry: &crate::harness::registry::Registry,
     vars: impl IntoIterator<Item = (K, V)>,
 ) -> Option<String> {
     vars.into_iter()
         .map(|(key, _)| key.as_ref().to_owned())
-        .find(|key| AGENT_ENV_MARKERS.contains(&key.as_str()))
+        .find(|key| {
+            registry
+                .person_guard_markers()
+                .any(|marker| marker.name == key)
+        })
 }
 
 /// The single client-side agent-evidence rule (TRUST-POLICY A4, best effort;

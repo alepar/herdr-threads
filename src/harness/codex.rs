@@ -1173,7 +1173,10 @@ to an existing daemon. Use native --no-daemon, or HERDR_THREADS_CODEX_OPTS='--no
 when the selected binary/wrapper supports and forwards it.",
     launch_notes: "Codex launches report
 `codex`: the effective CODEX_HOME, its config.toml and the selected profile (-p/--profile,
-else `profile` in config.toml, else default).",
+else `profile` in config.toml, else default). Codex CLI commands use approved
+outside-sandbox execution, without a network/socket allowance. Unsupported Codex subcommands,
+an explicit `--daemon`, a caller `--no-daemon` after the subcommand and a caller `-c hooks.*`
+override are refused.",
     config_root_hint: "CODEX_HOME",
     trust_reminder_label: "codex hook trust",
     version_history_note: "historical attributed metadata; rollout creator does not identify the current runtime",

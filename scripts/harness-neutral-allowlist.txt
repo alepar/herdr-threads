@@ -23,11 +23,6 @@
 # Only frozen wire shapes, historical migrations and registration may stay permanently (root spec
 # section 1); everything else is to-migrate. A site in a file outside core-sweep D15 is marked
 # `unassigned` until the coordinator routes it.
-src/cli/commands.rs:--hooks-only applies to `setup claude` only — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
-src/cli/commands.rs:Some("claude") — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
-src/cli/commands.rs:`setup claude|codex --harness-binary PATH` — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
-src/cli/commands.rs:apply to `setup` and `setup claude` only — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
-src/cli/commands.rs:see `herdr-threads setup codex` — to-migrate: ht-poh.2.2 setup hint (D15 non-watch)
 src/cli/commands.rs:wire code not_claude — frozen-wire: not_claude wire code in the watch help text (frozen wire shape)
 src/cli/doctor.rs:CLAUDE_NOT_OBSERVABLE — to-migrate: ht-poh.2.4 doctor projections (D7)
 src/cli/doctor.rs:CODEX_HOME — to-migrate: ht-poh.2.4 doctor projections (D7)
@@ -56,50 +51,11 @@ src/cli/doctor.rs:harness_codex — to-migrate: ht-poh.2.4 doctor projections (D
 src/cli/doctor.rs:legacy_claude_projection — to-migrate: ht-poh.2.4 doctor projections (D7)
 src/cli/doctor.rs:legacy_codex_projection — to-migrate: ht-poh.2.4 doctor projections (D7)
 src/cli/doctor.rs:observed_claude — to-migrate: ht-poh.2.4 doctor projections (D7)
-src/cli/handoff.rs:HERDR_THREADS_CLAUDE_OPTS — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/handoff.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/handoff.rs:claude — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/handoff.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/launch.rs:CLAUDE_CONFIG_DIR — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/launch.rs:CODEX_HOME — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/launch.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/launch.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/launch.rs:HERDR_THREADS_CLAUDE_OPTS — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/launch.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/launch.rs:Hermes — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/launch.rs:claude — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/launch.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/launch.rs:codex_profile — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/me.rs:CODEX_SANDBOX — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/me.rs:CODEX_SANDBOX_NETWORK_DISABLED — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/me.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/me.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/mod.rs:CODEX_SANDBOX — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/mod.rs:CODEX_SANDBOX_NETWORK_DISABLED — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/output.rs:CODEX_SANDBOX — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/output.rs:CODEX_SANDBOX_NETWORK_DISABLED — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/output.rs:CODEX_THREAD_ID — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/setup.rs:CLAUDE_CODE_DISABLE_AGENT_VIEW — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
-src/cli/setup.rs:CLAUDE_CONFIG_DIR — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
-src/cli/setup.rs:CODEX_HOME — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
-src/cli/setup.rs:Claude — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
-src/cli/setup.rs:Codex — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
-src/cli/setup.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
-src/cli/setup.rs:HERMES_HOME — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
-src/cli/setup.rs:claude — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
+src/cli/launch.rs:"codex": codex, — frozen-wire: launch report/record v1 key `codex` (null for other harnesses; frozen wire shape)
+src/cli/launch.rs:.get("codex") — frozen-wire: launch report/record v1 key `codex` (null for other harnesses; frozen wire shape)
+src/cli/launch.rs:let codex = preparation — frozen-wire: launch report/record v1 key `codex` (null for other harnesses; frozen wire shape)
 src/cli/setup.rs:codex hook trust: {} — frozen-wire: text fallback of the v1 trust_reminder scalar for reports without trust_reminders
-src/cli/setup.rs:codex — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
-src/cli/setup.rs:hermes — to-migrate: ht-poh.2.2 setup help text (SETUP_HELP hunk, cli/setup.rs 59-144) until its leaf removes it
 src/cli/setup.rs:if name == "codex" { — frozen-wire: v1 setup JSON scalar trust_reminder is always Codex's note
-src/cli/topology_handoff.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/topology_handoff.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/topology_handoff.rs:claude — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/topology_handoff.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/topology_runtime.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/topology_runtime.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/topology_runtime.rs:claude — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/topology_runtime.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/client/mod.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
 src/daemon/health.rs:claude: state("claude"), — frozen-wire: v1 HarnessHealth projection, the single place naming the two frozen fields (frozen wire shape)
 src/daemon/health.rs:codex: state("codex"), — frozen-wire: v1 HarnessHealth projection, the single place naming the two frozen fields (frozen wire shape)
 src/harness/admission.rs:rows.extend(version_rows("codex", super::codex::RECIPES)) — frozen-wire: schema-2 versions.json generator, byte-locked by versions_json_guard (frozen artifact)
@@ -109,12 +65,9 @@ src/harness/attribution.rs:"codex resume: rollout version is the creating CLI's"
 src/harness/attribution.rs:"codex rollout creator metadata does not identify the current runtime" — frozen-wire: Unattributed::as_str text goes on the wire and into doctor (frozen wire shape)
 src/harness/context.rs:pub const Claude: Self — registration: context::Harness const over the registry identity (permanent registration)
 src/harness/context.rs:pub const Codex: Self — registration: context::Harness const over the registry identity (permanent registration)
-src/harness/launch.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
-src/harness/launch.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/harness/launch.rs:CodexLaunchForm — to-migrate: ht-poh.2.2 launch/CLI projections
-src/harness/launch.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/harness/launch.rs:codex_guard — to-migrate: ht-poh.2.2 launch/CLI projections
-src/harness/launch.rs:scoped_codex_cwd — to-migrate: ht-poh.2.2 launch/CLI projections
+src/harness/launch.rs:Claude — frozen-wire: V1 bootstrap grammar, a frozen compatibility record (permanent)
+src/harness/launch.rs:Codex — frozen-wire: V1 bootstrap grammar, a frozen compatibility record (permanent)
+src/harness/launch.rs:codex_guard — frozen-wire: V1 bootstrap grammar, a frozen compatibility record (permanent)
 src/harness/mod.rs:pub mod claude; — registration: adapter module declaration (permanent registration)
 src/harness/mod.rs:pub mod claude_mod; — registration: adapter module declaration (permanent registration)
 src/harness/mod.rs:pub mod codex; — registration: adapter module declaration (permanent registration)
