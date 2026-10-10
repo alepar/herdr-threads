@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "claim": "The design does not specify capability negotiation for the changed ordinary-send receipt semantics, so a modern client cannot establish that an older daemon will start an unavailable recipient\u2019s ACK deadline at send time.",
+      "location": "Root spec: Message deadline contract; Invitation contract protocol negotiation; Risks and mitigations",
+      "category": "domain:protocol-evolution-and-data-migrations",
+      "external": false,
+      "evidence": "The message contract promises \u201cFor every new durable ACK-required ordinary send\u201d an original deadline at \u201ccanonical committed send time plus that duration\u201d, including \u201cno binding\u201d and \u201cunavailable binding\u201d. The explicit compatibility mechanism instead appears under invitations: \u201cnegotiate protocol capability/version before any mutation requiring the new representation\u201d; subtree validation likewise requires negotiation for \u201cnew incompatible fields\u201d. Ordinary ACK-required sends need not contain any new invitation field or new representation, yet their old availability-deferred semantics are precisely what this redesign changes. An old daemon can therefore accept a wire-compatible ordinary send while failing the new deadline contract unless a receipt-semantics capability/version gate or an explicit mixed-version limitation is specified. No such gate or mixed-version receipt test is named in the settled artifact.",
+      "kind": "GAP"
+    }
+  ]
+}

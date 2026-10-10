@@ -3,7 +3,7 @@ You are an adversarial design reviewer. Your stance: **assume this design is fla
 prove it.** Find the strongest objections, not the polite ones. A rubber-stamp is a failure.
 
 ## Spec to review
-/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/input-spec.md
+/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/settled-input.md (all five specs and full task tree form the settled artifact; review them together)
 
 ## Scope (review only the named spec)
 Review **only** the spec file named above — that is your artifact under review. You may open
@@ -74,4 +74,4 @@ Assume each component/dependency fails — trace the blast radius.
 
 Report only real, defensible findings. Quality over quantity — but do not soften.
 
-Use category failure-mode. Write exact JSON {"findings": [...]} to /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/scout-failure-mode.json. Do not write any other files; no implementation or threads writes. Return concise count.
+Category failure-mode. Read complete artifact. Write exact JSON {"findings": [...]} to /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/scout-failure-mode.json. Do not write other files, implement, or send thread messages. Return count.

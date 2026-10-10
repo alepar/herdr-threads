@@ -1,0 +1,658 @@
+
+You are the final gate of an adversarial review pipeline. You receive findings that have
+already been merged, suggested-severity-ranked, and independently verified by a
+seat-differentiated judge panel. Your job is to issue the final per-finding verdict and
+severity, and assemble the human-facing report. You do NOT re-derive findings from
+scratch — you reason over the evidence the seats already gathered. You do NOT rubber-stamp
+panel arithmetic when the evidence in front of you contradicts it, and you do NOT silently
+drop or silently confirm anything uncertain.
+
+## Judged findings (packets)
+[
+  {
+    "claim": "The bounded-time warning promise relies on fair, sufficiently frequent progress through overdue work, but the design specifies neither a detection-lag bound nor a backlog-progress test that establishes that assumption.",
+    "location": "Root design (settled-input.md): Goal; Message deadline contract; Risks and mitigations; task-tree ht-0lo.1.2 and ht-0lo.1.3",
+    "category": "domain:durable-messaging",
+    "external": false,
+    "evidence": "The Goal promises a 'bounded-time warning', and the message contract distinguishes 'bounded deadline detection' from deferred native submission. Historical dormant obligations are backdated and 'Already expired rows become due on the normal bounded scan'; the risk mitigation says to 'bound scan work'. These requirements bound work per scan, but do not state how soon successive scans execute, how a cursor makes fair progress through an upgrade burst, or a maximum delay between an overdue deadline and durable warning creation. The listed tests exercise individual unavailable recipients, restart, and a 'bounded warning burst', without requiring a multi-batch backlog to drain while native wakes remain blocked or newer due work arrives. For the promised detection bound to hold, overdue discovery must continue independently of blocked delivery and make fair progress under a stated workload bound; that assumption is not demonstrated by the artifact. No supported historical backlog size, new-send arrival rate, or minimum scan service rate is specified, and the stated bounded warning burst test has no measurable maximum per-obligation warning-creation delay.",
+    "kind": "UNVERIFIED-ASSUMPTION",
+    "spike": {
+      "question": "What upper bound on durable warning creation follows from the scanner cadence, batch size, and supported overdue backlog, independently of native wake admission?",
+      "cheapest_test": "Seed a supported sparse and physical historical overdue backlog larger than several scanner batches, block native delivery to recipients and originators, continuously add short-deadline receipts and timed invitations, and restart between batches. Measure maximum durable warning-creation delay for both original and newly due obligations, eventual discovery, and daemon responsiveness against a declared scan-count or time bound.",
+      "kill_criteria": "Reject the bounded-time claim if blocked delivery, restart, historical backlog, or continuing arrivals can starve any eligible obligation or exceed the declared detection-lag bound under the supported workload; define the load/latency contract and scheduler fairness or narrow the promise."
+    },
+    "suggestedSeverity": "Blocking",
+    "id": "R1-1",
+    "tier": "panel",
+    "votes": [
+      {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Internal unverified assumption, not a demonstrated implementation bug. The root Goal promises a 'bounded-time warning'; Message deadline contract expressly retains 'bounded deadline detection' while excluding only bounded native submission. The same contract backdates every formerly dormant obligation and says expired rows become due on the 'normal bounded scan'; Risks acknowledges an upgrade warning burst and mitigates it only with 'bound scan work'. Receipts task ht-0lo.1.2 owns bounded indexed due discovery and tests warnings pending during blocked native wake; ht-0lo.1.3 tests a bounded warning burst. Across the complete settled artifact there is no scanner cadence, maximum detection lag, backlog-dependent bound, explicit fair continuation invariant, or multi-batch completion acceptance test. Concrete dependency: an upgrade yields more expired obligations than one bounded scan can process; an obligation beyond the first batch cannot receive its durable warning until later scan progress. If blocked wake work or repeated selection of previously processed overdue work prevents that progress, its deadline stays expired indefinitely despite the running daemon. That contradicts the stated bounded detection requirement even though native submission is correctly deferred. The design requires the desired result but supplies no scheduler/progress contract or acceptance evidence excluding this failure. A finite multi-batch backlog test with blocked native wakes and an explicit maximum scan-count lag would resolve the material uncertainty without demanding unlimited-load guarantees. Should-fix rather than Blocking because the artifact does not demonstrate that the existing scanner actually lacks fairness or is coupled to native admission."
+      },
+      {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Checked the complete settled-input.md. (a) The equivalent mechanisms are present as 'normal bounded scan', 'due cursors', 'bounded indexed due discovery', historical 'materialize/index due work', scheduler tests, and ht-0lo.1.3's 'bounded warning burst'. These establish discovery ownership and bounded work, but none states a scan cadence, fair multi-batch progress rule, detection-lag bound, or a test asserting backlog progress independently of deferred native delivery. (b) The contract expressly permits delayed native key submission, while expressly retaining 'bounded deadline detection'; this exception cannot justify indefinitely delayed durable warning creation. A6 permits explicit progress-based extensions, not scanner starvation. (c) No supported backlog/load bound or exclusion of historical bursts is stated; upgrade bursts are explicitly in scope. An unlimited-load SLA would exceed what is reasonable here, but a stated finite operating assumption and a multi-batch progress test do not. (d) The gap affects the core promised bounded handoff outcome: send-anchored deadlines alone cannot establish when overdue warnings become durable when historical work spans scans. The finding therefore survives refutation as an unverified design assumption. Should-fix rather than Blocking: the artifact specifies indexed discovery and existing scanning, and does not demonstrate an actual starvation defect; establish the finite-load progress/latency contract and its test before relying on the bounded-time promise."
+      },
+      {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Verified against the complete settled-input.md and searched for scan/cursor, cadence/interval/tick, batch/backlog, fairness/starvation, latency/lag and equivalent progress mechanisms. The root Goal (line 41) promises a bounded-time warning; line 62 explicitly preserves bounded deadline detection while excluding bounded native submission. Lines 60 and 112 require historical overdue work on the normal bounded scan and bound scan work, but neither defines successive-scan progress or a warning-creation delay bound. The receipt subtree and ht-0lo.1.2 (lines 144, 681) require bounded indexed discovery and tests with unavailable recipients/blocked native wake, while ht-0lo.1.3 (line 369) names a bounded warning burst; none requires multi-batch backlog progress or establishes a bound under continuing due arrivals. Thus bounded work per invocation is specified without an explicit temporal/fair-progress contract or validation for the newly introduced upgrade burst. This is material to the stated bounded detection promise, not a request for bounded native delivery or unlimited scale. Should-fix: define the intended operating assumptions and progress bound and exercise multiple batches independently of native wake; the artifact alone does not establish that failure is likely enough to justify Blocking."
+      }
+    ],
+    "valid": 3
+  },
+  {
+    "claim": "The design leaves unspecified whether a confirmation committed after its deadline but before overdue scanning must create a missed-deadline warning or may settle silently.",
+    "location": "Root design: Message deadline contract and Invitation contract; acceptance and validation",
+    "category": "completeness",
+    "external": false,
+    "evidence": "The receipt contract says 'An overdue warning says confirmation missed its deadline' and 'Late ACK clears the existing warning through normal lifecycle'; the invitation contract says 'Only explicit recipient acceptance settles it automatically' and 'Expiry notifies its originating seat'. The tests exercise expiry then late ACK/acceptance, but no rule or scenario handles deadline < confirmation commit < first due-scan transaction, where no existing warning is available to clear. Both suppressing the warning because the row is now terminal and recording that the deadline was missed fit separate clauses. An atomic transition rule and boundary/race tests are needed to define the externally visible outcome.",
+    "kind": "GAP",
+    "suggestedSeverity": "Should-fix",
+    "id": "R1-2",
+    "tier": "panel",
+    "votes": [
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The proposed schedule is possible, but the demonstration does not reach a violation of the settled contract. Root Goal conditions the warning on receipt/acceptance being 'unconfirmed'; Message deadline contract makes expired pending rows due on the 'normal bounded scan', preserves terminal states, and says 'Late ACK clears the existing warning through normal lifecycle'. Invitation contract expressly says 'Only explicit recipient acceptance settles it automatically'; the invitation subtree likewise says timed invitations 'settle at acceptance'. Thus, at t0 an obligation is created with deadline D; at D it remains pending; at D+epsilon a genuine ACK/explicit acceptance settles it; at the next bounded scan it is already confirmed. Silent settlement does not reset D, invent confirmation, omit a still-pending overdue obligation, or lose an existing warning. Conversely, opening then passively clearing a warning also implements the specified lifecycle. The finding's final step needs an additional requirement that every historical deadline crossing produce a durable missed-deadline record even when genuine confirmation precedes observation. Neither the root acceptance clauses nor the receipt/invitation subtrees state that audit guarantee. The spec's 'Expiry notifies' and warning wording describe overdue notification, not an atomic historical-event ledger independent of settlement. A boundary test could document an implementation choice, but its absence does not establish a material gap against the stated bounded pending-confirmation contract."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "(a) Equivalent semantics are present: the receipts subtree goal applies to 'Every pending ACK-required message'; the root explicitly preserves terminal states and says 'Late ACK clears the existing warning through normal lifecycle'. Invitations state 'Only explicit recipient acceptance settles it automatically', without a before-deadline condition, and the subtree says timed invitations 'settle at acceptance'. Thus confirmation ends a pending obligation; due scanning discovers outstanding work, rather than necessarily synthesizing a historical warning after settlement. (b) The stated goal is a bounded-time warning 'when receipt or explicitly requested invitation acceptance is unconfirmed', and the root expressly uses the 'normal bounded scan'. 'An overdue warning says confirmation missed its deadline' constrains a warning's meaning; it does not require a warning for every historical miss after confirmation has already settled the obligation. (c) Requiring an atomic late-confirmation transition that always records a missed-deadline warning adds a deadline-audit guarantee absent from this scope. (d) The proposed race has already obtained the requested receipt/acceptance before warning discovery, so the sender no longer needs the recovery attention that this design promises. A boundary test could clarify implementation expectations, but the claimed mandatory historical warning rule is not a material missing requirement."
+      },
+      {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Verified against the complete settled artifact (6c74fa0a), including all five specs, task tree and coverage context, and searched deadline/expiry, scan/due, late/accept/settle/terminal, atomic/transaction and boundary/race mechanisms. The root requires send-anchored deadlines, says an overdue warning reports 'confirmation missed its deadline', and says 'Late ACK clears the existing warning through normal lifecycle'; invitation acceptance automatically settles while expiry notifies the originating seat. The receipt leaf requires sends 'through expiry and late ACK'; the invitation leaf requires 'acceptance clears'; integration likewise requires late confirmation to clear passively. None defines whether an ACK/accept committed after the effective deadline but before first due processing must atomically record the missed deadline or may terminalize the obligation without any warning. Upgrade terminal-state preservation and transactional schema markers address historical migration, not this ordering. This is material to the stated bounded confirmation-warning contract: the same missed deadline can produce or omit durable originator attention depending on scanner ordering. Specify the chosen outcome and test confirmation-before-scan versus scan-before-confirmation."
+      }
+    ],
+    "valid": 3
+  },
+  {
+    "claim": "The design leaves the ownership policy undefined when a recorded stable hook group is removed and independently recreated with identical bytes while its manifest remains.",
+    "location": "settled-input.md, root design, Stable hook entrypoints and ownership; Risks and mitigations",
+    "category": "domain:native-hook-configuration-ownership",
+    "external": false,
+    "evidence": "The spec says 'Remove the per-install UUID shell comment ... not the manifest installation identity', 'Persist exact installed groups/fingerprints and installation ID in ownership records', 'Existing unmanaged identical groups are foreign: do not adopt, overwrite, remove or treat them as owned', and 'Unsetup removes only exactly owned records'. Consider setup recording group G, then a same-user settings edit deleting G and independently inserting the same stable group at the same position, leaving the manifest intact. Group bytes, position and manifest installation ID match the untouched-install case, but the replacement is independently created. The listed ownership evidence cannot distinguish these histories. The spec does not state an accepted observational-ownership limit or another continuity signal, although it promises conservative foreign-group detection after removing the embedded installation marker. This is a configuration provenance ambiguity, not an adversarial-caller issue.",
+    "kind": "UNVERIFIED-ASSUMPTION",
+    "spike": {
+      "question": "Does ownership intentionally follow exact current configuration plus a retained manifest, including independently recreated identical groups, or must independent replacements remain foreign?",
+      "cheapest_test": "In isolated configuration, install a stable group, retain the manifest, remove and recreate the group byte-for-byte at its original position, then run reinstall and unsetup; compare with an untouched installation.",
+      "kill_criteria": "If the same observations authorize removing the independent replacement while the contract still calls it foreign, the stated ownership guarantee needs an explicit accepted limit or additional continuity mechanism."
+    },
+    "suggestedSeverity": "Should-fix",
+    "id": "R1-3",
+    "tier": "panel",
+    "votes": [
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The concrete history is observationally indistinguishable, but the reproduction fails at the required final contradiction. The root's Stable hook entrypoints and ownership section explicitly selects 'manifest-owned registrations', says to 'Persist exact installed groups/fingerprints and installation ID in ownership records', and requires reinstall to reuse 'its existing exact owned group'. Its foreign-group prohibition applies to 'Existing unmanaged identical groups'. A byte-identical group at the recorded position with the retained matching installation manifest still satisfies the design's recorded ownership evidence; the spec does not classify it as unmanaged solely because a user removed and reinserted its bytes between observations. Unsetup of that exactly recorded group therefore does not contradict 'Unsetup removes only exactly owned records'. The hooks subtree and ht-0lo.4.2 similarly require manifest-recorded exact ownership and protection of foreign/drifted groups, without adding historical edit-continuity detection. Confirming would require importing the unstated requirement that independent reconstruction revokes retained manifest ownership even when no observable drift remains. The inability to distinguish those histories is real, but no stated requirement makes that distinction necessary."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "(a) Present under another name: root Options decision 3 explicitly chooses \"manifest-owned registrations\"; Stable hook entrypoints and ownership specifies \"Persist exact installed groups/fingerprints and installation ID in ownership records\", and the hooks subtree/task ht-0lo.4.2 calls this \"manifest-recorded exact ownership/install identity\". This is the ownership evidence the finding describes, not a missing continuity mechanism. (b) Within contract: the foreign-group protection explicitly applies to \"Existing unmanaged identical groups\". In the proposed history the installation manifest remains and the current group exactly matches its recorded group, so the finding has not established that the replacement is unmanaged under the chosen manifest ownership semantics. The spec does not declare that any intervening manual deletion invalidates a retained ownership record. (c) Scope: requiring discovery of unobserved byte-identical delete/recreate history adds historical provenance tracking beyond the specified exact manifest/group ownership contract; the cooperative profile does not supply that requirement. (d) Materiality: removal of genuinely unmanaged identical groups or drift would violate stated outcomes, but this example supplies neither missing ownership records nor observable drift, and establishes no distinct required outcome from an untouched exact manifest-owned installation. An explicit observational-limit sentence could clarify the design, but the finding does not demonstrate a material gap against its stated contract. Internal structural judgment; no external facts relied on."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The quoted premises are present (settled-input.md lines 51, 86, 106 and 112), but the load-bearing premise that an independently recreated exact match with its ownership manifest retained must count as unmanaged/foreign is not established. The selected design explicitly chooses manifest-owned registrations (line 51), persists exact installed groups/fingerprints plus installation ID, and reuses an existing exact owned group (line 86). Its foreign-group rule applies to existing unmanaged identical groups; the scenario retains the management record and every exact recorded observation. I read the complete settled artifact and searched ownership, manifest, foreign, recreation, continuity, observation, fingerprints, identical groups, markers and limits; it supplies no stronger historical-origin guarantee making that retained-manifest match foreign. Demanding detection of an unobserved remove-and-byte-identical-recreate history therefore adds a continuity guarantee beyond the stated manifest/exact-match ownership contract. The indistinguishable histories are real, but do not demonstrate material violation or an undefined implementable policy under this spec."
+      }
+    ],
+    "valid": 3
+  },
+  {
+    "claim": "The design does not specify capability negotiation for the changed ordinary-send receipt semantics, so a modern client cannot establish that an older daemon will start an unavailable recipient\u2019s ACK deadline at send time.",
+    "location": "Root design: Message deadline contract; Invitation contract capability negotiation; Risks and mitigations; receipt task ht-0lo.1.1; invitation task ht-0lo.2.1",
+    "category": "domain:protocol-evolution-and-data-migrations",
+    "external": false,
+    "evidence": "The message contract promises \u201cFor every new durable ACK-required ordinary send\u201d an original deadline at \u201ccanonical committed send time plus that duration\u201d, including \u201cno binding\u201d and \u201cunavailable binding\u201d. The explicit compatibility mechanism instead appears under invitations: \u201cnegotiate protocol capability/version before any mutation requiring the new representation\u201d; subtree validation likewise requires negotiation for \u201cnew incompatible fields\u201d. Ordinary ACK-required sends need not contain any new invitation field or new representation, yet their old availability-deferred semantics are precisely what this redesign changes. An old daemon can therefore accept a wire-compatible ordinary send while failing the new deadline contract unless a receipt-semantics capability/version gate or an explicit mixed-version limitation is specified. No such gate or mixed-version receipt test is named in the settled artifact. The receipt migration uses a local schema/semantics marker, which does not establish the semantics supported by a connected older daemon; the task tree names invitation capability negotiation but no mixed-version ordinary-send test.",
+    "kind": "GAP",
+    "suggestedSeverity": "Should-fix",
+    "id": "R1-4",
+    "tier": "panel",
+    "votes": [
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The proposed reproduction breaks at the mixed-version connection premise. The settled artifact requires the redesigned canonical store to assign every new ACK-required ordinary send a send-time deadline (root Message deadline contract), and ht-0lo.1.1 owns that projection; ht-0lo.1.3 owns upgrading the legacy store. It does not state that a modern CLI must obtain redesigned ordinary-send semantics from an unupgraded daemon, or that existing protocol/version negotiation permits that client-daemon combination. Its explicit new compatibility obligation is narrower: negotiate before mutations requiring the new invitation representation, with subtree validation likewise mentioning new incompatible fields. A wire-compatible ordinary send to an older daemon retaining older behavior is therefore a hypothetical unsupported-version scenario, not an end-to-end contradiction demonstrated against the stated scope. The absence of a dedicated receipt capability or mixed-version receipt test alone does not establish a material gap; confirmation would require a stated mixed-version ordinary-send guarantee or evidence within the named artifact that supported negotiation admits the old daemon while promising the new timer behavior."
+      },
+      {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "(a) Present under another name: searched the complete settled artifact. The root Invitation contract requires capability/version negotiation only 'before any mutation requiring the new representation'; each subtree's validation similarly limits negotiation to 'new incompatible fields'. The Risks paragraph concerns additive fields and old peers. ht-0lo.2.1 owns invitation fields/capability refusal, whereas ht-0lo.1.1 owns canonical receipt projection without a receipt capability gate. The transactional schema/semantics marker establishes upgraded store projections, not the connected daemon's support. No equivalent ordinary-send semantic negotiation is specified. (b) Within contract: no mixed-version receipt exception is accepted. The Message deadline contract explicitly covers 'every new durable ACK-required ordinary send', including no binding and unavailable binding; availability cannot defer its start. Preserving legacy keyed requests/digests does not authorize availability deferral for new sends. (c) Scope: this is the ordinary receipt repair itself, not an extra receipt guarantee; the artifact already addresses old peers and refusal before unsupported mutations, and does not bound mixed-version ordinary sends away. (d) Materiality: an ordinary ACK-required send using existing wire fields can be accepted without demonstrating send-time semantics. Against an older availability-deferred daemon, a never-available recipient therefore need not produce the bounded warning that is the design's stated goal. Invitation representation negotiation does not cover an ordinary send to an already joined unavailable seat. Specify a receipt-semantics capability/version gate (and focused mixed-version coverage), or explicitly scope the receipt guarantee to upgraded daemons. Internal structural finding; no external API/library premise required."
+      },
+      {
+        "verdict": "CONFIRM",
+        "severity": "Should-fix",
+        "evidence": "Verified the complete settled artifact and searched capability, negotiation, version, old/older peers, incompatible fields, semantics and migration equivalents. Root Message deadline contract requires every new durable ACK-required ordinary send to start at canonical committed send time, including unavailable/unbound recipients. The explicit negotiation rule in Invitation contract covers mutations requiring the new representation; all subtree validation clauses cover new incompatible fields. Root Risks ties negotiation to additive fields. ht-0lo.2.1 owns invitation wire capability refusal, while ht-0lo.1.1 owns receipt projections with existing timestamps/durations and no ordinary-send capability contract or mixed-version validation. The transactionally recorded schema/semantics marker is specified for canonical manifest/physical migration, not as a negotiated peer capability. No equivalent global minimum-daemon-version requirement or accepted mixed-version receipt limitation appears. Thus the spec leaves wire-compatible ordinary sends without a specified way to ensure the changed deadline behavior on an older daemon, materially weakening its bounded confirmation promise. This is an internal protocol-contract omission, not a claim about an external library or API."
+      }
+    ],
+    "valid": 3
+  },
+  {
+    "claim": "The design adds a second permanent public hook invocation syntax without establishing why generating stable per-event commands with the existing hook HARNESS --event EVENT syntax cannot satisfy the same contract.",
+    "location": "settled-input.md: root design, Options and decisions item 3; Stable hook entrypoints and ownership; hooks subtree, Stable native event dispatch and command generation",
+    "category": "yagni",
+    "external": false,
+    "kind": "GAP",
+    "evidence": "The design explicitly preserves existing `hook HARNESS --event EVENT` registrations while introducing `herdr-threads hook-event HARNESS EVENT`. Its stated stability rule depends only on executable spelling, canonical route, harness and event; it separately identifies the per-install UUID shell comment as the changing component to remove. The options compare random owner comments, sidecar scripts and dedicated CLI entrypoints, but omit generating deterministic commands through the already event-specific syntax. The hooks task then owns the additional parser/dispatch surface, and registry/help/canary expectations must adopt its command grammar while legacy syntax remains supported. No stated semantic difference between the two invocation forms explains that additional permanent interface. Evaluate the existing syntax with UUID-free manifest-owned command generation before committing to the additional command.",
+    "suggestedSeverity": "Should-fix",
+    "id": "R1-5",
+    "tier": "panel",
+    "votes": [
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The structural observation is accurate: root Options and decisions item 3 selects dedicated CLI entrypoints without comparing deterministic generation through the existing event syntax, and Stable hook entrypoints and ownership explicitly retains hook HARNESS --event EVENT while adding hook-event HARNESS EVENT. However, the requested reproduction fails at the final requirement-contradiction step. The root goal and Acceptance and validation require byte-identical per-event commands across equivalent reinstalls, conservative ownership/migration, routing safety and native trust boundaries; none requires a single public invocation form or minimum parser surface. The selected new form can satisfy those requirements, and legacy support satisfies the explicit compatibility rule. The hooks subtree and ht-0lo.4.1/.4.2 assign parser/dispatch, registry/help/canary and migration work rather than leaving those consequences unowned. The finding establishes an alternative worth considering and possible maintenance cost, but no concrete failure against a stated contract or significant demonstrated rework. Treating the omitted alternative as a material gap would add an unstated interface-minimization requirement."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "(a) The whole settled artifact consistently specifies the new hook-event parser as consuming the existing harness registry/canonical routing, while retaining legacy hook syntax; it does not supply a semantic reason the old event-specific spelling could not also be deterministic. That omission is literal. (b) Root Options and decisions item 3 explicitly selects dedicated stable CLI entrypoints, and Stable hook entrypoints and ownership explicitly requires both the new surface and backward compatibility. Two accepted spellings are therefore an intentional contract choice, rather than a violation of its stability requirement. (c) Considering reuse of the old syntax is within the design topic, but the spec imposes no requirement to minimize public spellings or prove every alternative incapable. (d) The finding demonstrates neither broken command stability, ownership/trust safety, dispatch correctness nor significant added implementation risk: both spellings can consume the already specified registry, and command-dependent tooling needs its per-event update regardless. Requesting a missing comparison is a design-rationale suggestion, not a material gap under this review contract. The immateriality and explicit-choice refutations land; no external facts are needed."
+      },
+      {
+        "verdict": "REJECT",
+        "severity": "FYI",
+        "evidence": "The factual premises hold: settled-input.md:51 explicitly selects dedicated CLI event entrypoints; :84 introduces hook-event HARNESS EVENT while preserving hook HARNESS --event EVENT, and :86 identifies the UUID comment as the changing command component. Searching the complete artifact for hook, syntax, entrypoint, codec, grammar, UUID, deterministic generation and alternatives finds no distinct semantic requirement that the new spelling satisfies. However, that omission does not establish a material gap against this spec: a dedicated stable public entrypoint is itself an explicit selected design contract, and legacy compatibility is expressly required. The proposed existing-syntax alternative may simplify the design, but the finding demonstrates neither a violated requirement nor significant risk/rework from the additional parser surface. Requiring an exhaustive justification of why another spelling cannot work adds a review criterion the stated contract does not impose."
+      }
+    ],
+    "valid": 3
+  }
+]
+
+Each packet has the finding's own fields (`claim, location, category, external, evidence,
+suggestedSeverity`, optionally `kind`/`spike`), plus:
+- `votes`: an array of seat verdicts, each `{verdict: "CONFIRM"|"REJECT"|"UNVERIFIED",
+  severity, evidence}`. A seat that failed to return appears as `null` in this array. For
+  `panel` and `promoted` tier packets, `votes[]` is positional and matches the engine's
+  `panel()` dispatch order: index 0 is the **reproduce** seat, index 1 is the **refute**
+  seat, index 2 is the **ground** seat.
+- `tier`: `"panel"` (3 seats, for a Blocking/Should-fix candidate), `"spot"` (1 refute-seat
+  check of a Nit/FYI candidate), `"promoted"` (a spot-checked finding whose spot-check
+  escalated it to a full panel), or `"beyond-cap"` (a severe candidate the panel cap left
+  unverified — `votes` is always `[]` and `valid` is always `0`; it was never dispatched to a
+  judge at all).
+- `valid`: count of non-null votes.
+
+## Environment profile
+Internal, cooperative same-user coordination CLI with durable message data and real native configuration ownership. No adversarial caller-authentication requirement is implied. Receipt and invitation confirmation deadlines are core behavior; data/configuration safety and explicitly stated core-purpose floors remain binding.
+
+## Run context (use verbatim in the report header — do not re-derive or invent these)
+mode: design
+iteration: 1 of 3
+inputs: settled 6c74fa0a: all five handoff-delivery-redesign specs, exact full task-tree.json, coverage-ledger.md, author-refinements.md, coverage-changes.md and coverage-round-2 summaries; baseline 7c40c83c028d4a1a7650d6a58e92cd0bdedd3cdb
+
+## Coverage (engine-computed, before this call)
+{
+  "triageDead": false,
+  "triageAdopted": true,
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "scoutNames": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "domain:durable-messaging",
+    "domain:protocol-evolution-and-data-migrations",
+    "domain:native-hook-configuration-ownership"
+  ],
+  "raw": 11,
+  "deduped": 5,
+  "dedupeDead": false,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "panel": 5,
+  "spot": 0,
+  "promoted": 0,
+  "judgesDispatched": 15,
+  "judgesValid": 15,
+  "judgeCompletionPercent": 100,
+  "seatRetries": 0,
+  "inputCommit": "6c74fa0a",
+  "source": "manual fan-out, fresh fork:none agents"
+}
+
+## Prior report (previous iteration, may be empty)
+
+
+## Step 1 — Per-finding verdict
+
+**Packets with `tier: "beyond-cap"` are exempt from this entire step.** They were never
+dispatched to a judge — there is no verdict to assign and no arithmetic to apply. List each
+one directly under "## Not verified (beyond panel cap)" in Step 6, by its `suggestedSeverity`
+and `claim`/`location` — do not attempt to verify it, do not move it to Confirmed or
+Escalations, and do not drop it.
+
+**Order of application (apply in this order, every time — never infer an order yourself)
+— for every other tier:**
+1. **Escalation conditions** (below) — checked first, against every finding regardless of
+   tier.
+2. **Tier routing** (`panel`/`promoted` vs. `spot`) — checked second, for whatever the
+   escalation check didn't already claim.
+3. **Panel arithmetic** — applied last, only to what's left.
+
+**The escalation bullets override everything below them.** If a finding matches an
+escalation condition, it goes to Escalations — full stop — even when the arithmetic alone
+would say confirmed, even when the tier alone would say Unverified nits. Escalation is
+never something the arithmetic or tier routing can override; it only ever runs the other
+way.
+
+Never silently drop a finding and never silently confirm one out of uncertainty. A finding
+escalates if **any** of these hold:
+- Any `panel` or `promoted` finding with `valid` < 3 (a dead seat) → **Escalations**, not
+  confirmed, not rejected, not dropped.
+- Any finding — any tier, including `spot` — where `external` is true and any vote is
+  `UNVERIFIED` → **Escalations**. This includes a `spot` finding that is external with an
+  UNVERIFIED vote: it does NOT go to "Unverified nits" just because it's spot-tier —
+  Escalations wins, because an unresolved external premise needs a human either way,
+  regardless of how much verification depth the finding was routed to receive.
+  Concretely: reproduce and ground CONFIRM a Blocking finding while refute returns
+  UNVERIFIED on an external premise. Arithmetic alone reads `valid=3`, 2 CONFIRMs →
+  "confirmed" — but the escalation rule fires first because the finding is external with
+  an UNVERIFIED vote, so the correct outcome is Escalations, not confirmed.
+
+Only once no escalation condition applies do tier and arithmetic decide the finding:
+- A `spot` finding that was not promoted and does not escalate → **Unverified nits**, never
+  "confirmed" (a single refute-seat pass is not panel-strength verification).
+- A `panel` or `promoted` finding that does not escalate → **panel arithmetic**: `valid` = 3
+  and at least 2 CONFIRM votes is **confirmed**; otherwise **rejected**.
+
+You MAY overrule the arithmetic default, but ONLY with reasoning that cites specific seat
+evidence — for example, two CONFIRM votes whose shared premise the refute seat's evidence
+factually disproved, or a CONFIRM that itself concedes the refute seat's point. Never
+overrule on vibes, on your own re-reading of the spec, or on a preference for a different
+outcome — cite the seat evidence or don't overrule. An overrule only ever operates within
+step 3 (arithmetic); it cannot suppress an escalation condition from step 1.
+
+## Step 2 — Final severity
+Start from the seat severities on the confirming votes (not `suggestedSeverity`, which was
+only ever a routing hint). Then condition on the environment profile: the profile moves
+the Should-fix ↔ Nit boundary, and down-weights resilience/observability/cost findings for
+low-blast-radius projects (few users, no real money/data at stake, easy rollback). For
+every finding whose severity you demote because of the profile, state in one line which
+profile fact drove it — e.g. "demoted: profile states single-operator internal tool with
+no external users, so a missing retry-with-backoff is a Nit here."
+
+**Severity floors (profile-proof — hold under every profile):**
+confirmed injection / authZ bypass / secrets-in-code that is potentially exploitable to
+escalate privilege or reach data the invoker could not already reach — any network-exposed
+surface qualifies, and so does local tooling that runs with privileges its caller lacks;
+data-loss or irreversible-migration risk on real data; violation of the artifact's own
+stated core purpose → **Blocking under any profile.** A low-blast-radius profile can
+demote a missing circuit breaker to Nit; it can never demote an SQL injection.
+
+Apply the floors before applying any profile-driven demotion. If a finding matches a floor
+condition, its severity is Blocking regardless of what the profile says, and no one-line
+justification is needed for that floor (the floor is the justification).
+
+## Step 3 — Prior report handling
+If `` is non-empty:
+- For each finding that the prior report listed under "Confirmed findings", mark it in
+  this report as **resolved** (no longer present / fixed), **regressed** (present again
+  or fixed incompletely), or **still-open** (unchanged), based on the current packets.
+- Do NOT re-litigate any finding the prior report placed under "Rejected (with reason)" —
+  if scouts re-surfaced it anyway, note it was previously rejected and why, and leave the
+  rejection standing.
+  **Narrow exception (evidence-disciplined, mirrors the panel-overrule discipline in
+  Step 1):** a previously-rejected finding may be reconsidered ONLY when the current
+  iteration's evidence differs materially from what the prior report cited — typically
+  because the fixes changed the very code or spec text the rejection rested on — and your
+  reconsideration MUST cite that specific new evidence. Absent such a citation, the prior
+  rejection stands; do not reopen it. This exception exists because a fix can legitimately
+  turn a previously-immaterial claim into a real one — it is NOT a licence to re-argue
+  rejections you simply disagree with.
+Then compute the **delta counts** this iteration's header reports (see Step 6's
+`delta vs prior:` line) — they are what lets the caller's loop decide convergence without
+re-parsing prose:
+- `new`: confirmed findings in THIS report that the prior report does not list in any
+  section (a restatement, re-slicing, or wording-variant of a prior entry is NOT new —
+  match on substance, not wording). Track separately how many of these are Blocking.
+- `carried`: confirmed findings marked still-open from the prior report.
+- `resolved`: prior confirmed findings marked resolved.
+- `regressed`: prior confirmed findings marked regressed. Track separately how many are
+  Blocking — a regressed Blocking counts against convergence exactly like a new one.
+If `` is empty, this is iteration 1 — skip this step; there is no
+resolved/regressed/still-open tracking to do and no delta line to render.
+
+## Step 4 — Verdict line
+`<highest confirmed severity> (<n> confirmed)` if any finding confirmed, else
+`clean (<n> nits)` where n counts the Unverified-nits entries. **The word `confirmed` MUST
+appear literally in the parenthetical whenever anything confirmed** — `"Blocking (3)"` is
+wrong, `"Blocking (3 confirmed)"` is right. This is not cosmetic: a caller (e.g. super-design)
+may parse this line, and `clean (<n> nits)` deliberately does NOT carry the word `confirmed`
+since nothing did.
+Append ` [low coverage]` when any stage substantially failed: `{
+  "triageDead": false,
+  "triageAdopted": true,
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "scoutNames": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "domain:durable-messaging",
+    "domain:protocol-evolution-and-data-migrations",
+    "domain:native-hook-configuration-ownership"
+  ],
+  "raw": 11,
+  "deduped": 5,
+  "dedupeDead": false,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "panel": 5,
+  "spot": 0,
+  "promoted": 0,
+  "judgesDispatched": 15,
+  "judgesValid": 15,
+  "judgeCompletionPercent": 100,
+  "seatRetries": 0,
+  "inputCommit": "6c74fa0a",
+  "source": "manual fan-out, fresh fork:none agents"
+}`'s
+`triageDead` is `true` (triage returned nothing, so every conditional PR lane and every
+domain scout was silently skipped — the roster you see is the fallback, not a triage
+decision), any dead scout, `{
+  "triageDead": false,
+  "triageAdopted": true,
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "scoutNames": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "domain:durable-messaging",
+    "domain:protocol-evolution-and-data-migrations",
+    "domain:native-hook-configuration-ownership"
+  ],
+  "raw": 11,
+  "deduped": 5,
+  "dedupeDead": false,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "panel": 5,
+  "spot": 0,
+  "promoted": 0,
+  "judgesDispatched": 15,
+  "judgesValid": 15,
+  "judgeCompletionPercent": 100,
+  "seatRetries": 0,
+  "inputCommit": "6c74fa0a",
+  "source": "manual fan-out, fresh fork:none agents"
+}`'s `dedupeDead` is `true` (dedupe returned
+nothing on both tries despite non-empty scout input — this is a failed dedupe, not a clean
+result), any judge completion below 100% (i.e. any `valid` < the tier's full seat count
+anywhere in the packets), or zero raw findings on a non-trivial artifact. Low coverage is a fact about the run, independent of
+whether anything confirmed — append it even to a `clean` verdict.
+Append ` [panel-capped: N unverified]` when `{
+  "triageDead": false,
+  "triageAdopted": true,
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "scoutNames": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "domain:durable-messaging",
+    "domain:protocol-evolution-and-data-migrations",
+    "domain:native-hook-configuration-ownership"
+  ],
+  "raw": 11,
+  "deduped": 5,
+  "dedupeDead": false,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "panel": 5,
+  "spot": 0,
+  "promoted": 0,
+  "judgesDispatched": 15,
+  "judgesValid": 15,
+  "judgeCompletionPercent": 100,
+  "seatRetries": 0,
+  "inputCommit": "6c74fa0a",
+  "source": "manual fan-out, fresh fork:none agents"
+}`'s `beyondPanelCap` is
+non-zero, with N equal to that count. This is independent of `[low coverage]` — both
+qualifiers can appear together, and either can appear alone.
+Append ` [converged]` when ALL of these hold — it is the signal a caller's fix loop uses to
+stop iterating instead of running another round into diminishing returns:
+- `` is non-empty (never on iteration 1 — one round proves nothing about
+  convergence);
+- **no confirmed Blocking of any provenance this round** — zero new, zero regressed, AND
+  zero carried/still-open Blocking (a carried Blocking means the fix pass failed on it, and
+  the loop must keep driving it — that is the caller's no-shrink thrash exit's territory,
+  never convergence). Confirmed findings below Blocking do not block convergence;
+- neither `[low coverage]` nor `[panel-capped]` applies — a degraded round finding nothing
+  new is absence of evidence, not convergence; never emit `[converged]` alongside either.
+
+## Step 5 — Seat-agreement line
+Compute this over the population of packets whose `tier` is `panel` or `promoted` **and**
+whose `valid == 3` (all three seats returned). Call this population's size `N` — it is the
+`panels N` value in the emitted line. **When `N == 0`, omit the entire `seat-agreement:` line
+from the report** — no placeholder, no zeros line, nothing between `independence:` and
+`## Confirmed findings`.
+
+Within that population, for each packet look at the three seats' verdicts positionally
+(`votes[0]` = reproduce, `votes[1]` = refute, `votes[2]` = ground, per the packet-contract
+note above), collapsing each seat's verdict to agree/disagree pairwise:
+
+- `rr` = fraction of the N panels where the **reproduce** and **refute** seats' verdicts
+  agree with each other.
+- `rg` = fraction where the **reproduce** and **ground** seats' verdicts agree with each
+  other.
+- `fg` = fraction where the **refute** and **ground** seats' verdicts agree with each other.
+- `unanimous` = fraction where all three seats' verdicts agree.
+- `ground-loo` (leave-one-out): **restrict to the subset of the N panels where reproduce and
+  refute agree with each other.** Within that subset, compute the fraction where ground's
+  verdict matches what reproduce and refute agreed on. Report the subset's size as `(n=<subset
+  size>)` alongside the fraction. When that subset is empty, render `ground-loo n/a (n=0)`
+  instead of a fraction.
+- Per-seat verdict counts, rendered `C/R/U` (CONFIRM / REJECT / UNVERIFIED) — for each of the
+  three seats independently, count how many of the N panels had that seat vote CONFIRM, how
+  many voted REJECT, and how many voted UNVERIFIED. Render one triple per seat, in the order
+  reproduce, refute, ground.
+
+Round every fraction (`rr`, `rg`, `fg`, `unanimous`, `ground-loo`) to two decimal places.
+
+Emit exactly this line, immediately after the `independence:` line and before `## Confirmed
+findings`:
+
+```
+seat-agreement: panels N · rr <rr> · rg <rg> · fg <fg> · unanimous <unanimous> · ground-loo <ground-loo> (n=<subset size>) · reproduce <C>/<R>/<U> · refute <C>/<R>/<U> · ground <C>/<R>/<U>
+```
+
+**Worked example.** Take three panel packets (N=3) with these `votes[]` triples
+(verdict-only, in `[reproduce, refute, ground]` order):
+
+- Packet A: `[CONFIRM, CONFIRM, CONFIRM]`
+- Packet B: `[CONFIRM, REJECT, CONFIRM]`
+- Packet C: `[REJECT, REJECT, CONFIRM]`
+
+Pairwise agreement per packet (agree = same verdict):
+- reproduce vs refute: A agrees (CONFIRM/CONFIRM), B disagrees (CONFIRM/REJECT), C agrees
+  (REJECT/REJECT) → 2/3 → `rr 0.67`.
+- reproduce vs ground: A agrees, B agrees (CONFIRM/CONFIRM), C disagrees
+  (REJECT/CONFIRM) → 2/3 → `rg 0.67`.
+- refute vs ground: A agrees, B disagrees (REJECT/CONFIRM), C disagrees
+  (REJECT/CONFIRM) → 1/3 → `fg 0.33`.
+- unanimous (all three agree): only A → 1/3 → `unanimous 0.33`.
+- ground-loo: the reproduce/refute-agree subset is {A, C} (B disagrees, excluded), size 2.
+  Within {A, C}, does ground match the reproduce/refute pair's shared verdict? A: pair is
+  CONFIRM, ground is CONFIRM → match. C: pair is REJECT, ground is CONFIRM → no match. 1/2 →
+  `ground-loo 0.50 (n=2)`.
+- Per-seat C/R/U: reproduce has 2 CONFIRM, 1 REJECT, 0 UNVERIFIED → `2/1/0`. refute has 1
+  CONFIRM, 2 REJECT, 0 UNVERIFIED → `1/2/0`. ground has 3 CONFIRM, 0 REJECT, 0 UNVERIFIED →
+  `3/0/0`.
+
+Expected line:
+```
+seat-agreement: panels 3 · rr 0.67 · rg 0.67 · fg 0.33 · unanimous 0.33 · ground-loo 0.50 (n=2) · reproduce 2/1/0 · refute 1/2/0 · ground 3/0/0
+```
+
+## Step 6 — Assemble the report
+Render the full report using this template verbatim (fill the bracketed parts; keep every
+heading exactly as written). The `independence:` line is `same-family (OpenAI) — seat-differentiated panel` exactly as the
+orchestrator rendered it from the seats it actually dispatched — **never write a model family
+from assumption**: if the token reached you unrendered (the literal text `same-family (OpenAI) — seat-differentiated panel`),
+write `independence: unknown — orchestrator did not render the seat roster`, which a caller
+reads as weak, rather than guessing a family. The `iteration:` value is `1 of 3` as
+given — `N of <cap>` inside a fix loop, or `post-cap audit` for a whole-branch roast run after
+a caller's cap already tripped.
+
+---
+super-roast verdict: <Blocking (n confirmed) | Should-fix (n confirmed) | clean (n nits)> [low coverage] [panel-capped: N unverified] [converged]
+mode: design | PR        iteration: N of 3
+profile (assumed): <2–4 sentence inferred profile>
+inputs: <spec paths | branch@sha vs base@sha [+dirty] | PR#>
+delta vs prior: <X> new confirmed (<xB> Blocking) · <Y> carried (<yB> Blocking) · <Z> resolved · <W> regressed (<wB> Blocking)
+coverage: <lanes ran> · <raw → deduped → panel/spot-checked counts> · <judge completion %> · remainder-capped: N
+independence: same-family (OpenAI) — seat-differentiated panel
+seat-agreement: panels N · rr <rr> · rg <rg> · fg <fg> · unanimous <unanimous> · ground-loo <ground-loo> (n=<subset size>) · reproduce <C>/<R>/<U> · refute <C>/<R>/<U> · ground <C>/<R>/<U>   ← omit this line entirely when N == 0 (Step 5)
+
+## Confirmed findings            ← consumed by super-design, one task per finding
+- [SEV] <location> — <claim>
+  verdict: confirmed (reproduce ✓ / refute ✗-survived / ground ✓)
+  evidence: <strongest seat evidence, file:line / URL+quote>
+  fix-shape hint: <one advisory line>
+
+## Not verified (beyond panel cap)   ← severe candidates the panel cap left unverified — listed, never dropped
+- [suggested SEV] <location> — <claim>
+
+## Beyond remainder cap (count only)   ← low-severity candidates the dedupe remainder cap dropped; the count survives, the claims do not
+- <N> candidates dropped by the remainder cap — raise config.remainderCap and re-run to see them
+
+## Rejected (with reason)        ← so re-roasts don't re-litigate
+## Unverified nits (spot-checked)
+## Escalations (need human)      ← UNVERIFIED externals, incomplete panels, material dissent
+---
+
+Notes on filling it in:
+- `mode`, `iteration`, `inputs` come from the "## Run context" section above — use `design`,
+  `1 of 3`, and `settled 6c74fa0a: all five handoff-delivery-redesign specs, exact full task-tree.json, coverage-ledger.md, author-refinements.md, coverage-changes.md and coverage-round-2 summaries; baseline 7c40c83c028d4a1a7650d6a58e92cd0bdedd3cdb` verbatim. Do not re-derive them from the packets and do not
+  invent specifics; if a token arrives empty, write `not supplied` rather than a guess.
+- `profile (assumed)` is `Internal, cooperative same-user coordination CLI with durable message data and real native configuration ownership. No adversarial caller-authentication requirement is implied. Receipt and invitation confirmation deadlines are core behavior; data/configuration safety and explicitly stated core-purpose floors remain binding.`, rendered as the 2-4 sentence prose.
+- `delta vs prior` renders Step 3's delta counts with per-severity Blocking sub-counts.
+  **Iterations ≥ 2 only**: on iteration 1 omit the line entirely (there is no prior to delta
+  against — an invented `0 · 0 · 0 · 0` line would make a first look like a converged
+  round). The parenthesized Blocking sub-counts are what the `[converged]` qualifier is
+  computed from (Step 4) and what a caller's loop reads — keep the line's shape exactly.
+- `coverage` reports the pipeline funnel (raw → deduped → panel/spot-checked) and judge
+  completion percentage — read these directly off `{
+  "triageDead": false,
+  "triageAdopted": true,
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "scoutNames": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "domain:durable-messaging",
+    "domain:protocol-evolution-and-data-migrations",
+    "domain:native-hook-configuration-ownership"
+  ],
+  "raw": 11,
+  "deduped": 5,
+  "dedupeDead": false,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "panel": 5,
+  "spot": 0,
+  "promoted": 0,
+  "judgesDispatched": 15,
+  "judgesValid": 15,
+  "judgeCompletionPercent": 100,
+  "seatRetries": 0,
+  "inputCommit": "6c74fa0a",
+  "source": "manual fan-out, fresh fork:none agents"
+}`, don't re-derive them
+  from the packets (packets alone can't tell you about a dead triage, a dead scout or a dead
+  dedupe, and `beyondPanelCap` findings carry no votes to count). The trailing
+  `remainder-capped: N` term is `{
+  "triageDead": false,
+  "triageAdopted": true,
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "scoutNames": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "domain:durable-messaging",
+    "domain:protocol-evolution-and-data-migrations",
+    "domain:native-hook-configuration-ownership"
+  ],
+  "raw": 11,
+  "deduped": 5,
+  "dedupeDead": false,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "panel": 5,
+  "spot": 0,
+  "promoted": 0,
+  "judgesDispatched": 15,
+  "judgesValid": 15,
+  "judgeCompletionPercent": 100,
+  "seatRetries": 0,
+  "inputCommit": "6c74fa0a",
+  "source": "manual fan-out, fresh fork:none agents"
+}`'s `beyondCap` — print it every run, `0`
+  included.
+- **`beyondCap` and `beyondPanelCap` are two different losses — never merge them.**
+  `beyondPanelCap` findings survived dedupe with a severe suggested severity and arrive as
+  `tier: "beyond-cap"` packets, so they are listed individually under "## Not verified (beyond
+  panel cap)". `beyondCap` findings were cut by the **deduper's** remainder cap before this
+  stage: only their count reaches you, so "## Beyond remainder cap (count only)" carries the
+  number and nothing more. When `beyondCap` is `0`, write `- none` under that heading; when it
+  is non-zero, state the count. Either way the heading stays — a silently omitted section is
+  how a dropped finding becomes invisible.
+- Every packet with `tier: "beyond-cap"` goes under "## Not verified (beyond panel cap)",
+  rendered as `- [suggested SEV] <location> — <claim>` using its `suggestedSeverity` — labelled
+  "suggested" because it was never verified, not as a confirmed severity. List every one; this
+  section exists so the panel cap never silently drops a severe candidate.
+- Each "Confirmed findings" entry's `verdict:` line records which seats landed where —
+  `reproduce ✓` if that seat's vote was CONFIRM, `refute ✗-survived` if the refute seat's
+  REJECT attempt failed to kill the finding (i.e. refute seat CONFIRMed or the finding
+  survived its checks), `ground ✓` if the ground seat CONFIRMed. Use the actual per-seat
+  votes from `votes[]` — do not fabricate a seat's outcome.
+- `fix-shape hint` is advisory only — describe the shape of a plausible fix in one line,
+  not a full implementation. It is a hint for whoever fixes this, not a prescription.
+- Every finding placed in Escalations by Step 1 must appear under "## Escalations (need
+  human)" with a one-line reason (dead seat / UNVERIFIED external / material dissent
+  between seats you chose not to resolve).
+- Findings marked resolved/regressed/still-open per Step 3 are noted inline in whichever
+  section they land in this iteration (e.g. a still-open confirmed finding keeps its
+  "## Confirmed findings" entry and adds "(still-open, see iteration N-1)").
+
+## Output contract (exact — return one JSON object matching this shape, no prose outside it)
+`{"verdict": <string>, "reportMarkdown": <string>, "confirmedCount": <integer>, "escalations": [<string>, ...]}`
+
+- `verdict`: the verdict line from Step 4, exactly as it appears in the report header
+  (e.g. `"Blocking (2 confirmed)"`, `"clean (3 nits)"`, `"Should-fix (1 confirmed) [low
+  coverage]"`, `"Blocking (2 confirmed) [panel-capped: 3 unverified]"`,
+  `"Should-fix (2 confirmed) [converged]"`).
+- `reportMarkdown`: the entire rendered report from Step 6, as one markdown string.
+- `confirmedCount`: integer count of entries under "## Confirmed findings".
+- `escalations`: array of one-line strings, one per entry under "## Escalations (need
+  human)" — the same reasons that appear in the report, so callers can act on them without
+  parsing markdown.
+
+Never use `blocker`, `major`, `minor`, `BLOCK`, `REVISE`, or `PASS` — those vocabularies are
+retired. Use only `Blocking | Should-fix | Nit | FYI`.
+
+Write exact output JSON to /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/reporter-result.json and its reportMarkdown verbatim to /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-roast-design-1.md. No other writes. Read named input if necessary to assess seat evidence, but do not invent new findings. Explicitly resolve dissent from seat evidence or escalate; apply severity floors before profile demotion. Coverage is complete. Return verdict and counts.

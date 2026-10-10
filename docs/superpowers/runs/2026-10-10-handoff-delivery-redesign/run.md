@@ -16,4 +16,8 @@ approvals:
 - coverage-round-2 · requirements: 36 · mapped: 36 · unmapped: 0 · auto no new findings; C1/A1/A2/A3 verified closed by three valid independent reviews across root and three changed subtrees; trajectory 1 → 0; novel 0 (empty set); no degradation; source coverage-round-2/summary.md
 - top-split · ht-0lo.1 PROMOTE, ht-0lo.2 PROMOTE, ht-0lo.3 PROMOTE, ht-0lo.4 PROMOTE, ht-0lo.5 LEAF · exact settled split including required terminal integration sweep approved under the user’s explicit full-autonomy delegation; parent owns onward handoff
 
-roastDesignRound: 1
+- round1 · Blocking (2 confirmed) · R1-1 → ht-0lo.6 design contract applied; implementation .1.2/.1.3/.2.2 · R1-4 → ht-0lo.7 capability contract applied; implementation .1.1/.3.2 · no escalations/unverified/qualifiers · same-family OpenAI panels15/15 valid
+- top-split · ht-0lo.1 PROMOTE, ht-0lo.2 PROMOTE, ht-0lo.3 PROMOTE, ht-0lo.4 PROMOTE, ht-0lo.5 LEAF, ht-0lo.6 LEAF (closed design fix), ht-0lo.7 LEAF (closed design fix) · exact updated child set accepted under explicit fully autonomous user delegation
+
+roastDesignRound: 2
+roast-design: 2026-10-10-handoff-delivery-redesign-roast-design-1.md

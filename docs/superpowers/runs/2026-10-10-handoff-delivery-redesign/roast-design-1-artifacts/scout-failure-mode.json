@@ -1,0 +1,25 @@
+{
+  "findings": [
+    {
+      "claim": "The compatibility contract does not explicitly gate ordinary ACK-required sends on support for send-time receipt semantics, leaving a mixed-version client/daemon path that can retain the old availability-dependent timer without rejecting the send.",
+      "location": "Root design: Message deadline contract; Invitation contract capability negotiation; task ht-0lo.1.1",
+      "category": "failure-mode",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "The root requires \"For every new durable ACK-required ordinary send\" a deadline at committed send time, while the explicit negotiation rule is \"before any mutation requiring the new representation\" in the invitation section. The ordinary receipt change is a semantics change using existing immutable send timestamps/durations, and ht-0lo.1.1 owns projection/schema/preparation but specifies no receipt-semantics capability or mixed-version ordinary-send test. An ordinary send need not contain the new invitation representation, so negotiating that representation alone does not prove that its daemon starts dormant receipt timers at send time. The design needs an explicit version/capability refusal covering this behavior as well, or an explicit supported mixed-version limit."
+    },
+    {
+      "claim": "The bounded-time warning promise assumes the bounded due scanners can drain overdue work fast enough during historical backfill, but the design gives no detection-latency bound or load test to establish that assumption.",
+      "location": "Root design: Goal; Message deadline contract; Risks and mitigations; task ht-0lo.1.3",
+      "category": "failure-mode",
+      "external": false,
+      "kind": "UNVERIFIED-ASSUMPTION",
+      "evidence": "The goal promises a \"bounded-time warning\" and the receipt section calls this \"bounded deadline detection\". Historical dormant obligations are all assigned historical send-time deadlines, with already expired rows due on the \"normal bounded scan\". The risk mitigation is only \"bound scan work\", and ht-0lo.1.3 requests a \"bounded warning burst\" without a backlog size, fairness rule, scan cadence, throughput requirement or maximum delay for a new deadline behind the historical backlog. Bounded work per iteration protects the daemon but does not itself establish a bounded delay to creating an individual warning when overdue work accumulates. What must be true is that scanner scheduling and backlog handling retain a stated detection-latency guarantee under the supported history size and new-send rate.",
+      "spike": {
+        "question": "What maximum warning-creation delay is promised while the upgrade backlog is being drained?",
+        "cheapest_test": "Populate a large supported sparse/physical historical dormant-receipt backlog, run the normal capped scanner, inject new short-deadline sends and timed invitations during drainage, and measure their warning-creation delays and normal request latency.",
+        "kill_criteria": "New deadline detection exceeds the declared latency budget or overdue obligations can be starved by continuing work; either change scheduling/backfill or narrow the advertised bounded-time contract."
+      }
+    }
+  ]
+}

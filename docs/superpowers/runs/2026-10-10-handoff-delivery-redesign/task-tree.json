@@ -2,7 +2,7 @@
   {
     "id": "ht-0lo.5",
     "title": "Integration sweep: handoff delivery redesign",
-    "description": "owns: remaining cross-feature integration wiring, documentation consistency and end-to-end tests no owning leaf covers; consumes: all implementation leaves. Verify long durable inbox handoff, all native delivery paths, send-time unavailable-recipient expiry, lazy/timed invitation acceptance and independent sender warnings, retained keyed retry and stable per-event owned hooks. Fix small integration gaps inline; file blockers for larger discoveries. Run focused isolated tests, cargo fmt, nice cargo clippy --locked --all-targets --all-features -- -D warnings and nice scripts/check-default-features on the final candidate. Do not run the routine full suite while ht-zo4 restriction remains. Tests own/tag/stop all children/private sessions and never alter shared server or real user configs. Files: integration tests, embedded skills/help/docs, TRUST-POLICY.md and minimal seam wiring.\nblocked-by ht-0lo.1.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.1.2: consumes all leaves (integration sweep)\nblocked-by ht-0lo.1.3: consumes all leaves (integration sweep)\nblocked-by ht-0lo.2.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.2.2: consumes all leaves (integration sweep)\nblocked-by ht-0lo.2.3: consumes all leaves (integration sweep)\nblocked-by ht-0lo.3.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.3.2: consumes all leaves (integration sweep)\nblocked-by ht-0lo.4.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.4.2: consumes all leaves (integration sweep)",
+    "description": "owns: remaining cross-feature integration wiring, documentation consistency and end-to-end tests no owning leaf covers; consumes: all implementation leaves. Verify long durable inbox handoff, all native delivery paths, send-time unavailable-recipient expiry, lazy/timed invitation acceptance and independent sender warnings, retained keyed retry and stable per-event owned hooks. Fix small integration gaps inline; file blockers for larger discoveries. Run focused isolated tests, cargo fmt, nice cargo clippy --locked --all-targets --all-features -- -D warnings and nice scripts/check-default-features on the final candidate. Do not run the routine full suite while ht-zo4 restriction remains. Tests own/tag/stop all children/private sessions and never alter shared server or real user configs. Files: integration tests, embedded skills/help/docs, TRUST-POLICY.md and minimal seam wiring.\nblocked-by ht-0lo.1.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.1.2: consumes all leaves (integration sweep)\nblocked-by ht-0lo.1.3: consumes all leaves (integration sweep)\nblocked-by ht-0lo.2.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.2.2: consumes all leaves (integration sweep)\nblocked-by ht-0lo.2.3: consumes all leaves (integration sweep)\nblocked-by ht-0lo.3.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.3.2: consumes all leaves (integration sweep)\nblocked-by ht-0lo.4.1: consumes all leaves (integration sweep)\nblocked-by ht-0lo.4.2: consumes all leaves (integration sweep)\nblocked-by ht-0lo.6: consumes all leaves (integration sweep)\nblocked-by ht-0lo.7: consumes all leaves (integration sweep)",
     "acceptance_criteria": "Main handoff flows complete end to end with exact frozen bodies/routing and independent receipt/invitation deadlines. Overdue originators receive durable guarded waking attention; late confirmation clears passively. All owned native configurations and legacy retries remain safe. Final format, focused tests, all-feature clippy and default-feature gates pass; owned processes stopped. (needs: ht-0lo.1.1) (needs: ht-0lo.1.2) (needs: ht-0lo.1.3) (needs: ht-0lo.2.1) (needs: ht-0lo.2.2) (needs: ht-0lo.2.3) (needs: ht-0lo.3.1) (needs: ht-0lo.3.2) (needs: ht-0lo.4.1) (needs: ht-0lo.4.2)",
     "spec_id": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md",
     "status": "open",
@@ -11,7 +11,7 @@
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T23:09:38Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T23:09:38Z",
+    "updated_at": "2026-10-10T23:18:42Z",
     "metadata": {
       "depth": 1,
       "order": 5
@@ -38,6 +38,14 @@
       },
       {
         "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.6",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:18:29Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
         "depends_on_id": "ht-0lo.1.3",
         "type": "blocks",
         "created_at": "2026-10-10T23:09:43Z",
@@ -49,6 +57,14 @@
         "depends_on_id": "ht-0lo.1.1",
         "type": "blocks",
         "created_at": "2026-10-10T23:09:40Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.5",
+        "depends_on_id": "ht-0lo.7",
+        "type": "blocks",
+        "created_at": "2026-10-10T23:18:38Z",
         "created_by": "Alexey Parfenov",
         "metadata": "{}"
       },
@@ -109,7 +125,7 @@
         "metadata": "{}"
       }
     ],
-    "dependency_count": 10,
+    "dependency_count": 12,
     "dependent_count": 0,
     "comment_count": 0,
     "parent": "ht-0lo"
@@ -117,15 +133,15 @@
   {
     "id": "ht-0lo.1.3",
     "title": "Upgrade dormant historical receipt obligations",
-    "description": "owns: transactional upgrade/backfill of formerly dormant historical ACK obligations, sparse/physical due projection consistency and idempotent schema marker; consumes: canonical send-time receipt projection. Preserve already running deadlines, terminal states/provenance and immutable request/result digests. Files: src/store/{schema,effective,materialization}.rs and focused migration/store tests. Exercise legacy unavailable receipts upgrade/restart/replay and overdue indexed discovery, bounded warning burst.\nblocked-by ht-0lo.1.1: consumes canonical send-time receipt projection",
-    "acceptance_criteria": "Legacy dormant physical/manifest ACK obligations receive send-time deadlines while existing started/terminal/waived obligations remain unchanged. Idempotent restart and focused migration tests pass.",
+    "description": "owns: transactional upgrade/backfill of formerly dormant historical ACK obligations, sparse/physical due projection consistency and idempotent schema marker; consumes: canonical send-time receipt projection. Preserve already running deadlines, terminal states/provenance and immutable request/result digests. Files: src/store/{schema,effective,materialization}.rs and focused migration/store tests. Exercise legacy unavailable receipts upgrade/restart/replay and overdue indexed discovery, bounded warning burst.\nblocked-by ht-0lo.1.1: consumes canonical send-time receipt projection\nExercise dormant historical upgrade over multiple100candidate batches and verify no overdue initial row is lost or starved by newly arriving work; discovery contract is owned by ht-0lo.1.2.",
+    "acceptance_criteria": "Legacy dormant physical/manifest ACK obligations receive send-time deadlines while existing started/terminal/waived obligations remain unchanged. Idempotent restart and focused migration tests pass. Exercise dormant historical upgrade over multiple100candidate batches and verify no overdue initial row is lost or starved by newly arriving work; discovery contract is owned by ht-0lo.1.2.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T22:49:48Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T22:49:48Z",
+    "updated_at": "2026-10-10T23:18:48Z",
     "labels": [
       "sp:ht-0lo"
     ],
@@ -155,15 +171,15 @@
   {
     "id": "ht-0lo.3.2",
     "title": "Handoff confirmation policy wiring and recovery documentation",
-    "description": "owns: handoff --deadline/--require-invite-ack/--invite-deadline parsing/freeze/pass-through, modern lazy invitation plus addressed ACK-required body staging across new-tab/empty-pane/existing paths, retained child digest compatibility and source/help/skill docs; consumes: frozen handoff payload, invitation confirmation wire contract and send-time receipt semantics. Files: src/cli/{handoff,handoff_delivery,topology_handoff,mod}.rs, src/protocol/handoff.rs, src/store/{handoff,topology_handoff}.rs and related tests/help/skill. Run isolated actual handoff per all three paths/body sources; crash/retry after stage and possible-start/unknown-create never duplicates/restages/relaunches. Older plans absent new fields replay original keyed requests, modern deadlines freeze before staging; routing exact3field fallback and no auto trust/accept/ACK.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md\nblocked-by ht-0lo.3.1: consumes frozen handoff payload\nblocked-by ht-0lo.2.1: consumes invitation confirmation wire contract\nblocked-by ht-0lo.1.1: consumes send-time receipt semantics\nAlso owns: separating hook/setup/trust/profile readiness diagnostics from launch admission; src/cli/launch.rs prepare_launch and src/harness/launch.rs configuration checks. Missing/untrusted/wrong-profile hooks do not block staged work or otherwise structurally safe launch. Preserve empty-shell/seat/caller/native argv and owned launch-configuration fingerprint safety, and truthful native trust refusal; never auto-approve. Test missing/stale profile hooks through guarded handoff and observe durable ACK deadline warning without registration.\nblocked-by ht-0lo.2.2: consumes canonical invitation lifecycle\nblocked-by ht-0lo.1.2: consumes overdue receipt warning lifecycle\nHook readiness is advisory: keep owned launch configuration fingerprint recheck only when that configuration is actually used; absence cannot veto and no fingerprint is fabricated. Unsupported environment-overrides/native grammar/host-kind safety refusals remain.",
-    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass. Observe durable overdue warning for an unregistered recipient (needs: ht-0lo.1.2).",
+    "description": "owns: handoff --deadline/--require-invite-ack/--invite-deadline parsing/freeze/pass-through, modern lazy invitation plus addressed ACK-required body staging across new-tab/empty-pane/existing paths, retained child digest compatibility and source/help/skill docs; consumes: frozen handoff payload, invitation confirmation wire contract and send-time receipt semantics. Files: src/cli/{handoff,handoff_delivery,topology_handoff,mod}.rs, src/protocol/handoff.rs, src/store/{handoff,topology_handoff}.rs and related tests/help/skill. Run isolated actual handoff per all three paths/body sources; crash/retry after stage and possible-start/unknown-create never duplicates/restages/relaunches. Older plans absent new fields replay original keyed requests, modern deadlines freeze before staging; routing exact3field fallback and no auto trust/accept/ACK.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md\nblocked-by ht-0lo.3.1: consumes frozen handoff payload\nblocked-by ht-0lo.2.1: consumes invitation confirmation wire contract\nblocked-by ht-0lo.1.1: consumes send-time receipt semantics\nAlso owns: separating hook/setup/trust/profile readiness diagnostics from launch admission; src/cli/launch.rs prepare_launch and src/harness/launch.rs configuration checks. Missing/untrusted/wrong-profile hooks do not block staged work or otherwise structurally safe launch. Preserve empty-shell/seat/caller/native argv and owned launch-configuration fingerprint safety, and truthful native trust refusal; never auto-approve. Test missing/stale profile hooks through guarded handoff and observe durable ACK deadline warning without registration.\nblocked-by ht-0lo.2.2: consumes canonical invitation lifecycle\nblocked-by ht-0lo.1.2: consumes overdue receipt warning lifecycle\nHook readiness is advisory: keep owned launch configuration fingerprint recheck only when that configuration is actually used; absence cannot veto and no fingerprint is fabricated. Unsupported environment-overrides/native grammar/host-kind safety refusals remain.\nRequire messages.send_time_receipts_v1 before new handoff effects; consume ht-0lo.1.1 capability contract and verify unsupported-daemon refusal before staging/launch.",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass. Observe durable overdue warning for an unregistered recipient (needs: ht-0lo.1.2). Require messages.send_time_receipts_v1 before new handoff effects; consume ht-0lo.1.1 capability contract and verify unsupported-daemon refusal before staging/launch.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T22:48:20Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T22:59:17Z",
+    "updated_at": "2026-10-10T23:18:53Z",
     "labels": [
       "sp:ht-0lo"
     ],
@@ -361,15 +377,15 @@
   {
     "id": "ht-0lo.2.2",
     "title": "Invitation acceptance, due and delivery lifecycle",
-    "description": "owns: canonical lazy/timed invitation create/duplicate/accept/reject/cancel/retire behavior, due scanner and inviter-addressed warning routing plus read/wake/mod projections; consumes: invitation mode schema/wire contract. Files: src/store/{control,invitation_due,wake,queries,service_controls,seats}.rs as needed, daemon projections, TRUST-POLICY invitation clauses and focused tests. Run lazy invite no native wake/deadline, timed never-register and register-without-accept expiry, acceptance clears, duplicate never mutates policy, inviter leaving warning, required membership and explicit rejection notice cases.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md\nblocked-by ht-0lo.2.1: consumes invitation mode schema/wire contract\nOriginal inviter attribution frozen at invitation creation; overdue inviter open warning waking under existing native/mod guards even after leaving, clear passive; update TRUST-POLICY A7. Duplicate caller never retargets originator warning.",
-    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "description": "owns: canonical lazy/timed invitation create/duplicate/accept/reject/cancel/retire behavior, due scanner and inviter-addressed warning routing plus read/wake/mod projections; consumes: invitation mode schema/wire contract. Files: src/store/{control,invitation_due,wake,queries,service_controls,seats}.rs as needed, daemon projections, TRUST-POLICY invitation clauses and focused tests. Run lazy invite no native wake/deadline, timed never-register and register-without-accept expiry, acceptance clears, duplicate never mutates policy, inviter leaving warning, required membership and explicit rejection notice cases.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md\nblocked-by ht-0lo.2.1: consumes invitation mode schema/wire contract\nOriginal inviter attribution frozen at invitation creation; overdue inviter open warning waking under existing native/mod guards even after leaving, clear passive; update TRUST-POLICY A7. Duplicate caller never retargets originator warning.\nHealthy-daemon discovery contract: retain the5,000ms safety tick and100candidate per-drive cap; continue immediately while successful due progress reports more. Each class advances a stable finite high-water cursor fairly; newly arriving obligations do not restart/starve the current snapshot. Native wake admission/completion never gates cursor progress. For a snapshot with at most N candidates per class and successful runnable driver quanta taking at most Q ms including storage/scheduling, durable pending-warning detection finishes within5,000ms +(2*ceil(N/100)+2)*Q; this is conditional on the daemon running and successful bounded storage, not a guarantee across outages, repeated errors, unbounded overload or native key submission. Restart resumes/reconstructs fair discovery and scans already overdue obligations. Early fake-clock tests use at least250candidates in EACH invitation and receipt class, blocked native wakes, mixed future/due rows, continuing arrivals and restart; verify every initial overdue row is warned within the formula and arrivals cannot starve either class. Historical upgrade also uses multiple bounded batches without losing overdue indexed discovery.",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass. Healthy-daemon discovery contract: retain the5,000ms safety tick and100candidate per-drive cap; continue immediately while successful due progress reports more. Each class advances a stable finite high-water cursor fairly; newly arriving obligations do not restart/starve the current snapshot. Native wake admission/completion never gates cursor progress. For a snapshot with at most N candidates per class and successful runnable driver quanta taking at most Q ms including storage/scheduling, durable pending-warning detection finishes within5,000ms +(2*ceil(N/100)+2)*Q; this is conditional on the daemon running and successful bounded storage, not a guarantee across outages, repeated errors, unbounded overload or native key submission. Restart resumes/reconstructs fair discovery and scans already overdue obligations. Early fake-clock tests use at least250candidates in EACH invitation and receipt class, blocked native wakes, mixed future/due rows, continuing arrivals and restart; verify every initial overdue row is warned within the formula and arrivals cannot starve either class. Historical upgrade also uses multiple bounded batches without losing overdue indexed discovery.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T22:48:14Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T22:59:16Z",
+    "updated_at": "2026-10-10T23:18:51Z",
     "labels": [
       "sp:ht-0lo"
     ],
@@ -429,15 +445,15 @@
   {
     "id": "ht-0lo.1.2",
     "title": "Due discovery and originating-seat warning lifecycle",
-    "description": "owns: bounded indexed due discovery plus sender-addressed open/clear warning routing and guarded poke/wake calculations; consumes: send-anchored canonical receipt projection. Files: src/store/{receipts,poke,wake,queries,schema}.rs, scheduler tests. Exercise unbound/unregistered/unavailable/pending-invite recipient sends through expiry and late ACK; originator leaving does not lose notification.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md\nblocked-by ht-0lo.1.1: consumes send-anchored canonical receipt projection\nblocked-by ht-0lo.1.3: consumes historical dormant receipt upgrade\nOriginator open warning is waking attention under existing safe composer/host/mod guards even after leaving; clear passive; update TRUST-POLICY A7. No invented seat for service authors. Test notification pending while drafts/working/host outage defer actual native wake.",
-    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "description": "owns: bounded indexed due discovery plus sender-addressed open/clear warning routing and guarded poke/wake calculations; consumes: send-anchored canonical receipt projection. Files: src/store/{receipts,poke,wake,queries,schema}.rs, scheduler tests. Exercise unbound/unregistered/unavailable/pending-invite recipient sends through expiry and late ACK; originator leaving does not lose notification.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md\nblocked-by ht-0lo.1.1: consumes send-anchored canonical receipt projection\nblocked-by ht-0lo.1.3: consumes historical dormant receipt upgrade\nOriginator open warning is waking attention under existing safe composer/host/mod guards even after leaving; clear passive; update TRUST-POLICY A7. No invented seat for service authors. Test notification pending while drafts/working/host outage defer actual native wake.\nHealthy-daemon discovery contract: retain the5,000ms safety tick and100candidate per-drive cap; continue immediately while successful due progress reports more. Each class advances a stable finite high-water cursor fairly; newly arriving obligations do not restart/starve the current snapshot. Native wake admission/completion never gates cursor progress. For a snapshot with at most N candidates per class and successful runnable driver quanta taking at most Q ms including storage/scheduling, durable pending-warning detection finishes within5,000ms +(2*ceil(N/100)+2)*Q; this is conditional on the daemon running and successful bounded storage, not a guarantee across outages, repeated errors, unbounded overload or native key submission. Restart resumes/reconstructs fair discovery and scans already overdue obligations. Early fake-clock tests use at least250candidates in EACH invitation and receipt class, blocked native wakes, mixed future/due rows, continuing arrivals and restart; verify every initial overdue row is warned within the formula and arrivals cannot starve either class. Historical upgrade also uses multiple bounded batches without losing overdue indexed discovery.",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass. Healthy-daemon discovery contract: retain the5,000ms safety tick and100candidate per-drive cap; continue immediately while successful due progress reports more. Each class advances a stable finite high-water cursor fairly; newly arriving obligations do not restart/starve the current snapshot. Native wake admission/completion never gates cursor progress. For a snapshot with at most N candidates per class and successful runnable driver quanta taking at most Q ms including storage/scheduling, durable pending-warning detection finishes within5,000ms +(2*ceil(N/100)+2)*Q; this is conditional on the daemon running and successful bounded storage, not a guarantee across outages, repeated errors, unbounded overload or native key submission. Restart resumes/reconstructs fair discovery and scans already overdue obligations. Early fake-clock tests use at least250candidates in EACH invitation and receipt class, blocked native wakes, mixed future/due rows, continuing arrivals and restart; verify every initial overdue row is warned within the formula and arrivals cannot starve either class. Historical upgrade also uses multiple bounded batches without losing overdue indexed discovery.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T22:48:11Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T22:59:15Z",
+    "updated_at": "2026-10-10T23:18:46Z",
     "labels": [
       "sp:ht-0lo"
     ],
@@ -475,15 +491,15 @@
   {
     "id": "ht-0lo.1.1",
     "title": "Canonical send-time receipt projection",
-    "description": "owns: receipt original deadline semantics, preserving running deadlines and terminal provenance; consumes: existing immutable send timestamps/durations. Files: src/store/{effective,materialization,schema,messages}.rs and preparation modules, TRUST-POLICY deadline clauses, focused store tests. Cover sparse and physical receipts, restart, lazy/human waiver, registration not resetting and explicit A6 extension distinction.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md",
-    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "description": "owns: receipt original deadline semantics, preserving running deadlines and terminal provenance; consumes: existing immutable send timestamps/durations. Files: src/store/{effective,materialization,schema,messages}.rs and preparation modules, TRUST-POLICY deadline clauses, focused store tests. Cover sparse and physical receipts, restart, lazy/human waiver, registration not resetting and explicit A6 extension distinction.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md\nReceipt semantic capability: advertise messages.send_time_receipts_v1 only when canonical send-time projection and its ordinary send handlers are active. Modern clients require this capability before every new ACK-required ordinary send or handoff durable/native effect; absent/refused discovery produces explicit unsupported-daemon error, with no silent legacy fallback. All CLI entry paths and service-capable client sends that promise this contract are covered. Old clients talking to an upgraded daemon receive canonical new-send semantics without modifying their old wire requests. Lazy/human-waived sends remain exempt; completed retained keyed historical operations remain inspectable/replayable with original bytes/digests/outcomes and are never rewritten. A pending historical retry on an unsupported daemon refuses before additional effects. Test newCLI/olddaemon refusal, oldCLI/newdaemon canonical send, current/current unbound sends and lazy/human exemptions using capability fixtures.",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass. Receipt semantic capability: advertise messages.send_time_receipts_v1 only when canonical send-time projection and its ordinary send handlers are active. Modern clients require this capability before every new ACK-required ordinary send or handoff durable/native effect; absent/refused discovery produces explicit unsupported-daemon error, with no silent legacy fallback. All CLI entry paths and service-capable client sends that promise this contract are covered. Old clients talking to an upgraded daemon receive canonical new-send semantics without modifying their old wire requests. Lazy/human-waived sends remain exempt; completed retained keyed historical operations remain inspectable/replayable with original bytes/digests/outcomes and are never rewritten. A pending historical retry on an unsupported daemon refuses before additional effects. Test newCLI/olddaemon refusal, oldCLI/newdaemon canonical send, current/current unbound sends and lazy/human exemptions using capability fixtures.",
     "status": "open",
     "priority": 2,
     "issue_type": "task",
     "owner": "235553+alepar@users.noreply.github.com",
     "created_at": "2026-10-10T22:48:10Z",
     "created_by": "Alexey Parfenov",
-    "updated_at": "2026-10-10T22:49:47Z",
+    "updated_at": "2026-10-10T23:18:44Z",
     "labels": [
       "sp:ht-0lo"
     ],

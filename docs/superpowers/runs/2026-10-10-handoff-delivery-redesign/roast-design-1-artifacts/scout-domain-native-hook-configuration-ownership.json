@@ -1,0 +1,17 @@
+{
+  "findings": [
+    {
+      "claim": "The design leaves the ownership policy undefined when a recorded stable hook group is removed and independently recreated with identical bytes while its manifest remains.",
+      "location": "settled-input.md, root design, Stable hook entrypoints and ownership; Risks and mitigations",
+      "category": "domain:native-hook-configuration-ownership",
+      "external": false,
+      "evidence": "The spec says 'Remove the per-install UUID shell comment ... not the manifest installation identity', 'Persist exact installed groups/fingerprints and installation ID in ownership records', 'Existing unmanaged identical groups are foreign: do not adopt, overwrite, remove or treat them as owned', and 'Unsetup removes only exactly owned records'. Consider setup recording group G, then a same-user settings edit deleting G and independently inserting the same stable group at the same position, leaving the manifest intact. Group bytes, position and manifest installation ID match the untouched-install case, but the replacement is independently created. The listed ownership evidence cannot distinguish these histories. The spec does not state an accepted observational-ownership limit or another continuity signal, although it promises conservative foreign-group detection after removing the embedded installation marker. This is a configuration provenance ambiguity, not an adversarial-caller issue.",
+      "kind": "UNVERIFIED-ASSUMPTION",
+      "spike": {
+        "question": "Does ownership intentionally follow exact current configuration plus a retained manifest, including independently recreated identical groups, or must independent replacements remain foreign?",
+        "cheapest_test": "In isolated configuration, install a stable group, retain the manifest, remove and recreate the group byte-for-byte at its original position, then run reinstall and unsetup; compare with an untouched installation.",
+        "kill_criteria": "If the same observations authorize removing the independent replacement while the contract still calls it foreign, the stated ownership guarantee needs an explicit accepted limit or additional continuity mechanism."
+      }
+    }
+  ]
+}

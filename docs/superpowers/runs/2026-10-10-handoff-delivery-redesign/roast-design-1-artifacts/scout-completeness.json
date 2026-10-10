@@ -1,0 +1,20 @@
+{
+  "findings": [
+    {
+      "claim": "The bounded-time warning goal has no specified detection-latency bound or backlog/fairness requirement, so bounded scan batches alone do not establish a bounded delay for each overdue obligation.",
+      "location": "Root design: Goal; Message deadline contract; Risks and mitigations; task ht-0lo.1.3",
+      "category": "completeness",
+      "external": false,
+      "evidence": "The goal promises a 'bounded-time warning'; the contract says expired rows become due on the 'normal bounded scan' and migration must 'materialize/index due work'; the risk mitigation is to 'bound scan work' during an upgrade-time warning burst. These specify bounded work per scan, but no maximum time from a due deadline to durable warning, ordering/fairness guarantee across backlogged receipt/invitation work, or load assumption under which that bound holds. The task tree similarly asks for 'bounded warning burst' without a measurable per-obligation delay. Consequently the central timing promise has no acceptance criterion that distinguishes bounded processing from indefinite delay behind other due work.",
+      "kind": "GAP"
+    },
+    {
+      "claim": "The design leaves unspecified whether a confirmation committed after its deadline but before overdue scanning must create a missed-deadline warning or may settle silently.",
+      "location": "Root design: Message deadline contract and Invitation contract; acceptance and validation",
+      "category": "completeness",
+      "external": false,
+      "evidence": "The receipt contract says 'An overdue warning says confirmation missed its deadline' and 'Late ACK clears the existing warning through normal lifecycle'; the invitation contract says 'Only explicit recipient acceptance settles it automatically' and 'Expiry notifies its originating seat'. The tests exercise expiry then late ACK/acceptance, but no rule or scenario handles deadline < confirmation commit < first due-scan transaction, where no existing warning is available to clear. Both suppressing the warning because the row is now terminal and recording that the deadline was missed fit separate clauses. An atomic transition rule and boundary/race tests are needed to define the externally visible outcome.",
+      "kind": "GAP"
+    }
+  ]
+}

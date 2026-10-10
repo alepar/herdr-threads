@@ -1,0 +1,28 @@
+{
+  "mode": "design",
+  "iteration": 1,
+  "inputCommit": "6c74fa0a",
+  "baseline": "7c40c83c028d4a1a7650d6a58e92cd0bdedd3cdb",
+  "mechanism": "manual fan-out",
+  "context": "fresh fork:none for every scout/dedupe/judge/reporter",
+  "family": "OpenAI",
+  "model": "inherited parent model, no overrides",
+  "scouts": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "domain:durable-messaging",
+    "domain:protocol-evolution-and-data-migrations",
+    "domain:native-hook-configuration-ownership"
+  ],
+  "panelSeats": [
+    "reproduce",
+    "refute",
+    "ground"
+  ],
+  "panelCap": null,
+  "remainderCap": 50,
+  "completedTriageAdopted": true
+}

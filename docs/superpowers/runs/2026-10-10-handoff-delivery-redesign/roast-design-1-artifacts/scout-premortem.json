@@ -1,0 +1,25 @@
+{
+  "findings": [
+    {
+      "claim": "The design does not require receipt-semantics negotiation for an ordinary ACK-required send whose unchanged wire representation can still be accepted by a daemon using availability-deferred deadlines.",
+      "location": "Root design: Message deadline contract; Invitation contract capability paragraph; receipt task ht-0lo.1.1",
+      "category": "premortem",
+      "external": false,
+      "kind": "GAP",
+      "evidence": "The root promises \"For every new durable ACK-required ordinary send\" a committed-send-time deadline, including unbound and unavailable recipients. Its receipt migration uses a local \"schema/semantics marker\", while protocol refusal is specified for \"any mutation requiring the new representation\" and task ht-0lo.2.1 owns invitation confirmation capability. No receipt task or acceptance scenario requires an old daemon to reject an unchanged ordinary send when it cannot provide send-time deadlines. Thus the stated negotiation rules leave the mixed-version ordinary-send path unspecified: acceptance of the old wire request need not imply the promised new deadline semantics."
+    },
+    {
+      "claim": "The bounded-time warning guarantee has no defined discovery-latency or fairness requirement when a large historical overdue backlog competes with newly due obligations.",
+      "location": "Root design: Goal, Message deadline contract, Risks and mitigations; task ht-0lo.1.3",
+      "category": "premortem",
+      "external": false,
+      "kind": "UNVERIFIED-ASSUMPTION",
+      "evidence": "The Goal promises a \"bounded-time warning\". Migration makes \"Already expired rows\" due on the \"normal bounded scan\", and the mitigation for the acknowledged \"upgrade-time warning burst\" is to \"bound scan work\". Task ht-0lo.1.3 tests a \"bounded warning burst\". Those clauses bound per-scan work but supply no bound on warning creation delay, backlog size, or scheduling fairness between historical and fresh due work. With more historical overdue obligations than one scan processes, the promised delay depends on backlog and scan ordering; neither is specified or measured by an acceptance condition.",
+      "spike": {
+        "question": "What maximum delay from deadline to durable warning creation is guaranteed while historical backfill and ongoing sends coexist?",
+        "cheapest_test": "Seed an overdue historical backlog substantially larger than one scan batch, continue creating new short-deadline receipts and timed invitations, and measure warning creation delay and eventual discovery for both old and new obligations.",
+        "kill_criteria": "Any due obligation can be perpetually skipped, or the claimed warning-time bound cannot be stated and met under the supported backlog and send rate."
+      }
+    }
+  ]
+}

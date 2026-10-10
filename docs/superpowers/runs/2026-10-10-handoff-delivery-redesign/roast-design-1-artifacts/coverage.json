@@ -1,0 +1,30 @@
+{
+  "triageDead": false,
+  "triageAdopted": true,
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "scoutNames": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "domain:durable-messaging",
+    "domain:protocol-evolution-and-data-migrations",
+    "domain:native-hook-configuration-ownership"
+  ],
+  "raw": 11,
+  "deduped": 5,
+  "dedupeDead": false,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "panel": 5,
+  "spot": 0,
+  "promoted": 0,
+  "judgesDispatched": 15,
+  "judgesValid": 15,
+  "judgeCompletionPercent": 100,
+  "seatRetries": 0,
+  "inputCommit": "6c74fa0a",
+  "source": "manual fan-out, fresh fork:none agents"
+}

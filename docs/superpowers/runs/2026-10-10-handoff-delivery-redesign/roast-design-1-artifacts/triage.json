@@ -1,0 +1,9 @@
+{
+  "lanes": [],
+  "domains": [
+    "durable-messaging",
+    "protocol-evolution-and-data-migrations",
+    "native-hook-configuration-ownership"
+  ],
+  "provenance": "Adopted completed triage explicitly supplied by caller; settled scope retains all three domains."
+}
