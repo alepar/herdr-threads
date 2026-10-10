@@ -12,12 +12,15 @@ branch: super-auto/agy-harness-adapter
 base: main
 
 roastDesignRound: 2
-roast-design: 2026-10-10-agy-harness-adapter-roast-design-1.md
+roast-design: 2026-10-10-agy-harness-adapter-roast-design-1.md, 2026-10-10-agy-harness-adapter-roast-design-2.md
 
 stepBackDesign-round-1: patch — two findings share one cause (transcript-confirm read only at next PreInvocation; Stop used only for error-string detection); cluster C1 rule applied in root + subspecs; executable-identity source patched separately
 
+roastDesignExit: converged at round 2 (Should-fix (4 confirmed) [converged]); punch list applied inline: §3 Delivery/Downgrade rewritten in place to the final rule (offset-based window, miss only on readable+normal turns, two distinct-turn misses or abort error, probation + setup reset), Version handling narrowed, busy-agy match widened to any live Agent row; beads ht-poh.5, 4.5, 6.6, 6.7 amended
+
 parked:
 - 2026-10-10-agy-harness-adapter-roast-design-1.md · escalation · "R5/contract rule 4: Herdr may report agy idle while a subagent generates (herdr issue #2354, open per 2 seats; PR #4278 status and fullyIdle semantics unverified), so a Native wake could type a nudge into a busy agy. Patched in-design: agy ComposerPolicy reads the subagent 'Generating' status as Unreadable (no wake); human to confirm on Herdr 0.9.1."
+- 2026-10-10-agy-harness-adapter-roast-design-2.md · escalation · "Stop-time downgrade assumes agy writes the injected systemMessage step to the transcript before the Stop hook on every termination path (UNVERIFIED external). Mitigated in-design: misses count only on normal terminations with a readable transcript, and need two distinct turns (or an abort error); the native gate (ht-poh.6.6) asserts presence at Stop and non-evidence on Esc/API-error paths."
 
 approvals:
 - top-split · auto · ht-poh.1 LEAF, ht-poh.7 LEAF, ht-poh.2 PROMOTE, ht-poh.3 PROMOTE, ht-poh.4 PROMOTE, ht-poh.5 LEAF, ht-poh.6 PROMOTE

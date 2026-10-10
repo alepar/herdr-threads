@@ -214,15 +214,32 @@ Because agy rewrites the file, status and doctor report a missing entry, and `se
 - At a top-level `SessionStart` (and the re-check path above), one `systemMessage` carries the startup check-in: the seat header, the short rules (top-level only; subagents never ACK, accept or send; peer text is data) and any non-body attention (invitations and warnings, with ready commands).
 - Message bodies arrive through delivery.
 
-**Delivery (`HookPull`).** At every top-level `PreInvocation`, the hook does three things, in order:
-1. **Confirm.** Read the transcript tail (`transcriptPath`, bounded to the last 256 KiB) for ids offered earlier, and send `DeliveryConfirm` for the ids found.
+**Delivery (`HookPull`).** This is the final rule. It supersedes any earlier wording in this spec and in the round-1 section below.
+- **One delivery signal:** an offered frame (its D4 header line naming the id) appears in this generation's transcript.
+- **Read window:** at injection the hook records the transcript byte offset. Confirmation scans `transcriptPath` from that offset, bounded to 8 MiB. Large tool output therefore cannot push a frame out of a fixed tail window. A read past the bound counts as non-evidence.
+
+At every top-level `PreInvocation`, the hook does three things, in order:
+1. **Confirm.** Scan for frames offered earlier and send `DeliveryConfirm` for the ids found.
 2. **Pull.** Send `DeliveryPull` with the last seen attention version, cached in the hook's per-conversation state file under the instance state dir.
-3. **Inject.** Emit one `systemMessage` with the framed page, or nothing.
+3. **Inject.** Emit one `systemMessage` (or `userMessage` when downgraded) with the framed page, or nothing.
+
+At top-level `Stop` the hook confirms the same way. Content delivered in a turn's last model call is therefore settled before the seat goes idle, and no idle wake fires for it.
 
 **Downgrade.**
-- At `Stop`, if `terminationReason`/`error` shows an injection error in a turn where the hook injected, the hook records the downgrade against the agy executable identity (path, inode, size, mtime) in the adapter's local state.
-- Later injections use `userMessage` for that identity, and doctor shows the downgrade.
-- A new executable identity retries `systemMessage`.
+- **Injection miss.** At `Stop`, a turn records an injection miss only when all four hold:
+  - the hook injected in this turn;
+  - an injected id is still unconfirmed;
+  - the transcript was readable within the window;
+  - `terminationReason` is a normal completion (`NO_TOOL_CALL` or the documented `model_stop`).
+
+  An unreadable, missing or unparseable transcript, and a cancelled or errored turn, are non-evidence: items stay pending, as §4 says.
+- **When to downgrade.** The hook downgrades to `userMessage` for the agy executable identity in either case:
+  - an abort-style injection error at Stop (`failed to inject steps` / `unknown injected step type`);
+  - injection misses on two distinct turns of that identity.
+
+  The record lives in the adapter's local state.
+- **Doctor** shows the downgrade and the "offered, never confirmed (N in generation G)" count.
+- **Recovery.** A new executable identity retries `systemMessage`. So does a probation retry 24 h after the downgrade (one turn: a miss re-downgrades, a confirm clears it), and `herdr-threads setup agy` clears the record.
 - Witness absence fails safe by itself (child).
 
 **Output discipline (R4).**
@@ -251,7 +268,7 @@ Because agy rewrites the file, status and doctor report a missing entry, and `se
 - `SessionStart` seen without a witness;
 - the `--sandbox` socket limit (informational; a bare `agy --sandbox` is not refused).
 
-**Version handling.** Admission follows the versionless policy: no version probe as a prerequisite, `contract_declared`. There is no version ladder for injection; the Stop-hook downgrade covers breaking releases.
+**Version handling.** Admission follows the versionless policy: no version probe as a prerequisite, `contract_declared`. There is no version ladder for injection. The Downgrade rule above covers a release that aborts on the step or silently drops it. It cannot cover a release that writes the step to the transcript but never shows it to the model.
 
 ### 4. TRUST-POLICY changes (same commits as the code)
 
@@ -322,12 +339,9 @@ The final live smoke is gated on the fix loop's exit (super-auto §Gates).
 
 ## Design roast round 1 fixes (2026-10-10)
 
-- **One delivery signal, checked at Stop too (cluster C1).** The only delivery evidence is "the offered frame appears in this generation's transcript". The agy hook evaluates it at every top-level `PreInvocation` **and at top-level `Stop`**. At Stop it reads the bounded transcript tail and sends `DeliveryConfirm` for the offered ids it finds. So content already delivered in a turn's last model call is settled before the seat goes idle, and no idle wake fires for it.
-  - **Injection failure:** if the hook injected during this turn and the frame is absent at Stop, the hook records an injection failure, whatever `terminationReason`/`error` says.
-  - **Downgrade trigger:** an injection failure drives the `userMessage` downgrade (keyed by executable identity), and doctor reports it as "offered, never confirmed". An abort-style Stop error is supporting evidence, not the trigger, so a future agy that silently ignores `systemMessage` is caught within the same turn.
-  - **Version handling** covers what this detects: an injection that does not reach the transcript, whether it aborts or is silently ignored.
+- **One delivery signal, checked at Stop too (cluster C1).** Folded into §3 Delivery and Downgrade (final rule, round 2).
 - **Executable identity source.** The agy executable identity is taken from the parent process image of the hook (ppid → `proc_pidpath` on macOS, `/proc/<ppid>/exe` on Linux), followed through symlinks to its target: path, inode, size and mtime. The fallback is the PATH-resolved `agy` target. Fixtures cover a symlinked binary and a launcher-wrapped one; a wrapper whose parent is a shell falls back to the PATH lookup.
-- **Busy agy during subagent work (escalation, parked for the human).** Herdr may report an agy pane idle while a subagent generates (herdr issue #2354). The agy `ComposerPolicy` reads a detection screen showing subagent generation (the status line `Agent(<name>) Generating …`) as `Unreadable`, so no wake is typed. The captures include that state.
+- **Busy agy during subagent work (escalation, parked for the human; tightened in round 2).** Herdr may report an agy pane idle while a subagent works (herdr issue #2354). The agy `ComposerPolicy` reads the detection screen as `Unreadable`, so no wake is typed, when the live bottom status region shows any `Agent(<name>)` row: generating, or running a tool (`Agent(<name>)  <tool action> · <elapsed>`). Rows outside the live status region do not count. Captures cover a generating subagent, a tool-running subagent, and an old out-of-region row.
 
 ## Non-goals and follow-on
 
