@@ -14,4 +14,5 @@ approvals:
 - top-split · human · ht-54r.1 LEAF, ht-54r.2 LEAF, ht-54r.3 LEAF, ht-54r.4 LEAF, ht-54r.5 LEAF, ht-54r.6 LEAF, ht-54r.7 LEAF, ht-54r.8 LEAF, ht-54r.9 LEAF, ht-54r.10 LEAF, ht-54r.11 LEAF, ht-54r.12 LEAF, ht-54r.13 LEAF, ht-54r.14 LEAF, ht-54r.15 LEAF, ht-54r.16 LEAF, ht-54r.17 LEAF, ht-54r.18 LEAF, ht-54r.19 LEAF, ht-54r.20 LEAF, ht-54r.21 LEAF, ht-54r.22 LEAF, ht-54r.23 LEAF
 - design-mode · human · Mode A interactive design by user request at launch; autonomy from phase 3 (reserved: design questions asked, not parked)
 - coverage-round-1 · c1-01..c1-14 applied auto, c1-15 rejected auto · R-list: coverage-round-1-requirements.md (R1–R16) · requirements: 16 · mapped: 14 · unmapped: 2 (R15, R16 — appended from r-new) · not degraded (2 valid reviews)
+- coverage-round-2 · c2-01..c2-17 applied auto · requirements: 16 · mapped: 16 · unmapped: 0 · divergence: findings 14 → 17 · novel 16/17 (94%) · widening: yes (cap holds at 2; design roast covers round-2 fixes) · not degraded (2 valid reviews) · integration sweep bead created
 baseAbsorbed: cb6052fc → 520a1780, 1 conflicted files
