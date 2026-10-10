@@ -253,6 +253,9 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_cell_ran_versions.py'
           python3 -m unittest discover -s scripts/tests -p 'test_demo_try_it_camera.py'
           python3 -m unittest discover -s scripts -p 'test_native_hermes_probe.py'
+          for d in scripts/agy-fake-gemini scripts/agy-sandbox scripts/agy-relay scripts/agy-gate; do
+            if [ -d "$d" ]; then python3 -m unittest discover -s "$d" -p 'test_*.py'; fi
+          done
 
       - name: Skipped Herdr tests (job summary)
         if: always()
