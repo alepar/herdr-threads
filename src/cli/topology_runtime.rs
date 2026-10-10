@@ -81,6 +81,7 @@ pub(crate) fn is_compound(semantic: &SemanticMutation) -> bool {
             | SemanticMutation::HandoffDelivery(_)
             | SemanticMutation::AutomaticDelivery(_)
             | SemanticMutation::AutomaticHandoff(_)
+            | SemanticMutation::AutomaticBootstrap(_)
     )
 }
 fn agent_claim(claim: &CallerClaim) -> Result<(), RunError> {
@@ -117,7 +118,9 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     let reference = &original.header.reference;
     let ns = namespace(selected, instance);
     match original_kind(&original.semantic) {
-        SemanticMutation::AutomaticDelivery(_) | SemanticMutation::AutomaticHandoff(_) => {
+        SemanticMutation::AutomaticDelivery(_)
+        | SemanticMutation::AutomaticHandoff(_)
+        | SemanticMutation::AutomaticBootstrap(_) => {
             Err(super::unsupported("automatic handoff producer unavailable"))
         }
         SemanticMutation::HandoffBootstrap(_) => {

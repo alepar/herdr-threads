@@ -64,7 +64,7 @@ pub(crate) fn guard_legacy_identity(
     db: &Connection,
     identity: &HandoffIdentity,
 ) -> Result<(), ApiError> {
-    let automatic: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM automatic_handoff_companions WHERE instance_id=?1 AND actor_scope=?2 AND compound=?3)",params![identity.claim.instance,scope(identity),identity.compound.as_str()],|r|r.get(0)).map_err(store_error)?;
+    let automatic: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM automatic_handoff_companions WHERE instance_id=?1 AND actor_scope=?2 AND compound=?3) OR EXISTS(SELECT 1 FROM automatic_bootstrap_keys WHERE instance_id=?1 AND actor_scope=?2 AND operation_key=?3 AND role='child')",params![identity.claim.instance,scope(identity),identity.compound.as_str()],|r|r.get(0)).map_err(store_error)?;
     if automatic {
         return Err(mismatch());
     }
@@ -76,7 +76,7 @@ pub(crate) fn guard_unscoped_key(
     actor: &str,
     key: &str,
 ) -> Result<(), ApiError> {
-    let automatic: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM automatic_handoff_keys WHERE instance_id=?1 AND actor_scope=?2 AND operation_key=?3)",params![instance,actor,key],|r|r.get(0)).map_err(store_error)?;
+    let automatic: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM automatic_handoff_keys WHERE instance_id=?1 AND actor_scope=?2 AND operation_key=?3) OR EXISTS(SELECT 1 FROM automatic_bootstrap_keys WHERE instance_id=?1 AND actor_scope=?2 AND operation_key=?3)",params![instance,actor,key],|r|r.get(0)).map_err(store_error)?;
     if automatic {
         return Err(mismatch());
     }
@@ -88,6 +88,7 @@ pub(crate) fn current(
     request: &AutomaticDeliveryMutation,
 ) -> Result<Option<HandoffResult>, ApiError> {
     request.validate().map_err(ApiError::invalid_request)?;
+    crate::store::topology_handoff::automatic::guard_child(db, request, true)?;
     let id = identity(request);
     let bytes: Option<Vec<u8>> = db.query_row("SELECT substr(original_json,1,?4) FROM automatic_handoff_companions WHERE instance_id=?1 AND actor_scope=?2 AND compound=?3",params![id.claim.instance,scope(&id),id.compound.as_str(),(MAX_ORIGINAL_BYTES+1) as u32],|r|r.get(0)).optional().map_err(store_error)?;
     let Some(bytes) = bytes else {
@@ -108,6 +109,16 @@ pub(crate) fn current(
     saved
         .validate()
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?;
+    if serde_json::from_slice::<serde_json::Value>(&bytes)
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?
+        != serde_json::to_value(&saved)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?
+    {
+        return Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "automatic original contains lost fields",
+        ));
+    }
     if original_bytes(&saved)? != original_bytes(request)? {
         return Err(mismatch());
     }
@@ -138,11 +149,34 @@ pub(crate) fn current(
         .map(Some)
         .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "automatic fence missing"))
 }
+/// Registered automatic sends retain the same ordinary service entrypoint.
+pub(crate) fn selected_send(
+    db: &Connection,
+    canonical: &HandoffNamespace,
+    send: &crate::protocol::commands::SendMessage,
+    replay: bool,
+) -> Result<bool, ApiError> {
+    let bytes:Option<Vec<u8>>=db.query_row("SELECT substr(c.original_json,1,?4) FROM automatic_handoff_keys k JOIN automatic_handoff_companions c USING(instance_id,actor_scope,compound) WHERE k.instance_id=?1 AND k.actor_scope=?2 AND k.operation_key=?3 AND k.role='send'",params![send.claim.instance,format!("seat:{}",send.claim.seat.as_str()),send.operation.as_str(),(MAX_ORIGINAL_BYTES+1) as u32],|r|r.get(0)).optional().map_err(store_error)?;
+    let Some(bytes) = bytes else { return Ok(false) };
+    if bytes.len() > MAX_ORIGINAL_BYTES {
+        return Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "oversized automatic original",
+        ));
+    }
+    let mut request: AutomaticDeliveryMutation = serde_json::from_slice(&bytes)
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid automatic original"))?;
+    request.action = AutomaticDeliveryAction::Send(send.clone());
+    validate_namespace(canonical, &request)?;
+    validate_phase(db, &request, replay)?;
+    Ok(true)
+}
 pub(crate) fn validate_phase(
     db: &Connection,
     request: &AutomaticDeliveryMutation,
     replay: bool,
 ) -> Result<(), ApiError> {
+    crate::store::topology_handoff::automatic::guard_child(db, request, replay)?;
     let saved = current(db, request)?;
     let Some(saved) = saved else {
         return if matches!(request.action, AutomaticDeliveryAction::Begin { .. }) {
@@ -161,7 +195,10 @@ pub(crate) fn validate_phase(
     }
     if replay
         && (saved.state == HandoffState::Completed
-            || matches!(request.action, AutomaticDeliveryAction::Ensure(_)))
+            || matches!(
+                request.action,
+                AutomaticDeliveryAction::Ensure(_) | AutomaticDeliveryAction::Send(_)
+            ))
     {
         return Ok(());
     }
@@ -184,6 +221,13 @@ pub(crate) fn inner(request: &AutomaticDeliveryMutation) -> Result<PermitMutatio
             }))
         }
         AutomaticDeliveryAction::Ensure(v) => Ok(PermitMutation::EnsureDirectThread(v.clone())),
+        AutomaticDeliveryAction::Send(v) => Ok(PermitMutation::SendMessage(v.clone())),
+        AutomaticDeliveryAction::Complete { operation } => {
+            Ok(PermitMutation::CompleteHandoff(HandoffMutation {
+                identity: identity(request),
+                operation: operation.clone(),
+            }))
+        }
         _ => Err(ApiError::unsupported(
             "automatic phase awaits complete guarded runtime",
         )),
@@ -239,6 +283,10 @@ pub(crate) fn mutate(
             &v.operation,
             control::cooperative_payload_hash("ensure_direct_thread", v)?,
         ),
+        PermitMutation::CompleteHandoff(v) => (
+            &v.operation,
+            control::cooperative_payload_hash("complete_handoff", v)?,
+        ),
         _ => unreachable!(),
     };
     let id = identity(request);
@@ -273,7 +321,11 @@ pub(crate) fn mutate(
                     if let Some(saved) = current(tx, request)? {
                         return Ok(CommandResult::Handoff(saved));
                     }
-                    crate::store::topology_handoff::guard_child_begin(tx, &id)?;
+                    let linked =
+                        crate::store::topology_handoff::automatic::guard_child(tx, request, false)?;
+                    if !linked {
+                        crate::store::topology_handoff::guard_child_begin(tx, &id)?;
+                    }
                     let keys = &request.plan().payload.keys;
                     for key in [
                         &keys.compound,
@@ -282,12 +334,14 @@ pub(crate) fn mutate(
                         &keys.send,
                         &keys.complete,
                     ] {
-                        crate::store::topology_handoff::guard_unscoped_child_phase(
-                            tx,
-                            &request.claim.instance,
-                            &scope(&id),
-                            key.as_str(),
-                        )?;
+                        if !linked {
+                            crate::store::topology_handoff::guard_unscoped_child_phase(
+                                tx,
+                                &request.claim.instance,
+                                &scope(&id),
+                                key.as_str(),
+                            )?;
+                        }
                         let used:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE actor_scope=?1 AND operation_key=?2) OR EXISTS(SELECT 1 FROM channel_handoff_fences WHERE instance_id=?3 AND actor_scope=?1 AND (compound=?2 OR create_key=?2 OR invite_key=?2 OR send_key=?2))",params![scope(&id),key.as_str(),request.claim.instance],|r|r.get(0)).map_err(store_error)?;
                         if used {
                             return Err(mismatch());
@@ -337,11 +391,27 @@ pub(crate) fn mutate(
                         operation.as_str(),
                         &thread,
                     )?;
+                    crate::store::topology_handoff::automatic::attach_thread(tx, request, &thread)?;
                     let attached = current(tx, request)?.and_then(|v| v.thread);
                     if attached.as_ref() != Some(&thread) {
                         return Err(mismatch());
                     }
                     Ok(CommandResult::ThreadCreated(thread))
+                }
+                AutomaticDeliveryAction::Complete { .. } => {
+                    let mut saved = current(tx, request)?
+                        .ok_or_else(|| api_error(ErrorCode::NotFound, "automatic fence missing"))?;
+                    if saved.state == HandoffState::Live {
+                        if saved.thread.is_none() {
+                            return Err(api_error(
+                                ErrorCode::Conflict,
+                                "automatic handoff has no attached thread",
+                            ));
+                        }
+                        tx.execute("UPDATE channel_handoff_fences SET state='completed',completed_at=?4 WHERE instance_id=?1 AND actor_scope=?2 AND compound=?3 AND state='live'",params![id.claim.instance,scope(&id),id.compound.as_str(),decision.utc.0]).map_err(store_error)?;
+                        saved.state = HandoffState::Completed;
+                    }
+                    Ok(CommandResult::Handoff(saved))
                 }
                 _ => unreachable!(),
             }
@@ -350,9 +420,11 @@ pub(crate) fn mutate(
             let saved = current(tx, request)?
                 .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "automatic fence missing"))?;
             match (&request.action, result) {
-                (AutomaticDeliveryAction::Begin { .. }, CommandResult::Handoff(_)) => {
-                    Ok(CommandResult::Handoff(saved))
-                }
+                (
+                    AutomaticDeliveryAction::Begin { .. }
+                    | AutomaticDeliveryAction::Complete { .. },
+                    CommandResult::Handoff(_),
+                ) => Ok(CommandResult::Handoff(saved)),
                 (AutomaticDeliveryAction::Ensure(_), CommandResult::ThreadCreated(thread))
                     if saved.thread.as_ref() == Some(&thread) =>
                 {

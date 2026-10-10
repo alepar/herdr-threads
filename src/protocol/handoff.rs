@@ -7,6 +7,8 @@ use super::{
 use serde::{Deserialize, Serialize};
 pub(crate) mod automatic;
 pub use automatic::*;
+mod automatic_bootstrap;
+pub use automatic_bootstrap::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

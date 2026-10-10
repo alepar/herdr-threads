@@ -235,6 +235,11 @@ pub(crate) fn validate_selected_child_phase(
         ));
     }
     let actor = format!("seat:{}", claim.seat.as_str());
+    if let PermitMutation::SendMessage(send) = command
+        && handoff::automatic::selected_send(db, canonical, send, replay)?
+    {
+        return Ok(());
+    }
     handoff::automatic::guard_unscoped_key(db, &claim.instance, &actor, operation.as_str())?;
     let Some((identity, status)) =
         canonical_parent(db, canonical, &actor, registered_key.as_str(), role)?

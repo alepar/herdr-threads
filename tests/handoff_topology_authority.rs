@@ -1632,3 +1632,539 @@ fn automatic_canonical_registration_refuses_cross_role_and_legacy_key_adoption()
         0
     );
 }
+
+#[test]
+fn automatic_canonical_send_publishes_once_and_completed_replay_is_historical() {
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    automatic_call(&f, request.begin()).unwrap();
+    let ensured = automatic_call(&f, request.ensure()).unwrap();
+    let thread = automatic_selected_thread(&ensured).unwrap().clone();
+    let sent = automatic_call(&f, request.send(thread.clone())).unwrap();
+    assert!(matches!(sent, CommandResult::MessageSent(_)), "{sent:?}");
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM messages WHERE kind='ordinary' AND body='work'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    let completed = automatic_call(&f, request.complete()).unwrap();
+    assert!(matches!(completed, CommandResult::Handoff(ref v) if v.state==HandoffState::Completed));
+    f.db.execute(
+        "UPDATE memberships SET state='left',left_at=1 WHERE thread_id=?1 AND seat_id='peer'",
+        [thread.as_str()],
+    )
+    .unwrap();
+    f.db.execute("UPDATE occupant_bindings SET ended_at=1", [])
+        .unwrap();
+    assert_eq!(automatic_call(&f, request.send(thread)).unwrap(), sent);
+    assert_eq!(automatic_call(&f, request.complete()).unwrap(), completed);
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+fn automatic_parent_identity() -> AutomaticBootstrapIdentity {
+    let old = super::topology_handoff::identity();
+    let plan = AutomaticBootstrapPlan {
+        version: 2,
+        payload: AutomaticBootstrapPayload {
+            handoff: AutomaticHandoffPayload::new(
+                old.payload.handoff.namespace.clone(),
+                herdr_threads::protocol::ids::OperationId::new("automatic-child"),
+                "work".into(),
+            )
+            .unwrap(),
+            keys: AutomaticBootstrapKeys::new(herdr_threads::protocol::ids::OperationId::new(
+                "automatic-parent",
+            )),
+            workspace: old.payload.workspace,
+            cwd: old.payload.cwd,
+            label: old.payload.label,
+            focus: false,
+            env: Default::default(),
+            launch: old.payload.launch,
+            startup_input: None,
+        },
+    };
+    AutomaticBootstrapIdentity::new(old.scope, old.claim, plan).unwrap()
+}
+
+#[test]
+fn automatic_canonical_bootstrap_public_begin_reserve_and_record_created() {
+    let f = Fixture::new();
+    let identity = automatic_parent_identity();
+    let mut request = AutomaticBootstrapMutation {
+        identity,
+        action: AutomaticBootstrapAction::Begin,
+    };
+    let begin = f
+        .call(Command::AutomaticBootstrap(Box::new(request.clone())))
+        .unwrap();
+    assert!(
+        matches!(begin,CommandResult::AutomaticBootstrap(ref v) if v.state==BootstrapState::Prepared)
+    );
+    request.action = AutomaticBootstrapAction::Reserve {
+        attempt: BootstrapAttempt::first(),
+    };
+    let reserved = f
+        .call(Command::AutomaticBootstrap(Box::new(request.clone())))
+        .unwrap();
+    assert!(
+        matches!(reserved,CommandResult::AutomaticBootstrapReserved(ref v) if v.authorization.is_some())
+    );
+    let replay = f
+        .call(Command::AutomaticBootstrap(Box::new(request.clone())))
+        .unwrap();
+    assert!(
+        matches!(replay,CommandResult::AutomaticBootstrapReserved(ref v) if v.authorization.is_none())
+    );
+    request.action = AutomaticBootstrapAction::CheckSubmission {
+        attempt: BootstrapAttempt::first(),
+        administrative_revision: 0,
+    };
+    assert!(matches!(
+        f.call(Command::AutomaticBootstrap(Box::new(request.clone())))
+            .unwrap(),
+        CommandResult::BootstrapSubmissionChecked(_)
+    ));
+    request.action = AutomaticBootstrapAction::RecordNotSubmitted {
+        attempt: BootstrapAttempt::first(),
+    };
+    let not_submitted = f
+        .call(Command::AutomaticBootstrap(Box::new(request.clone())))
+        .unwrap();
+    assert!(
+        matches!(not_submitted, CommandResult::AutomaticBootstrap(ref status)
+        if status.attempt.get() == 2 && status.attempt_state == BootstrapAttemptState::Prepared)
+    );
+    assert_eq!(
+        f.call(Command::AutomaticBootstrap(Box::new(request.clone())))
+            .unwrap(),
+        not_submitted
+    );
+    let next = BootstrapAttempt::new(2).unwrap();
+    request.action = AutomaticBootstrapAction::Reserve { attempt: next };
+    assert!(
+        matches!(f.call(Command::AutomaticBootstrap(Box::new(request.clone()))).unwrap(),
+        CommandResult::AutomaticBootstrapReserved(ref status) if status.authorization.is_some())
+    );
+    request.action = AutomaticBootstrapAction::CheckSubmission {
+        attempt: next,
+        administrative_revision: 0,
+    };
+    assert!(matches!(
+        f.call(Command::AutomaticBootstrap(Box::new(request.clone())))
+            .unwrap(),
+        CommandResult::BootstrapSubmissionChecked(_)
+    ));
+    request.action = AutomaticBootstrapAction::RecordCreated {
+        attempt: next,
+        evidence: super::topology_handoff::created(),
+    };
+    let created = f
+        .call(Command::AutomaticBootstrap(Box::new(request)))
+        .unwrap();
+    assert!(
+        matches!(created,CommandResult::AutomaticBootstrap(ref v) if v.state==BootstrapState::Created && v.creation.is_some())
+    );
+    let json = serde_json::to_string(&begin).unwrap();
+    assert!(!json.contains("invite_key"));
+    assert!(!json.contains("create_key"));
+}
+
+#[test]
+fn automatic_canonical_ordinary_send_uses_selected_bootstrap_preparer() {
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    automatic_call(&f, request.begin()).unwrap();
+    let ensured = automatic_call(&f, request.ensure()).unwrap();
+    let thread = automatic_selected_thread(&ensured).unwrap().clone();
+    let AutomaticDeliveryAction::Send(send) = request.send(thread).action else {
+        panic!("send")
+    };
+    let result = f.call(Command::SendMessage(send.clone())).unwrap();
+    assert!(matches!(result, CommandResult::MessageSent(_)));
+    assert_eq!(f.call(Command::SendMessage(send)).unwrap(), result);
+}
+
+fn parent_call(
+    f: &Fixture,
+    id: &AutomaticBootstrapIdentity,
+    action: AutomaticBootstrapAction,
+) -> Result<CommandResult, herdr_threads::protocol::results::ApiError> {
+    f.call(Command::AutomaticBootstrap(Box::new(
+        AutomaticBootstrapMutation {
+            identity: id.clone(),
+            action,
+        },
+    )))
+}
+#[test]
+fn automatic_canonical_unknown_recovery_is_inspected_one_use_and_operator_attributed() {
+    let f = Fixture::new();
+    let id = automatic_parent_identity();
+    let attempt = BootstrapAttempt::first();
+    parent_call(&f, &id, AutomaticBootstrapAction::Begin).unwrap();
+    parent_call(&f, &id, AutomaticBootstrapAction::Reserve { attempt }).unwrap();
+    let unknown = parent_call(
+        &f,
+        &id,
+        AutomaticBootstrapAction::RecordOutcomeUnknown { attempt },
+    )
+    .unwrap();
+    let CommandResult::AutomaticBootstrap(status) = unknown else {
+        panic!("status")
+    };
+    assert_eq!(status.attempt_state, BootstrapAttemptState::OutcomeUnknown);
+    assert!(
+        parent_call(
+            &f,
+            &id,
+            AutomaticBootstrapAction::RecordNotSubmitted { attempt }
+        )
+        .is_err(),
+        "unknown submission cannot become transport-proven zero"
+    );
+    let recover = AutomaticBootstrapAction::Recover {
+        attempt,
+        inspection: status.recovery_inspection().unwrap(),
+        disposition: AutomaticBootstrapRecoveryDisposition::NotCreated {
+            quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+        },
+    };
+    let result = parent_call(&f, &id, recover.clone()).unwrap();
+    let CommandResult::AutomaticBootstrap(ref status) = result else {
+        panic!("status")
+    };
+    assert_eq!(status.attempt.get(), 2);
+    assert_eq!(status.administrative_revision, 1);
+    let saved = status.recovery.as_ref().unwrap();
+    assert_eq!(saved.operator_uid, 501);
+    assert_eq!(saved.operator_provenance, "operator:local-user:501");
+    f.db.execute("UPDATE occupant_bindings SET ended_at=1", [])
+        .unwrap();
+    assert_eq!(parent_call(&f, &id, recover).unwrap(), result);
+    assert!(
+        parent_call(
+            &f,
+            &id,
+            AutomaticBootstrapAction::CheckSubmission {
+                attempt,
+                administrative_revision: 0
+            }
+        )
+        .is_err()
+    );
+}
+#[test]
+fn automatic_canonical_parent_blocks_archival_before_child_registration() {
+    let f = Fixture::new();
+    let id = automatic_parent_identity();
+    parent_call(&f, &id, AutomaticBootstrapAction::Begin).unwrap();
+    f.db.execute("UPDATE memberships SET state='left'", [])
+        .unwrap();
+    for at in [0, 60000, 120000] {
+        let rt = herdr_threads::store::archival::Runtime {
+            boot: "auto-archive".into(),
+            mono: at,
+            utc: herdr_threads::protocol::time::UtcMillis(at),
+            after_ms: 60000,
+            host_generation: 0,
+            coherent: true,
+            valid_until_mono: None,
+            legacy_source: Some("covered".into()),
+        };
+        for _ in 0..20 {
+            if !herdr_threads::store::archival::advance(&f.db, "i", &rt)
+                .unwrap()
+                .has_more
+            {
+                break;
+            }
+        }
+    }
+    assert!(
+        !f.db
+            .query_row("SELECT archived FROM threads WHERE id='t'", [], |r| r
+                .get::<_, bool>(0))
+            .unwrap(),
+        "unattached original parent must protect possible creation"
+    );
+}
+
+#[test]
+fn automatic_canonical_recovery_public_noncreation_requires_inspected_state() {
+    let f = Fixture::new();
+    let id = automatic_parent_identity();
+    let attempt = BootstrapAttempt::first();
+    parent_call(&f, &id, AutomaticBootstrapAction::Begin).unwrap();
+    let CommandResult::AutomaticBootstrapReserved(reserved) =
+        parent_call(&f, &id, AutomaticBootstrapAction::Reserve { attempt }).unwrap()
+    else {
+        panic!("reserve")
+    };
+    let action = AutomaticBootstrapAction::Recover {
+        attempt,
+        inspection: reserved.status.recovery_inspection().unwrap(),
+        disposition: AutomaticBootstrapRecoveryDisposition::NotCreated {
+            quiescence: BootstrapQuiescenceAssertion::InspectedNoncreationAndQuiescence,
+        },
+    };
+    let CommandResult::AutomaticBootstrap(status) = parent_call(&f, &id, action).unwrap() else {
+        panic!("status")
+    };
+    assert_eq!(status.attempt.get(), 2);
+    assert!(status.recovery.is_some());
+}
+
+#[test]
+fn automatic_canonical_descriptor_requires_the_concrete_automatic_runtime() {
+    use herdr_threads::daemon::control::{ControlService, StopController};
+    for generic in [false, true] {
+        let mut f = Fixture::new();
+        if generic {
+            let host = Arc::new(herdr_threads::host::native::NativeCli::new(
+                "/host.sock".into(),
+                f.clock.clone(),
+            ));
+            f.service = f
+                .service
+                .with_bootstrap_runtime(
+                    super::topology_handoff::namespace(),
+                    host,
+                    Arc::new(GenericBootstrap),
+                )
+                .unwrap();
+        }
+        let budget = CallBudget {
+            deadline: MonoInstant(f.clock.monotonic_now().0 + 5000),
+            cancellation: Cancellation::default(),
+        };
+        let service = ControlService::new_guarded(
+            StopController::new(
+                uuid::Uuid::new_v4(),
+                uuid::Uuid::new_v4(),
+                Cancellation::default(),
+            ),
+            |_| -> herdr_threads::daemon::health::HealthInputs { panic!("health") },
+            f.service,
+        )
+        .unwrap();
+        let CommandResult::Capabilities(caps) = service
+            .handle(
+                Command::Capabilities,
+                herdr_threads::test_support::peer_identity(501),
+                &budget,
+            )
+            .unwrap()
+        else {
+            panic!("capabilities")
+        };
+        assert_eq!(
+            caps.capabilities
+                .iter()
+                .any(|name| name == herdr_threads::protocol::capabilities::AUTOMATIC_HANDOFF_V1),
+            !generic
+        );
+    }
+}
+
+fn automatic_peer_claim(
+    f: &Fixture,
+    request: &AutomaticDeliveryMutation,
+) -> herdr_threads::protocol::authority::CallerClaim {
+    use herdr_threads::protocol::ids::*;
+    f.db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('peer',1,'peer-pane','b',1,1,'codex','peer-session','00000000-0000-4000-8000-000000000002','cooperative_top_level',0,0,'term-peer','inc')",[]).unwrap();
+    let mut claim = request.claim.clone();
+    claim.seat = SeatId::new("peer");
+    claim.target = HostTargetId::new("peer-pane");
+    claim.native_session = NativeSessionId::new("peer-session");
+    claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+    claim
+}
+#[test]
+fn automatic_canonical_lost_ensure_then_real_reject_or_leave_cannot_publish_or_reinvite() {
+    use herdr_threads::protocol::{
+        commands::{Accept, Leave, Reject},
+        ids::*,
+    };
+    for phase in ["reject", "leave"] {
+        let f = Fixture::new();
+        let request = automatic_request(&f);
+        let peer = automatic_peer_claim(&f, &request);
+        automatic_call(&f, request.begin()).unwrap();
+        let ensured = automatic_call(&f, request.ensure()).unwrap();
+        let thread = automatic_selected_thread(&ensured).unwrap().clone();
+        if phase == "reject" {
+            let invitation: String =
+                f.db.query_row(
+                    "SELECT id FROM invitations WHERE thread_id=?1",
+                    [thread.as_str()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            f.call(Command::Reject(Reject {
+                thread: thread.clone(),
+                invitation: InvitationId::new(invitation),
+                reason: "declined".into(),
+                operation: OperationId::new("reject-peer"),
+                claim: peer,
+            }))
+            .unwrap();
+        } else {
+            f.call(Command::Accept(Accept {
+                thread: thread.clone(),
+                operation: OperationId::new("accept-peer"),
+                claim: peer.clone(),
+            }))
+            .unwrap();
+            f.call(Command::Leave(Leave {
+                thread: thread.clone(),
+                operation: OperationId::new("leave-peer"),
+                claim: peer,
+            }))
+            .unwrap();
+        }
+        assert_eq!(automatic_call(&f, request.ensure()).unwrap(), ensured);
+        assert!(automatic_call(&f, request.send(thread)).is_err(), "{phase}");
+        assert_eq!(
+            f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            f.db.query_row(
+                "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+}
+#[test]
+fn automatic_canonical_real_reject_between_preparation_and_publication_refuses() {
+    use herdr_threads::{
+        ports::{BootstrapStorePort, DurableWorkAdmission, SendPreparationProgress},
+        protocol::{
+            commands::{PermitMutation, Reject},
+            ids::*,
+        },
+    };
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    let peer = automatic_peer_claim(&f, &request);
+    automatic_call(&f, request.begin()).unwrap();
+    let ensured = automatic_call(&f, request.ensure()).unwrap();
+    let thread = automatic_selected_thread(&ensured).unwrap().clone();
+    let send = request.send(thread.clone());
+    let budget = CallBudget {
+        deadline: MonoInstant(f.clock.monotonic_now().0 + 5000),
+        cancellation: Cancellation::default(),
+    };
+    loop {
+        match f
+            .store
+            .automatic_delivery_prepare_send_step(
+                &request.plan().payload.namespace,
+                &send,
+                DurableWorkAdmission::new(16).unwrap(),
+                &budget,
+            )
+            .unwrap()
+        {
+            SendPreparationProgress::Ready { .. } => break,
+            SendPreparationProgress::More { .. } => {}
+            SendPreparationProgress::Committed(_) => panic!("fresh preparation"),
+        }
+    }
+    let invitation: String =
+        f.db.query_row(
+            "SELECT id FROM invitations WHERE thread_id=?1",
+            [thread.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    f.call(Command::Reject(Reject {
+        thread,
+        invitation: InvitationId::new(invitation),
+        reason: "declined".into(),
+        operation: OperationId::new("reject-interleave"),
+        claim: peer,
+    }))
+    .unwrap();
+    let AutomaticDeliveryAction::Send(inner) = &send.action else {
+        panic!("send")
+    };
+    let permit = f
+        .store
+        .issue_cooperative_permit(
+            herdr_threads::store::cooperative_permit_request(&PermitMutation::SendMessage(
+                inner.clone(),
+            ))
+            .unwrap(),
+            &budget,
+        )
+        .unwrap();
+    assert!(
+        f.store
+            .automatic_delivery_mutate(&request.plan().payload.namespace, &send, permit, &budget)
+            .is_err()
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+#[test]
+fn automatic_canonical_selected_runtime_keeps_active_unlinked_direct_send() {
+    use herdr_threads::protocol::{
+        commands::{DeliveryMode, EnsureDirectThread, SendMessage},
+        ids::*,
+    };
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    let CommandResult::ThreadCreated(thread) = f
+        .call(Command::EnsureDirectThread(EnsureDirectThread {
+            recipient: request.plan().recipient.clone(),
+            operation: OperationId::new("unlinked-ensure"),
+            claim: request.claim.clone(),
+        }))
+        .unwrap()
+    else {
+        panic!("thread")
+    };
+    let send = SendMessage {
+        user_intent: None,
+        thread,
+        body: "unlinked".into(),
+        invited_recipients: vec![],
+        direct_recipient: Some(request.plan().recipient.clone()),
+        deadline_millis: None,
+        operation: OperationId::new("unlinked-send"),
+        claim: request.claim,
+        delivery_mode: DeliveryMode::Ordinary,
+        relays_user: false,
+    };
+    assert!(matches!(
+        f.call(Command::SendMessage(send)).unwrap(),
+        CommandResult::MessageSent(_)
+    ));
+}

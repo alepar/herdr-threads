@@ -2555,7 +2555,7 @@ fn validate_resolution_evidence(
     Ok(())
 }
 
-fn current_resolution_owner(
+pub(crate) fn current_resolution_owner(
     tx: &Transaction<'_>,
     instance: &str,
     guard: &OrdinaryResolutionGuard,
@@ -2688,6 +2688,11 @@ pub fn resolve_seat(
     budget: &CallBudget,
 ) -> Result<OrdinaryResolutionOutcome, ApiError> {
     snapshot_budget(context, budget)?;
+    super::topology_handoff::automatic::guard_raw_resolution(
+        conn,
+        instance,
+        request.operation.as_str(),
+    )?;
     let digest = ordinary_resolution_digest(instance, &request)?;
     if matches!(attempt, OrdinaryResolutionAttempt::ReplayOnly) {
         return context.execute_decision(
@@ -2923,7 +2928,7 @@ fn resolve_bootstrap_seat_impl(
 
 /// Shared unchanged ordinary allocation recipe. The boolean records only this
 /// call's successful new seat insert; it is never inferred on replay.
-fn ordinary_resolution_apply(
+pub(crate) fn ordinary_resolution_apply(
     tx: &Transaction<'_>,
     at: DecisionInstant,
     instance: &str,

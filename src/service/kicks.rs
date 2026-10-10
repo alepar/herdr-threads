@@ -129,6 +129,12 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "direct_threads",
     // Immutable automatic identities accompany the archival fence parent.
     "automatic_handoff_companions",
+    "automatic_bootstrap_parents",
+    "automatic_bootstrap_keys",
+    "automatic_bootstrap_attempts",
+    "automatic_bootstrap_attachments",
+    "automatic_bootstrap_reports",
+    "automatic_bootstrap_recoveries",
     "automatic_handoff_keys",
     // Bootstrap proof/history transitions also update the archival barrier parent.
     "bootstrap_child_keys",

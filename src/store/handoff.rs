@@ -136,6 +136,9 @@ pub(crate) fn validate_handoff_requirement(
     replay: bool,
 ) -> Result<(), ApiError> {
     match requirement {
+        crate::protocol::authority::HandoffRequirement::AutomaticBootstrap(request) => {
+            super::topology_handoff::automatic::validate_parent_phase(db, request, replay)
+        }
         crate::protocol::authority::HandoffRequirement::AutomaticDelivery(request) => {
             automatic::validate_phase(db, request, replay)
         }

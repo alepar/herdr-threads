@@ -112,6 +112,31 @@ pub fn prepare_send_step(
     prepare_send_step_impl(context, conn, request, limits, budget, admission, None)
 }
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_automatic_send_step(
+    context: &StoreContext,
+    conn: &mut Connection,
+    request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+    limits: MessageLimits,
+    budget: &CallBudget,
+    admission: DurableWorkAdmission,
+) -> Result<SendPreparationProgress, ApiError> {
+    let crate::protocol::handoff::AutomaticDeliveryAction::Send(send) = &request.action else {
+        return Err(ApiError::invalid_request("not automatic Send"));
+    };
+    let requirement = crate::protocol::authority::HandoffRequirement::AutomaticDelivery(Box::new(
+        request.clone(),
+    ));
+    prepare_send_step_impl(
+        context,
+        conn,
+        send,
+        limits,
+        budget,
+        admission,
+        Some(&requirement),
+    )
+}
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_delivery_send_step(
     context: &StoreContext,
     conn: &mut Connection,

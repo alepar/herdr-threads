@@ -113,6 +113,7 @@ pub enum Command {
     OperatorReplace(OperatorReplace),
     HandoffDelivery(Box<crate::protocol::handoff::DeliveryMutation>),
     AutomaticHandoffDelivery(Box<crate::protocol::handoff::AutomaticDeliveryMutation>),
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapMutation>),
     BeginBootstrap(Box<crate::protocol::handoff::BeginBootstrap>),
     ReserveBootstrapAttempt(Box<crate::protocol::handoff::ReserveBootstrapAttempt>),
     RecordBootstrapCreated(Box<crate::protocol::handoff::RecordBootstrapCreated>),
@@ -954,6 +955,7 @@ impl Command {
         match self {
             Self::HandoffDelivery(v) => return v.validate(),
             Self::AutomaticHandoffDelivery(v) => return v.validate(),
+            Self::AutomaticBootstrap(v) => return v.validate(),
             Self::BeginBootstrap(v) => {
                 v.identity.validate()?;
                 if v.operation != v.identity.payload.handoff.keys.begin {
@@ -1240,6 +1242,7 @@ impl TryFrom<Command> for OperatorCommand {
 /// cannot be passed to the permit-consuming store path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermitMutation {
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapMutation>),
     BeginBootstrap(Box<crate::protocol::handoff::BeginBootstrap>),
     ReserveBootstrapAttempt(Box<crate::protocol::handoff::ReserveBootstrapAttempt>),
     RecordBootstrapCreated(Box<crate::protocol::handoff::RecordBootstrapCreated>),
@@ -1275,6 +1278,7 @@ impl TryFrom<Command> for PermitMutation {
     type Error = Command;
     fn try_from(command: Command) -> Result<Self, Self::Error> {
         match command {
+            Command::AutomaticBootstrap(v) => Ok(Self::AutomaticBootstrap(v)),
             Command::BeginBootstrap(v) => Ok(Self::BeginBootstrap(v)),
             Command::ReserveBootstrapAttempt(v) => Ok(Self::ReserveBootstrapAttempt(v)),
             Command::RecordBootstrapCreated(v) => Ok(Self::RecordBootstrapCreated(v)),

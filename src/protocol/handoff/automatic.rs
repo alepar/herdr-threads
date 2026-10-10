@@ -125,7 +125,9 @@ impl AutomaticDeliveryPlan {
 pub struct AutomaticHandoffPlan {
     pub version: u32,
     pub delivery: AutomaticDeliveryPlan,
+    #[serde(deserialize_with = "deserialize_exact")]
     pub launch: crate::cli::launch::LaunchRequest,
+    #[serde(deserialize_with = "deserialize_exact")]
     pub context: crate::protocol::output::ContinuationContext,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_input: Option<crate::harness::adapter::StartupInputTemplate>,
@@ -227,6 +229,7 @@ pub struct AutomaticDeliveryMutation {
     pub scope: IntentScope,
     pub claim: CallerClaim,
     pub digest: String,
+    #[serde(deserialize_with = "deserialize_exact")]
     pub original: AutomaticOriginal,
     pub action: AutomaticDeliveryAction,
 }
@@ -355,4 +358,19 @@ pub fn automatic_selected_thread(result: &CommandResult) -> Result<&ThreadId, &'
             .ok_or("automatic fence has no attached thread"),
         _ => Err("automatic selection returned an unexpected result"),
     }
+}
+
+pub(super) fn deserialize_exact<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Serialize,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let decoded: T = serde_json::from_value(value.clone()).map_err(serde::de::Error::custom)?;
+    if value != serde_json::to_value(&decoded).map_err(serde::de::Error::custom)? {
+        return Err(serde::de::Error::custom(
+            "automatic wire contains lost fields",
+        ));
+    }
+    Ok(decoded)
 }

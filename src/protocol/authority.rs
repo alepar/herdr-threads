@@ -153,6 +153,7 @@ pub struct CooperativeDecisionFence {
 pub(crate) enum HandoffRequirement {
     Delivery(Box<crate::protocol::handoff::DeliveryMutation>),
     AutomaticDelivery(Box<crate::protocol::handoff::AutomaticDeliveryMutation>),
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapMutation>),
     BootstrapChild {
         namespace: crate::protocol::handoff::HandoffNamespace,
         command: Box<crate::protocol::commands::PermitMutation>,
@@ -214,6 +215,15 @@ impl MutationPermit {
         request: &crate::protocol::handoff::AutomaticDeliveryMutation,
     ) -> Self {
         self.handoff_requirement = Some(HandoffRequirement::AutomaticDelivery(Box::new(
+            request.clone(),
+        )));
+        self
+    }
+    pub(crate) fn with_automatic_bootstrap(
+        mut self,
+        request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+    ) -> Self {
+        self.handoff_requirement = Some(HandoffRequirement::AutomaticBootstrap(Box::new(
             request.clone(),
         )));
         self
