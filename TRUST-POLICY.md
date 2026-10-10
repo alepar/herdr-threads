@@ -119,7 +119,7 @@ live seat, the refusal offers exactly two resolutions, each as ready argv:
 
 **C4. Availability ends only on evidence.** A joined seat stays available across a daemon restart when its
 mapping is structurally reconfirmed; the open cooperative or operator binding carries forward to the new host epoch (implemented; a native binding re-registers instead, and a send before the first reconciliation pass assumes the carry rather than warning). A `managed_launch` binding is never availability, so it is not carried; it stays open and unregistered until a check-in replaces it. Availability ends when the mapping becomes
-unresolved, the seat retires, or a check-in replaces the binding.
+unresolved, the seat retires, or a check-in replaces the binding. Availability is derived per binding: a seat is available while any open, connected, registered binding of it is confirmed by the effective observation, so the last connected binding disconnecting (for example on liveness evidence) opens the seat's unavailability episode, and a lifecycle check-in that reconnects a binding closes it.
 Herdr not answering (a timed-out or refused connection, a read that finishes past its budget) and a
 daemon-side failure to stage a capture are missing evidence, not evidence of change: they write no host
 invalidation, so seats, bindings and the published view stay **frozen** until Herdr answers (implemented,
@@ -183,8 +183,8 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it starts no availability or receipt timer. |
 | `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
 | `cooperative_hook_agent` | binding claims | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
-| `liveness_process_exit` | binding disconnections only (defined; behaviour lands in later beads) | The binding's fingerprinted process (pid and start time) no longer exists, or the pid now has a different start time. Structural evidence; it disconnects the binding and never ends it, moves a seat or merges seats. |
-| `liveness_end_event` | binding disconnections only (defined; behaviour lands in later beads) | The harness reported an end event for this session (Codex SessionEnd/SubagentStop, Claude SubagentStop, Hermes `on_session_finalize`/`subagent_stop`). It disconnects the binding and never ends it, moves a seat or merges seats. |
+| `liveness_process_exit` | binding disconnections only | The binding's fingerprinted process (pid and start time) no longer exists, or the pid now has a different start time. Structural evidence; it disconnects the binding and never ends it, moves a seat or merges seats. |
+| `liveness_end_event` | binding disconnections only (defined; the end-event behaviour lands in a later bead) | The harness reported an end event for this session (Codex SessionEnd/SubagentStop, Claude SubagentStop, Hermes `on_session_finalize`/`subagent_stop`). It disconnects the binding and never ends it, moves a seat or merges seats. |
 | `canonical_binding_composer` | archival sample association only | The daemon associated a fresh registered-parser composer read with an already registered cooperative top-level binding after exact canonical binding, structural, activity and timing validation. The harness/session/execution in the association come from that binding; the host does not attest occupancy or current execution. This value authorizes no seat, binding, membership, receipt or invitation transition. |
 | `daemon_lifecycle` | automatic archive events only | The daemon applied the configured quiet-channel lifecycle policy after complete canonical validation. No actor seat, binding or receipt claim; no membership or continuity change. |
 | `legacy_local_journal_hint` | handoff archival vetoes only | A bounded read-only scan found a pending compound in this instance's intents directory. It can only prevent automatic archival; it authorizes no action and claims no native execution. |
@@ -249,6 +249,19 @@ model open work, and summary closure never changes receipt state or installs glo
   never superseded, and a supersede-induced disconnect never triggers fast-forward. A lineage successor
   supersedes its predecessor only after copying its cursors. A seat is active while any open binding is
   connected, or while its open human binding sits on a resolved seat.
+- *Liveness worker (ht-54r.23)*: the daemon re-checks the process fingerprint of every connected,
+  open, non-human binding on a cadence (5 s) and, for the candidate's seat, before each wake decision.
+  A binding whose process no longer exists, whose pid now has another start time, or that is a migrated
+  binding connected with no fingerprint is disconnected `liveness_process_exit` (a non-migrated binding
+  without a fingerprint is absence of evidence and is left alone); among connected top-level bindings
+  of one instance and harness sharing one fingerprint, only the latest lifecycle claim stays connected
+  and the others are disconnected `superseded` (subagents excluded). Disconnection on liveness evidence
+  is structural evidence, never a heuristic: it goes through the one `store::bindings::disconnect`
+  transition, and the worker never ends a binding, retires, moves or merges a seat. It never judges a
+  human binding (a person has no harness process), and it skips seats that are unresolved or retired
+  and every seat of an instance under a recovery hold, so a Herdr restart never disconnects through the
+  worker: the reconciler's C2 path owns those seats. A verdict is applied only if the binding is still
+  connected with the fingerprint it was judged on. Availability follows liveness per binding (C4).
 - *Refusals*: an agent call without a harness session id (empty, a `launch:` placeholder, and from
   ht-54r.5 a `plugin_context:` session), reads included, is refused with `session_claim_required`. An agent
   call that would enroll, reconnect or reopen a binding without a liveness fingerprint is refused with

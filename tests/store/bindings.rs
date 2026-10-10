@@ -1528,3 +1528,189 @@ mod liveness {
         assert_eq!(reason(&db, &pred).as_deref(), Some("superseded"));
     }
 }
+
+// ---- ht-54r.23: availability from binding liveness ----
+
+mod availability {
+    use super::*;
+    use crate::protocol::authority::LivenessFingerprint;
+
+    fn enroll_pid(db: &Connection, session: &str, pid: u32) -> BindingRow {
+        let (k, p) = (key(session, None), placement());
+        let mut req = request(&k, &p);
+        req.fingerprint = Some(LivenessFingerprint { pid, start: 9 });
+        enrolled(enroll(db, &req, UtcMillis(10)).unwrap()).0
+    }
+    /// The seat is placed on an observed target so its connected, registered bindings count.
+    fn observable_db() -> Connection {
+        let db = db();
+        db.execute_batch(
+            "UPDATE seats SET target_id='p', target_generation=1, unavailability_open=0 WHERE id='s'; \
+             UPDATE host_instances SET host_boot='b', host_epoch=1 WHERE id='i'; \
+             INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance) VALUES ('i','p','b',1,1,1,'fresh');",
+        )
+        .unwrap();
+        db
+    }
+    fn episode(db: &Connection) -> (i64, i64) {
+        db.query_row(
+            "SELECT unavailability_open, unavailability_episode FROM seats WHERE id='s'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+    fn availability(db: &Connection) -> SeatAvailability {
+        seat_availability(db, &SeatId::new("s")).unwrap()
+    }
+
+    #[test]
+    fn availability_episode_opens_when_the_last_binding_disconnects() {
+        let db = observable_db();
+        let a = enroll_pid(&db, "sess-A", 7);
+        assert_eq!(availability(&db), SeatAvailability::Available);
+        assert_eq!(episode(&db), (0, 1));
+        assert!(
+            disconnect(
+                &db,
+                &a.binding_id,
+                DisconnectReason::ProcessExit,
+                UtcMillis(20)
+            )
+            .unwrap()
+        );
+        assert_eq!(episode(&db), (1, 2));
+        // Idempotent: a second disconnect changes nothing and opens no second episode.
+        assert!(
+            !disconnect(
+                &db,
+                &a.binding_id,
+                DisconnectReason::ProcessExit,
+                UtcMillis(21)
+            )
+            .unwrap()
+        );
+        assert_eq!(episode(&db), (1, 2));
+    }
+
+    #[test]
+    fn episode_stays_closed_while_another_binding_is_connected() {
+        let db = observable_db();
+        let a = enroll_pid(&db, "sess-A", 7);
+        let b = enroll_pid(&db, "sess-B", 8);
+        assert!(
+            disconnect(
+                &db,
+                &a.binding_id,
+                DisconnectReason::ProcessExit,
+                UtcMillis(20)
+            )
+            .unwrap()
+        );
+        assert_eq!(episode(&db), (0, 1));
+        assert_eq!(availability(&db), SeatAvailability::Available);
+        assert!(
+            disconnect(
+                &db,
+                &b.binding_id,
+                DisconnectReason::ProcessExit,
+                UtcMillis(21)
+            )
+            .unwrap()
+        );
+        assert_eq!(episode(&db), (1, 2));
+    }
+
+    #[test]
+    fn retired_seat_opens_no_episode_on_disconnect() {
+        let db = observable_db();
+        let a = enroll_pid(&db, "sess-A", 7);
+        db.execute(
+            "UPDATE seats SET state='retired', retired_at=15 WHERE id='s'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            disconnect(
+                &db,
+                &a.binding_id,
+                DisconnectReason::SeatRetired,
+                UtcMillis(20)
+            )
+            .unwrap()
+        );
+        assert_eq!(episode(&db), (0, 1));
+    }
+
+    #[test]
+    fn seat_availability_reports_since() {
+        let db = observable_db();
+        let a = enroll_pid(&db, "sess-A", 7);
+        let b = enroll_pid(&db, "sess-B", 8);
+        disconnect(
+            &db,
+            &a.binding_id,
+            DisconnectReason::ProcessExit,
+            UtcMillis(20),
+        )
+        .unwrap();
+        assert_eq!(availability(&db), SeatAvailability::Available);
+        disconnect(
+            &db,
+            &b.binding_id,
+            DisconnectReason::Superseded,
+            UtcMillis(31),
+        )
+        .unwrap();
+        assert_eq!(
+            availability(&db),
+            SeatAvailability::Unavailable {
+                since: UtcMillis(31)
+            }
+        );
+    }
+
+    #[test]
+    fn lifecycle_reconnect_closes_the_episode() {
+        use crate::store::cooperative_checkin_tests::{check_in, claim, fixture, lifecycle};
+        let (store, conn, _clock) = fixture();
+        check_in(&store, lifecycle(claim(), "op-1")).unwrap();
+        let binding: String = conn
+            .query_row("SELECT binding_id FROM occupant_bindings", [], |r| r.get(0))
+            .unwrap();
+        let binding = BindingId::parse(binding).unwrap();
+        assert_eq!(
+            seat_availability(&conn, &SeatId::new("s")).unwrap(),
+            SeatAvailability::Available
+        );
+        disconnect(
+            &conn,
+            &binding,
+            DisconnectReason::ProcessExit,
+            UtcMillis(150),
+        )
+        .unwrap();
+        assert_eq!(episode(&conn).0, 1);
+        assert!(matches!(
+            seat_availability(&conn, &SeatId::new("s")).unwrap(),
+            SeatAvailability::Unavailable { .. }
+        ));
+        // The same session checks in again: the binding reconnects and the episode closes.
+        let mut again = claim();
+        again.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+        check_in(&store, lifecycle(again, "op-2")).unwrap();
+        let liveness: String = conn
+            .query_row(
+                "SELECT liveness FROM occupant_bindings WHERE binding_id=?1",
+                [binding.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(liveness, "connected");
+        assert_eq!(episode(&conn).0, 0);
+        assert_eq!(
+            seat_availability(&conn, &SeatId::new("s")).unwrap(),
+            SeatAvailability::Available
+        );
+    }
+}

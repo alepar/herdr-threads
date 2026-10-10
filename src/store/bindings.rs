@@ -422,11 +422,12 @@ pub struct DisconnectEvent<'a> {
 }
 pub type DisconnectHook = fn(&Connection, &DisconnectEvent<'_>) -> Result<(), ApiError>;
 /// Side effects of a disconnect, run inside the deciding transaction after the row changed.
-/// ht-54r.12 appends ("mod_channel_release", ..); ht-54r.23 appends ("availability_recompute", ..).
+/// ht-54r.12 appends ("mod_channel_release", ..); ht-54r.23 appended ("availability_recompute", ..).
 /// Human bindings (`harness='human'`) are exempt from the liveness sweep (TRUST-POLICY A4): a
 /// person has no process fingerprint, and the seat stays human-held until an agent replaces it;
 /// ht-54r.23's worker skips them.
-pub const DISCONNECT_HOOKS: &[(&str, DisconnectHook)] = &[];
+pub const DISCONNECT_HOOKS: &[(&str, DisconnectHook)] =
+    &[("availability_recompute", availability_recompute)];
 
 /// The only disconnect transition (end event, pane close, re-check, session switch, supersede all
 /// come through here). Connected -> disconnected with reason and time; idempotent. Runs
@@ -521,6 +522,141 @@ pub fn seat_active(db: &Connection, seat: &SeatId) -> Result<bool, ApiError> {
         |r| r.get(0),
     )
     .map_err(store_error)
+}
+
+/// Whether a seat is available or not, from the liveness of its bindings (spec §3 Presence).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatAvailability {
+    Available,
+    /// No open, connected, registered binding is confirmed; `since` is the latest moment a
+    /// binding of the seat disconnected (the seat's creation when none ever did).
+    Unavailable {
+        since: UtcMillis,
+    },
+}
+
+/// A seat is available iff it has at least one open, connected, registered binding that the
+/// canonical observation confirms (`schema::effective_registered_availability`).
+pub fn seat_availability(db: &Connection, seat: &SeatId) -> Result<SeatAvailability, ApiError> {
+    if super::schema::effective_registered_availability(db, seat.as_str(), None)?.is_some() {
+        return Ok(SeatAvailability::Available);
+    }
+    let since: i64 = db
+        .query_row(
+            "SELECT COALESCE((SELECT MAX(disconnected_at) FROM occupant_bindings WHERE seat_id=?1), \
+             (SELECT created_at FROM seats WHERE id=?1), 0)",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    Ok(SeatAvailability::Unavailable {
+        since: UtcMillis(since),
+    })
+}
+
+/// Disconnect hook: when the disconnected binding was the seat's last confirmed connected
+/// registered binding, the seat's unavailability episode opens (`seats.unavailability_open=1`).
+/// A retired seat opens none; an already open episode is reused. Reconnect closes the episode in
+/// the check-in that reconnects (`register_available`).
+fn availability_recompute(db: &Connection, event: &DisconnectEvent<'_>) -> Result<(), ApiError> {
+    let seat = &event.binding.seat;
+    let retired: bool = db
+        .query_row(
+            "SELECT state='retired' FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if retired
+        || super::schema::effective_registered_availability(db, seat.as_str(), None)?.is_some()
+    {
+        return Ok(());
+    }
+    super::schema::ensure_unavailability_episode(db, seat)?;
+    Ok(())
+}
+
+/// A connected, open, non-human binding the liveness worker may judge, with what the same-process
+/// sweep needs.
+#[derive(Debug, Clone)]
+pub struct LivenessCandidate {
+    pub binding: BindingRow,
+    pub instance: String,
+    /// The binding's latest lifecycle claim (`observed_at`).
+    pub claimed_at: i64,
+}
+
+/// One liveness verdict: disconnect `binding` for `reason` provided it is still connected with
+/// exactly `fingerprint` (a reconnect with another process in between voids the verdict).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LivenessDecision {
+    pub binding: BindingId,
+    pub fingerprint: Option<LivenessFingerprint>,
+    pub reason: DisconnectReason,
+}
+
+/// Connected open bindings of resolved seats the liveness check may judge. Human bindings are
+/// never judged by process evidence (ht-54r.4). Unresolved and retired seats, and seats of an
+/// instance under a recovery hold (open `recovery_holds` or an unclaimed baseline hold), are
+/// skipped entirely: a Herdr restart never leads to a disconnect from here (the reconciler owns
+/// those seats). `seat` narrows the read to one seat.
+pub fn liveness_candidates(
+    db: &Connection,
+    seat: Option<&SeatId>,
+) -> Result<Vec<LivenessCandidate>, ApiError> {
+    let mut statement = db
+        .prepare_cached(&format!(
+            "SELECT {COLUMNS}, (SELECT instance_id FROM seats WHERE id=occupant_bindings.seat_id), observed_at \
+             FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected' AND harness<>'human' \
+             AND (?1 IS NULL OR seat_id=?1) \
+             AND seat_id IN (SELECT s.id FROM seats s JOIN host_instances h ON h.id=s.instance_id \
+                 WHERE s.state='resolved' AND COALESCE(h.baseline_hold_unclaimed,0)=0 \
+                 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=s.instance_id AND rh.released_at IS NULL)) \
+             ORDER BY ordinal"
+        ))
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map([seat.map(SeatId::as_str)], |r| {
+            Ok((row(r)?, r.get::<_, String>(19)?, r.get::<_, i64>(20)?))
+        })
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?;
+    rows.into_iter()
+        .map(|(binding, instance, claimed_at)| {
+            Ok(LivenessCandidate {
+                binding: binding?,
+                instance,
+                claimed_at,
+            })
+        })
+        .collect()
+}
+
+/// Applies liveness verdicts inside the caller's transaction, each through the sole disconnect
+/// transition. A verdict whose binding is no longer a candidate (reconnected with another
+/// fingerprint, seat now held, unresolved or retired) is dropped. Returns how many bindings
+/// changed. Never ends a binding, moves a seat or merges seats.
+pub fn apply_liveness(
+    tx: &Connection,
+    decisions: &[LivenessDecision],
+    now: UtcMillis,
+) -> Result<usize, ApiError> {
+    if decisions.is_empty() {
+        return Ok(0);
+    }
+    let current = liveness_candidates(tx, None)?;
+    let mut changed = 0;
+    for decision in decisions {
+        let still = current.iter().any(|c| {
+            c.binding.binding_id == decision.binding
+                && c.binding.fingerprint == decision.fingerprint
+        });
+        if still && disconnect(tx, &decision.binding, decision.reason, now)? {
+            changed += 1;
+        }
+    }
+    Ok(changed)
 }
 
 /// Enroll hook: an enrollment or lifecycle check-in by a top-level binding disconnects

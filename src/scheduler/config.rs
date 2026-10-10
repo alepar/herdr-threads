@@ -70,3 +70,7 @@ impl SchedulerTiming {
             .unwrap_or(Ok(self.receipt))
     }
 }
+
+/// How often the liveness worker re-checks the process fingerprints of connected bindings
+/// (`service::liveness`); wake decisions re-check their own seat on top of this cadence.
+pub const LIVENESS_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
