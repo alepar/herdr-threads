@@ -1634,6 +1634,181 @@ fn automatic_canonical_registration_refuses_cross_role_and_legacy_key_adoption()
 }
 
 #[test]
+fn automatic_canonical_complete_requires_published_frozen_send() {
+    use herdr_threads::protocol::{
+        commands::{OperatorRetire, Reject},
+        ids::*,
+    };
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    let peer = automatic_peer_claim(&f, &request);
+    automatic_call(&f, request.begin()).unwrap();
+    let ensured = automatic_call(&f, request.ensure()).unwrap();
+    let thread = automatic_selected_thread(&ensured).unwrap().clone();
+    let assert_live_without_completion = || {
+        assert_eq!(
+            f.db.query_row(
+                "SELECT state FROM channel_handoff_fences WHERE compound=?1",
+                [request.plan().payload.keys.compound.as_str()],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "live"
+        );
+        assert_eq!(
+            f.db.query_row(
+                "SELECT count(*) FROM operations WHERE operation_key=?1",
+                [request.plan().payload.keys.complete.as_str()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    };
+    assert!(
+        automatic_call(&f, request.complete()).is_err(),
+        "Ensure alone must not complete or release the live handoff fence"
+    );
+    assert_live_without_completion();
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let AutomaticDeliveryAction::Send(mut unrelated) = request.send(thread.clone()).action else {
+        panic!("send")
+    };
+    unrelated.operation = OperationId::new("unrelated-send");
+    unrelated.body = "unrelated work".into();
+    assert!(matches!(
+        f.call(Command::SendMessage(unrelated)).unwrap(),
+        CommandResult::MessageSent(_)
+    ));
+    assert!(
+        automatic_call(&f, request.complete()).is_err(),
+        "a published ordinary message on this pair under another key is not the frozen Send"
+    );
+    assert_live_without_completion();
+    assert!(matches!(
+        automatic_call(&f, request.send(thread.clone())).unwrap(),
+        CommandResult::MessageSent(_)
+    ));
+    let completed = automatic_call(&f, request.complete()).unwrap();
+    assert!(
+        matches!(completed, CommandResult::Handoff(ref status) if status.state == HandoffState::Completed)
+    );
+    let invitation: String =
+        f.db.query_row(
+            "SELECT id FROM invitations WHERE thread_id=?1",
+            [thread.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    f.call(Command::Reject(Reject {
+        thread: thread.clone(),
+        invitation: InvitationId::new(invitation),
+        reason: "declined after publication".into(),
+        operation: OperationId::new("reject-after-complete"),
+        claim: peer,
+    }))
+    .unwrap();
+    f.call(Command::OperatorRetire(OperatorRetire {
+        seat: request.claim.seat.clone(),
+        operation: OperationId::new("retire-after-complete"),
+    }))
+    .unwrap();
+    assert_eq!(automatic_call(&f, request.complete()).unwrap(), completed);
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn automatic_canonical_complete_refuses_corrupt_publication_proof() {
+    use herdr_threads::protocol::ids::*;
+    for corruption in [
+        "digest",
+        "result_kind",
+        "missing_message",
+        "unrelated_message",
+    ] {
+        let f = Fixture::new();
+        let request = automatic_request(&f);
+        automatic_call(&f, request.begin()).unwrap();
+        let ensured = automatic_call(&f, request.ensure()).unwrap();
+        let thread = automatic_selected_thread(&ensured).unwrap().clone();
+        let AutomaticDeliveryAction::Send(mut unrelated) = request.send(thread.clone()).action
+        else {
+            panic!("send")
+        };
+        unrelated.operation = OperationId::new("unrelated-send");
+        unrelated.body = "unrelated work".into();
+        let unrelated = f.call(Command::SendMessage(unrelated)).unwrap();
+        automatic_call(&f, request.send(thread.clone())).unwrap();
+        if corruption == "digest" {
+            f.db.execute(
+                "UPDATE operations SET digest=zeroblob(32) WHERE operation_key=?1",
+                [request.plan().payload.keys.send.as_str()],
+            )
+            .unwrap();
+        } else {
+            let result = match corruption {
+                "result_kind" => CommandResult::ThreadCreated(thread),
+                "missing_message" => CommandResult::MessageSent(MessageId::new("missing-message")),
+                "unrelated_message" => unrelated,
+                _ => unreachable!(),
+            };
+            f.db.execute(
+                "UPDATE operations SET result_json=?1 WHERE operation_key=?2",
+                rusqlite::params![
+                    serde_json::to_string(&result).unwrap(),
+                    request.plan().payload.keys.send.as_str()
+                ],
+            )
+            .unwrap();
+        }
+        assert!(
+            automatic_call(&f, request.complete()).is_err(),
+            "{corruption} must not prove publication of the frozen Send"
+        );
+        assert_eq!(
+            f.db.query_row("SELECT state FROM channel_handoff_fences", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "live"
+        );
+        assert_eq!(
+            f.db.query_row(
+                "SELECT count(*) FROM operations WHERE operation_key=?1",
+                [request.plan().payload.keys.complete.as_str()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            f.db.query_row(
+                "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+    }
+}
+
+#[test]
 fn automatic_canonical_send_publishes_once_and_completed_replay_is_historical() {
     let f = Fixture::new();
     let request = automatic_request(&f);

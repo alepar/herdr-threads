@@ -265,6 +265,57 @@ pub(crate) fn query(
         _ => Err(ApiError::invalid_request("not an automatic query")),
     }
 }
+/// Prove publication of this frozen Send, rather than another message on the pair.
+/// Published preparations/manifests are retained by the ordinary engine; its
+/// discard, abandonment and retention paths only clean unpublished generations.
+pub(crate) fn published_send(
+    db: &Connection,
+    request: &AutomaticDeliveryMutation,
+    thread: &crate::protocol::ids::ThreadId,
+) -> Result<bool, ApiError> {
+    request.validate().map_err(ApiError::invalid_request)?;
+    let AutomaticDeliveryAction::Send(send) = request.send(thread.clone()).action else {
+        unreachable!()
+    };
+    let actor = format!("seat:{}", request.claim.seat.as_str());
+    let expected = schema::canonical_digest(&crate::store::messages::send_payload(&send))?;
+    let row: Option<(Vec<u8>, String)> = db.query_row(
+        "SELECT digest,substr(result_json,1,131073) FROM operations WHERE actor_scope=?1 AND operation_key=?2",
+        params![actor, send.operation.as_str()], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).optional().map_err(store_error)?;
+    let Some((digest, json)) = row else {
+        return Ok(false);
+    };
+    if digest != expected {
+        return Err(mismatch());
+    }
+    let corrupt = || {
+        api_error(
+            ErrorCode::StoreCorrupt,
+            "invalid automatic Send publication proof",
+        )
+    };
+    if json.len() > MAX_ORIGINAL_BYTES {
+        return Err(corrupt());
+    }
+    let value: serde_json::Value = serde_json::from_str(&json).map_err(|_| corrupt())?;
+    let result: CommandResult = serde_json::from_value(value.clone()).map_err(|_| corrupt())?;
+    if serde_json::to_value(&result).map_err(|_| corrupt())? != value {
+        return Err(corrupt());
+    }
+    let CommandResult::MessageSent(message) = result else {
+        return Err(corrupt());
+    };
+    let valid: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM send_preparations p JOIN send_manifests s ON s.preparation_id=p.id AND s.instance_id=p.instance_id AND s.thread_id=p.thread_id JOIN messages m ON m.id=s.message_id AND m.instance_id=p.instance_id AND m.thread_id=p.thread_id WHERE p.instance_id=?1 AND p.operation_scope=?2 AND p.operation_key=?3 AND p.digest=?4 AND p.thread_id=?5 AND s.message_id=?6 AND m.kind='ordinary' AND m.delivery_mode='ordinary')",
+        params![request.claim.instance, actor, send.operation.as_str(), expected.as_slice(), thread.as_str(), message.as_str()], |r| r.get(0),
+    ).map_err(store_error)?;
+    if !valid {
+        return Err(corrupt());
+    }
+    Ok(true)
+}
+
 pub(crate) fn mutate(
     context: &StoreContext,
     db: &mut Connection,
@@ -402,10 +453,16 @@ pub(crate) fn mutate(
                     let mut saved = current(tx, request)?
                         .ok_or_else(|| api_error(ErrorCode::NotFound, "automatic fence missing"))?;
                     if saved.state == HandoffState::Live {
-                        if saved.thread.is_none() {
-                            return Err(api_error(
+                        let thread = saved.thread.as_ref().ok_or_else(|| {
+                            api_error(
                                 ErrorCode::Conflict,
                                 "automatic handoff has no attached thread",
+                            )
+                        })?;
+                        if !published_send(tx, request, thread)? {
+                            return Err(api_error(
+                                ErrorCode::Conflict,
+                                "automatic handoff has no published frozen Send",
                             ));
                         }
                         tx.execute("UPDATE channel_handoff_fences SET state='completed',completed_at=?4 WHERE instance_id=?1 AND actor_scope=?2 AND compound=?3 AND state='live'",params![id.claim.instance,scope(&id),id.compound.as_str(),decision.utc.0]).map_err(store_error)?;

@@ -589,7 +589,7 @@ pub(crate) fn check_start(
     };
     control::validate_pair_send(tx, send)?;
     handoff::automatic::validate_phase(tx, &child, false)?;
-    if !published_send(tx, &request.identity, a, thread)? {
+    if !handoff::automatic::published_send(tx, &a.child, thread)? {
         return Err(conflict());
     }
     Ok(CommandResult::AutomaticBootstrap(Box::new(s)))
@@ -1123,7 +1123,7 @@ pub(crate) fn complete(
     if child.state != HandoffState::Completed || child.thread.as_ref() != Some(&retained.thread) {
         return Err(conflict());
     }
-    if !published_send(tx, id, attachment, &retained.thread)? {
+    if !handoff::automatic::published_send(tx, &attachment.child, &retained.thread)? {
         return Err(conflict());
     }
     let crate::protocol::commands::PermitMutation::CompleteHandoff(inner) =
@@ -1184,32 +1184,4 @@ pub(crate) fn complete(
         tx.execute("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES(?1,?2,?3,?4,?5)",params![actor(id),operation.as_str(),digest.as_slice(),std::str::from_utf8(&result_bytes).map_err(|_|corrupt())?,now.0]).map_err(store_error)?;
     }
     Ok(result)
-}
-
-fn published_send(
-    db: &Connection,
-    id: &AutomaticBootstrapIdentity,
-    a: &AutomaticBootstrapAttachment,
-    thread: &ThreadId,
-) -> Result<bool, ApiError> {
-    let request = a.child.send(thread.clone());
-    let AutomaticDeliveryAction::Send(send) = request.action else {
-        unreachable!()
-    };
-    let expected = schema::canonical_digest(&crate::store::messages::send_payload(&send))?;
-    let row:Option<(Vec<u8>,String)>=db.query_row("SELECT digest,substr(result_json,1,131073) FROM operations WHERE actor_scope=?1 AND operation_key=?2",params![actor(id),send.operation.as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
-    let Some((digest, json)) = row else {
-        return Ok(false);
-    };
-    if digest != expected {
-        return Err(mismatch());
-    }
-    let CommandResult::MessageSent(message) = decode(json.as_bytes(), LIMIT)? else {
-        return Err(corrupt());
-    };
-    let valid:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1 AND thread_id=?2 AND kind='ordinary')",params![message.as_str(),thread.as_str()],|r|r.get(0)).map_err(store_error)?;
-    if !valid {
-        return Err(corrupt());
-    }
-    Ok(true)
 }
