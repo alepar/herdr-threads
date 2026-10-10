@@ -7,3 +7,7 @@ idea: Use $super-auto, fully autonomous end to end with both roasts on, to imple
 branch: super-auto/automatic-one-to-one-threads
 base: main
 spec: 2026-10-10-automatic-one-to-one-threads-design.md
+epic: ht-e99
+
+approvals:
+- top-split · auto under explicit fully-autonomous delegation · ht-e99.1 PROMOTE, ht-e99.2 LEAF, ht-e99.3 PROMOTE, ht-e99.4 LEAF
