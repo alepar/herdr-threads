@@ -3321,6 +3321,9 @@ pub struct ModChannelRegistration {
     pub binding_generation: u64,
     pub native_session: NativeSessionId,
     pub harness: Harness,
+    /// What wakes an idle seat of this harness, from its delivery policy
+    /// (delivery-policy DP7).
+    pub idle_wake: crate::harness::adapter::IdleWake,
     pub registered_at: UtcMillis,
 }
 
@@ -3384,11 +3387,19 @@ pub trait ModChannels: Send + Sync {
     /// "Is the mod handling this seat" (spec D7): any registry entry for the
     /// seat whose grace has not expired, Live, ReconnectGrace and RebindGrace
     /// alike, whatever its binding generation. Consumers: the wake candidate
-    /// path and pokes (scheduler `mod_suppressed`) and the Claude hook digest
+    /// path and pokes (via [`Self::wake_suppressed`]) and the push-channel hook digest
     /// flag (`mod_channel_live`). The default answers from `status()`.
     fn seat_live(&self, seat: &SeatId) -> bool {
         self.status()
             .is_some_and(|status| status.channels.iter().any(|entry| &entry.seat == seat))
+    }
+    /// Whether native wake and pokes are suppressed for the seat (delivery-policy
+    /// DP7): the mod handles the seat *and* its policy says the channel is what
+    /// wakes an idle session (`IdleWake::Channel`). The default is
+    /// [`Self::seat_live`]; a registry that records each channel's `idle_wake`
+    /// overrides it.
+    fn wake_suppressed(&self, seat: &SeatId) -> bool {
+        self.seat_live(seat)
     }
     /// Push `Attention{version}` to the seat's channel (call sites per spec D2).
     fn notify(&self, _seat: &SeatId, _attention_version: u64) {}

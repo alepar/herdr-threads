@@ -608,7 +608,7 @@ static NO_MOD_CHANNELS: NoModChannels = NoModChannels;
 /// per seat: the `/clear` window between the check-in commit and the worker
 /// pass holds a channel of the previous generation.
 fn mod_suppressed(channels: &dyn ModChannels, seat: &SeatId, now: UtcMillis) -> bool {
-    channels.seat_live(seat) && !channels.stalled(seat, now)
+    channels.wake_suppressed(seat) && !channels.stalled(seat, now)
 }
 
 #[derive(Clone)]

@@ -411,7 +411,7 @@ pub enum CliAction {
     ContractId {
         harness: Option<crate::harness::context::Harness>,
     },
-    /// Hidden `watch --harness claude --session ID`: the mod delivery child.
+    /// Hidden `watch --harness ID --session ID`: the mod delivery child.
     Watch(super::watch::WatchRequest),
     /// Hidden `watch ack --session ID --via VIA IDS...`.
     WatchAck(super::watch::WatchAckRequest),
@@ -1070,10 +1070,11 @@ enum Top {
         after_help = "Exit codes: 0 stream ended (restart with backoff), 1 other error \
 (restart with backoff), 2 refused (retry after backoff), 3 permanent (stop until \
 reload). Registration refusals no_binding, session_mismatch, held, unresolved, \
-cooldown, busy and stopping exit 2; not_claude and disabled exit 3. A Close of \
+cooldown, busy and stopping exit 2; no push channel (wire code not_claude) and \
+disabled exit 3. A Close of \
 disabled or replaced exits 3, any other Close exits 0. Local reasons no_pane, \
 env_disabled and unsupported exit 3; daemon_unavailable and error exit 1; \
-stream_ended exits 0. Spawned by the herdr-threads Claude mod."
+stream_ended exits 0. Spawned by a push-channel mod."
     )]
     Watch(WatchArgs),
     /// Discover built-in adapters and their declared tooling metadata. Local only.
@@ -1103,9 +1104,15 @@ stream_ended exits 0. Spawned by the herdr-threads Claude mod."
 
 #[derive(Args)]
 struct WatchArgs {
-    /// Only `claude` (the id is not `harness`, so the registry-wide harness
-    /// selector choices do not replace this narrower list).
-    #[arg(long = "harness", value_parser = ["claude"])]
+    /// A harness whose adapter declares a push delivery channel (the id is not
+    /// `harness`, so the registry-wide harness selector choices do not replace
+    /// this narrower list).
+    #[arg(
+        long = "harness",
+        value_parser = clap::builder::PossibleValuesParser::new(
+            crate::harness::registry::builtins().push_channel_ids()
+        )
+    )]
     mod_harness: Option<String>,
     #[arg(long)]
     session: Option<String>,
@@ -2044,7 +2051,7 @@ where
 
 /// Apply the registry's agent namespace to every selector, including global
 /// cooperative selection. Human-specific commands have no harness selector.
-fn command_for_registry(registry: &crate::harness::registry::Registry) -> clap::Command {
+pub(crate) fn command_for_registry(registry: &crate::harness::registry::Registry) -> clap::Command {
     fn selectors(mut command: clap::Command, choices: &[&'static str]) -> clap::Command {
         // mut_args preserves declaration order, including positional HARNESS RAW.
         command = command.mut_args(|arg| {
@@ -2069,7 +2076,15 @@ fn command_for_registry(registry: &crate::harness::registry::Registry) -> clap::
         .iter()
         .map(|registration| registration.metadata().id)
         .collect();
-    selectors(Cli::command(), &choices)
+    let mut command = selectors(Cli::command(), &choices);
+    // `watch --harness` lists only the harnesses that declare a push channel.
+    let push = registry.push_channel_ids();
+    if let Some(watch) = command.find_subcommand_mut("watch") {
+        *watch = watch.clone().mut_arg("mod_harness", |arg| {
+            arg.value_parser(clap::builder::PossibleValuesParser::new(push))
+        });
+    }
+    command
 }
 
 /// P7 (native Claude demo 3): a global path flag may repeat only with one
@@ -2951,13 +2966,13 @@ fn parse_cli_in_registry(
                         .collect::<Result<_, _>>()?,
                 })
             }
-            (None, Some(_), Some(session)) => CliAction::Watch(super::watch::WatchRequest {
-                harness: crate::harness::context::Harness::Claude,
+            (None, Some(harness), Some(session)) => CliAction::Watch(super::watch::WatchRequest {
+                harness: harness_arg(&harness, registry)?,
                 session,
             }),
             _ => {
                 return Err(invalid(
-                    "watch needs --harness claude and --session ID, or the `ack` subcommand",
+                    "watch needs --harness ID and --session ID, or the `ack` subcommand",
                 ));
             }
         },

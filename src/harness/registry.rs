@@ -2528,10 +2528,14 @@ mod tests {
         assert!(registry.delivery_policy("test-beta").is_none());
         assert!(registry.delivery_policy("test-alpha").is_some());
         assert_eq!(registry.push_channel_ids(), ["test-alpha"]);
+        // Only the Claude adapter declares a delivery policy today.
         for r in builtins().registrations() {
-            assert!(builtins().delivery_policy(r.metadata().id).is_none());
+            assert_eq!(
+                builtins().delivery_policy(r.metadata().id).is_some(),
+                r.metadata().id == "claude"
+            );
         }
-        assert!(builtins().push_channel_ids().is_empty());
+        assert_eq!(builtins().push_channel_ids(), ["claude"]);
     }
     fn registry(adapters: &[&'static TestAdapter]) -> Result<Registry, RegistryError> {
         Registry::new(Box::leak(

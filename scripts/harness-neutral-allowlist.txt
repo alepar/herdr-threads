@@ -25,14 +25,10 @@
 # `unassigned` until the coordinator routes it.
 src/cli/commands.rs:--hooks-only applies to `setup claude` only — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
 src/cli/commands.rs:Some("claude") — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
-src/cli/commands.rs:Spawned by the herdr-threads Claude mod — to-migrate: ht-poh.3.3 watch help text
 src/cli/commands.rs:`setup claude|codex --harness-binary PATH` — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
 src/cli/commands.rs:apply to `setup` and `setup claude` only — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
-src/cli/commands.rs:harness: crate::harness::context::Harness::Claude, — to-migrate: ht-poh.3.3 watch request
-src/cli/commands.rs:not_claude and disabled exit 3 — to-migrate: ht-poh.3.3 watch help text
 src/cli/commands.rs:see `herdr-threads setup codex` — to-migrate: ht-poh.2.2 setup hint (D15 non-watch)
-src/cli/commands.rs:value_parser = ["claude"] — to-migrate: ht-poh.3.3 watch --harness argument
-src/cli/commands.rs:watch needs --harness claude and --session ID — to-migrate: ht-poh.3.3 watch usage error
+src/cli/commands.rs:wire code not_claude — frozen-wire: not_claude wire code in the watch help text (frozen wire shape)
 src/cli/doctor.rs:CLAUDE_NOT_OBSERVABLE — to-migrate: ht-poh.2.4 doctor projections (D7)
 src/cli/doctor.rs:CODEX_HOME — to-migrate: ht-poh.2.4 doctor projections (D7)
 src/cli/doctor.rs:Claude — to-migrate: ht-poh.2.4 doctor projections (D7)
@@ -133,8 +129,6 @@ src/cli/topology_runtime.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI project
 src/cli/topology_runtime.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/topology_runtime.rs:claude — to-migrate: ht-poh.2.2 launch/CLI projections
 src/cli/topology_runtime.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
-src/cli/watch.rs:Claude — to-migrate: ht-poh.3.3 watch/delivery
-src/cli/watch.rs:NotClaude — to-migrate: ht-poh.3.3 watch/delivery
 src/client/mod.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
 src/daemon/health.rs:claude: state("claude"), — frozen-wire: v1 HarnessHealth projection, the single place naming the two frozen fields (frozen wire shape)
 src/daemon/health.rs:codex: state("codex"), — frozen-wire: v1 HarnessHealth projection, the single place naming the two frozen fields (frozen wire shape)
@@ -204,8 +198,4 @@ src/protocol/results.rs:pub claude: HarnessState, — frozen-wire: v1 HarnessHea
 src/protocol/results.rs:pub codex: HarnessState, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)
 src/protocol/watch.rs:NotClaude, — frozen-wire: not_claude wire code and its NotClaude variants (frozen wire shape)
 src/protocol/watch.rs:Self::NotClaude — frozen-wire: not_claude wire code and its NotClaude variants (frozen wire shape)
-src/service/dispatch.rs:Claude — to-migrate: ht-poh.3.3 watch/delivery
-src/service/dispatch.rs:NotClaude — to-migrate: ht-poh.3.3 watch/delivery
-src/service/dispatch.rs:claude — to-migrate: ht-poh.3.3 watch/delivery
-src/store/receipts.rs:Claude — to-migrate: ht-poh.3.3 watch/delivery
 src/store/schema.rs:check(harnessin('codex','claude','human')) — history: schema-history shape check of the harness CHECK constraint (historical migration)

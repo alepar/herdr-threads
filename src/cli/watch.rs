@@ -1,4 +1,4 @@
-//! Hidden `watch` and `watch ack` subcommands: the Claude mod's delivery child.
+//! Hidden `watch` and `watch ack` subcommands: a push-channel mod's delivery child.
 //! The contract (argv, env, exit codes, JSON lines) is in
 //! [`crate::protocol::watch`]; this file is the CLI behaviour (spec D3, D4, D6).
 //!
@@ -715,7 +715,7 @@ fn run_ack_lines(
 enum CallerFailure {
     Daemon,
     NoBinding,
-    NotClaude,
+    NoPushChannel,
     Other,
 }
 
@@ -724,13 +724,13 @@ impl CallerFailure {
         match self {
             Self::Daemon => WatchStatusReason::DaemonUnavailable,
             Self::NoBinding => WatchStatusReason::NoBinding,
-            Self::NotClaude => WatchStatusReason::NotClaude,
+            Self::NoPushChannel => WatchStatusReason::NO_PUSH_CHANNEL,
             Self::Other => WatchStatusReason::Error,
         }
     }
 }
 
-/// Pane (or `--cooperative-*`) to seat to the seat's recorded Claude context,
+/// Pane (or `--cooperative-*`) to seat to the seat's recorded harness context,
 /// as a claim whose native session is the `--session` value (spec D3).
 fn locate_claim<C, F>(
     parsed: &mut super::commands::ParsedCli,
@@ -765,8 +765,11 @@ where
         .current()
         .map_err(|_| CallerFailure::Other)?
         .ok_or(CallerFailure::NoBinding)?;
-    if current.harness != Harness::Claude {
-        return Err(CallerFailure::NotClaude);
+    if !crate::delivery::declares(
+        current.harness.occupant().as_str(),
+        crate::harness::adapter::DeliveryMechanism::PushChannel,
+    ) {
+        return Err(CallerFailure::NoPushChannel);
     }
     let mut claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
     claim.native_session =

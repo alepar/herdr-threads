@@ -1,4 +1,4 @@
-//! The daemon's registry of live Claude mod watch channels (spec D2, D7).
+//! The daemon's registry of live push-channel mod watch channels (spec D2, D7).
 //!
 //! One entry per seat (`ModChannelRegistration` is decided against A2 by
 //! `DomainService::watch_register` before it gets here); the registry is
@@ -36,6 +36,7 @@
 //! every second. The registry never holds its lock across a store read.
 
 use crate::{
+    harness::adapter::IdleWake,
     ports::{
         ModChannelId, ModChannelRegistration, ModChannelSink, ModChannels, ModFingerprint,
         ModStoreReads,
@@ -70,6 +71,7 @@ struct Entry {
     generation: u64,
     native_session: String,
     harness: Harness,
+    idle_wake: IdleWake,
     connected_since: UtcMillis,
     state: ModChannelState,
     grace_until: Option<UtcMillis>,
@@ -510,6 +512,7 @@ impl ModChannels for ModChannelRegistry {
                     generation: registration.binding_generation,
                     native_session: registration.native_session.as_str().to_owned(),
                     harness: registration.harness,
+                    idle_wake: registration.idle_wake,
                     connected_since: now,
                     state: ModChannelState::Live,
                     grace_until: None,
@@ -583,6 +586,14 @@ impl ModChannels for ModChannelRegistry {
             .is_some_and(|entry| entry.grace_until.is_none_or(|until| until > now))
     }
 
+    fn wake_suppressed(&self, seat: &SeatId) -> bool {
+        let now = self.clock.utc_now();
+        self.lock().entries.get(seat).is_some_and(|entry| {
+            entry.idle_wake == IdleWake::Channel
+                && entry.grace_until.is_none_or(|until| until > now)
+        })
+    }
+
     fn record_attention_push(&self, seat: &SeatId, binding_generation: u64, now: UtcMillis) {
         if let Some(entry) = self.lock().entries.get_mut(seat)
             && entry.generation == binding_generation
@@ -644,3 +655,7 @@ impl ModChannels for ModChannelRegistry {
 #[cfg(test)]
 #[path = "../../tests/service/mod_channels.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/delivery/push_channel.rs"]
+mod push_channel_tests;

@@ -13,6 +13,7 @@ pub mod doctor;
 pub mod setup;
 
 pub(crate) mod composer;
+mod delivery;
 
 use super::adapter::*;
 use super::admission::{self, OptimisticAdmission, Refusal, Row};
@@ -979,6 +980,9 @@ impl HarnessAdapter for ClaudeAdapter {
     }
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         Some(&composer::NativeComposer)
+    }
+    fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
+        Some(&delivery::ClaudeDelivery)
     }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         Some(self)
