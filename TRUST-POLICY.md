@@ -696,6 +696,15 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   header) can only come from the mod. Within a header line the thread and sender names are peer-chosen text
   and may contain words that look like markers; the markers the mod writes come after the sender and attribute
   the source without granting permission.
+- **Claude subagent attribution is a best-effort shell rewrite.** The PreToolUse hook adds
+  `--agent-id=<agent_id>` after the command word of every simple command whose command word is
+  `herdr-threads` or `ht` (after `;`, `&&`, `||`, `|`, `&`, newline, leading `VAR=value` words and the wrappers
+  `env`, `command`, `nice`, `timeout`, `time`, `nohup`). Claude subagent calls whose shell shape the rewrite does
+  not recognize (a script that calls `ht`, `eval`, `bash -c`, `xargs`, command substitution, a heredoc, a quoted or
+  path-qualified command word) carry no `--agent-id` and are attributed to the parent session. A sibling PreToolUse
+  hook that also returns `updatedInput` may drop the rewrite (last hook wins); the call is then attributed to the
+  parent session. The rewrite never returns `permissionDecision`, and a same-user subagent can still pass any
+  `--agent-id` it likes (cooperative model).
 
 ## Decision record
 

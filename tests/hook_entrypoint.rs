@@ -1363,6 +1363,41 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
 // checks in although nothing advanced (the CheckIn count must not move).
 // Past the ~128-call wedge point of a journaling tool path; the journal bytes
 // are compared exactly as well, so one journaling call already fails.
+// Kills: a rewrite that only exists in a unit seam, not in the installed hook process: a
+// subagent's `ht` call must come back from the real entrypoint with `--agent-id` and no
+// permissionDecision, and the same call from the main session must stay untouched.
+#[test]
+fn installed_claude_hook_rewrites_a_subagents_herdr_call_only() {
+    let fx = Fixture::start();
+    let (host, command) = (fx.host.clone(), fx.command.clone());
+    let started = run_hook(&command, "w9:p1", &host, &start("sess-sub"));
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+
+    let child = Payload::pre_tool_use("sess-sub", "cd x && ht inbox | ht send t m")
+        .with("agent_id", "agent-9".into())
+        .with("agent_type", "worker".into())
+        .bytes();
+    let rewritten = run_hook(&command, "w9:p1", &host, &child);
+    assert_eq!(rewritten.code, Some(0), "{}", rewritten.stderr);
+    let value = rewritten.context();
+    let specific = &value["hookSpecificOutput"];
+    assert_eq!(specific["hookEventName"], "PreToolUse");
+    assert_eq!(
+        specific["updatedInput"]["command"],
+        "cd x && ht --agent-id=agent-9 inbox | ht --agent-id=agent-9 send t m"
+    );
+    assert!(specific.get("permissionDecision").is_none(), "{specific}");
+
+    let main = Payload::pre_tool_use("sess-sub", "ht inbox").bytes();
+    let untouched = run_hook(&command, "w9:p1", &host, &main);
+    assert_eq!(untouched.code, Some(0), "{}", untouched.stderr);
+    assert!(
+        !String::from_utf8_lossy(&untouched.stdout).contains("updatedInput"),
+        "{:?}",
+        String::from_utf8_lossy(&untouched.stdout)
+    );
+}
+
 const TOOL_HOOK_CALLS: u64 = 130;
 #[test]
 fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {

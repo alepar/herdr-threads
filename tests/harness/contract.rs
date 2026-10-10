@@ -195,7 +195,7 @@ fn canonical_json_sorts_keys_events_and_fields() {
 /// together with them.
 #[test]
 fn contract_ids_are_pinned() {
-    assert_eq!(contract_id(&claude::CONTRACT), "3f860645de4c3363");
+    assert_eq!(contract_id(&claude::CONTRACT), "b76ddc7501b1db9c");
     assert_eq!(contract_id(&codex::CONTRACT), "d3b98d74f26f7e2c");
 }
 
@@ -591,7 +591,7 @@ fn adapters_local_dispatch_keeps_legacy_contract_id_bytes() {
     .unwrap();
     assert_eq!(
         String::from_utf8(legacy).unwrap(),
-        "{\"claude\":\"3f860645de4c3363\",\"codex\":\"d3b98d74f26f7e2c\",\"normalize\":{\"claude\":{\"2.1.286 (Claude Code)\":\"2.1.286\"},\"codex\":{\"codex-cli 0.158.0\":\"0.158.0\"}}}\n"
+        "{\"claude\":\"b76ddc7501b1db9c\",\"codex\":\"d3b98d74f26f7e2c\",\"normalize\":{\"claude\":{\"2.1.286 (Claude Code)\":\"2.1.286\"},\"codex\":{\"codex-cli 0.158.0\":\"0.158.0\"}}}\n"
     );
     let mut output = Vec::new();
     crate::cli::run_in_pane(["herdr-threads", "adapters", "--json"], None, &mut output).unwrap();
@@ -613,7 +613,7 @@ fn adapters_local_dispatch_keeps_legacy_contract_id_bytes() {
     assert_shipped_discovery_metadata(&discovery, "synthetic_fourth");
     let row = |id: &str| discovery.adapters.iter().find(|row| row.id == id).unwrap();
     for (id, pinned) in [
-        ("claude", "3f860645de4c3363"),
+        ("claude", "b76ddc7501b1db9c"),
         ("codex", "d3b98d74f26f7e2c"),
     ] {
         assert_eq!(row(id).legacy_contract_id.as_deref(), Some(pinned));

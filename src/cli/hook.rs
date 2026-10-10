@@ -3323,6 +3323,19 @@ fn emit(outcome: &HookOutcome) -> bool {
     delivered
 }
 
+/// A Claude subagent's `herdr-threads`/`ht` Bash call carries its `agent_id` to the CLI as
+/// `--agent-id` (spec §1). The rewrite needs no daemon, so it rides on every PreToolUse
+/// outcome, including the quiet and unavailable ones.
+fn with_subagent_rewrite(args: &HookArgs, stdin: &[u8], mut outcome: HookOutcome) -> HookOutcome {
+    if args.harness == Harness::Claude
+        && let Some(stdout) =
+            crate::harness::claude::subagent_rewrite_output(stdin, &outcome.stdout)
+    {
+        outcome.stdout = stdout;
+    }
+    outcome
+}
+
 /// Process boundary. Always returns exit status 0: plugin or daemon failure
 /// must never block the native tool (exit 2 blocks a Claude PreToolUse).
 /// A watchdog enforces the end-to-end budget even if a call ignores its deadline.
@@ -3511,6 +3524,7 @@ pub fn run_process_with(
                 }))
                 .unwrap_or_else(|_| quiet_outcome("internal error".into()))
             })();
+            let outcome = with_subagent_rewrite(&args, &stdin, outcome);
             let delivered = emit(&outcome);
             // The local mark first: a slow completion (or the watchdog) must
             // never cost it.
@@ -3536,7 +3550,7 @@ pub fn run_process_with(
             deadline
         },
         |detail| {
-            emit(&quiet_outcome(detail));
+            emit(&with_subagent_rewrite(&args, &stdin, quiet_outcome(detail)));
         },
         |deadline| {
             if read_ok {
@@ -3613,6 +3627,8 @@ fn native_event_name(event: &LifecycleEvent) -> &'static str {
         "PreToolUse"
     } else if event.source == "SubagentStart" {
         "SubagentStart"
+    } else if event.source == "SubagentStop" {
+        "SubagentStop"
     } else {
         "SessionStart"
     }

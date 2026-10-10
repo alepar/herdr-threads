@@ -896,26 +896,16 @@ fn with_command(group: &Value, command: &str) -> Value {
 fn downgrade_to_bash_only(config: &std::path::Path, manifest_path: &std::path::Path) {
     let mut manifest: OwnershipManifest =
         serde_json::from_slice(&fs::read(manifest_path).unwrap()).unwrap();
-    let session = manifest
-        .owned
-        .iter()
-        .find(|entry| entry.event == "SessionStart")
-        .unwrap()
-        .clone();
     let mut settings: Value = serde_json::from_slice(&fs::read(config).unwrap()).unwrap();
-    settings["hooks"]["SessionStart"]
-        .as_array_mut()
-        .unwrap()
-        .retain(|group| group != &session.group);
-    if settings["hooks"]["SessionStart"]
-        .as_array()
-        .unwrap()
-        .is_empty()
-    {
-        settings["hooks"]
-            .as_object_mut()
-            .unwrap()
-            .remove("SessionStart");
+    for entry in manifest.owned.iter().filter(|e| e.event != "PreToolUse") {
+        let groups = settings["hooks"][&entry.event].as_array_mut().unwrap();
+        groups.retain(|group| group != &entry.group);
+        if groups.is_empty() {
+            settings["hooks"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&entry.event);
+        }
     }
     let bytes = serde_json::to_vec(&settings).unwrap();
     fs::write(config, &bytes).unwrap();
@@ -1554,8 +1544,10 @@ fn interrupted_drift_upgrade_resumes_or_removes_from_each_real_boundary() {
             let after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
             let original: Value = serde_json::from_slice(original).unwrap();
             let mut expected = original.clone();
-            if after["hooks"]["PreToolUse"] == json!([]) {
-                expected["hooks"]["PreToolUse"] = json!([]);
+            for event in ["PreToolUse", "SubagentStart", "SubagentStop"] {
+                if after["hooks"][event] == json!([]) {
+                    expected["hooks"][event] = json!([]);
+                }
             }
             assert_eq!(after, expected, "{name} {fault:?} resume={resume}");
             assert!(!manifest_path.exists());
@@ -1830,7 +1822,9 @@ fn prepared_install_under_earlier_declaration_converges_on_resetup() {
             now,
             json!({"other":1,"later":"keep","hooks":{
                 "SessionStart":[expected[0].group.clone()],
-                "PreToolUse":[expected[1].group.clone()]
+                "PreToolUse":[expected[1].group.clone()],
+                "SubagentStart":[expected[2].group.clone()],
+                "SubagentStop":[expected[3].group.clone()]
             }}),
             "{name}"
         );
@@ -1873,7 +1867,7 @@ fn prepared_resetup_refuses_second_supersession_of_the_same_event() {
     );
     // The intent was recorded by a binary whose declaration has since changed again.
     let mut manifest = read_manifest_file(&manifest_path);
-    assert_eq!(manifest.superseded.len(), 2);
+    assert_eq!(manifest.superseded.len(), manifest.owned.len());
     for entry in &mut manifest.owned {
         entry.group["hooks"][0]["timeout"] = json!(9);
         entry.fingerprint = group_fingerprint(&entry.group);
@@ -2073,7 +2067,16 @@ fn changed_file_drift_upgrade_keeps_empty_owned_event_arrays_the_recorded_base_h
         let first = install_claude_user(&config, &manifest_path, &argv, original).unwrap();
         let mut owned_events: Vec<&str> = first.owned.iter().map(|o| o.event.as_str()).collect();
         owned_events.sort_unstable();
-        assert_eq!(owned_events, ["PreToolUse", "SessionStart"], "{name}");
+        assert_eq!(
+            owned_events,
+            [
+                "PreToolUse",
+                "SessionStart",
+                "SubagentStart",
+                "SubagentStop"
+            ],
+            "{name}"
+        );
         drift_installation(&config, &manifest_path, &drift);
         let mut v: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
         v["later"] = json!("keep");
@@ -2367,7 +2370,16 @@ fn claude_setup_registers_event_per_group() {
         shell_command(&argv).unwrap(),
         manifest.installation_id
     );
-    assert_eq!(manifest.owned.len(), 2);
+    let events: Vec<&str> = manifest.owned.iter().map(|e| e.event.as_str()).collect();
+    assert_eq!(
+        events,
+        [
+            "SessionStart",
+            "PreToolUse",
+            "SubagentStart",
+            "SubagentStop"
+        ]
+    );
     assert_event_per_group(&manifest.owned, &base);
     assert_eq!(
         command_of(&manifest.owned[0]),

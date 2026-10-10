@@ -38,9 +38,16 @@ mod tests {
     use super::*;
     #[test]
     fn installed_groups_are_a_subset_of_the_required_sets() {
-        for (event, _) in crate::harness::claude::declared_hook_groups("ht hook claude") {
-            assert!(CLAUDE_REQUIRED_HOOK_EVENTS.contains(&event), "{event}");
-        }
+        // Claude installs exactly the required set; Codex and Hermes stay a subset until ht-54r.11.
+        let claude: Vec<&str> = crate::harness::claude::declared_hook_groups("ht hook claude")
+            .into_iter()
+            .map(|(event, _)| event)
+            .collect();
+        let mut sorted = claude.clone();
+        sorted.sort_unstable();
+        let mut required = CLAUDE_REQUIRED_HOOK_EVENTS.to_vec();
+        required.sort_unstable();
+        assert_eq!(sorted, required);
         for hook in crate::harness::codex::DECLARATION.owned_hooks {
             assert!(
                 CODEX_REQUIRED_HOOK_EVENTS.contains(&hook.event),

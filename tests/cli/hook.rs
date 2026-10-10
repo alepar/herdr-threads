@@ -44,7 +44,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
             settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
             crate::harness::setup::event_command(&command, "PreToolUse")
         );
-        assert_eq!(plan.owned.len(), 2);
+        assert_eq!(plan.owned.len(), 4);
         // Each owned group registers its own event on the command line, and that evented
         // command parses back through the hook entrypoint.
         for entry in &plan.owned {
@@ -8059,6 +8059,60 @@ mod registered_resume {
             registered_event: Some("SessionStart".into()),
         }
     }
+    fn claude_subagent_event(event: &str) -> HookInput {
+        HookInput {
+            bytes: serde_json::to_vec(&serde_json::json!({
+                "hook_event_name": event, "session_id": "claude-s",
+                "agent_id": "agent-7", "agent_type": "worker",
+                "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp"
+            }))
+            .unwrap(),
+            registered_event: Some(event.into()),
+        }
+    }
+    // Kills: SubagentStop rendering child guidance or checking in (it is bookkeeping only), and
+    // SubagentStop failing to decode (a stale-contract parse failure reported to the daemon).
+    #[test]
+    fn claude_subagent_stop_is_quiet() {
+        let f = Fixture::new(true);
+        let outcome = f.run(
+            claude_registration(),
+            &claude_subagent_event("SubagentStop"),
+        );
+        assert!(outcome.stdout.is_empty(), "{:?}", outcome.stdout);
+        assert_eq!(outcome.diagnostic, None);
+        assert!(outcome.attention.is_none());
+        assert_eq!(task52_commands(&f), (0, 0), "no check-in, no hot threads");
+    }
+    // Kills: SubagentStart being refused as an unknown Claude event, or rendering under the
+    // SessionStart name (Claude would drop the context).
+    #[test]
+    fn claude_subagent_start_renders_child_guidance() {
+        let f = Fixture::new(true);
+        let outcome = f.run(
+            claude_registration(),
+            &claude_subagent_event("SubagentStart"),
+        );
+        assert_eq!(outcome.diagnostic, None);
+        let output: serde_json::Value = serde_json::from_slice(&outcome.stdout)
+            .unwrap_or_else(|e| panic!("{e}: {:?}", outcome.stdout));
+        assert_eq!(
+            output["hookSpecificOutput"]["hookEventName"],
+            "SubagentStart"
+        );
+        assert!(
+            !output["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(output["hookSpecificOutput"].get("updatedInput").is_none());
+        assert!(
+            output["hookSpecificOutput"]
+                .get("permissionDecision")
+                .is_none()
+        );
+    }
     fn turn_output(outcome: &HookOutcome, mode: &str, input: &HookInput) -> serde_json::Value {
         let output = task52_output(outcome, mode, input);
         assert!(output["context"].is_string());
@@ -8418,4 +8472,120 @@ mod registered_resume {
             assert!(enrollment_counts(&f).0 >= 1);
         }
     }
+}
+
+fn subagent_bash(agent: Option<&str>, tool: &str, command: &str) -> Vec<u8> {
+    let mut payload = serde_json::json!({
+        "session_id": "sess-1", "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp",
+        "permission_mode": "default", "hook_event_name": "PreToolUse", "tool_name": tool,
+        "tool_input": {"command": command, "description": "d", "timeout": 5},
+        "tool_use_id": "toolu_1"
+    });
+    if let Some(agent) = agent {
+        payload["agent_id"] = agent.into();
+        payload["agent_type"] = "worker".into();
+    }
+    serde_json::to_vec(&payload).unwrap()
+}
+
+fn claude_args() -> HookArgs {
+    HookArgs {
+        state_dir: None,
+        host_endpoint: None,
+        harness: Harness::Claude,
+        event: Some("PreToolUse".into()),
+    }
+}
+
+fn outcome_with(stdout: &[u8]) -> HookOutcome {
+    HookOutcome {
+        stdout: stdout.to_vec(),
+        ..HookOutcome::default()
+    }
+}
+
+// Kills: no rewrite for a subagent, rewriting more than `command`, emitting a permissionDecision
+// (an `allow` would approve a whole compound command), and dropping the existing
+// additionalContext.
+#[test]
+fn claude_subagent_pre_tool_use_rewrites_herdr_commands() {
+    let input = subagent_bash(Some("a-1"), "Bash", "cd x && ht inbox");
+    for existing in [
+        &b""[..],
+        br#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"ctx"}}"#,
+    ] {
+        let out = with_subagent_rewrite(&claude_args(), &input, outcome_with(existing));
+        let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let specific = &value["hookSpecificOutput"];
+        assert_eq!(specific["hookEventName"], "PreToolUse");
+        assert_eq!(
+            specific["updatedInput"],
+            serde_json::json!({
+                "command": "cd x && ht --agent-id=a-1 inbox", "description": "d", "timeout": 5
+            })
+        );
+        assert!(specific.get("permissionDecision").is_none());
+        assert!(value.get("permissionDecision").is_none());
+        assert_eq!(
+            specific.get("additionalContext").and_then(|c| c.as_str()),
+            (!existing.is_empty()).then_some("ctx")
+        );
+    }
+}
+
+// Kills: rewriting a main-session call (no agent_id), any non-Bash tool, a command that does not
+// run herdr-threads/ht, a non-Claude harness, and any output byte change in those cases.
+#[test]
+fn claude_main_session_non_bash_and_non_herdr_commands_are_untouched() {
+    let context =
+        br#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"ctx"}}"#;
+    for (name, input) in [
+        ("main session", subagent_bash(None, "Bash", "ht inbox")),
+        (
+            "non-Bash tool",
+            subagent_bash(Some("a-1"), "Read", "ht inbox"),
+        ),
+        (
+            "non-herdr command",
+            subagent_bash(Some("a-1"), "Bash", "git log; echo ht"),
+        ),
+        ("eval", subagent_bash(Some("a-1"), "Bash", "eval 'ht x'")),
+        (
+            "empty agent id",
+            subagent_bash(Some(""), "Bash", "ht inbox"),
+        ),
+        ("garbage", b"not json".to_vec()),
+    ] {
+        for existing in [&b""[..], &context[..]] {
+            let out = with_subagent_rewrite(&claude_args(), &input, outcome_with(existing));
+            assert_eq!(out.stdout, existing, "{name}");
+        }
+    }
+    let mut codex = claude_args();
+    codex.harness = Harness::Codex;
+    let input = subagent_bash(Some("a-1"), "Bash", "ht inbox");
+    assert!(
+        with_subagent_rewrite(&codex, &input, outcome_with(b""))
+            .stdout
+            .is_empty(),
+        "only Claude's PreToolUse is rewritten"
+    );
+}
+
+// Kills: tying the rewrite to a healthy daemon: it must ride on a quiet/unavailable outcome too,
+// and keep that outcome's diagnostic.
+#[test]
+fn claude_rewrite_survives_an_unavailable_daemon() {
+    let input = subagent_bash(Some("a-1"), "Bash", "ht inbox");
+    let out = with_subagent_rewrite(
+        &claude_args(),
+        &input,
+        quiet_outcome("daemon unavailable".into()),
+    );
+    assert_eq!(out.diagnostic.as_deref(), Some("daemon unavailable"));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        value["hookSpecificOutput"]["updatedInput"]["command"],
+        "ht --agent-id=a-1 inbox"
+    );
 }

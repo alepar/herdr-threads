@@ -463,7 +463,12 @@ fn installed_command_is_the_hook_entrypoint_argv() {
         .join(" ");
     let settings: serde_json::Value =
         serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
-    for event in ["SessionStart", "PreToolUse"] {
+    for event in [
+        "SessionStart",
+        "PreToolUse",
+        "SubagentStart",
+        "SubagentStop",
+    ] {
         let command = settings["hooks"][event][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
@@ -475,6 +480,93 @@ fn installed_command_is_the_hook_entrypoint_argv() {
         );
     }
     assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+}
+
+const SUBAGENT_EVENTS: [&str; 2] = ["SubagentStart", "SubagentStop"];
+
+fn owned_event_groups(settings: &serde_json::Value, event: &str) -> usize {
+    settings["hooks"][event].as_array().map_or(0, |groups| {
+        groups
+            .iter()
+            .filter(|group| {
+                group["hooks"][0]["command"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("herdr-threads-owner:"))
+            })
+            .count()
+    })
+}
+
+/// Kills: leaving SubagentStart/SubagentStop out of the declared Claude hooks (a subagent's
+/// start and stop would never reach the hook), or registering them without the per-event
+/// `--event` command and ownership marker.
+#[test]
+fn setup_claude_registers_subagent_start_and_stop() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    let setup = s.run(&["setup", "claude", "--json"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+    for event in SUBAGENT_EVENTS {
+        let group = &settings["hooks"][event][0];
+        let command = group["hooks"][0]["command"].as_str().unwrap();
+        assert!(
+            command.contains(&format!(" '--event' '{event}' # herdr-threads-owner:")),
+            "{event}: {command}"
+        );
+        assert_eq!(group["hooks"][0]["type"], "command", "{event}");
+        assert_eq!(group["hooks"][0]["timeout"], 10, "{event}");
+        assert!(group.get("matcher").is_none(), "{event}: no matcher");
+    }
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert_eq!(status["installed"], true, "{status}");
+}
+
+/// Kills: an unsetup that leaves the subagent groups behind (a stray hook running a removed
+/// binary), and a stale hook object that survives in the settings file.
+#[test]
+fn unsetup_claude_removes_subagent_groups() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::write(s.settings(), ORIGINAL).unwrap();
+    let setup = s.run(&["setup", "claude"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let installed: serde_json::Value =
+        serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+    for event in SUBAGENT_EVENTS {
+        assert_eq!(owned_event_groups(&installed, event), 1, "{event}");
+    }
+    let unsetup = s.run(&["unsetup", "claude"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+    let left = text(&fs::read(s.settings()).unwrap());
+    for event in SUBAGENT_EVENTS {
+        assert!(!left.contains(event), "{event} left behind: {left}");
+    }
+}
+
+/// Kills: a re-run that appends a second owned group per event (every subagent hook would then
+/// fire twice).
+#[test]
+fn setup_claude_twice_keeps_one_group_per_event() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    for _ in 0..2 {
+        let setup = s.run(&["setup", "claude", "--json"]);
+        assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    }
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+    for event in [
+        "SessionStart",
+        "PreToolUse",
+        "SubagentStart",
+        "SubagentStop",
+    ] {
+        assert_eq!(owned_event_groups(&settings, event), 1, "{event}");
+    }
 }
 
 /// Setup creates an absent `settings.json` (and its config directory) as

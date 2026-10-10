@@ -1097,7 +1097,15 @@ fn claude_declared_groups_are_the_single_source_for_the_hook_object() {
     let command = "'/tmp/hook' # herdr-threads-owner:x";
     let groups = claude::declared_hook_groups(command);
     let events: Vec<_> = groups.iter().map(|(event, _)| *event).collect();
-    assert_eq!(events, ["SessionStart", "PreToolUse"]);
+    assert_eq!(
+        events,
+        [
+            "SessionStart",
+            "PreToolUse",
+            "SubagentStart",
+            "SubagentStop"
+        ]
+    );
     for (event, group) in &groups {
         assert_eq!(
             group["hooks"][0]["command"],
