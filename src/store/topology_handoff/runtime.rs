@@ -11,6 +11,21 @@ use crate::{
     store::{SqliteStore, connection::api_error, control, schema, seats},
 };
 
+/// These selected-runtime adapters also prepare unlinked ordinary sends.
+/// Direct admission needs canonical linked/unlinked routing and exact frozen
+/// marker/target equality for automatic handoff.
+fn require_legacy_send_marker(
+    send: &crate::protocol::commands::SendMessage,
+) -> Result<(), ApiError> {
+    if send.direct_recipient.is_some() {
+        return Err(api_error(
+            ErrorCode::Unsupported,
+            "direct handoff sends require guarded automatic runtime",
+        ));
+    }
+    Ok(())
+}
+
 fn required_guard(
     guard: Option<&BootstrapAttachmentGuard>,
 ) -> Result<&BootstrapAttachmentGuard, ApiError> {
@@ -96,6 +111,7 @@ impl BootstrapStorePort for SqliteStore {
         admission: crate::ports::DurableWorkAdmission,
         budget: &CallBudget,
     ) -> Result<crate::ports::SendPreparationProgress, ApiError> {
+        require_legacy_send_marker(command)?;
         crate::store::messages::prepare_bootstrap_send_step(
             &self.context,
             &mut *self.writer(budget)?,
@@ -190,6 +206,9 @@ impl BootstrapStorePort for SqliteStore {
         admission: crate::ports::DurableWorkAdmission,
         budget: &CallBudget,
     ) -> Result<crate::ports::SendPreparationProgress, ApiError> {
+        if let crate::protocol::handoff::DeliveryAction::Send(send) = &request.action {
+            require_legacy_send_marker(send)?;
+        }
         validate_delivery_namespace(&self.instance, canonical, request)?;
         let crate::protocol::handoff::DeliveryAction::Send(send) = &request.action else {
             return Err(api_error(

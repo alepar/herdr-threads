@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 struct Fixture {
     service: DomainService,
+    store: Arc<SqliteStore>,
     db: rusqlite::Connection,
     clock: Arc<dyn Clock>,
     directory: super::handoff_fences::Directory,
@@ -52,10 +53,11 @@ impl Fixture {
         let service = DomainService::with_identity("i".into(), store, clock.clone(), identity)
             .with_operator_owner(501)
             .with_cooperative_owner(501, writer)
-            .with_bootstrap_runtime(super::topology_handoff::namespace(), host, concrete)
+            .with_bootstrap_runtime(super::topology_handoff::namespace(), host, concrete.clone())
             .unwrap();
         Self {
             service,
+            store: concrete,
             db,
             clock,
             directory,
@@ -708,4 +710,86 @@ fn actual_main_delivery_phase_preserves_ordinary_and_rejects_lazy_mode() {
         direct_refusal,
         "frozen Ordinary delivery phase must reject a changed Lazy mode"
     );
+}
+
+#[test]
+fn direct_marker_delivery_refuses_before_preparation_and_preserves_original_send() {
+    use herdr_threads::{
+        ports::{BootstrapStorePort, DurableWorkAdmission},
+        protocol::{
+            commands::{DeliveryMode, SendMessage},
+            results::ErrorCode,
+        },
+    };
+    let f = Fixture::new();
+    let mut request = delivery();
+    f.call(Command::HandoffDelivery(Box::new(request.clone())))
+        .unwrap();
+    let send = SendMessage {
+        delivery_mode: DeliveryMode::Ordinary,
+        thread: request.plan.payload.channel.thread().unwrap().clone(),
+        body: request.plan.payload.body.clone(),
+        direct_recipient: None,
+        invited_recipients: vec![request.plan.recipient.clone()],
+        deadline_millis: None,
+        operation: request.plan.payload.keys.send.clone(),
+        claim: request.claim.clone(),
+        relays_user: false,
+        user_intent: None,
+    };
+    let snapshot = || {
+        ["send_preparations", "prepared_recipients", "operations"].map(|table| {
+            f.db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        })
+    };
+    let before = snapshot();
+    let mut marked = send.clone();
+    marked.direct_recipient = Some(request.plan.recipient.clone());
+    request.action = DeliveryAction::Send(marked.clone());
+    assert!(
+        f.call(Command::HandoffDelivery(Box::new(request.clone())))
+            .is_err()
+    );
+    assert_eq!(
+        snapshot(),
+        before,
+        "unsupported envelope must not stage its altered digest or audience"
+    );
+    let budget = CallBudget {
+        deadline: MonoInstant(f.clock.monotonic_now().0 + 5000),
+        cancellation: Cancellation::default(),
+    };
+    assert_eq!(
+        f.store
+            .delivery_prepare_send_step(
+                &request.plan.payload.namespace,
+                &request,
+                DurableWorkAdmission::new(16).unwrap(),
+                &budget
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::Unsupported
+    );
+    assert_eq!(
+        f.store
+            .bootstrap_prepare_send_step(
+                &request.plan.payload.namespace,
+                &marked,
+                DurableWorkAdmission::new(16).unwrap(),
+                &budget
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::Unsupported
+    );
+    assert_eq!(snapshot(), before);
+    request.action = DeliveryAction::Send(send);
+    assert!(matches!(
+        f.call(Command::HandoffDelivery(Box::new(request))).unwrap(),
+        CommandResult::MessageSent(_)
+    ));
 }

@@ -133,6 +133,7 @@ impl DeliveryMutation {
                 v.delivery_mode == crate::protocol::commands::DeliveryMode::Ordinary
                     && v.claim == self.claim
                     && v.operation == keys.send
+                    && v.direct_recipient.is_none()
                     && v.body == self.plan.payload.body
                     && v.invited_recipients == [self.plan.recipient.clone()]
                     && v.deadline_millis.is_none()
