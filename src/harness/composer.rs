@@ -8,7 +8,7 @@
 //! - Claude: the rows between the last two `─` rules. The first row starts
 //!   `❯ `, continuation rows are indented two spaces. Empty is `❯` alone or a
 //!   captured `Try "…"` placeholder; another placeholder-shaped row is
-//!   unreadable. Any other Claude text is `Unsafe` ([`CLAUDE_NOT_KNOWN_EMPTY`]),
+//!   unreadable. Any other Claude text is `Unsafe` (`CLAUDE_NOT_KNOWN_EMPTY` in the Claude adapter),
 //!   never `Text`: Claude draws a prompt suggestion in the composer after a turn
 //!   and the detection text cannot tell it from a typed draft.
 //! - Codex: a `› ` row, then two-space rows until a blank row (the footer
@@ -29,8 +29,6 @@ use crate::{ports::HostUiState, protocol::authority::Harness};
 
 /// A row this close to the pane width may be a soft wrap (findings Q2).
 const WRAP_MARGIN: usize = 12;
-/// Why Claude composer text is never `Text`.
-pub const CLAUDE_NOT_KNOWN_EMPTY: &str = "Claude composer text may be a prompt suggestion";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposerRead {
@@ -235,7 +233,7 @@ mod tests {
     fn not_known_empty(text: &str) -> ComposerRead {
         ComposerRead::Unsafe {
             text: text.into(),
-            reason: CLAUDE_NOT_KNOWN_EMPTY,
+            reason: crate::harness::claude::composer::CLAUDE_NOT_KNOWN_EMPTY,
         }
     }
 

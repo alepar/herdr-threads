@@ -6333,7 +6333,15 @@ mod inbox_v2 {
         if state.publication_decision_high_water > decision as u64 {
             return Err(invalid("inbox snapshot is in the future"));
         }
-        let current_agent:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND harness IN ('claude','codex') AND observation_provenance='cooperative_top_level')",[seat.as_str()],|r|r.get(0)).map_err(store_error)?;
+        let registered_ids = serde_json::to_string(
+            &crate::harness::registry::builtins()
+                .registrations()
+                .iter()
+                .map(|r| r.metadata().id)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".into());
+        let current_agent:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND harness IN (SELECT value FROM json_each(?2)) AND observation_provenance='cooperative_top_level')",params![seat.as_str(),registered_ids],|r|r.get(0)).map_err(store_error)?;
         if let Some(body) = &state.body {
             let lazy = state.source == Source::Lazy;
             if message(db, body.message.as_str(), lazy, current_agent, &state)?.is_none() {

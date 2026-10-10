@@ -2587,8 +2587,14 @@ fn startup_evidence_health_recomputes_after_operator_repair_and_reregistration()
         inputs.coherent_enumeration = crate::protocol::results::CapabilityState::Supported;
         inputs.safe_prompt = crate::protocol::results::CapabilityState::Supported;
         inputs.receipt_registration = crate::protocol::results::CapabilityState::Supported;
-        inputs.codex = crate::daemon::health::HarnessStatus::Supported("native".into());
-        inputs.claude = crate::daemon::health::HarnessStatus::Supported("native".into());
+        inputs.set_harness(
+            "codex",
+            crate::daemon::health::HarnessStatus::Supported("native".into()),
+        );
+        inputs.set_harness(
+            "claude",
+            crate::daemon::health::HarnessStatus::Supported("native".into()),
+        );
         inputs.binding_evidence = report;
         inputs.unresolved = Some(Default::default());
         inputs.assemble()

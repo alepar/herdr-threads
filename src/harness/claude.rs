@@ -12,7 +12,7 @@
 pub mod doctor;
 pub mod setup;
 
-mod composer;
+pub(crate) mod composer;
 
 use super::adapter::*;
 use super::admission::{self, OptimisticAdmission, Refusal, Row};

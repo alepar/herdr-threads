@@ -23,11 +23,6 @@
 # Only frozen wire shapes, historical migrations and registration may stay permanently (root spec
 # section 1); everything else is to-migrate. A site in a file outside core-sweep D15 is marked
 # `unassigned` until the coordinator routes it.
-src/app.rs:!matches!(*id, "claude" | "codex") — to-migrate: ht-poh.2.5 health inputs
-src/app.rs:("claude", observed.detected_version("claude")) — to-migrate: ht-poh.2.5 health inputs
-src/app.rs:("codex", observed.detected_version("codex")) — to-migrate: ht-poh.2.5 health inputs
-src/app.rs:inputs.claude = observed.status("claude") — to-migrate: ht-poh.2.5 health inputs
-src/app.rs:inputs.codex = observed.status("codex") — to-migrate: ht-poh.2.5 health inputs
 src/cli/commands.rs:--hooks-only applies to `setup claude` only — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
 src/cli/commands.rs:Some("claude") — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
 src/cli/commands.rs:Spawned by the herdr-threads Claude mod — to-migrate: ht-poh.3.3 watch help text
@@ -156,10 +151,8 @@ src/cli/watch.rs:Claude — to-migrate: ht-poh.3.3 watch/delivery
 src/cli/watch.rs:NotClaude — to-migrate: ht-poh.3.3 watch/delivery
 src/client/mod.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
 src/daemon/harness_evidence.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/daemon/harness_states.rs:Claude — to-migrate: ht-poh.2.5 health/state projections
-src/daemon/harness_states.rs:claude — to-migrate: ht-poh.2.5 health/state projections
-src/daemon/health.rs:claude — to-migrate: ht-poh.2.5 health/state projections
-src/daemon/health.rs:codex — to-migrate: ht-poh.2.5 health/state projections
+src/daemon/health.rs:claude: state("claude"), — frozen-wire: v1 HarnessHealth projection, the single place naming the two frozen fields (frozen wire shape)
+src/daemon/health.rs:codex: state("codex"), — frozen-wire: v1 HarnessHealth projection, the single place naming the two frozen fields (frozen wire shape)
 src/harness/adapter.rs:CodexWitness — to-migrate: ht-poh.2.6 contract/evidence/hook
 src/harness/adapter.rs:CodexWitness(super::codex::InstalledVersion) — to-migrate: ht-poh.2.6 CodexWitness
 src/harness/admission.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
@@ -170,8 +163,6 @@ src/harness/attribution.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/h
 src/harness/attribution.rs:claude_version — to-migrate: ht-poh.2.6 contract/evidence/hook
 src/harness/attribution.rs:codex — to-migrate: ht-poh.2.6 contract/evidence/hook
 src/harness/attribution.rs:codex_version — to-migrate: ht-poh.2.6 contract/evidence/hook
-src/harness/composer.rs:CLAUDE_NOT_KNOWN_EMPTY — to-migrate: ht-poh.2.5 health/state projections
-src/harness/composer.rs:Claude — to-migrate: ht-poh.2.5 health/state projections
 src/harness/context.rs:pub const Claude: Self — registration: context::Harness const over the registry identity (permanent registration)
 src/harness/context.rs:pub const Codex: Self — registration: context::Harness const over the registry identity (permanent registration)
 src/harness/contract.rs:Claude — to-migrate: ht-poh.2.6 contract/evidence/hook
@@ -239,7 +230,5 @@ src/protocol/watch.rs:Self::NotClaude — frozen-wire: not_claude wire code and 
 src/service/dispatch.rs:Claude — to-migrate: ht-poh.3.3 watch/delivery
 src/service/dispatch.rs:NotClaude — to-migrate: ht-poh.3.3 watch/delivery
 src/service/dispatch.rs:claude — to-migrate: ht-poh.3.3 watch/delivery
-src/store/queries.rs:claude — to-migrate: ht-poh.2.5 health/state projections
-src/store/queries.rs:codex — to-migrate: ht-poh.2.5 health/state projections
 src/store/receipts.rs:Claude — to-migrate: ht-poh.3.3 watch/delivery
 src/store/schema.rs:check(harnessin('codex','claude','human')) — history: schema-history shape check of the harness CHECK constraint (historical migration)

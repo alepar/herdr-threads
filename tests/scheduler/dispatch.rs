@@ -7328,7 +7328,7 @@ fn typed_draft_defers_poke_and_ordinary_wake() {
     };
     let stash_failed = || {
         CooperativeStashingHost::over_typed_input(ComposerStash::Failed(
-            crate::harness::composer::CLAUDE_NOT_KNOWN_EMPTY.into(),
+            crate::harness::claude::composer::CLAUDE_NOT_KNOWN_EMPTY.into(),
         ))
     };
     let host = stash_failed();

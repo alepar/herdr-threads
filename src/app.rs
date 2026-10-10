@@ -252,20 +252,22 @@ impl ElectedHealth {
         inputs.transitions_refused = self.host.status.transitions_refused();
         inputs.last_scheduler_tick_at = self.workers.first().and_then(|status| status.last_tick());
         if let Ok(observed) = self.host.harnesses.lock() {
-            inputs.claude = observed.status("claude");
-            inputs.codex = observed.status("codex");
-            // Only observed additional harnesses report: an optional harness
-            // the observer has not reached yet is not an unknown core harness.
-            inputs.additional_harnesses = crate::harness::registry::builtins()
+            // A harness with a legacy contract always reports (`Unknown` until
+            // observed); any other only once observed: an optional harness the
+            // observer has not reached yet is not an unknown core harness.
+            inputs.harnesses = crate::harness::registry::builtins()
                 .registrations()
                 .iter()
-                .map(|r| r.metadata().id)
-                .filter(|id| !matches!(*id, "claude" | "codex"))
-                .filter_map(|id| {
-                    observed
-                        .entries
-                        .get(id)
-                        .map(|entry| (id.into(), entry.status.clone()))
+                .filter_map(|r| {
+                    let id = r.metadata().id;
+                    if r.legacy_contract_id().is_some() {
+                        Some((id.to_owned(), observed.status(id)))
+                    } else {
+                        observed
+                            .entries
+                            .get(id)
+                            .map(|entry| (id.to_owned(), entry.status.clone()))
+                    }
                 })
                 .collect();
         }
@@ -1519,10 +1521,15 @@ where
                             observer_store.as_ref(),
                             observer_manifest.as_ref(),
                             &observer_manifest.current(),
-                            &[
-                                ("claude", observed.detected_version("claude")),
-                                ("codex", observed.detected_version("codex")),
-                            ],
+                            &crate::harness::registry::builtins()
+                                .registrations()
+                                .iter()
+                                .filter(|r| r.legacy_contract_id().is_some())
+                                .map(|r| {
+                                    let id = r.metadata().id;
+                                    (id, observed.detected_version(id))
+                                })
+                                .collect::<Vec<_>>(),
                             budget,
                         );
                         Ok(observed)

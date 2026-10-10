@@ -5513,7 +5513,9 @@ pub(crate) mod tests {
                 });
             assert_eq!(
                 stash.unwrap(),
-                ComposerStash::Failed(composer::CLAUDE_NOT_KNOWN_EMPTY.into())
+                ComposerStash::Failed(
+                    crate::harness::claude::composer::CLAUDE_NOT_KNOWN_EMPTY.into()
+                )
             );
             assert_eq!(methods, ["pane.get", "agent.read"], "no pane.send_keys");
         }

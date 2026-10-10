@@ -102,11 +102,12 @@ pub struct HealthInputs {
     /// Completion time of the deadline scheduler's last error-free pass;
     /// None until one completed in this daemon boot.
     pub last_scheduler_tick_at: Option<UtcMillis>,
-    /// Executable availability and declared core cooperation on daemon PATH.
-    pub codex: HarnessStatus,
-    /// Claude executable availability and declared core cooperation on daemon PATH.
-    pub claude: HarnessStatus,
-    pub additional_harnesses: Vec<(String, HarnessStatus)>,
+    /// Executable availability and declared core cooperation on daemon PATH,
+    /// in registry order. A harness with a legacy contract is always present
+    /// (`Unknown` until observed); any other registered harness only once
+    /// observed, so an optional harness the observer has not reached yet is
+    /// not an unknown core harness.
+    pub harnesses: Vec<(String, HarnessStatus)>,
     pub retirement: RetirementHealth,
     pub settings: Option<HealthSettings>,
     /// Completion time of the last reconciliation pass over a verified
@@ -169,6 +170,7 @@ fn bounded(text: &str, limit: usize) -> String {
 
 /// Health's statement of the cooperative wake basis when current native
 /// execution is unverified.
+#[cfg(test)]
 pub const COOPERATIVE_WAKE_LINE: &str = "wake cooperative: prompts only Herdr's detected idle/done claude or codex agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified";
 
 /// Declared core contracts grant cooperative caller claims, never native receipt
@@ -423,9 +425,12 @@ impl HealthInputs {
             receipt_registration: CapabilityState::Unknown,
             scheduler: ComponentStatus::Unknown,
             last_scheduler_tick_at: None,
-            codex: HarnessStatus::Unknown,
-            claude: HarnessStatus::Unknown,
-            additional_harnesses: Vec::new(),
+            harnesses: crate::harness::registry::builtins()
+                .registrations()
+                .iter()
+                .filter(|r| r.legacy_contract_id().is_some())
+                .map(|r| (r.metadata().id.to_owned(), HarnessStatus::Unknown))
+                .collect(),
             retirement: RetirementHealth::default(),
             settings: None,
             last_reconciliation_at: None,
@@ -438,7 +443,39 @@ impl HealthInputs {
         }
     }
 
+    /// Sets one harness's status, keeping the registry order of the rows
+    /// already present; a harness not yet present is appended.
+    pub fn set_harness(&mut self, id: &str, status: HarnessStatus) {
+        match self.harnesses.iter_mut().find(|(known, _)| known == id) {
+            Some((_, slot)) => *slot = status,
+            None => self.harnesses.push((id.to_owned(), status)),
+        }
+    }
+
+    /// The status recorded for `id`, if any.
+    pub fn harness(&self, id: &str) -> Option<&HarnessStatus> {
+        self.harnesses
+            .iter()
+            .find(|(known, _)| known == id)
+            .map(|(_, status)| status)
+    }
+
+    /// The v1 `HarnessHealth` wire projection: the one place that names the
+    /// two harnesses the frozen shape carries. A harness without a row is
+    /// `unknown`.
+    fn v1_harness_health(&self) -> HarnessHealth {
+        let state = |id: &str| {
+            self.harness(id)
+                .map_or(HarnessState::Unknown, HarnessStatus::state)
+        };
+        HarnessHealth {
+            codex: state("codex"),
+            claude: state("claude"),
+        }
+    }
+
     pub fn assemble(self) -> Health {
+        let v1_harness = self.v1_harness_health();
         let mut health = Health::unknown(
             self.instance.to_string(),
             self.boot.to_string(),
@@ -497,34 +534,21 @@ impl HealthInputs {
             }
         }
         health.last_scheduler_tick_at = self.last_scheduler_tick_at;
-        health.harness = HarnessHealth {
-            codex: self.codex.state(),
-            claude: self.claude.state(),
-        };
-        for (name, status) in [("claude", &self.claude), ("codex", &self.codex)]
-            .into_iter()
-            .chain(
-                self.additional_harnesses
-                    .iter()
-                    .map(|(id, status)| (id.as_str(), status)),
-            )
-        {
+        health.harness = v1_harness;
+        for (name, status) in &self.harnesses {
             harness_line(name, status, &mut health.limitations, &mut health.notes);
         }
         for line in &self.harness_version_lines {
             push(&mut health.limitations, line.clone());
         }
-        let cooperative_harness = [&self.claude, &self.codex]
-            .into_iter()
-            .chain(self.additional_harnesses.iter().map(|(_, status)| status))
-            .any(|status| {
-                matches!(
-                    status,
-                    HarnessStatus::ContractDeclared { .. }
-                        | HarnessStatus::Cooperative { .. }
-                        | HarnessStatus::Optimistic(_)
-                )
-            });
+        let cooperative_harness = self.harnesses.iter().any(|(_, status)| {
+            matches!(
+                status,
+                HarnessStatus::ContractDeclared { .. }
+                    | HarnessStatus::Cooperative { .. }
+                    | HarnessStatus::Optimistic(_)
+            )
+        });
         if cooperative_harness {
             push(&mut health.notes, cooperative_receipt_line());
         }
@@ -607,12 +631,7 @@ impl HealthInputs {
             && scheduler.state == ComponentState::Ready
             && health.host.coherent_enumeration == CapabilityState::Supported
             && wake_available
-            && self.claude.acceptable()
-            && self.codex.acceptable()
-            && self
-                .additional_harnesses
-                .iter()
-                .all(|(_, status)| status.acceptable())
+            && self.harnesses.iter().all(|(_, status)| status.acceptable())
             && !self.retirement.pending
             && !self.retirement.degraded
             && !lacking_evidence
