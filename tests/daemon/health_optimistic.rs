@@ -74,8 +74,14 @@ fn override_table(
 fn optimistic_renders_nothing_in_health() {
     let mut inputs = ready_inputs();
     let version = newer_version();
-    inputs.claude = claude_status(observed(&version), CapabilityState::Unsupported);
-    assert!(matches!(inputs.claude, HarnessStatus::Optimistic(_)));
+    inputs.set_harness(
+        "claude",
+        claude_status(observed(&version), CapabilityState::Unsupported),
+    );
+    assert!(matches!(
+        inputs.harness("claude"),
+        Some(HarnessStatus::Optimistic(_))
+    ));
     let health = inputs.assemble();
     assert_eq!(health.state, HealthState::Healthy, "{health:#?}");
     assert!(health.limitations.is_empty(), "{:#?}", health.limitations);
@@ -97,8 +103,8 @@ fn optimistic_renders_nothing_in_health() {
 fn worst_case_line_budget_still_holds_with_optimistic_harnesses() {
     let mut inputs = worst_case_inputs();
     let long = "y".repeat(400);
-    inputs.claude = HarnessStatus::Optimistic(long.clone());
-    inputs.codex = HarnessStatus::Optimistic(long);
+    inputs.set_harness("claude", HarnessStatus::Optimistic(long.clone()));
+    inputs.set_harness("codex", HarnessStatus::Optimistic(long));
     let health = inputs.assemble();
     assert!(
         health.limitations.len() <= HEALTH_LINE_BUDGET,
@@ -188,7 +194,7 @@ fn known_broken_is_a_version_refusal_not_a_health_limitation() {
         ))
     );
     let mut inputs = ready_inputs();
-    inputs.claude = status;
+    inputs.set_harness("claude", status);
     let health = inputs.assemble();
     assert_eq!(health.state, HealthState::Healthy, "{health:#?}");
     assert!(health.limitations.is_empty(), "{:#?}", health.limitations);
@@ -209,7 +215,7 @@ fn within_span_label_renders_in_status_not_in_health() {
          compatible with recipe claude-hooks-2.1.283"
     );
     let mut inputs = ready_inputs();
-    inputs.claude = status;
+    inputs.set_harness("claude", status);
     let health = inputs.assemble();
     assert!(
         health
@@ -226,13 +232,16 @@ fn within_span_label_renders_in_status_not_in_health() {
 #[test]
 fn major_version_change_in_status_not_in_health() {
     let mut inputs = ready_inputs();
-    inputs.claude = claude_status(observed("9.0.0"), CapabilityState::Unsupported);
+    inputs.set_harness(
+        "claude",
+        claude_status(observed("9.0.0"), CapabilityState::Unsupported),
+    );
     assert!(
-        matches!(&inputs.claude, HarnessStatus::Optimistic(detail)
+        matches!(inputs.harness("claude"), Some(HarnessStatus::Optimistic(detail))
             if detail.starts_with("claude 9.0.0: optimistic")
                 && detail.ends_with("; major version change")),
         "{:?}",
-        inputs.claude
+        inputs.harness("claude")
     );
     let health = inputs.assemble();
     assert!(
