@@ -43,8 +43,9 @@ use std::{
 pub const MAX_STATE_BYTES: usize = 4096;
 /// A confirm scan reads at most this many bytes after the recorded offset.
 pub const TRANSCRIPT_WINDOW: u64 = 8 * 1024 * 1024;
-/// Injected ids tracked per conversation (the oldest go first).
-pub const MAX_TRACKED: usize = 24;
+/// Injected ids tracked per conversation: at least one full page (the oldest go first).
+pub const MAX_TRACKED: usize = crate::service::delivery_pull::PAGE_MAX_BLOCKS;
+const _: () = assert!(MAX_TRACKED >= crate::service::delivery_pull::PAGE_MAX_BLOCKS);
 /// A downgrade is retried (one probation turn) this long after it was recorded.
 pub const PROBATION_AFTER_MS: u64 = 24 * 60 * 60 * 1000;
 /// `<state_dir>/downgrade.json`.

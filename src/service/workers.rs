@@ -1572,6 +1572,7 @@ pub fn start_wake_worker(
     poke_capabilities: Arc<dyn crate::ports::PokeCapabilitySource>,
     reachability: Arc<HostReachability>,
     mod_channels: Arc<dyn crate::ports::ModChannels>,
+    hook_pull: Arc<dyn crate::ports::HookPullOutlook>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("herdr-wakes".into())
@@ -1580,11 +1581,13 @@ pub fn start_wake_worker(
             status.attach_pacer(Arc::clone(&pacer));
             let _guard = status.lane_guard(&cancellation);
             let port = ScheduledStore::new(store, writer);
-            let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock());
+            let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock())
+                .with_hook_pull(hook_pull.as_ref());
             let observed = ObservedWakePort::new(&port, &status);
             let scheduler = Scheduler::new(instance, &port, &observed, &notifier, retry, boot)
                 .with_poke_capabilities(poke_capabilities.as_ref())
-                .with_mod_channels(mod_channels.as_ref());
+                .with_mod_channels(mod_channels.as_ref())
+                .with_hook_pull(hook_pull.as_ref());
             let safety_tick = Duration::from_millis(WAKE_SAFETY_TICK_MILLIS);
             // The first pass runs at boot, before the first wait.
             let mut next_due_at: Option<crate::protocol::time::MonoInstant> = None;
