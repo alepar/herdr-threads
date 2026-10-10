@@ -540,6 +540,29 @@ fn prefix(exe: &str) -> Vec<String> {
     ])
 }
 
+/// Kills: a mod whose wake prompt drifts from the core's content-free wake text (the native
+/// wake verification and the policy would then disagree about what a wake types).
+#[test]
+fn mod_wake_prompt_is_the_core_wake_text() {
+    let (_, content) = MOD_FILES
+        .iter()
+        .find(|(path, _)| *path == REGISTER_JS)
+        .unwrap();
+    let literal = format!(
+        "const WAKE_PROMPT = '{}'",
+        crate::notification::policy::WAKE_UP
+    );
+    assert_eq!(
+        content.lines().filter(|line| *line == literal).count(),
+        1,
+        "{literal}"
+    );
+    assert_eq!(
+        crate::notification::policy::WAKE_UP,
+        "herdr-threads: wake up"
+    );
+}
+
 #[test]
 fn embedded_register_js_has_exactly_one_launch_marker() {
     let (_, content) = MOD_FILES

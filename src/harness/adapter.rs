@@ -343,6 +343,12 @@ pub trait DeliveryPolicy: Send + Sync + 'static {
     /// An A3 provenance constant.
     fn provenance(&self) -> &'static str;
     fn idle_wake(&self) -> IdleWake;
+    /// The prompt a native idle wake types. Default: the marker that names `inbox`, for a harness
+    /// whose turn start injects nothing. A policy whose turn-start hook or channel injects the
+    /// pending items returns [`crate::notification::policy::WAKE_UP`].
+    fn wake_text(&self) -> &'static str {
+        crate::notification::policy::MARKER
+    }
 }
 
 pub struct AdapterMetadata {

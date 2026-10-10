@@ -14,6 +14,13 @@ export type HerdrThreadsTurns = {
    * its load (ht-j16.31).
    */
   submitting?: { sid: string; ids: string[]; ackable: string[]; at: number; turnId: string | null; issued?: boolean } | null
+  /**
+   * The content-free wake prompt still to submit (R18): written after an idle `$.session.append` resolved,
+   * cleared when the wake submit resolves or any main turn starts. A successor with a record for its own
+   * session submits it once idle. New idle deliveries no longer write `submitting`; only an older instance's
+   * record can be found there.
+   */
+  wake?: { sid: string; at: number } | null
 }
 declare module 'claude-code' {
   interface PluginState {

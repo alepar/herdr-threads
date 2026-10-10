@@ -2362,7 +2362,11 @@ pub(crate) fn composer_state_from_text(text: Option<&str>) -> ports::AgentCompos
         None => tail.concat(),
     };
     let normalize = |raw: &str| -> String { raw.chars().filter(|c| !is_chrome(*c)).collect() };
-    if normalize(&composer).contains(&normalize(crate::notification::policy::MARKER)) {
+    let composer = normalize(&composer);
+    if crate::notification::policy::WAKE_TEXTS
+        .iter()
+        .any(|text| composer.contains(&normalize(text)))
+    {
         HoldingPrompt
     } else {
         Submitted

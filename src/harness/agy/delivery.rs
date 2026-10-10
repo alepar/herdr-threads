@@ -66,6 +66,9 @@ impl DeliveryPolicy for AgyDelivery {
     fn idle_wake(&self) -> IdleWake {
         IdleWake::Native
     }
+    fn wake_text(&self) -> &'static str {
+        crate::notification::policy::WAKE_UP
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -921,3 +924,6 @@ pub fn doctor_lines(delivery: &Value) -> Vec<String> {
 #[cfg(test)]
 #[path = "../../../tests/harness/agy_delivery.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "../../../tests/harness/agy_wake.rs"]
+mod wake_tests;
