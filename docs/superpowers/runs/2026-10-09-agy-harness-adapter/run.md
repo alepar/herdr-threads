@@ -6,6 +6,10 @@ phase: design
 codeMechanism: Workflow
 
 spec: 2026-10-09-agy-harness-adapter-design.md
+epic: ht-poh
 idea: let's pick up adding support for agy. we implemented a prototype of routing agy via openrouter to avoid gemini subscription for testing, so lets use that. /superpowers:super-auto interactive design where we do the briefing, look around, brainstorming and finalizing design together, fully autonomous after that, roasts on. One of the goals - prove our new shiny adapter model. So one of the things I want us to be on the lookout for - how much we will need to touch code outside the adapter. Will we have to extend it scope? Rework existing implementations? callers? -> that can be a final report at the end
 branch: super-auto/agy-harness-adapter
 base: main
+
+approvals:
+- top-split · auto · ht-poh.1 LEAF, ht-poh.7 LEAF, ht-poh.2 PROMOTE, ht-poh.3 PROMOTE, ht-poh.4 PROMOTE, ht-poh.5 LEAF, ht-poh.6 PROMOTE
