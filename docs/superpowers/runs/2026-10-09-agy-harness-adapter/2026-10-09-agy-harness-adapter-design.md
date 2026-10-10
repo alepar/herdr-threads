@@ -16,7 +16,7 @@ Interactive root design (Mode A) with the user, 2026-10-09. Inputs:
 ## Requirements
 
 - R1. A bare `agy` started in a Herdr pane enrolls a seat on its first prompt, through globally installed hooks (no launch required), like Claude and Codex.
-- R2. A subagent's conversation never ends, moves or replaces the parent's binding. A `/clear` rebinds. The difference is decided in the daemon from on-disk witnesses the hook reports, failing toward "child".
+- R2. A subagent's conversation never ends, moves or replaces the parent's binding; a `/clear` rebinds. The difference comes from on-disk witnesses mapped by the agy adapter and judged by a harness-neutral rule in the hook runner, failing toward child; the role reaches the daemon as the ordinary cooperative claim, and the daemon decides every resulting enrollment, rotation and reattachment against A2 (see Refinements).
 - R3. Resume (`agy -c` / `--conversation`) keeps the seat through C1 cooperative continuity.
 - R4. Pending message bodies (ordinary and lazy) reach the agy model directly between model calls, framed as untrusted peer data, without the agent running `herdr-threads inbox`. Receipts settle only after the session's own transcript shows the delivery.
 - R5. An idle agy with pending nudge-class attention is woken through Herdr into an empty composer, and only then.
