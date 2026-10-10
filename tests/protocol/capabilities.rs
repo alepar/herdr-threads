@@ -1483,6 +1483,19 @@ fn picker_directory_wire_keeps_old_directory_shape_and_cursor_only_contract() {
     );
     let old_command:Command=serde_json::from_value(serde_json::json!({"kind":"directory","args":{"membership":null,"membership_filter":"all","topic_contains":null,"page":{"cursor":null,"limit":19,"max_bytes":65536}}})).unwrap();
     assert!(old_command.validate().is_ok());
+    let mut filtered_command = old_command.clone();
+    let Command::Directory(query) = &mut filtered_command else {
+        panic!("wrong directory route")
+    };
+    query.topic_contains = Some("雪's %_.* topic".into());
+    let encoded = serde_json::to_value(&filtered_command).unwrap();
+    assert_eq!(encoded["args"]["topic_contains"], "雪's %_.* topic");
+    assert!(encoded["args"].get("name_contains").is_none());
+    assert_eq!(
+        serde_json::from_value::<Command>(encoded).unwrap(),
+        filtered_command
+    );
+
     let old_result:CommandResult=serde_json::from_value(serde_json::json!({"kind":"directory","data":{"items":[],"next_cursor":null,"next_argv":null,"high_water_ordinal":0,"scope_revision":null,"has_more":false,"stop_reason":"complete","consistency":"bounded_live"}})).unwrap();
     let old_encoded = serde_json::to_value(old_result).unwrap();
     assert_eq!(old_encoded["kind"], "directory");
@@ -1510,6 +1523,65 @@ fn picker_directory_wire_keeps_old_directory_shape_and_cursor_only_contract() {
     assert!(page.validate().is_err());
     page.stop_reason = StopReason::Complete;
     assert!(page.validate().is_ok());
+}
+
+#[test]
+fn directory_search_generated_continuation_preserves_literal_scope_order_and_output() {
+    use crate::{
+        cli::commands::{CliAction, parse_argv},
+        ports::{ReadContext, StorePort},
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let iso = TestIsolation::new("directory-search-continuation");
+    let context = StoreContext::new(iso.path("store.db"), Arc::new(FixedClock));
+    context.open_writer().unwrap().execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t1','i','雪''s %_.* topic','goal',0,0),('t2','i','雪''s %_.* topic','goal',0,0);").unwrap();
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let original = parse_argv([
+        "ht",
+        "--state-dir",
+        "/tmp/state with space",
+        "--host-endpoint",
+        "/tmp/host.sock",
+        "--json",
+        "thread",
+        "list",
+        "--all",
+        "--recent",
+        "--search",
+        "雪's %_.* topic",
+        "--limit",
+        "1",
+        "--max-bytes",
+        "4096",
+    ])
+    .unwrap();
+    let CliAction::Wire(command) = &original.action else {
+        panic!("wrong route")
+    };
+    let CommandResult::Directory(page) = store
+        .query(
+            command,
+            &ReadContext {
+                instance: "i".into(),
+                output: original.output.clone(),
+                operation_scope: None,
+            },
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong result")
+    };
+    assert!(page.has_more);
+    let parsed = parse_argv(page.next_argv.unwrap()).unwrap();
+    assert_eq!(parsed.output, original.output);
+    let CliAction::Wire(Command::Directory(mut continued)) = parsed.action else {
+        panic!("wrong continuation route")
+    };
+    assert_eq!(continued.page.cursor, page.next_cursor);
+    assert!(continued.page.cursor.take().is_some());
+    assert_eq!(Command::Directory(continued), *command);
 }
 
 fn probe_message_delivery_modes() {
