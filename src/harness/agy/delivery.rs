@@ -8,7 +8,8 @@
 //!
 //! State owned here (both under `<instance_dir>/adapter-state/agy/`, mode 0600):
 //! - `conversations/<hash>.json` ([`ConversationState`], at most 4 KiB): created only after a
-//!   `DeliveryPull` that was not refused, deleted on a `session_mismatch` refusal.
+//!   `DeliveryPull` that was not refused, deleted on a `session_mismatch` refusal; a file untouched for 30 days is
+//!   deleted when another conversation's file is created.
 //! - `downgrade.json` ([`DowngradeRecord`]): keyed by the agy executable [`Identity`].
 use super::{InjectionStep, paths};
 use crate::{
@@ -42,6 +43,11 @@ use std::{
 /// The state file stays at or under this many bytes.
 pub const MAX_STATE_BYTES: usize = 4096;
 /// A confirm scan reads at most this many bytes after the recorded offset.
+/// A conversation state file untouched this long is deleted when another conversation's state
+/// file is first created.
+pub const CONVERSATION_STATE_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+/// At most this many directory entries are looked at per prune.
+const PRUNE_SCAN_LIMIT: usize = 256;
 pub const TRANSCRIPT_WINDOW: u64 = 8 * 1024 * 1024;
 /// Injected ids tracked per conversation: at least one full page (the oldest go first).
 pub const MAX_TRACKED: usize = crate::service::delivery_pull::PAGE_MAX_BLOCKS;
@@ -258,7 +264,8 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Injected {
     pub id: String,
-    /// Transcript size when the page carrying `id` was injected.
+    /// Transcript size when the page carrying `id` was injected. An entry more than
+    /// [`TRANSCRIPT_WINDOW`] behind the transcript end is dropped unconfirmed.
     pub offset: u64,
     pub turn: u64,
     /// Injected as a `userMessage` (a downgraded identity): never evidence about `systemMessage`.
@@ -631,6 +638,37 @@ struct Step<'a> {
     state_path: PathBuf,
 }
 
+/// Delete regular `*.json` files in `<state_dir>/conversations` (other than `keep`) whose mtime is
+/// older than [`CONVERSATION_STATE_TTL_MS`] before `now_ms`. Errors are ignored.
+fn prune_conversation_states(state_dir: &Path, keep: &Path, now_ms: u64) {
+    let Ok(entries) = std::fs::read_dir(state_dir.join("conversations")) else {
+        return;
+    };
+    for entry in entries.flatten().take(PRUNE_SCAN_LIMIT) {
+        let path = entry.path();
+        if path == keep || path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let Some(mtime_ms) = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+        else {
+            continue;
+        };
+        if now_ms.saturating_sub(mtime_ms) > CONVERSATION_STATE_TTL_MS {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 impl Step<'_> {
     fn in_time(&self) -> bool {
         Instant::now() < self.context.deadline
@@ -665,6 +703,21 @@ impl Step<'_> {
         let Some(path) = self.payload.transcript.as_deref() else {
             return Scan::default();
         };
+        // An entry more than one window behind the end can never again be scanned completely, so
+        // its absence is never evidence; dropping it keeps it from anchoring the scan too early.
+        if let Ok(meta) = std::fs::metadata(path) {
+            let len = meta.len();
+            state
+                .injected
+                .retain(|e| e.offset.saturating_add(TRANSCRIPT_WINDOW) >= len);
+            if state.injected.is_empty() {
+                return Scan {
+                    readable: true,
+                    complete: true,
+                    ..Scan::default()
+                };
+            }
+        }
         let wanted: BTreeSet<&str> = state.injected.iter().map(|e| e.id.as_str()).collect();
         let from = state.injected.iter().map(|e| e.offset).min().unwrap_or(0);
         let scan = scan_transcript(path, from, &wanted);
@@ -712,6 +765,13 @@ impl Step<'_> {
                 .retain(|e| !scan.found.contains(&e.id) || retry.contains(e.id.as_str()));
         }
         scan
+    }
+
+    /// Prune old state files when this call creates the conversation's file.
+    fn prune_if_new(&self, existed: bool) {
+        if !existed && self.in_time() {
+            prune_conversation_states(self.state_dir, &self.state_path, self.runtime.now_ms);
+        }
     }
 
     fn pre_invocation(&self) -> Vec<u8> {
@@ -770,6 +830,7 @@ impl Step<'_> {
             DeliveryPullReply::Unchanged { attention_version } => {
                 state.seen_attention_version = Some(attention_version);
                 state.generation = Some(claim.binding_generation);
+                self.prune_if_new(existed);
                 state.save(&self.state_path);
                 Vec::new()
             }
@@ -790,6 +851,7 @@ impl Step<'_> {
                 let output = step.render(&page.text);
                 let offset = self.transcript_len();
                 state.record_injection(&page.offered, offset, user);
+                self.prune_if_new(existed);
                 state.save(&self.state_path);
                 serde_json::to_vec(&output).unwrap_or_default()
             }

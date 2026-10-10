@@ -1354,3 +1354,123 @@ mod daemon {
         );
     }
 }
+
+// --- stale tracked ids and old state files (ht-poh.36) ---------------------------------------------
+
+/// `msg-old` is injected, then more than one window of frame-less transcript follows, then
+/// `msg-a1` is injected and its frame appended: the stale id must not anchor the scan.
+fn rig_with_stale_id_and_new_frame(rt: &Runtime) -> Rig {
+    let rig = Rig::new();
+    rig.pre(0, &Fake::with(vec![page(&["msg-old"], TEXT, 1)]), rt);
+    let line = fixture_bytes("tool-output-line.jsonl");
+    rig.append(&line.repeat(TRANSCRIPT_WINDOW as usize / line.len() + 8));
+    rig.pre(0, &Fake::with(vec![page(&["msg-a1"], TEXT, 2)]), rt);
+    rig.append(&frame_line());
+    rig
+}
+
+#[test]
+fn a_stale_never_found_id_does_not_block_confirming_newer_frames() {
+    let rt = runtime(1000, &ident("a"));
+    let rig = rig_with_stale_id_and_new_frame(&rt);
+    let fake = Fake::with(vec![
+        confirmed(&["msg-a1"]),
+        pulled(DeliveryPullReply::Unchanged {
+            attention_version: 3,
+        }),
+    ]);
+    rig.pre(1, &fake, &rt);
+    assert_eq!(fake.confirmed(), vec![vec!["msg-a1".to_owned()]]);
+    assert!(rig.conversation().injected.is_empty());
+}
+
+#[test]
+fn stop_confirms_newer_frames_past_a_stale_id_and_records_no_miss_for_it() {
+    let rt = runtime(1000, &ident("a"));
+    let rig = rig_with_stale_id_and_new_frame(&rt);
+    let fake = Fake::with(vec![confirmed(&["msg-a1"])]);
+    rig.stop("stop-no-tool-call.json", &fake, &rt);
+    assert_eq!(fake.confirmed(), vec![vec!["msg-a1".to_owned()]]);
+    assert!(rig.record().is_none(), "no miss for the dropped msg-old");
+}
+
+#[test]
+fn an_id_within_one_window_of_the_end_stays_tracked() {
+    let rt = runtime(1000, &ident("a"));
+    let rig = Rig::new();
+    rig.pre(0, &offering(), &rt);
+    rig.append(&fixture_bytes("tool-output-line.jsonl"));
+    rig.pre(
+        1,
+        &Fake::with(vec![pulled(DeliveryPullReply::Unchanged {
+            attention_version: 12,
+        })]),
+        &rt,
+    );
+    let ids: Vec<String> = rig
+        .conversation()
+        .injected
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    assert_eq!(ids, vec!["msg-a1".to_owned()]);
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+fn aged_file(dir: &Path, name: &str, days: u64) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, b"{}").unwrap();
+    let age = Duration::from_secs(days * 24 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - age)
+        .unwrap();
+    path
+}
+
+#[test]
+fn state_files_untouched_for_30_days_are_pruned_when_a_new_conversation_starts() {
+    let rig = Rig::new();
+    let dir = rig.state.join("conversations");
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = aged_file(&dir, "old.json", 31);
+    let fresh = aged_file(&dir, "fresh.json", 1);
+    let notes = aged_file(&dir, "notes.txt", 31);
+    let link = dir.join("link.json");
+    std::os::unix::fs::symlink(&old, &link).unwrap();
+    let rt = runtime(now_ms(), &ident("a"));
+    rig.pre(0, &offering(), &rt);
+    assert!(!old.exists(), "a 31-day-old state file is deleted");
+    assert!(fresh.exists());
+    assert!(notes.exists(), "only .json files are pruned");
+    assert!(link.symlink_metadata().is_ok(), "a symlink is skipped");
+    assert!(rig.state_file().exists());
+}
+
+#[test]
+fn an_existing_conversation_does_not_prune() {
+    let rig = Rig::new();
+    rig.pre(0, &offering(), &runtime(1000, &ident("a")));
+    assert!(rig.state_file().exists());
+    let dir = rig.state.join("conversations");
+    let old = aged_file(&dir, "old.json", 31);
+    let rt = runtime(now_ms(), &ident("a"));
+    rig.pre(
+        1,
+        &Fake::with(vec![pulled(DeliveryPullReply::Unchanged {
+            attention_version: 12,
+        })]),
+        &rt,
+    );
+    assert!(
+        old.exists(),
+        "pruning runs only when a file is first created"
+    );
+}

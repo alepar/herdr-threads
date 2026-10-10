@@ -712,7 +712,7 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   found at the start of a line in a hook-injected step of a transcript it could read (text in tool output, model
   output or user input never confirms; malformed records are skipped): a missing, unreadable or unparseable transcript, or one that grew
   more than 8 MiB past the recorded injection offset, settles nothing (the items stay pending and are offered again
-  within the re-offer bounds, never settled), and a cancelled or errored turn counts as no evidence about
+  within the re-offer bounds, never settled; the hook stops tracking an id once more than 8 MiB of transcript follows its injection offset, so such an id never holds back the confirmation of later frames), and a cancelled or errored turn counts as no evidence about
   delivery. Absence is a downgrade signal only when the transcript was read in full over two distinct turns of
   one agent executable identity. The hook trusts the `transcriptPath` its harness payload names (cooperative
   model; the file is only read, never trusted for authority).
