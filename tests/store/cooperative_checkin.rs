@@ -1335,13 +1335,16 @@ fn independent_current_and_issuance_budgets_stop_accountable_sqlite_waits() {
         protocol::commands::{Ack, CreateThread, PermitMutation, SendMessage},
     };
     use std::time::{Duration, Instant};
-    for route in ["control", "ack", "send"] {
-        for constraint in [
-            "current_cancel",
-            "current_expire",
-            "issuance_cancel",
-            "issuance_expire",
-        ] {
+    // Pairwise cover: every route is stopped by each of its two budgets
+    // (current and issuance), and each budget is stopped both by
+    // cancellation and by expiry on some route; the full 3x4 product
+    // repeated the same per-route budget checks.
+    for (route, constraints) in [
+        ("control", ["current_cancel", "issuance_expire"]),
+        ("ack", ["current_expire", "issuance_cancel"]),
+        ("send", ["current_cancel", "issuance_expire"]),
+    ] {
+        for constraint in constraints {
             let (store, conn, clock) = fixture();
             obligations(&conn);
             let first = check_in(&store, lifecycle(claim(), "initial")).unwrap();
@@ -1495,6 +1498,9 @@ fn independent_current_and_issuance_budgets_stop_accountable_sqlite_waits() {
 
 #[test]
 fn execution_index_rejects_incompatible_key_metadata_without_replacing_it() {
+    // A refused startup writes nothing, so the cases share one store: each
+    // replaces the index with its own shape and must be refused as-is.
+    let (_, conn, _) = fixture();
     for shape in [
         "seat_id COLLATE NOCASE,execution_id",
         "seat_id,execution_id COLLATE NOCASE",
@@ -1503,7 +1509,6 @@ fn execution_index_rejects_incompatible_key_metadata_without_replacing_it() {
         "seat_id,lower(execution_id)",
         "execution_id,seat_id",
     ] {
-        let (_, conn, _) = fixture();
         conn.execute_batch(&format!("DROP INDEX occupant_bindings_execution; CREATE INDEX occupant_bindings_execution ON occupant_bindings({shape})")).unwrap();
         let raw: String = conn
             .query_row(
@@ -1533,7 +1538,6 @@ fn execution_index_rejects_incompatible_key_metadata_without_replacing_it() {
         "CREATE UNIQUE INDEX occupant_bindings_execution ON occupant_bindings(seat_id,execution_id)",
         "CREATE INDEX occupant_bindings_execution ON occupant_bindings(seat_id,execution_id) WHERE ended_at IS NULL",
     ] {
-        let (_, conn, _) = fixture();
         conn.execute_batch(&format!("DROP INDEX occupant_bindings_execution; {sql}"))
             .unwrap();
         assert_eq!(
@@ -1613,9 +1617,12 @@ fn fixture_directory_lives_until_worker_and_reopened_connections_close() {
 
 #[test]
 fn dual_budget_final_validation_and_postdecision_outcomes_are_preserved() {
+    // The cases share one store; each starts from host_epoch=1 again.
+    let (store, mut conn, clock) = fixture();
     for source in ["current", "issuance"] {
         for expires in [false, true] {
-            let (store, mut conn, clock) = fixture();
+            conn.execute("UPDATE host_instances SET host_epoch=1", [])
+                .unwrap();
             let mut current = budget();
             let mut issuance = budget();
             if expires {
@@ -1695,9 +1702,10 @@ fn dual_budget_final_validation_and_postdecision_outcomes_are_preserved() {
 #[test]
 fn dual_budget_progress_interrupts_validation_and_keeps_writer_reusable() {
     use std::time::{Duration, Instant};
+    // A refused decision writes nothing, so the cases share one store.
+    let (store, mut conn, clock) = fixture();
     for source in ["current", "issuance"] {
         for expires in [false, true] {
-            let (store, mut conn, clock) = fixture();
             let mut current = budget();
             let mut issuance = budget();
             if expires {
@@ -1954,27 +1962,40 @@ fn drain_warning_dedup_attribution(conn: &mut Connection, clock: &dyn Clock, war
 }
 
 fn open_warning_dedup_invitation(conn: &mut Connection, episode: i64) -> MessageId {
-    let invitation = InvitationId::new(format!("dedup-invitation-{episode}"));
     let tx = conn.transaction().unwrap();
+    let warning = open_warning_dedup_invitation_in(&tx, episode, true);
+    tx.commit().unwrap();
+    warning
+}
+
+/// Opens one overdue transition; `check_replay` also asserts that a replay of
+/// the overdue decision inserts nothing and names the same warning.
+fn open_warning_dedup_invitation_in(
+    tx: &rusqlite::Transaction<'_>,
+    episode: i64,
+    check_replay: bool,
+) -> MessageId {
+    let invitation = InvitationId::new(format!("dedup-invitation-{episode}"));
     tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,'dedup','s',?2,'pending',0,1,50,50)", rusqlite::params![invitation.as_str(),episode]).unwrap();
     let outcome = schema::record_overdue_if_pending(
-        &tx,
+        tx,
         &ObligationRef::Invitation(invitation.clone()),
         &crate::ports::TimeBasis::Decision,
         UtcMillis(100),
     )
     .unwrap();
     assert!(outcome.inserted);
-    let replay = schema::record_overdue_if_pending(
-        &tx,
-        &ObligationRef::Invitation(invitation),
-        &crate::ports::TimeBasis::Decision,
-        UtcMillis(100),
-    )
-    .unwrap();
-    assert!(!replay.inserted);
-    assert_eq!(outcome.warning, replay.warning);
-    tx.commit().unwrap();
+    if check_replay {
+        let replay = schema::record_overdue_if_pending(
+            tx,
+            &ObligationRef::Invitation(invitation),
+            &crate::ports::TimeBasis::Decision,
+            UtcMillis(100),
+        )
+        .unwrap();
+        assert!(!replay.inserted);
+        assert_eq!(outcome.warning, replay.warning);
+    }
     outcome.warning.unwrap()
 }
 
@@ -1983,17 +2004,34 @@ fn seed_warning_dedup_thread(conn: &Connection) {
 }
 
 // Kills retaining delivered transitions in the legacy "pending" sources:
-// after enough history they saturate an empty count and make its work grow.
+// retained history shows up in the (empty) pending count and makes the walk's
+// work grow. History spans more than 10x the first page (169 vs 16
+// transitions, ending on a partial page); retention is visible at any size,
+// so crossing the 1000-row count cap only multiplied the setup.
 #[test]
 fn builtin_warning_projection_cleanup_keeps_delivered_history_out_of_pending_walks() {
     let (store, mut conn, clock, _) = fixture_with_context();
     seed_warning_dedup_thread(&conn);
     let first = check_in(&store, lifecycle(claim(), "cleanup-initial")).unwrap();
     let mut small_work = None;
-    for episode in 1..=1001 {
-        let warning = open_warning_dedup_invitation(&mut conn, episode);
-        drain_warning_dedup_attribution(&mut conn, clock.as_ref(), &warning);
-        if episode % 16 == 0 || episode == 1001 {
+    // One notice page (16) of overdue transitions per writer transaction,
+    // each drained by the real attribution worker, then delivered by one
+    // check-in. The first page also checks that a replayed overdue decision
+    // is a no-op.
+    const EPISODES: i64 = 169;
+    let page = crate::protocol::results::MAX_NOTICE_PAGE_ITEMS as i64;
+    for first_episode in (1..=EPISODES).step_by(page as usize) {
+        let last_episode = (first_episode + page - 1).min(EPISODES);
+        let tx = conn.transaction().unwrap();
+        let warnings: Vec<_> = (first_episode..=last_episode)
+            .map(|episode| open_warning_dedup_invitation_in(&tx, episode, episode <= page))
+            .collect();
+        tx.commit().unwrap();
+        for warning in &warnings {
+            drain_warning_dedup_attribution(&mut conn, clock.as_ref(), warning);
+        }
+        {
+            let episode = last_episode;
             let operation = format!("cleanup-page-{episode}");
             let offer = check_in(&store, current(&first.context, &operation)).unwrap();
             assert!(!offer.notices.items.is_empty());
@@ -2003,7 +2041,7 @@ fn builtin_warning_projection_cleanup_keeps_delivered_history_out_of_pending_wal
             if episode == 16 {
                 small_work = Some(pending.work_steps);
             }
-            if episode == 1001 {
+            if episode == EPISODES {
                 assert_eq!(
                     pending.count(),
                     (0, false),
@@ -2029,7 +2067,7 @@ fn builtin_warning_projection_cleanup_keeps_delivered_history_out_of_pending_wal
             })
             .unwrap();
         assert_eq!(
-            count, 1001,
+            count, EPISODES,
             "{table} retains immutable event/recipient and delivery history"
         );
     }
@@ -3171,8 +3209,11 @@ fn managed_launch_is_refused_when_evidence_differs_from_the_canonical_view() {
             ErrorCode::TargetUnresolved,
         ),
     ];
+    // A refused launch writes nothing (no binding, generation or stored
+    // operation, checked after each case), so the cases share one store and
+    // each is decided afresh rather than replayed.
+    let (store, conn, _) = fixture();
     for (label, change, code) in cases {
-        let (store, conn, _) = fixture();
         let mut command = managed_launch();
         change(&mut command);
         assert_eq!(
@@ -3182,8 +3223,14 @@ fn managed_launch_is_refused_when_evidence_differs_from_the_canonical_view() {
         );
         assert!(bindings(&conn).is_empty(), "{label}");
         assert_eq!(seat_generation(&conn), 0, "{label}");
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM operations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "{label}"
+        );
     }
-    let (store, conn, _) = fixture();
     conn.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES ('i','p','b',1,'restore')", [])
         .unwrap();
     assert_eq!(

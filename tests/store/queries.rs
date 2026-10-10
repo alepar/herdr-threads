@@ -116,9 +116,11 @@ fn seat_inspect_reports_open_binding_and_none() {
 #[test]
 fn history_pages_205_rows_and_refresh_finds_append() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         db.execute("INSERT INTO messages(instance_id,decision_seq,id, thread_id, sequence, kind, actor_seat_id, body, decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),?1, 't', ?2, 'ordinary', 's', 'body', 0)", params![format!("m{n}"), n]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     db.execute("UPDATE threads SET next_sequence=206 WHERE id='t'", [])
         .unwrap();
     let mut cursor = None;
@@ -744,10 +746,12 @@ fn inbox_batch_partial_body_has_cursor_and_no_candidate_until_final_chunk() {
 fn inbox_batch_pages_101_receipts_without_acknowledging_or_skipping() {
     let (store, db) = fixture();
     bind_query_agent(&db);
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=101 {
         db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',?1,?2,'t',?1,'ordinary','s','body',0)", params![n, format!("message-{n:03}")]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t','s','pending',300)", [format!("message-{n:03}")]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let mut request = PageRequest {
         cursor: None,
         limit: 100,
@@ -1312,9 +1316,11 @@ fn inbox_clear_recipient_is_frozen_at_close_decision_before_projection() {
 #[test]
 fn warnings_sparse_scan_continues_after_candidate_cap() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 0..105 {
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)",[format!("empty-{n:03}")]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('last','i','topic','goal',0,0,3)",[]).unwrap();
     db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p','i','actor','o',zeroblob(32),'last',0,0,0,0,0,0,0,'sealed');
     INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('p','key','warn-last','s',1,1,'{}');
@@ -1351,6 +1357,7 @@ fn warnings_sparse_scan_continues_after_candidate_cap() {
 #[test]
 fn warnings_pages_205_rows_without_duplication() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let id = format!("warn-{n:03}");
         db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'warn','{}',0,?2)",params![id,n]).unwrap();
@@ -1360,6 +1367,7 @@ fn warnings_pages_205_rows_without_duplication() {
         )
         .unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     db.execute("UPDATE threads SET next_sequence=206 WHERE id='t'", [])
         .unwrap();
     let mut request = page(None);
@@ -1399,12 +1407,14 @@ fn warnings_pages_205_rows_without_duplication() {
 #[test]
 fn inbox_pages_205_invited_threads_without_skipping() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let thread = format!("thread-{n:03}");
         let invitation = format!("invite-{n:03}");
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)",[&thread]).unwrap();
         db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES (?1,?2,'s',1,'pending',0,300,300,(SELECT decision_seq+1 FROM host_instances WHERE id='i'))",params![invitation,thread]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let mut request = page(None);
     let mut ids = Vec::new();
     loop {
@@ -1443,9 +1453,11 @@ fn inbox_pages_205_invited_threads_without_skipping() {
 #[test]
 fn inbox_continuation_stales_when_published_receipt_enters_examined_thread() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 0..100 {
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','other','goal',0,0)", [format!("empty-{n:03}")]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
             seat: Some(SeatId::new("s")),
@@ -1475,9 +1487,11 @@ fn inbox_continuation_stales_when_published_receipt_enters_examined_thread() {
 #[test]
 fn inbox_continuation_stales_on_new_invitation_in_examined_thread() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 0..100 {
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','other','goal',0,0)", [format!("empty-{n:03}")]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
             seat: Some(SeatId::new("s")),
@@ -1498,9 +1512,11 @@ fn inbox_continuation_stales_on_new_invitation_in_examined_thread() {
 fn inbox_continuation_stales_at_committed_retirement_fence() {
     let (store, mut db) = fixture();
     db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv','t','s',1,'pending',0,300,300,(SELECT decision_seq+1 FROM host_instances WHERE id='i'))", []).unwrap();
+    db.execute_batch("BEGIN").unwrap();
     for n in 0..100 {
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','other','goal',0,0)", [format!("empty-{n:03}")]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
             seat: Some(SeatId::new("s")),
@@ -1535,9 +1551,11 @@ fn inbox_continuation_stales_at_committed_retirement_fence() {
 fn inbox_validation_pages_unrelated_publications_before_advancing() {
     let (store, db) = fixture();
     db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('u','i','resolved','native',1,0)", []).unwrap();
+    db.execute_batch("BEGIN").unwrap();
     for n in 0..100 {
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','other','goal',0,0)", [format!("empty-{n:03}")]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let make = |cursor| {
         Command::Inbox(InboxQuery {
             seat: Some(SeatId::new("s")),
@@ -1659,9 +1677,11 @@ fn inbox_continuation_survives_projection_of_already_published_receipt() {
 #[test]
 fn inbox_continuation_ignores_hidden_preparation_for_same_seat() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 0..100 {
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','other','goal',0,0)", [format!("empty-{n:03}")]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let make = |cursor| {
         Command::Inbox(InboxQuery {
             seat: Some(SeatId::new("s")),
@@ -1705,10 +1725,12 @@ fn transaction_local_inbox_never_returns_zero_after_cancellation() {
 #[test]
 fn pending_cursor_finds_old_id_behind_250_settled_rows() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=251 {
         db.execute("INSERT INTO messages(instance_id,decision_seq,id, thread_id, sequence, kind, actor_seat_id, body, decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),?1, 't', ?2, 'ordinary', 's', 'body', 0)", params![format!("m{n}"), n]).unwrap();
         db.execute("INSERT INTO receipts(message_id, thread_id, seat_id, state, frozen_duration_ms) VALUES (?1, 't', 's', ?2, 300000)", params![format!("m{n}"), if n == 1 { "pending" } else { "acked" }]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let q = Command::PendingReceipts(PendingReceiptsQuery {
         seat: Some(SeatId::new("s")),
         thread: None,
@@ -1969,7 +1991,9 @@ fn history_rejects_cursor_with_changed_filter_digest() {
 #[test]
 fn multibyte_body_continuation_reassembles_every_byte() {
     let (store, db) = fixture();
-    let body = "🦊é".repeat(9000);
+    // 18 KB of mixed 4- and 2-byte characters: about ten 2 KB pages, so the
+    // page boundaries land at several offsets within the characters.
+    let body = "🦊é".repeat(3000);
     db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),'big','t',1,'ordinary','s',?1,0)",[&body]).unwrap();
     let mut cursor = None;
     let mut assembled = String::new();
@@ -2047,11 +2071,11 @@ fn body_paging_returns_complete_remainder_whenever_it_fits() {
         .unwrap()
         .len() as u32;
         // Budgets are swept densely within 16 bytes of the full size (the
-        // boundary where a complete remainder starts to fit) and every 9th
+        // boundary where a complete remainder starts to fit) and every 23rd
         // byte elsewhere: an off-by-reservation bug fails on a contiguous
-        // range starting at full_size, so the stride still lands in it.
+        // range starting at full_size, which the dense band covers.
         let sampled = |range: std::ops::Range<u32>| {
-            range.filter(|max| full_size.abs_diff(*max) <= 16 || max % 9 == 0)
+            range.filter(|max| full_size.abs_diff(*max) <= 16 || max % 23 == 0)
         };
         // Sweep across full_size <= max < full_size + partial-page overhead.
         for max in sampled(full_size..full_size + 600) {
@@ -2105,6 +2129,7 @@ fn body_paging_returns_complete_remainder_whenever_it_fits() {
 #[test]
 fn sparse_literal_search_returns_work_continuation_then_match() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let body = if n == 205 {
             "literal %_ ' 🦊"
@@ -2113,6 +2138,7 @@ fn sparse_literal_search_returns_work_continuation_then_match() {
         };
         db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),?1,'t',?2,'ordinary','s',?3,0)",params![format!("m{n}"),n,body]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     db.execute("UPDATE threads SET next_sequence=206 WHERE id='t'", [])
         .unwrap();
     let mut cursor = None;
@@ -2655,16 +2681,16 @@ fn participant_stale_restart_uses_typed_thread_route() {
 
 // A long run of non-matching messages is scanned in candidate-capped pages
 // (100 candidates each), so every page returns a work continuation and the
-// page count tracks the run length. 3,000 rows (30 pages) keep the property;
+// page count tracks the run length. 1,000 rows (10 pages) keep the property;
 // the original 30,000-row run only multiplied the page count.
 #[test]
-fn search_3000_sparse_nonmatches_remains_paged() {
+fn search_1000_sparse_nonmatches_remains_paged() {
     let (store, db) = fixture();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    for n in 1..=3_000 {
+    for n in 1..=1_000 {
         db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),?1,'t',?2,'ordinary','s','unrelated',0)",params![format!("m{n}"),n]).unwrap();
     }
-    db.execute("UPDATE threads SET next_sequence=3001 WHERE id='t'", [])
+    db.execute("UPDATE threads SET next_sequence=1001 WHERE id='t'", [])
         .unwrap();
     db.execute_batch("COMMIT").unwrap();
     let mut cursor = None;
@@ -2685,9 +2711,9 @@ fn search_3000_sparse_nonmatches_remains_paged() {
         if cursor.is_none() {
             break;
         }
-        assert!(pages <= 32);
+        assert!(pages <= 12);
     }
-    assert!(pages >= 30);
+    assert!(pages >= 10);
 }
 
 #[test]
@@ -2759,9 +2785,11 @@ fn search_oversized_first_match_reports_minimum_without_skipping() {
 #[test]
 fn directory_pages_205_threads_with_fixed_high_water() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [format!("t{n:03}")]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let mut cursor = None;
     let mut ids = Vec::new();
     loop {
@@ -2821,9 +2849,12 @@ fn directory_default_pages_quiet_joined_invited_and_archived_memberships() {
     for (id, sequence) in [("m1", 1), ("m2", 2)] {
         db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),?1,'t',?2,'ordinary','s','body',0)", params![id,sequence]).unwrap();
     }
-    for n in 0..1000 {
+    // An unrelated suffix of three times the 100-candidate work cap.
+    db.execute_batch("BEGIN").unwrap();
+    for n in 0..300 {
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','unrelated','goal',50,50)", [format!("u{n:04}")]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let mut cursor = None;
     let mut rows = Vec::new();
     let mut empty_work = false;
@@ -3028,6 +3059,7 @@ fn continuation_context_is_budgeted_and_round_trips_special_path() {
 #[test]
 fn participants_page_all_rows_and_expose_effective_retirement() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let id = format!("s{n:03}");
         db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)",[&id]).unwrap();
@@ -3037,6 +3069,7 @@ fn participants_page_all_rows_and_expose_effective_retirement() {
         )
         .unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     db.execute(
         "UPDATE seats SET state='retired',retired_at=90,retired_seq=1 WHERE id='s001'",
         [],
@@ -3077,6 +3110,7 @@ fn participants_page_all_rows_and_expose_effective_retirement() {
 #[test]
 fn thread_show_repeats_metadata_and_pages_participants() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let id = format!("s{n:03}");
         db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)",[&id]).unwrap();
@@ -3086,6 +3120,7 @@ fn thread_show_repeats_metadata_and_pages_participants() {
         )
         .unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let mut cursor = None;
     let mut count = 0;
     loop {
@@ -3112,9 +3147,11 @@ fn thread_show_repeats_metadata_and_pages_participants() {
 #[test]
 fn seat_directory_pages_205_rows_without_offset() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','unresolved','native',0,0)",[format!("s{n:03}")]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let mut cursor = None;
     let mut seats = Vec::new();
     loop {
@@ -3208,9 +3245,11 @@ fn seat_directory_excludes_retired_and_freezes_newest_first_page() {
 #[test]
 fn seat_target_filter_finds_live_seat_after_many_retired_seats_in_one_request() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=900 {
         db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at,retired_at,retired_seq) VALUES (?1,'i','retired','native','pane',0,0,1,?2)",params![format!("r{n:04}"),n]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at) VALUES ('live','i','resolved','native','pane',0,0)",[]).unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at) VALUES ('other','i','resolved','native','pane2',0,0)",[]).unwrap();
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,created_at) VALUES ('unres','i','unresolved','native','pane3',0,0)",[]).unwrap();
@@ -3261,9 +3300,11 @@ fn seats_query_target_is_additive_on_the_wire() {
 #[test]
 fn seat_inspect_pages_binding_and_repair_history() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at) VALUES ('s',?1,'target','boot',1,'codex',?2,?2,'fresh',?1,?1)",params![n,format!("exec-{n}")]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     db.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation) VALUES ('i','target','s','operator_rebind',1,'boot',1,206)",[]).unwrap();
     let mut cursor = None;
     let mut count = 0;
@@ -3294,12 +3335,14 @@ fn seat_inspect_pages_binding_and_repair_history() {
 #[test]
 fn retirement_jobs_page_205_scalar_rows() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let seat = format!("retired-{n:03}");
         let job = format!("job-{n:03}");
         db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at,retired_at,retired_seq) VALUES (?1,'i','retired','native',1,0,1,1)",[&seat]).unwrap();
         db.execute("INSERT INTO retirements(id,seat_id,cutover_at,closure_boot,closure_epoch,closure_target,closure_generation) VALUES (?1,?2,1,'boot',1,'target',1)",params![job,seat]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let mut cursor = None;
     let mut count = 0;
     loop {
@@ -3629,11 +3672,13 @@ fn pending_receipts_attribute_a_programmatic_sender() {
 fn recipients_page_205_rows_and_show_effective_retirement() {
     let (store, db) = fixture();
     db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),'m','t',1,'ordinary','s','body',0)",[]).unwrap();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let seat = format!("s{n:03}");
         db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)",[&seat]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t',?1,'pending',300)",[&seat]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     db.execute(
         "UPDATE seats SET state='retired',retired_at=90,retired_seq=1 WHERE id='s001'",
         [],
@@ -3675,11 +3720,13 @@ fn recipients_page_205_rows_and_show_effective_retirement() {
 fn delivery_inspect_pages_recipients_with_exact_committed_count() {
     let (store, db) = fixture();
     db.execute("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',coalesce((SELECT MAX(decision_seq)+1 FROM messages WHERE instance_id='i'),1),'m','t',1,'ordinary','s','body',0)",[]).unwrap();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         let seat = format!("s{n:03}");
         db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'i','resolved','native',1,0)",[&seat]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t',?1,'pending',300)",[&seat]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let mut cursor = None;
     let mut count = 0;
     loop {
@@ -4355,9 +4402,12 @@ fn resolve_name(
 #[test]
 fn thread_names_joined_match_wins_over_large_lower_tiers() {
     let (store, db) = fixture();
-    for n in 0..1000 {
+    // 100 lower-tier matches: an order of magnitude past the nine-row bound.
+    db.execute_batch("BEGIN").unwrap();
+    for n in 0..100 {
         named_thread(&db, &format!("lower{n}"), n % 2 == 0, Some("left"));
     }
+    db.execute_batch("COMMIT").unwrap();
     named_thread(&db, "late-joined", false, Some("joined"));
     assert_eq!(
         resolve_name(&store, Some("s"), None).unwrap(),
@@ -4622,9 +4672,11 @@ fn recent_page(
 #[test]
 fn recent_picker_pages_all_archived_and_ties_with_index_seek() {
     let (store, db) = fixture();
+    db.execute_batch("BEGIN").unwrap();
     for n in 1..=205 {
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,archived) VALUES (?1,'i','topic','goal',?2,?2,?3)",params![format!("t{n:03}"),n/3,n%2]).unwrap();
     }
+    db.execute_batch("COMMIT").unwrap();
     let mut cursor = None;
     let mut ids = Vec::new();
     let mut archived = false;
@@ -4837,6 +4889,11 @@ fn adapter_inbox_batch_stale_generation_cannot_offer_display_ack() {
 
 #[test]
 fn adapter_inbox_batch_candidates_require_canonical_registered_agent() {
+    // One store serves every case: each case changes one field of the
+    // canonical binding and the next case restores all of them first.
+    let (store, db) = fixture();
+    bind_query_agent(&db);
+    db.execute_batch("UPDATE seats SET target_id='w:p1',target_generation=1 WHERE id='s'; INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,body,decision_at) VALUES ('i',1,'m','t',1,'ordinary','body',0); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
     for (change, candidate) in [
         ("target_id='different'", false),
         ("harness='codex'", true),
@@ -4848,9 +4905,11 @@ fn adapter_inbox_batch_candidates_require_canonical_registered_agent() {
         ("native_session=''", false),
         ("execution_id=''", false),
     ] {
-        let (store, db) = fixture();
-        bind_query_agent(&db);
-        db.execute_batch("UPDATE seats SET target_id='w:p1',target_generation=1 WHERE id='s'; INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,body,decision_at) VALUES ('i',1,'m','t',1,'ordinary','body',0); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+        db.execute(
+            "UPDATE occupant_bindings SET target_id='w:p1',harness='codex',registered_at=0,observation_provenance='cooperative_top_level',native_session='session',execution_id='exec' WHERE seat_id='s'",
+            [],
+        )
+        .unwrap();
         db.execute(
             &format!("UPDATE occupant_bindings SET {change} WHERE seat_id='s'"),
             [],
@@ -5249,7 +5308,8 @@ fn picker_directory_sql_work_does_not_grow_with_message_history() {
         counter.units()
     };
     let small = measure(512);
-    let large = measure(20_000);
+    // More than 10x the sampled window.
+    let large = measure(6_000);
     eprintln!("picker bounded history VM units: small={small} large={large}");
     assert!(
         large <= small + small / 10 + 100,

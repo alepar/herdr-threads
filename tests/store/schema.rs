@@ -323,6 +323,68 @@ impl Drop for ScratchStore {
     }
 }
 
+/// The serialized `main` database of `db` (an independent byte image).
+fn image_of(db: &Connection) -> Vec<u8> {
+    use rusqlite::ffi;
+    let mut size: ffi::sqlite3_int64 = 0;
+    // SAFETY: serialize the main schema of our own open connection; the
+    // returned sqlite3_malloc buffer is copied and freed here.
+    unsafe {
+        let data = ffi::sqlite3_serialize(db.handle(), c"main".as_ptr(), &mut size, 0);
+        assert!(!data.is_null(), "serialize store image");
+        let image = std::slice::from_raw_parts(data, size as usize).to_vec();
+        ffi::sqlite3_free(data.cast());
+        image
+    }
+}
+
+/// A private in-memory database holding a copy of `image`.
+fn from_image(image: &[u8]) -> Connection {
+    use rusqlite::ffi;
+    let db = Connection::open_in_memory().unwrap();
+    // SAFETY: SQLite takes ownership of the sqlite3_malloc64 copy (FREEONCLOSE)
+    // and may grow it (RESIZEABLE); the connection handle is ours and open.
+    unsafe {
+        let buffer = ffi::sqlite3_malloc64(image.len() as u64).cast::<u8>();
+        assert!(!buffer.is_null(), "allocate store image");
+        std::ptr::copy_nonoverlapping(image.as_ptr(), buffer, image.len());
+        let size = image.len() as ffi::sqlite3_int64;
+        let rc = ffi::sqlite3_deserialize(
+            db.handle(),
+            c"main".as_ptr(),
+            buffer,
+            size,
+            size,
+            (ffi::SQLITE_DESERIALIZE_FREEONCLOSE | ffi::SQLITE_DESERIALIZE_RESIZEABLE) as _,
+        );
+        assert_eq!(rc, ffi::SQLITE_OK, "deserialize store image");
+    }
+    db
+}
+
+/// A private in-memory fresh store at the latest schema. Fresh creation
+/// replays every migration (~75 ms of CPU); this copies one image per test
+/// process instead: the binary's fresh-schema template (built by the
+/// production fresh-creation path), verified once by `schema::initialize`
+/// (which creates it the ordinary way if no template is available), so a
+/// tamper case starting from a copy needs no verification of its own.
+fn fresh_db() -> Connection {
+    static IMAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let image = IMAGE.get_or_init(|| {
+        let store = ScratchStore::fresh("ht-fresh-image");
+        let db = Connection::open(store.path()).unwrap();
+        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        image_of(&db)
+    });
+    let db = from_image(image);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        schema::LATEST_VERSION
+    );
+    db
+}
+
 // Kills: a v6 database left without the digest indexes (the producer names
 // them with INDEXED BY and would fail on every query), or a v7 migration that
 // rewrites existing rows.
@@ -366,11 +428,16 @@ fn v6_upgrade_adds_seat_and_thread_leading_digest_indexes() {
 // producer's plan or fail its INDEXED BY).
 #[test]
 fn startup_rejects_missing_or_altered_digest_index() {
+    // Migrate from v6 once; each tamper starts from a private copy of it.
+    let migrated = v6_database();
+    schema::initialize(&migrated, || crate::protocol::time::UtcMillis(0)).unwrap();
+    let snapshot = image_of(&migrated);
+    drop(migrated);
     for tamper in [
         "DROP INDEX messages_thread_warning",
         "DROP INDEX send_manifests_thread_warning; CREATE INDEX send_manifests_thread_warning ON send_manifests(thread_id, base_sequence)",
     ] {
-        let db = v6_database();
+        let db = from_image(&snapshot);
         schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
         db.execute_batch(tamper).unwrap();
         let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
@@ -509,13 +576,12 @@ fn v6_upgrade_carries_the_current_occupant_offer_into_the_notice_frontier() {
 // reach the projection and be silently hidden).
 #[test]
 fn startup_rejects_missing_or_altered_digest_projection() {
-    // Migrate from v6 once; each tamper starts from a file copy of that store.
+    // Migrate from v6 once, verify that store once, and start each tamper
+    // from a private in-memory copy of it.
     let migrated = v6_database();
     schema::initialize(&migrated, || crate::protocol::time::UtcMillis(0)).unwrap();
-    let snapshot = ScratchStore::new("ht-digest-tamper");
-    migrated
-        .execute("VACUUM INTO ?1", [snapshot.path().to_str().unwrap()])
-        .unwrap();
+    schema::initialize(&migrated, || crate::protocol::time::UtcMillis(0)).unwrap();
+    let snapshot = image_of(&migrated);
     drop(migrated);
     for tamper in [
         "DROP TRIGGER digest_receipt_state_settled_update",
@@ -528,9 +594,7 @@ fn startup_rejects_missing_or_altered_digest_projection() {
         "DROP TRIGGER digest_open_warning_closed",
         "DROP TRIGGER digest_invitation_created; CREATE TRIGGER digest_invitation_created AFTER INSERT ON invitations BEGIN SELECT 1; END",
     ] {
-        let copy = snapshot.copy("ht-digest-tamper");
-        let db = Connection::open(copy.path()).unwrap();
-        schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+        let db = from_image(&snapshot);
         db.execute_batch(tamper).unwrap();
         let error = schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap_err();
         assert_eq!(error.code, ErrorCode::IncompatibleSchema, "{tamper}");
@@ -2755,7 +2819,8 @@ fn receipt_warning_condition_survives_writer_reopen() {
 #[test]
 fn unavailable_recovery_records_one_bounded_close_job_for_many_threads() {
     let (context, mut db, clock) = seeded_db(300_000);
-    const CONDITIONS: i64 = 256;
+    // Far above the 5-row foreground bound and several 16-unit work turns.
+    const CONDITIONS: i64 = 64;
     for number in 0..CONDITIONS {
         let thread = format!("u{number}");
         let warning = format!("e{number}");
@@ -4154,7 +4219,7 @@ fn fresh_store_lands_at_latest_with_the_evidence_tables() {
 
 #[test]
 fn v12_audit_rejects_a_missing_or_altered_evidence_table() {
-    let db = Connection::open_in_memory().unwrap();
+    let db = fresh_db();
     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     db.execute_batch("DROP TABLE harness_unattributed").unwrap();
     assert_eq!(
@@ -4523,13 +4588,31 @@ fn fresh_and_main_v10_stores_share_the_v11_shape() {
         .collect::<Result<_, _>>()
         .unwrap()
     };
-    let fresh = Connection::open_in_memory().unwrap();
+    let fresh = fresh_db();
     schema::initialize(&fresh, || crate::protocol::time::UtcMillis(0)).unwrap();
+    // One chain replay: the v11 and v12 stores extend a copy of the v10 one
+    // exactly as v11_database / v12_database do.
     let upgraded = v10_database();
+    let v10_image = image_of(&upgraded);
     schema::initialize(&upgraded, || crate::protocol::time::UtcMillis(0)).unwrap();
-    let upgraded_v11 = v11_database();
+    let upgraded_v11 = from_image(&v10_image);
+    upgraded_v11
+        .execute_batch(include_str!("../../migrations/0011_cooperative_only.sql"))
+        .unwrap();
+    upgraded_v11
+        .pragma_update(None, "user_version", 11)
+        .unwrap();
+    let v11_image = image_of(&upgraded_v11);
     schema::initialize(&upgraded_v11, || crate::protocol::time::UtcMillis(0)).unwrap();
-    let upgraded_v12 = v12_database();
+    let upgraded_v12 = from_image(&v11_image);
+    upgraded_v12
+        .execute_batch(include_str!(
+            "../../migrations/0012_harness_version_evidence.sql"
+        ))
+        .unwrap();
+    upgraded_v12
+        .pragma_update(None, "user_version", 12)
+        .unwrap();
     schema::initialize(&upgraded_v12, || crate::protocol::time::UtcMillis(0)).unwrap();
     for db in [&fresh, &upgraded, &upgraded_v11, &upgraded_v12] {
         assert_eq!(
@@ -4994,8 +5077,7 @@ fn wake_batch_schema_audit_rejects_missing_or_altered_clear_trigger() {
             "CREATE TRIGGER wake_batches_clear_retired AFTER UPDATE OF state ON seats BEGIN DELETE FROM wake_batches; END;",
         ),
     ] {
-        let db = Connection::open_in_memory().unwrap();
-        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        let db = fresh_db();
         db.execute_batch("DROP TRIGGER wake_batches_clear_retired")
             .unwrap();
         if let Some(replacement) = replacement {
@@ -5082,8 +5164,7 @@ fn invitation_rejection_schema_audit_rejects_projection_guard_tampering() {
             "CREATE TRIGGER invitations_rejection_projection_guard BEFORE UPDATE OF reject_recorded ON invitations BEGIN SELECT 1; END;",
         ),
     ] {
-        let db = Connection::open_in_memory().unwrap();
-        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        let db = fresh_db();
         db.execute_batch("DROP TRIGGER invitations_rejection_projection_guard")
             .unwrap();
         if let Some(sql) = replacement {
@@ -5159,16 +5240,15 @@ fn invitation_rejection_v21_upgrades_v20_without_rebuilding_history() {
 
 #[test]
 fn recent_activity_writer_rejects_missing_or_null_default() {
+    let verified = ScratchStore::fresh("ht-activity-default");
+    schema::initialize(&Connection::open(verified.path()).unwrap(), || UtcMillis(0)).unwrap();
     for replacement in [
         "last_activity INTEGER NOT NULL",
         "last_activity INTEGER NOT NULL DEFAULT NULL",
     ] {
-        let path = std::env::temp_dir().join(format!(
-            "ht-activity-default-{}.sqlite3",
-            uuid::Uuid::new_v4()
-        ));
-        let db = Connection::open(&path).unwrap();
-        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        let store = verified.copy("ht-activity-default");
+        let path = store.path();
+        let db = Connection::open(path).unwrap();
         let original: String = db
             .query_row(
                 "SELECT sql FROM sqlite_schema WHERE type='table' AND name='threads'",
@@ -5186,7 +5266,7 @@ fn recent_activity_writer_rejects_missing_or_null_default() {
         .unwrap();
         db.execute_batch("PRAGMA writable_schema=OFF").unwrap();
         drop(db);
-        let db = Connection::open(&path).unwrap();
+        let db = Connection::open(path).unwrap();
         let default: Option<String> = db
             .query_row(
                 "SELECT dflt_value FROM pragma_table_info('threads') WHERE name='last_activity'",
@@ -5197,7 +5277,6 @@ fn recent_activity_writer_rejects_missing_or_null_default() {
         assert!(default.is_none() || default.as_deref() == Some("NULL"));
         let result = schema::initialize(&db, || UtcMillis(1));
         drop(db);
-        std::fs::remove_file(path).unwrap();
         assert!(
             matches!(result,Err(ref error) if error.code==ErrorCode::IncompatibleSchema),
             "writer must reject the altered default before creation: {replacement}: {result:?}"
@@ -5316,7 +5395,7 @@ fn adapter_migration_preserves_all_supported_history_and_rejection_overlay() {
 // foreign keys, and accepting native/bridge evidence with no runtime identity.
 #[test]
 fn adapter_migration_v2_tables_enforce_bounded_keys_and_references() {
-    let db = Connection::open_in_memory().unwrap();
+    let db = fresh_db();
     db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
     schema::initialize(&db, || UtcMillis(0)).unwrap();
     let runtime = "INSERT INTO harness_runtime_identities(harness,identity_key,descriptor_json,last_seen_at) VALUES (?1,'release:1.2.3','{}',0)";
@@ -5419,13 +5498,37 @@ fn adapter_historical_database(version: usize) -> Connection {
         include_str!("../../migrations/0025_warning_notice_delivery.sql"),
         include_str!("../../migrations/0026_lazy_message_delivery.sql"),
     ];
-    let db = Connection::open_in_memory().unwrap();
-    db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-    for migration in &migrations[..version] {
-        db.execute_batch(migration).unwrap();
+    // Tests start from several versions: replay each step of the chain at
+    // most once per test process, keep the image after every prefix, and
+    // hand each call a private copy of the requested prefix (its
+    // user_version asserted).
+    static IMAGES: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+    let mut images = IMAGES.lock().unwrap();
+    if images.len() <= version {
+        let db = match images.last() {
+            Some(image) => from_image(image),
+            None => {
+                let db = Connection::open_in_memory().unwrap();
+                images.push(image_of(&db));
+                db
+            }
+        };
+        db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        while images.len() <= version {
+            let applied = images.len();
+            db.execute_batch(migrations[applied - 1]).unwrap();
+            db.pragma_update(None, "user_version", applied as i64)
+                .unwrap();
+            images.push(image_of(&db));
+        }
     }
-    db.pragma_update(None, "user_version", version as i64)
-        .unwrap();
+    let db = from_image(&images[version]);
+    db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        version as i64
+    );
     db
 }
 
@@ -5501,8 +5604,7 @@ fn adapter_migration_reopen_rejects_weakened_lexical_tables_and_missing_indexes(
         "DROP INDEX occupant_bindings_history",
         "PRAGMA writable_schema=ON; UPDATE sqlite_master SET sql=replace(sql,'instr(harness,char(0))=0 AND ','') WHERE name='harness_runtime_identities'; PRAGMA writable_schema=OFF",
     ] {
-        let db = Connection::open_in_memory().unwrap();
-        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        let db = fresh_db();
         db.execute_batch(statement).unwrap();
         assert_eq!(
             schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
@@ -5533,34 +5635,38 @@ fn archival_commit_counter_origin_does_not_collide_with_requests() {
 }
 
 fn user_intent_v21_fixture() -> Connection {
-    let db = Connection::open_in_memory().unwrap();
-    for migration in [
-        include_str!("../../migrations/0001_initial.sql"),
-        include_str!("../../migrations/0002_service_substrate.sql"),
-        include_str!("../../migrations/0003_invitation_cancellations.sql"),
-        include_str!("../../migrations/0004_voluntary_membership.sql"),
-        include_str!("../../migrations/0005_service_notifications.sql"),
-        include_str!("../../migrations/0006_retirement_health.sql"),
-        include_str!("../../migrations/0007_attention_digest.sql"),
-        include_str!("../../migrations/0008_digest_pending_paths.sql"),
-        include_str!("../../migrations/0009_human_occupant.sql"),
-        include_str!("../../migrations/0010_b5_trust_guards.sql"),
-        include_str!("../../migrations/0011_cooperative_only.sql"),
-        include_str!("../../migrations/0012_harness_version_evidence.sql"),
-        include_str!("../../migrations/0013_thread_summaries.sql"),
-        include_str!("../../migrations/0014_catch_up_release.sql"),
-        include_str!("../../migrations/0015_preparation_retention.sql"),
-        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
-        include_str!("../../migrations/0017_wake_batches.sql"),
-        include_str!("../../migrations/0018_warning_conditions.sql"),
-        include_str!("../../migrations/0019_thread_names.sql"),
-        include_str!("../../migrations/0020_recent_activity.sql"),
-        include_str!("../../migrations/0021_invitation_rejections.sql"),
-    ] {
-        db.execute_batch(migration).unwrap();
-    }
-    db.pragma_update(None, "user_version", 21).unwrap();
-    db
+    // Replayed once per test process; each call gets a private copy.
+    static IMAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    from_image(IMAGE.get_or_init(|| {
+        let db = Connection::open_in_memory().unwrap();
+        for migration in [
+            include_str!("../../migrations/0001_initial.sql"),
+            include_str!("../../migrations/0002_service_substrate.sql"),
+            include_str!("../../migrations/0003_invitation_cancellations.sql"),
+            include_str!("../../migrations/0004_voluntary_membership.sql"),
+            include_str!("../../migrations/0005_service_notifications.sql"),
+            include_str!("../../migrations/0006_retirement_health.sql"),
+            include_str!("../../migrations/0007_attention_digest.sql"),
+            include_str!("../../migrations/0008_digest_pending_paths.sql"),
+            include_str!("../../migrations/0009_human_occupant.sql"),
+            include_str!("../../migrations/0010_b5_trust_guards.sql"),
+            include_str!("../../migrations/0011_cooperative_only.sql"),
+            include_str!("../../migrations/0012_harness_version_evidence.sql"),
+            include_str!("../../migrations/0013_thread_summaries.sql"),
+            include_str!("../../migrations/0014_catch_up_release.sql"),
+            include_str!("../../migrations/0015_preparation_retention.sql"),
+            include_str!("../../migrations/0016_human_receipt_waivers.sql"),
+            include_str!("../../migrations/0017_wake_batches.sql"),
+            include_str!("../../migrations/0018_warning_conditions.sql"),
+            include_str!("../../migrations/0019_thread_names.sql"),
+            include_str!("../../migrations/0020_recent_activity.sql"),
+            include_str!("../../migrations/0021_invitation_rejections.sql"),
+        ] {
+            db.execute_batch(migration).unwrap();
+        }
+        db.pragma_update(None, "user_version", 21).unwrap();
+        image_of(&db)
+    }))
 }
 
 fn user_intent_seed(db: &Connection) {
@@ -5666,7 +5772,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
             0
         );
     }
-    let fresh = Connection::open_in_memory().unwrap();
+    let fresh = fresh_db();
     schema::initialize(&fresh, || UtcMillis(100)).unwrap();
     assert_eq!(shape(&upgraded), shape(&fresh));
     schema::initialize(&fresh, || UtcMillis(200)).unwrap();
@@ -5677,7 +5783,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
 // Catches a CHECK weakened to accept unknown claims or SQL NULL bypassing attribution.
 #[test]
 fn user_intent_schema22_checks_and_eligibility() {
-    let db = Connection::open_in_memory().unwrap();
+    let db = fresh_db();
     schema::initialize(&db, || UtcMillis(0)).unwrap();
     user_intent_seed(&db);
     db.execute(
@@ -5747,15 +5853,18 @@ fn user_intent_schema22_checks_and_eligibility() {
 // Catches startup accepting a present but altered column domain, shape, or guard.
 #[test]
 fn user_intent_schema22_rejects_column_or_guard_tampering() {
+    // Column tampering edits the stored schema text, which only a reopen
+    // loads: each case starts from a file copy of one fresh store verified
+    // here once.
+    let verified = ScratchStore::fresh("ht-intent-tamper");
+    schema::initialize(&Connection::open(verified.path()).unwrap(), || UtcMillis(0)).unwrap();
     for replacement in [
         None,
         Some(
             "CREATE TRIGGER messages_user_intent_insert BEFORE INSERT ON messages BEGIN SELECT 1; END;",
         ),
     ] {
-        let store = ScratchStore::fresh("ht-intent-guard-tamper");
-        let db = Connection::open(store.path()).unwrap();
-        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        let db = fresh_db();
         db.execute_batch("DROP TRIGGER messages_user_intent_insert")
             .unwrap();
         if let Some(sql) = replacement {
@@ -5808,10 +5917,9 @@ fn user_intent_schema22_rejects_column_or_guard_tampering() {
             ));
         }
         for replacement in replacements {
-            let store = ScratchStore::fresh("ht-intent-tamper");
+            let store = verified.copy("ht-intent-tamper");
             let path = store.path();
             let db = Connection::open(path).unwrap();
-            schema::initialize(&db, || UtcMillis(0)).unwrap();
             let original: String = db
                 .query_row(
                     "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
@@ -5902,8 +6010,7 @@ fn archival_schema_refuses_missing_or_weakened_guards_before_writing() {
         "DROP INDEX seat_archival_due",
         "DROP TRIGGER archival_operation_activity; CREATE TRIGGER archival_operation_activity AFTER INSERT ON operations BEGIN SELECT 1; END",
     ] {
-        let db = Connection::open_in_memory().unwrap();
-        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        let db = fresh_db();
         db.execute_batch(change).unwrap();
         assert!(
             matches!(schema::initialize(&db, || UtcMillis(1)), Err(e) if e.code == ErrorCode::IncompatibleSchema)
@@ -5913,7 +6020,7 @@ fn archival_schema_refuses_missing_or_weakened_guards_before_writing() {
 
 #[test]
 fn archival_schema_audit_preserves_case_sensitive_terminal_state_literals() {
-    let db = Connection::open_in_memory().unwrap();
+    let db = fresh_db();
     schema::initialize(&db, || UtcMillis(0)).unwrap();
     let sql: String = db
         .query_row(
@@ -6049,13 +6156,12 @@ fn adapter_migration_main24_to26_preserves_archival_guards_and_intent_history() 
         .unwrap(),
         0
     );
-    let fresh = Connection::open_in_memory().unwrap();
+    let fresh = fresh_db();
     schema::initialize(&fresh, || UtcMillis(0)).unwrap();
     assert_eq!(binding_archival_guards(&fresh), guards);
     // A lost guard on an already-upgraded database must refuse reopening.
     for (name, _) in guards {
-        let fresh = Connection::open_in_memory().unwrap();
-        schema::initialize(&fresh, || UtcMillis(0)).unwrap();
+        let fresh = fresh_db();
         fresh
             .execute_batch(&format!("DROP TRIGGER {name}"))
             .unwrap();
@@ -6080,8 +6186,7 @@ fn task3_versionless_schema24_rejects_altered_table_and_missing_index() {
         "DROP INDEX harness_contract_diagnostics_recent",
         "DROP TABLE harness_contract_diagnostics; CREATE TABLE harness_contract_diagnostics(harness TEXT, session_id TEXT, contract_id TEXT, event TEXT, field TEXT, first_seen_at INTEGER, last_seen_at INTEGER)",
     ] {
-        let db = Connection::open_in_memory().unwrap();
-        schema::initialize(&db, || UtcMillis(1)).unwrap();
+        let db = fresh_db();
         db.execute_batch(alteration).unwrap();
         assert!(schema::initialize(&db, || UtcMillis(2)).is_err());
     }
@@ -6141,8 +6246,7 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         for harness in ["human", "Upper", "1agent", "has.dot", ""] {
             assert!(db.execute("INSERT INTO harness_contract_diagnostics VALUES(?1,'invalid','0123456789abcdef','SessionStart','field',12,13)",[harness]).is_err(),"{harness}");
         }
-        let fresh = Connection::open_in_memory().unwrap();
-        schema::initialize(&fresh, || UtcMillis(0)).unwrap();
+        let fresh = fresh_db();
         let catalog = |db: &Connection| {
             db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
             .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('\"',"")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()

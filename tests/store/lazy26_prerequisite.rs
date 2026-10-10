@@ -16,6 +16,31 @@ impl Database {
         Self { directory }
     }
 
+    /// An independent store whose file is a byte copy of this closed one.
+    /// Creating a Store replays every migration (schema 28), far more than
+    /// one tamper case costs, so each test creates its fresh store once and
+    /// gives every case its own copy.
+    fn copy(&self) -> Self {
+        let source = self.directory.join("store.db");
+        for suffix in ["-wal", "-journal"] {
+            let mut sidecar = source.clone().into_os_string();
+            sidecar.push(suffix);
+            assert!(
+                !std::path::Path::new(&sidecar).exists(),
+                "template store must be closed and checkpointed"
+            );
+        }
+        let copy = Self::new();
+        std::fs::copy(source, copy.directory.join("store.db")).unwrap();
+        copy
+    }
+
+    fn fresh() -> Self {
+        let database = Self::new();
+        drop(database.store().unwrap());
+        database
+    }
+
     fn connection(&self) -> Connection {
         Connection::open(self.directory.join("store.db")).unwrap()
     }
@@ -39,6 +64,9 @@ impl Database {
             .map(|entry| entry.unwrap().path())
             .collect::<Vec<_>>();
         migrations.sort();
+        // One transaction for the whole replay: the same committed schema and
+        // rows, without one durable commit per migration statement.
+        db.execute_batch("BEGIN").unwrap();
         for path in migrations.into_iter().take(25) {
             db.execute_batch(&std::fs::read_to_string(path).unwrap())
                 .unwrap();
@@ -50,6 +78,7 @@ impl Database {
             INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,actor_seat_id,author_role,relays_user,user_intent) VALUES('msg-old','i','t',1,'ordinary',1,'original evidence',14,'s','agent',1,'request');
             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('prep-old','i','scope','key',zeroblob(32),'t',0,0,0,0,0,0,0,'building');
             INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES('msg-old','t','s','acked',100,14,114,'s',1,'cooperative_top_level',15);").unwrap();
+        db.execute_batch("COMMIT").unwrap();
     }
 }
 
@@ -176,6 +205,7 @@ fn rejected_on_reopen(database: &Database, description: &str) {
 // Omitting the v26 startup audit accepts a removed or weakened immutable guard.
 #[test]
 fn reopen_rejects_missing_and_altered_lazy_triggers() {
+    let fresh = Database::fresh();
     for trigger in [
         "lazy_preparation_mode_immutable",
         "lazy_message_mode_immutable",
@@ -188,8 +218,7 @@ fn reopen_rejects_missing_and_altered_lazy_triggers() {
         "lazy_manifest_source",
     ] {
         for altered in [false, true] {
-            let database = Database::new();
-            drop(database.store().unwrap());
+            let database = fresh.copy();
             let db = database.connection();
             db.execute_batch(&format!("DROP TRIGGER {trigger}"))
                 .unwrap();
@@ -208,6 +237,7 @@ fn reopen_rejects_missing_and_altered_lazy_triggers() {
 // Auditing only trigger names misses a removed or altered lazy table/index.
 #[test]
 fn reopen_rejects_missing_and_altered_lazy_table_and_indexes() {
+    let fresh = Database::fresh();
     for mutation in [
         "DROP TABLE lazy_recipients",
         "DROP INDEX lazy_recipients_pending_seat_ordinal",
@@ -216,8 +246,7 @@ fn reopen_rejects_missing_and_altered_lazy_table_and_indexes() {
         "DROP INDEX lazy_recipients_preparation_ordinal; CREATE INDEX lazy_recipients_preparation_ordinal ON lazy_recipients(ordinal)",
         "PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql,\"CHECK(state IN ('pending','displayed'))\",\"CHECK(state IN ('pending','displayed','other'))\") WHERE type='table' AND name='lazy_recipients'; PRAGMA writable_schema=OFF;",
     ] {
-        let database = Database::new();
-        drop(database.store().unwrap());
+        let database = fresh.copy();
         database.connection().execute_batch(mutation).unwrap();
         rejected_on_reopen(&database, mutation);
     }
@@ -227,6 +256,7 @@ fn reopen_rejects_missing_and_altered_lazy_table_and_indexes() {
 #[test]
 fn reopen_rejects_missing_or_weakened_mode_columns() {
     const COLUMN: &str = "delivery_mode TEXT NOT NULL DEFAULT 'ordinary' CHECK(delivery_mode IN ('ordinary','lazy'))";
+    let fresh = Database::fresh();
     for table in ["messages", "send_preparations"] {
         for replacement in [
             "",
@@ -235,8 +265,7 @@ fn reopen_rejects_missing_or_weakened_mode_columns() {
             "delivery_mode TEXT NOT NULL DEFAULT 'ordinary'",
             "delivery_mode BLOB NOT NULL DEFAULT 'ordinary' CHECK(delivery_mode IN ('ordinary','lazy'))",
         ] {
-            let database = Database::new();
-            drop(database.store().unwrap());
+            let database = fresh.copy();
             let db = database.connection();
             let sql: String = db
                 .query_row(
