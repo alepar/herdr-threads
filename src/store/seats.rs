@@ -4357,8 +4357,8 @@ pub fn register_available(
             let seat = &claim.seat;
             let (terminal, incarnation) = mapping.reconfirmation_evidence()?;
             // Evaluated before the claim's binding is resolved, so a binding this very call
-            // enrolls does not count. ht-54r.23 redoes availability from liveness.
-            let previously_available:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND generation=?2 AND host_boot=?3 AND host_epoch=?4 AND target_generation=?5)",
+            // enrolls does not count. Availability follows liveness: only connected bindings count.
+            let previously_available:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' AND registered_at IS NOT NULL AND generation=?2 AND host_boot=?3 AND host_epoch=?4 AND target_generation=?5)",
                 params![seat.as_str(),mapping.generation as i64,mapping.boot,mapping.epoch as i64,mapping.revision as i64],|r|r.get(0)).map_err(store_error)?;
             if !previously_available {
                 schema::ensure_unavailability_episode(tx, seat)?;

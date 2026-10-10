@@ -1241,6 +1241,26 @@ impl crate::ports::ModStoreReads for SqliteStore {
 }
 
 impl StorePort for SqliteStore {
+    fn liveness_candidates(
+        &self,
+        seat: Option<&SeatId>,
+        budget: &CallBudget,
+    ) -> Result<Vec<bindings::LivenessCandidate>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        bindings::liveness_candidates(&db, seat)
+    }
+    fn apply_liveness(
+        &self,
+        decisions: &[bindings::LivenessDecision],
+        budget: &CallBudget,
+    ) -> Result<usize, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_decision(
+            &mut writer,
+            |_| Ok(()),
+            |tx, at, ()| bindings::apply_liveness(tx, decisions, at.utc),
+        )
+    }
     fn archival_pass(
         &self,
         runtime: &archival::Runtime,

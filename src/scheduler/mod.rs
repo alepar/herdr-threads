@@ -73,6 +73,12 @@ pub trait WakePort: Send + Sync {
     ) -> Result<Option<(crate::protocol::time::UtcMillis, u64)>, ApiError> {
         Ok(None)
     }
+    /// Runs right before a candidate is reserved: the port re-checks the liveness of the
+    /// seat's connected bindings, so a dead binding is disconnected before it can be targeted
+    /// (`reserve_wake` then decides against the updated presence). The default checks nothing.
+    fn before_wake_decision(&self, _seat: &SeatId, _budget: &CallBudget) -> Result<(), ApiError> {
+        Ok(())
+    }
     fn reserve_wake(
         &self,
         candidate: &WakeCandidate,
@@ -767,6 +773,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         {
             return Ok(None);
         }
+        self.store.before_wake_decision(&seat, budget)?;
         let Some(reservation) = self.store.reserve_wake(candidate, budget)? else {
             return Ok(None);
         };

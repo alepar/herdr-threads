@@ -2937,7 +2937,9 @@ pub fn bump_lifecycle_revision(tx: &Transaction<'_>, instance: &str) -> Result<(
 /// and structural generation. A raw `observed_targets` row from an earlier
 /// epoch never decides availability on its own: after a host outage the
 /// published reconfirmation snapshot advances the epoch while such rows keep
-/// the old one. Returns the binding's observation provenance when available.
+/// the old one. A binding counts only while connected (liveness; ht-54r.23): a seat is
+/// available while any open, connected, registered binding is confirmed. Returns the binding's
+/// observation provenance when available.
 /// Recipient staging and unavailability-episode opening must both use this.
 pub fn effective_registered_availability(
     db: &Connection,
@@ -2950,7 +2952,7 @@ pub fn effective_registered_availability(
             "SELECT s.instance_id, s.target_id, s.target_generation, h.host_boot, h.host_epoch, b.observation_provenance \
              FROM seats s JOIN host_instances h ON h.id=s.instance_id JOIN occupant_bindings b ON b.seat_id=s.id \
              WHERE s.id=?1 AND s.state='resolved' AND s.target_id IS NOT NULL \
-               AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.target_id=s.target_id \
+               AND b.ended_at IS NULL AND b.liveness='connected' AND b.registered_at IS NOT NULL AND b.target_id=s.target_id \
                AND b.generation=s.generation AND b.target_generation=s.target_generation \
                AND b.host_boot=h.host_boot AND b.host_epoch=h.host_epoch \
                AND (?2 IS NULL OR h.id=?2) LIMIT 1",
@@ -3008,7 +3010,7 @@ pub fn carry_pending(db: &Connection, seat: &str, instance: &str) -> Result<bool
 /// verified availability without visiting every seat; the first affected
 /// deciding writer reconciles this marker. Repeated sightings of the same open
 /// outage reuse the numeric episode, so warning keys stay stable.
-pub fn ensure_unavailability_episode(tx: &Transaction<'_>, seat: &SeatId) -> Result<u64, ApiError> {
+pub fn ensure_unavailability_episode(tx: &Connection, seat: &SeatId) -> Result<u64, ApiError> {
     let (state, open, episode): (String, i64, i64) = tx
         .query_row(
             "SELECT state, unavailability_open, unavailability_episode FROM seats WHERE id=?1",

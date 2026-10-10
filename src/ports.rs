@@ -2599,6 +2599,24 @@ pub trait BootstrapStorePort: Send + Sync {
 
 pub trait StorePort: ModStoreReads + Send + Sync {
     fn clock(&self) -> &dyn Clock;
+    /// Connected bindings the liveness worker may judge (read-only; `seat` narrows it). The
+    /// default has none, so a port that predates the worker keeps its behavior.
+    fn liveness_candidates(
+        &self,
+        _seat: Option<&SeatId>,
+        _budget: &CallBudget,
+    ) -> Result<Vec<crate::store::bindings::LivenessCandidate>, ApiError> {
+        Ok(Vec::new())
+    }
+    /// Applies liveness verdicts in one write transaction; returns how many bindings
+    /// disconnected.
+    fn apply_liveness(
+        &self,
+        _decisions: &[crate::store::bindings::LivenessDecision],
+        _budget: &CallBudget,
+    ) -> Result<usize, ApiError> {
+        Ok(0)
+    }
     fn archival_pass(
         &self,
         runtime: &crate::store::archival::Runtime,
