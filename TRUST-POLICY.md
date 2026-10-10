@@ -226,6 +226,20 @@ model open work, and summary closure never changes receipt state or installs glo
   named here and implemented by ht-54r.20 and ht-54r.17. A person and an agent still never hold a seat
   together and the first agent lifecycle check-in still replaces `managed_launch` (both below, ended as
   `replaced`), until ht-54r.4 moves them into enroll hooks. A plain human call never enrolls a binding.
+- *Binding liveness (ht-54r.10)*: a binding is connected or disconnected. Disconnection never ends a
+  binding, moves a seat or merges seats, and every disconnect (end event, process exit, pane close,
+  supersede, seat retirement or unresolve) goes through the one `store::bindings::disconnect`
+  transition, which records the reason (`liveness_process_exit`, `liveness_end_event`, `seat_retired`,
+  `seat_unresolved`, `superseded`, plus `replaced` and `migrated`) and runs the registered side-effect
+  hooks. A binding connects only on enrollment or a lifecycle check-in; plain calls refresh the
+  fingerprint only. Same-process supersede: an enrollment or lifecycle check-in by a top-level binding
+  disconnects every other connected top-level binding of the same instance and harness with the same
+  process fingerprint (pid and start time). This is structural evidence, not a heuristic (a reused pid
+  has a different start time and never matches); the most recent claimer wins, so switching back to an
+  older session in the same process disconnects the one just left. Subagents never supersede and are
+  never superseded, and a supersede-induced disconnect never triggers fast-forward. A lineage successor
+  supersedes its predecessor only after copying its cursors. A seat is active while any open binding is
+  connected, or while its open human binding sits on a resolved seat.
 - *Refusals*: an agent call without a harness session id (empty, a `launch:` placeholder, and from
   ht-54r.5 a `plugin_context:` session), reads included, is refused with `session_claim_required`. An agent
   call that would enroll, reconnect or reopen a binding without a liveness fingerprint is refused with

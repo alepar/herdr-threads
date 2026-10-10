@@ -178,9 +178,9 @@ pub struct EnrollEvent<'a> {
     pub created: bool,
 }
 pub type EnrollHook = fn(&Connection, &EnrollEvent<'_>, UtcMillis) -> Result<(), ApiError>;
-/// Enroll-hook registry, run in order after the row and its cursors exist. Later beads append:
-/// ht-54r.4 `launch_placeholder_replace`, ht-54r.10 `same_pid_supersede`.
-pub const ENROLL_HOOKS: &[(&str, EnrollHook)] = &[];
+/// Enroll-hook registry, run in order after the row and its cursors exist. ht-54r.4 inserts
+/// `launch_placeholder_replace` before `same_pid_supersede`.
+pub const ENROLL_HOOKS: &[(&str, EnrollHook)] = &[("same_pid_supersede", same_pid_supersede)];
 
 const COLUMNS: &str = "ordinal,binding_id,seat_id,harness,native_session,agent_id,role,parent_binding,lineage_from,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start,migrated,migrated_session,generation,observation_provenance,ended_at";
 
@@ -412,14 +412,38 @@ pub fn touch(
     Ok(found)
 }
 
-/// Minimal disconnect: connected -> disconnected with reason and time. Idempotent; returns
-/// whether it changed the row. ht-54r.10 turns this into the sole disconnect transition (with
-/// side-effect hooks); keep the signature.
+/// What a disconnect hook sees: the binding after the row changed.
+pub struct DisconnectEvent<'a> {
+    pub binding: &'a BindingRow,
+    pub reason: DisconnectReason,
+    pub at: UtcMillis,
+}
+pub type DisconnectHook = fn(&Connection, &DisconnectEvent<'_>) -> Result<(), ApiError>;
+/// Side effects of a disconnect, run inside the deciding transaction after the row changed.
+/// ht-54r.12 appends ("mod_channel_release", ..); ht-54r.23 appends ("availability_recompute", ..).
+pub const DISCONNECT_HOOKS: &[(&str, DisconnectHook)] = &[];
+
+/// The only disconnect transition (end event, pane close, re-check, session switch, supersede all
+/// come through here). Connected -> disconnected with reason and time; idempotent. Runs
+/// `DISCONNECT_HOOKS` only when the row actually changed; returns whether it did. Disconnection
+/// never ends a binding, moves a seat or merges seats (TRUST-POLICY). A `Superseded` disconnect
+/// never triggers fast-forward: fast-forward (ht-54r.8) runs only on the resuming binding's own
+/// lifecycle reconnect.
 pub fn disconnect(
     tx: &Connection,
     binding: &BindingId,
     reason: DisconnectReason,
     now: UtcMillis,
+) -> Result<bool, ApiError> {
+    disconnect_with_hooks(tx, binding, reason, now, DISCONNECT_HOOKS)
+}
+
+pub(crate) fn disconnect_with_hooks(
+    tx: &Connection,
+    binding: &BindingId,
+    reason: DisconnectReason,
+    now: UtcMillis,
+    hooks: &[(&str, DisconnectHook)],
 ) -> Result<bool, ApiError> {
     let changed = tx
         .execute(
@@ -428,7 +452,112 @@ pub fn disconnect(
             params![binding.as_str(), now.0, reason.as_str()],
         )
         .map_err(store_error)?;
+    if changed == 0 {
+        return Ok(false);
+    }
+    if !hooks.is_empty() {
+        let row = get(tx, binding)?.ok_or_else(|| corrupt("disconnected binding vanished"))?;
+        let event = DisconnectEvent {
+            binding: &row,
+            reason,
+            at: now,
+        };
+        for (_, hook) in hooks {
+            hook(tx, &event)?;
+        }
+    }
+    Ok(true)
+}
+
+/// What brought a binding back to connected. Only enrollment and lifecycle check-ins connect;
+/// a plain touch never does (spec §1, r2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectTrigger {
+    Enrollment,
+    Lifecycle,
+}
+
+/// The only connected transition: disconnected -> connected on an open binding (clears
+/// disconnected_at/reason); the fingerprint is recorded or refreshed (None clears a stale one: an
+/// old process is not evidence about the new one). Enrollment inserts rows already connected, so
+/// this serves existing rows. Returns whether liveness changed.
+pub fn connect(
+    tx: &Connection,
+    binding: &BindingId,
+    fingerprint: Option<LivenessFingerprint>,
+    _trigger: ConnectTrigger,
+    _now: UtcMillis,
+) -> Result<bool, ApiError> {
+    let (pid, start) = match fingerprint {
+        Some(f) => (
+            Some(i64::from(f.pid)),
+            Some(to_i64(f.start, "liveness start")?),
+        ),
+        None => (None, None),
+    };
+    let changed = tx
+        .execute(
+            "UPDATE occupant_bindings SET liveness='connected', disconnected_at=NULL, disconnect_reason=NULL, liveness_pid=?2, liveness_start=?3 \
+             WHERE binding_id=?1 AND ended_at IS NULL AND liveness='disconnected'",
+            params![binding.as_str(), pid, start],
+        )
+        .map_err(store_error)?;
     Ok(changed > 0)
+}
+
+/// Spec §3 Presence: a seat is active iff it has an open connected binding, or its open binding is
+/// a human binding and the seat is still resolved onto its target (the pane exists).
+pub fn seat_active(db: &Connection, seat: &SeatId) -> Result<bool, ApiError> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
+         WHERE b.seat_id=?1 AND b.ended_at IS NULL AND \
+         ((b.harness<>'human' AND b.liveness='connected') OR (b.harness='human' AND s.state='resolved')))",
+        [seat.as_str()],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
+/// Enroll hook: an enrollment or lifecycle check-in by a top-level binding disconnects
+/// (`Superseded`) every other open connected top-level binding of the same instance and harness
+/// with the same liveness fingerprint (pid AND start: structural evidence of one process, so pid
+/// reuse never matches). Most recent claimer wins. Subagents neither supersede nor are
+/// superseded; a plain call of an existing binding is not an event. Hooks run after cursor
+/// seeding, so a lineage successor has copied its cursors before its predecessor is superseded.
+pub fn same_pid_supersede(
+    tx: &Connection,
+    event: &EnrollEvent<'_>,
+    now: UtcMillis,
+) -> Result<(), ApiError> {
+    let binding = event.binding;
+    let Some(fp) = binding.fingerprint else {
+        return Ok(());
+    };
+    if binding.role != BindingRole::TopLevel
+        || binding.liveness != Liveness::Connected
+        || !(event.created || event.trigger == EnrollTrigger::Lifecycle)
+    {
+        return Ok(());
+    }
+    let others = query_rows(
+        tx,
+        &format!(
+            "SELECT {COLUMNS} FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected' AND role='top_level' \
+             AND harness=?1 AND liveness_pid=?2 AND liveness_start=?3 AND binding_id<>?4 \
+             AND seat_id IN (SELECT id FROM seats WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?5)) ORDER BY ordinal"
+        ),
+        &[
+            &binding.harness,
+            &i64::from(fp.pid),
+            &to_i64(fp.start, "liveness start")?,
+            &binding.binding_id.as_str(),
+            &binding.seat.as_str(),
+        ],
+    )?;
+    for other in &others {
+        disconnect(tx, &other.binding_id, DisconnectReason::Superseded, now)?;
+    }
+    Ok(())
 }
 
 /// Open, connected bindings of the seat, in ordinal order.
@@ -597,33 +726,6 @@ fn subagent_shape_error() -> ApiError {
     )
 }
 
-/// Minimal reconnect (lifecycle only): disconnected -> connected, fingerprint set to the given
-/// one (None clears a stale one: an old process is not evidence about the new one). ht-54r.10
-/// replaces it with `connect` (keep the call sites; it renames them). Returns whether it changed
-/// the row.
-pub fn reconnect(
-    tx: &Connection,
-    binding: &BindingId,
-    fingerprint: Option<LivenessFingerprint>,
-    _now: UtcMillis,
-) -> Result<bool, ApiError> {
-    let (pid, start) = match fingerprint {
-        Some(f) => (
-            Some(i64::from(f.pid)),
-            Some(to_i64(f.start, "liveness start")?),
-        ),
-        None => (None, None),
-    };
-    let changed = tx
-        .execute(
-            "UPDATE occupant_bindings SET liveness='connected', disconnected_at=NULL, disconnect_reason=NULL, liveness_pid=?2, liveness_start=?3 \
-             WHERE binding_id=?1 AND ended_at IS NULL AND liveness='disconnected'",
-            params![binding.as_str(), pid, start],
-        )
-        .map_err(store_error)?;
-    Ok(changed > 0)
-}
-
 /// Ends every open binding of the seat: connected ones go through `disconnect(reason)` first (so
 /// ht-54r.10's side-effect hooks run), then `ended_at` is set. Used by unresolve here, and by
 /// retirement (ht-54r.14) and human exclusivity (ht-54r.4).
@@ -786,7 +888,13 @@ pub(crate) fn resolve_claim_with_hooks(
             });
         }
         let reconnected = existing.liveness == Liveness::Disconnected
-            && reconnect(tx, &existing.binding_id, claim.liveness, now)?;
+            && connect(
+                tx,
+                &existing.binding_id,
+                claim.liveness,
+                ConnectTrigger::Lifecycle,
+                now,
+            )?;
         if !reconnected {
             touch(tx, &existing.binding_id, claim.liveness, now)?;
         }
@@ -834,7 +942,13 @@ pub(crate) fn resolve_claim_with_hooks(
             [ended.binding_id.as_str()],
         )
         .map_err(store_error)?;
-        reconnect(tx, &ended.binding_id, claim.liveness, now)?;
+        connect(
+            tx,
+            &ended.binding_id,
+            claim.liveness,
+            ConnectTrigger::Lifecycle,
+            now,
+        )?;
         let provenance = if subagent { None } else { Some(top_provenance) };
         refresh_placement(tx, &ended.binding_id, request.placement, provenance)?;
         read_cursors::seed(tx, &ended.binding_id, SeedMode::Readopt)?;
