@@ -14,3 +14,7 @@
 - Friction: explicit inner/outer30000 still produced middle truncation of oversized packets.
 - Adaptation: preserve valid reasoning and acquire missing full tree only; final independent reviewers read four fixed sections below cap, text(result.output) only. All9 final reports complete, no exploratory reads.
 - Improvement: bounded sections should be the initial transport; full artifact remains reviewable source of truth.
+
+- 2026-10-10 · review input acquisition · Native descendants omit inherited functions.exec output; full bounded review packets require explicit immutable file acquisition. JSON-wrapped command outputs amplified packet size and hit hard truncation despite high token caps; fixed range/suffix/tree-only acquisition repairs preserve valid reasoning, with all18 coverage reviews receiving complete inputs. Capability-limited fanout batched7+2 rather than claiming9-way concurrency.
+
+- 2026-10-10 · roast harness · Workflow and Claude role tiers unavailable; manual fresh OpenAI stage agents, eight scouts staggered at most seven descendants. One empty-array schema correction and one judge evidence followup retained; full panel complete with explicit2–1 dissent resolution.

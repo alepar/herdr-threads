@@ -1,0 +1,115 @@
+{
+  "triage": {
+    "lanes": [],
+    "domains": [
+      "distributed-systems",
+      "database-transactions",
+      "protocol-compatibility"
+    ]
+  },
+  "scouts": {
+    "yagni": {
+      "findings": []
+    },
+    "failure-mode": {
+      "findings": []
+    },
+    "completeness": {
+      "findings": [
+        {
+          "claim": "The automatic handoff contract does not specify how its ordinary invite step preserves the prohibition on automatically resurrecting a pair recipient who previously left or rejected the invitation.",
+          "location": "2026-10-10-automatic-one-to-one-threads-design.md:43,63; 2026-10-10-automatic-one-to-one-threads--handoff-design.md:25,29",
+          "category": "completeness",
+          "external": false,
+          "evidence": "The lifecycle section says \u201cNo automatic resurrection after explicit lifecycle decisions\u201d and requires a target who left or rejected to be explicitly reinvited through the ordinary pair channel; Ensure itself does not reinvite. The automatic handoff section nevertheless retains the frozen invite step, saying the Ensure invitation may make it an idempotent no-op. That explains initial or pending invitations, but does not define whether automatic handoff must refuse an existing left/rejected recipient before its invite child executes, or whether issuing threadless handoff counts as explicit reinvitation. The handoff leaf preserves ordinary invite execution without resolving this distinction, leaving the implementation to choose whether an automatic operation reverses the recipient\u2019s earlier lifecycle decision.",
+          "kind": "GAP"
+        }
+      ]
+    },
+    "premortem": {
+      "findings": []
+    },
+    "feasibility": {
+      "findings": [
+        {
+          "claim": "Automatic handoff preserves an ordinary invite step without specifying a lifecycle gate that prevents it from reinviting a pair recipient who explicitly left or rejected.",
+          "location": "Root spec: Membership and lifecycle; Handoff integration and compatibility. Handoff spec: Shared automatic handoff contract.",
+          "category": "feasibility",
+          "external": false,
+          "kind": "GAP",
+          "evidence": "The root requires 'No automatic resurrection after explicit lifecycle decisions' and says 'Ensure does not reinvite, settle old episodes or synthesize acceptance.' However, automatic handoff retains invitation effects: 'The ensure\u2019s ordinary invitation may make a subsequent ordinary invite an idempotent no-op, but the frozen steps remain exact.' The handoff child spec likewise permits child invite/send after pair attachment. An ordinary invite can be a no-op while the original invitation remains pending, but after an explicit leave/rejection it can instead create a fresh invitation. The specs do not require Ensure or the automatic handoff adapter to refuse that lifecycle state before the retained invite step. Consequently, the assumption that ordinary invitation composition preserves the promised lifecycle behavior is not established."
+        }
+      ]
+    },
+    "domain:protocol-compatibility": {
+      "findings": []
+    },
+    "domain:database-transactions": {
+      "findings": []
+    },
+    "domain:distributed-systems": {
+      "findings": []
+    }
+  },
+  "scoutInitialNoncontractResponse": {
+    "agent": "scout_distributed",
+    "response": []
+  },
+  "dedupe": {
+    "findings": [
+      {
+        "claim": "Automatic handoff preserves an ordinary invite step without specifying how it prevents automatic reinvitation of a pair recipient who explicitly left or rejected, or whether threadless handoff itself counts as explicit reinvitation.",
+        "location": "2026-10-10-automatic-one-to-one-threads-design.md:43,63 (Membership and lifecycle; Handoff integration and compatibility); 2026-10-10-automatic-one-to-one-threads--handoff-design.md:25,29 (Shared automatic handoff contract)",
+        "category": "completeness",
+        "external": false,
+        "evidence": "The root requires \u201cNo automatic resurrection after explicit lifecycle decisions,\u201d requires explicit reinvitation through the ordinary pair channel, and says \u201cEnsure does not reinvite, settle old episodes or synthesize acceptance.\u201d Automatic handoff nevertheless retains the frozen ordinary invite step, explaining that Ensure\u2019s invitation may make the subsequent invite an idempotent no-op. This addresses an initial or pending invitation, but an ordinary invite after explicit leave or rejection can create a fresh invitation. The handoff leaf permits child invite/send after pair attachment without defining a lifecycle gate before the invite child executes or establishing that issuing threadless handoff counts as explicit reinvitation. The implementation must therefore choose whether the automatic operation reverses the recipient\u2019s earlier lifecycle decision.",
+        "suggestedSeverity": "Blocking",
+        "kind": "GAP"
+      }
+    ],
+    "beyondCapCount": 0
+  },
+  "judgeReproduceInitial": {
+    "verdict": "REJECT",
+    "severity": "FYI",
+    "evidence": "The demonstration breaks at the premise that automatic handoff may unconditionally reinvite a departed or rejecting recipient. The root's Membership and lifecycle section explicitly requires 'No automatic resurrection after explicit lifecycle decisions,' says 'Ensure does not reinvite, settle old episodes or synthesize acceptance,' and requires explicit reinvitation through the ordinary pair channel. The handoff leaf expressly makes the root normative for invitation consent and lifecycle, while the pair-boundary leaf assigns archived/left/rejected guidance and canonical effective/voluntary membership semantics to the resolver mechanism. Preserving a frozen ordinary invite step does not authorize executing that step contrary to these inherited requirements; the root only says Ensure's invitation 'may' make it an idempotent no-op. A specific lifecycle-gate algorithm is not provided, but the candidate cannot complete a failure trace permitted by the whole artifact: its reinvitation step already violates an explicit governing invariant."
+  },
+  "packets": [
+    {
+      "f": {
+        "claim": "Automatic handoff preserves an ordinary invite step without specifying how it prevents automatic reinvitation of a pair recipient who explicitly left or rejected, or whether threadless handoff itself counts as explicit reinvitation.",
+        "location": "2026-10-10-automatic-one-to-one-threads-design.md:43,63 (Membership and lifecycle; Handoff integration and compatibility); 2026-10-10-automatic-one-to-one-threads--handoff-design.md:25,29 (Shared automatic handoff contract)",
+        "category": "completeness",
+        "external": false,
+        "evidence": "The root requires \u201cNo automatic resurrection after explicit lifecycle decisions,\u201d requires explicit reinvitation through the ordinary pair channel, and says \u201cEnsure does not reinvite, settle old episodes or synthesize acceptance.\u201d Automatic handoff nevertheless retains the frozen ordinary invite step, explaining that Ensure\u2019s invitation may make the subsequent invite an idempotent no-op. This addresses an initial or pending invitation, but an ordinary invite after explicit leave or rejection can create a fresh invitation. The handoff leaf permits child invite/send after pair attachment without defining a lifecycle gate before the invite child executes or establishing that issuing threadless handoff counts as explicit reinvitation. The implementation must therefore choose whether the automatic operation reverses the recipient\u2019s earlier lifecycle decision.",
+        "suggestedSeverity": "Blocking",
+        "kind": "GAP"
+      },
+      "votes": [
+        {
+          "verdict": "REJECT",
+          "severity": "FYI",
+          "evidence": "The ensure\u2192invite race is a concrete implementation concern, but does not complete a failure demonstration permitted by the design. Suppose Ensure succeeds, then the recipient rejects or leaves before the ordinary invite child executes. Replacing that invitation automatically would violate the root's categorical requirement, 'No automatic resurrection after explicit lifecycle decisions,' and its requirement for explicit reinvitation through the ordinary pair channel. The handoff leaf expressly inherits root lifecycle and invitation-consent requirements; exact frozen steps and attachment do not waive them. The artifact specifies the required canonical outcome sufficiently to prohibit resurrection, although it does not detail the child invite's lifecycle-check algorithm or refusal presentation. Ensure-time checking alone would therefore be an implementation defect against the stated design, rather than behavior the design authorizes. The candidate's final failure step still requires disregarding an inherited explicit invariant."
+        },
+        {
+          "verdict": "CONFIRM",
+          "severity": "Blocking",
+          "evidence": "(a) Present under another name: The pair-boundary leaf assigns 'archived/left/rejected guidance' to Ensure, and the handoff leaf requires child invite/send to reference the attached pair result. Neither specifies a lifecycle check for the subsequent ordinary invite. Even an Ensure refusal for an already-left/rejected target cannot cover this sequence: Ensure succeeds; the recipient then leaves or rejects; the frozen ordinary invite executes. Pair identity, fence equality and third-seat guards all still pass. (b) Accepted contract: The root explicitly requires 'No automatic resurrection after explicit lifecycle decisions' and explicit ordinary-channel reinvitation. Its statement that Ensure's invitation 'may make a subsequent ordinary invite an idempotent no-op' covers an existing invitation, not a replacement after rejection/leave; it does not declare threadless handoff explicit reinvitation. (c) Scope: Automatic handoff and ordinary pair lifecycle are explicit goals, and both leaves make the root normative for lifecycle. This demands no additional feature or stronger trust model. (d) Materiality: The unresolved invite can replace an invitation the recipient deliberately rejected, or reinvite after deliberate departure, contradicting the stated lifecycle contract. The spec needs to decide whether automatic handoff is explicit reinvitation or must refuse such an invite, including the Ensure-to-invite race. This is an internal structural finding; no external premise is required."
+        },
+        {
+          "verdict": "CONFIRM",
+          "severity": "Should-fix",
+          "evidence": "Read all three complete specs and searched lifecycle/reinvitation/refusal/voluntary/effective/fence/revision equivalents. Root :43 explicitly prohibits automatic resurrection and requires explicit ordinary-channel reinvitation after leave/rejection; :63 nevertheless preserves automatic handoff's ordinary invite child. The handoff leaf :25 guards that child's attached thread and namespace, but specifies neither lifecycle refusal at fresh invite execution nor whether automatic handoff authorizes explicit reinvitation. Pair-boundary :27 assigns archived/left/rejected guidance and canonical effective membership checks without resolving this invite distinction. A concrete remaining case is Ensure succeeding while the recipient is invited, followed by recipient rejection before the fresh invite child. TRUST-POLICY A5 explicitly says reinvitation creates a fresh episode; exact thread/payload attachment and later send checks cannot prevent that invitation effect. Thus even initial-state refusal in Ensure would leave this ordinary concurrent lifecycle transition unresolved. This is material against the stated no-resurrection contract, without requiring adversarial verification or stronger invitation acceptance guarantees."
+        }
+      ],
+      "tier": "panel",
+      "valid": 3
+    }
+  ],
+  "reporter": {
+    "verdict": "Blocking (1 confirmed)",
+    "reportMarkdown": "---\nsuper-roast verdict: Blocking (1 confirmed)\nmode: design        iteration: 1 of 3\nprofile (assumed): A local cooperative same-user durable mailbox tool, used internally with real conversation, invitation and receipt history. Identity and lifecycle errors can strand work or misattribute user data; no network adversary or same-user caller verification is in scope. TRUST-POLICY.md is normative; new provenance or stronger caller attestation is not assumed.\ninputs: Settled b4e68a3d: 2026-10-10-automatic-one-to-one-threads-design.md + --pair-boundary-design.md + --handoff-design.md\ncoverage: premortem, completeness, yagni, failure-mode, feasibility, domain:distributed-systems, domain:database-transactions, domain:protocol-compatibility \u00b7 8/8 scouts completed \u00b7 2 raw \u2192 1 deduped \u2192 1 panel / 0 spot-checked / 0 promoted \u00b7 judge completion 100% \u00b7 remainder-capped: 0. Capacity: at most 7 active descendants; 8 scout dispatches staggered, all completed, no omitted lenses. Workflow and Claude role models were unavailable; all stage agents inherited OpenAI models with fresh contexts and method-differentiated judges. One format retry and one judge evidence follow-up completed.\nindependence: same-family (OpenAI) \u2014 seat-differentiated panel\nseat-agreement: panels 1 \u00b7 rr 0.00 \u00b7 rg 0.00 \u00b7 fg 1.00 \u00b7 unanimous 0.00 \u00b7 ground-loo n/a (n=0) \u00b7 reproduce 0/1/0 \u00b7 refute 1/0/0 \u00b7 ground 1/0/0\n\n## Confirmed findings\n- [Blocking] 2026-10-10-automatic-one-to-one-threads-design.md:43,63; 2026-10-10-automatic-one-to-one-threads--handoff-design.md:25,29 \u2014 Automatic handoff retains an ordinary invite child without resolving how that child preserves an explicit leave or rejection, including a lifecycle transition after Ensure succeeds.\n  verdict: confirmed (reproduce \u2717 / refute \u2717-survived [CONFIRM] / ground \u2713)\n  evidence: Refute and ground independently identify the same sequence: Ensure succeeds while the recipient is invited; the recipient rejects or leaves; the frozen ordinary invite then executes against the attached pair. Their evidence establishes that thread attachment, namespace and fence checks do not settle whether this invite may create a fresh invitation episode. Ground cites TRUST-POLICY A5 for that fresh-episode effect. Root :43 prohibits automatic resurrection and requires explicit ordinary-channel reinvitation, while root :63 preserves the automatic handoff invite child; handoff :25 supplies attachment checks without deciding the reinvitation distinction.\n  dissent resolution: Reproduce rejects because the inherited no-resurrection invariant already prohibits the unwanted outcome, while acknowledging that the child invite's lifecycle-check algorithm and refusal presentation are unspecified. That evidence does not refute the confirming seats' narrower completeness finding: the retained ordinary invite needs a defined distinction between automatic continuation and explicit reinvitation, including the intervening rejection/leave case. The 2 CONFIRM / 1 REJECT arithmetic therefore stands. Blocking follows the core-purpose floor: automatic reusable pair threads must preserve ordinary invitation and lifecycle behavior.\n  fix-shape hint: Define automatic handoff's reinvitation authority and require its ordinary invite child to enforce that decision against canonical lifecycle state when the invite executes, including rejection or departure after Ensure.\n\n## Not verified (beyond panel cap)\n- none\n\n## Beyond remainder cap (count only)\n- none\n\n## Rejected (with reason)\n- none\n\n## Unverified nits (spot-checked)\n- none\n\n## Escalations (need human)\n- none\n---",
+    "confirmedCount": 1,
+    "escalations": []
+  }
+}
