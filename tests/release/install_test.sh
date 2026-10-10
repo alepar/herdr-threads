@@ -269,7 +269,7 @@ else
         bash -c "[ \"\$(grep -c 'herdr-threads setup' '$out')\" = 1 ]"
 fi
 expect "next steps: no Codex trust reminder without Codex setup" bash -c "! grep -qF 'Trust the Codex hooks' '$out'"
-expect "next steps: try-it points at me init" has "herdr-threads me init"
+expect "next steps: try-it points at me init" has "herdr-threads human me init"
 expect "next steps: no stale agent-guide URL" bash -c "! grep -qF 'docs/agent-usage.md' '$out'"
 expect "stub server down: no actions invoked" [ ! -e "$root/actions" ]
 expect "stub server down: the message does not claim a daemon is running" has "no daemon was started"
@@ -411,7 +411,7 @@ expect "no per-harness setup call" bash -c "! grep -q 'setup c' '$root/stub.log'
 expect "--setup next steps: no setup suggestion after setup" bash -c "! grep -qF 'Set up agent hooks' '$out'"
 expect "--setup next steps: no start-Herdr step with a running daemon" bash -c "! grep -qF 'Start Herdr' '$out'"
 expect "--setup next steps: doctor" has "Check it: herdr-threads doctor"
-expect "--setup next steps: me init" has "herdr-threads me init"
+expect "--setup next steps: me init" has "herdr-threads human me init"
 expect "--setup next steps: no Codex trust reminder (claude only)" bash -c "! grep -qF 'Trust the Codex hooks' '$out'"
 install --release-url "file://$stub_rel"
 expect "no terminal and no --setup: setup suggested in the next steps" has "Set up agent hooks: herdr-threads setup"

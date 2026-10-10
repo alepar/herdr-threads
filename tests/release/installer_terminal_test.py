@@ -27,9 +27,11 @@ def run(root, answers, redirected=False, no_color=False):
         os.setsid()
         fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
 
-    child = subprocess.Popen([str(binary), '--state-dir', str(root / 'state'),
-                              '--host-endpoint', str(root / 'herdr.sock'),
-                              'internal', 'installer-integrations'], cwd=root, env=env,
+    # An agent-reachable escalating command must lead with its words, so the
+    # options follow them (as scripts/install.sh writes it).
+    child = subprocess.Popen([str(binary), 'internal', 'installer-integrations',
+                              '--state-dir', str(root / 'state'),
+                              '--host-endpoint', str(root / 'herdr.sock')], cwd=root, env=env,
                              stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE if redirected else slave,
                              stderr=slave, preexec_fn=terminal)
