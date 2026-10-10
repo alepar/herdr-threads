@@ -1,0 +1,2 @@
+- [2026-10-10 pre-flight] Native managed worktree creation placed the checkout under a real harness profile outside the sandbox's writable roots; moved that newly created worktree into repo .worktrees with an approved git worktree move — native placement and project config protections required an adaptation.
+- [2026-10-10 pre-flight] Upstream skill version lookup failed inside the restricted network sandbox; approved gh api retry succeeded and matched 6.4.2-alepar4.20 — version verification needs the network approval envelope in this harness.
