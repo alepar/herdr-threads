@@ -1,0 +1,19 @@
+{
+  "receipts": [
+    "ht-0lo.1.1",
+    "ht-0lo.1.2"
+  ],
+  "invitations": [
+    "ht-0lo.2.1",
+    "ht-0lo.2.2",
+    "ht-0lo.2.3"
+  ],
+  "hooks": [
+    "ht-0lo.4.1",
+    "ht-0lo.4.2"
+  ],
+  "handoff": [
+    "ht-0lo.3.1",
+    "ht-0lo.3.2"
+  ]
+}

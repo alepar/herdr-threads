@@ -69,3 +69,11 @@ Columns: date · title · relative link · one-line summary · status · tags.
 | 2026-10-10 | Invitation rejection policy and warning delivery | [Design](../runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-design.md) | Require decided bad-fit rejection and deliver attributed reasons with stable replay | implemented | invitation, warning |
 
 | 2026-10-10 | Handoff delivery redesign | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md) | Send-time receipt deadlines, lazy optional-confirmation invitations, full durable handoff instructions and stable owned native hook entrypoints. | draft | handoff, receipts, invitation, hooks |
+
+| 2026-10-10 | Handoff delivery: receipts | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md) | Every pending ACK-required message has a send-anchored original deadline and is scanned for overdue warning without requiring recipient availability. | draft | handoff-delivery-redesign, ht-0lo.1 |
+
+| 2026-10-10 | Handoff delivery: invitations | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md) | Ordinary invitations are lazy unless confirmation was explicitly requested; timed invitations settle at acceptance and notify originator on expiry independently of registration. | draft | handoff-delivery-redesign, ht-0lo.2 |
+
+| 2026-10-10 | Handoff delivery: hooks | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--hooks-design.md) | Equivalent reinstalls preserve stable native per-event command strings while exact ownership, conservative migration and native trust boundaries remain intact. | draft | handoff-delivery-redesign, ht-0lo.4 |
+
+| 2026-10-10 | Handoff delivery: handoff | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md) | Complete bounded instructions and explicit confirmation policy freeze once into durable handoff retry across every delivery/launch path. | draft | handoff-delivery-redesign, ht-0lo.3 |

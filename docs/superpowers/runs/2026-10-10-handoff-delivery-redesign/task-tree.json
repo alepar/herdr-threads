@@ -1,0 +1,486 @@
+[
+  {
+    "id": "ht-0lo.3.2",
+    "title": "Handoff confirmation policy wiring and recovery documentation",
+    "description": "owns: handoff --deadline/--require-invite-ack/--invite-deadline parsing/freeze/pass-through, modern lazy invitation plus addressed ACK-required body staging across new-tab/empty-pane/existing paths, retained child digest compatibility and source/help/skill docs; consumes: frozen handoff payload, invitation confirmation wire contract and send-time receipt semantics. Files: src/cli/{handoff,handoff_delivery,topology_handoff,mod}.rs, src/protocol/handoff.rs, src/store/{handoff,topology_handoff}.rs and related tests/help/skill. Run isolated actual handoff per all three paths/body sources; crash/retry after stage and possible-start/unknown-create never duplicates/restages/relaunches. Older plans absent new fields replay original keyed requests, modern deadlines freeze before staging; routing exact3field fallback and no auto trust/accept/ACK.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md\nblocked-by ht-0lo.3.1: consumes frozen handoff payload\nblocked-by ht-0lo.2.1: consumes invitation confirmation wire contract\nblocked-by ht-0lo.1.1: consumes send-time receipt semantics\nAlso owns: separating hook/setup/trust/profile readiness diagnostics from launch admission; src/cli/launch.rs prepare_launch and src/harness/launch.rs configuration checks. Missing/untrusted/wrong-profile hooks do not block staged work or otherwise structurally safe launch. Preserve empty-shell/seat/caller/native argv and owned launch-configuration fingerprint safety, and truthful native trust refusal; never auto-approve. Test missing/stale profile hooks through guarded handoff and observe durable ACK deadline warning without registration.",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:20Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:49:12Z",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.3.2",
+        "depends_on_id": "ht-0lo.3",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:20Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.3.2",
+        "depends_on_id": "ht-0lo.1.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:30Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.3.2",
+        "depends_on_id": "ht-0lo.2.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:29Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.3.2",
+        "depends_on_id": "ht-0lo.3.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:28Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 3,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo.3"
+  },
+  {
+    "id": "ht-0lo.3.1",
+    "title": "Handoff instruction source acquisition and frozen payload",
+    "description": "owns: positional/file/stdin source exclusivity, bounded nonempty UTF-8 65,536-byte acquisition and exact bytes frozen in all handoff intent forms; consumes: existing compound intent/body schema. Files: src/cli/handoff.rs parser and validation, src/cli/{handoff_delivery,topology_handoff}.rs saved plans and associated parser sources/tests. Preserve topic/goal limits separately; invalid sources fail before mutations; mutate/delete source after initial staging and prove retry keeps original content. Native argv contains fixed routing/inbox only.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:19Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:19Z",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.3.1",
+        "depends_on_id": "ht-0lo.3",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:19Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo.3"
+  },
+  {
+    "id": "ht-0lo.4.2",
+    "title": "Owned stable registration migration and tooling",
+    "description": "owns: manifest-recorded exact ownership/install identity, repeat setup in place, recoverable UUID/shared-command migration, safe unsetup and status/trust/canary/launcher command compatibility; consumes: stable native per-event command grammar. Files: src/harness/setup.rs and claude/codex setup modules, src/cli setup/launch consumers, canary/tooling/docs/tests. Invoke isolated Claude/Codex setup-repeat/migration/interruption/unsetup with foreign identical/drifted groups and ensure no ownership theft, no trust writes, no group shifting on equivalent reinstall. Hermes/Claude mod regressions stay passing.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--hooks-design.md\nblocked-by ht-0lo.4.1: consumes stable native per-event command grammar",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:18Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:31Z",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.4.2",
+        "depends_on_id": "ht-0lo.4.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:27Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.4.2",
+        "depends_on_id": "ht-0lo.4",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:18Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo.4"
+  },
+  {
+    "id": "ht-0lo.4.1",
+    "title": "Stable native event dispatch and command generation",
+    "description": "owns: hook-event HARNESS EVENT parser/registered-codec dispatch and stable per-event shell command grammar; consumes: existing harness event registry and canonical routing. Files: src/cli/{hook,mod,setup}.rs, src/harness/{setup,claude,codex}.rs, registry declarations/tests. Keep legacy hook syntax; validate invalid pairs before effects; command stability includes executable/route/harness/event only. Exercise declared Claude/Codex events with fixtures through dedicated entrypoints; retain Hermes callback and bundled mod route compatibility.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--hooks-design.md",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:17Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:17Z",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.4.1",
+        "depends_on_id": "ht-0lo.4",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:17Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo.4"
+  },
+  {
+    "id": "ht-0lo.2.3",
+    "title": "Invitation CLI and presentation contract",
+    "description": "owns: ordinary invite --lazy default, --require-ack/--deadline implication and conflicts, compact/JSON/inbox/help/embedded skill presentation; consumes: invitation confirmation protocol/store contract. Files: src/cli parser invitation branches/mod/output and help/skill resources, relevant CLI tests. Invoke actual CLI in isolated daemon/config for bare lazy, require-ack default duration, explicit deadline, conflicting flags, duplicate and historical keyed retry. Required/operator commands remain unchanged.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md\nblocked-by ht-0lo.2.2: consumes invitation confirmation store behavior",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:15Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:33Z",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.2.3",
+        "depends_on_id": "ht-0lo.2.2",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:26Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.2.3",
+        "depends_on_id": "ht-0lo.2",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:15Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo.2"
+  },
+  {
+    "id": "ht-0lo.2.2",
+    "title": "Invitation acceptance, due and delivery lifecycle",
+    "description": "owns: canonical lazy/timed invitation create/duplicate/accept/reject/cancel/retire behavior, due scanner and inviter-addressed warning routing plus read/wake/mod projections; consumes: invitation mode schema/wire contract. Files: src/store/{control,invitation_due,wake,queries,service_controls,seats}.rs as needed, daemon projections, TRUST-POLICY invitation clauses and focused tests. Run lazy invite no native wake/deadline, timed never-register and register-without-accept expiry, acceptance clears, duplicate never mutates policy, inviter leaving warning, required membership and explicit rejection notice cases.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md\nblocked-by ht-0lo.2.1: consumes invitation mode schema/wire contract",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:14Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:32Z",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.2.2",
+        "depends_on_id": "ht-0lo.2.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:25Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.2.2",
+        "depends_on_id": "ht-0lo.2",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:14Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 1,
+    "comment_count": 0,
+    "parent": "ht-0lo.2"
+  },
+  {
+    "id": "ht-0lo.2.1",
+    "title": "Invitation confirmation protocol and schema contract",
+    "description": "owns: additive invitation delivery/confirmation wire fields, capability refusal and schema fields/indexes/legacy defaults; consumes: existing operation digests and membership episodes. Files: src/protocol commands/results/capabilities or existing capability module, src/store/schema.rs and schema tests. Absent historical fields mean legacy timed behavior; explicit modern Lazy requests retain timing/inviter origin without altering old bytes. Freeze duration at creation, preserve required and human invitation semantics.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:13Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:13Z",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.2.1",
+        "depends_on_id": "ht-0lo.2",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:13Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-0lo.2"
+  },
+  {
+    "id": "ht-0lo.1.2",
+    "title": "Due discovery and originating-seat warning lifecycle",
+    "description": "owns: bounded indexed due discovery plus sender-addressed open/clear warning routing and guarded poke/wake calculations; consumes: send-anchored canonical receipt projection. Files: src/store/{receipts,poke,wake,queries,schema}.rs, scheduler tests. Exercise unbound/unregistered/unavailable/pending-invite recipient sends through expiry and late ACK; originator leaving does not lose notification.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md\nblocked-by ht-0lo.1.1: consumes send-anchored canonical receipt projection",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:11Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:34Z",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.1.2",
+        "depends_on_id": "ht-0lo.1.1",
+        "type": "blocks",
+        "created_at": "2026-10-10T22:48:24Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "ht-0lo.1.2",
+        "depends_on_id": "ht-0lo.1",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:11Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 1,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo.1"
+  },
+  {
+    "id": "ht-0lo.1.1",
+    "title": "Canonical receipt deadline projection and upgrade",
+    "description": "owns: receipt original deadline semantics and transactional upgrade of formerly dormant obligations, preserving running deadlines and terminal provenance; consumes: existing immutable send timestamps/durations. Files: src/store/{effective,materialization,schema,messages}.rs and preparation modules, TRUST-POLICY deadline clauses, focused store tests. Cover sparse and physical receipts, restart, lazy/human waiver, registration not resetting and explicit A6 extension distinction.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md",
+    "acceptance_criteria": "Implement and run every scenario named in this description; preserve the parent spec contract. Focused tests, format and per-change clippy pass.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:48:10Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:10Z",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.1.1",
+        "depends_on_id": "ht-0lo.1",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:48:10Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 2,
+    "comment_count": 0,
+    "parent": "ht-0lo.1"
+  },
+  {
+    "id": "ht-0lo.4",
+    "title": "Stable hooks",
+    "description": "owns: native event command surface, exact command generation, owned migration/unsetup/status/canary/launcher consistency; consumes: existing registered harness codec declaration. Files: src/cli/{hook,setup,mod}.rs, src/harness/{setup,claude,codex}.rs and setup submodules, installed manifest/canary/tooling tests and docs. Exercise Claude/Codex per-event dispatch/setup repeat/migration/unsetup in isolated config; verify Hermes and mod route remain compatible before integration.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md",
+    "acceptance_criteria": "Implement the corresponding spec contract and exercise all configurations named in this description with isolated owned children before terminal integration. Run focused tests and mandated per-change lint.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:45:47Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:16Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 3
+    },
+    "labels": [
+      "sp:ht-0lo",
+      "sp:needs-design"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.4",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:45:47Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.3",
+    "title": "Handoff payload",
+    "description": "owns: full frozen handoff payload and policy integration; consumes: send-time receipt semantics and invitation confirmation wire contract. Files: src/cli handoff paths, src/protocol/handoff.rs, src/store handoff paths and tests. Spec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md",
+    "acceptance_criteria": "Implement the corresponding spec contract and exercise all configurations named in this description with isolated owned children before terminal integration. Run focused tests and mandated per-change lint.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:45:46Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:23Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 4
+    },
+    "labels": [
+      "sp:ht-0lo",
+      "sp:needs-design"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.3",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:45:46Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.2",
+    "title": "Invitation lifecycle",
+    "description": "owns: invitation mode/duration/acceptance contract, protocol capability and inviter warning routing through CLI/store/query/wake; consumes: existing membership lifecycle. Files: src/protocol/{commands,results,capabilities}.rs and wire negotiation, src/cli parser invitation branches, src/store/{control,invitation_due,wake,queries,schema}.rs, relevant tests, TRUST-POLICY invitation clauses. Exercise bare lazy invite, explicit timed invite, never-register expiry, register-without-accept expiry, acceptance/rejection, duplicates, legacy retry and required memberships before integration.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md",
+    "acceptance_criteria": "Implement the corresponding spec contract and exercise all configurations named in this description with isolated owned children before terminal integration. Run focused tests and mandated per-change lint.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:45:45Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:12Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 2
+    },
+    "labels": [
+      "sp:ht-0lo",
+      "sp:needs-design"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.2",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:45:45Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo.1",
+    "title": "Receipt deadlines",
+    "description": "owns: canonical send-time/upgrade receipt semantics, due materialization and originating-seat warning routing; consumes: existing preparation/projection schema. Files: src/store/{effective,materialization,receipts,messages,poke,wake,schema,queries}.rs, relevant send preparation modules and tests, TRUST-POLICY.md deadline clauses. Exercise unavailable/unbound/invited send+expiry, sparse/physical/restart, human/lazy exemptions and catch-up distinction before integration.\nSpec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md",
+    "acceptance_criteria": "Implement the corresponding spec contract and exercise all configurations named in this description with isolated owned children before terminal integration. Run focused tests and mandated per-change lint.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:45:44Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:48:09Z",
+    "metadata": {
+      "sp_depth": 1,
+      "sp_order": 1
+    },
+    "labels": [
+      "sp:ht-0lo",
+      "sp:needs-design"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "ht-0lo.1",
+        "depends_on_id": "ht-0lo",
+        "type": "parent-child",
+        "created_at": "2026-10-10T22:45:44Z",
+        "created_by": "Alexey Parfenov",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "ht-0lo"
+  },
+  {
+    "id": "ht-0lo",
+    "title": "Handoff delivery redesign",
+    "description": "Deliver thread-carried complete handoff instructions with send-time receipt deadlines, lazy optional-confirmation invitations and stable native hook entrypoints. Spec: docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md. User authorized autonomous implementation; integration merge remains coordinator decision.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "epic",
+    "owner": "235553+alepar@users.noreply.github.com",
+    "created_at": "2026-10-10T22:45:27Z",
+    "created_by": "Alexey Parfenov",
+    "updated_at": "2026-10-10T22:45:27Z",
+    "labels": [
+      "sp:ht-0lo"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]

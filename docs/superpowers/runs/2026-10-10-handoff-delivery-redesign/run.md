@@ -8,3 +8,7 @@ branch: super-auto/handoff-delivery-redesign
 base: main
 
 spec: 2026-10-10-handoff-delivery-redesign-design.md
+epic: ht-0lo
+
+approvals:
+- top-split · ht-0lo.1 PROMOTE, ht-0lo.2 PROMOTE, ht-0lo.3 PROMOTE, ht-0lo.4 PROMOTE · user explicitly authorized fully autonomous design decisions from the collaboratively settled scope; parent delegated this exact split approval without interruption
