@@ -12,7 +12,10 @@ import re
 FORMAT = "agy-fake-gemini/1"
 
 # The D4 delivery header line (delivery-policy spec DP2).
-FRAME_HEADER = re.compile(r'^\[herdr-threads\] (\S+) (\S+) in (\S+) from (\S+)(.*):$', re.M)
+# The thread and sender ids may be followed by their quoted names (delivery/frame.rs ``label``); the
+# names are skipped, so group 3 and 4 stay the ids and group 5 the marker tail.
+_NAME = r'(?: "(?:[^"\\]|\\.)*")?'
+FRAME_HEADER = re.compile(r'^\[herdr-threads\] (\S+) (\S+) in (\S+)' + _NAME + r' from (\S+)' + _NAME + r'(.*):$', re.M)
 
 FRAME_KEYS = ("id", "thread", "kind", "sender")
 _PLACEHOLDER = re.compile(r"\{(var|frame)\.([A-Za-z0-9_]+)\}")
