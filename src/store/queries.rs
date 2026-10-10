@@ -6320,7 +6320,13 @@ mod inbox_v2 {
         if state.publication_decision_high_water > decision as u64 {
             return Err(invalid("inbox snapshot is in the future"));
         }
-        let current_agent:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND harness IN ('claude','codex') AND observation_provenance='cooperative_top_level')",[seat.as_str()],|r|r.get(0)).map_err(store_error)?;
+        // Receipt eligibility is canonical registered-agent eligibility (as
+        // in inbox v1 and display-ACK settlement), never a fixed harness list:
+        // a Hermes binding's pending receipts are ACK candidates too.
+        let current_harness:Option<String>=db.query_row("SELECT harness FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND observation_provenance='cooperative_top_level'",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
+        let current_agent = current_harness
+            .as_deref()
+            .is_some_and(|harness| crate::harness::registry::builtins().agent(harness).is_ok());
         if let Some(body) = &state.body {
             let lazy = state.source == Source::Lazy;
             if message(db, body.message.as_str(), lazy, current_agent, &state)?.is_none() {

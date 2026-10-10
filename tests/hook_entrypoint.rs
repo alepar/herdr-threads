@@ -1793,7 +1793,10 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     );
     assert!(!context.contains(&big[..100]), "{context}");
     assert!(!context.contains(INBOX_HEADER), "{context}");
-    assert!(context.contains("do not fit this hook's context"), "{context}");
+    assert!(
+        context.contains("do not fit this hook's context"),
+        "{context}"
+    );
     assert!(context.len() <= 4096, "{}", context.len());
     assert_eq!(displayed(), 2);
     quiet("oversized repeat");

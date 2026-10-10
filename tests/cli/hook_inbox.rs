@@ -136,7 +136,8 @@ fn only_a_whole_prefix_of_the_page_fits_and_the_rest_is_retrievable() {
     let data = peer_data(&context);
     assert!(data.contains("first") && !data.contains("xxxx") && !data.contains("after the big"));
     assert!(
-        context.contains("keep retrieving with herdr-threads --state-dir /s inbox"),
+        context.contains("keep retrieving it: run herdr-threads --state-dir /s inbox once")
+            && context.contains("then follow each next: command it prints until none remains"),
         "{context}"
     );
     // A partial body from the daemon is never shown, nor anything after it.

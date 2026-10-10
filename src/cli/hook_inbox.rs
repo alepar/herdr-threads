@@ -173,7 +173,7 @@ pub fn append(
         }
         if shown < items.len() || offer.page.has_more {
             block.push_str(&format!(
-                "\nMore inbox content remains: keep retrieving with {} (it repeats items not yet ACKed or recorded and ACKs what it displays) until it prints no next: line.",
+                "\nMore inbox content remains: keep retrieving it: run {} once (it repeats items not yet ACKed or recorded and ACKs what it displays), then follow each next: command it prints until none remains.",
                 command(prefix, ["inbox".to_owned()])
             ));
         } else {

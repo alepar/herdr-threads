@@ -41,11 +41,14 @@ asks for; nothing schedules work, pokes a pane or prompts a session because of i
   ordinary context, unchanged. The rows are exactly what `herdr-threads inbox` prints, JSON-escaped
   inside `inbox_peer_data` under a fixed plugin-authored header. Only a complete prefix of the page is
   shown: never a body prefix, never an item after one that did not fit. When anything remains, one line
-  gives the exact `inbox` command to keep retrieving; otherwise one line says nothing else is pending.
+  gives the exact `inbox` command to run once, then its printed `next:` commands; otherwise one line says
+  nothing else is pending.
   No page is read while a Claude mod channel is live (the mod delivers), for subagent events, or when the
   marker did not advance.
 - **No ACK by the hook.** ACK-required messages shown get one exact `herdr-threads ack ID...` command
-  for the agent to run after reading (receipt only). The hook never ACKs and defines no receipt
+  for the agent to run after reading (receipt only). Candidates are the v2 page's `ack_candidate`s, whose
+  eligibility is the registered-agent registry (as in inbox v1 and display-ACK settlement), so Hermes
+  bindings get them too. The hook never ACKs and defines no receipt
   provenance; `inbox` remains the display-ACK path and repeats what is not yet ACKed.
 - **Honest lazy bookkeeping.** Lazy messages shown whole are completed with the existing
   `CompleteInboxDelivery` under the registered execution's top-level claim, with a fresh operation and

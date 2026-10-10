@@ -823,6 +823,59 @@ fn lazy_inbox_v2_preserves_invitations_warnings_and_ordinary_candidates() {
     );
     assert!(!page.has_more);
 }
+// Lazy hook delivery (main merge review P2): receipt eligibility is the
+// registered-agent registry, not a fixed Claude/Codex list. A real Hermes
+// binding's ordinary ACK-required message is an ACK candidate on the v2 page,
+// and the hook page renderer then names its exact `ack` command instead of
+// claiming nothing else is needed. Kills: the hard-coded `IN ('claude','codex')`
+// predicate (Hermes bodies shown without ACK instructions) and an always-true
+// eligibility (an unregistered or human harness still gets candidates).
+#[test]
+fn lazy_inbox_v2_ack_candidates_follow_registered_agent_harnesses() {
+    use herdr_threads::cli::hook_inbox::{InboxOffer, append};
+    let (iso, context, mut conn) = fixture("lazy-v2-hermes-ack");
+    let ordinary = send(
+        &iso,
+        &context,
+        &mut conn,
+        "ordinary",
+        "loud",
+        DeliveryMode::Ordinary,
+    );
+    let candidate = |conn: &Connection, harness: &str| {
+        conn.execute(
+            "UPDATE occupant_bindings SET harness=?1 WHERE seat_id='b'",
+            [harness],
+        )
+        .unwrap();
+        let page = query(&context, PageRequest::default(), &OutputSpec::default());
+        let found = page.items.iter().find_map(|item| match item {
+            InboxBatchV2Item::Message {
+                message,
+                ack_candidate,
+                ..
+            } if message == &ordinary => Some(ack_candidate.clone()),
+            _ => None,
+        });
+        (page, found.expect("ordinary row listed"))
+    };
+    let (page, hermes) = candidate(&conn, "hermes");
+    assert_eq!(hermes.as_ref(), Some(&ordinary));
+    // The renderer reads only the page; the claim matters for completion.
+    let offer = InboxOffer {
+        page,
+        claim: claim(),
+    };
+    let (context_text, lazy) = append(String::new(), &offer, &["herdr-threads".to_owned()], 4096);
+    assert!(lazy.is_empty(), "ordinary rows are never lazy-completed");
+    assert!(
+        context_text.contains(&format!("herdr-threads ack {}", ordinary.as_str())),
+        "{context_text}"
+    );
+    for (harness, wanted) in [("claude", true), ("codex", true), ("not-a-harness", false)] {
+        assert_eq!(candidate(&conn, harness).1.is_some(), wanted, "{harness}");
+    }
+}
 #[test]
 fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
     let (iso, context, mut conn) = fixture("lazy-v2-atomic");
