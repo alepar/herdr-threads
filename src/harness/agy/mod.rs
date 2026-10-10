@@ -182,6 +182,9 @@ impl HarnessAdapter for AgyAdapter {
     ) -> Option<DoctorProjection> {
         doctor::doctor_projection(request, daemon, budget)
     }
+    fn doctor_text(&self, hooks: &serde_json::Value, form: DoctorTextForm) -> String {
+        doctor::doctor_text(hooks, form)
+    }
     fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
         witness::local_evidence(request)
     }
