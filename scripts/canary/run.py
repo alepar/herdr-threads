@@ -587,7 +587,7 @@ def run_strategy(adapter, out, binary, root, model_tier="off", runtime_command=N
                 if rc == 0:
                     published = _json(raw, NPM_VIEW_LIMIT)
                     break
-                failure = "exit %d: %s" % (rc, " ".join(err.decode("utf-8", "replace").split())[-200:])
+                failure = ("exit %d: %s" % (rc, " ".join(err.decode("utf-8", "replace").split())[-200:])).rstrip(": ")
             except (ValueError, OSError) as e:
                 failure = str(e)
         else:
