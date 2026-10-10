@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.6.2
+
+- **Canary version discovery.** npm version listings have a separate bounded 4 MiB capture/parse limit instead of the 64 KiB companion-result limit, fixing Codex discovery failures as its release list grows. Exhausted retries retain the final failure reason.
+- **Scheduled canary scope.** Scheduled and default workflow runs probe Claude Code and Codex. Hermes requires explicit runtime input and has no scheduled canary coverage; requesting it without that input remains inconclusive. The CLI default remains `all`.
+
 ## v0.6.1
 
 - **Explicit invitation refusals.** Agents reject a decided bad-fit ordinary invitation by exact ID with a meaningful reason. New refusals deliver the retained reason as an attributed informational warning to the existing thread members at their next check-in; historical rejection replay, required memberships and receipt semantics remain unchanged.
