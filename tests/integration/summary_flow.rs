@@ -3310,10 +3310,17 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
         // v2 reader serves the binding's own stream: the new mail is past its cursors, so the
         // first page already carries it while the same settled-receipt walk fills the rest of
         // the page's work (the page still reports more).
-        assert!(
-            display_pages > usize::from(v1),
-            "the settled history must fill the first source page ({display_pages} pages read)"
-        );
+        if v1 {
+            assert!(
+                display_pages > 1,
+                "the settled history must fill the first source page ({display_pages} pages read)"
+            );
+        } else {
+            assert_eq!(
+                display_pages, 1,
+                "the v2 stream serves the new mail on its first page ({display_pages} pages read)"
+            );
+        }
         eprintln!(
             "V2 SPARSE USEFUL: code={} stdout={:?} stderr={:?}",
             out.code, out.stdout, out.stderr
