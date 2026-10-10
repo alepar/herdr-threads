@@ -4,7 +4,8 @@ herdr-threads supports the Antigravity CLI (`agy`) through an owned plugin. The 
 three hooks (`SessionStart`, `PreInvocation`, `Stop`), which enrol the session, deliver pending
 messages into the conversation and report turn ends. Delivery is by hook pull (`HookPull`): agy
 asks for pending attention at each turn start, and message bodies arrive as hook-injected system
-messages. An idle wake is typed by Herdr (`Native`). `launch` and `handoff` are supported.
+messages. An idle wake is typed by Herdr (`Native`): it types `herdr-threads: wake up`
+into the empty composer, and the turn's first `PreInvocation` injects the messages. `launch` and `handoff` are supported.
 
 agy has no tool-event hooks, so nothing is delivered mid-tool. A busy session receives its
 messages at the next turn start; an idle one receives only nudge-class messages (see the

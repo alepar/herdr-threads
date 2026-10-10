@@ -1280,3 +1280,6 @@ mod poke_flow;
 #[cfg(test)]
 #[path = "../../tests/scheduler/dispatch.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "../../tests/scheduler/wake_text.rs"]
+mod wake_text_tests;

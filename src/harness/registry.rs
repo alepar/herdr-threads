@@ -1357,6 +1357,12 @@ impl Registry {
             .find(|r| r.metadata().id == harness_id)
             .and_then(|r| r.adapter.delivery_policy())
     }
+    /// The prompt a native idle wake types for a harness id: the marker unless its delivery
+    /// policy injects the pending items at turn start.
+    pub fn wake_text(&self, harness_id: &str) -> &'static str {
+        self.delivery_policy(harness_id)
+            .map_or(crate::notification::policy::MARKER, |p| p.wake_text())
+    }
     /// Ids of harnesses that deliver through a push channel (for the clap parser).
     pub fn push_channel_ids(&self) -> Vec<&'static str> {
         self.registrations

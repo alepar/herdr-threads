@@ -336,7 +336,18 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         };
         let text = match (&poke, using_poke) {
             (Some(request), true) => request.plan.text.as_str(),
-            _ => MARKER,
+            // The hook path is what failed for a recovery hint: it must name `inbox`.
+            (_, _)
+                if matches!(
+                    reservation.authority,
+                    ReservedWakeAuthority::RecoveryHint { .. }
+                ) =>
+            {
+                MARKER
+            }
+            _ => target.bound_harness.as_deref().map_or(MARKER, |id| {
+                crate::harness::registry::builtins().wake_text(id)
+            }),
         };
         // Unsolicited attention never queues into an active turn.
         let submitted = self.host.submit_prompt(&target, text, &prompt_context);
