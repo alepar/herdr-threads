@@ -180,12 +180,15 @@ def run(world):
         return
     seat, conversation = binding["seat_id"], binding["native_session"]
     thread = _l6.create_thread(world, sender, "gate-downgrade")
-    invite, accept = _l6.join(world, sender, pane, thread, seat)
-    world.check("the sender invited the agy seat and it accepted", invite.returncode == 0 and accept.returncode == 0,
-                "invite=%s accept=%s" % (invite.stderr.strip(), accept.stderr.strip()))
+    # The idle wake exists only while the invitation is pending: an accept that lands first removes the
+    # reason to wake (ht-poh.46), so the wake is awaited between the invite and the accept.
+    invite = world.ht(["invite", thread, "--seat", seat], pane=sender.pane_id, check=False, human=True)
     joined = _l5.await_step(world, "wake-join", 45)
     world.check("the join's idle wake was served (wake-join on 'herdr-threads: wake up')", joined is not None)
     pane.wait("idle", 30)
+    accept = world.ht(["accept", thread], pane=pane.pane_id, check=False)
+    world.check("the sender invited the agy seat and it accepted", invite.returncode == 0 and accept.returncode == 0,
+                "invite=%s accept=%s" % (invite.stderr.strip(), accept.stderr.strip()))
 
     abort_phase(world, pane, sender, thread, scenario)
     user_message_phase(world, pane, sender, thread, scenario)
