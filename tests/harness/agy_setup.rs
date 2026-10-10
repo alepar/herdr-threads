@@ -523,13 +523,21 @@ fn allow_entry_creates_an_absent_settings_file_and_removes_it_again() {
     );
     fx.unsetup().unwrap();
     assert!(!fx.roots.settings.exists());
-    // Unsetup keeps one pre-image of the granted file, so the directory stays with only it.
-    assert_eq!(
-        fx.files_under(&fx.roots.data).len(),
-        1,
-        "{:?}",
-        fx.files_under(&fx.roots.data)
-    );
+    // v0.6 backup model (human decision 2026-10-10, ht-poh.43): unsetup keeps setup's pre-images,
+    // never pruned, so the directory setup created stays holding only them.
+    let left = fx.files_under(&fx.roots.data);
+    assert!(!left.is_empty(), "{left:?}");
+    for path in &left {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        assert!(
+            name.starts_with("settings.json.") && name.ends_with(".herdr-threads"),
+            "only setup's `.herdr-threads` backups remain in antigravity-cli/: {left:?}"
+        );
+    }
+    assert_eq!(left.len(), backups(&fx).len());
     assert_eq!(backups(&fx).len(), 1);
 }
 

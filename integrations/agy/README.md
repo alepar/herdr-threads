@@ -39,7 +39,9 @@ and setup commands [Y/n]` (empty line is yes), and without a terminal it reports
 `herdr-threads` command, person and setup commands included, because herdr-threads writes no agy
 ask rule. Each run keeps one pre-image of `settings.json` beside it
 (`settings.json.<stamp>-<id>.herdr-threads`) before its first change; a file setup itself creates
-gets none.
+gets none. These backups follow the same model as Claude and Codex: they are never pruned,
+`unsetup agy` keeps them, and an `antigravity-cli/` directory that setup created can remain after
+`unsetup agy`, holding only backups.
 
 Setup writes a file only when it is new or still equals what it recorded. A file it does not own,
 or a `herdr-threads` plugin directory without its manifest, is a conflict and is never

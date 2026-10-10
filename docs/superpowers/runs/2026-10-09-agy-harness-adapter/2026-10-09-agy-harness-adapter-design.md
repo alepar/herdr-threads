@@ -361,3 +361,5 @@ The final live smoke is gated on the fix loop's exit (super-auto §Gates).
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
 
 - 2026-10-10 (ht-poh.47, human decision): §3 "Output discipline (R4)" is amended toward harness parity: with the daemon down, the lifecycle hooks (SessionStart, inv0 fresh/resume/clear) print the shared `check-in unavailable` notice as one valid `systemMessage` step, as Claude and Codex do; routine `PreInvocation` and `Stop` still print nothing. Pinned by `tests/hook_entrypoint/agy.rs` `with_the_daemon_down_*`.
+
+- 2026-10-10 (ht-poh.43, human decision): R6 "reversibly" means reversible per the v0.6 backup model. `unsetup agy` removes the owned plugin files and the allow member it added, and keeps setup's `settings.json.<UTC timestamp>-<uuid>.herdr-threads` pre-images, never pruned, as for Claude and Codex; an `antigravity-cli/` directory setup created can remain holding only them.
