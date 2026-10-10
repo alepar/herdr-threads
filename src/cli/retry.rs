@@ -619,9 +619,11 @@ pub(crate) fn load_original_for_actor(
     let prefix = format!("{ordinal:020}-");
     let terminal_prefix = format!("delivery-{ordinal:020}-");
     let bootstrap_prefix = format!("bootstrap-{ordinal:020}-");
+    let automatic_prefix = format!("automatic-{ordinal:020}-");
     let mut intents = 0;
     let mut retained = false;
     let mut bootstrap_retained = false;
+    let mut automatic_retained = false;
     for entry in std::fs::read_dir(journal.root())? {
         let name = entry?.file_name();
         let name = name.to_string_lossy();
@@ -630,8 +632,15 @@ pub(crate) fn load_original_for_actor(
         }
         retained |= name.starts_with(&terminal_prefix) && name.ends_with(".terminal");
         bootstrap_retained |= name.starts_with(&bootstrap_prefix) && name.ends_with(".terminal");
+        automatic_retained |= name.starts_with(&automatic_prefix) && name.ends_with(".terminal");
     }
-    if intents > 1 || (retained && bootstrap_retained) {
+    if intents > 1
+        || [retained, bootstrap_retained, automatic_retained]
+            .into_iter()
+            .filter(|present| *present)
+            .count()
+            > 1
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "ambiguous original intent reference",
@@ -640,7 +649,8 @@ pub(crate) fn load_original_for_actor(
     let pending = match journal.resolve_recovery_ref(recovery) {
         Ok(reference) => Some(journal.load(&reference)?),
         Err(error)
-            if error.kind() == io::ErrorKind::NotFound && (retained || bootstrap_retained) =>
+            if error.kind() == io::ErrorKind::NotFound
+                && (retained || bootstrap_retained || automatic_retained) =>
         {
             None
         }
@@ -670,6 +680,27 @@ pub(crate) fn load_original_for_actor(
             io::ErrorKind::InvalidData,
             "conflicting original intent and bootstrap terminal",
         ));
+    }
+    if automatic_retained || pending.as_ref().is_some_and(|p| {
+        matches!(
+            &p.semantic,
+            SemanticMutation::Frozen { mutation, .. }
+                if matches!(mutation.as_ref(),
+                    SemanticMutation::AutomaticDelivery(_) | SemanticMutation::AutomaticHandoff(_))
+        )
+    }) {
+        if pending.as_ref().is_some_and(|p| !matches!(
+            &p.semantic,
+            SemanticMutation::Frozen { mutation, .. }
+                if matches!(mutation.as_ref(),
+                    SemanticMutation::AutomaticDelivery(_) | SemanticMutation::AutomaticHandoff(_))
+        )) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "conflicting automatic original"));
+        }
+        let reference = super::handoff_delivery::resolve_automatic_recovery_ref(journal, recovery)
+            .map_err(io::Error::other)?;
+        return super::handoff_delivery::load_automatic_original(journal, &reference)
+            .map_err(io::Error::other);
     }
     if bootstrap_retained
         || pending.as_ref().is_some_and(|p| {

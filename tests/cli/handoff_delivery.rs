@@ -2595,3 +2595,649 @@ fn automatic_delivery_preparation_stays_unsupported_before_any_read() {
     assert!(matches!(error,RunError::Api(ref error) if error.code==ErrorCode::Unsupported));
     assert!(client.calls.lock().unwrap().is_empty());
 }
+
+struct AutomaticPeerClient {
+    supported: bool,
+    calls: Mutex<Vec<Command>>,
+    thread: Mutex<Option<ThreadId>>,
+    sent: Mutex<bool>,
+    completed: Mutex<bool>,
+    lost: Mutex<Option<&'static str>>,
+    rejected: Mutex<bool>,
+    invitations: Mutex<usize>,
+}
+impl AutomaticPeerClient {
+    fn new(supported: bool) -> Self {
+        Self {
+            supported,
+            calls: Mutex::new(vec![]),
+            thread: Mutex::new(None),
+            sent: Mutex::new(false),
+            completed: Mutex::new(false),
+            lost: Mutex::new(None),
+            rejected: Mutex::new(false),
+            invitations: Mutex::new(0),
+        }
+    }
+}
+impl LocalClient for AutomaticPeerClient {
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command.clone());
+        match command {
+            Command::Capabilities => Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: if self.supported {
+                        vec![crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into()]
+                    } else {
+                        vec![]
+                    },
+                },
+            )),
+            Command::SeatInspect(q) => {
+                assert_eq!(q.seat.as_str(), "recipient");
+                Ok(CommandResult::SeatInspect(inspection()))
+            }
+            Command::Seats(q) => {
+                assert_eq!(q.target.unwrap().as_str(), "w1:p2");
+                Ok(CommandResult::Seats(
+                    serde_json::from_value(page(serde_json::json!([inspection().summary])))
+                        .unwrap(),
+                ))
+            }
+            Command::AutomaticHandoffDelivery(request) => {
+                use crate::protocol::handoff::{AutomaticDeliveryAction, HandoffResult};
+                assert_eq!(request.plan().recipient.as_str(), "recipient");
+                assert_eq!(request.plan().payload.body, "literal '$HOME' work");
+                let keys = &request.plan().payload.keys;
+                let status = |state, thread| {
+                    CommandResult::Handoff(HandoffResult {
+                        compound: keys.compound.clone(),
+                        state,
+                        thread,
+                    })
+                };
+                match &request.action {
+                    AutomaticDeliveryAction::Prepare => {
+                        Ok(CommandResult::SeatResolved(SeatId::new("recipient")))
+                    }
+                    AutomaticDeliveryAction::Status | AutomaticDeliveryAction::Begin { .. } => {
+                        Ok(status(
+                            if *self.completed.lock().unwrap() {
+                                HandoffState::Completed
+                            } else {
+                                HandoffState::Live
+                            },
+                            self.thread.lock().unwrap().clone(),
+                        ))
+                    }
+                    AutomaticDeliveryAction::Ensure(q) => {
+                        assert_eq!(q.operation, keys.ensure);
+                        let mut thread = self.thread.lock().unwrap();
+                        if thread.is_none() {
+                            *self.invitations.lock().unwrap() += 1;
+                            *thread = Some(ThreadId::new("t-pair"));
+                        }
+                        drop(thread);
+                        let mut lost = self.lost.lock().unwrap();
+                        if *lost == Some("ensure") {
+                            *lost = None;
+                            return Err(ApiError::unknown_outcome("Ensure committed; reply lost"));
+                        }
+                        Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
+                    }
+                    AutomaticDeliveryAction::Send(q) => {
+                        assert_eq!(q.operation, keys.send);
+                        assert_eq!(q.thread.as_str(), "t-pair");
+                        assert_eq!(q.direct_recipient.as_ref().unwrap().as_str(), "recipient");
+                        if !*self.sent.lock().unwrap() && *self.rejected.lock().unwrap() {
+                            return Err(ApiError::new(
+                                ErrorCode::MembershipRequired,
+                                "recipient rejected; explicitly reinvite",
+                            ));
+                        }
+                        *self.sent.lock().unwrap() = true;
+                        let mut lost = self.lost.lock().unwrap();
+                        if *lost == Some("send") {
+                            *lost = None;
+                            return Err(ApiError::unknown_outcome("Send committed; reply lost"));
+                        }
+                        Ok(CommandResult::MessageSent(MessageId::new("m-pair")))
+                    }
+                    AutomaticDeliveryAction::Complete { operation } => {
+                        assert_eq!(operation, &keys.complete);
+                        assert!(*self.sent.lock().unwrap());
+                        *self.completed.lock().unwrap() = true;
+                        let mut lost = self.lost.lock().unwrap();
+                        if *lost == Some("complete") {
+                            *lost = None;
+                            return Err(ApiError::unknown_outcome(
+                                "Complete committed; reply lost",
+                            ));
+                        }
+                        Ok(status(
+                            HandoffState::Completed,
+                            Some(ThreadId::new("t-pair")),
+                        ))
+                    }
+                }
+            }
+            other => panic!("automatic existing producer used forbidden command: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn automatic_existing_seat_full_request_ensures_and_sends() {
+    let parsed = super::super::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--existing",
+        "--seat",
+        "recipient",
+        "--",
+        "literal '$HOME' work",
+    ])
+    .unwrap();
+    let super::super::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    assert!(request.automatic);
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let client = AutomaticPeerClient::new(true);
+    let topology = crate::host::observation::HostTopology {
+        spaces: vec![],
+        tabs: vec![],
+        panes: vec![],
+    };
+    let namespace = fixture::payload().handoff.namespace;
+    let mut bytes = vec![];
+    let result = run_automatic_existing(
+        &request,
+        Preparation {
+            claim: &canonical_claim(),
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &TestClock,
+        },
+        &journal,
+        super::super::actor_route::InvocationActor::Agent,
+        &OutputSpec::default(),
+        &mut bytes,
+    );
+    assert!(
+        result.is_ok(),
+        "existing-seat automatic route failed: {result:?}"
+    );
+    let calls = client.calls.lock().unwrap();
+    assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Ensure(_)))).count(), 1);
+    assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Send(_)))).count(), 1);
+    assert_eq!(*client.invitations.lock().unwrap(), 1);
+    assert!(*client.sent.lock().unwrap());
+    assert!(!bytes.is_empty());
+}
+
+#[test]
+fn automatic_existing_pane_full_request_resolves_one_seat() {
+    let parsed = super::super::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--existing",
+        "--pane",
+        "w1:p2",
+        "--",
+        "literal '$HOME' work",
+    ])
+    .unwrap();
+    let super::super::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    assert!(request.automatic);
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let client = AutomaticPeerClient::new(true);
+    let topology = crate::host::observation::HostTopology {
+        spaces: vec![crate::host::observation::TopologySpace {
+            id: "w1".into(),
+            label: None,
+        }],
+        tabs: vec![crate::host::observation::TopologyTab {
+            id: "w1:t1".into(),
+            space: "w1".into(),
+            label: None,
+        }],
+        panes: vec![
+            crate::host::observation::TopologyPane {
+                target: crate::protocol::ids::HostTargetId::new("w1:p1"),
+                space: "w1".into(),
+                tab: "w1:t1".into(),
+                label: None,
+                agent_names: vec![],
+            },
+            crate::host::observation::TopologyPane {
+                target: crate::protocol::ids::HostTargetId::new("w1:p2"),
+                space: "w1".into(),
+                tab: "w1:t1".into(),
+                label: None,
+                agent_names: vec![],
+            },
+        ],
+    };
+    let namespace = fixture::payload().handoff.namespace;
+    let mut bytes = vec![];
+    let result = run_automatic_existing(
+        &request,
+        Preparation {
+            claim: &canonical_claim(),
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &TestClock,
+        },
+        &journal,
+        super::super::actor_route::InvocationActor::Agent,
+        &OutputSpec::default(),
+        &mut bytes,
+    );
+    assert!(
+        result.is_ok(),
+        "existing-pane automatic route failed: {result:?}"
+    );
+    let calls = client.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| matches!(c, Command::Seats(_)))
+            .count(),
+        1
+    );
+    assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Ensure(_)))).count(), 1);
+    assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Send(_)))).count(), 1);
+    assert_eq!(*client.invitations.lock().unwrap(), 1);
+    assert!(*client.sent.lock().unwrap());
+    assert!(!bytes.is_empty());
+}
+
+#[test]
+fn automatic_existing_unsupported_refuses_before_publication_and_effects() {
+    let parsed = super::super::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--existing",
+        "--seat",
+        "recipient",
+        "--",
+        "literal '$HOME' work",
+    ])
+    .unwrap();
+    let super::super::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let client = AutomaticPeerClient::new(false);
+    let topology = crate::host::observation::HostTopology {
+        spaces: vec![],
+        tabs: vec![],
+        panes: vec![],
+    };
+    let namespace = fixture::payload().handoff.namespace;
+    let result = run_automatic_existing(
+        &request,
+        Preparation {
+            claim: &canonical_claim(),
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &TestClock,
+        },
+        &journal,
+        super::super::actor_route::InvocationActor::Agent,
+        &OutputSpec::default(),
+        &mut vec![],
+    );
+    assert!(
+        matches!(result, Err(RunError::Api(ref error)) if error.code == ErrorCode::Unsupported),
+        "{result:?}"
+    );
+    assert_eq!(client.calls.lock().unwrap().len(), 1);
+    assert!(journal.resolve_recovery_ref("local:1").is_err());
+}
+
+#[test]
+fn automatic_existing_pane_unsupported_refuses_before_resolution_and_publication() {
+    let parsed = super::super::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--existing",
+        "--pane",
+        "w1:p2",
+        "--",
+        "literal '$HOME' work",
+    ])
+    .unwrap();
+    let super::super::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let client = AutomaticPeerClient::new(false);
+    let topology = crate::host::observation::HostTopology {
+        spaces: vec![],
+        tabs: vec![],
+        panes: vec![],
+    };
+    let namespace = fixture::payload().handoff.namespace;
+    let result = run_automatic_existing(
+        &request,
+        Preparation {
+            claim: &canonical_claim(),
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &TestClock,
+        },
+        &journal,
+        super::super::actor_route::InvocationActor::Agent,
+        &OutputSpec::default(),
+        &mut vec![],
+    );
+    assert!(
+        matches!(result, Err(RunError::Api(ref e)) if e.code == ErrorCode::Unsupported),
+        "{result:?}"
+    );
+    assert_eq!(client.calls.lock().unwrap().len(), 1);
+    assert!(journal.resolve_recovery_ref("local:1").is_err());
+}
+
+#[test]
+fn automatic_existing_lost_ensure_then_reject_keeps_original_and_refuses_send() {
+    let parsed = super::super::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--existing",
+        "--seat",
+        "recipient",
+        "--",
+        "literal '$HOME' work",
+    ])
+    .unwrap();
+    let super::super::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let client = AutomaticPeerClient::new(true);
+    *client.lost.lock().unwrap() = Some("ensure");
+    let topology = crate::host::observation::HostTopology {
+        spaces: vec![],
+        tabs: vec![],
+        panes: vec![],
+    };
+    let namespace = fixture::payload().handoff.namespace;
+    let mut first_output = vec![];
+    let first = run_automatic_existing(
+        &request,
+        Preparation {
+            claim: &canonical_claim(),
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &TestClock,
+        },
+        &journal,
+        super::super::actor_route::InvocationActor::Agent,
+        &OutputSpec::default(),
+        &mut first_output,
+    );
+    assert!(
+        matches!(first, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{first:?}"
+    );
+    assert!(
+        !first_output.is_empty(),
+        "lost Ensure needs explicit retry guidance"
+    );
+    let reference = resolve_automatic_recovery_ref(&journal, "local:1").unwrap();
+    let original = load_automatic_original(&journal, &reference).unwrap();
+    let frozen = automatic_original(&original).unwrap();
+    let keys = frozen.delivery().payload.keys.clone();
+    *client.rejected.lock().unwrap() = true;
+    let mut retry_output = vec![];
+    let retry = retry_automatic_to_writer(
+        &journal,
+        &reference,
+        super::super::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        None,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut retry_output,
+    );
+    assert!(
+        matches!(retry, Err(RunError::Api(ref e)) if e.code == ErrorCode::MembershipRequired),
+        "{retry:?}"
+    );
+    assert_eq!(*client.invitations.lock().unwrap(), 1);
+    assert!(!*client.sent.lock().unwrap());
+    assert!(
+        !retry_output.is_empty(),
+        "rejected recipient needs retained recovery guidance"
+    );
+    let after =
+        automatic_original(&load_automatic_original(&journal, &reference).unwrap()).unwrap();
+    assert_eq!(after.delivery().payload.keys, keys);
+    assert_eq!(after.delivery().payload.body, "literal '$HOME' work");
+    *client.rejected.lock().unwrap() = false;
+    retry_automatic_to_writer(
+        &journal,
+        &reference,
+        super::super::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        None,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut vec![],
+    )
+    .unwrap();
+    assert_eq!(*client.invitations.lock().unwrap(), 1);
+    assert!(*client.sent.lock().unwrap());
+}
+
+#[test]
+fn automatic_existing_lost_send_replays_published_message_after_reject() {
+    let parsed = super::super::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--existing",
+        "--seat",
+        "recipient",
+        "--",
+        "literal '$HOME' work",
+    ])
+    .unwrap();
+    let super::super::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let client = AutomaticPeerClient::new(true);
+    *client.lost.lock().unwrap() = Some("send");
+    let topology = crate::host::observation::HostTopology {
+        spaces: vec![],
+        tabs: vec![],
+        panes: vec![],
+    };
+    let namespace = fixture::payload().handoff.namespace;
+    let first = run_automatic_existing(
+        &request,
+        Preparation {
+            claim: &canonical_claim(),
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &TestClock,
+        },
+        &journal,
+        super::super::actor_route::InvocationActor::Agent,
+        &OutputSpec::default(),
+        &mut vec![],
+    );
+    assert!(
+        matches!(first, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{first:?}"
+    );
+    *client.rejected.lock().unwrap() = true;
+    let reference = resolve_automatic_recovery_ref(&journal, "local:1").unwrap();
+    let report = retry_automatic_to_writer(
+        &journal,
+        &reference,
+        super::super::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        None,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut vec![],
+    )
+    .unwrap();
+    assert_eq!(report["message"]["data"], "m-pair");
+    assert_eq!(*client.invitations.lock().unwrap(), 1);
+    assert!(*client.sent.lock().unwrap());
+}
+
+#[test]
+fn automatic_existing_completed_retry_uses_terminal_without_ensure_or_send() {
+    let parsed = super::super::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--existing",
+        "--seat",
+        "recipient",
+        "--",
+        "literal '$HOME' work",
+    ])
+    .unwrap();
+    let super::super::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let client = AutomaticPeerClient::new(true);
+    let topology = crate::host::observation::HostTopology {
+        spaces: vec![],
+        tabs: vec![],
+        panes: vec![],
+    };
+    let namespace = fixture::payload().handoff.namespace;
+    let mut first_output = vec![];
+    run_automatic_existing(
+        &request,
+        Preparation {
+            claim: &canonical_claim(),
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &TestClock,
+        },
+        &journal,
+        super::super::actor_route::InvocationActor::Agent,
+        &OutputSpec::default(),
+        &mut first_output,
+    )
+    .unwrap();
+    let before = client.calls.lock().unwrap().len();
+    let reference = resolve_automatic_recovery_ref(&journal, "local:1").unwrap();
+    let mut second_output = vec![];
+    let report = retry_automatic_to_writer(
+        &journal,
+        &reference,
+        super::super::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        None,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut second_output,
+    )
+    .unwrap();
+    assert_eq!(report["message"]["data"], "m-pair");
+    assert_eq!(second_output, first_output);
+    let calls = client.calls.lock().unwrap();
+    assert_eq!(calls.len(), before + 1);
+    assert!(
+        matches!(&calls[before], Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Status))
+    );
+    assert_eq!(*client.invitations.lock().unwrap(), 1);
+}
+
+#[test]
+fn automatic_existing_retry_requires_exact_namespace_path_bytes_before_client() {
+    let parsed = super::super::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--existing",
+        "--seat",
+        "recipient",
+        "--",
+        "literal '$HOME' work",
+    ])
+    .unwrap();
+    let super::super::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let client = AutomaticPeerClient::new(true);
+    let topology = crate::host::observation::HostTopology {
+        spaces: vec![],
+        tabs: vec![],
+        panes: vec![],
+    };
+    let namespace = fixture::payload().handoff.namespace;
+    run_automatic_existing(
+        &request,
+        Preparation {
+            claim: &canonical_claim(),
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &TestClock,
+        },
+        &journal,
+        super::super::actor_route::InvocationActor::Agent,
+        &OutputSpec::default(),
+        &mut vec![],
+    )
+    .unwrap();
+    let reference = resolve_automatic_recovery_ref(&journal, "local:1").unwrap();
+    let mut alias = namespace.clone();
+    alias.state_dir = "/state//".into();
+    let before = client.calls.lock().unwrap().len();
+    let mut bytes = vec![];
+    let result = retry_automatic_to_writer(
+        &journal,
+        &reference,
+        super::super::actor_route::InvocationActor::Agent,
+        &alias,
+        &client,
+        None,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut bytes,
+    );
+    assert!(result.is_err());
+    assert!(bytes.is_empty());
+    assert_eq!(client.calls.lock().unwrap().len(), before);
+}

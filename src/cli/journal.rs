@@ -807,6 +807,12 @@ pub type PendingPage = Page<LocalIntent>;
 // fixed reference/digest/header fields have 4096 bytes of additional headroom.
 pub(crate) const MAX_BOOTSTRAP_ORIGIN_BYTES: usize =
     2 * crate::store::topology_handoff::MAX_IDENTITY_BYTES + 4096;
+// The canonical automatic envelope (claim + original) is capped at 128 KiB.
+// The first 128 KiB covers the nested original and claim, and the second
+// covers repeated claim/scope fields in the frozen semantic and header. Fixed
+// reference fields and JSON tags use 4 KiB. Reject oversize, never truncate.
+pub(crate) const MAX_AUTOMATIC_ORIGIN_BYTES: usize =
+    2 * crate::protocol::handoff::MAX_AUTOMATIC_ORIGINAL_BYTES + 4096;
 pub struct Journal {
     root: PathBuf,
 }
@@ -1438,6 +1444,58 @@ impl Journal {
             65536,
             "delivery",
         )
+    }
+    pub(crate) fn snapshot_automatic_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(self.path(reference))?;
+        if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_AUTOMATIC_ORIGIN_BYTES as u64
+        {
+            return Err(invalid("unsafe or oversized automatic handoff origin"));
+        }
+        let mut bytes = Vec::new();
+        file.take((MAX_AUTOMATIC_ORIGIN_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        Self::decode_automatic_origin(reference, &bytes)?;
+        Ok(bytes)
+    }
+    pub(crate) fn decode_automatic_origin(
+        reference: &IntentRef,
+        bytes: &[u8],
+    ) -> io::Result<PendingIntent> {
+        if bytes.len() > MAX_AUTOMATIC_ORIGIN_BYTES
+            || reference.ordinal == 0
+            || Uuid::parse_str(reference.operation.as_str()).is_err()
+        {
+            return Err(invalid("oversized automatic handoff origin"));
+        }
+        let pending = Self::decode_reader(reference, BufReader::new(bytes))?;
+        if !matches!(
+            (&pending.header.kind, &pending.semantic),
+            (IntentKind::HandoffDelivery, SemanticMutation::Frozen { mutation, .. })
+                if matches!(mutation.as_ref(), SemanticMutation::AutomaticDelivery(_))
+        ) && !matches!(
+            (&pending.header.kind, &pending.semantic),
+            (IntentKind::Handoff, SemanticMutation::Frozen { mutation, .. })
+                if matches!(mutation.as_ref(), SemanticMutation::AutomaticHandoff(_))
+        ) {
+            return Err(invalid("retained origin is not automatic handoff"));
+        }
+        let original = std::str::from_utf8(bytes).map_err(invalid)?;
+        let (header, body) = original
+            .split_once('\n')
+            .ok_or_else(|| invalid("missing automatic handoff origin header"))?;
+        if serde_json::from_str::<serde_json::Value>(header)?
+            != serde_json::to_value(&pending.header)?
+            || serde_json::from_str::<serde_json::Value>(body)?
+                != serde_json::to_value(&pending.semantic)?
+        {
+            return Err(invalid(
+                "unexpected retained automatic handoff origin fields",
+            ));
+        }
+        Ok(pending)
     }
     /// Typed bounded bootstrap original; exact historical bytes are retained.
     pub(crate) fn snapshot_bootstrap_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
