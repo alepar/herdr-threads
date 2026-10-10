@@ -388,5 +388,41 @@ class FlowHelperTests(unittest.TestCase):
         self.assertIsNone(live_smoke.data_id({"x": 1}, "id"))
 
 
+class EnterFailureTests(unittest.TestCase):
+    class StubBackend(object):
+        run_dir = None
+
+        def budget(self):
+            return {}
+
+    class BrokenWorld(object):
+        def __init__(self, *a, **k):
+            self.checks = []
+            self.root = None
+
+        def __enter__(self):
+            raise RuntimeError("herdr would not start")
+
+        def __exit__(self, *exc):
+            return False
+
+    def test_world_enter_failure_still_leak_checks_and_writes_a_failing_record(self):
+        leak_calls = []
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = live_smoke.execute(
+                    parse("--dry-run"), OK_ENV, dict(CLEAN), AGY, Path(tmp) / "ev", os.getpid(), "run-x", HERDR,
+                    world_factory=self.BrokenWorld, backend_factory=lambda **k: self.StubBackend(),
+                    leak_check=lambda run_id: leak_calls.append(run_id) or (True, ""))
+            summary = json.loads((Path(tmp) / "ev" / "summary.json").read_text())
+        self.assertEqual(rc, live_smoke.EXIT_FAIL)
+        self.assertEqual(leak_calls, ["run-x"])
+        self.assertFalse(summary["pass"])
+        self.assertEqual(summary["aborted"], "error")
+        self.assertIn("herdr would not start", json.dumps(summary["checks"]))
+        self.assertEqual(summary["leak_check"]["ok"], True)
+
+
 if __name__ == "__main__":
     unittest.main()

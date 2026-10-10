@@ -72,3 +72,9 @@ finish (exit 1) if any `sk-or-` that is not that marker is left in a file it wro
 
 Exit codes: 0 pass; 1 the smoke failed, aborted, or the key scan fired; 2 environment refusal; 3 the
 leak check failed.
+
+## Records
+
+- `2026-10-10-4d2ec663dbfa/`: live, genuine agy 1.3.2, `google/gemini-2.5-flash` through `scripts/agy-relay`.
+  PASS, ack_phase `wake`, 7 requests (cap 40), cost 0.02208829 USD (cap 0.50), leak check clean, no
+  relay refusal. R17 compact framing and R18 wake ran together on genuine agy; every check passed.
