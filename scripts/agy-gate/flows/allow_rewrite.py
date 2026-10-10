@@ -3,7 +3,8 @@
 Starts agy in an untrusted workspace ``ws2``, accepts the trust prompt, and records whether agy
 rewrote ``settings.json`` without the owned member. Either outcome is a finding, written to the
 ``allow-rewrite-finding.json`` artifact and the check detail. When agy did drop it, ``setup-status``
-must say ``missing`` and ``setup agy`` must add it back as ``owned``.
+must say ``missing`` and a plain ``setup agy`` (the consent-free Ask path, keeping the recorded grant)
+must add it back as ``owned``.
 """
 from __future__ import annotations
 
@@ -59,8 +60,8 @@ def run(world):
     if dropped:
         world.check("setup-status reports the allow entry missing", _l4.allow_state(status) == "missing",
                     status.get("allow_entry"))
-        rc, _ = _l4.setup_json(world)
-        world.check("setup agy re-adds the member", rc == 0 and _l4.ALLOW_RULE in _l4.allow_members(world),
+        rc, _ = _l4.setup_json(world, permissions=False)
+        world.check("plain setup agy keeps the recorded grant and re-adds the member", rc == 0 and _l4.ALLOW_RULE in _l4.allow_members(world),
                     "allow=%s" % _l4.allow_members(world))
         world.check("the re-added member is owned", _l4.allow_state(_l4.setup_status(world)) == "owned")
     else:

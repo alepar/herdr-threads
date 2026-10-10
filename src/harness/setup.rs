@@ -1441,7 +1441,7 @@ fn install_allow_member<F: FnOnce()>(
             if bytes.len() > 1_048_576 {
                 return Err(SetupError::TooLarge);
             }
-            write_replacement(config, &bytes, false)?;
+            write_user_config(config, &current, &bytes)?;
             bytes
         };
         manifest.phase = InstallPhase::Installed;
@@ -1498,7 +1498,7 @@ fn install_allow_member<F: FnOnce()>(
         action.take().expect("one fault action")();
     }
     if !permission.pre_existing {
-        write_replacement(config, &proposed, false)?;
+        write_user_config(config, expected_base, &proposed)?;
     }
     let mut installed = manifest;
     installed.phase = InstallPhase::Installed;
@@ -1578,7 +1578,7 @@ fn remove_allow_member(
         return Err(SetupError::Conflict);
     }
     if removed != current {
-        write_replacement(config, &removed, false)?;
+        write_user_config(config, &current, &removed)?;
     }
     fs::remove_file(manifest_path).map_err(|_| SetupError::Io)
 }

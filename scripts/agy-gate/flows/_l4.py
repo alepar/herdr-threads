@@ -91,9 +91,10 @@ def allow_state(status):
     return (status.get("allow_entry") or {}).get("state")
 
 
-def setup_json(world):
-    """``setup agy`` with ``--json``: ``(returncode, data)``."""
-    result = world.ht(["--json", "setup", "agy"], check=False)
+def setup_json(world, permissions=True):
+    """``setup agy`` with ``--json``: ``(returncode, data)``; ``permissions`` adds ``--with-permissions``."""
+    argv = ["--json", "setup", "agy"] + (["--with-permissions"] if permissions else [])
+    result = world.ht(argv, check=False)
     try:
         doc = json.loads(result.stdout)
     except ValueError:

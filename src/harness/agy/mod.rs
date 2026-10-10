@@ -165,6 +165,28 @@ impl HarnessAdapter for AgyAdapter {
     ) -> Result<RemovalOutcome, SetupFailure> {
         setup::unsetup(request)
     }
+    fn setup_options(&self) -> &'static [SetupOption] {
+        &[
+            SetupOption {
+                name: crate::cli::setup::WITH_PERMISSIONS,
+                conflicts: &[crate::cli::setup::WITHOUT_PERMISSIONS],
+            },
+            SetupOption {
+                name: crate::cli::setup::WITHOUT_PERMISSIONS,
+                conflicts: &[crate::cli::setup::WITH_PERMISSIONS],
+            },
+        ]
+    }
+    fn settle_setup_consent(
+        &self,
+        environment: &SetupEnvironment,
+        projection: &mut serde_json::Value,
+        reader: &mut dyn std::io::BufRead,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), SetupFailure> {
+        let scope = self.resolve_setup_scope(&SetupScopeRequest::Default, environment)?;
+        setup::settle_permissions(&scope, environment, projection, reader, writer)
+    }
     fn settings_kind(&self) -> Option<&'static crate::harness::setup::SettingsKindSpec> {
         Some(&setup::SETTINGS_KIND)
     }

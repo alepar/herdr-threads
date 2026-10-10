@@ -36,7 +36,7 @@ hooks.codex.installed: contract_declared; runtime metadata unavailable; rich opt
 hooks.codex.socket_policy_validation: not_run
 hooks.agy.plugin: <root>/home/.gemini/config/plugins/herdr-threads installed=no current=no enabled=yes version=none
 hooks.agy.hooks_file: <root>/home/.gemini/config/plugins/herdr-threads/hooks.json
-hooks.agy.allow_entry: command(herdr-threads) missing in <root>/home/.gemini/antigravity-cli/settings.json
+hooks.agy.allow_entry: command(herdr-threads) not-granted in <root>/home/.gemini/antigravity-cli/settings.json
 hooks.agy.installed: unavailable (binary none)
 hooks.agy.witness: presence_dir=no brain_entries=0 bounded=yes recent_top_level_without_lock=0
 hooks.agy.sandbox: agy --sandbox sessions may not reach the herdr-threads daemon socket (untested); launch refuses --sandbox
@@ -50,7 +50,6 @@ codex local_config_root : installed: false, enabled: unknown, admitted: true, ob
 hermes local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
   setup: invalid adapter input: Hermes launcher unavailable
 agy local_config_root : installed: false, enabled: true, admitted: unknown, observed: unknown
-  the allow entry command(herdr-threads) is missing from antigravity-cli/settings.json; re-run `herdr-threads setup agy`
 synthetic_fourth local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
   setup: invalid adapter input: synthetic fourth: explicit fixture root unavailable
 rich harness evidence unavailable: the daemon is not reachable
