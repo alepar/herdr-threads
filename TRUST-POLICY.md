@@ -319,8 +319,9 @@ The service never ACKs, accepts or rejects invitations and is never a receipt re
 An ordinary invitation rejection is the addressed seat's explicit, accountable decision about one
 invitation episode, with a nonblank reason of at most 4096 UTF-8 bytes. It retains the actor seat, binding
 generation, timestamp and existing `cooperative_top_level` or `operator_human` observation in an immutable
-ledger, and publishes an attributed thread info event. It settles only that invitation's attention and
-warning condition: never a message ACK or waiver, an acceptance, or a fabricated join/leave interval.
+ledger. New rejections publish an attributed native warning event in the thread; historical info
+events remain unchanged on replay (A7). Rejection settles only that invitation's attention and warning
+condition: never a message ACK or waiver, an acceptance, or a fabricated join/leave interval.
 Declared subagents cannot reject. Required invitations remain service-owner controlled; a recipient must
 ask that owner to release the requirement and reread its current state before attempting rejection.
 Reinvitation creates a fresh episode; replay of an old rejection cannot reject that new invitation.
