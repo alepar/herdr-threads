@@ -165,6 +165,15 @@ impl HarnessAdapter for AgyAdapter {
     ) -> Result<RemovalOutcome, SetupFailure> {
         setup::unsetup(request)
     }
+    fn settings_kind(&self) -> Option<&'static crate::harness::setup::SettingsKindSpec> {
+        Some(&setup::SETTINGS_KIND)
+    }
+    fn setup_status_extras(&self, request: &StatusRequest, projection: &mut serde_json::Value) {
+        setup::setup_status_extras(request, projection)
+    }
+    fn setup_report_lines(&self, report: &serde_json::Value) -> Vec<String> {
+        setup::setup_report_lines(report)
+    }
     fn doctor_projection(
         &self,
         request: &StatusRequest,

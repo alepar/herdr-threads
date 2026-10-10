@@ -1416,10 +1416,7 @@ mod tests {
                 },
                 &budget,
             );
-            if matches!(
-                registration.metadata().id,
-                "hermes" | "synthetic_fourth" | "agy"
-            ) {
+            if matches!(registration.metadata().id, "hermes" | "synthetic_fourth") {
                 assert!(matches!(status, SetupStatus::Failed(_)));
             } else {
                 assert!(matches!(status, SetupStatus::Detailed(_)));

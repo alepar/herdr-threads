@@ -9,17 +9,13 @@ use crate::harness::{
     adapter::{
         AdmissionDecision, AdmissionRequest, ContractDomain, DecodeFailure, DecodedEvent,
         DeliveryEligibility, EncodeFailure, EncodedOutput, EventIntent, EventRole, HarnessAdapter,
-        HookInput, InstallObservation, NeutralOffer, ResolvedSetupScope, RuntimeAttribution,
-        SetupEnvironment, SetupFailure, SetupRequest, SetupStatus, StatusRequest, UnsetupRequest,
+        HookInput, InstallObservation, NeutralOffer, RuntimeAttribution, SetupEnvironment,
     },
     context::EventKind,
     contract::{Classification, Malformed},
     registry::builtins,
 };
-use crate::protocol::{
-    results::ErrorCode,
-    time::{CallBudget, MonoInstant},
-};
+use crate::protocol::time::{CallBudget, MonoInstant};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -617,49 +613,8 @@ fn stubbed_surfaces_refuse_or_read_unreadable() {
     let error = launch.validate_native_argv(&[]).unwrap_err();
     assert!(error.detail.contains("not yet supported"), "{error:?}");
     assert!(launch.compose_argv(vec![], vec![]).is_err());
-    // Setup surfaces refuse as UnsupportedHarness, which the bare commands report as "refused".
-    let environment = SetupEnvironment::default();
-    let scope = ResolvedSetupScope::ConfigRoot(PathBuf::from("unused"));
-    let refused = |failure: &SetupFailure| matches!(failure, SetupFailure::Api(error) if error.code == ErrorCode::UnsupportedHarness);
-    assert!(refused(
-        &AgyAdapter
-            .setup(
-                &SetupRequest {
-                    scope: scope.clone(),
-                    environment: environment.clone(),
-                    native_binary: None,
-                    executable: PathBuf::from("unused"),
-                    options: Default::default(),
-                },
-                &budget()
-            )
-            .err()
-            .unwrap()
-    ));
-    assert!(refused(
-        &AgyAdapter
-            .unsetup(
-                &UnsetupRequest {
-                    scope: scope.clone(),
-                    environment: environment.clone()
-                },
-                &budget()
-            )
-            .err()
-            .unwrap()
-    ));
-    let SetupStatus::Failed(failure) = AgyAdapter.status(
-        &StatusRequest {
-            scope,
-            environment,
-            native_binary: None,
-        },
-        &budget(),
-    ) else {
-        panic!("agy status stub must fail as unsupported");
-    };
-    assert!(refused(&failure));
-    assert!(AgyAdapter.settings_kind().is_none());
+    // Setup, status and unsetup are real (L3): `tests/harness/agy_setup.rs` covers them.
+    assert!(AgyAdapter.settings_kind().is_some());
     assert!(
         AgyAdapter
             .doctor_text(&Value::Null, crate::harness::adapter::DoctorTextForm::Debug)
