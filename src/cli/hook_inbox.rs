@@ -32,6 +32,9 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 const PAGE_ROWS: u16 = 8;
 /// Read size of the page; the hook shows only what fits its own bound.
 const PAGE_READ_BYTES: u32 = 16_384;
+/// Escaped context bound: Hermes refuses result JSON over 8192 bytes, and
+/// its envelope (event and session IDs) stays well inside the margin.
+const MAX_ESCAPED_CONTEXT: usize = 7_168;
 
 /// Fixed plugin-authored header of the inbox block. Peer text follows only
 /// JSON-escaped inside `inbox_peer_data`.
@@ -179,7 +182,11 @@ pub fn append(
         } else {
             format!("{context}\n{block}")
         };
-        (joined.len() <= budget).then_some(joined)
+        // Encoders bound the raw context (4096) and Hermes also its JSON
+        // envelope (8192): quote-dense peer text nearly doubles when escaped,
+        // so the page never pushes the escaped context past that envelope.
+        let escaped = serde_json::to_string(&joined).map_or(usize::MAX, |e| e.len());
+        (joined.len() <= budget && escaped <= MAX_ESCAPED_CONTEXT).then_some(joined)
     };
     for shown in (1..=shown_max).rev() {
         if let Some(joined) = render(shown) {

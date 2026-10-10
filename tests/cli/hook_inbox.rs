@@ -187,3 +187,26 @@ fn page_is_read_only_for_top_level_claims_on_a_capable_daemon() {
     child.role = CallerRole::Subagent;
     assert!(read_page(&NoCaps, child, &budget).is_none());
 }
+
+// Kills: a page whose escaped form overflows the Hermes result envelope
+// (quote-dense peer text nearly doubles when escaped), which would fail the
+// whole hook output on every turn.
+#[test]
+fn quote_dense_page_stays_inside_the_escaped_envelope() {
+    let quotes = "\"".repeat(1650);
+    let offer = page_offer(vec![lazy("m1", "short"), lazy("m2", &quotes)], false);
+    // Raw, the dense body would fit the 4096-byte bound; escaped, it would not.
+    let (context, lazy_ids) = append("c".repeat(100), &offer, &prefix(), 4096);
+    assert!(context.len() <= 4096);
+    assert!(serde_json::to_string(&context).unwrap().len() <= MAX_ESCAPED_CONTEXT);
+    let both = serde_json::to_string(&rows(&offer.page.items).unwrap()).unwrap();
+    assert!(
+        100 + INBOX_HEADER.len() + both.len() + 100 <= 4096,
+        "the raw bound alone admits both"
+    );
+    assert_eq!(
+        lazy_ids,
+        vec![MessageId::new("m1")],
+        "the dense body is withheld"
+    );
+}
