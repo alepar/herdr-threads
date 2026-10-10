@@ -241,7 +241,11 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
                 vec![
                     seat.seat.as_str().to_owned(),
                     state.to_owned(),
-                    if seat.active { "active" } else { "inactive" }.to_owned(),
+                    format!(
+                        "{}{}",
+                        if seat.active { "active" } else { "inactive" },
+                        availability_suffix(seat.availability.as_deref())
+                    ),
                     timestamp(seat.created_at),
                     current.map_or_else(
                         || "-".to_owned(),
@@ -648,6 +652,22 @@ fn active_first(items: &[Participant]) -> Vec<&Participant> {
     active
 }
 
+/// `, available` or `, unavailable since <time>` for the presence availability slot; empty when
+/// the slot is absent.
+fn availability_suffix(slot: Option<&str>) -> String {
+    match slot {
+        Some("available") => ", available".to_owned(),
+        Some(other) => match other
+            .strip_prefix("unavailable@")
+            .and_then(|ms| ms.parse::<i64>().ok())
+        {
+            Some(ms) => format!(", unavailable since {}", timestamp(UtcMillis(ms))),
+            None => format!(", {}", escape_for_terminal(other, Context::SingleLine)),
+        },
+        None => String::new(),
+    }
+}
+
 /// One indented line per open binding: `    claude top_level connected [agent=ID]`.
 fn binding_lines(
     bindings: &[crate::protocol::results::BindingPresence],
@@ -692,6 +712,7 @@ fn participant_line(participant: &Participant, out: &mut String) {
     {
         out.push_str(&format!(" since {}", timestamp(at)));
     }
+    out.push_str(&availability_suffix(participant.availability.as_deref()));
     if participant.requirement.is_some() {
         out.push_str(" (required)");
     }
@@ -973,3 +994,18 @@ mod golden_contract;
 #[cfg(test)]
 #[path = "../../tests/cli/guidance.rs"]
 mod guidance;
+
+#[cfg(test)]
+mod availability_suffix_tests {
+    use super::*;
+
+    #[test]
+    fn renders_available_and_unavailable_since() {
+        assert_eq!(availability_suffix(None), "");
+        assert_eq!(availability_suffix(Some("available")), ", available");
+        assert_eq!(
+            availability_suffix(Some("unavailable@0")),
+            ", unavailable since 1970-01-01 00:00Z"
+        );
+    }
+}

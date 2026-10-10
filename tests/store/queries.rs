@@ -5644,7 +5644,11 @@ fn participants_report_active_and_open_bindings() {
     for (g, w) in got.iter().zip(&want) {
         assert_eq!((g.0, g.1, &g.2), (w.0, w.1, &w.2));
     }
-    assert!(participants.items.iter().all(|p| p.availability.is_none()));
+    assert!(participants.items.iter().all(|p| {
+        p.availability
+            .as_deref()
+            .is_some_and(|a| a == "available" || a.starts_with("unavailable@"))
+    }));
 }
 
 #[test]
@@ -5680,9 +5684,10 @@ fn seat_list_reports_the_same() {
     let json = serde_json::to_value(&seats.items[0]).unwrap();
     assert!(json.get("active").is_some() && json.get("bindings").is_some());
     assert!(
-        json.get("availability").is_none(),
-        "unset availability stays off the wire"
+        seats.items.iter().all(|i| i.availability.is_some()),
+        "seat list fills the availability slot"
     );
+    assert!(json.get("availability").is_some());
 }
 
 // presence_adds_one_query_per_page_not_per_member: skipped. The store has no query-count

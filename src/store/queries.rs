@@ -917,6 +917,7 @@ fn seat_inspect(
     )?;
     let mut summary = summary;
     (summary.active, summary.bindings) = presence(db, q.seat.as_str())?;
+    summary.availability = Some(availability_label(db, q.seat.as_str())?);
     let mapping = MappingStatus {
         state: summary.continuity,
         target: summary.target.clone(),
@@ -1290,6 +1291,7 @@ fn seats(
             retired_at,
         )?;
         (item.active, item.bindings) = presence(db, &id)?;
+        item.availability = Some(availability_label(db, &id)?);
         let raw = cursor_for(
             instance,
             CursorScope::Seats,
@@ -1379,6 +1381,19 @@ fn seat_summary(
         bindings: Vec::new(),
         availability: None,
     })
+}
+
+/// The presence `availability` slot: `available`, or `unavailable@<unix-ms>` (since when); the
+/// human renderer turns the latter into `unavailable since <time>`.
+fn availability_label(db: &QueryConnection, seat: &str) -> Result<String, ApiError> {
+    Ok(
+        match super::bindings::seat_availability(db, &SeatId::new(seat))? {
+            super::bindings::SeatAvailability::Available => "available".to_owned(),
+            super::bindings::SeatAvailability::Unavailable { since } => {
+                format!("unavailable@{}", since.0)
+            }
+        },
+    )
 }
 
 /// Presence of one seat (spec §3): `active` from the seat-active predicate, plus its open
@@ -1575,7 +1590,7 @@ fn participants(
             accepted_invitation,
             active,
             bindings,
-            availability: None,
+            availability: Some(availability_label(db, &seat)?),
         };
         let mut next_cursor = cursor_for(
             instance,
