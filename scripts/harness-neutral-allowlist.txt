@@ -1,0 +1,262 @@
+# Allowlist for scripts/check-harness-neutral (the harness-neutral core seam, root spec section 1).
+#
+# One entry per line, sorted (byte order) and unique:
+#     <path>:<pattern> — <category>: <text>
+# <path> is repo-relative. <pattern> is a fixed string (no regex): an entry allows a harness-naming
+# token T in file <path> when the pattern contains T and occurs on the same source line (comments
+# removed). A bare-token pattern (`claude`) allows that token anywhere in the file; a longer
+# pattern (`registry.agent("claude")`) allows it only on lines containing that text. The separator
+# is space, U+2014 EM DASH, space (the first one after the first `:`); <text> must be non-empty.
+# An entry that no longer covers any site is stale and fails the check, so a leaf that migrates a
+# site deletes its entry in the same commit. Keep the file sorted: leaves then edit disjoint hunks.
+#
+# Categories:
+#   to-migrate   temporary. The owning leaf named in <text> moves the site behind the adapter
+#                contract and deletes the entry; ht-poh.2.8 makes any remaining to-migrate entry a
+#                hard failure.
+#   frozen-wire  a frozen v1 wire shape (HarnessHealth / HarnessEvidence / HookParseFailure, legacy
+#                contract ids, the not_claude wire code). May stay permanently.
+#   history      a historical schema migration shape. May stay permanently.
+#   registration the builtins() rows, the CODEX / CLAUDE registry identities, the OccupantHarness /
+#                context::Harness consts and the harness/mod.rs `pub mod` lines. May stay permanently.
+#
+# Only frozen wire shapes, historical migrations and registration may stay permanently (root spec
+# section 1); everything else is to-migrate. A site in a file outside core-sweep D15 is marked
+# `unassigned` until the coordinator routes it.
+src/app.rs:!matches!(*id, "claude" | "codex") — to-migrate: ht-poh.2.5 health inputs
+src/app.rs:("claude", observed.detected_version("claude")) — to-migrate: ht-poh.2.5 health inputs
+src/app.rs:("codex", observed.detected_version("codex")) — to-migrate: ht-poh.2.5 health inputs
+src/app.rs:crate::harness::codex::OPTIMISTIC_LABEL — to-migrate: ht-poh.2.1 adapter-owned label import
+src/app.rs:crate::harness::codex::SCHEMA_MATCHED_LABEL — to-migrate: ht-poh.2.1 adapter-owned label import
+src/app.rs:crate::harness::codex::VERSION_TIMEOUT — to-migrate: ht-poh.2.1 adapter-owned constant import
+src/app.rs:inputs.claude = observed.status("claude") — to-migrate: ht-poh.2.5 health inputs
+src/app.rs:inputs.codex = observed.status("codex") — to-migrate: ht-poh.2.5 health inputs
+src/cli/commands.rs:--hooks-only applies to `setup claude` only — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
+src/cli/commands.rs:Some("claude") — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
+src/cli/commands.rs:Spawned by the herdr-threads Claude mod — to-migrate: ht-poh.3.3 watch help text
+src/cli/commands.rs:`setup claude|codex --harness-binary PATH` — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
+src/cli/commands.rs:apply to `setup` and `setup claude` only — to-migrate: ht-poh.2.2 setup argument validation (D15 non-watch)
+src/cli/commands.rs:harness: crate::harness::context::Harness::Claude, — to-migrate: ht-poh.3.3 watch request
+src/cli/commands.rs:not_claude and disabled exit 3 — to-migrate: ht-poh.3.3 watch help text
+src/cli/commands.rs:see `herdr-threads setup codex` — to-migrate: ht-poh.2.2 setup hint (D15 non-watch)
+src/cli/commands.rs:value_parser = ["claude"] — to-migrate: ht-poh.3.3 watch --harness argument
+src/cli/commands.rs:watch needs --harness claude and --session ID — to-migrate: ht-poh.3.3 watch usage error
+src/cli/doctor.rs:CLAUDE_NOT_OBSERVABLE — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:CODEX_HOME — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:Claude — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:Codex — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:SetupClaude — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:claude — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:claude_binary — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:claude_installed — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:claude_installed_stub — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:claude_observed_text — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:claude_path_line — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:claude_verdict_line — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:claude_warning — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:codex — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:codex_evidence — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:codex_foreign_proxy_warnings — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:codex_inspection — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:codex_missing_roots_warning — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:codex_setup — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:codex_trust — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:codex_trust_report — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:codex_unmeasured_allowance_warning — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:harness_claude — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:harness_codex — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:legacy_claude_projection — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:legacy_codex_projection — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/doctor.rs:observed_claude — to-migrate: ht-poh.2.4 doctor projections (D7)
+src/cli/handoff.rs:HERDR_THREADS_CLAUDE_OPTS — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/handoff.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/handoff.rs:claude — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/handoff.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/hook.rs:Claude — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook.rs:ClaudeContract — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook.rs:Codex — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook.rs:CodexContract — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook.rs:CodexWitness — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook.rs:DeclaredClaude — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook.rs:DeclaredCodex — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook.rs:codex — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook.rs:codex_start — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook_evidence.rs:CodexResumed — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook_evidence.rs:codex — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/hook_evidence.rs:codex_evidence — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/cli/launch.rs:CLAUDE_CONFIG_DIR — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/launch.rs:CODEX_HOME — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/launch.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/launch.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/launch.rs:CodexShellProbe — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/launch.rs:CodexWitness — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/launch.rs:HERDR_THREADS_CLAUDE_OPTS — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/launch.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/launch.rs:Hermes — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/launch.rs:claude — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/launch.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/launch.rs:codex_profile — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/me.rs:CODEX_SANDBOX — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/me.rs:CODEX_SANDBOX_NETWORK_DISABLED — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/me.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/me.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/mod.rs:CODEX_SANDBOX — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/mod.rs:CODEX_SANDBOX_NETWORK_DISABLED — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/output.rs:CODEX_SANDBOX — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/output.rs:CODEX_SANDBOX_NETWORK_DISABLED — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/output.rs:CODEX_THREAD_ID — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/setup.rs:CLAUDE_CODE_DISABLE_AGENT_VIEW — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:CLAUDE_CONFIG_DIR — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:CODEX_HOME — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:CODEX_SANDBOX_MEASURED_VERSIONS — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:CODEX_TRUST_NOTE — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:CODEX_WRITABLE_DIRS — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:Claude — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:Codex — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:CodexLayerFile — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:CodexPaths — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:HERMES_HOME — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:claude — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:claude_config_dir — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:claude_config_dir_from — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:claude_override — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:claude_paths — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:claude_settings — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex_file — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex_foreign_proxy_warnings — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex_home — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex_home_from — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex_layer_paths — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex_missing_roots_warning — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex_override — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex_paths — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex_sandbox_note — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex_trust_report — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:codex_unmeasured_allowance_warning — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:hermes — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup.rs:observe_codex_layer — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup/foreground.rs:CLAUDE_ADVICE — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup/foreground.rs:CLAUDE_CODE_DISABLE_AGENT_VIEW — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup/foreground.rs:CLAUDE_CODE_DISABLE_BACKGROUND_TASKS — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup/foreground.rs:CODEX_ADVICE — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup/foreground.rs:Claude — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup/foreground.rs:Codex — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup/foreground.rs:HERDR_THREADS_CODEX_OPTS — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup/foreground.rs:claude_config_dir — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup/foreground.rs:codex — to-migrate: ht-poh.2.3 setup projections
+src/cli/setup/foreground.rs:codex_home — to-migrate: ht-poh.2.3 setup projections
+src/cli/skill.rs:CODEX_COMMAND_GUIDANCE — to-migrate: ht-poh.2.1 adapter-owned import/marker
+src/cli/skill.rs:Codex — to-migrate: ht-poh.2.1 adapter-owned import/marker
+src/cli/topology_handoff.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/topology_handoff.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/topology_handoff.rs:claude — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/topology_handoff.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/topology_runtime.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/topology_runtime.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/topology_runtime.rs:claude — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/topology_runtime.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
+src/cli/watch.rs:Claude — to-migrate: ht-poh.3.3 watch/delivery
+src/cli/watch.rs:NotClaude — to-migrate: ht-poh.3.3 watch/delivery
+src/client/mod.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
+src/daemon/harness_evidence.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/daemon/harness_states.rs:Claude — to-migrate: ht-poh.2.5 health/state projections
+src/daemon/harness_states.rs:claude — to-migrate: ht-poh.2.5 health/state projections
+src/daemon/health.rs:claude — to-migrate: ht-poh.2.5 health/state projections
+src/daemon/health.rs:codex — to-migrate: ht-poh.2.5 health/state projections
+src/harness/adapter.rs:CodexShellProbe — to-migrate: ht-poh.2.1 adapter-owned import/marker
+src/harness/adapter.rs:CodexWitness — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/adapter.rs:CodexWitness(super::codex::InstalledVersion) — to-migrate: ht-poh.2.6 CodexWitness
+src/harness/admission.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/admission.rs:codex — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/attribution.rs:CodexCreatorOnly — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/attribution.rs:CodexResumed — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/attribution.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/attribution.rs:claude_version — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/attribution.rs:codex — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/attribution.rs:codex_version — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/composer.rs:CLAUDE_NOT_KNOWN_EMPTY — to-migrate: ht-poh.2.5 health/state projections
+src/harness/composer.rs:Claude — to-migrate: ht-poh.2.5 health/state projections
+src/harness/context.rs:pub const Claude: Self — registration: context::Harness const over the registry identity (permanent registration)
+src/harness/context.rs:pub const Codex: Self — registration: context::Harness const over the registry identity (permanent registration)
+src/harness/contract.rs:Claude — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/contract.rs:claude — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/contract.rs:codex — to-migrate: ht-poh.2.6 contract/evidence/hook
+src/harness/launch.rs:Claude — to-migrate: ht-poh.2.2 launch/CLI projections
+src/harness/launch.rs:Codex — to-migrate: ht-poh.2.2 launch/CLI projections
+src/harness/launch.rs:CodexLaunchForm — to-migrate: ht-poh.2.2 launch/CLI projections
+src/harness/launch.rs:CodexShellProbe — to-migrate: ht-poh.2.2 launch/CLI projections
+src/harness/launch.rs:codex — to-migrate: ht-poh.2.2 launch/CLI projections
+src/harness/launch.rs:codex_guard — to-migrate: ht-poh.2.2 launch/CLI projections
+src/harness/launch.rs:scoped_codex_cwd — to-migrate: ht-poh.2.2 launch/CLI projections
+src/harness/manifest.rs:codex — to-migrate: ht-poh.2.1 adapter-owned import/marker
+src/harness/mod.rs:pub mod claude; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod claude_mod; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod codex; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod codex_config; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod codex_evidence; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod codex_schema; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod hermes; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub use codex_schema::BinaryIdentity; — to-migrate: ht-poh.2.1 adapter-owned re-export
+src/harness/operational.rs:ClaudeContract — to-migrate: ht-poh.2.1 adapter-owned import/marker
+src/harness/operational.rs:CodexContract — to-migrate: ht-poh.2.1 adapter-owned import/marker
+src/harness/prompt_suggestion.rs:claude — to-migrate: ht-poh.2.3 setup projections
+src/harness/registry.rs:CLAUDE — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:CODEX — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:CodexShellProbe — to-migrate: unassigned (not in core-sweep D15)
+src/harness/registry.rs:Registration::new(&crate::harness::claude::ClaudeAdapter), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:Registration::new(&crate::harness::codex::CodexAdapter), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:Registration::new(&crate::harness::hermes::HermesAdapter), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:context_spelling: "Claude", — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:context_spelling: "Codex", — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:id: "claude", — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:id: "codex", — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:pub const Claude: Self = Self::Agent(CLAUDE); — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:pub const Codex: Self = Self::Agent(CODEX); — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:registry.agent("claude").expect("built-in Claude missing"), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:registry.agent("codex").expect("built-in Codex missing"), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/setup.rs:CODEX_RETRUST_WARNING — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:Claude — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:ClaudeUser — to-migrate: ht-poh.2.1 adapter-owned import/marker
+src/harness/setup.rs:Codex — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:CodexContract — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:CodexSetupPlan — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:CodexUser — to-migrate: ht-poh.2.1 adapter-owned import/marker
+src/harness/setup.rs:claude — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:claude_config_dir — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:claude_entries — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:claude_paths — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:claude_settings — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:codex — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:codex_config — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:codex_entries — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:codex_file — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:codex_home — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:codex_paths — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:codex_session_manifest — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:inspect_codex_session — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:plan_claude — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:plan_claude_command — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:plan_codex — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:plan_codex_for_contract — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:plan_codex_for_version — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:uninstall_claude — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:uninstall_codex — to-migrate: ht-poh.2.3 setup projections
+src/harness/setup.rs:verify_codex_base — to-migrate: ht-poh.2.3 setup projections
+src/protocol/commands.rs:if !matches!(report.harness.as_str(), "claude" | "codex") — frozen-wire: v1 HookParseFailure validation (frozen wire shape)
+src/protocol/commands.rs:if !matches!(self.harness.as_str(), "claude" | "codex") — frozen-wire: v1 HarnessEvidence::validate (frozen wire shape)
+src/protocol/results.rs:claude: HarnessState::Unknown, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)
+src/protocol/results.rs:codex: HarnessState::Unknown, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)
+src/protocol/results.rs:pub claude: HarnessState, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)
+src/protocol/results.rs:pub codex: HarnessState, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)
+src/protocol/watch.rs:NotClaude, — frozen-wire: not_claude wire code and its NotClaude variants (frozen wire shape)
+src/protocol/watch.rs:Self::NotClaude — frozen-wire: not_claude wire code and its NotClaude variants (frozen wire shape)
+src/service/dispatch.rs:Claude — to-migrate: ht-poh.3.3 watch/delivery
+src/service/dispatch.rs:NotClaude — to-migrate: ht-poh.3.3 watch/delivery
+src/service/dispatch.rs:claude — to-migrate: ht-poh.3.3 watch/delivery
+src/store/queries.rs:claude — to-migrate: ht-poh.2.5 health/state projections
+src/store/queries.rs:codex — to-migrate: ht-poh.2.5 health/state projections
+src/store/receipts.rs:Claude — to-migrate: ht-poh.3.3 watch/delivery
+src/store/schema.rs:check(harnessin('codex','claude','human')) — history: schema-history shape check of the harness CHECK constraint (historical migration)
