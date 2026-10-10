@@ -98,6 +98,10 @@ pub enum Command {
     /// The bundled Claude mod reports items it delivered (spec D6); sent only to a
     /// daemon advertising `mod.watch_v1`. Decided per id against A2.
     AckModDelivered(AckModDelivered),
+    /// Hook-pull read (delivery-policy DP4); gated by `delivery.pull_v1`, not yet served.
+    DeliveryPull(crate::protocol::delivery::DeliveryPull),
+    /// Hook-pull settlement (DP4); gated by `delivery.pull_v1`, not yet served.
+    DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
     Leave(Leave),
@@ -1019,6 +1023,8 @@ impl Command {
             Self::SendMessage(v) => Some(&v.claim),
             Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
             Self::AckModDelivered(v) => Some(&v.claim),
+            Self::DeliveryPull(v) => Some(&v.claim),
+            Self::DeliveryConfirm(v) => Some(&v.claim),
             Self::CompleteInboxDelivery(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
@@ -1153,6 +1159,8 @@ impl Command {
             {
                 Err("invalid mod delivery ack batch")
             }
+            Self::DeliveryPull(pull) => pull.validate(),
+            Self::DeliveryConfirm(confirm) => confirm.validate(),
             _ => Ok(()),
         }
     }
@@ -1229,6 +1237,8 @@ pub enum PermitMutation {
     AckDisplayed(Ack),
     /// Mod delivery ack (spec D6): settles per id under the daemon's decision.
     AckModDelivered(AckModDelivered),
+    /// Hook-pull settlement (delivery-policy DP4).
+    DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
     Leave(Leave),
@@ -1263,6 +1273,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::Ack(v) => Ok(Self::Ack(v)),
             Command::AckDisplayed(v) => Ok(Self::AckDisplayed(v)),
             Command::AckModDelivered(v) => Ok(Self::AckModDelivered(v)),
+            Command::DeliveryConfirm(v) => Ok(Self::DeliveryConfirm(v)),
             Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),

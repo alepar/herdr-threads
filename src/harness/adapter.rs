@@ -177,9 +177,34 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         None
     }
+    /// `None`: hooks deliver and the native wake applies (delivery-policy DP1).
+    fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
+        None
+    }
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         None
     }
+}
+
+/// How a harness receives pending items (delivery-policy DP1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryMechanism {
+    PushChannel,
+    HookPull,
+}
+/// What wakes an idle seat of this harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleWake {
+    Native,
+    Channel,
+}
+/// Delivery declaration of one adapter; `Registry::new` validates the
+/// `(mechanism, provenance, idle_wake)` triple against the allowed pairings.
+pub trait DeliveryPolicy: Send + Sync + 'static {
+    fn mechanism(&self) -> DeliveryMechanism;
+    /// An A3 provenance constant.
+    fn provenance(&self) -> &'static str;
+    fn idle_wake(&self) -> IdleWake;
 }
 
 pub struct AdapterMetadata {
