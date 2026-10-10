@@ -71,7 +71,8 @@ landed on main (merge-base `3573b9f5`).
    backed writes. Hermes: plugin
    `register(ctx)` adds the `pre_tool_call` approve hook; status reports it as part of the plugin.
 6. **Wiring.** Consent flags (`--permissions`, `--with-permissions`, `--without-permissions`;
-   no inventory paths any more) through setup/status/unsetup/bare setup, `internal installer-integrations`
+   no inventory paths any more; a granted first install rewrites settings.json compactly, so
+   keep its original bytes for an exact unsetup) through setup/status/unsetup/bare setup, `internal installer-integrations`
    (permissions component + prompt), `install.sh` (`--without-permissions`, capability probe,
    uninstall), doctor (report; fix only narrows). Behaviour spec and tests ported from the old
    branch's `setup_cli.rs`, `installer_integrations.rs`, `tests/cli/installer.rs`,
