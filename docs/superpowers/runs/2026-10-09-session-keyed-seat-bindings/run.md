@@ -11,7 +11,7 @@ spec: 2026-10-10-session-keyed-seat-bindings-design.md
 epic: ht-54r
 roastDesignRound: 2
 stepBackDesign-round-1: patch — four clusters (supersede rule, V29 row classes, human-seat transitions, claim-source completeness), no recurrence; root goal stands
-roast-design: 2026-10-10-session-keyed-seat-bindings-roast-design-1.md
+roast-design: 2026-10-10-session-keyed-seat-bindings-roast-design-1.md, 2026-10-10-session-keyed-seat-bindings-roast-design-2.md
 
 approvals:
 - top-split · human · ht-54r.1 LEAF, ht-54r.2 LEAF, ht-54r.3 LEAF, ht-54r.4 LEAF, ht-54r.5 LEAF, ht-54r.6 LEAF, ht-54r.7 LEAF, ht-54r.8 LEAF, ht-54r.9 LEAF, ht-54r.10 LEAF, ht-54r.11 LEAF, ht-54r.12 LEAF, ht-54r.13 LEAF, ht-54r.14 LEAF, ht-54r.15 LEAF, ht-54r.16 LEAF, ht-54r.17 LEAF, ht-54r.18 LEAF, ht-54r.19 LEAF, ht-54r.20 LEAF, ht-54r.21 LEAF, ht-54r.22 LEAF, ht-54r.23 LEAF
@@ -24,3 +24,6 @@ parked:
 - 2026-10-10-session-keyed-seat-bindings-roast-design-1.md · escalation · "a sibling Bash PreToolUse hook returning updatedInput/ask may drop the --agent-id rewrite (claude-code issue 83353, last hook wins) — subagent misattributed to parent"
 - 2026-10-10-session-keyed-seat-bindings-roast-design-1.md · escalation · "Codex CODEX_THREAD_ID != CODEX_SESSION_ID subagent test unverified at runtime across /new, /clear, fork, resume"
 - 2026-10-10-session-keyed-seat-bindings-roast-design-1.md · escalation · "Hermes /resume: whether HERMES_SESSION_ID re-syncs to the resumed id (same binding) or rotates (needs lineage)"
+- 2026-10-10-session-keyed-seat-bindings-roast-design-2.md · escalation · "Hermes compression lineage source: pre_llm_call parent_session_id documented for delegation only; spec falls back to a new binding at the seat maximum if absent"
+- 2026-10-10-session-keyed-seat-bindings-roast-design-2.md · degraded-verdict · "design roast exit: converged at round 2 (Should-fix 9, 0 Blocking); punch list applied inline to spec + beads, not re-roasted"
+
