@@ -57,6 +57,13 @@ fn lazy_store(wake_on: &str, batch_delay_ms: u64) -> (SqliteStore, std::path::Pa
 /// Publish lazy row `n` (message `msg-n`, recipient ordinal in insertion
 /// order) to seat `s`, published at `decision_at`.
 fn publish_lazy(store: &SqliteStore, n: i64, decision_at: i64) {
+    stage_lazy(store, n);
+    publish_staged(store, n, n, decision_at);
+}
+
+/// Stage lazy row `n` for seat `s` (preparation and recipient row; the
+/// recipient ordinal follows staging order). Not yet published.
+fn stage_lazy(store: &SqliteStore, n: i64) {
     let db = store.context.open_writer().unwrap();
     db.execute(
         "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES(?1,'i','scope',?1,zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",
@@ -68,14 +75,20 @@ fn publish_lazy(store: &SqliteStore, n: i64, decision_at: i64) {
         [format!("prep-{n}"), format!("msg-{n}")],
     )
     .unwrap();
+}
+
+/// Publish the staged row `n` in the decision `decision_seq` at `decision_at`
+/// (message and manifest).
+fn publish_staged(store: &SqliteStore, n: i64, decision_seq: i64, decision_at: i64) {
+    let db = store.context.open_writer().unwrap();
     db.execute(
-        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'i','t',?2,'ordinary',?2,'passive',?3,'lazy')",
-        params![format!("msg-{n}"), n, decision_at],
+        "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,delivery_mode) VALUES(?1,'i','t',?2,'ordinary',?3,'passive',?4,'lazy')",
+        params![format!("msg-{n}"), n, decision_seq, decision_at],
     )
     .unwrap();
     db.execute(
         "INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES(?1,?2,'i','t',?4,?3,?4,0,1,0)",
-        params![format!("prep-{n}"), format!("msg-{n}"), decision_at, n],
+        params![format!("prep-{n}"), format!("msg-{n}"), decision_at, decision_seq],
     )
     .unwrap();
 }
@@ -173,6 +186,30 @@ fn same_lazy_frontier_is_not_reserved_again_but_a_new_row_is() {
     let again = reserve(&store, &next).expect("new lazy row reserves again");
     assert_eq!(again.reasons, vec!["lazy".to_string()]);
     assert_eq!(last_lazy_ordinal(&store), Some(2));
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn a_row_staged_earlier_but_published_later_wakes_the_seat_again() {
+    let (store, path) = lazy_store("all", 0);
+    // A stages row 5 (ordinal 1), B stages row 6 (ordinal 2) and publishes first.
+    stage_lazy(&store, 5);
+    stage_lazy(&store, 6);
+    publish_staged(&store, 6, 10, 50);
+    let first = candidates(&store).remove(0);
+    let reservation = reserve(&store, &first).expect("first reservation");
+    assert_eq!(reservation.reasons, vec!["lazy".to_string()]);
+    settle(&store, &reservation);
+    assert!(!direct_candidate(&store).has_actionable_work());
+    // A publishes later: a larger publication sequence, a smaller ordinal.
+    publish_staged(&store, 5, 11, 60);
+    let found = candidates(&store);
+    assert_eq!(found.len(), 1, "the late-published row is discovered");
+    assert!(found[0].has_unreserved_lazy());
+    let again = reserve(&store, &found[0]).expect("late row reserves again");
+    assert_eq!(again.reasons, vec!["lazy".to_string()]);
+    assert_eq!(last_lazy_ordinal(&store), Some(11));
     drop(store);
     let _ = std::fs::remove_file(path);
 }
