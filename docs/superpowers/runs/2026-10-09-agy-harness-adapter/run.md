@@ -35,6 +35,8 @@ codeBuckets:
   processSweep: stopped 0 · survived 0
 
 parked:
+- super-code invocation 4 · escalation · "DC-3 (delivery-contract audit): the ActiveTurn poke branch still contradicts contract rule 4 (nudge only idle sessions); dormant. Needs the human: fix (remove/align) or accept as a documented exception."
+- super-code invocation 4 · escalation · "ht-poh.18/Task 42: 'unsetup agy' leaves main v0.6's settings backup (and the directory when setup created settings.json); a test assertion was dropped to allow it. R6 says reversible. Needs the human: keep v0.6's backup-retention model for agy, or remove backups setup created."
 - super-code invocation 1 · graph-change · "ht-poh.5 <- ht-poh.4.5 drop (edge audit, safe no: .5 declares IdleWake::Native but does not call the composer)"
 - super-code invocation 1 · degraded-verdict · "ht-poh.13 (R17) BLOCKED-AUTH: permission classifier refused 'node scripts/gen-frame-goldens.mjs' twice as Security Weaken; partial work uncommitted in its task worktree; needs the human to run or allow it"
 - graph-pass · graph-change · "ht-poh.2.7 <- ht-poh.7 drop (safe no: 2.7 notes snapshots follow ht-poh.7's audit fixes) — with the 4.4 drop, depth 11→10"
