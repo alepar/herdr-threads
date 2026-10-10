@@ -2,6 +2,7 @@
 //! Each test names the mutation it kills.
 
 use super::*;
+use crate::harness::claude::doctor::{CLAUDE_NOT_OBSERVABLE, claude_observed_text};
 
 /// Kills a fixed Claude/Codex renderer and conflation of local profile with
 /// daemon/default or aggregate runtime observation.
@@ -54,7 +55,7 @@ fn default_doctor_pins_result_and_issues_without_debug_inventory() {
 }
 
 #[test]
-fn repair_plan_refuses_unsafe_state_and_limits_setup_to_missing_hooks() {
+fn repair_plan_is_global_only_and_refuses_unsafe_state() {
     let mut report = json!({
         "context": {"ok": true}, "state_dir": {"safe": true},
         "daemon": {"state": "not_running"},
@@ -63,16 +64,13 @@ fn repair_plan_refuses_unsafe_state_and_limits_setup_to_missing_hooks() {
             "codex": {"setup": {"installed": true}, "installed": {"admission": "listed", "binary": "/bin/codex"}}
         }
     });
-    assert_eq!(
-        repair_plan(&report),
-        vec![Repair::EnsureDaemon, Repair::SetupClaude]
-    );
+    // Missing Claude hooks are not in the report-wide plan: the adapter projection owns them.
+    assert_eq!(repair_plan(&report), vec![Repair::EnsureDaemon]);
     report["state_dir"]["safe"] = json!(false);
     assert!(repair_plan(&report).is_empty());
     report["state_dir"]["safe"] = json!(true);
-    report["hooks"]["claude"]["error"] = json!("ownership unknown");
-    assert_eq!(repair_plan(&report), vec![Repair::EnsureDaemon]);
-    report["hooks"]["claude"]["error"] = Value::Null;
+    report["daemon"]["state"] = json!("healthy");
+    assert!(repair_plan(&report).is_empty());
     report["daemon"]["state"] = json!("unreachable");
     assert!(repair_plan(&report).is_empty());
     report["daemon"]["state"] = json!("healthy");
@@ -81,6 +79,35 @@ fn repair_plan_refuses_unsafe_state_and_limits_setup_to_missing_hooks() {
     report["daemon"]["version_matches"] = json!(true);
     report["daemon"]["state"] = json!("unavailable");
     assert!(repair_plan(&report).is_empty());
+}
+
+#[test]
+fn claude_safe_repair_is_limited_to_inspectable_missing_hooks_in_a_safe_context() {
+    use crate::harness::claude::doctor::safe_repairs;
+    let mut report = json!({
+        "context": {"ok": true}, "state_dir": {"safe": true},
+        "daemon": {"state": "not_running"},
+        "hooks": {"claude": {"setup": {"installed": false}, "installed": {"admission": "listed", "binary": "/bin/claude"}}}
+    });
+    let claude = |report: &Value| report["hooks"]["claude"].clone();
+    assert!(matches!(
+        safe_repairs(&report, &claude(&report))[..],
+        [crate::harness::adapter::LocalRepair::InstallOwned]
+    ));
+    report["state_dir"]["safe"] = json!(false);
+    assert!(safe_repairs(&report, &claude(&report)).is_empty());
+    report["state_dir"]["safe"] = json!(true);
+    report["hooks"]["claude"]["error"] = json!("ownership unknown");
+    assert!(safe_repairs(&report, &claude(&report)).is_empty());
+    report["hooks"]["claude"]["error"] = Value::Null;
+    report["daemon"]["state"] = json!("unreachable");
+    assert!(safe_repairs(&report, &claude(&report)).is_empty());
+    report["daemon"]["state"] = json!("healthy");
+    report["daemon"]["version_matches"] = json!(false);
+    assert!(safe_repairs(&report, &claude(&report)).is_empty());
+    report["daemon"]["version_matches"] = json!(true);
+    report["daemon"]["state"] = json!("unavailable");
+    assert!(safe_repairs(&report, &claude(&report)).is_empty());
 }
 
 #[test]
@@ -95,8 +122,8 @@ fn doctor_fix_keeps_codex_global_sandbox_setup_explicit() {
         }}
     });
     assert!(repair_plan(&report).is_empty());
-    let mut outcomes = Vec::new();
-    add_manual_repairs(&report, &mut outcomes);
+    let outcomes =
+        crate::harness::codex::doctor::manual_repairs(&report, &report["hooks"]["codex"]);
     assert!(
         outcomes.iter().any(|row| row["action"] == "setup codex"
             && row["outcome"] == "manual"
@@ -111,8 +138,8 @@ fn doctor_fix_keeps_codex_global_sandbox_setup_explicit() {
     installed["hooks"]["codex"]["installed"]["admission"] =
         json!("schema-matched, live-unverified");
     installed["hooks"]["codex"]["installed"]["version"] = json!("0.160.0");
-    let mut outcomes = Vec::new();
-    add_manual_repairs(&installed, &mut outcomes);
+    let outcomes =
+        crate::harness::codex::doctor::manual_repairs(&installed, &installed["hooks"]["codex"]);
     assert!(
         outcomes
             .iter()
@@ -141,7 +168,8 @@ fn compact_doctor_offers_fix_for_inspectable_missing_claude_hooks() {
         "hooks": {"claude": {
             "setup": {"installed": false},
             "installed": {"admission": "listed", "binary": "/bin/claude"}
-        }}
+        }},
+        "local_harnesses": {"claude": {"safe_repairs": ["install_owned"]}}
     });
     assert!(render_text(&report).contains("fix: herdr-threads doctor fix"));
 }
@@ -172,7 +200,11 @@ fn fix_outcomes_name_manual_trust_and_refuse_unsafe_state() {
         "hooks": {"codex": {"setup": {"installed": true}, "trust": {"status": "review_required"}}}
     });
     let mut outcomes = Vec::new();
-    add_manual_repairs(&report, &mut outcomes);
+    add_global_manual_repairs(&report, &mut outcomes);
+    outcomes.extend(crate::harness::codex::doctor::manual_repairs(
+        &report,
+        &report["hooks"]["codex"],
+    ));
     assert!(
         outcomes
             .iter()
@@ -478,12 +510,18 @@ fn task3_versionless_doctor_metadata_unknown_is_informational_not_repairable() {
     }}});
     assert!(repair_plan(&report).is_empty());
     let mut repairs = Vec::new();
-    add_manual_repairs(&report, &mut repairs);
+    add_global_manual_repairs(&report, &mut repairs);
+    repairs.extend(crate::harness::claude::doctor::manual_repairs(
+        &report["hooks"]["claude"],
+    ));
     assert!(
         !repairs
             .iter()
             .any(|repair| repair["action"] == "claude version")
     );
     report["hooks"]["claude"]["setup"]["installed"] = json!(false);
-    assert_eq!(repair_plan(&report), vec![Repair::SetupClaude]);
+    assert!(matches!(
+        crate::harness::claude::doctor::safe_repairs(&report, &report["hooks"]["claude"])[..],
+        [crate::harness::adapter::LocalRepair::InstallOwned]
+    ));
 }

@@ -659,7 +659,7 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
     assert!(
         report.contains(&format!(
             "hooks.claude.observed: {}\n",
-            herdr_threads::cli::doctor::CLAUDE_NOT_OBSERVABLE
+            herdr_threads::harness::claude::doctor::CLAUDE_NOT_OBSERVABLE
         )),
         "{report}"
     );
