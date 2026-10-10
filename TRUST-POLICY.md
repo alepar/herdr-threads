@@ -553,7 +553,8 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   The daemon decides every enrollment, rotation and reattachment it leads to against A2.
   A child is answered locally with the subagent restriction and never reaches the daemon. agy
   fires no session start on resume, so the first turn-start hook of a conversation unknown to
-  the pane context (a client-local hint) carries the resume or clear lifecycle.
+  the pane context (a client-local hint) carries the resume or clear lifecycle. Only the pane
+  context makes a conversation known; the adapter's per-conversation delivery state never does.
 - **A child with a presence lock is still a child through the listing.** A child conversation
   that agy does give a presence lock would read as top-level on the lock alone, but the subagent
   listing still makes it a child. A listing outside the known layout would let such a child

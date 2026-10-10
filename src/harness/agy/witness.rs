@@ -13,12 +13,10 @@ use std::time::Instant;
 
 /// The most `brain/` entries one glob examines before it reads as `Unreadable`.
 pub const BRAIN_ENTRY_CAP: usize = 65_536;
-/// A conversation-state file larger than this is not a known-conversation witness.
-const STATE_FILE_MAX: u64 = 4096;
 
 #[cfg(test)]
 thread_local! {
-    /// `read_dir` calls made on this thread, so a test can prove a known conversation runs no glob.
+    /// `read_dir` calls made on this thread, so a test can prove the pane-bound conversation runs no glob.
     pub(super) static READ_DIR_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -111,13 +109,10 @@ pub(super) fn local_evidence(request: &LocalEvidenceRequest<'_>) -> LocalEvidenc
     // The pane's current native session is a client-local hint; ask once, and only when needed.
     let pane = OnceCell::new();
     let pane_session = || pane.get_or_init(|| (request.pane_session)()).clone();
-    let known = || {
-        let state_file = request.state_dir.is_some_and(|state| {
-            std::fs::symlink_metadata(paths::conversation_state(state, conversation))
-                .is_ok_and(|meta| meta.file_type().is_file() && meta.len() <= STATE_FILE_MAX)
-        });
-        state_file || pane_session().as_deref() == Some(conversation)
-    };
+    // "Known" means only: the pane's current native session is this conversation (P == C). The
+    // conversation-state file under `state_dir` is ht-poh.5's delivery cache and never an input here
+    // (A2: a client-local file is not lifecycle authority).
+    let known = || pane_session().as_deref() == Some(conversation);
     let role = match request.home.filter(|home| !home.is_empty()) {
         None => RoleWitness {
             top_level_marker: Witness::Unreadable,
