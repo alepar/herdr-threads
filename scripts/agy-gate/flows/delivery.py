@@ -64,7 +64,7 @@ def no_miss(world, label):
 
 def frames_in(request):
     """Message ids framed in the request's ``PreInvocation`` system messages."""
-    return _l6.frame_ids_in([m for m in _l6.system_texts(request) if "[herdr-threads] Messages" in m])
+    return _l6.frame_ids_in([m for m in _l6.system_texts(request) if _l6.HEADER.search(m)])
 
 
 def stop_phase(world, pane, sender, thread, scenario):

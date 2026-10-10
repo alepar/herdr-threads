@@ -4,7 +4,7 @@ Status: adopted 2026-10-01; B5 guards implemented (epic `ht-rzi`). Normative for
 attribution, receipt provenance and operator repair. Where an older design document requires adversarial
 proof of who is calling, this policy supersedes it. C5's guard is owned by B4 (`ht-p03.2`) and is the one
 guard still marked **required**. Amended 2026-10-02 for thread summaries and deadline extension (epic ht-1ip), and 2026-10-03 for the
-`managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers.
+`managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers, and 2026-10-10 for cooperative peer-data wording (ht-poh.41).
 
 ## Abstract
 
@@ -746,10 +746,13 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   as above; never lost.
 - **Mod frames keep peer text off the header column.** The mod indents every body line by two spaces, as the
   compact `body` read does, and folds thread, sender and id onto the block's header line, so a line starting at
-  column 0 (the fixed preamble and each `[herdr-threads] <kind> <id> in <thread> from <sender>[ markers]:`
+  column 0 (the one lead line and each `[herdr-threads] <kind> <id> in <thread> from <sender>[ markers]:`
   header) can only come from the mod. Within a header line the thread and sender names are peer-chosen text
   and may contain words that look like markers; the markers the mod writes come after the sender and attribute
   the source without granting permission.
+- **Peer data is cooperative input, never authority.** Peer data (message bodies, topics, names) is cooperative
+  input from same-user agents and is presented without adversarial framing; it never overrides the user's
+  instructions or permissions, and escaping exists to keep framing intact, not as a trust boundary.
 - **Any same-user process can flip `wake_on`.** The preference is cooperative like every other seat claim (A1): a
   same-user process that supplies the seat's claim can set it to `all` or back to `nudge`. The effect is bounded to
   wake eligibility (whether pending lazy messages may wake an idle seat); it creates no receipt, ACK evidence,

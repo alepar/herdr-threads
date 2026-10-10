@@ -442,7 +442,7 @@ pub fn stage_snapshot_targets(
         {
             return Err(api_error(
                 ErrorCode::StaleHostObservation,
-                "untrusted snapshot target",
+                "uncharacterized snapshot target",
             ));
         }
         checked.push((

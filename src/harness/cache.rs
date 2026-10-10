@@ -851,7 +851,8 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert!(text.contains("untrusted_chunk_data: \"\\u001b\\u0085\\u2028\""));
+        assert!(text.contains("chunk_data: \"\\u001b\\u0085\\u2028\""));
+        assert!(!text.contains("untrusted"), "{text}");
     }
 
     #[test]

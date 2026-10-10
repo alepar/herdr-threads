@@ -1694,7 +1694,7 @@ fn codex_compact_recovery_names_the_hot_thread() {
     let context = output["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
-    let (fixed, data) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+    let (fixed, data) = context.split_once("\npeer_data: ").unwrap();
     assert!(
         fixed
             .lines()

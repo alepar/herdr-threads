@@ -25,6 +25,10 @@ use crate::{
 use std::io::{self, Write};
 use uuid::Uuid;
 
+/// Heading of the selected directory overview in a presented offer.
+const OVERVIEW_HEADING: &[u8] =
+    b"Current directory overview at presentation time (selected data):\n";
+
 #[derive(Debug)]
 pub enum BridgeError {
     Context(ContextError),
@@ -152,7 +156,7 @@ pub fn encode_hook(
             if page.items.len() > 8 || page.validate().is_err() {
                 return Err(PresentationError::Invalid);
             }
-            bytes.extend_from_slice(b"Current directory overview at presentation time (selected data; peer topics are untrusted):\n");
+            bytes.extend_from_slice(OVERVIEW_HEADING);
             bytes.extend_from_slice(
                 &encode_selected(result, input.output).map_err(PresentationError::Api)?,
             );
@@ -228,7 +232,7 @@ fn directory_share(input: &HookInput<'_>, seat: &str) -> Result<u32, Presentatio
     let mut selector = directory_argv(input.output, seat, MAX_PAGE_BYTES);
     selector.extend(["--cursor".to_owned(), "x".repeat(MAX_CURSOR_BYTES)]);
     let selector_bytes = serde_json::to_vec(&selector).map_err(|_| PresentationError::Invalid)?;
-    let fixed = b"Current directory overview at presentation time (selected data; peer topics are untrusted):\n".len()
+    let fixed = OVERVIEW_HEADING.len()
         + b"Current directory age and count labels (JSON data; age_millis_signed is now minus created_at):\n".len()
         + b"For a chosen thread, an explicit cheap child can read a bounded history and return message IDs and a summary; only the top-level agent may decide acceptance or ACK.\n".len()
         + empty_selected.len() + age_bytes.len() + 1 + selector_bytes.len();

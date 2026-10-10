@@ -438,7 +438,7 @@ fn encode_text(result: &CommandResult, spec: &OutputSpec) -> Result<Vec<u8>, Api
             "cached: true\nhistorical: {}\nstart: {}\nend: {}\ntotal: {}\n",
             page.historical, page.start, page.end, page.total
         ));
-        text.push_str("untrusted_chunk_data: ");
+        text.push_str("chunk_data: ");
         text.push_str(&text_json(&serde_json::json!(page.chunk_data)));
         text.push('\n');
         text.push_str("next_argv: ");
