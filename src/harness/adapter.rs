@@ -1443,9 +1443,13 @@ impl DecodedEvent {
             "PreToolUse"
         } else if event.source == "SubagentStart" {
             "SubagentStart"
+        } else if event.source == "SubagentStop" {
+            "SubagentStop"
         } else {
             "SessionStart"
         };
+        // A subagent's end is a bookkeeping event: it never checks in and renders nothing.
+        let stop = native_event == "SubagentStop";
         Self {
             harness,
             role: match event.role {
@@ -1454,7 +1458,9 @@ impl DecodedEvent {
             },
             native_session: event.native_session,
             event_id: event.event_id,
-            intent: if event.kind == super::context::EventKind::Tool {
+            intent: if stop {
+                EventIntent::Observer
+            } else if event.kind == super::context::EventKind::Tool {
                 EventIntent::Current
             } else {
                 EventIntent::Lifecycle(event.kind)
@@ -1469,7 +1475,11 @@ impl DecodedEvent {
                 native_event: native_event.into(),
                 shape_fields: vec![],
             },
-            delivery: DeliveryEligibility::Context,
+            delivery: if stop {
+                DeliveryEligibility::Ineligible
+            } else {
+                DeliveryEligibility::Context
+            },
             runtime: RuntimeAttribution::Unavailable {
                 diagnostic: "runtime attribution is separate".into(),
             },

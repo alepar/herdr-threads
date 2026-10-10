@@ -15,6 +15,7 @@ pub mod caller_env;
 mod canary_payloads;
 pub mod claude;
 pub mod claude_mod;
+pub mod claude_rewrite;
 #[cfg(test)]
 #[path = "../../tests/harness/claude.rs"]
 mod claude_tests;
