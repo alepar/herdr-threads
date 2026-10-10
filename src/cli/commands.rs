@@ -594,11 +594,17 @@ enum Top {
     Join { thread: String },
     /// Accept an invitation to a thread.
     Accept { thread: String },
-    /// Reject an exact ordinary invitation with an explicit reason.
+    /// Reject an exact ordinary invitation with a meaningful nonblank reason.
+    ///
+    /// Top-level agents must reject invitations they decide are a bad fit.
+    /// The reason is automatically delivered as a native warning to thread
+    /// members at their next hook/check-in or inbox; no separate send is needed.
     Reject {
         thread: String,
+        /// Exact invitation ID to reject.
         #[arg(long)]
         invitation: String,
+        /// Meaningful nonblank explanation for rejecting this invitation.
         #[arg(long)]
         reason: String,
     },
