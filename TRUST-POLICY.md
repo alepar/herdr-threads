@@ -280,6 +280,7 @@ model open work, and summary closure never changes receipt state or installs glo
 | display ACK after text inbox output | the current top-level agent binding, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
 | open a mod delivery channel (`watch`) | the pane's top-level Claude session through its mod, for the current `cooperative_top_level` binding with the matching native session; recorded as `cooperative_mod_channel`; it grants no other row |
 | mod delivery ACK (`watch ack`) | the current top-level Claude binding with a live channel (grace included) for its binding generation, or, on resume, for ids delivered under the immediately previous generation of the same native session; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
+| set `wake_on` (`wake-on [nudge\|all]`) | the seat's current top-level binding (cooperative; changes wake eligibility only, never receipts or authority) |
 | check in | the pane's top-level agent (hook) or a human via `me init` |
 | record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup, on a seat with no open binding; it grants no row above |
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
@@ -621,6 +622,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   header) can only come from the mod. Within a header line the thread and sender names are peer-chosen text
   and may contain words that look like markers; the markers the mod writes come after the sender and attribute
   the source without granting permission.
+- **Any same-user process can flip `wake_on`.** The preference is cooperative like every other seat claim (A1): a
+  same-user process that supplies the seat's claim can set it to `all` or back to `nudge`. The effect is bounded to
+  wake eligibility (whether pending lazy messages may wake an idle seat); it creates no receipt, ACK evidence,
+  attention or authority, and the daemon records only the seat's own current top-level binding as the actor.
 
 ## Decision record
 

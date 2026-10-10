@@ -1527,6 +1527,9 @@ impl StorePort for SqliteStore {
             PermitMutation::CompleteInboxDelivery(v) => {
                 control::complete_inbox_delivery(&self.context, &mut writer, budget, &v, permit)
             }
+            PermitMutation::SetWakeOn(v) => {
+                seats::set_wake_on(&self.context, &mut writer, budget, &v, permit)
+            }
             PermitMutation::CheckIn(_) => Err(api_error(
                 ErrorCode::InvalidRequest,
                 "check-in requires verified registration and read context",
@@ -2986,6 +2989,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
             control::cooperative_payload_hash("complete_inbox_delivery", v)?,
+            None,
+        ),
+        PermitMutation::SetWakeOn(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            control::cooperative_payload_hash("set_wake_on", v)?,
             None,
         ),
         PermitMutation::Leave(v) => (

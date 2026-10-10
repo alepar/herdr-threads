@@ -31,6 +31,7 @@ pub mod threads;
 pub mod topology_handoff;
 pub mod topology_recover;
 mod topology_runtime;
+pub mod wake_on;
 pub mod watch;
 
 use crate::{
@@ -851,6 +852,7 @@ where
         CliAction::Picker(_) => unreachable!("picker is handled after context resolution"),
         CliAction::Follow(_) => unreachable!("follow is handled after context resolution"),
         CliAction::Summary(_) => unreachable!("summary always derives a caller selection"),
+        CliAction::WakeOn(_) => unreachable!("wake-on always derives a caller selection"),
         CliAction::View { once, page } => {
             if !once {
                 return Err(unsupported(
@@ -1490,6 +1492,9 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     if matches!(&parsed.action, CliAction::Summary(_)) {
         return summary::run(parsed, selection, paths, instance, client, clock, writer);
     }
+    if matches!(&parsed.action, CliAction::WakeOn(_)) {
+        return wake_on::run(parsed, selection, paths, instance, client, clock, writer);
+    }
     let request = Command::SeatInspect(SeatInspectQuery {
         seat: selection.seat.clone(),
         page: PageRequest {
@@ -1908,6 +1913,7 @@ fn caller_need(
         }
         CliAction::CachedCheckIn(_)
         | CliAction::Summary(_)
+        | CliAction::WakeOn(_)
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
         | CliAction::Watch(_)

@@ -436,6 +436,10 @@ pub enum CliAction {
     /// `summary THREAD`, `summary job`, `summary submit`: act as the invoking
     /// seat (cooperative claim from its saved context), never journaled.
     Summary(super::summary::SummaryCli),
+    /// `wake-on [nudge|all]`: read or set the invoking seat's wake preference;
+    /// acts as the seat (cooperative claim from its saved context), never
+    /// journaled.
+    WakeOn(Option<crate::protocol::commands::WakeOn>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -586,7 +590,8 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::InternalJsonField { .. }
         | CliAction::Picker(_)
         | CliAction::Follow(_)
-        | CliAction::Summary(_) => {
+        | CliAction::Summary(_)
+        | CliAction::WakeOn(_) => {
             return Err(ApiError::unsupported(
                 "setup, launch and skill are local compositions without a daemon backend",
             ));
@@ -1053,6 +1058,11 @@ enum Top {
     /// section of `herdr-threads skill`).
     #[command(args_conflicts_with_subcommands = true)]
     Summary(SummaryArgs),
+    /// Show or set whether pending lazy messages also wake this seat when it
+    /// is idle: `nudge` (default) keeps the ordinary wake policy, `all` wakes
+    /// for every pending message. A preference only: it never ACKs or
+    /// changes receipts.
+    WakeOn(WakeOnArgs),
     /// Mod delivery child: streams herdr-threads deliveries as JSON lines.
     #[command(
         hide = true,
@@ -1120,6 +1130,13 @@ enum WatchSub {
 enum DoctorSub {
     /// Attempt safe, owned repairs and report remaining manual actions.
     Fix,
+}
+
+#[derive(Args)]
+struct WakeOnArgs {
+    /// The new preference; omit to print the current one.
+    #[arg(value_parser = ["nudge", "all"])]
+    value: Option<String>,
 }
 
 #[derive(Args)]
@@ -2886,6 +2903,14 @@ fn parse_cli_in_registry(
         }
         Top::PendingOps(args) => CliAction::PendingOps(page(args)?),
         Top::Skill => CliAction::Skill,
+        Top::WakeOn(args) => CliAction::WakeOn(
+            args.value
+                .map(|value| {
+                    crate::protocol::commands::WakeOn::parse(&value)
+                        .ok_or_else(|| invalid("wake-on takes `nudge` or `all`"))
+                })
+                .transpose()?,
+        ),
         Top::Summary(args) => {
             use super::summary::SummaryCli;
             let job = |job: String, lease: String| -> Result<_, ApiError> {
