@@ -2,6 +2,7 @@
 use super::{RunError, panes::PaneSelector};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
+    pub automatic: bool,
     pub new_tab: Option<String>,
     pub existing: bool,
     pub selector: PaneSelector,
@@ -41,6 +42,11 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         ids::{HostTargetId, OperationId},
         results::CommandResult,
     };
+    if request.automatic {
+        return Err(super::unsupported(
+            "automatic bootstrap producer unavailable",
+        ));
+    }
     let fail = super::invalid_request;
     let label = request
         .new_tab
@@ -228,6 +234,11 @@ pub(super) fn preflight_launch_request(
     let longest = ThreadId::new("t".repeat(128));
     let thread = match &identity.payload.handoff.channel {
         HandoffChannel::Existing { thread } => thread,
+        HandoffChannel::Automatic => {
+            return Err(super::unsupported(
+                "automatic bootstrap producer unavailable",
+            ));
+        }
         HandoffChannel::New { .. } => &longest,
     };
     let mut argv = identity.payload.launch.argv.clone();
@@ -583,6 +594,11 @@ fn downstream_plan(
     use crate::{harness::context::Harness, protocol::handoff::HandoffChannel};
     let payload = &identity.payload;
     let (thread, thread_name, topic, goal) = match &payload.handoff.channel {
+        HandoffChannel::Automatic => {
+            return Err(super::unsupported(
+                "automatic bootstrap producer unavailable",
+            ));
+        }
         HandoffChannel::Existing { thread } => (Some(thread.clone()), None, None, None),
         HandoffChannel::New { name, topic, goal } => {
             (None, name.clone(), Some(topic.clone()), Some(goal.clone()))
@@ -592,6 +608,7 @@ fn downstream_plan(
     let plan = super::handoff::HandoffPlan {
         startup_input: None,
         request: super::handoff::HandoffRequest {
+            automatic: false,
             thread,
             thread_name,
             topic,

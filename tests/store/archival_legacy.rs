@@ -149,6 +149,7 @@ fn legacy_compound(
     let plan = HandoffPlan {
         startup_input: None,
         request: HandoffRequest {
+            automatic: false,
             thread: (!new_thread).then(|| ThreadId::new("t")),
             thread_name: None,
             topic: new_thread.then(|| "literal-topic".into()),

@@ -76,7 +76,9 @@ pub fn classify_original_actor(
             IntentScope::Native { .. },
             SemanticMutation::Handoff(_)
             | SemanticMutation::HandoffBootstrap(_)
-            | SemanticMutation::HandoffDelivery(_),
+            | SemanticMutation::HandoffDelivery(_)
+            | SemanticMutation::AutomaticDelivery(_)
+            | SemanticMutation::AutomaticHandoff(_),
         ) => Err(invalid("handoff needs frozen caller")),
         (IntentScope::Native { .. }, _)
         | (IntentScope::Continuity { .. }, SemanticMutation::ContinuityCheckIn { .. })
@@ -111,6 +113,8 @@ pub(crate) fn classify_original_claim(
 pub enum SemanticMutation {
     DirectSend(Box<super::direct_send::Plan>),
     Handoff(Box<super::handoff::HandoffPlan>),
+    AutomaticDelivery(Box<crate::protocol::handoff::AutomaticDeliveryPlan>),
+    AutomaticHandoff(Box<crate::protocol::handoff::AutomaticHandoffPlan>),
     Frozen {
         claim: CallerClaim,
         mutation: Box<SemanticMutation>,
@@ -270,6 +274,8 @@ impl SemanticMutation {
             Self::DirectSend(p) => Some(&p.namespace),
             Self::HandoffBootstrap(p) => Some(&p.payload.handoff.namespace),
             Self::HandoffDelivery(p) => Some(&p.payload.namespace),
+            Self::AutomaticDelivery(p) => Some(&p.payload.namespace),
+            Self::AutomaticHandoff(p) => Some(&p.delivery.payload.namespace),
             Self::OperatorRecoverBootstrap(p) => {
                 Some(&p.request.identity.payload.handoff.namespace)
             }
@@ -332,6 +338,8 @@ impl SemanticMutation {
             Self::Handoff(plan) => plan.validate(),
             Self::HandoffBootstrap(plan) => plan.validate(),
             Self::HandoffDelivery(plan) => plan.validate(),
+            Self::AutomaticDelivery(plan) => plan.validate().map_err(invalid),
+            Self::AutomaticHandoff(plan) => plan.validate().map_err(invalid),
             Self::OperatorRecoverBootstrap(plan) => plan.validate(),
             Self::Frozen { mutation, .. } => {
                 if mutation.is_operator()
@@ -473,7 +481,8 @@ impl SemanticMutation {
     pub fn kind(&self) -> IntentKind {
         match self {
             Self::DirectSend(_) => IntentKind::DirectSend,
-            Self::Handoff(_) => IntentKind::Handoff,
+            Self::Handoff(_) | Self::AutomaticHandoff(_) => IntentKind::Handoff,
+            Self::AutomaticDelivery(_) => IntentKind::HandoffDelivery,
             Self::HandoffBootstrap(_) => IntentKind::HandoffBootstrap,
             Self::HandoffDelivery(_) => IntentKind::HandoffDelivery,
             Self::OperatorRecoverBootstrap(_) => IntentKind::OperatorRecoverBootstrap,
@@ -540,7 +549,9 @@ impl SemanticMutation {
                 return Err(invalid("direct send requires compound coordinator"));
             }
             Self::Handoff(_) => return Err(invalid("handoff requires compound coordinator")),
-            Self::HandoffBootstrap(_)
+            Self::AutomaticDelivery(_)
+            | Self::AutomaticHandoff(_)
+            | Self::HandoffBootstrap(_)
             | Self::HandoffDelivery(_)
             | Self::OperatorRecoverBootstrap(_) => {
                 return Err(invalid("topology contract is inert"));

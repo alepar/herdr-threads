@@ -112,6 +112,7 @@ pub enum Command {
     OperatorRetire(OperatorRetire),
     OperatorReplace(OperatorReplace),
     HandoffDelivery(Box<crate::protocol::handoff::DeliveryMutation>),
+    AutomaticHandoffDelivery(Box<crate::protocol::handoff::AutomaticDeliveryMutation>),
     BeginBootstrap(Box<crate::protocol::handoff::BeginBootstrap>),
     ReserveBootstrapAttempt(Box<crate::protocol::handoff::ReserveBootstrapAttempt>),
     RecordBootstrapCreated(Box<crate::protocol::handoff::RecordBootstrapCreated>),
@@ -952,6 +953,7 @@ impl Command {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
             Self::HandoffDelivery(v) => return v.validate(),
+            Self::AutomaticHandoffDelivery(v) => return v.validate(),
             Self::BeginBootstrap(v) => {
                 v.identity.validate()?;
                 if v.operation != v.identity.payload.handoff.keys.begin {

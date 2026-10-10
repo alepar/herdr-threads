@@ -2570,3 +2570,28 @@ fn pending_delivery_writer_inspect_argv_parses_as_public_pending_ops() {
         }
     }
 }
+
+#[test]
+fn automatic_delivery_preparation_stays_unsupported_before_any_read() {
+    let client = Client::new(false);
+    let mut request = request();
+    request.automatic = true;
+    request.thread = None;
+    let error = prepare(
+        &request,
+        Preparation {
+            claim: &fixture::claim(),
+            namespace: &fixture::payload().handoff.namespace,
+            topology: &crate::host::observation::HostTopology {
+                spaces: vec![],
+                tabs: vec![],
+                panes: vec![],
+            },
+            client: &client,
+            clock: &TestClock,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(error,RunError::Api(ref error) if error.code==ErrorCode::Unsupported));
+    assert!(client.calls.lock().unwrap().is_empty());
+}

@@ -1719,7 +1719,6 @@ fn handoff_new_tab_conflicts_and_required_fields() {
     }
     for argv in [
         vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--", "work"],
-        vec!["herdr-threads", "handoff", "--new-tab", "peer", "--kind", "codex", "--", "work"],
         vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--kind", "codex"],
         vec!["herdr-threads", "handoff", "--pane", "w1:p1", "--cwd", "/tmp", "--new-thread", "--kind", "codex", "--", "work"],
     ] { assert!(parse_argv(argv.clone()).is_err(), "accepted missing/conflict: {argv:?}"); }
@@ -2491,3 +2490,21 @@ fn direct_send_stdin_grammar_uses_shared_bounded_utf8_source() {
     let mut input = "line one\n雪\n".as_bytes();
     assert_eq!(crate::cli::input::read_body_from(args.body, args.file, args.stdin, &mut input).unwrap(), "line one\n雪\n");
 }
+
+#[test]
+fn automatic_handoff_channel_omission_parses_for_every_destination() {
+    for args in [
+        vec!["ht", "handoff", "--existing", "--seat", "s1", "--", "work"],
+        vec!["ht", "handoff", "--existing", "--pane", "w1:p2", "--", "work"],
+        vec!["ht", "handoff", "--pane", "w1:p2", "--kind", "codex", "--", "work"],
+        vec!["ht", "handoff", "--new-tab", "peer", "--kind", "codex", "--", "work"],
+    ] {
+        let parsed = parse_argv(args.clone()).unwrap_or_else(|e| panic!("automatic channel rejected: {args:?}: {e:?}"));
+        match parsed.action {
+            CliAction::Handoff(request) => assert!(request.automatic),
+            CliAction::TopologyHandoff(request) => assert!(request.automatic),
+            _ => panic!("unexpected automatic parser route"),
+        }
+    }
+}
+

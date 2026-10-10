@@ -750,6 +750,12 @@ impl LocalService for DomainService {
         }
         match command {
             Command::HandoffDelivery(request) => self.delivery_command(&request, peer, budget),
+            Command::AutomaticHandoffDelivery(request) => {
+                request.validate().map_err(ApiError::invalid_request)?;
+                Err(ApiError::unsupported(
+                    "automatic canonical runtime unavailable",
+                ))
+            }
             command @ (Command::BeginBootstrap(_)
             | Command::ReserveBootstrapAttempt(_)
             | Command::RecordBootstrapCreated(_)

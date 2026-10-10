@@ -99,6 +99,8 @@ attempt. Product cleanup never closes created topology.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoffRequest {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automatic: bool,
     pub thread: Option<ThreadId>,
     pub thread_name: Option<String>,
     pub topic: Option<String>,
@@ -142,6 +144,11 @@ impl HandoffRequest {
 }
 impl HandoffPlan {
     pub fn validate(&self) -> io::Result<()> {
+        if self.request.automatic {
+            return Err(io::Error::other(
+                "automatic handoff requires its additive V2 plan",
+            ));
+        }
         self.request.validate()?;
         if let Some(template) = &self.startup_input {
             template
@@ -198,6 +205,9 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
     *phase = "create";
     if progress.thread.is_none() {
         progress.thread = Some(match plan.channel {
+            HandoffChannel::Automatic => {
+                return Err(super::unsupported("automatic handoff producer unavailable"));
+            }
             HandoffChannel::Existing { thread } => thread.clone(),
             HandoffChannel::New { name, topic, goal } => match call(
                 SemanticMutation::CreateThread {
@@ -662,6 +672,9 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    if request.automatic {
+        return Err(super::unsupported("automatic handoff producer unavailable"));
+    }
     request.validate()?;
     if claim.role != crate::protocol::authority::CallerRole::TopLevel || claim.instance.is_empty() {
         return Err(super::invalid_request(

@@ -851,3 +851,56 @@ fn ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime() {
         1
     );
 }
+
+#[test]
+fn automatic_contract_public_dispatch_refuses_every_phase_without_effects() {
+    use herdr_threads::{cli::journal::IntentScope, protocol::ids::*};
+    let f = Fixture::new();
+    let claim = super::handoff_fences::identity().claim;
+    let payload = AutomaticHandoffPayload::new(
+        super::topology_handoff::namespace(),
+        OperationId::new("automatic-compound"),
+        "work".into(),
+    )
+    .unwrap();
+    let plan = AutomaticDeliveryPlan::new(payload, SeatId::new("peer")).unwrap();
+    let request = AutomaticDeliveryMutation::new(
+        IntentScope::Cooperative {
+            instance: claim.instance.clone(),
+            seat: claim.seat.clone(),
+        },
+        claim,
+        AutomaticOriginal::Delivery(Box::new(plan)),
+    )
+    .unwrap();
+    let counts = || {
+        ["operations", "messages", "channel_handoff_fences"].map(|table| {
+            f.db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        })
+    };
+    let before = counts();
+    let mut status = request.clone();
+    status.action = AutomaticDeliveryAction::Status;
+    for phase in [
+        status,
+        request.clone(),
+        request.begin(),
+        request.ensure(),
+        request.send(ThreadId::new("t")),
+        request.complete(),
+    ] {
+        let result = f.call(Command::AutomaticHandoffDelivery(Box::new(phase)));
+        assert!(
+            matches!(result, Err(ref error) if error.code == herdr_threads::protocol::results::ErrorCode::Unsupported),
+            "{result:?}"
+        );
+        assert_eq!(
+            counts(),
+            before,
+            "unsupported automatic contract must not mutate canonical state"
+        );
+    }
+}
