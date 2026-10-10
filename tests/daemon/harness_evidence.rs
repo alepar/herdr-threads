@@ -1723,7 +1723,7 @@ fn absorption_codex_creator_only_neither_holds_nor_filters_lifecycle() {
     let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
     let mut start = codex_note(false, "SessionStart", "fresh-creator");
     start.unavailable_reason = Some(
-        crate::harness::attribution::Unattributed::CodexCreatorOnly
+        crate::harness::attribution::Unattributed::CreatorOnly
             .as_str()
             .into(),
     );

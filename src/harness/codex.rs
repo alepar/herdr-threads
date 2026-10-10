@@ -1376,7 +1376,7 @@ impl HarnessAdapter for CodexAdapter {
         &self,
         descriptor: &ContractDescriptor,
     ) -> &'static [&'static str] {
-        static REASONS: [&str; 1] = [super::attribution::Unattributed::CodexCreatorOnly.as_str()];
+        static REASONS: [&str; 1] = [super::attribution::Unattributed::CreatorOnly.as_str()];
         if std::ptr::eq(&self.contracts()[0], descriptor) {
             &REASONS
         } else {
