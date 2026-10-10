@@ -23,6 +23,8 @@ mod channel_archival;
 mod contracts;
 #[path = "golden_surfaces.rs"]
 mod golden_surfaces;
+#[path = "handoff_agy.rs"]
+mod handoff_agy;
 #[path = "store/handoff_fences.rs"]
 mod handoff_fences;
 #[path = "handoff_topology_authority.rs"]
