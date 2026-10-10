@@ -96,7 +96,10 @@ fn two_sessions_hold_two_open_bindings_on_one_seat() {
     let p = placement();
     let (ka, kb) = (key("sess-A", None), key("sess-B", None));
     let (a, _) = enrolled(enroll(&db, &request(&ka, &p), UtcMillis(10)).unwrap());
-    let (b, _) = enrolled(enroll(&db, &request(&kb, &p), UtcMillis(10)).unwrap());
+    // Two processes (the same process would supersede, ht-54r.10).
+    let mut req_b = request(&kb, &p);
+    req_b.fingerprint = Some(crate::protocol::authority::LivenessFingerprint { pid: 8, start: 9 });
+    let (b, _) = enrolled(enroll(&db, &req_b, UtcMillis(10)).unwrap());
     assert_ne!(a.binding_id, b.binding_id);
     let listed = list_connected(&db, &SeatId::new("s")).unwrap();
     assert_eq!(
@@ -422,6 +425,12 @@ mod resolution {
             UtcMillis(50),
         )
     }
+    /// A top-level claim from a different process than `claim` (the same process would supersede).
+    fn other_process(session: &str) -> CallerClaim {
+        let mut c = claim(session, None);
+        c.liveness = Some(LivenessFingerprint { pid: 8, start: 9 });
+        c
+    }
     fn count(db: &Connection, sql: &str) -> i64 {
         db.query_row(sql, [], |r| r.get(0)).unwrap()
     }
@@ -602,7 +611,13 @@ mod resolution {
     fn two_sessions_resolve_to_two_open_bindings() {
         let db = db();
         let a = resolve(&db, &claim("sess-A", None), true, FingerprintRule::Required).unwrap();
-        let b = resolve(&db, &claim("sess-B", None), true, FingerprintRule::Required).unwrap();
+        let b = resolve(
+            &db,
+            &other_process("sess-B"),
+            true,
+            FingerprintRule::Required,
+        )
+        .unwrap();
         assert_ne!(a.binding().binding_id, b.binding().binding_id);
         assert_eq!(
             count(
@@ -916,7 +931,13 @@ mod resolution {
     fn end_open_bindings_disconnects_then_ends() {
         let db = db();
         let a = resolve(&db, &claim("sess-A", None), true, FingerprintRule::Required).unwrap();
-        let b = resolve(&db, &claim("sess-B", None), true, FingerprintRule::Required).unwrap();
+        let b = resolve(
+            &db,
+            &other_process("sess-B"),
+            true,
+            FingerprintRule::Required,
+        )
+        .unwrap();
         disconnect(
             &db,
             &b.binding().binding_id,
@@ -955,7 +976,7 @@ mod resolution {
     }
 
     #[test]
-    fn cross_pane_session_enrolls_on_the_new_seat_and_leaves_the_old_row() {
+    fn cross_pane_session_enrolls_on_the_new_seat_and_supersedes_the_old_row() {
         let db = db();
         db.execute_batch(
             "INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','i','resolved','native',4,0);",
@@ -968,9 +989,353 @@ mod resolution {
         assert!(matches!(on_b, Resolution::Enrolled { .. }));
         assert_ne!(on_a.binding().binding_id, on_b.binding().binding_id);
         assert_eq!(on_b.binding().seat, SeatId::new("s2"));
-        assert_eq!(
-            get(&db, &on_a.binding().binding_id).unwrap().unwrap(),
-            *on_a.binding()
+        // The same process claiming from another seat supersedes (disconnects) the old row; it
+        // stays open, on its own seat.
+        let old = get(&db, &on_a.binding().binding_id).unwrap().unwrap();
+        assert_eq!(old.seat, SeatId::new("s"));
+        assert_eq!(old.ended_at, None);
+        assert_eq!(old.liveness, Liveness::Disconnected);
+        assert_eq!(old.disconnect_reason.as_deref(), Some("superseded"));
+    }
+}
+
+// ---- ht-54r.10: binding liveness ----
+
+mod liveness {
+    use super::*;
+    use crate::protocol::authority::LivenessFingerprint;
+    use std::sync::Mutex;
+
+    const FP: LivenessFingerprint = LivenessFingerprint { pid: 7, start: 9 };
+
+    fn enroll_top(db: &Connection, session: &str, fp: LivenessFingerprint, now: i64) -> BindingRow {
+        let (k, p) = (key(session, None), placement());
+        let mut req = request(&k, &p);
+        req.fingerprint = Some(fp);
+        enrolled(enroll(db, &req, UtcMillis(now)).unwrap()).0
+    }
+    fn row(db: &Connection, b: &BindingRow) -> BindingRow {
+        get(db, &b.binding_id).unwrap().unwrap()
+    }
+    fn reason(db: &Connection, b: &BindingRow) -> Option<String> {
+        row(db, b).disconnect_reason
+    }
+    /// A lifecycle check-in of an existing binding, as the resolver does it.
+    fn lifecycle_checkin(db: &Connection, b: &BindingRow, fp: LivenessFingerprint, now: i64) {
+        connect(
+            db,
+            &b.binding_id,
+            Some(fp),
+            ConnectTrigger::Lifecycle,
+            UtcMillis(now),
+        )
+        .unwrap();
+        let current = row(db, b);
+        run_enroll_hooks(
+            db,
+            &EnrollEvent {
+                binding: &current,
+                trigger: EnrollTrigger::Lifecycle,
+                created: false,
+            },
+            UtcMillis(now),
+            ENROLL_HOOKS,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn connect_reconnects_and_refreshes_fingerprint() {
+        let db = db();
+        let b = enroll_top(&db, "sess-A", FP, 10);
+        // Enrolled rows are connected; connect on a connected row changes nothing.
+        let fresh = LivenessFingerprint { pid: 8, start: 99 };
+        assert!(
+            !connect(
+                &db,
+                &b.binding_id,
+                Some(fresh),
+                ConnectTrigger::Lifecycle,
+                UtcMillis(11)
+            )
+            .unwrap()
         );
+        assert_eq!(row(&db, &b).fingerprint, Some(FP));
+        disconnect(
+            &db,
+            &b.binding_id,
+            DisconnectReason::EndEvent,
+            UtcMillis(20),
+        )
+        .unwrap();
+        assert!(
+            connect(
+                &db,
+                &b.binding_id,
+                Some(fresh),
+                ConnectTrigger::Lifecycle,
+                UtcMillis(30)
+            )
+            .unwrap()
+        );
+        let r = row(&db, &b);
+        assert_eq!(r.liveness, Liveness::Connected);
+        assert_eq!(r.disconnected_at, None);
+        assert_eq!(r.disconnect_reason, None);
+        assert_eq!(r.fingerprint, Some(fresh));
+        assert!(
+            !connect(
+                &db,
+                &b.binding_id,
+                Some(fresh),
+                ConnectTrigger::Lifecycle,
+                UtcMillis(31)
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn disconnect_runs_hooks_only_on_change() {
+        static SEEN: Mutex<Vec<(String, &'static str, i64)>> = Mutex::new(Vec::new());
+        fn record(_: &Connection, e: &DisconnectEvent<'_>) -> Result<(), ApiError> {
+            SEEN.lock().unwrap().push((
+                e.binding.binding_id.as_str().to_owned(),
+                e.reason.as_str(),
+                e.at.0,
+            ));
+            // The hook sees the row already changed.
+            assert_eq!(e.binding.liveness, Liveness::Disconnected);
+            Ok(())
+        }
+        let db = db();
+        let b = enroll_top(&db, "sess-A", FP, 10);
+        let hooks: &[(&str, DisconnectHook)] = &[("record", record)];
+        assert!(
+            disconnect_with_hooks(
+                &db,
+                &b.binding_id,
+                DisconnectReason::SeatRetired,
+                UtcMillis(20),
+                hooks
+            )
+            .unwrap()
+        );
+        assert!(
+            !disconnect_with_hooks(
+                &db,
+                &b.binding_id,
+                DisconnectReason::ProcessExit,
+                UtcMillis(21),
+                hooks
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            *SEEN.lock().unwrap(),
+            vec![(b.binding_id.as_str().to_owned(), "seat_retired", 20)]
+        );
+    }
+
+    #[test]
+    fn disconnect_reasons_round_trip() {
+        let db = db();
+        let all = [
+            (DisconnectReason::Migrated, "migrated"),
+            (DisconnectReason::ProcessExit, "liveness_process_exit"),
+            (DisconnectReason::EndEvent, "liveness_end_event"),
+            (DisconnectReason::Superseded, "superseded"),
+            (DisconnectReason::SeatRetired, "seat_retired"),
+            (DisconnectReason::SeatUnresolved, "seat_unresolved"),
+            (DisconnectReason::Replaced, "replaced"),
+        ];
+        for (i, (why, text)) in all.into_iter().enumerate() {
+            let b = enroll_top(
+                &db,
+                &format!("sess-{i}"),
+                LivenessFingerprint {
+                    pid: 100 + i as u32,
+                    start: 1,
+                },
+                10,
+            );
+            assert!(disconnect(&db, &b.binding_id, why, UtcMillis(20)).unwrap());
+            assert_eq!(reason(&db, &b).as_deref(), Some(text));
+            assert_eq!(row(&db, &b).disconnected_at, Some(UtcMillis(20)));
+        }
+    }
+
+    #[test]
+    fn seat_active_over_mixed_bindings() {
+        let db = db();
+        let seat = SeatId::new("s");
+        assert!(!seat_active(&db, &seat).unwrap());
+        let a = enroll_top(&db, "sess-A", FP, 10);
+        let b = enroll_top(&db, "sess-B", LivenessFingerprint { pid: 8, start: 9 }, 11);
+        assert!(seat_active(&db, &seat).unwrap());
+        disconnect(
+            &db,
+            &a.binding_id,
+            DisconnectReason::EndEvent,
+            UtcMillis(20),
+        )
+        .unwrap();
+        assert!(seat_active(&db, &seat).unwrap(), "one connected is enough");
+        disconnect(
+            &db,
+            &b.binding_id,
+            DisconnectReason::EndEvent,
+            UtcMillis(21),
+        )
+        .unwrap();
+        assert!(!seat_active(&db, &seat).unwrap());
+        // An ended connected binding does not count.
+        connect(
+            &db,
+            &a.binding_id,
+            Some(FP),
+            ConnectTrigger::Lifecycle,
+            UtcMillis(22),
+        )
+        .unwrap();
+        assert!(seat_active(&db, &seat).unwrap());
+        db.execute("UPDATE occupant_bindings SET ended_at=30", [])
+            .unwrap();
+        assert!(!seat_active(&db, &seat).unwrap());
+    }
+
+    #[test]
+    fn seat_active_for_human_binding_follows_the_seat_state() {
+        let db = db();
+        let seat = SeatId::new("s");
+        let mut k = key("person", None);
+        k.harness = "human".into();
+        let p = placement();
+        let mut req = request(&k, &p);
+        req.fingerprint = None;
+        enrolled(enroll(&db, &req, UtcMillis(10)).unwrap());
+        assert!(
+            seat_active(&db, &seat).unwrap(),
+            "open human binding on a resolved seat"
+        );
+        db.execute("UPDATE seats SET state='retired', retired_at=40", [])
+            .unwrap();
+        assert!(!seat_active(&db, &seat).unwrap(), "retired seat");
+    }
+
+    #[test]
+    fn same_pid_supersede_disconnects_the_prior_top_level_binding_at_enrollment() {
+        let db = db();
+        let a = enroll_top(&db, "sess-A", FP, 10);
+        let b = enroll_top(&db, "sess-B", FP, 11);
+        assert_eq!(row(&db, &a).liveness, Liveness::Disconnected);
+        assert_eq!(reason(&db, &a).as_deref(), Some("superseded"));
+        assert_eq!(row(&db, &a).disconnected_at, Some(UtcMillis(11)));
+        assert_eq!(row(&db, &b).liveness, Liveness::Connected);
+        // Superseding disconnects; it never ends the binding.
+        assert_eq!(row(&db, &a).ended_at, None);
+    }
+
+    #[test]
+    fn switching_back_to_an_older_session_disconnects_the_one_just_left() {
+        let db = db();
+        let a = enroll_top(&db, "sess-A", FP, 10);
+        let b = enroll_top(&db, "sess-B", FP, 11);
+        lifecycle_checkin(&db, &a, FP, 12);
+        assert_eq!(row(&db, &a).liveness, Liveness::Connected);
+        assert_eq!(row(&db, &b).liveness, Liveness::Disconnected);
+        assert_eq!(reason(&db, &b).as_deref(), Some("superseded"));
+    }
+
+    #[test]
+    fn plain_touch_never_supersedes() {
+        let db = db();
+        let a = enroll_top(&db, "sess-A", FP, 10);
+        let b = enroll_top(&db, "sess-B", LivenessFingerprint { pid: 8, start: 9 }, 11);
+        // B's process is now reported as A's process by a plain touch.
+        assert!(touch(&db, &b.binding_id, Some(FP), UtcMillis(12)).unwrap());
+        assert_eq!(row(&db, &a).liveness, Liveness::Connected);
+        assert_eq!(row(&db, &b).liveness, Liveness::Connected);
+        assert_eq!(row(&db, &b).fingerprint, Some(FP));
+    }
+
+    #[test]
+    fn subagents_never_supersede_nor_are_superseded() {
+        let db = db();
+        let p = placement();
+        let parent = enroll_top(&db, "sess-A", FP, 10);
+        let sub_key = key("sess-A", Some("a1"));
+        let mut req = request(&sub_key, &p);
+        req.role = BindingRole::Subagent;
+        req.parent = Some(&parent.binding_id);
+        req.fingerprint = Some(FP);
+        let (sub, _) = enrolled(enroll(&db, &req, UtcMillis(11)).unwrap());
+        assert_eq!(
+            row(&db, &parent).liveness,
+            Liveness::Connected,
+            "subagent did not supersede"
+        );
+        assert_eq!(row(&db, &sub).liveness, Liveness::Connected);
+        // A lifecycle check-in of the subagent does not supersede either.
+        let current = row(&db, &sub);
+        run_enroll_hooks(
+            &db,
+            &EnrollEvent {
+                binding: &current,
+                trigger: EnrollTrigger::Lifecycle,
+                created: false,
+            },
+            UtcMillis(12),
+            ENROLL_HOOKS,
+        )
+        .unwrap();
+        assert_eq!(row(&db, &parent).liveness, Liveness::Connected);
+        // A new top-level session in the same process supersedes the old top-level binding only.
+        let b = enroll_top(&db, "sess-B", FP, 13);
+        assert_eq!(row(&db, &parent).liveness, Liveness::Disconnected);
+        assert_eq!(row(&db, &sub).liveness, Liveness::Connected);
+        assert_eq!(row(&db, &b).liveness, Liveness::Connected);
+    }
+
+    #[test]
+    fn pid_reuse_does_not_supersede() {
+        let db = db();
+        let a = enroll_top(&db, "sess-A", FP, 10);
+        let b = enroll_top(&db, "sess-B", LivenessFingerprint { pid: 7, start: 10 }, 11);
+        assert_eq!(row(&db, &a).liveness, Liveness::Connected);
+        assert_eq!(row(&db, &b).liveness, Liveness::Connected);
+    }
+
+    #[test]
+    fn different_harness_same_pid_does_not_supersede() {
+        let db = db();
+        let a = enroll_top(&db, "sess-A", FP, 10);
+        let mut k = key("sess-B", None);
+        k.harness = "codex".into();
+        let p = placement();
+        let mut req = request(&k, &p);
+        req.fingerprint = Some(FP);
+        let (b, _) = enrolled(enroll(&db, &req, UtcMillis(11)).unwrap());
+        assert_eq!(row(&db, &a).liveness, Liveness::Connected);
+        assert_eq!(row(&db, &b).liveness, Liveness::Connected);
+    }
+
+    #[test]
+    fn lineage_successor_copies_cursors_before_superseding() {
+        let db = db();
+        let pred = enroll_top(&db, "sess-A", FP, 10);
+        db.execute("UPDATE binding_cursors SET seq=1", []).unwrap();
+        let (k, p) = (key("sess-B", None), placement());
+        let mut req = request(&k, &p);
+        req.lineage = Some(&pred.binding_id);
+        req.fingerprint = Some(FP);
+        let (succ, first_contact) = enrolled(enroll(&db, &req, UtcMillis(11)).unwrap());
+        assert!(!first_contact);
+        assert_eq!(
+            read_cursors::cursor_for(&db, &succ.binding_id, &thread()).unwrap(),
+            Some(1)
+        );
+        assert_eq!(row(&db, &pred).liveness, Liveness::Disconnected);
+        assert_eq!(reason(&db, &pred).as_deref(), Some("superseded"));
     }
 }
