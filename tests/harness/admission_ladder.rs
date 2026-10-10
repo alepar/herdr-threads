@@ -183,7 +183,6 @@ const PROFILE: ClaudeProfile = ClaudeProfile {
     model_receipt: NativeSupport::Unsupported,
     session_start_compact: NativeSupport::Unsupported,
     composer_stash: NativeSupport::Unsupported,
-    poke_during_turn: NativeSupport::Unsupported,
 };
 
 const fn planted(

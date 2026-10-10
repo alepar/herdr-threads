@@ -569,44 +569,62 @@ fn eligibility_matrix() {
     let mut stashes = 0;
     for ui in states {
         for focused in [false, true] {
-            for during_turn in [Unsupported, Supported] {
-                for stash in [Unsupported, Supported] {
-                    let caps = PokeCapabilities {
-                        composer_stash: stash,
-                        poke_during_turn: during_turn,
-                    };
-                    let decision =
-                        poke_eligibility(&poke_observation(ui, focused), true, true, caps);
-                    let expected = if focused {
-                        None
-                    } else {
-                        match ui {
-                            HostUiState::Idle => Some(PokeDecision::Submit),
-                            HostUiState::ActiveTurn => {
-                                (during_turn == Supported).then_some(PokeDecision::Submit)
-                            }
-                            HostUiState::HumanInput => {
-                                (stash == Supported).then_some(PokeDecision::Stash)
-                            }
-                            HostUiState::ApprovalOrQuestion | HostUiState::Unknown => None,
+            for stash in [Unsupported, Supported] {
+                let caps = PokeCapabilities {
+                    composer_stash: stash,
+                };
+                let decision = poke_eligibility(&poke_observation(ui, focused), true, true, caps);
+                let expected = if focused {
+                    None
+                } else {
+                    match ui {
+                        HostUiState::Idle => Some(PokeDecision::Submit),
+                        HostUiState::HumanInput => {
+                            (stash == Supported).then_some(PokeDecision::Stash)
                         }
-                    };
-                    match expected {
-                        Some(expected) => assert_eq!(decision, expected, "{ui:?} {focused}"),
-                        None => assert!(
-                            matches!(decision, PokeDecision::Skip(_)),
-                            "{ui:?} focused={focused} {during_turn:?} {stash:?} -> {decision:?}"
-                        ),
+                        HostUiState::ActiveTurn
+                        | HostUiState::ApprovalOrQuestion
+                        | HostUiState::Unknown => None,
                     }
-                    submits += usize::from(decision == PokeDecision::Submit);
-                    stashes += usize::from(decision == PokeDecision::Stash);
+                };
+                match expected {
+                    Some(expected) => assert_eq!(decision, expected, "{ui:?} {focused}"),
+                    None => assert!(
+                        matches!(decision, PokeDecision::Skip(_)),
+                        "{ui:?} focused={focused} {stash:?} -> {decision:?}"
+                    ),
                 }
+                submits += usize::from(decision == PokeDecision::Submit);
+                stashes += usize::from(decision == PokeDecision::Stash);
             }
         }
     }
-    // Idle unfocused (4 capability combos) + ActiveTurn unfocused with the
-    // capability (2); HumanInput unfocused with the capability (2).
-    assert_eq!((submits, stashes), (6, 2));
+    // Idle unfocused (2 stash values); HumanInput unfocused with the stash (1).
+    assert_eq!((submits, stashes), (2, 1));
+}
+
+/// Kills: an `ActiveTurn` submit branch returning, for either stash value.
+#[test]
+fn active_turn_always_defers() {
+    use crate::harness::recipe::NativeSupport::{Supported, Unsupported};
+    for stash in [Unsupported, Supported] {
+        for focused in [false, true] {
+            let caps = PokeCapabilities {
+                composer_stash: stash,
+            };
+            let decision = poke_eligibility(
+                &poke_observation(HostUiState::ActiveTurn, focused),
+                true,
+                true,
+                caps,
+            );
+            if focused {
+                assert_eq!(decision, PokeDecision::Skip("pane focused"));
+            } else {
+                assert_eq!(decision, PokeDecision::Skip("active turn"));
+            }
+        }
+    }
 }
 
 #[test]

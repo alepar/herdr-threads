@@ -383,10 +383,7 @@ pub fn poke_eligibility(
     }
     match observation.ui {
         HostUiState::Idle => PokeDecision::Submit,
-        HostUiState::ActiveTurn if caps.poke_during_turn == NativeSupport::Supported => {
-            PokeDecision::Submit
-        }
-        HostUiState::ActiveTurn => PokeDecision::Skip("active turn without poke_during_turn"),
+        HostUiState::ActiveTurn => PokeDecision::Skip("active turn"),
         HostUiState::HumanInput if caps.composer_stash == NativeSupport::Supported => {
             PokeDecision::Stash
         }

@@ -91,8 +91,6 @@ pub struct ClaudeProfile {
     /// Typed composer text can be read, cleared and retyped around a poke
     /// (spec §10), from `docs/evidence/poke-spike/findings.md`.
     pub composer_stash: NativeSupport,
-    /// A prompt sent during a running turn is queued and steered into it.
-    pub poke_during_turn: NativeSupport,
 }
 
 pub type ClaudeRecipe = Recipe<ClaudeProfile>;
@@ -137,7 +135,6 @@ pub const RECIPES: &[ClaudeRecipe] = &[
             model_receipt: NativeSupport::Unsupported,
             session_start_compact: NativeSupport::Unsupported,
             composer_stash: NativeSupport::Unsupported,
-            poke_during_turn: NativeSupport::Unsupported,
         },
     },
     Recipe {
@@ -156,8 +153,8 @@ pub const RECIPES: &[ClaudeRecipe] = &[
                 evidence SHA in docs/validation/report.md. Model receipt unqualified. Poke \
                 spike (findings.md Q2-Q5): the composer reads via `agent read --source \
                 detection`, clears with ctrl+u, retypes with send-text and no Enter, and \
-                a prompt sent during a turn is steered into it, so composer_stash and \
-                poke_during_turn are declared for this exact version only",
+                a prompt sent during a turn was observed steered into it (historical, \
+                never used), so composer_stash is declared for this exact version only",
         evidence_levels: &[(Version::new(2, 1, 287), Evidence::Live)],
         known_broken: &[],
         profile: ClaudeProfile {
@@ -165,7 +162,6 @@ pub const RECIPES: &[ClaudeRecipe] = &[
             model_receipt: NativeSupport::Unsupported,
             session_start_compact: NativeSupport::Supported,
             composer_stash: NativeSupport::Supported,
-            poke_during_turn: NativeSupport::Supported,
         },
     },
 ];

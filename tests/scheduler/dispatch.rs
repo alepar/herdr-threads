@@ -5516,11 +5516,6 @@ impl PokeCapabilitySource for Declared {
 }
 const STASH: Declared = Declared(PokeCapabilities {
     composer_stash: NativeSupport::Supported,
-    poke_during_turn: NativeSupport::Unsupported,
-});
-const DURING_TURN: Declared = Declared(PokeCapabilities {
-    composer_stash: NativeSupport::Unsupported,
-    poke_during_turn: NativeSupport::Supported,
 });
 
 fn poke_budget() -> CallBudget {
@@ -5757,16 +5752,13 @@ fn poke_plan_for_tests() -> PokePlan {
 }
 
 #[test]
-fn active_attention_is_deferred_even_with_turn_capability_then_idle_delivers() {
+fn active_attention_is_always_deferred_then_idle_delivers() {
     let clock = FakeClock(AtomicU64::new(0));
     let check = FakeReservationCheck {
         current: true,
         calls: AtomicU64::new(0),
     };
-    let caps = Declared(PokeCapabilities {
-        composer_stash: NativeSupport::Supported,
-        poke_during_turn: NativeSupport::Supported,
-    });
+    let caps = STASH;
     for mode in [PokeMode::PokeOnly, PokeMode::WithWake] {
         let host = PokeHost::new(HostUiState::ActiveTurn, false);
         let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
@@ -5825,66 +5817,62 @@ fn nudge_safety_pokes_never_stash_user_input() {
     let mut cases = 0;
     for ui in states {
         for focused in [false, true] {
-            for during_turn in [NativeSupport::Unsupported, NativeSupport::Supported] {
-                for stash in [NativeSupport::Unsupported, NativeSupport::Supported] {
-                    let caps = Declared(PokeCapabilities {
-                        composer_stash: stash,
-                        poke_during_turn: during_turn,
-                    });
-                    let host = StashingHost::new(
-                        PokeHost::new(ui, focused),
-                        ComposerStash::Saved("typed".into()),
-                    );
-                    let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
-                    let attempt = dispatcher
-                        .attempt_poke(
-                            poke_reservation("seat", "a"),
-                            &poke_plan_for_tests(),
-                            PokeMode::PokeOnly,
-                            &caps,
-                            &dispatch_context(),
-                        )
-                        .unwrap();
-                    let (submits, stashes) = match (ui, focused) {
-                        (_, true) => (false, false),
-                        (HostUiState::Idle, _) => (true, false),
-                        (HostUiState::ActiveTurn, _) => (false, false),
-                        (HostUiState::HumanInput, _) => (false, false),
-                        _ => (false, false),
-                    };
-                    let label =
-                        format!("{ui:?} focused={focused} turn={during_turn:?} stash={stash:?}");
-                    assert_eq!(host.inner.prompts().len(), usize::from(submits), "{label}");
-                    assert_eq!(
-                        host.stash_calls.load(Ordering::SeqCst),
-                        u64::from(stashes),
-                        "{label}"
-                    );
-                    assert_eq!(
-                        *host.restored.lock().unwrap(),
-                        if stashes {
-                            vec!["typed".to_owned()]
-                        } else {
-                            vec![]
-                        },
-                        "{label}"
-                    );
-                    assert_eq!(attempt.poked, submits, "{label}");
-                    assert_eq!(
-                        attempt.outcome,
-                        if submits {
-                            WakeOutcome::Submitted
-                        } else {
-                            WakeOutcome::Unsafe
-                        },
-                        "{label}"
-                    );
-                    cases += 1;
-                }
+            for stash in [NativeSupport::Unsupported, NativeSupport::Supported] {
+                let caps = Declared(PokeCapabilities {
+                    composer_stash: stash,
+                });
+                let host = StashingHost::new(
+                    PokeHost::new(ui, focused),
+                    ComposerStash::Saved("typed".into()),
+                );
+                let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
+                let attempt = dispatcher
+                    .attempt_poke(
+                        poke_reservation("seat", "a"),
+                        &poke_plan_for_tests(),
+                        PokeMode::PokeOnly,
+                        &caps,
+                        &dispatch_context(),
+                    )
+                    .unwrap();
+                let (submits, stashes) = match (ui, focused) {
+                    (_, true) => (false, false),
+                    (HostUiState::Idle, _) => (true, false),
+                    (HostUiState::ActiveTurn, _) => (false, false),
+                    (HostUiState::HumanInput, _) => (false, false),
+                    _ => (false, false),
+                };
+                let label = format!("{ui:?} focused={focused} stash={stash:?}");
+                assert_eq!(host.inner.prompts().len(), usize::from(submits), "{label}");
+                assert_eq!(
+                    host.stash_calls.load(Ordering::SeqCst),
+                    u64::from(stashes),
+                    "{label}"
+                );
+                assert_eq!(
+                    *host.restored.lock().unwrap(),
+                    if stashes {
+                        vec!["typed".to_owned()]
+                    } else {
+                        vec![]
+                    },
+                    "{label}"
+                );
+                assert_eq!(attempt.poked, submits, "{label}");
+                assert_eq!(
+                    attempt.outcome,
+                    if submits {
+                        WakeOutcome::Submitted
+                    } else {
+                        WakeOutcome::Unsafe
+                    },
+                    "{label}"
+                );
+                cases += 1;
             }
         }
     }
-    assert_eq!(cases, 40);
+    assert_eq!(cases, 20);
 }
 
 #[test]
@@ -6349,7 +6337,7 @@ fn five_due_seats_send_at_most_four_active_prompts() {
 }
 
 #[test]
-fn active_turn_pokes_defer_receipts_until_idle_even_with_declared_support() {
+fn active_turn_pokes_always_defer_receipts_until_idle() {
     let clock = Arc::new(FakeClock(AtomicU64::new(0)));
     let store = PokeStore::new(clock, one_seat_due());
     let host = PokeHost::new(HostUiState::ActiveTurn, false);
@@ -6362,16 +6350,16 @@ fn active_turn_pokes_defer_receipts_until_idle_even_with_declared_support() {
         },
     );
     assert!(host.prompts().is_empty(), "undeclared: skipped");
-    with_scheduler(&store, &host, &DURING_TURN, |scheduler| {
+    with_scheduler(&store, &host, &STASH, |scheduler| {
         scheduler.drive_pokes(&poke_budget()).unwrap();
     });
     assert!(
         host.prompts().is_empty(),
-        "historical capability cannot admit active attention"
+        "an active turn defers even with a declared capability"
     );
     assert!(store.marked.lock().unwrap().is_empty());
     host.set(HostUiState::Idle, false);
-    with_scheduler(&store, &host, &DURING_TURN, |scheduler| {
+    with_scheduler(&store, &host, &STASH, |scheduler| {
         scheduler.drive_pokes(&poke_budget()).unwrap();
     });
     assert_eq!(host.prompts(), [POKE_TEXT]);
@@ -6703,7 +6691,7 @@ fn cooperative_registered_poke_identity_reaches_capability_source() {
         let caps = RegisteredPokeCaps {
             selected,
             calls: Mutex::new(Vec::new()),
-            declared: DURING_TURN.0,
+            declared: STASH.0,
         };
         let host = RegisteredPokeHost::new(HostUiState::Idle);
         let clock = FakeClock(AtomicU64::new(0));
@@ -6812,7 +6800,7 @@ fn cooperative_registered_poke_none_stays_conservative() {
             (
                 HostUiState::ActiveTurn,
                 PokeMode::PokeOnly,
-                DURING_TURN.0,
+                STASH.0,
                 WakeOutcome::Unsafe,
                 false,
                 None,
@@ -6821,7 +6809,7 @@ fn cooperative_registered_poke_none_stays_conservative() {
             (
                 HostUiState::ActiveTurn,
                 PokeMode::WithWake,
-                DURING_TURN.0,
+                STASH.0,
                 WakeOutcome::Refused(RefusalCause::Unsafe),
                 false,
                 None,
@@ -6966,7 +6954,7 @@ fn cooperative_poke_invalid_identity_never_calls_capability_source() {
             session: NativeSessionId::new("session"),
             execution: ExecutionId::new("execution"),
         });
-        let caps = registered_poke_caps("hermes", DURING_TURN.0);
+        let caps = registered_poke_caps("hermes", STASH.0);
         let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
         let attempt = dispatcher
             .attempt_poke(
@@ -7005,7 +6993,7 @@ fn cooperative_poke_invalid_identity_never_calls_capability_source() {
         },
         ..test_reservation()
     };
-    let caps = registered_poke_caps("codex", DURING_TURN.0);
+    let caps = registered_poke_caps("codex", STASH.0);
     let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
     let attempt = dispatcher
         .attempt_poke(
@@ -7135,7 +7123,7 @@ fn cooperative_registered_poke_preserves_fences_and_budget() {
             };
             let mut host = RegisteredPokeHost::new(HostUiState::Idle);
             change(&mut host);
-            let caps = registered_poke_caps("hermes", DURING_TURN.0);
+            let caps = registered_poke_caps("hermes", STASH.0);
             let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
             let attempt = dispatcher
                 .attempt_poke(
@@ -7174,7 +7162,7 @@ fn cooperative_registered_poke_preserves_fences_and_budget() {
         };
         let mut host = RegisteredPokeHost::new(ui);
         host.inner.observation.focused = focused;
-        let caps = registered_poke_caps("hermes", DURING_TURN.0);
+        let caps = registered_poke_caps("hermes", STASH.0);
         let dispatcher = NativeWakeDispatcher::new(&host, &check, &clock);
         let attempt = dispatcher
             .attempt_poke(
@@ -7236,7 +7224,7 @@ fn cooperative_registered_poke_preserves_fences_and_budget() {
                 }
                 _ => unreachable!(),
             }
-            let caps = registered_poke_caps("hermes", DURING_TURN.0);
+            let caps = registered_poke_caps("hermes", STASH.0);
             let dispatcher = NativeWakeDispatcher::new(&host, &check, clock.as_ref());
             let result = dispatcher.attempt_poke(
                 registered_poke_reservation(Some("hermes")),

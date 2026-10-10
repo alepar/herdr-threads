@@ -1885,8 +1885,7 @@ mod poke_capability_source_tests {
         assert_eq!(
             crate::harness::recipe::poke_capabilities(Harness::Claude, Some("2.1.287")),
             PokeCapabilities {
-                composer_stash: NativeSupport::Supported,
-                poke_during_turn: NativeSupport::Supported
+                composer_stash: NativeSupport::Supported
             }
         );
     }

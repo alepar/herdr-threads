@@ -169,7 +169,6 @@ fn codex_profile_declares_no_poke_capability_without_a_covering_recipe() {
     assert!(codex::recipe_for("0.160.0").is_err());
     for recipe in codex::RECIPES {
         assert_eq!(recipe.profile.composer_stash, NativeSupport::Unsupported);
-        assert_eq!(recipe.profile.poke_during_turn, NativeSupport::Unsupported);
     }
 }
 
@@ -1215,7 +1214,6 @@ const SUPPORTED_RECIPES: &[codex::CodexRecipe] = &[crate::harness::recipe::Recip
         invocation_transport: NativeSupport::Supported,
         model_receipt: NativeSupport::Supported,
         composer_stash: NativeSupport::Unsupported,
-        poke_during_turn: NativeSupport::Unsupported,
     },
 }];
 

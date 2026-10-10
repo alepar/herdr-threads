@@ -112,25 +112,22 @@ Enforcement:
   actionable work, a resolved continuity or a target, and skips a seat served by a live mod channel (`:703`). A
   `wake_on: all` seat's lazy row reaches this gate like any other wake reason, so it is subject to the same idle
   gate.
-- Pokes (deadline reminders typed into the composer): `poke_eligibility` (`src/notification/policy.rs:361-389`, the branch at `:381-383`) would
-  submit during `ActiveTurn` when the harness declares `poke_during_turn`. In production no harness declares it:
-  `ObservedPokeCapabilities::capabilities` returns `PokeCapabilities::NONE` for every harness
-  (`src/app.rs:164-167`), so an active-turn poke is skipped and stays pending until the seat is idle. The historical
-  Claude declaration (`src/harness/claude.rs:166`, asserted at `src/app.rs:1879-1887`) is test-only data.
+- Pokes (deadline reminders typed into the composer): `poke_eligibility` (`src/notification/policy.rs`) skips every
+  `ActiveTurn` observation and no turn-time capability exists (ht-poh.42), so an active-turn poke stays pending until
+  the seat is idle. Turn-time pokes are parked as an idea.
 - Is a deadline poke a "nudge" under rule 4? Yes: it is a typed prompt into the composer that interrupts the model
   exactly as a wake does, so rule 4 applies to it. It also carries only ACK-required receipts (rule 5), never lazy
-  mail. The production wiring already honours rule 4; the dormant `poke_during_turn` branch is the only place the
-  policy code would not (DC-3).
+  mail. Rule 4 is enforced in `poke_eligibility` itself, with no exception (DC-3, fixed).
 - Claude mod channel: whether the mod submits a turn only when idle is decided in the mod (frozen at v0.5.0, R9) and
   is not verifiable from core code (DC-4).
 
-Pinning tests: `tests/scheduler/dispatch.rs` `active_attention_is_deferred_even_with_turn_capability_then_idle_delivers`,
+Pinning tests: `tests/scheduler/dispatch.rs` `active_attention_is_always_deferred_then_idle_delivers`,
 `blocked_or_human_input_target_is_never_prompted`, `nonempty_composer_skips_before_stash_or_restore`,
-`active_turn_pokes_defer_receipts_until_idle_even_with_declared_support`; `tests/scheduler/poke_flow.rs`
-`active_turn_pokes_remain_pending_even_with_the_capability`, `drafts_never_stash_even_with_test_only_capabilities`;
-`tests/scheduler/policy.rs` (poke eligibility matrix, `:563-607`).
+`active_turn_pokes_always_defer_receipts_until_idle`; `tests/scheduler/poke_flow.rs`
+`active_turn_pokes_remain_pending_until_idle`, `drafts_never_stash_even_with_test_only_capabilities`;
+`tests/scheduler/policy.rs` (`eligibility_matrix`, `active_turn_always_defers`).
 
-Verdict: holds in production wiring. Dormant policy branch recorded (DC-3); mod-side idleness recorded (DC-4).
+Verdict: holds in production wiring and in `poke_eligibility` (DC-3, fixed by ht-poh.42); mod-side idleness recorded (DC-4).
 
 ## Rule 5. Messages that require an ACK are always nudge-class
 
@@ -171,11 +168,11 @@ Verdict: holds. The channel flag is a mod-channel registry query keyed by the ad
 |----|------|------|---------|----------------------|------------------|
 | DC-1 | 1 | `src/protocol/commands.rs:766-770,845-846` wire default `Ordinary` | divergence - recorded | Frozen wire shape: an absent field must decode as ordinary for pre-lazy clients (R9/wire compat). Every in-repo producer states its mode. Permanent. | none (permanent) |
 | DC-2 | 3 | `src/harness/bridge.rs:1218-1291`, `src/cli/hook.rs:2588-2630` | divergence - recorded (narrowed) | Lazy bodies now reach Claude-without-mod, Codex and Hermes through the standard hook's inbox page and a hook-pull seat through `DeliveryPull` (see rule 3). Only ordinary (non-lazy) bodies on the hook harnesses remain digest plus ready commands, "as far as the harness allows"; ordinary body delivery for Codex/Hermes is a root-spec non-goal. | follow-up (per-harness delivery policy work) |
-| DC-3 | 4 | `src/notification/policy.rs:381-383` `ActiveTurn` poke branch | divergence - recorded (re-checked, still open) | Dormant: production capability source is `NONE` (`src/app.rs:164-167`), so no poke is typed during a turn. ht-poh.3.3 (merged, `8dd62bac`) re-fitted wake suppression to the delivery policy but did not touch `poke_eligibility`; the branch and the Claude `poke_during_turn` declaration (`src/harness/claude.rs:166`) contradict rule 4 if ever wired. | follow-up: remove the branch or gate it behind the policy trait |
+| DC-3 | 4 | `src/notification/policy.rs` `poke_eligibility` `ActiveTurn` branch (removed) | fixed | ht-poh.42: the `ActiveTurn` submit branch and the `poke_during_turn` capability (and Claude's exact-version declaration) were removed (human decision 2026-10-10). Turn-time pokes are parked as an idea; a revival needs a delivery-policy method with a neutral default and must keep rule 4. | none |
 | DC-4 | 4 | Claude mod idleness decision (mod side) | divergence - recorded | Not verifiable from core; the mod is frozen at v0.5.0 (R9, DP10). | none (R9) |
 
 No divergence met the fix criteria (small, inside `src/scheduler/**` or `src/service/**`, no change to the v0.5.0 mod
-wire or behaviour, no TRUST-POLICY change), so no Rust was changed for DC-1 to DC-4.
+wire or behaviour, no TRUST-POLICY change), so no Rust was changed for DC-1 to DC-4 (DC-3 was later fixed by ht-poh.42 on a human decision).
 
 Fixed by ht-poh.17 (not a numbered divergence, found by this redo): the lifecycle check-in of a hook-pull seat read
 an inbox page and could complete the same lazy rows that `DeliveryPull` offers (two completion sources, rule 3
@@ -192,9 +189,7 @@ the clause was removed. No other rule text was inaccurate.
 - DC-2 (rule 3): lazy bodies now arrive in context for Claude-without-mod, Codex and Hermes (inbox page) and hook-pull
   seats (`DeliveryPull`); ordinary (non-lazy) bodies on the hook harnesses remain digest plus ready commands, accepted
   as "as far as the harness allows"; revisit only with per-harness delivery policies.
-- DC-3 (rule 4): `poke_eligibility` still has an `ActiveTurn` submit branch gated by `poke_during_turn`; production
-  declares none, so it is dormant, and ht-poh.3.3 did not remove it. Remove or route through the delivery policy in a
-  follow-up.
+- DC-3 (rule 4): resolved by ht-poh.42; `poke_eligibility` always defers an active turn and the `poke_during_turn` capability is gone.
 - DC-4 (rule 4): the Claude mod's own idle-vs-in-turn decision cannot be audited from core; frozen by R9.
 - Resolved by ht-poh.3.6 (was a note for 3.5/3.6): rule 2's `wake_on: all` exception now has code and tests (see rule 2).
 - Resolved by ht-poh.17: a hook-pull seat's lazy rows are delivered once, through `DeliveryPull` only (rule 3).
