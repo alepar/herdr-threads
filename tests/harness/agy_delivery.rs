@@ -237,6 +237,11 @@ fn a_genuine_user_message_frame_confirms() {
 }
 
 #[test]
+fn a_genuine_post_tool_call_frame_confirms() {
+    genuine_capture_confirms("transcript-genuine-post-tool-call.jsonl");
+}
+
+#[test]
 fn malformed_and_truncated_lines_are_skipped() {
     let found = scan_fixture("transcript-malformed-lines.jsonl", &["msg-a1", "msg-trunc"]);
     assert_eq!(found, ids_of(&["msg-a1"]));
