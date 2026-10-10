@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.6.1
+
+- **Explicit invitation refusals.** Agents reject a decided bad-fit ordinary invitation by exact ID with a meaningful reason. New refusals deliver the retained reason as an attributed informational warning to the existing thread members at their next check-in; historical rejection replay, required memberships and receipt semantics remain unchanged.
+
 ## v0.6.0
 
 - **Explicit harness permissions.** Hooks and command permission rules are separate owned components for Claude, Codex and Hermes. Setup and installation offer explicit permission choices; human and self-granting commands ask for approval. Write escalating command words first, with routing and output options after them.
