@@ -96,8 +96,8 @@ fn prepared(
             namespace: &namespace,
             topology: &topology(),
             invocation_cwd: root,
-            // The synthetic fixture adapter admits no native option words.
-            options: (r.kind.as_deref() != Some("synthetic_fourth"))
+            // Only the V1 harnesses take the configured native option words here.
+            options: matches!(r.kind.as_deref(), Some("claude" | "codex"))
                 .then(|| "--config 'quoted $HOME' --config '$(literal)'".into()),
             client: &ReadOnly,
             clock: &crate::app::SystemClock::new(),
@@ -973,6 +973,13 @@ mod live {
                         crate::harness::launch::compose_bootstrap_v2_argv(
                             identity.payload.launch.harness,
                             identity.payload.launch.argv.clone(),
+                        )
+                        .unwrap(),
+                    );
+                    identity.payload.launch.startup_input = Some(
+                        crate::harness::launch::bootstrap_v2_startup_input(
+                            identity.payload.launch.harness,
+                            &identity.payload.launch.argv,
                         )
                         .unwrap(),
                     );
@@ -5204,6 +5211,33 @@ mod live {
         assert_eq!(replay, output);
         assert_eq!(launcher.starts, 1);
     }
+    /// agy runs the V2 bootstrap end to end: the retained report places the frozen prompt with
+    /// `--prompt-interactive` and completion validates it against the frozen template.
+    #[test]
+    fn bootstrap_v2_agy_completes_end_to_end_with_prompt_interactive() {
+        let f = Fixture::with_request(Fault::None, super::kind_request("agy", &[]), Some(vec![]));
+        assert_eq!(f.peer.identity.payload.plan_version(), 2);
+        let mut launcher = DownstreamLauncher::default();
+        let mut output = vec![];
+        let done = downstream(&f, &mut launcher, &mut output)
+            .unwrap_or_else(|e| panic!("agy V2 bootstrap must complete: {e:?}"));
+        assert_eq!(done.state, BootstrapState::Completed);
+        let report = done.completed.unwrap().retained.report;
+        assert_eq!(report["harness"], "agy");
+        let argv = report["argv"].as_array().unwrap();
+        let flag = argv
+            .iter()
+            .position(|arg| arg == "--prompt-interactive")
+            .unwrap_or_else(|| panic!("no --prompt-interactive in {argv:?}"));
+        assert_eq!(flag + 2, argv.len(), "the prompt is the flag's value, last");
+        assert!(
+            argv[flag + 1]
+                .as_str()
+                .unwrap()
+                .starts_with("Expected handoff command routing")
+        );
+        assert_eq!(launcher.starts, 1);
+    }
     /// The V2 Root launch refuses before any native start when today's composer would launch
     /// different arguments than the adapter composition the plan froze.
     #[test]
@@ -5491,6 +5525,17 @@ fn v1_plan_payload_is_unchanged_by_bootstrap_v2() {
     assert!(identity.payload.launch.composed_argv.is_none());
     let launch = serde_json::to_value(&identity.payload.launch).unwrap();
     assert!(launch.get("composed_argv").is_none(), "{launch}");
+    assert!(identity.payload.launch.startup_input.is_none());
+    assert!(launch.get("startup_input").is_none(), "{launch}");
+    let plan = downstream_plan(
+        &identity,
+        &created_tab(),
+        &crate::protocol::ids::SeatId::new("recipient"),
+    )
+    .unwrap();
+    assert!(plan.bootstrap_input.is_none());
+    let plan_json = serde_json::to_value(&plan).unwrap();
+    assert!(plan_json.get("bootstrap_input").is_none(), "{plan_json}");
     // A pre-V2 stored payload (no such key) still reads back and validates.
     let legacy: crate::protocol::handoff::BootstrapPayload =
         serde_json::from_value(serde_json::to_value(&identity.payload).unwrap()).unwrap();
@@ -5592,6 +5637,215 @@ fn v2_retained_argv_validation_accepts_frozen_and_refuses_changed() {
     let refusal = check(&drifted, &frozen).unwrap_err();
     assert!(
         refusal.detail.contains("synthetic_fourth") && refusal.detail.contains("V2"),
+        "{refusal:?}"
+    );
+}
+fn created_tab() -> crate::ports::CreatedTab {
+    use crate::host::continuity::{LocalEndpointWitness, SocketIdentity};
+    use crate::protocol::ids::{HostBootId, HostCallId, TerminalId};
+    crate::ports::CreatedTab {
+        correlation: HostCallId::new("correlation"),
+        workspace: HostTargetId::new("w1"),
+        tab: HostTargetId::new("w1:t2"),
+        root_pane: HostTargetId::new("w1:p2"),
+        terminal: TerminalId::new("terminal"),
+        host_incarnation: HostBootId::new("herdr-server:pid=42:start=1.000002:uid=501"),
+        witness: LocalEndpointWitness {
+            schema: 1,
+            platform: "macos-proc-bsdinfo-v1".into(),
+            endpoint: "/host.sock".into(),
+            peer_uid: 501,
+            peer_pid: 42,
+            start_seconds: 1,
+            start_microseconds: 2,
+            socket: SocketIdentity {
+                device: 1,
+                inode: 2,
+                birth_seconds: 1,
+                birth_nanoseconds: 0,
+                change_seconds: 1,
+                change_nanoseconds: 0,
+            },
+        },
+    }
+}
+fn kind_request(kind: &str, argv: &[&str]) -> Request {
+    Request {
+        kind: Some(kind.into()),
+        binary: None,
+        argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+        ..request()
+    }
+}
+fn identity_context(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+) -> crate::protocol::output::ContinuationContext {
+    let ns = &identity.payload.handoff.namespace;
+    crate::protocol::output::ContinuationContext {
+        state_dir: Some(ns.state_dir.to_string_lossy().into_owned()),
+        host: Some(ns.host_endpoint.to_string_lossy().into_owned()),
+    }
+}
+/// `handoff --new-tab --kind agy` places the frozen V1 prompt with `--prompt-interactive`
+/// instead of the bare positional agy's flag grammar refuses.
+#[test]
+fn v2_new_tab_agy_places_the_prompt_with_prompt_interactive() {
+    let temp = Temp::new();
+    let identity = prepared(&kind_request("agy", &["--effort", "high"]), temp.path())
+        .expect("agy new-tab preparation must succeed");
+    assert_eq!(identity.payload.plan_version(), 2);
+    let template = identity.payload.launch.startup_input.clone().unwrap();
+    assert_eq!(template.before, ["--prompt-interactive"]);
+    assert_eq!(template.insertion_index, 2);
+    let fresh = preflight_launch_request(&identity).unwrap();
+    let crate::protocol::handoff::HandoffChannel::Existing { thread } =
+        &identity.payload.handoff.channel
+    else {
+        panic!("fixture uses an existing thread")
+    };
+    let prompt = super::super::handoff::bootstrap_v1::prompt(
+        thread.as_str(),
+        &identity_context(&identity),
+        &identity.claim.instance,
+    );
+    assert_eq!(
+        fresh.argv,
+        ["--effort", "high", "--prompt-interactive", prompt.as_str()]
+    );
+    // The adapter accepts exactly this composition.
+    crate::harness::launch::compose_bootstrap_v2_argv(
+        identity.payload.launch.harness,
+        fresh.argv.clone(),
+    )
+    .unwrap();
+    // The downstream plan carries the frozen placement.
+    let plan = downstream_plan(
+        &identity,
+        &created_tab(),
+        &crate::protocol::ids::SeatId::new("recipient"),
+    )
+    .unwrap();
+    assert_eq!(plan.bootstrap_input, Some(template));
+    assert!(plan.startup_input.is_none());
+    plan.validate().unwrap();
+}
+/// Hermes places the same frozen text with `--query`.
+#[test]
+fn v2_new_tab_hermes_places_the_prompt_with_query() {
+    let temp = Temp::new();
+    let identity = prepared(&kind_request("hermes", &["--model", "m"]), temp.path())
+        .expect("hermes new-tab preparation must succeed");
+    assert_eq!(identity.payload.plan_version(), 2);
+    let template = identity.payload.launch.startup_input.clone().unwrap();
+    assert_eq!(template.before, ["--query"]);
+    let fresh = preflight_launch_request(&identity).unwrap();
+    assert_eq!(&fresh.argv[..3], ["--model", "m", "--query"]);
+    assert_eq!(fresh.argv.len(), 4);
+    assert!(fresh.argv[3].starts_with("Expected handoff command routing"));
+    let (expected, _) = template
+        .apply(&identity.payload.launch.argv, &fresh.argv[3])
+        .unwrap();
+    assert_eq!(fresh.argv, expected);
+    crate::harness::launch::compose_bootstrap_v2_argv(
+        identity.payload.launch.harness,
+        fresh.argv.clone(),
+    )
+    .unwrap();
+}
+/// Retained validation applies the template frozen in the plan; the V1 bare-positional form is
+/// not a V2 composition.
+#[test]
+fn v2_retained_argv_validation_uses_the_frozen_template() {
+    let temp = Temp::new();
+    let identity = prepared(&kind_request("agy", &["--effort", "high"]), temp.path()).unwrap();
+    let launch = &identity.payload.launch;
+    let context = identity_context(&identity);
+    let instance = &identity.claim.instance;
+    let prompt = super::super::handoff::bootstrap_v1::prompt("t1", &context, instance);
+    let placed = launch
+        .startup_input
+        .as_ref()
+        .unwrap()
+        .apply(&launch.argv, &prompt)
+        .unwrap()
+        .0;
+    let retained = serde_json::json!(
+        crate::harness::launch::compose_bootstrap_v2_argv(launch.harness, placed).unwrap()
+    );
+    let check = |launch: &crate::protocol::handoff::BootstrapLaunch,
+                 retained: &serde_json::Value| {
+        super::super::handoff::retained_launch_argv_matches(
+            launch,
+            "t1",
+            &context,
+            instance,
+            Some(retained),
+        )
+    };
+    assert!(check(launch, &retained).unwrap());
+    let mut bare = launch.argv.clone();
+    bare.push(prompt);
+    let bare = serde_json::json!(bare);
+    assert!(!matches!(check(launch, &bare), Ok(true)));
+    // A V2 launch without its frozen template is refused, never matched.
+    let mut stripped = launch.clone();
+    stripped.startup_input = None;
+    assert!(check(&stripped, &retained).is_err());
+}
+/// A V2 payload carries a template exactly when it carries a composition.
+#[test]
+fn v2_payload_requires_template_iff_composed_argv() {
+    let temp = Temp::new();
+    let v2 = prepared(&kind_request("agy", &[]), temp.path())
+        .unwrap()
+        .payload;
+    let v1 = prepared(&request(), temp.path()).unwrap().payload;
+    v2.validate().unwrap();
+    v1.validate().unwrap();
+    let mut missing = v2.clone();
+    missing.launch.startup_input = None;
+    assert!(missing.validate().is_err());
+    let mut extra = v1.clone();
+    extra.launch.startup_input = Some(crate::harness::adapter::StartupInputTemplate::positional(
+        v1.launch.argv.len(),
+    ));
+    assert!(extra.validate().is_err());
+    let plan = |version, payload: &crate::protocol::handoff::BootstrapPayload| {
+        super::super::journal::BootstrapPlan {
+            version,
+            payload: payload.clone(),
+        }
+    };
+    plan(2, &v2).validate().unwrap();
+    assert!(plan(2, &missing).validate().is_err());
+    assert!(plan(1, &extra).validate().is_err());
+    // A template that no longer fits the caller arguments is refused too.
+    let mut out_of_range = v2.clone();
+    out_of_range
+        .launch
+        .startup_input
+        .as_mut()
+        .unwrap()
+        .insertion_index = 9;
+    assert!(out_of_range.validate().is_err());
+}
+/// Fresh preparation refuses a plan whose frozen placement differs from today's adapter.
+#[test]
+fn v2_startup_input_drift_is_refused_at_preparation() {
+    let temp = Temp::new();
+    let mut identity = prepared(&kind_request("agy", &["--effort", "high"]), temp.path()).unwrap();
+    preflight_launch_argv(&identity).unwrap();
+    identity
+        .payload
+        .launch
+        .startup_input
+        .as_mut()
+        .unwrap()
+        .before
+        .push("--x".into());
+    let refusal = preflight_launch_argv(&identity).unwrap_err();
+    assert!(
+        format!("{refusal:?}").contains("current startup input differs from bootstrap plan V2"),
         "{refusal:?}"
     );
 }

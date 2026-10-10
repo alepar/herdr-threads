@@ -922,6 +922,7 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
             SemanticMutation::freeze(
                 SemanticMutation::Handoff(Box::new(HandoffPlan {
                     startup_input: None,
+                    bootstrap_input: None,
                     request: HandoffRequest {
                         thread: Some(ThreadId::new("t")),
                         thread_name: None,

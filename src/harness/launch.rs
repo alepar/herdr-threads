@@ -461,6 +461,29 @@ pub fn compose_bootstrap_v2_argv(
         .compose_argv(caller, vec![])
 }
 
+/// Bootstrap plan V2: the adapter's own startup-input placement for `caller`. An adapter without one
+/// cannot be the target of a handoff (the same refusal as the pane path).
+pub fn bootstrap_v2_startup_input(
+    harness: Harness,
+    caller: &[String],
+) -> Result<crate::harness::adapter::StartupInputTemplate, ApiError> {
+    launch_registration(super::registry::builtins(), harness)?
+        .launch_policy()
+        .expect("checked provider")
+        .prepare_startup_input(
+            caller,
+            &crate::harness::adapter::StartupInputSpec {
+                max_text_bytes: crate::ports::NativeLaunchRequest::MAX_ARG_BYTES,
+            },
+        )?
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::UnsupportedHarness,
+                "selected adapter has no handoff startup input",
+            )
+        })
+}
+
 /// The V1 Codex acceptance grammar, frozen with its original tables.
 mod v1 {
     use super::error;

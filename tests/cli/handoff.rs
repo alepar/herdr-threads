@@ -976,6 +976,7 @@ fn frozen_in(
             SemanticMutation::freeze(
                 SemanticMutation::Handoff(Box::new(HandoffPlan {
                     startup_input: None,
+                    bootstrap_input: None,
                     request: request(),
                     context,
                     recipient: SeatId::new("recipient"),
@@ -1988,6 +1989,7 @@ fn registered_plan_fixture(
 ) -> HandoffPlan {
     HandoffPlan {
         startup_input: None,
+        bootstrap_input: None,
         request: req,
         context,
         recipient: SeatId::new("recipient"),
@@ -2261,6 +2263,7 @@ fn handoff_manual_recovery_preserves_frozen_options_without_reentry() {
             .unwrap();
         let plan = HandoffPlan {
             startup_input: None,
+            bootstrap_input: None,
             request,
             context: Default::default(),
             recipient: SeatId::new("recipient"),
@@ -2404,6 +2407,7 @@ fn stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver() {
         .unwrap();
     let plan = HandoffPlan {
         startup_input: None,
+        bootstrap_input: None,
         request,
         context: Default::default(),
         recipient: SeatId::new("recipient"),
@@ -2960,6 +2964,28 @@ fn task48_finite_grammar_keeps_captured_caller_states_and_refuses_neighbors() {
     }
 }
 
+/// Pane handoff places the startup text with each adapter's own template, and the composed
+/// argv passes that adapter's native argv validation (agy and Hermes, ht-poh.22 acceptance).
+#[test]
+fn pane_handoff_agy_and_hermes_produce_valid_argv() {
+    let caller: Vec<String> = vec!["--model".into(), "m".into()];
+    let agy = task48_select("agy", &["--model", "m"]).unwrap();
+    let (argv, slot) = agy.apply(&caller, "TEXT").unwrap();
+    assert_eq!(argv, ["--model", "m", "--prompt-interactive", "TEXT"]);
+    assert_eq!(slot, 3);
+    task48_policy("agy").validate_native_argv(&argv).unwrap();
+    // A bare positional is what the V1 bootstrap appended; agy's grammar refuses it.
+    let bare: Vec<String> = ["--model", "m", "TEXT"].map(String::from).to_vec();
+    assert!(task48_policy("agy").validate_native_argv(&bare).is_err());
+    // The prompt flag is occupied by the caller: no template.
+    assert!(task48_select("agy", &["--prompt-interactive", "x"]).is_err());
+
+    let hermes = task48_select("hermes", &["--model", "m"]).unwrap();
+    let (argv, _) = hermes.apply(&caller, "TEXT").unwrap();
+    assert_eq!(argv, ["--model", "m", "--query", "TEXT"]);
+    task48_policy("hermes").validate_native_argv(&argv).unwrap();
+}
+
 struct Task48UnavailableLauncher;
 impl HandoffLauncher for Task48UnavailableLauncher {
     fn select_startup_input(
@@ -3406,6 +3432,7 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
                         _ => {
                             let plan = HandoffPlan {
                                 startup_input: None,
+                                bootstrap_input: None,
                                 request: HandoffRequest {
                                     launch,
                                     ..request()
@@ -3746,6 +3773,7 @@ fn frozen_v1_prompt_and_manual_projection_ignore_current_renderer_drift() {
     let (_temp, journal) = journal();
     let plan = HandoffPlan {
         startup_input: None,
+        bootstrap_input: None,
         request: request(),
         context: v1_context("/state", "/host.sock"),
         recipient: SeatId::new("recipient"),

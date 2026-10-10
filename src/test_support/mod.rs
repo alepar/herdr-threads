@@ -511,6 +511,19 @@ pub mod synthetic_fourth {
                 Ok(())
             }
         }
+        fn prepare_startup_input(
+            &self,
+            caller: &[String],
+            _: &crate::harness::adapter::StartupInputSpec,
+        ) -> Result<
+            Option<crate::harness::adapter::StartupInputTemplate>,
+            crate::protocol::results::ApiError,
+        > {
+            self.validate_native_argv(caller)?;
+            Ok(Some(
+                crate::harness::adapter::StartupInputTemplate::positional(caller.len()),
+            ))
+        }
         fn compose_argv(
             &self,
             caller: Vec<String>,

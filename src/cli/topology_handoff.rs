@@ -197,6 +197,14 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
                     launch.argv.clone(),
                 )?)
             },
+            startup_input: if crate::harness::launch::bootstrap_v1_harness(harness.occupant()) {
+                None
+            } else {
+                Some(crate::harness::launch::bootstrap_v2_startup_input(
+                    harness.occupant(),
+                    &launch.argv,
+                )?)
+            },
             argv: launch.argv,
         },
         handoff_key: child("handoff"),
@@ -237,12 +245,21 @@ pub(super) fn preflight_launch_request(
         HandoffChannel::Existing { thread } => thread,
         HandoffChannel::New { .. } => &longest,
     };
-    let mut argv = identity.payload.launch.argv.clone();
-    argv.push(super::handoff::bootstrap_v1::prompt(
-        thread.as_str(),
-        &context,
-        &identity.claim.instance,
-    ));
+    let prompt =
+        super::handoff::bootstrap_v1::prompt(thread.as_str(), &context, &identity.claim.instance);
+    let argv = match &identity.payload.launch.startup_input {
+        Some(template) => {
+            template
+                .apply(&identity.payload.launch.argv, &prompt)
+                .map_err(RunError::from)?
+                .0
+        }
+        None => {
+            let mut argv = identity.payload.launch.argv.clone();
+            argv.push(prompt);
+            argv
+        }
+    };
     Ok(super::launch::LaunchRequest {
         target: identity.claim.target.clone(),
         harness: identity.payload.launch.harness.into(),
@@ -256,6 +273,17 @@ fn preflight_launch_argv(
     identity: &crate::protocol::handoff::BootstrapIdentity,
 ) -> Result<(), RunError> {
     let request = preflight_launch_request(identity)?;
+    if let Some(frozen) = &identity.payload.launch.startup_input
+        && *frozen
+            != crate::harness::launch::bootstrap_v2_startup_input(
+                identity.payload.launch.harness,
+                &identity.payload.launch.argv,
+            )?
+    {
+        return Err(super::invalid_request(
+            "current startup input differs from bootstrap plan V2; a new bootstrap plan version is required",
+        ));
+    }
     // Supported production hooks own no native args. This is the same composition
     // and geometry used by prepare_managed, including Codex grammar validation.
     let argv = crate::harness::launch::compose_native_argv(
@@ -612,6 +640,7 @@ fn downstream_plan(
     let harness = Harness::from(payload.launch.harness);
     let plan = super::handoff::HandoffPlan {
         startup_input: None,
+        bootstrap_input: payload.launch.startup_input.clone(),
         request: super::handoff::HandoffRequest {
             thread,
             thread_name,

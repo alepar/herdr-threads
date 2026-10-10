@@ -36,6 +36,10 @@ pub struct HandoffRequest {
 pub struct HandoffPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_input: Option<crate::harness::adapter::StartupInputTemplate>,
+    /// Bootstrap plan V2 only: the frozen placement of the frozen V1 prompt text. Distinct from
+    /// `startup_input` (the pane path's envelope with today's text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_input: Option<crate::harness::adapter::StartupInputTemplate>,
     pub request: HandoffRequest,
     pub context: crate::protocol::output::ContinuationContext,
     pub recipient: SeatId,
@@ -70,6 +74,16 @@ impl HandoffPlan {
     pub fn validate(&self) -> io::Result<()> {
         self.request.validate()?;
         if let Some(template) = &self.startup_input {
+            template
+                .validate(self.request.launch.argv.len())
+                .map_err(|error| io::Error::other(error.detail))?;
+        }
+        if let Some(template) = &self.bootstrap_input {
+            if self.startup_input.is_some() {
+                return Err(io::Error::other(
+                    "handoff plan carries both startup and bootstrap input",
+                ));
+            }
             template
                 .validate(self.request.launch.argv.len())
                 .map_err(|error| io::Error::other(error.detail))?;
@@ -618,6 +632,7 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
     let key = || OperationId::new(uuid::Uuid::new_v4().to_string());
     let plan = HandoffPlan {
         startup_input: Some(template),
+        bootstrap_input: None,
         request,
         context: output.context.clone(),
         recipient,
@@ -999,11 +1014,11 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
             // against frozen V1 composition, so refuse before any start when
             // today's composer would launch different native arguments.
             let mut request = plan.request.launch.clone();
-            request.argv.push(bootstrap_v1::prompt(
-                thread.as_str(),
-                &plan.context,
-                &claim.instance,
-            ));
+            let prompt = bootstrap_v1::prompt(thread.as_str(), &plan.context, &claim.instance);
+            match &plan.bootstrap_input {
+                Some(template) => request.argv = template.apply(&request.argv, &prompt)?.0,
+                None => request.argv.push(prompt),
+            }
             let harness = request.harness.into();
             let current =
                 crate::harness::launch::compose_native_argv(harness, request.argv.clone(), vec![])?;
@@ -1553,10 +1568,12 @@ pub(crate) mod bootstrap_v1 {
 /// adapter drifted and the plan is refused), and the retained successful report's `argv` must
 /// be that composition of the caller arguments plus one generated bootstrap prompt. The
 /// prompt text is harness-neutral and shared with V1.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn retained_argv_matches_v2(
     harness: crate::protocol::authority::Harness,
     caller: &[String],
     composed: &[String],
+    template: &crate::harness::adapter::StartupInputTemplate,
     thread: &str,
     context: &crate::protocol::output::ContinuationContext,
     instance: &str,
@@ -1572,8 +1589,9 @@ pub(crate) fn retained_argv_matches_v2(
         ));
     }
     for prompt in bootstrap_v1::retained_prompts(thread, context, instance) {
-        let mut argv = caller.to_vec();
-        argv.push(prompt);
+        let Ok((argv, _)) = template.apply(caller, &prompt) else {
+            continue;
+        };
         let expected = crate::harness::launch::compose_bootstrap_v2_argv(harness, argv)?;
         if retained == Some(&serde_json::json!(expected)) {
             return Ok(true);
@@ -1596,6 +1614,12 @@ pub(crate) fn retained_launch_argv_matches(
             launch.harness,
             &launch.argv,
             composed,
+            launch.startup_input.as_ref().ok_or_else(|| {
+                crate::protocol::results::ApiError::new(
+                    crate::protocol::results::ErrorCode::Conflict,
+                    "bootstrap plan V2 carries no frozen startup input",
+                )
+            })?,
             thread,
             context,
             instance,
@@ -1742,12 +1766,18 @@ fn report_core(
         } else {
             // Historical caller arrays are display only; do not reselect a
             // transport. Template-free plans carry the frozen V1 input.
-            manual.extend(plan.request.launch.argv.clone());
-            manual.push(bootstrap_v1::prompt(
-                thread.as_str(),
-                &plan.context,
-                &claim.instance,
-            ));
+            let prompt = bootstrap_v1::prompt(thread.as_str(), &plan.context, &claim.instance);
+            match plan
+                .bootstrap_input
+                .as_ref()
+                .map(|template| template.apply(&plan.request.launch.argv, &prompt))
+            {
+                Some(Ok((argv, _))) => manual.extend(argv),
+                _ => {
+                    manual.extend(plan.request.launch.argv.clone());
+                    manual.push(prompt);
+                }
+            }
         }
     } else {
         manual.clear();
