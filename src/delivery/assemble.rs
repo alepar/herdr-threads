@@ -113,6 +113,7 @@ impl Assembler {
                 ..
             } => self.emit_chunk(Chunk {
                 lazy: false,
+                promoted: false,
                 ack_required: ack_candidate.is_some(),
                 thread,
                 topic: topic_data,
@@ -138,9 +139,11 @@ impl Assembler {
                 body_start,
                 body_end,
                 body_len,
+                wakes,
                 ..
             } => self.emit_chunk(Chunk {
                 lazy: true,
+                promoted: wakes,
                 ack_required: false,
                 thread,
                 topic: topic_data,
@@ -214,7 +217,7 @@ impl Assembler {
         };
         self.emitted.insert(id);
         Ok(Assembled::Item(DeliveryItem {
-            kind: if chunk.lazy {
+            kind: if chunk.lazy && !chunk.promoted {
                 DeliveryKind::Lazy
             } else {
                 DeliveryKind::Message
@@ -227,6 +230,9 @@ impl Assembler {
 
 struct Chunk {
     lazy: bool,
+    /// A lazy row of a `wake_on: all` seat, delivered as a `message` line with
+    /// no ACK to run (delivery-policy DP8); the daemon still completes it lazily.
+    promoted: bool,
     ack_required: bool,
     thread: crate::protocol::ids::ThreadId,
     topic: String,

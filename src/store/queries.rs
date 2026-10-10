@@ -6065,6 +6065,9 @@ mod inbox_v2 {
             })
             .transpose()?;
         let body = body[offset as usize..].to_owned();
+        let wakes = lazy
+            && super::super::seats::wake_on(db, &state.seat)?
+                == crate::protocol::commands::WakeOn::All;
         Ok(Some(if lazy {
             Item::LazyMessage {
                 thread: thread_id,
@@ -6080,6 +6083,7 @@ mod inbox_v2 {
                 body_start: offset,
                 body_end: body_len,
                 body_len,
+                wakes,
             }
         } else {
             Item::Message {
