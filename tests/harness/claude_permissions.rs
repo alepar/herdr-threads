@@ -315,3 +315,61 @@ fn interrupted_publication_with_edited_settings_refuses() {
     );
     assert_eq!(scope.component().remove(), Err(SetupError::Conflict));
 }
+
+// A historical grant the user already deleted is not re-added without consent: the record is
+// only retired.
+#[test]
+fn deleted_historical_rule_is_not_regranted() {
+    let scope = Scope::new(b"{}");
+    scope.historical(BROAD, false);
+    let mut value = scope.value();
+    remove_one(&mut value, "allow", BROAD);
+    fs::write(&scope.settings, serde_json::to_vec(&value).unwrap()).unwrap();
+    let status = scope
+        .component()
+        .apply(PermissionConsent::Undecided)
+        .unwrap();
+    assert_eq!(status.state, ClaudePermissionState::Missing);
+    // Nothing granted; only the empty list the earlier setup created is tidied away.
+    value.as_object_mut().unwrap().remove("permissions");
+    assert_eq!(scope.value(), value);
+    assert_eq!(
+        recorded_hook_permission(&scope.settings, &scope.hooks).unwrap(),
+        None
+    );
+}
+
+// With settings.json (or its whole directory) gone, removal and setup forget the component
+// instead of refusing, even mid-publication.
+#[test]
+fn missing_settings_forget_the_component() {
+    for gone in ["file", "dir", "pending"] {
+        let scope = Scope::new(b"{}");
+        scope.component().apply(PermissionConsent::Granted).unwrap();
+        if gone == "pending" {
+            arm(Some(Fault::AfterIntent));
+            let _ = scope.component().apply(PermissionConsent::Granted);
+            arm(None);
+        }
+        if gone == "dir" {
+            fs::remove_dir_all(scope.dir.join(".claude")).unwrap();
+        } else {
+            fs::remove_file(&scope.settings).unwrap();
+        }
+        assert_eq!(
+            scope.component().remove().unwrap().state,
+            ClaudePermissionState::Missing,
+            "{gone}"
+        );
+        assert!(!scope.component().manifest().exists(), "{gone}");
+        assert_eq!(
+            scope
+                .component()
+                .apply(PermissionConsent::Undecided)
+                .unwrap()
+                .state,
+            ClaudePermissionState::Missing,
+            "{gone}"
+        );
+    }
+}

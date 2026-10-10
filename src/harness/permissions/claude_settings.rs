@@ -216,13 +216,25 @@ impl ClaudePermissions {
     }
 
     /// The settings file as recorded in the manifest: under the canonical config directory.
-    fn recorded_file(&self) -> Result<PathBuf, SetupError> {
-        let parent = self.settings.parent().ok_or(SetupError::Invalid)?;
-        let name = self.settings.file_name().ok_or(SetupError::Invalid)?;
-        Ok(parent
-            .canonicalize()
-            .map_err(|_| SetupError::Io)?
-            .join(name))
+    /// `None` when that directory is gone.
+    fn recorded_file(&self) -> Option<PathBuf> {
+        Some(
+            self.settings
+                .parent()?
+                .canonicalize()
+                .ok()?
+                .join(self.settings.file_name()?),
+        )
+    }
+
+    /// With the settings file gone no owned rule is left: forget the component (an interrupted
+    /// publication included). True when it did.
+    fn forget_if_settings_gone(&self) -> Result<bool, SetupError> {
+        if self.current()?.is_some() {
+            return Ok(false);
+        }
+        self.remove_manifest()?;
+        Ok(true)
     }
 
     fn current(&self) -> Result<Option<Vec<u8>>, SetupError> {
@@ -243,14 +255,13 @@ impl ClaudePermissions {
         }
         let manifest: PermissionComponentManifest =
             serde_json::from_slice(&bytes).map_err(|_| SetupError::Invalid)?;
-        let file = self.recorded_file()?;
+        let file = self.recorded_file();
         // A manifest can never direct removal of a rule it does not fingerprint.
         if manifest.version != PERMISSION_MANIFEST_VERSION
             || manifest.backend != PermissionBackend::Claude
-            || manifest
-                .resources
-                .iter()
-                .any(|r| r.file != file || resource_list(r).is_none())
+            || manifest.resources.iter().any(|r| {
+                file.as_ref().is_some_and(|file| r.file != *file) || resource_list(r).is_none()
+            })
         {
             return Err(SetupError::Conflict);
         }
@@ -271,7 +282,8 @@ impl ClaudePermissions {
 
     fn lock(&self) -> Result<OwnedConfigWriteGuard, SetupError> {
         let root = self
-            .recorded_file()?
+            .recorded_file()
+            .ok_or(SetupError::Io)?
             .parent()
             .ok_or(SetupError::Invalid)?
             .to_path_buf();
@@ -353,6 +365,9 @@ impl ClaudePermissions {
         let Some(pending) = manifest.pending.take() else {
             return Ok(());
         };
+        if self.forget_if_settings_gone()? {
+            return Ok(());
+        }
         let current = hex(&self.current()?.ok_or(SetupError::Conflict)?);
         if current == pending.after {
             if let Some(retired) = &pending.retired {
@@ -388,6 +403,10 @@ impl ClaudePermissions {
         {
             return self.status();
         }
+        if self.forget_if_settings_gone()? {
+            // Creating the file for a fresh grant is the caller's (hook setup creates it).
+            return self.status();
+        }
         let guard = self.lock()?;
         self.settle(&guard)?;
         let manifest = self.read()?;
@@ -399,7 +418,7 @@ impl ClaudePermissions {
         let current = self.current()?.ok_or(SetupError::Conflict)?;
         let mut value = setup::root(&current)?;
         let rendered = render();
-        let file = self.recorded_file()?;
+        let file = self.recorded_file().ok_or(SetupError::Io)?;
         let mut target: Vec<(&str, String)> = LISTS
             .into_iter()
             .zip([rendered.allow, rendered.ask])
@@ -417,8 +436,14 @@ impl ClaudePermissions {
                         .collect();
                     target.retain(|(list, rule)| kept.contains(&(*list, rule.as_str())));
                 }
-                // The historical broad grant keeps exactly the spelling it already covered.
-                (None, Some(hook)) if !hook.owned.is_empty() => {
+                // A historical grant still in place keeps exactly the spelling it covered; one
+                // the user already deleted stays deleted.
+                (None, Some(hook))
+                    if hook
+                        .owned
+                        .iter()
+                        .any(|rule| present(&value, "allow", rule).unwrap_or(false)) =>
+                {
                     target.retain(|(_, rule)| covers_spelling(rule, "herdr-threads"));
                 }
                 _ => target.clear(),
@@ -518,7 +543,7 @@ impl ClaudePermissions {
     /// Remove every rule the component added; pre-existing rules stay. A historical hook
     /// record is left to the hook removal, which strips its owned rule.
     pub fn remove(&self) -> Result<ClaudePermissionStatus, SetupError> {
-        if self.read()?.is_none() {
+        if self.read()?.is_none() || self.forget_if_settings_gone()? {
             return self.status();
         }
         let guard = self.lock()?;
