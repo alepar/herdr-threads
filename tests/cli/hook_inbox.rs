@@ -147,7 +147,13 @@ fn only_a_whole_prefix_of_the_page_fits_and_the_rest_is_retrievable() {
     }
     let offer = page_offer(vec![partial, lazy("m5", "later")], false);
     let (context, lazy_ids) = append(ordinary_context.clone(), &offer, &prefix(), 4096);
-    assert_eq!(context, ordinary_context, "nothing whole to show");
+    assert_eq!(
+        context,
+        format!(
+            "{ordinary_context}\nherdr-threads: 2 inbox item(s) pending do not fit this hook's context; read them with herdr-threads --state-dir /s inbox"
+        ),
+        "nothing whole to show: only the exact pointer"
+    );
     assert!(lazy_ids.is_empty());
     // A further page alone also earns the retrieval line.
     let offer = page_offer(vec![lazy("m6", "one")], true);

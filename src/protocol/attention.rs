@@ -273,6 +273,7 @@ impl AttentionDigest {
         let lazy = self
             .lazy
             .as_ref()
+            .filter(|lazy| lazy.count > 0)
             .map_or_else(String::new, |lazy| format!("; {}", class("lazy", lazy)));
         format!(
             "attention digest: {}; {}; {}{lazy}",

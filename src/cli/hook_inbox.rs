@@ -32,6 +32,8 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 const PAGE_ROWS: u16 = 8;
 /// Read size of the page; the hook shows only what fits its own bound.
 const PAGE_READ_BYTES: u32 = 16_384;
+/// Own cap of the post-delivery lazy completion.
+const COMMIT_BUDGET: std::time::Duration = std::time::Duration::from_millis(300);
 /// Escaped context bound: Hermes refuses result JSON over 8192 bytes, and
 /// its envelope (event and session IDs) stays well inside the margin.
 const MAX_ESCAPED_CONTEXT: usize = 7_168;
@@ -188,6 +190,10 @@ pub fn append(
         let escaped = serde_json::to_string(&joined).map_or(usize::MAX, |e| e.len());
         (joined.len() <= budget && escaped <= MAX_ESCAPED_CONTEXT).then_some(joined)
     };
+    let fits = |joined: String| {
+        let escaped = serde_json::to_string(&joined).map_or(usize::MAX, |e| e.len());
+        (joined.len() <= budget && escaped <= MAX_ESCAPED_CONTEXT).then_some(joined)
+    };
     for shown in (1..=shown_max).rev() {
         if let Some(joined) = render(shown) {
             let lazy = items[..shown]
@@ -200,7 +206,23 @@ pub fn append(
             return (joined, lazy);
         }
     }
-    (context, Vec::new())
+    // Nothing whole fits (a large first body): still say so, with the exact
+    // command, so withheld mail is never silent.
+    let pointer = format!(
+        "herdr-threads: {}{} inbox item(s) pending do not fit this hook's context; read them with {}",
+        items.len(),
+        if offer.page.has_more { "+" } else { "" },
+        command(prefix, ["inbox".to_owned()])
+    );
+    let joined = if context.is_empty() {
+        pointer
+    } else {
+        format!("{context}\n{pointer}")
+    };
+    match fits(joined) {
+        Some(joined) => (joined, Vec::new()),
+        None => (context, Vec::new()),
+    }
 }
 
 /// Where the completion goes once stdout is delivered.
@@ -234,7 +256,9 @@ impl LazyCommit {
     }
 
     pub fn submit<C: LocalClient + ?Sized>(self, client: &C) -> Result<(), ApiError> {
-        let budget = super::hook::budget(self.deadline, self.link.clock.as_ref());
+        // Its own small cap: the hook (and a PreToolUse's tool) waits on it.
+        let deadline = self.deadline.min(Instant::now() + COMMIT_BUDGET);
+        let budget = super::hook::budget(deadline, self.link.clock.as_ref());
         match client.call(
             Command::CompleteInboxDelivery(CompleteInboxDelivery {
                 messages: self.messages,

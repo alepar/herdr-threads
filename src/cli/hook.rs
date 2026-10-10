@@ -2086,7 +2086,13 @@ impl PaneCall<'_> {
             // The inbox page rides only with a presented offer; a live mod
             // channel delivers itself.
             let lazy = (!boundary.live && !boundary.text.is_empty())
-                .then(|| self.inbox_offer(&contexts))
+                .then(|| {
+                    self.inbox_offer(
+                        &contexts,
+                        event,
+                        boundary.mark.map(|(execution, _)| execution),
+                    )
+                })
                 .flatten();
             let attention = boundary.mark.map(|(execution, token)| AttentionCommit {
                 contexts,
@@ -2130,13 +2136,14 @@ impl PaneCall<'_> {
             ..event.clone()
         };
         done.recovery = self.recovery_rows(&recovery_event, seat);
-        // The check-in registered (or kept) the execution whose claim may
-        // complete what this event shows. Without ready commands a live mod
-        // channel delivers, and the hook adds no page.
-        if done.actions.is_some() {
+        // Only a fresh (not replayed or historical) offer whose digest was
+        // read and found no live mod channel seeds a mark; only then does the
+        // hook add a page, under exactly the execution that check-in
+        // registered.
+        if let Some(execution) = done.attention.as_ref().map(|mark| mark.execution) {
             done.lazy = super::seat_contexts(paths, instance, seat)
                 .ok()
-                .and_then(|contexts| self.inbox_offer(&contexts));
+                .and_then(|contexts| self.inbox_offer(&contexts, event, Some(execution)));
         }
         Ok(done)
     }
@@ -2146,8 +2153,21 @@ impl PaneCall<'_> {
     fn inbox_offer(
         &self,
         contexts: &crate::harness::context::ContextJournal,
+        event: &LifecycleEvent,
+        execution: Option<uuid::Uuid>,
     ) -> Option<super::hook_inbox::InboxOffer> {
         let saved = contexts.current().ok()??;
+        // The claim must be the execution this event presented for, never a
+        // context that replaced it in between.
+        if saved.harness != event.harness
+            || execution.is_some_and(|execution| execution != saved.execution)
+            || event
+                .native_session
+                .as_ref()
+                .is_some_and(|native| saved.session != SessionReference::Native(native.clone()))
+        {
+            return None;
+        }
         let claim = bridge::caller_claim(&saved).ok()?;
         let capped = self.deadline.min(Instant::now() + INBOX_READ_BUDGET);
         super::hook_inbox::read_page(self.client, claim, &budget(capped, self.clock.as_ref()))
@@ -3023,10 +3043,13 @@ fn run_admitted_hook_since(
             // the ordinary context left under the bound, whole items only.
             let (context, shown) = match &lazy {
                 Some(offer) => {
-                    let prefix = fallback
-                        .iter()
-                        .position(|word| word == "inbox")
-                        .map_or_else(|| vec![CLI_ARGV0.to_owned()], |at| fallback[..at].to_vec());
+                    // The fallback is the pane prefix plus `inbox --seat SEAT`.
+                    let prefix = match fallback.len().checked_sub(3) {
+                        Some(at) if fallback[at..].first().is_some_and(|w| w == "inbox") => {
+                            fallback[..at].to_vec()
+                        }
+                        _ => vec![CLI_ARGV0.to_owned()],
+                    };
                     super::hook_inbox::append(context, offer, &prefix, MAX_CONTEXT)
                 }
                 None => (context, Vec::new()),
@@ -3364,6 +3387,17 @@ pub fn run_process_with(
                 .unwrap_or_else(|_| quiet_outcome("internal error".into()))
             })();
             let delivered = emit(&outcome);
+            // The local mark first: a slow completion (or the watchdog) must
+            // never cost it.
+            if let (true, Some(attention)) = (delivered, outcome.attention)
+                && let Err(error) = attention.commit()
+            {
+                let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
+                let _ = writeln!(
+                    io::stderr(),
+                    "herdr-threads hook: attention mark not saved: {error:?}"
+                );
+            }
             if let (true, Some(lazy)) = (delivered, outcome.lazy)
                 && let Err(error) = lazy.commit()
             {
@@ -3372,15 +3406,6 @@ pub fn run_process_with(
                     io::stderr(),
                     "herdr-threads hook: lazy delivery not completed (rows stay pending): {:?}",
                     error.code
-                );
-            }
-            if let (true, Some(attention)) = (delivered, outcome.attention)
-                && let Err(error) = attention.commit()
-            {
-                let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
-                let _ = writeln!(
-                    io::stderr(),
-                    "herdr-threads hook: attention mark not saved: {error:?}"
                 );
             }
             deadline
