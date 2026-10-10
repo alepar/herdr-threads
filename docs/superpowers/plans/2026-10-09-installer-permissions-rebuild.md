@@ -77,5 +77,10 @@ landed on main (merge-base `3573b9f5`).
    uninstall), doctor (report; fix only narrows). Behaviour spec and tests ported from the old
    branch's `setup_cli.rs`, `installer_integrations.rs`, `tests/cli/installer.rs`,
    `tests/release/install_test.sh`.
-7. **Docs and review.** install/integration guides, TRUST-POLICY.md if an invariant changes; whole
-   branch review, one roast, fix loop.
+7. **Docs and review.** (done) Docs rewritten for separate permission components; main merged
+   in; whole-branch review and roast findings fixed (installer takeover under
+   --without-permissions, partial grants asked, own rules not foreign, one backup per command,
+   byte-exact unsetup across a hook upgrade after a grant, catalog reduced to the escalating
+   commands). Full suite 4469/4469, no leaks. Left as accepted: lock files
+   `.herdr-threads-{claude,codex}.lock` stay in the config roots (stable lock inode by design),
+   and backups are never pruned.
