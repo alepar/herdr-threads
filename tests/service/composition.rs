@@ -1594,6 +1594,7 @@ struct ActualNativeFixture {
     /// Kicks the daemon's lanes for rows written on a separate connection.
     lanes: herdr_threads::app::LaneProbe,
     endpoint: std::path::PathBuf,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     /// Live panes served by the private endpoint's snapshot and pane reads.
     panes: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
     _stdio: std::sync::MutexGuard<'static, ()>,
@@ -1851,6 +1852,7 @@ impl ActualNativeFixture {
         }
         fixture
     }
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     /// Stop the elected daemon and start a new boot with a fresh production
     /// NativeCli (connection epoch 1) against the same private endpoint.
     fn restart(&mut self) {
@@ -1889,6 +1891,7 @@ impl ActualNativeFixture {
         }));
         self.descriptor = received.recv_timeout(Duration::from_secs(30)).unwrap();
     }
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     fn resolve(
         &self,
         pane: &str,
@@ -1903,6 +1906,7 @@ impl ActualNativeFixture {
             &self.budget(),
         )
     }
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     fn wait_for(&self, what: &str, mut done: impl FnMut(&rusqlite::Connection) -> bool) {
         let db = self.db();
         let until = Instant::now() + Duration::from_secs(30);
@@ -2135,6 +2139,7 @@ fn actual_native_verified_baseline_holds_targets_and_cannot_retire_proofless_sea
     );
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn host_state(db: &rusqlite::Connection) -> (Option<String>, i64, i64) {
     db.query_row(
         "SELECT active_snapshot_id,host_epoch,invalidation_revision FROM host_instances",

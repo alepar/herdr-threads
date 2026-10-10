@@ -4177,13 +4177,17 @@ fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
 }
 
 /// The identity of one process-wide stdio descriptor.
-fn fd_identity(fd: i32) -> (u32, u64, i32) {
+fn fd_identity(fd: i32) -> (u32, u64, u64) {
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
     assert_eq!(unsafe { libc::fstat(fd, &mut stat) }, 0, "fstat {fd}");
     (
-        u32::from(stat.st_mode) & u32::from(libc::S_IFMT),
+        // st_mode is u16 on macOS, u32 on Linux; st_dev i32 vs u64. Only
+        // compared for identity.
+        #[allow(clippy::useless_conversion)]
+        (u32::from(stat.st_mode) & u32::from(libc::S_IFMT)),
         stat.st_ino,
-        stat.st_dev,
+        #[allow(clippy::unnecessary_cast)]
+        (stat.st_dev as u64),
     )
 }
 

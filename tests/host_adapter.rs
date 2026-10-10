@@ -193,28 +193,32 @@ fn unserved_methods_and_rejected_params_are_unsupported_for_that_operation_only(
 
     // Over the socket: the operation fails as Unsupported while the host
     // answered, and the next operation on the same adapter still works.
-    let (path, worker) = serve_calls(2, |stream, request| {
-        if request["method"] == "agent.get" {
-            respond_error(
-                stream,
-                &request,
-                "unknown_method",
-                "unknown method: agent.get",
-            );
-        } else {
-            respond(stream, &request, json!({"type":"pane_info","pane":pane()}));
-        }
-    });
-    let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
-    let unsupported = cli.run(
-        &["agent", "get", "w4:p1"],
-        &budget(5000),
-        Duration::from_secs(2),
-    );
-    let pane = cli.pane("w4:p1", &budget(5000));
-    cleanup(path, worker);
-    assert_eq!(unsupported.unwrap_err().code, ErrorCode::Unsupported);
-    assert_eq!(pane.unwrap().terminal_id, "term_1");
+    // macOS only, like serve_calls: the adapter needs the kernel peer witness.
+    #[cfg(target_os = "macos")]
+    {
+        let (path, worker) = serve_calls(2, |stream, request| {
+            if request["method"] == "agent.get" {
+                respond_error(
+                    stream,
+                    &request,
+                    "unknown_method",
+                    "unknown method: agent.get",
+                );
+            } else {
+                respond(stream, &request, json!({"type":"pane_info","pane":pane()}));
+            }
+        });
+        let cli = NativeCli::new(path.clone(), Arc::new(TestClock(Instant::now())));
+        let unsupported = cli.run(
+            &["agent", "get", "w4:p1"],
+            &budget(5000),
+            Duration::from_secs(2),
+        );
+        let pane = cli.pane("w4:p1", &budget(5000));
+        cleanup(path, worker);
+        assert_eq!(unsupported.unwrap_err().code, ErrorCode::Unsupported);
+        assert_eq!(pane.unwrap().terminal_id, "term_1");
+    }
 }
 
 #[test]

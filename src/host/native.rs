@@ -4042,6 +4042,7 @@ pub(crate) mod tests {
             assert_eq!(observation.focused, focused);
         }
     }
+    #[cfg(target_os = "macos")]
     fn recheck_exchange(agent: Value) -> Exchange {
         Box::new(move |stream: &mut UnixStream, request: Value| {
             assert_eq!(request["method"], "agent.get");
@@ -4059,6 +4060,7 @@ pub(crate) mod tests {
             expected_epoch: Some(observation.epoch),
         }
     }
+    #[cfg(target_os = "macos")]
     /// Reads the target with a real witnessed `pane.get`, derives the
     /// cooperative target, then submits with the remaining exchanges.
     fn cooperative_wake(
@@ -4072,6 +4074,7 @@ pub(crate) mod tests {
     /// A slot through which an exchange reaches the adapter under test (to
     /// change its state mid-call, as a concurrent host call would).
     type CliSlot = Arc<std::sync::OnceLock<Arc<NativeCli>>>;
+    #[cfg(target_os = "macos")]
     /// [`cooperative_wake`] with the adapter published into `slot` before
     /// submission and `tamper` applied to the derived target and context.
     fn cooperative_wake_with(
@@ -4084,6 +4087,7 @@ pub(crate) mod tests {
     ) {
         cooperative_wake_in(registry::builtins(), rest, slot, tamper)
     }
+    #[cfg(target_os = "macos")]
     fn cooperative_wake_in(
         registry: &'static Registry,
         rest: Vec<Exchange>,
@@ -5220,6 +5224,7 @@ pub(crate) mod tests {
     const CLAUDE_DRAFT: &str = include_str!(
         "../../docs/evidence/poke-spike/captures/claude-q1-q2-single.read-detection.txt"
     );
+    #[cfg(target_os = "macos")]
     const CLAUDE_IMAGE: &str = include_str!(
         "../../docs/evidence/poke-spike/captures/claude-q2-image-placeholder.read-detection.txt"
     );
@@ -5260,6 +5265,7 @@ pub(crate) mod tests {
             refuse(stream, &request, "agent_not_found");
         })
     }
+    #[cfg(target_os = "macos")]
     fn clear_exchange() -> Exchange {
         Box::new(|stream: &mut UnixStream, request: Value| {
             assert_eq!(request["method"], "pane.send_keys");
@@ -5270,6 +5276,7 @@ pub(crate) mod tests {
             answer(stream, &request, json!({"type":"ok"}));
         })
     }
+    #[cfg(target_os = "macos")]
     fn retype_exchange(text: &'static str, ok: bool) -> Exchange {
         Box::new(move |stream: &mut UnixStream, request: Value| {
             assert_eq!(request["method"], "pane.send_text");
@@ -5281,6 +5288,7 @@ pub(crate) mod tests {
             }
         })
     }
+    #[cfg(target_os = "macos")]
     fn prompt_exchange(text: &'static str) -> Exchange {
         Box::new(move |stream: &mut UnixStream, request: Value| {
             assert_eq!(request["method"], "agent.prompt");
