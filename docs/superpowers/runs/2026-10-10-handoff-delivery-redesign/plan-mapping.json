@@ -1,0 +1,239 @@
+[
+  {
+    "n": 1,
+    "id": "ht-0lo.1.1",
+    "files": [
+      "src/store/effective.rs",
+      "src/store/materialization.rs",
+      "src/store/schema.rs",
+      "src/store/messages.rs",
+      "src/store/service_send.rs",
+      "src/protocol/capabilities.rs",
+      "src/cli/mod.rs",
+      "src/cli/retry.rs",
+      "src/client/service.rs",
+      "tests/store/effective.rs",
+      "tests/store/materialization.rs",
+      "tests/store/receipts.rs",
+      "tests/cli/lazy_send.rs",
+      "tests/protocol/capabilities.rs",
+      "tests/store/service_send.rs",
+      "TRUST-POLICY.md"
+    ]
+  },
+  {
+    "n": 2,
+    "id": "ht-0lo.2.1",
+    "files": [
+      "src/protocol/commands.rs",
+      "src/protocol/results.rs",
+      "src/protocol/capabilities.rs",
+      "src/store/schema.rs",
+      "src/cli/commands.rs",
+      "src/cli/mod.rs",
+      "src/cli/threads.rs",
+      "src/cli/retry.rs",
+      "src/cli/journal.rs",
+      "src/cli/handoff.rs",
+      "src/test_support/history.rs",
+      "tests/protocol/capabilities.rs",
+      "tests/store/schema.rs",
+      "tests/store/control.rs",
+      "tests/store/cooperative_checkin.rs",
+      "tests/store/retention.rs",
+      "tests/store/facade.rs",
+      "tests/integration/channel_activation.rs",
+      "tests/integration/topology_activation.rs",
+      "tests/integration/lazy_attention.rs",
+      "tests/handoff_topology_authority.rs",
+      "tests/cli/cooperative.rs",
+      "tests/cli/handoff_delivery.rs",
+      "tests/service/cooperative.rs",
+      "tests/service/crash_matrix.rs"
+    ]
+  },
+  {
+    "n": 3,
+    "id": "ht-0lo.4.1",
+    "files": [
+      "src/cli/hook.rs",
+      "src/cli/commands.rs",
+      "src/cli/mod.rs",
+      "src/cli/setup.rs",
+      "src/harness/setup.rs",
+      "src/harness/claude.rs",
+      "src/harness/codex.rs",
+      "tests/cli/hook.rs",
+      "tests/cli/commands.rs",
+      "tests/hook_entrypoint.rs",
+      "tests/harness/setup.rs"
+    ]
+  },
+  {
+    "n": 4,
+    "id": "ht-0lo.3.1",
+    "files": [
+      "src/cli/commands.rs",
+      "src/cli/handoff.rs",
+      "src/cli/input.rs",
+      "src/cli/handoff_delivery.rs",
+      "src/cli/topology_handoff.rs",
+      "src/cli/journal.rs",
+      "src/protocol/handoff.rs",
+      "src/store/topology_handoff.rs",
+      "src/store/topology_handoff/persistence.rs",
+      "tests/cli/handoff.rs",
+      "tests/cli/handoff_delivery.rs",
+      "tests/cli/topology_handoff.rs",
+      "tests/cli/journal.rs",
+      "tests/store/topology_handoff.rs",
+      "tests/store/topology_handoff_schema.rs",
+      "tests/handoff_topology_cli.rs",
+      "TRUST-POLICY.md"
+    ]
+  },
+  {
+    "n": 5,
+    "id": "ht-0lo.1.3",
+    "files": [
+      "src/store/schema.rs",
+      "src/store/effective.rs",
+      "src/store/materialization.rs",
+      "tests/store/schema.rs",
+      "tests/store/effective.rs",
+      "tests/store/materialization.rs",
+      "tests/store/receipts.rs"
+    ]
+  },
+  {
+    "n": 6,
+    "id": "ht-0lo.2.2",
+    "files": [
+      "src/store/control.rs",
+      "src/store/invitation_due.rs",
+      "src/store/wake.rs",
+      "src/store/queries.rs",
+      "src/store/service_controls.rs",
+      "src/store/seats.rs",
+      "src/store/schema.rs",
+      "src/store/mod.rs",
+      "src/daemon/control.rs",
+      "tests/store/control.rs",
+      "tests/store/invitation_due.rs",
+      "tests/store/wake.rs",
+      "tests/store/queries.rs",
+      "tests/daemon/control.rs",
+      "TRUST-POLICY.md"
+    ]
+  },
+  {
+    "n": 7,
+    "id": "ht-0lo.1.2",
+    "files": [
+      "src/store/receipts.rs",
+      "src/store/poke.rs",
+      "src/store/wake.rs",
+      "src/store/queries.rs",
+      "src/store/schema.rs",
+      "src/store/mod.rs",
+      "src/scheduler/deadlines.rs",
+      "src/daemon/lifecycle.rs",
+      "tests/store/receipts.rs",
+      "tests/store/poke.rs",
+      "tests/store/wake.rs",
+      "tests/store/wake_discovery_cost.rs",
+      "tests/scheduler/deadlines.rs",
+      "tests/scheduler/poke_flow.rs",
+      "TRUST-POLICY.md"
+    ]
+  },
+  {
+    "n": 8,
+    "id": "ht-0lo.2.3",
+    "files": [
+      "src/cli/commands.rs",
+      "src/cli/mod.rs",
+      "src/cli/threads.rs",
+      "src/cli/output.rs",
+      "src/cli/retry.rs",
+      "integrations/skill/SKILL.md",
+      "README.md",
+      "tests/cli/commands.rs",
+      "tests/cli/output.rs",
+      "tests/cli/skill.rs",
+      "tests/cli/guidance.rs"
+    ]
+  },
+  {
+    "n": 9,
+    "id": "ht-0lo.4.2",
+    "files": [
+      "src/harness/setup.rs",
+      "src/harness/claude/setup.rs",
+      "src/harness/codex/setup.rs",
+      "src/cli/setup.rs",
+      "src/cli/setup/foreground.rs",
+      "src/cli/launch.rs",
+      "src/harness/launch.rs",
+      "src/harness/claude_mod.rs",
+      "tests/harness/setup.rs",
+      "tests/harness/launch.rs",
+      "tests/harness/claude_mod.rs",
+      "tests/setup_cli.rs",
+      "tests/integration/setup_canary_seam.rs",
+      "tests/canary_manifest_writer.rs",
+      "scripts/canary/manifest.py",
+      "scripts/canary/test_manifest.py",
+      "integrations/skill/SKILL.md",
+      "integrations/claude/README.md",
+      "integrations/codex/README.md"
+    ]
+  },
+  {
+    "n": 10,
+    "id": "ht-0lo.3.2",
+    "files": [
+      "src/cli/commands.rs",
+      "src/cli/handoff.rs",
+      "src/cli/handoff_delivery.rs",
+      "src/cli/topology_handoff.rs",
+      "src/cli/mod.rs",
+      "src/cli/launch.rs",
+      "src/harness/launch.rs",
+      "src/protocol/handoff.rs",
+      "src/store/handoff.rs",
+      "src/store/topology_handoff.rs",
+      "src/store/topology_handoff/attachment.rs",
+      "src/store/topology_handoff/runtime.rs",
+      "tests/cli/handoff.rs",
+      "tests/cli/handoff_delivery.rs",
+      "tests/cli/topology_handoff.rs",
+      "tests/cli/launch.rs",
+      "tests/harness/launch.rs",
+      "tests/handoff_topology_cli.rs",
+      "tests/handoff_topology_authority.rs",
+      "integrations/skill/SKILL.md",
+      "README.md"
+    ]
+  },
+  {
+    "n": 11,
+    "id": "ht-0lo.5",
+    "files": [
+      "tests/cli/handoff.rs",
+      "tests/cli/handoff_delivery.rs",
+      "tests/cli/topology_handoff.rs",
+      "tests/handoff_topology_cli.rs",
+      "tests/integration/notice_wake.rs",
+      "tests/integration/setup_canary_seam.rs",
+      "tests/scheduler/deadlines.rs",
+      "tests/cli/skill.rs",
+      "integrations/skill/SKILL.md",
+      "README.md",
+      "TRUST-POLICY.md",
+      "src/cli/handoff.rs",
+      "src/cli/handoff_delivery.rs",
+      "src/cli/topology_handoff.rs"
+    ]
+  }
+]
