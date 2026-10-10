@@ -1,4 +1,5 @@
 use super::*;
+use crate::harness::codex::launch::scoped_codex_cwd;
 use crate::ports::{
     CorrelatedStartup, EvidenceKind, ExecutionEvidence, HostSnapshot, IncarnationEvidence,
     ObservationProvenance, PromptOutcome, SafeWakeTarget,

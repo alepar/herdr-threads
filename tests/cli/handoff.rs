@@ -2445,8 +2445,8 @@ fn stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver() {
             &manual[..3],
             [
                 "env",
-                "HERDR_THREADS_CODEX_OPTS=",
-                "HERDR_THREADS_CLAUDE_OPTS="
+                "HERDR_THREADS_CLAUDE_OPTS=",
+                "HERDR_THREADS_CODEX_OPTS="
             ]
         );
         assert_eq!(

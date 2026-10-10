@@ -239,10 +239,12 @@ pub(crate) fn run(
             let topology = host.topology(&super::cooperative_budget(clock.as_ref()))?;
             let cwd = std::env::current_dir()?;
             let registry = crate::harness::registry::builtins();
-            let harness = match request.kind.as_deref() {
-                Some("codex") => crate::harness::context::Harness::Codex,
-                Some("claude") => crate::harness::context::Harness::Claude,
-                _ => return Err(super::invalid_request("invalid bootstrap harness")),
+            let Some(harness) = request
+                .kind
+                .as_deref()
+                .and_then(|kind| crate::harness::launch::bootstrap_v1_target(registry, kind))
+            else {
+                return Err(super::invalid_request("invalid bootstrap harness"));
             };
             let options =
                 super::launch::native_options_env(registry, harness)?.and_then(std::env::var_os);

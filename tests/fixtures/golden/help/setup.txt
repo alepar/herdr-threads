@@ -53,7 +53,7 @@ No harness named: every registered harness. `setup` sets up every detected harne
 and prints one line per harness: installed, already
 installed or skipped (not on PATH);
 `unsetup` removes recorded installations (on PATH or not); `setup-status` reports
-every registered harness. The Codex hook-trust reminder is printed once at the end. The exit status is that
+every registered harness. Hook-trust reminders are printed once at the end. The exit status is that
 of the first harness that failed; skipped harnesses are not failures.
 
 Scope (user level, like Herdr's own agent hooks):
@@ -85,7 +85,7 @@ Scope (user level, like Herdr's own agent hooks):
           selection, reporting residue and manual disable guidance.
 
 Foreground agents (user-managed, read-only inspection): setup and setup-status report user
-settings and manual advice for both harnesses. Claude: merge `disableAgentView: true` into
+settings and manual advice for every harness. Claude: merge `disableAgentView: true` into
 user settings.json, or set its env.CLAUDE_CODE_DISABLE_AGENT_VIEW to `1`. The inspected Codex has
 no persistent config/environment daemon opt-out; features.daemon_auto_start=false still attaches
 to an existing daemon. Use native --no-daemon, or HERDR_THREADS_CODEX_OPTS='--no-daemon'
@@ -114,7 +114,7 @@ short best-effort evidence note to a daemon already running (gate files under
 Each harness's ownership manifest lives in <state>/setup/.
 
 A hook file that already holds exactly this command's hook groups under another setup's
-owner marker (for example a hooks.json copied with its trust into a second CODEX_HOME) is
+owner marker (for example a hook file copied with its trust into a second config root) is
 adopted: setup records a manifest for it and leaves the file byte-identical (action
 `adopted`), setup-status and doctor report it installed (adopted), and unsetup removes only
 those groups from that file.
@@ -127,7 +127,7 @@ Exit status:
   0  installed / removed / nothing to remove / status reported
   1  refused: the file changed concurrently, an owned entry was edited or removed by hand,
      the recorded allow rule was removed by hand, an unowned identical hook exists (for
-     codex also in another Codex config layer), a recorded legacy allowance is partial or
+     some harnesses also in another config layer), a recorded legacy allowance is partial or
      edited, or a file could not be written
   2  invalid arguments, undetectable Herdr instance, or invalid settings file (not a JSON
      object / not valid TOML, symlink, over 1 MiB)

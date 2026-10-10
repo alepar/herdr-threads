@@ -62,11 +62,9 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         .kind
         .as_deref()
         .ok_or_else(|| fail("bootstrap requires --kind"))?;
-    let harness = match kind {
-        "codex" => crate::harness::context::Harness::Codex,
-        "claude" => crate::harness::context::Harness::Claude,
-        _ => return Err(fail("invalid bootstrap harness")),
-    };
+    let harness =
+        crate::harness::launch::bootstrap_v1_target(crate::harness::registry::builtins(), kind)
+            .ok_or_else(|| fail("invalid bootstrap harness"))?;
     let cwd = request.cwd.as_deref().unwrap_or(inputs.invocation_cwd);
     if !cwd.is_absolute() || !cwd.is_dir() {
         return Err(fail("--cwd must be an absolute existing directory"));

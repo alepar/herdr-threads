@@ -187,11 +187,17 @@ fn harness_markers_select_agent_output_even_on_a_tty() {
     assert!(!harness_marked(env(&[])));
     assert!(!harness_marked(env(&[("CLAUDECODE", "")])));
     assert!(!harness_marked(env(&[("TERM", "xterm"), ("HOME", "/h")])));
-    for marker in HARNESS_MARKERS {
+    for marker in [
+        "CLAUDECODE",
+        "CODEX_THREAD_ID",
+        "CODEX_SANDBOX",
+        "CODEX_SANDBOX_NETWORK_DISABLED",
+    ] {
         let set: &'static [(&'static str, &'static str)] =
             Box::leak(vec![(marker, "1")].into_boxed_slice());
         assert!(harness_marked(env(set)), "{marker}");
     }
+    assert!(!harness_marked(env(&[("CODEX_HOME", "/x")])));
 }
 
 #[derive(Default)]

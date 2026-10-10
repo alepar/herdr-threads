@@ -1016,17 +1016,17 @@ enum Top {
     /// plugin state. Setup uses the declared hook contract; installed version
     /// metadata is optional and may be unknown. Configured hooks do not prove
     /// observed delivery or native harness support.
-    #[command(after_help = super::setup::SETUP_HELP)]
+    #[command(after_help = super::help::setup_help())]
     Setup(SetupArgs),
     /// Remove the owned herdr-threads hooks installed by `setup`, keeping
     /// every other setting; unchanged settings are restored byte for byte.
     /// Removal does not depend on installed harness metadata.
-    #[command(after_help = super::setup::SETUP_HELP)]
+    #[command(after_help = super::help::setup_help())]
     Unsetup(SetupArgs),
     /// Report whether the owned hooks are installed (separately from native
     /// observation), with optional installed version metadata. Installation
     /// does not prove native callback delivery or launch support.
-    #[command(after_help = super::setup::SETUP_HELP)]
+    #[command(after_help = super::help::setup_help())]
     SetupStatus(SetupArgs),
     /// List local mutations whose outcome is still unknown.
     PendingOps(PageArgs),
@@ -1037,10 +1037,10 @@ enum Top {
     /// Start Codex or Claude in one explicit existing empty shell pane with
     /// the owned hooks, after resolving the pane's seat. Launch never
     /// registers, accepts or ACKs: the handoff is read through the hooks.
-    #[command(after_help = super::launch::LAUNCH_HELP)]
+    #[command(after_help = super::help::launch_help())]
     Launch(LaunchArgs),
     /// Deliver durable work to a new tab, explicit launch pane, or existing peer.
-    #[command(after_help = format!("{}\n\n{}", super::handoff::HANDOFF_HELP, super::topology_recover::RECOVERY_HELP))]
+    #[command(after_help = format!("{}\n\n{}", super::help::handoff_help(), super::topology_recover::RECOVERY_HELP))]
     Handoff(HandoffArgs),
     #[command(name = "_topology-recover", hide = true)]
     TopologyRecover(RecoveryArgs),
@@ -1202,7 +1202,7 @@ enum MeSub {
     /// Record this pane (HERDR_PANE_ID) as your own seat, with operator/human
     /// provenance, so `thread create`, `invite`, `send`, `read`, `ack` and
     /// `accept` run here with no caller flags. Re-run after a daemon restart.
-    #[command(after_help = super::me::ME_INIT_HELP)]
+    #[command(after_help = super::help::me_init_help())]
     Init {
         /// Override the agent guard as the local account: record yourself over
         /// an agent's binding or where agent markers are present.
@@ -1706,10 +1706,16 @@ fn setup_action(
         options.insert("disable-prompt-suggestions".into(), true);
     }
     if args.hooks_only
-        && (verb != super::setup::SetupVerb::Install || args.harness.as_deref() != Some("claude"))
+        && (verb != super::setup::SetupVerb::Install
+            || !registration.is_some_and(|registration| {
+                registration
+                    .setup_options()
+                    .iter()
+                    .any(|option| option.name == "hooks-only")
+            }))
     {
         return Err(invalid(
-            "--hooks-only applies to `setup claude` only (unsetup removes the mod with the hooks)",
+            "--hooks-only applies to `setup <harness>` only, for a harness that declares it (unsetup removes the mod with the hooks)",
         ));
     }
     if args.keep_prompt_suggestions {
@@ -1739,11 +1745,11 @@ fn setup_action(
         &Default::default(),
         &options,
     )
-    .map_err(|_| invalid("--disable-prompt-suggestions and --keep-prompt-suggestions apply to `setup` and `setup claude` only (unsetup reverts what setup set)"))?;
+    .map_err(|_| invalid("--disable-prompt-suggestions and --keep-prompt-suggestions apply to `setup` and `setup <harness>` only, for a harness that declares them (unsetup reverts what setup set)"))?;
     let Some(harness) = args.harness else {
         if args.harness_binary.is_some() {
             return Err(invalid(
-                "--harness-binary needs a harness: `setup claude|codex --harness-binary PATH`",
+                "--harness-binary needs a harness: `setup <harness> --harness-binary PATH`",
             ));
         }
         return Ok(CliAction::SetupAll(verb, prompt_suggestions));
@@ -1859,7 +1865,7 @@ pub fn exit_status_help() -> String {
   3  daemon or host unavailable; {}
      (version mismatch: {})
   4  unsupported capability in this build or environment (including transport_denied:
-     a sandbox refused the daemon socket; see `herdr-threads setup codex`)
+     a sandbox refused the daemon socket; see `herdr-threads setup <harness>`)
   5  outcome unknown; inspect `herdr-threads pending-ops` and `retry` the local reference",
         crate::daemon::remedy::remedy(
             Some(crate::protocol::results::ErrorClass::Unavailable),

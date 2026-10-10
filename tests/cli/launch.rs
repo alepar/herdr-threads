@@ -2516,6 +2516,59 @@ fn stage_a_options_declaration_is_optional_and_provider_owned() {
     }
 }
 
+/// Catches a launch help whose options list is fixed in core: a registered launch policy with a
+/// fourth key shows up in registry order, while the frozen V1 handoff help stays at its targets.
+#[test]
+fn stage_a_help_lists_registered_options_keys_in_registry_order() {
+    let builtin = crate::cli::help::launch_help();
+    assert!(
+        builtin.contains("HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS are prepended"),
+        "{builtin}"
+    );
+    let (registry, _) = fourth_adapter::registry_with_options(
+        true,
+        false,
+        false,
+        Some("HERDR_THREADS_FOURTH_OPTS"),
+    );
+    let launch = crate::cli::help::launch_help_in(&registry);
+    assert!(
+        launch.contains(
+            "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_FOURTH_OPTS are prepended"
+        ),
+        "{launch}"
+    );
+    let handoff = crate::cli::help::handoff_help_in(&registry);
+    assert!(!handoff.contains("FOURTH"), "{handoff}");
+    assert!(handoff.contains("HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS prepend"));
+    assert!(handoff.contains("--pane PANE --kind claude|codex launches"));
+    assert!(handoff.contains("--new-tab LABEL --kind claude|codex creates"));
+    // Hermes and the test-support fourth are registered but not V1 bootstrap targets.
+    let builtin = crate::cli::help::handoff_help();
+    assert!(
+        !builtin.contains("hermes") && !builtin.contains("synthetic"),
+        "{builtin}"
+    );
+}
+
+/// Catches a bootstrap `--kind` lookup that admits a registered kind the frozen V1 record refuses.
+#[test]
+fn stage_a_bootstrap_v1_target_admits_only_the_frozen_pair() {
+    let registry = crate::harness::registry::builtins();
+    for kind in ["claude", "codex"] {
+        assert_eq!(
+            crate::harness::launch::bootstrap_v1_target(registry, kind).map(|h| h.as_str()),
+            Some(kind)
+        );
+    }
+    for kind in ["hermes", "human", "Claude", "nope", ""] {
+        assert!(
+            crate::harness::launch::bootstrap_v1_target(registry, kind).is_none(),
+            "{kind}"
+        );
+    }
+}
+
 /// Catches unsafe declarations reaching getenv, implicit brand fallbacks, and lost literal tokens.
 #[test]
 fn stage_a_registered_options_validate_keys_and_preserve_literal_tokens() {

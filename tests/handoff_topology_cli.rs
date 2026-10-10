@@ -1689,8 +1689,8 @@ fn final_sdd_public_possible_start_reports_known_committed_work_without_relaunch
         &manual[..3],
         [
             "env",
-            "HERDR_THREADS_CODEX_OPTS=",
-            "HERDR_THREADS_CLAUDE_OPTS="
+            "HERDR_THREADS_CLAUDE_OPTS=",
+            "HERDR_THREADS_CODEX_OPTS="
         ]
     );
     assert!(manual.contains(&"--config=frozen=true".into()));
@@ -1701,7 +1701,7 @@ fn final_sdd_public_possible_start_reports_known_committed_work_without_relaunch
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains("phase: launch"));
     assert!(text.contains("outcome: possible_start"));
-    assert!(text.contains("manual_launch_after_confirming_no_start_argv: env HERDR_THREADS_CODEX_OPTS= HERDR_THREADS_CLAUDE_OPTS="));
+    assert!(text.contains("manual_launch_after_confirming_no_start_argv: env HERDR_THREADS_CLAUDE_OPTS= HERDR_THREADS_CODEX_OPTS="));
     assert!(text.contains("--config=frozen=true"));
     assert!(text.contains("seat_inspect_argv:"));
     assert!(text.contains("inspect_argv:"));

@@ -2486,7 +2486,7 @@ fn prompt_suggestion_flags_are_refused_elsewhere() {
         let out = s.run(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         assert!(
-            text(&out.stderr).contains("apply to `setup` and `setup claude` only"),
+            text(&out.stderr).contains("apply to `setup` and `setup <harness>` only"),
             "{args:?}: {}",
             text(&out.stderr)
         );

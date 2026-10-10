@@ -16,7 +16,7 @@ use std::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Presentation {
     /// Human form when stdout is a terminal and no agent-harness marker is
-    /// present ([`HARNESS_MARKERS`]), machine form otherwise.
+    /// present ([`harness_marked`]), machine form otherwise.
     #[default]
     Auto,
     /// `--human`: the human form even when stdout is not a terminal.
@@ -159,29 +159,21 @@ fn inbox_continuation(result: &CommandResult) -> CommandResult {
     result
 }
 
-/// Environment variables an agent harness sets for the subprocesses of its
-/// shell tool, so a harness that runs commands in a PTY (Codex unified exec
-/// with `tty: true`) is still recognized as an agent, not a person.
-/// Verified: `CLAUDECODE` (Claude Code, every captured hook env under
-/// `docs/evidence/claude-28*-hook-capture/payloads/*.env-names.txt`);
-/// `CODEX_THREAD_ID` (in the shell-subprocess environment allow-list of the
-/// installed Codex 0.159.3 binary) and `CODEX_SANDBOX` /
-/// `CODEX_SANDBOX_NETWORK_DISABLED` (set by Codex's exec policy for sandboxed
-/// commands; both names are in the same binary). `CODEX_MANAGED_BY_NPM` is
-/// not listed: only an npm-launched Codex sets it, and no capture shows it in
-/// tool subprocesses.
-pub const HARNESS_MARKERS: [&str; 4] = [
-    "CLAUDECODE",
-    "CODEX_THREAD_ID",
-    "CODEX_SANDBOX",
-    "CODEX_SANDBOX_NETWORK_DISABLED",
-];
-
-/// Whether `env` carries a non-empty agent-harness marker.
+/// Whether `env` carries a non-empty agent-harness marker: any environment variable a
+/// registered adapter declares, so a harness that runs commands in a PTY is still recognized
+/// as an agent, not a person.
 pub fn harness_marked(env: impl Fn(&str) -> Option<OsString>) -> bool {
-    HARNESS_MARKERS
-        .iter()
-        .any(|name| env(name).is_some_and(|value| !value.is_empty()))
+    harness_marked_in(crate::harness::registry::builtins(), env)
+}
+
+/// [`harness_marked`] against an explicit registry.
+pub fn harness_marked_in(
+    registry: &crate::harness::registry::Registry,
+    env: impl Fn(&str) -> Option<OsString>,
+) -> bool {
+    registry
+        .env_markers()
+        .any(|marker| env(marker.name).is_some_and(|value| !value.is_empty()))
 }
 
 /// Record whether this process runs under an agent harness. Only the process

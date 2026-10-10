@@ -298,7 +298,6 @@ fn launch_target(
 pub(crate) use super::codex::launch::{
     CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS, CODEX_UNSUPPORTED_SUBCOMMANDS, CODEX_VALUE_OPTIONS,
 };
-pub use super::codex::launch::{CodexLaunchForm, scoped_codex_cwd};
 
 pub fn compose_native_argv(
     harness: Harness,
@@ -406,6 +405,17 @@ pub fn compose_bootstrap_v1_argv(
     }
     v1::codex_guard(&caller)?;
     Ok(caller)
+}
+
+/// The version-1 bootstrap target named by a `--kind` value: a registered agent that is one of
+/// the original V1 native targets. A kind V1 refuses, or that is not registered, gives `None`,
+/// so the handoff and topology kind lists never admit what the frozen record cannot compose.
+pub fn bootstrap_v1_target(
+    registry: &super::registry::Registry,
+    kind: &str,
+) -> Option<super::context::Harness> {
+    let harness: Harness = super::registry::OccupantHarness::Agent(registry.agent(kind).ok()?);
+    (harness == Harness::Claude || harness == Harness::Codex).then(|| harness.into())
 }
 
 /// The V1 Codex acceptance grammar, frozen with its original tables.

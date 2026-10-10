@@ -57,8 +57,8 @@ pub(crate) fn connect_error(
             ErrorCode::TransportDenied,
             format!(
                 "daemon socket not reachable from this sandbox (permission denied): {}; \
-                 use approved outside-sandbox execution for this CLI command; in Codex, \
-                 request command approval or use a preapproved CLI-only rule (see docs/install.md)",
+                 use approved outside-sandbox execution for this CLI command; request command \
+                 approval or use a preapproved CLI-only rule (see docs/install.md)",
                 path.display()
             ),
         )
