@@ -574,6 +574,7 @@ impl<C: LocalClient + ?Sized> HandoffReader for C {
     fn pending(&self, seat: &SeatId, budget: &CallBudget) -> Result<Value, ApiError> {
         let result = self.call(
             Command::Inbox(InboxQuery {
+                claim: None,
                 seat: Some(seat.clone()),
                 page: PageRequest {
                     cursor: None,

@@ -246,6 +246,7 @@ fn probe_inbox_batch() {
     use crate::protocol::commands::InboxQuery;
     let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
     let command = Command::InboxBatch(InboxQuery {
+        claim: None,
         seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
         page: Default::default(),
     });
@@ -269,6 +270,7 @@ fn capability_constants_are_stable() {
     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
+    assert_eq!(BINDING_CURSORS, "inbox.binding_cursors_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -290,7 +292,8 @@ fn capability_constants_are_stable() {
             "send.lazy_v1",
             "inbox.batch_v2",
             "mod.watch_v1",
-            "hook.lazy_delivery_v1"
+            "hook.lazy_delivery_v1",
+            "inbox.binding_cursors_v1"
         ]
     );
 }
@@ -314,6 +317,7 @@ fn every_advertised_capability_has_a_handler() {
             INBOX_BATCH => probe_inbox_batch(),
             INBOX_BATCH_V2 => {
                 let command = Command::InboxBatchV2(crate::protocol::commands::InboxQuery {
+                    claim: None,
                     seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
                     page: Default::default(),
                 });
@@ -392,9 +396,60 @@ fn every_advertised_capability_has_a_handler() {
                     ErrorCode::NotFound
                 );
             }
+            BINDING_CURSORS => probe_binding_cursors(),
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }
+}
+
+/// The cursor command is served by the store, which decides it against the canonical view: a
+/// claim for a seat it does not know is refused (a store without the handler would answer
+/// `unsupported`).
+fn probe_binding_cursors() {
+    use crate::{
+        ports::StorePort,
+        protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            commands::AdvanceCursors,
+            ids::{ExecutionId, HostTargetId, MessageId, NativeSessionId, OperationId, SeatId},
+        },
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+    };
+    let command = Command::AdvanceCursors(AdvanceCursors {
+        claim: CallerClaim {
+            instance: "probe-instance".into(),
+            seat: SeatId::new("nobody"),
+            binding_generation: 1,
+            role: CallerRole::Subagent,
+            harness: Harness::Claude,
+            native_session: NativeSessionId::new("n"),
+            execution: ExecutionId::new("e"),
+            target: HostTargetId::new("p"),
+            agent_id: Some(crate::protocol::ids::AgentId::new("ag")),
+            liveness: None,
+        },
+        operation: OperationId::new("op"),
+        displayed: vec![MessageId::new("m")],
+    });
+    // A subagent may send it: validation does not refuse the role.
+    assert!(command.validate().is_ok());
+    let json = serde_json::to_value(&command).unwrap();
+    assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+    let Command::AdvanceCursors(request) = command else {
+        unreachable!()
+    };
+    let isolation = crate::test_support::isolation::TestIsolation::new("cursors-capability");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let store = SqliteStore::new(
+        StoreContext::new(isolation.path("store.db"), clock),
+        "probe-instance",
+        StoreSettings::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.advance_cursors(&request, &budget()).unwrap_err().code,
+        ErrorCode::CallerUnverified
+    );
 }
 
 /// The daemon's domain decides a watch registration against its store: a
@@ -509,7 +564,8 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "send.lazy_v1",
             "inbox.batch_v2",
             "mod.watch_v1",
-            "hook.lazy_delivery_v1"
+            "hook.lazy_delivery_v1",
+            "inbox.binding_cursors_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);

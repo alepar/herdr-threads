@@ -3166,7 +3166,7 @@ fn run_admitted_hook_since(
             );
             // Inbox contents are the lowest priority: they only fill what
             // the ordinary context left under the bound, whole items only.
-            let (context, shown) = match &lazy {
+            let (context, shown, displayed) = match &lazy {
                 Some(offer) => {
                     // The fallback is the pane prefix plus `inbox --seat SEAT`.
                     let prefix = match fallback.len().checked_sub(3) {
@@ -3175,18 +3175,22 @@ fn run_admitted_hook_since(
                         }
                         _ => vec![CLI_ARGV0.to_owned()],
                     };
-                    super::hook_inbox::append(context, offer, &prefix, MAX_CONTEXT)
+                    super::hook_inbox::append_shown(context, offer, &prefix, MAX_CONTEXT)
                 }
-                None => (context, Vec::new()),
+                None => (context, Vec::new(), Vec::new()),
             };
             let (stdout, consumes, diagnostic) =
                 encode_prepared_result(registration, admitted, decoded, prepared_kind, context);
             let lazy = match (consumes, lazy, link) {
-                (true, Some(offer), Some(link)) if !shown.is_empty() => {
+                (true, Some(offer), Some(link))
+                    if !shown.is_empty() || (offer.cursors && !displayed.is_empty()) =>
+                {
                     Some(super::hook_inbox::LazyCommit {
                         link,
                         claim: offer.claim,
                         messages: shown,
+                        displayed,
+                        cursors: offer.cursors,
                         deadline,
                     })
                 }

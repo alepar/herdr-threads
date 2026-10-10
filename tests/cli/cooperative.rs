@@ -3991,6 +3991,7 @@ fn inbox_empty_work_selection_preserves_bounds_and_continuations() {
                 requests: Mutex::new(vec![]),
             };
             let request = InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("seat")),
                 page: PageRequest {
                     cursor: None,
@@ -4111,6 +4112,7 @@ fn inbox_drained_page_refit_retains_selected_cursor_and_body_offset() {
     }
     let client = Client(Mutex::new(vec![]));
     let command = Command::InboxBatchV2(InboxQuery {
+        claim: None,
         seat: Some(SeatId::new("seat")),
         page: PageRequest {
             cursor: None,

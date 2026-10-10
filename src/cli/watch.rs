@@ -533,6 +533,7 @@ pub(crate) fn drain(
     for _ in 0..MAX_DRAIN_PAGES {
         let result = client.call(
             Command::InboxBatchV2(InboxQuery {
+                claim: None,
                 seat: Some(seat.clone()),
                 page: PageRequest {
                     cursor: cursor.take(),

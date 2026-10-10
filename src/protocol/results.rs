@@ -39,6 +39,8 @@ pub enum CommandResult {
     InboxBatchV2(Page<InboxBatchV2Item>),
     MessageDeliveryModes(Vec<MessageDeliveryMode>),
     InboxDeliveryCompleted(Vec<MessageId>),
+    /// The messages the caller binding's cursors now cover (`AdvanceCursors`).
+    CursorsAdvanced(Vec<MessageId>),
     Warnings(Page<WarningRef>),
     ActiveWarnings(Page<WarningRef>),
     Thread(ThreadDetails),

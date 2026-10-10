@@ -769,6 +769,7 @@ fn test_cursor_after(after: u64) -> String {
         lazy_high_water_ordinal: 100,
         publication_decision_high_water: 4,
         body: None,
+        unread: None,
         attention: SeatAttentionCursorState {
             invitation_after_seq: 0,
             invitation_after_ordinal: 0,

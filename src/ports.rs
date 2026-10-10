@@ -2669,6 +2669,19 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         permit: MutationPermit,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// Move the caller binding's own read cursors (spec §2): decided in one idempotent
+    /// transaction against the canonical view (A2), allowed for subagent claims because it
+    /// changes no seat state. A store without per-binding cursors refuses it.
+    fn advance_cursors(
+        &self,
+        _request: &crate::protocol::commands::AdvanceCursors,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::new(
+            crate::protocol::results::ErrorCode::Unsupported,
+            "per-binding cursors unsupported by this store",
+        ))
+    }
     /// Hidden bounded staging keyed by the request's durable operation identity.
     /// Caller authority is rechecked at final `mutate` publication.
     fn prepare_send_step(

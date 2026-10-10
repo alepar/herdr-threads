@@ -1986,6 +1986,7 @@ fn inbox_v2_continuation_validates_without_changing_own_text_action() {
             offset: 2,
             body_len: 10,
         }),
+        unread: None,
         attention: SeatAttentionCursorState {
             invitation_after_seq: 0,
             invitation_after_ordinal: 0,

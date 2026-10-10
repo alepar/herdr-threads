@@ -444,6 +444,7 @@ impl World {
             pagination::PageRequest,
         };
         self.daemon_call(Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new(seat)),
             page: PageRequest {
                 limit: 100,
@@ -3206,6 +3207,22 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
     fx.world
         .cli(Some(fx.caller_b()), None, &ack)
         .data("settle sparse history");
+    // B displayed this history before ACKing it (a display advances B's own cursors; an ACK
+    // alone does not), so only the retained settled receipts remain for the bounded Work pages.
+    fx.world
+        .daemon_call(herdr_threads::protocol::commands::Command::AdvanceCursors(
+            herdr_threads::protocol::commands::AdvanceCursors {
+                claim: fx.world.seat_claim(&fx.b),
+                operation: herdr_threads::protocol::ids::OperationId::new(
+                    "sparse-history-displayed",
+                ),
+                displayed: settled
+                    .iter()
+                    .map(|id| herdr_threads::protocol::ids::MessageId::new(id.as_str()))
+                    .collect(),
+            },
+        ))
+        .expect("advance B's cursors over the displayed history");
     for (pass, v1) in [false, true].into_iter().enumerate() {
         let mark = select_reader(&proxy, v1);
         let sent = fx.send_as_a(
@@ -3288,8 +3305,13 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
                 )
             })
             .count();
+        // The v1 reader walks the retained settled receipts before it reaches the useful mail, so
+        // its first source page is filled by history and empty Work pages precede the body. The
+        // v2 reader serves the binding's own stream: the new mail is past its cursors, so the
+        // first page already carries it while the same settled-receipt walk fills the rest of
+        // the page's work (the page still reports more).
         assert!(
-            display_pages > 1,
+            display_pages > usize::from(v1),
             "the settled history must fill the first source page ({display_pages} pages read)"
         );
         eprintln!(

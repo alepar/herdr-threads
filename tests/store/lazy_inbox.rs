@@ -184,6 +184,7 @@ fn query(
         context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("b")),
             page: request,
         }),
@@ -554,6 +555,7 @@ fn lazy_inbox_addressed_leave_retire_archive() {
         &context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
         }),
@@ -592,6 +594,7 @@ fn lazy_inbox_v2_rejects_changed_binding_foreign_and_bad_body_cursor() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("b")),
                 page: PageRequest {
                     cursor: Some(raw),
@@ -750,6 +753,7 @@ fn lazy_inbox_v2_small_budget_and_read_only_queries() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("b")),
                 page: PageRequest {
                     max_bytes: 256,
@@ -867,6 +871,7 @@ fn lazy_inbox_v2_ack_candidates_follow_registered_agent_harnesses() {
     let offer = InboxOffer {
         page,
         claim: claim(),
+        cursors: false,
     };
     let (context_text, lazy) = append(String::new(), &offer, &["herdr-threads".to_owned()], 4096);
     assert!(lazy.is_empty(), "ordinary rows are never lazy-completed");

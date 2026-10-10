@@ -201,6 +201,7 @@ impl Fixture {
     }
     fn inbox(&self, seat: &str) -> Vec<MessageId> {
         let CommandResult::InboxBatchV2(page) = self.query(Command::InboxBatchV2(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new(seat)),
             page: PageRequest::default(),
         })) else {

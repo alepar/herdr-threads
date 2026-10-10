@@ -1041,6 +1041,14 @@ impl Journal {
         digest.update(claim.binding_generation.to_be_bytes());
         digest.update((claim.execution.as_str().len() as u64).to_be_bytes());
         digest.update(claim.execution.as_str().as_bytes());
+        // Per binding (session and agent), so two bindings of one seat that share an execution
+        // never share display progress.
+        let session = claim.native_session.as_str();
+        digest.update((session.len() as u64).to_be_bytes());
+        digest.update(session.as_bytes());
+        let agent = claim.agent_id.as_ref().map_or("", |a| a.as_str());
+        digest.update((agent.len() as u64).to_be_bytes());
+        digest.update(agent.as_bytes());
         digest.update(message.as_str().as_bytes());
         self.root
             .join(format!("display-{:x}.progress", digest.finalize()))

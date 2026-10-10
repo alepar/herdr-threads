@@ -132,10 +132,93 @@ pub fn copy_lineage(tx: &Connection, from: &BindingId, to: &BindingId) -> Result
     .map_err(store_error)
 }
 
-/// Contract stub (graph pass): always false until ht-54r.7 implements it.
+/// The rows a seat's ordinary inbox delivers, as one query fragment (the single copy; the unread
+/// walk, `has_unread` and `advance_through_displayed` all use it). Ordinary-mode messages reach a
+/// seat through `prepared_recipients` (a message the seat sent itself, or any other kind, never
+/// does). Bind `?1` = the seat. Aliases: `pr` recipient row, `sm` manifest (published), `m` message.
+pub const RECEIVABLE_FROM: &str = "prepared_recipients pr \
+    JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id \
+    JOIN messages m ON m.id=sm.message_id";
+pub const RECEIVABLE_WHERE: &str =
+    "pr.seat_id=?1 AND m.kind='ordinary' AND m.delivery_mode='ordinary'";
+/// Appended to `RECEIVABLE_WHERE`: unread by a binding, i.e. in a thread the seat has joined, past the binding's cursor
+/// (a missing cursor row counts as 0). Bind `?2` = the binding.
+pub const UNREAD_EXTRA: &str = "AND EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=m.thread_id AND mb.seat_id=pr.seat_id AND mb.state='joined') \
+    AND m.sequence > COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=?2 AND c.thread_id=m.thread_id),0)";
+
+fn seat_of(db: &Connection, binding: &BindingId) -> Result<Option<SeatId>, ApiError> {
+    db.query_row(
+        "SELECT seat_id FROM occupant_bindings WHERE binding_id=?1",
+        [binding.as_str()],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(store_error)
+    .map(|seat| seat.map(SeatId::new))
+}
+
+/// Whether `binding` has unread mail (spec §2 Inbox per binding). Serves wake and the mod channel.
+/// The ordinary part: receivable messages in joined threads past the binding's cursor.
+/// The lazy part is the seat's pending lazy rows (today's rule); ht-54r.22 replaces it with
+/// `lazy_delivery::binding_lazy_unread`, keeping this ordinary side.
 pub fn has_unread(db: &Connection, binding: &BindingId) -> Result<bool, ApiError> {
-    let _ = (db, binding);
-    Ok(false)
+    let Some(seat) = seat_of(db, binding)? else {
+        return Ok(false);
+    };
+    db.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} {UNREAD_EXTRA}) \
+             OR EXISTS(SELECT 1 FROM lazy_recipients lr \
+               JOIN send_manifests sm ON sm.preparation_id=lr.preparation_id AND sm.message_id=lr.message_id \
+               WHERE lr.seat_id=?1 AND lr.state='pending')"
+        ),
+        params![seat.as_str(), binding.as_str()],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
+/// Advance `binding`'s cursor in `thread` over the longest prefix of messages past the cursor
+/// whose sequences are all in `displayed`. Messages the seat cannot receive in that thread (its
+/// own sends, kinds the inbox never shows) count as displayed. Monotonic. Returns the cursor.
+// ht-54r.22 adds lazy-mode messages to the receivable set.
+pub fn advance_through_displayed(
+    tx: &Connection,
+    binding: &BindingId,
+    thread: &ThreadId,
+    displayed: &[u64],
+) -> Result<u64, ApiError> {
+    let current = cursor_for(tx, binding, thread)?.unwrap_or(0);
+    let Some(seat) = seat_of(tx, binding)? else {
+        return Ok(current);
+    };
+    let mut stmt = tx
+        .prepare(&format!(
+            "SELECT x.sequence, EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} AND m.id=x.id) \
+             FROM messages x WHERE x.thread_id=?2 AND x.sequence>?3 ORDER BY x.sequence"
+        ))
+        .map_err(store_error)?;
+    let rows = stmt
+        .query_map(
+            params![seat.as_str(), thread.as_str(), to_i64(current)?],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)),
+        )
+        .map_err(store_error)?;
+    let mut reached = current;
+    for row in rows {
+        let (sequence, receivable) = row.map_err(store_error)?;
+        let sequence = u64::try_from(sequence)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative message sequence"))?;
+        if receivable && !displayed.contains(&sequence) {
+            break;
+        }
+        reached = sequence;
+    }
+    drop(stmt);
+    if reached > current {
+        advance(tx, binding, thread, reached)?;
+    }
+    Ok(reached)
 }
 
 #[cfg(test)]

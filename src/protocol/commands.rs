@@ -100,6 +100,9 @@ pub enum Command {
     AckModDelivered(AckModDelivered),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
+    /// Advance the caller binding's own read cursors over messages it fully displayed. Allowed
+    /// for subagent bindings: it changes only the caller's read position, never seat state.
+    AdvanceCursors(AdvanceCursors),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -392,6 +395,10 @@ pub struct SeatInspectQuery {
 pub struct InboxQuery {
     pub seat: Option<SeatId>,
     pub page: PageRequest,
+    /// The reading binding's claim (ht-54r.7). With it the daemon serves that binding's own
+    /// stream (spec §2 Inbox, per binding); without it, today's per-seat page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<CallerClaim>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -795,6 +802,16 @@ pub struct CompleteInboxDelivery {
     pub via: Option<LazyCompletionVia>,
 }
 
+/// Advance the caller binding's cursors over messages it fully displayed (spec §2). Allowed for
+/// subagent bindings: it changes only the caller's own read position, never seat state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdvanceCursors {
+    pub claim: CallerClaim,
+    pub operation: OperationId,
+    pub displayed: Vec<MessageId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendMessage {
@@ -1149,6 +1166,16 @@ impl Command {
                 if query.messages.is_empty() || query.messages.len() > MAX_BATCH_ITEMS =>
             {
                 Err("message delivery mode batch must contain 1..=100 messages")
+            }
+            Self::AdvanceCursors(advance) => {
+                advance.claim.validate_binding_fields()?;
+                if advance.displayed.is_empty()
+                    || advance.displayed.len() > MAX_BATCH_ITEMS
+                    || has_duplicate(&advance.displayed)
+                {
+                    return Err("invalid cursor advance batch");
+                }
+                Ok(())
             }
             Self::CompleteInboxDelivery(completion)
                 if completion.messages.is_empty()

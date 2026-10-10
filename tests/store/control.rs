@@ -1570,6 +1570,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
     };
     assert!(threads.items.iter().any(|item| item.thread == thread));
     let inbox = crate::protocol::commands::Command::Inbox(crate::protocol::commands::InboxQuery {
+        claim: None,
         seat: Some(SeatId::new("s2")),
         page: Default::default(),
     });

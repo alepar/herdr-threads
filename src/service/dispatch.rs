@@ -387,6 +387,36 @@ impl DomainService {
             .bootstrap_mutate(&runtime.canonical, mutation, permit, None, budget)
     }
 
+    /// A binding's own read position (spec §2): authorised like a cooperative call, but open to
+    /// declared subagents, since it never touches seat state. Decided by the store.
+    fn advance_cursors(
+        &self,
+        request: &crate::protocol::commands::AdvanceCursors,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if request.claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        self.store.advance_cursors(request, budget)
+    }
+
     fn cooperative_mutation(
         &self,
         mutation: PermitMutation,
@@ -813,6 +843,7 @@ impl LocalService for DomainService {
             Command::AckModDelivered(request) => {
                 self.ack_mod_delivered(request, peer, budget, read)
             }
+            Command::AdvanceCursors(request) => self.advance_cursors(&request, peer, budget),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
