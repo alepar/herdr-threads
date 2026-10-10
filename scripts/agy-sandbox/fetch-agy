@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Download and verify a genuine agy (test-infra spec D4). Never run by CI or by the gate.
+
+  fetch-agy --dest DIR [--version V] [--manifest FILE] [--archive FILE] [--versions-file FILE]
+
+Mirrors the official installer: platform key ``<os>_<arch>``, manifest from the auto-updater
+service (or a saved ``--manifest``), the ``url`` must sit under the public storage prefix,
+redirects to other hosts are refused, the archive sha512 must match the manifest (and
+``agy-versions.json`` when the version is pinned there), ``antigravity`` is extracted to
+``DIR/<version>/agy`` (0755, quarantine attribute removed) and the manifest is saved beside it.
+It never runs ``agy install``. ``--archive`` verifies a local tar.gz instead of downloading it.
+"""
+import argparse
+import hashlib
+import io
+import json
+import os
+import platform
+import subprocess
+import sys
+import tarfile
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+MANIFEST_BASE = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/"
+URL_PREFIX = "https://storage.googleapis.com/antigravity-public/antigravity-cli/"
+VERSIONS_FILE = HERE / "agy-versions.json"
+MEMBER = "antigravity"
+MAX_ARCHIVE = 512 * 1024 * 1024
+
+
+class FetchError(Exception):
+    pass
+
+
+def platform_key(system=None, machine=None):
+    system = (system or platform.system()).lower()
+    machine = (machine or platform.machine()).lower()
+    arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64", "amd64": "amd64"}.get(machine)
+    if system != "darwin" or arch is None:
+        raise FetchError("unsupported platform %s/%s (darwin arm64 or amd64 only)" % (system, machine))
+    return "%s_%s" % (system, arch)
+
+
+def manifest_url(platform_name):
+    return MANIFEST_BASE + platform_name + ".json"
+
+
+def check_url(url):
+    if not isinstance(url, str) or not url.startswith(URL_PREFIX):
+        raise FetchError("refusing download URL outside %s: %r" % (URL_PREFIX, url))
+    return url
+
+
+def parse_manifest(obj):
+    """``(version, url, sha512)`` from a manifest object; any missing field is an error."""
+    if not isinstance(obj, dict):
+        raise FetchError("manifest is not an object")
+    version, url, digest = obj.get("version"), obj.get("url"), obj.get("sha512")
+    if not (isinstance(version, str) and version and isinstance(digest, str) and digest):
+        raise FetchError("manifest lacks version/sha512")
+    check_url(url)
+    return version, url, digest.lower()
+
+
+def sha512_bytes(data):
+    return hashlib.sha512(data).hexdigest()
+
+
+def verify_sha512(data, expected, what="archive"):
+    actual = sha512_bytes(data)
+    if actual != expected.lower():
+        raise FetchError("%s sha512 mismatch: expected %s, got %s" % (what, expected[:16] + "...", actual[:16] + "..."))
+
+
+def check_pinned(version, digest, versions_file=None):
+    """If ``version`` is pinned in agy-versions.json its sha512 must equal ``digest``."""
+    path = Path(versions_file or VERSIONS_FILE)
+    pins = json.loads(path.read_text()).get("versions", {}) if path.exists() else {}
+    pin = pins.get(version)
+    if pin and pin.get("sha512") and pin["sha512"].lower() != digest.lower():
+        raise FetchError("version %s is pinned in %s with a different sha512" % (version, path.name))
+    return bool(pin and pin.get("sha512"))
+
+
+class _SameHostRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old, new = urllib.parse.urlparse(req.full_url), urllib.parse.urlparse(newurl)
+        if new.scheme != "https" or new.netloc != old.netloc:
+            raise FetchError("refusing redirect to %s" % newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def http_get(url, limit=MAX_ARCHIVE):
+    opener = urllib.request.build_opener(_SameHostRedirect)
+    with opener.open(urllib.request.Request(url), timeout=120) as resp:
+        data = resp.read(limit + 1)
+    if len(data) > limit:
+        raise FetchError("download from %s exceeds %d bytes" % (url, limit))
+    return data
+
+
+def extract_member(archive_bytes):
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if member.isfile() and os.path.basename(member.name) == MEMBER:
+                return tar.extractfile(member).read()
+    raise FetchError("archive has no %r file" % MEMBER)
+
+
+def install(dest, version, manifest, archive_bytes):
+    out_dir = Path(dest) / version
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / "agy"
+    target.write_bytes(extract_member(archive_bytes))
+    os.chmod(str(target), 0o755)
+    subprocess.run(["xattr", "-d", "com.apple.quarantine", str(target)], stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)  # absent attribute is fine
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    return target
+
+
+def run(args):
+    if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+        raise FetchError("refusing to run under CI/GITHUB_ACTIONS")
+    if args.manifest:
+        manifest = json.loads(Path(args.manifest).read_text())
+    else:
+        manifest = json.loads(http_get(manifest_url(platform_key()), 1 << 20).decode())
+    version, url, digest = parse_manifest(manifest)
+    if args.version and args.version != version:
+        raise FetchError("manifest is version %s, not the requested %s" % (version, args.version))
+    check_pinned(version, digest, args.versions_file)
+    data = Path(args.archive).read_bytes() if args.archive else http_get(url)
+    verify_sha512(data, digest)
+    return install(args.dest, version, manifest, data)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Download and verify a genuine agy binary")
+    ap.add_argument("--dest", required=True)
+    ap.add_argument("--version")
+    ap.add_argument("--manifest", help="a saved manifest JSON instead of fetching one")
+    ap.add_argument("--archive", help="a local tar.gz to verify and unpack instead of downloading")
+    ap.add_argument("--versions-file", help="alternative agy-versions.json (tests)")
+    args = ap.parse_args(argv)
+    try:
+        target = run(args)
+    except (FetchError, urllib.error.URLError, OSError, ValueError) as error:
+        sys.stderr.write("fetch-agy: %s\n" % error)
+        return 1
+    print(target)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

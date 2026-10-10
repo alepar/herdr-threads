@@ -1,0 +1,4 @@
+{
+  "comment": "Pinned agy releases: version -> sha512 of the tar.gz named by the official manifest. fetch-agy refuses a manifest whose sha512 differs from its pin. 1.3.0 and 1.3.3 are to be seeded from the recorded manifests of the agy research evidence; no digest is invented here.",
+  "versions": {}
+}
