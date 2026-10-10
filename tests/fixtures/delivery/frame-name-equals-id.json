@@ -1,0 +1,38 @@
+[
+  {
+    "kind": "message",
+    "id": "m1",
+    "thread": "T1",
+    "threadName": "T1",
+    "sender": "S1",
+    "senderName": "S1",
+    "body": "body of m1"
+  },
+  {
+    "kind": "message",
+    "id": "m2",
+    "thread": "T1",
+    "threadName": "T1\n",
+    "sender": "S1",
+    "senderName": "S1",
+    "body": "body of m2"
+  },
+  {
+    "kind": "message",
+    "id": "m3",
+    "thread": "",
+    "threadName": "only a name",
+    "sender": "",
+    "senderName": "",
+    "body": "body of m3"
+  },
+  {
+    "kind": "message",
+    "id": "m4",
+    "thread": "",
+    "threadName": "",
+    "sender": "",
+    "senderName": "",
+    "body": "body of m4"
+  }
+]
