@@ -12,3 +12,5 @@ R11 Human seats (me init) remain exclusive; managed launch records a fingerprint
 R12 Existing installs migrate to the new schema without duplicate delivery; protocol/wire and installed hooks are updated; agents mid-session re-enroll.
 R13 TRUST-POLICY.md, the herdr-threads skill and docs describe the new model (shared-seat consequence, refusals, provenance values).
 R14 Every configuration the spec enumerates (Claude+subagents, Codex embedded/daemon, Hermes + one-shot, human exclusivity, resume/fast-forward, pane close→retire→archive) is exercised end to end.
+R15 An agent or hook that predates the upgrade gets an actionable refusal or re-enrolls (keeping its migrated binding's cursors when its session matches); stale installed hooks are detected.
+R16 Every path that ends a binding uses one disconnect transition, so seat_active, presence, wake and archival agree.
