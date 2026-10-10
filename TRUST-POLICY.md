@@ -589,7 +589,11 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   Foreign broad allowances are preserved and can still cover Human commands. Bare names
   cannot attest later PATH, alias or function resolution. Generated matching and native
   checker evidence never prove a live classifier verdict or installed wrapper support.
-  Setup changes no general shell, network, sandbox or approval-mode setting.
+  Setup changes no general shell, network, sandbox or approval-mode setting. The owned
+  agy allow member `command(herdr-threads)` has no ask counterpart herdr-threads can
+  write, so once granted it also covers person and setup commands; agy's consent
+  question says so, and it is installed only with consent (`--with-permissions` or a
+  yes) or kept from an earlier recorded grant.
 - **Unattributed public reads retain ordinary daemon spelling.** Public read requests
   carry no invocation actor; a Human subject seat or peer label cannot identify the
   requesting viewer. Known current caller/action producers include Human spelling before

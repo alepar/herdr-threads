@@ -397,6 +397,13 @@ impl Fixture {
         ResolvedSetupScope::ConfigRoot(self.roots.config_root.clone())
     }
     fn setup(&self) {
+        self.setup_with_options(
+            [(crate::cli::setup::WITH_PERMISSIONS.to_owned(), true)]
+                .into_iter()
+                .collect(),
+        );
+    }
+    fn setup_with_options(&self, options: crate::harness::adapter::SetupOptions) {
         AgyAdapter
             .setup(
                 &SetupRequest {
@@ -404,7 +411,7 @@ impl Fixture {
                     executable: self.exe.clone(),
                     environment: self.env(),
                     native_binary: None,
-                    options: Default::default(),
+                    options: options.clone(),
                 },
                 &budget(),
             )
@@ -585,6 +592,23 @@ fn an_installed_current_enabled_plugin_prepares_the_validated_caller_argv() {
         registration
             .prepare_launch(&request, &scope, &admitted, &status, &NoProbe, &budget())
             .is_err()
+    );
+}
+
+#[test]
+fn a_not_granted_allow_entry_is_no_warning() {
+    let fx = Fixture::new();
+    fx.setup_with_options(Default::default());
+    let prepared = fx.prepare(&["-c"]).unwrap();
+    assert_eq!(
+        prepared.report["agy"]["allow_entry"]["state"],
+        "not_granted"
+    );
+    assert!(
+        prepared.report["agy"]["warnings"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
 }
 

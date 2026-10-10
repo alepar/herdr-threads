@@ -537,9 +537,14 @@ class World(object):
         if not self.workspace:
             raise WorldError("workspace create returned no workspace id: %r" % (data,))
 
-    def setup_agy(self):
-        """Run ``herdr-threads setup agy`` inside the isolated HOME (never the real one)."""
-        return self.ht(["setup", "agy"], check=False)
+    def setup_agy(self, permissions=True):
+        """Run ``herdr-threads setup agy`` inside the isolated HOME (never the real one).
+
+        ``permissions`` passes ``--with-permissions``: agy's allow member is installed only with
+        consent, so a plain ``setup agy`` (``permissions=False``) adds it only when a grant is recorded.
+        """
+        argv = ["setup", "agy"] + (["--with-permissions"] if permissions else [])
+        return self.ht(argv, check=False)
 
     def unsetup_agy(self):
         return self.ht(["unsetup", "agy"], check=False)

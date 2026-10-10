@@ -19,10 +19,20 @@ use crate::{
     protocol::results::{ApiError, ErrorCode},
 };
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::{
+    io::{BufRead, Write},
+    path::{Path, PathBuf},
+};
 
 /// The owned `permissions.allow` member.
 pub const ALLOW_RULE: &str = "command(herdr-threads)";
+/// The consent question an interactive `setup agy` asks when nothing is granted.
+pub const AGY_PERMISSION_QUESTION: &str = "Let agy agents run herdr-threads commands without prompting? \
+    The allow entry command(herdr-threads) also covers person and setup commands [Y/n] ";
+/// The non-interactive advice when nothing is granted (nothing was changed).
+pub const AGY_PERMISSION_ADVICE: &str = "agy asks before each herdr-threads command: re-run \
+    `herdr-threads setup agy --with-permissions` to add the allow entry command(herdr-threads) (it covers every \
+    herdr-threads command, person and setup commands included), or --without-permissions to keep it this way";
 const SETTINGS_MANIFEST_KIND: &str = "agy-user";
 
 /// agy's user settings file in the shared engine: allow-member-only, and agy rewrites the file.
@@ -50,8 +60,10 @@ pub enum AllowEntryState {
     Owned,
     /// The user's file held it before setup; unsetup leaves it.
     PreExisting,
-    /// Not set up, or agy rewrote the file without it.
+    /// A recorded grant whose member agy rewrote away, or a file that cannot be inspected.
     Missing,
+    /// No record and no member: consent was not given.
+    NotGranted,
 }
 impl AllowEntryState {
     pub fn as_str(self) -> &'static str {
@@ -59,6 +71,7 @@ impl AllowEntryState {
             Self::Owned => "owned",
             Self::PreExisting => "pre_existing",
             Self::Missing => "missing",
+            Self::NotGranted => "not_granted",
         }
     }
 }
@@ -122,6 +135,28 @@ fn inspect_allow(
 ) -> Result<(AllowEntryState, Option<String>), SetupFailure> {
     use crate::harness::setup::AllowRuleOwnership;
     let manifest = settings_manifest(roots, env)?;
+    match read_settings_manifest(&manifest) {
+        Ok(None) => {
+            return Ok((
+                if rule_in_file(&roots.settings) {
+                    AllowEntryState::PreExisting
+                } else {
+                    AllowEntryState::NotGranted
+                },
+                None,
+            ));
+        }
+        Ok(Some(_)) => {}
+        Err(error) => {
+            return Ok((
+                AllowEntryState::Missing,
+                Some(format!(
+                    "{} ownership record cannot be inspected ({error:?})",
+                    roots.settings.display()
+                )),
+            ));
+        }
+    }
     let inspection = match inspect_user_settings(
         settings_kind(),
         &roots.settings,
@@ -149,6 +184,18 @@ fn inspect_allow(
         _ => AllowEntryState::Missing,
     };
     Ok((state, None))
+}
+
+/// Whether the user's own `settings.json` holds the allow member; any error reads as no.
+fn rule_in_file(path: &Path) -> bool {
+    let Ok(bytes) = crate::harness::setup::config_bytes(path) else {
+        return false;
+    };
+    serde_json::from_slice::<Value>(&bytes).is_ok_and(|value| {
+        value["permissions"]["allow"]
+            .as_array()
+            .is_some_and(|allow| allow.iter().any(|rule| rule == ALLOW_RULE))
+    })
 }
 
 /// Add the owned allow member, creating `settings.json` as `{}` when absent.
@@ -237,6 +284,20 @@ fn allow_json(roots: &AgyRoots, state: AllowEntryState) -> Value {
     })
 }
 
+fn permissions_json(roots: &AgyRoots, env: &SetupEnvironment, state: AllowEntryState) -> Value {
+    json!({
+        "state": if matches!(state, AllowEntryState::Owned | AllowEntryState::PreExisting) {
+            "installed"
+        } else {
+            "not_installed"
+        },
+        "rule": ALLOW_RULE,
+        "file": roots.settings.display().to_string(),
+        "pre_existing": state == AllowEntryState::PreExisting,
+        "manifest": settings_manifest(roots, env).ok().map(|path| path.display().to_string()),
+    })
+}
+
 fn status_diagnostics(
     plugin: &plugin::PluginStatus,
     allow: AllowEntryState,
@@ -259,6 +320,51 @@ fn status_diagnostics(
     diagnostics
 }
 
+/// `Ask`: keep a recorded grant current, record the user's own member; `false` when nothing is
+/// granted (nothing written).
+fn ask_allow(roots: &AgyRoots, env: &SetupEnvironment) -> Result<bool, SetupFailure> {
+    let manifest = settings_manifest(roots, env)?;
+    let recorded = read_settings_manifest(&manifest)
+        .map_err(|error| settings_failure(error, roots, &manifest))?
+        .is_some();
+    if recorded || rule_in_file(&roots.settings) {
+        install_allow(roots, env)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Ask on a terminal when setup only advised; a yes (the default) grants.
+pub(super) fn settle_permissions(
+    scope: &ResolvedSetupScope,
+    env: &SetupEnvironment,
+    report: &mut Value,
+    reader: &mut dyn BufRead,
+    writer: &mut dyn Write,
+) -> Result<(), SetupFailure> {
+    if report["permissions"]["action"] != "advised" {
+        return Ok(());
+    }
+    let roots = roots_of(scope)?;
+    write!(writer, "{AGY_PERMISSION_QUESTION}").map_err(SetupFailure::Io)?;
+    writer.flush().map_err(SetupFailure::Io)?;
+    let yes = crate::harness::claude::setup::permission_answer(reader).map_err(SetupFailure::Io)?;
+    if yes {
+        install_allow(&roots, env)?;
+        let state = allow_entry_state(&roots, env);
+        report["permissions"] = permissions_json(&roots, env, state);
+        report["permissions"]["action"] = json!("granted");
+        report["allow_entry"] = allow_json(&roots, state);
+    } else {
+        report["permissions"]["action"] = json!("declined");
+        if let Some(permissions) = report["permissions"].as_object_mut() {
+            permissions.remove("note");
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn setup(request: &SetupRequest) -> Result<SetupOutcome, SetupFailure> {
     let roots = roots_of(&request.scope)?;
     let mut environment = request.environment.clone();
@@ -266,12 +372,42 @@ pub(super) fn setup(request: &SetupRequest) -> Result<SetupOutcome, SetupFailure
     let env = &environment;
     state_dir(env)?;
     legacy::prepare_state(&SetupEnv::from_snapshot(env)).map_err(legacy::adapter_failure)?;
+    let policy = crate::cli::setup::PermissionPolicy::from_options(&request.options);
     let before = allow_entry_state(&roots, env);
     let report = plugin::install(&roots, env)?;
-    install_allow(&roots, env)?;
+    // The allow member stays owned by the shared settings engine: its write is already a
+    // compare-and-swap against the validated bytes, so there is no permission backend or
+    // write guard here (a lock file would be left in `~/.gemini` that unsetup never removes).
+    let (action, note, failed) = match policy {
+        crate::cli::setup::PermissionPolicy::Grant => {
+            install_allow(&roots, env)?;
+            ("granted", false, None)
+        }
+        crate::cli::setup::PermissionPolicy::Decline => (
+            "removed",
+            false,
+            remove_allow(&roots, env)
+                .err()
+                .map(|error| error.to_string()),
+        ),
+        crate::cli::setup::PermissionPolicy::Ask => match ask_allow(&roots, env) {
+            Ok(true) => ("kept", false, None),
+            Ok(false) => ("advised", true, None),
+            Err(error) => ("kept", false, Some(error.to_string())),
+        },
+    };
     let plugin = plugin::status(&roots, env);
     let allow = allow_entry_state(&roots, env);
-    let changed = report.changed() || before == AllowEntryState::Missing;
+    let changed = report.changed() || before != allow;
+    let mut permissions = permissions_json(&roots, env, allow);
+    permissions["action"] = json!(action);
+    if note {
+        permissions["note"] = json!(AGY_PERMISSION_ADVICE);
+    }
+    if let Some(error) = failed {
+        permissions["state"] = json!("error");
+        permissions["error"] = json!(error);
+    }
     let mut projection = json!({
         "action": if changed { "installed" } else { "already_installed" },
         "installed": plugin.installed && plugin.current,
@@ -279,6 +415,7 @@ pub(super) fn setup(request: &SetupRequest) -> Result<SetupOutcome, SetupFailure
         "hooks_file": roots.plugin_dir.join(plugin::HOOKS_JSON).display().to_string(),
         "plugin": plugin_json(&plugin),
         "allow_entry": allow_json(&roots, allow),
+        "permissions": permissions,
         "files": report.files.iter().map(|(rel, action)| json!({"path": rel, "action": action.as_str()})).collect::<Vec<_>>(),
     });
     let diagnostics = status_diagnostics(&plugin, allow, None);
@@ -316,6 +453,7 @@ pub(super) fn status(request: &StatusRequest) -> SetupStatus {
         "hooks_file": roots.plugin_dir.join(plugin::HOOKS_JSON).display().to_string(),
         "plugin": plugin_json(&plugin),
         "allow_entry": allow_json(&roots, allow),
+        "permissions": permissions_json(&roots, env, allow),
     });
     if env.state_dir.is_none() {
         projection["error"] =
@@ -403,6 +541,9 @@ pub(super) fn setup_report_lines(report: &Value) -> Vec<String> {
     if let Some(state) = report["allow_entry"]["state"].as_str() {
         let rule = report["allow_entry"]["rule"].as_str().unwrap_or(ALLOW_RULE);
         lines.push(format!("allow entry {rule}: {}", state.replace('_', "-")));
+    }
+    if let Some(action) = report["permissions"]["action"].as_str() {
+        lines.push(format!("permissions: {action}"));
     }
     lines
 }

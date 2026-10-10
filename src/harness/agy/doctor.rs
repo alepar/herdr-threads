@@ -215,6 +215,7 @@ pub(super) fn doctor_projection(
     let allow = match status.projection["allow_entry"]["state"].as_str() {
         Some("owned") => AllowEntryState::Owned,
         Some("pre_existing") => AllowEntryState::PreExisting,
+        Some("not_granted") => AllowEntryState::NotGranted,
         _ => AllowEntryState::Missing,
     };
     let present = agy_present(&roots, request);

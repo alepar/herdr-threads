@@ -59,6 +59,13 @@ impl Fixture {
         }
     }
     fn setup(&self) {
+        self.setup_with_options(
+            [(crate::cli::setup::WITH_PERMISSIONS.to_owned(), true)]
+                .into_iter()
+                .collect(),
+        );
+    }
+    fn setup_with_options(&self, options: crate::harness::adapter::SetupOptions) {
         AgyAdapter
             .setup(
                 &SetupRequest {
@@ -66,7 +73,7 @@ impl Fixture {
                     executable: self.exe.clone(),
                     environment: self.env(),
                     native_binary: None,
-                    options: Default::default(),
+                    options: options.clone(),
                 },
                 &budget(),
             )
@@ -177,6 +184,31 @@ fn missing_allow_entry_is_a_limitation_with_a_safe_repair() {
         projection.safe_repairs[..],
         [LocalRepair::RepairOwned]
     ));
+}
+
+#[test]
+fn not_granted_allow_entry_is_not_a_limitation() {
+    let fixture = Fixture::new(Some("top-level"));
+    fixture.setup_with_options(Default::default());
+    let projection = fixture.projection();
+    assert_eq!(
+        projection.hooks["allow_entry"]["state"],
+        json!("not_granted")
+    );
+    assert_eq!(
+        projection.hooks["permissions"]["state"],
+        json!("not_installed")
+    );
+    assert!(
+        projection.limitations.is_empty(),
+        "{:?}",
+        projection.limitations
+    );
+    assert!(projection.safe_repairs.is_empty());
+    assert_eq!(
+        doctor_text(&projection.hooks, DoctorTextForm::Summary),
+        "agy: plugin installed, allow entry not-granted\n"
+    );
 }
 
 #[test]
@@ -355,7 +387,7 @@ fn a_safe_repair_makes_the_full_summary_print_the_fix_line() {
     let broken = fixture.projection();
     let summary = crate::cli::doctor::render_text(&report_of(&broken));
     assert!(
-        summary.contains("agy: plugin missing, allow entry missing\n"),
+        summary.contains("agy: plugin missing, allow entry not-granted\n"),
         "{summary}"
     );
     assert!(

@@ -4,7 +4,7 @@ claude: contract_declared, hooks installed
 claude: runtime metadata unavailable; rich optional capabilities unavailable
 codex: contract_declared, hooks missing
 codex: runtime metadata unavailable; rich optional capabilities unavailable
-agy: plugin missing, allow entry missing
+agy: plugin missing, allow entry not-granted
 issue: codex is on PATH (<root>/bin dir/codex) but its hooks are not installed in <root>/codex home/hooks.json: run `herdr-threads setup codex` with this CODEX_HOME
 fix: herdr-threads doctor fix
 claude local_config_root : installed: true, enabled: unknown, admitted: true, observed: unknown
@@ -16,7 +16,6 @@ codex local_config_root : installed: false, enabled: unknown, admitted: true, ob
 hermes local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
   setup: invalid adapter input: Hermes launcher unavailable
 agy local_config_root : installed: false, enabled: true, admitted: unknown, observed: unknown
-  the allow entry command(herdr-threads) is missing from antigravity-cli/settings.json; re-run `herdr-threads setup agy`
 synthetic_fourth local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
   setup: invalid adapter input: synthetic fourth: explicit fixture root unavailable
 rich harness evidence unavailable: the daemon is not reachable

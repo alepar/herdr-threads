@@ -24,7 +24,20 @@ state directory:
 - the plugin directory `~/.gemini/config/plugins/herdr-threads/` with `plugin.json`, `hooks.json`
   and `skills/herdr-threads/SKILL.md` (the core skill plus a short agy section);
 - one `permissions.allow` member, `command(herdr-threads)`, in
-  `~/.gemini/antigravity-cli/settings.json`.
+  `~/.gemini/antigravity-cli/settings.json`, only with consent.
+
+The allow member goes through the same consent and backup model as Claude and Codex.
+`setup agy --with-permissions` adds it; `--without-permissions` removes the one setup added (the
+plugin stays; a member that was already in your file stays too). A plain `setup agy` keeps what
+is there: it keeps a recorded grant current (re-adding a member agy rewrote away) and records your
+own member as pre-existing. When nothing is granted it asks on a terminal, `Let agy agents run
+herdr-threads commands without prompting? The allow entry command(herdr-threads) also covers person
+and setup commands [Y/n]` (empty line is yes), and without a terminal it reports
+`permissions.action: advised` with a note and changes nothing. The entry covers every
+`herdr-threads` command, person and setup commands included, because herdr-threads writes no agy
+ask rule. Each run keeps one pre-image of `settings.json` beside it
+(`settings.json.<stamp>-<id>.herdr-threads`) before its first change; a file setup itself creates
+gets none.
 
 Setup writes a file only when it is new or still equals what it recorded. A file it does not own,
 or a `herdr-threads` plugin directory without its manifest, is a conflict and is never
@@ -54,9 +67,10 @@ unknown, and `launch` refuses until you fix it or enable the plugin.
 
 The allow member `command(herdr-threads)` lets the agent run `herdr-threads ...` through
 `run_command` without a prompt per command. agy rewrites `settings.json` itself and can drop the
-member. When that happens, `setup-status` and `doctor` report the entry as missing, `launch`
-warns (it does not refuse; agy then asks before each herdr-threads command), and re-running
-`herdr-threads setup agy` adds it back.
+member. When a grant was recorded, `setup-status` and `doctor` then report the entry as `missing`,
+`launch` warns (it does not refuse; agy then asks before each herdr-threads command), and re-running
+`herdr-threads setup agy` adds it back. `not_granted` (no record and no member: consent was never
+given) is not a defect: it produces no warning, limitation or repair.
 
 Agents should run each command as one plain `herdr-threads ...` command. Chaining (`;`, `&&`,
 `|`) and prefixes (`cd`, `env`) are outside the allow rule and need approval.
@@ -112,11 +126,11 @@ global file and block untouched, so Herdr's agent detection and the plugin run s
 `herdr-threads doctor` reports for agy:
 
 - the plugin status (installed, current, enabled, version) and the allow entry state
-  (`owned`, `pre-existing` or `missing`);
+  (`owned`, `pre-existing`, `not-granted` or `missing`) and the `permissions` state;
 - the witness scan: a bounded, read-only look at up to 64 recent `brain/` conversations, counting
   top-level conversations that have no presence lock;
 - the `--sandbox` limit above;
-- limitations: plugin missing, stale or disabled; allow entry missing;
+- limitations: plugin missing, stale or disabled; allow entry missing (a not-granted entry is not a limitation);
   `SessionStart without witness: N recent top-level conversations lack a presence lock`;
   `subagent check bounded: brain/ has N entries`.
 

@@ -2,6 +2,7 @@
 //! Included from `src/harness/agy/setup.rs`; goldens are `tests/fixtures/agy/plugin/*` with the
 //! placeholders `<EXE>`, `<STATE>`, `<HOST>`, `<VERSION>` and (SKILL.md only) `<SKILL_MD>`.
 use super::*;
+use crate::cli::setup::PermissionPolicy;
 use crate::harness::{
     adapter::{
         HarnessAdapter, ResolvedSetupScope, SetupEnvironment, SetupFailure, SetupRequest,
@@ -52,16 +53,29 @@ impl Fixture {
         ResolvedSetupScope::ConfigRoot(self.roots.config_root.clone())
     }
     fn setup_request(&self) -> SetupRequest {
+        self.setup_request_with(crate::cli::setup::PermissionPolicy::Grant)
+    }
+    fn setup_request_with(&self, policy: crate::cli::setup::PermissionPolicy) -> SetupRequest {
         SetupRequest {
             scope: self.scope(),
             executable: self.exe.clone(),
             environment: self.env(),
             native_binary: None,
-            options: Default::default(),
+            options: policy
+                .option()
+                .map(|name| (name.to_owned(), true))
+                .into_iter()
+                .collect(),
         }
     }
+    fn setup_with(
+        &self,
+        policy: crate::cli::setup::PermissionPolicy,
+    ) -> Result<crate::harness::adapter::SetupOutcome, SetupFailure> {
+        AgyAdapter.setup(&self.setup_request_with(policy), &budget())
+    }
     fn setup(&self) -> Result<crate::harness::adapter::SetupOutcome, SetupFailure> {
-        AgyAdapter.setup(&self.setup_request(), &budget())
+        self.setup_with(crate::cli::setup::PermissionPolicy::Grant)
     }
     fn status_request(&self) -> StatusRequest {
         StatusRequest {
@@ -475,7 +489,7 @@ fn allow_entry_is_created_when_the_array_is_absent() {
     let fx = Fixture::new();
     assert_eq!(
         allow_entry_state(&fx.roots, &fx.env()),
-        AllowEntryState::Missing
+        AllowEntryState::NotGranted
     );
     // A settings file with other content and no permissions at all.
     fx.write(&fx.roots.settings, "{\"theme\":\"dark\"}");
@@ -498,14 +512,25 @@ fn allow_entry_is_created_when_the_array_is_absent() {
 fn allow_entry_creates_an_absent_settings_file_and_removes_it_again() {
     let fx = Fixture::new();
     assert!(!fx.roots.data.exists());
-    fx.setup().unwrap();
+    {
+        let _run = crate::harness::setup::BackupSession::start();
+        fx.setup().unwrap();
+    }
     assert_eq!(fx.settings_json(), json!({"permissions":{"allow":[RULE]}}));
+    assert!(
+        backups(&fx).is_empty(),
+        "setup created the file: no pre-image"
+    );
     fx.unsetup().unwrap();
     assert!(!fx.roots.settings.exists());
-    assert!(
-        !fx.roots.data.exists(),
-        "the directory setup created is removed when empty"
+    // Unsetup keeps one pre-image of the granted file, so the directory stays with only it.
+    assert_eq!(
+        fx.files_under(&fx.roots.data).len(),
+        1,
+        "{:?}",
+        fx.files_under(&fx.roots.data)
     );
+    assert_eq!(backups(&fx).len(), 1);
 }
 
 #[test]
@@ -578,7 +603,7 @@ fn unsetup_removes_only_the_owned_member() {
     );
     assert_eq!(
         allow_entry_state(&fx.roots, &fx.env()),
-        AllowEntryState::Missing
+        AllowEntryState::NotGranted
     );
 }
 
@@ -729,6 +754,7 @@ fn report_lines_name_the_plugin_and_the_allow_entry() {
         vec![
             format!("plugin {}", fx.roots.plugin_dir.display()),
             "allow entry command(herdr-threads): owned".to_owned(),
+            "permissions: granted".to_owned(),
         ]
     );
     let fx = Fixture::new();
@@ -777,4 +803,217 @@ fn setup_needs_a_state_dir_and_refuses_profiles() {
         Err(SetupFailure::Invalid(_))
     ));
     assert!(!fx.roots.config_root.exists(), "a refusal creates nothing");
+}
+
+// ---- consent and backups (ht-poh.18) ----
+
+fn backups(fx: &Fixture) -> Vec<Vec<u8>> {
+    crate::harness::setup::user_config_backups(&fx.roots.settings)
+}
+fn permissions_of(fx: &Fixture) -> Value {
+    fx.status().projection["permissions"].clone()
+}
+
+#[test]
+fn setup_options_declare_with_and_without_permissions() {
+    let options = AgyAdapter.setup_options();
+    let names: Vec<_> = options.iter().map(|o| (o.name, o.conflicts)).collect();
+    assert_eq!(
+        names,
+        [
+            ("with-permissions", &["without-permissions"][..]),
+            ("without-permissions", &["with-permissions"][..]),
+        ]
+    );
+}
+
+#[test]
+fn ask_without_a_grant_advises_and_writes_nothing() {
+    let _run = crate::harness::setup::BackupSession::start();
+    let fx = Fixture::new();
+    let outcome = fx.setup_with(PermissionPolicy::Ask).unwrap();
+    assert!(fx.plugin_file(plugin::HOOKS_JSON).exists());
+    assert!(!fx.roots.settings.exists());
+    assert_eq!(outcome.projection["allow_entry"]["state"], "not_granted");
+    let permissions = &outcome.projection["permissions"];
+    assert_eq!(permissions["state"], "not_installed");
+    assert_eq!(permissions["rule"], RULE);
+    assert_eq!(permissions["action"], "advised");
+    assert_eq!(permissions["note"], AGY_PERMISSION_ADVICE);
+    let status = fx.status();
+    assert!(!diagnostic_codes(&status.diagnostics).contains(&"agy_allow_entry_missing"));
+    assert!(status.repairs.is_empty());
+}
+
+#[test]
+fn ask_keeps_a_recorded_grant_and_re_adds_it_after_an_agy_rewrite() {
+    let fx = Fixture::new();
+    {
+        let _run = crate::harness::setup::BackupSession::start();
+        fx.setup().unwrap();
+    }
+    let rewritten = "{\"model\":\"x\",\"permissions\":{\"allow\":[]}}";
+    fx.write(&fx.roots.settings, rewritten);
+    let _run = crate::harness::setup::BackupSession::start();
+    let outcome = fx.setup_with(PermissionPolicy::Ask).unwrap();
+    assert_eq!(outcome.projection["permissions"]["action"], "kept");
+    assert_eq!(outcome.projection["allow_entry"]["state"], "owned");
+    assert_eq!(
+        fx.settings_json(),
+        json!({"model":"x","permissions":{"allow":[RULE]}})
+    );
+    assert_eq!(backups(&fx), [rewritten.as_bytes().to_vec()]);
+}
+
+#[test]
+fn ask_records_a_users_own_member_without_changing_the_file() {
+    let _run = crate::harness::setup::BackupSession::start();
+    let fx = Fixture::new();
+    let own = "{\"permissions\":{\"allow\":[\"command(herdr-threads)\",\"command(ls)\"]}}";
+    fx.write(&fx.roots.settings, own);
+    let outcome = fx.setup_with(PermissionPolicy::Ask).unwrap();
+    assert_eq!(std::fs::read_to_string(&fx.roots.settings).unwrap(), own);
+    assert_eq!(outcome.projection["allow_entry"]["state"], "pre_existing");
+    assert_eq!(outcome.projection["permissions"]["pre_existing"], true);
+    assert_eq!(outcome.projection["permissions"]["action"], "kept");
+    assert!(backups(&fx).is_empty());
+    fx.unsetup().unwrap();
+    assert!(
+        fx.settings_json()["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(RULE))
+    );
+}
+
+#[test]
+fn grant_backs_up_an_existing_file_once_per_run() {
+    let _run = crate::harness::setup::BackupSession::start();
+    let fx = Fixture::new();
+    fx.write(&fx.roots.settings, "{\"theme\":\"dark\"}");
+    fx.setup_with(PermissionPolicy::Grant).unwrap();
+    assert_eq!(
+        fx.settings_json(),
+        json!({"theme":"dark","permissions":{"allow":[RULE]}})
+    );
+    eprintln!(
+        "DBG {:?}",
+        fx.files_under(fx.roots.settings.parent().unwrap())
+    );
+    assert_eq!(backups(&fx), [b"{\"theme\":\"dark\"}".to_vec()]);
+    let granted = std::fs::read(&fx.roots.settings).unwrap();
+    fx.setup_with(PermissionPolicy::Grant).unwrap();
+    assert_eq!(std::fs::read(&fx.roots.settings).unwrap(), granted);
+    assert_eq!(backups(&fx).len(), 1);
+}
+
+#[test]
+fn grant_creating_the_file_keeps_no_backup() {
+    let _run = crate::harness::setup::BackupSession::start();
+    let fx = Fixture::new();
+    assert!(!fx.roots.settings.exists());
+    fx.setup_with(PermissionPolicy::Grant).unwrap();
+    assert!(fx.roots.settings.exists());
+    assert!(backups(&fx).is_empty());
+}
+
+#[test]
+fn decline_removes_only_the_owned_member_and_keeps_the_plugin() {
+    let fx = Fixture::new();
+    fx.write(
+        &fx.roots.settings,
+        "{\"permissions\":{\"allow\":[\"command(ls)\"]}}",
+    );
+    {
+        let _run = crate::harness::setup::BackupSession::start();
+        fx.setup().unwrap();
+    }
+    let granted = std::fs::read(&fx.roots.settings).unwrap();
+    let earlier = backups(&fx).len();
+    let _run = crate::harness::setup::BackupSession::start();
+    let outcome = fx.setup_with(PermissionPolicy::Decline).unwrap();
+    assert_eq!(outcome.projection["permissions"]["action"], "removed");
+    assert_eq!(outcome.projection["allow_entry"]["state"], "not_granted");
+    assert_eq!(
+        fx.settings_json()["permissions"]["allow"],
+        json!(["command(ls)"])
+    );
+    assert!(fx.plugin_file(plugin::HOOKS_JSON).exists());
+    let kept = backups(&fx);
+    assert_eq!(kept.len(), earlier + 1);
+    assert!(kept.contains(&granted), "the pre-decline bytes are kept");
+}
+
+#[test]
+fn decline_keeps_a_pre_existing_member() {
+    let _run = crate::harness::setup::BackupSession::start();
+    let fx = Fixture::new();
+    fx.write(
+        &fx.roots.settings,
+        "{\"permissions\":{\"allow\":[\"command(herdr-threads)\"]}}",
+    );
+    fx.setup().unwrap();
+    let outcome = fx.setup_with(PermissionPolicy::Decline).unwrap();
+    assert_eq!(outcome.projection["permissions"]["action"], "removed");
+    assert_eq!(outcome.projection["allow_entry"]["state"], "pre_existing");
+    assert_eq!(fx.settings_json()["permissions"]["allow"], json!([RULE]));
+}
+
+#[test]
+fn unsetup_backs_up_settings_before_removing_the_owned_member() {
+    let fx = Fixture::new();
+    fx.write(&fx.roots.settings, "{\"theme\":\"dark\"}");
+    {
+        let _run = crate::harness::setup::BackupSession::start();
+        fx.setup().unwrap();
+    }
+    let granted = std::fs::read(&fx.roots.settings).unwrap();
+    let earlier = backups(&fx).len();
+    let _run = crate::harness::setup::BackupSession::start();
+    fx.unsetup().unwrap();
+    let kept = backups(&fx);
+    assert_eq!(kept.len(), earlier + 1);
+    assert!(kept.contains(&granted), "the pre-unsetup bytes are kept");
+}
+
+#[test]
+fn settle_consent_yes_grants_and_no_declines() {
+    let _run = crate::harness::setup::BackupSession::start();
+    let ask = |input: &[u8]| {
+        let fx = Fixture::new();
+        let outcome = fx.setup_with(PermissionPolicy::Ask).unwrap();
+        let mut projection = outcome.projection;
+        let mut out = Vec::new();
+        let mut reader = input;
+        AgyAdapter
+            .settle_setup_consent(&fx.env(), &mut projection, &mut reader, &mut out)
+            .unwrap();
+        let present = fx.roots.settings.exists();
+        let state = fx.status().projection["allow_entry"]["state"].clone();
+        (projection, String::from_utf8(out).unwrap(), present, state)
+    };
+    let (report, out, present, state) = ask(b"\n");
+    assert_eq!(report["permissions"]["action"], "granted");
+    assert_eq!(report["allow_entry"]["state"], "owned");
+    assert_eq!(out, AGY_PERMISSION_QUESTION);
+    assert!(present);
+    assert_eq!(state, "owned");
+    for input in [&b"n\n"[..], &b""[..]] {
+        let (report, _, present, state) = ask(input);
+        assert_eq!(report["permissions"]["action"], "declined");
+        assert!(report["permissions"].get("note").is_none());
+        assert!(!present);
+        assert_eq!(state, "not_granted");
+    }
+    // A report that was not advised is never asked about.
+    let fx = Fixture::new();
+    let mut projection = fx.setup_with(PermissionPolicy::Grant).unwrap().projection;
+    let mut out = Vec::new();
+    AgyAdapter
+        .settle_setup_consent(&fx.env(), &mut projection, &mut &b"n\n"[..], &mut out)
+        .unwrap();
+    assert!(out.is_empty());
+    assert_eq!(projection["permissions"]["action"], "granted");
+    assert_eq!(fx.status().projection["allow_entry"]["state"], "owned");
+    let _ = permissions_of(&fx);
 }
