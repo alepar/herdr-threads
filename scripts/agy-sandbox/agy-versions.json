@@ -1,4 +1,11 @@
 {
-  "comment": "Pinned agy releases: version -> sha512 of the tar.gz named by the official manifest. fetch-agy refuses a manifest whose sha512 differs from its pin. 1.3.0 and 1.3.3 are to be seeded from the recorded manifests of the agy research evidence; no digest is invented here.",
-  "versions": {}
+  "comment": "Pinned agy releases: version -> {url, sha512, platform, team_id}. A pin with a url covers exactly that archive; a pin without one covers every archive of the version. fetch-agy refuses a manifest whose sha512 differs from an applying pin. 1.3.2 darwin_arm64 was verified by downloading the archive (sha512 prefix 02dd409d8d40bdae) and checking the Google team id EQHXZ8M8AV; no digest is invented here.",
+  "versions": {
+    "1.3.2": {
+      "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.3.2-5813501495738368/darwin-arm/cli_mac_arm64.tar.gz",
+      "sha512": "02dd409d8d40bdae4a97196c81ee009b90bbe4673ae380f0cd2b2b4eff05556d0668e9182d6d61f1cebc8a0b0c3594e11d514071175f41d71011e82bb31c9f22",
+      "platform": "darwin_arm64",
+      "team_id": "EQHXZ8M8AV"
+    }
+  }
 }

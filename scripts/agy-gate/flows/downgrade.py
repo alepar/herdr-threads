@@ -183,14 +183,15 @@ def run(world):
     invite, accept = _l6.join(world, sender, pane, thread, seat)
     world.check("the sender invited the agy seat and it accepted", invite.returncode == 0 and accept.returncode == 0,
                 "invite=%s accept=%s" % (invite.stderr.strip(), accept.stderr.strip()))
-    _l5.await_step(world, "wake-join", 10)
+    joined = _l5.await_step(world, "wake-join", 45)
+    world.check("the join's idle wake was served (wake-join on 'herdr-threads: wake up')", joined is not None)
     pane.wait("idle", 30)
 
     abort_phase(world, pane, sender, thread, scenario)
     user_message_phase(world, pane, sender, thread, scenario)
     pane, _ = restage_phase(world, pane, sender, thread, conversation)
-    world.check("downgrade: every step consumed", not _l6.unconsumed(world, scenario, ("wake-join", "tail")),
-                "unconsumed=%s" % _l6.unconsumed(world, scenario, ("wake-join", "tail")))
+    world.check("downgrade: every step consumed", not _l6.unconsumed(world, scenario, ("tail",)),
+                "unconsumed=%s" % _l6.unconsumed(world, scenario, ("tail",)))
     ignore_phase(world, pane, sender, thread)
 
     pane.exit()

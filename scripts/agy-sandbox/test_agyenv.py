@@ -256,6 +256,8 @@ class SpawnTests(unittest.TestCase):
 class FetchTests(unittest.TestCase):
     ARCHIVE = HERE / "testdata" / "agy-9.9.9.tar.gz"
     MANIFEST = HERE / "testdata" / "manifest-9.9.9.json"
+    PIN_URL = ("https://storage.googleapis.com/antigravity-public/antigravity-cli/"
+               "1.3.2-5813501495738368/darwin-arm/cli_mac_arm64.tar.gz")
 
     def setUp(self):
         self._ci = {k: os.environ.pop(k, None) for k in ("CI", "GITHUB_ACTIONS")}
@@ -350,6 +352,39 @@ class FetchTests(unittest.TestCase):
         self.assertIsInstance(data["versions"], dict)
         for version, pin in data["versions"].items():
             self.assertEqual(len(pin["sha512"]), 128, version)
+            if "url" in pin:
+                self.assertEqual(fetch.check_url(pin["url"]), pin["url"], version)
+
+    def shipped_pin(self):
+        return json.loads((HERE / "agy-versions.json").read_text())["versions"]["1.3.2"]
+
+    def test_shipped_pin_for_1_3_2_darwin_arm64(self):
+        pin = self.shipped_pin()
+        self.assertEqual(pin["url"], self.PIN_URL)
+        self.assertRegex(pin["sha512"], r"^[0-9a-f]{128}$")
+        self.assertTrue(pin["sha512"].startswith("02dd409d8d40bdae"))
+        self.assertEqual(pin["platform"], "darwin_arm64")
+        self.assertEqual(pin["team_id"], "EQHXZ8M8AV")
+
+    def test_shipped_pin_refuses_a_wrong_hash(self):
+        with self.assertRaises(fetch.FetchError):
+            fetch.check_pinned("1.3.2", "0" * 128, url=self.PIN_URL)
+        path = Path(self.tmp) / "wrong.json"
+        path.write_text(json.dumps({"version": "1.3.2", "url": self.PIN_URL, "sha512": "0" * 128}))
+        self.assertEqual(self.run_fetch("--manifest", str(path)), 1)
+        self.assertFalse((Path(self.tmp) / "out" / "1.3.2").exists())
+
+    def test_shipped_pin_accepts_its_own_digest(self):
+        self.assertIs(fetch.check_pinned("1.3.2", self.shipped_pin()["sha512"], url=self.PIN_URL), True)
+
+    def test_a_pin_with_a_url_covers_only_that_archive(self):
+        manifest_url = json.loads(self.MANIFEST.read_text())["url"]
+        pins = Path(self.tmp) / "pins.json"
+        other = fetch.URL_PREFIX + "9.9.9/darwin_amd64/agy.tar.gz"
+        pins.write_text(json.dumps({"versions": {"9.9.9": {"sha512": "f" * 128, "url": other}}}))
+        self.assertEqual(self.run_fetch("--manifest", str(self.MANIFEST), "--versions-file", str(pins)), 0)
+        pins.write_text(json.dumps({"versions": {"9.9.9": {"sha512": "f" * 128, "url": manifest_url}}}))
+        self.assertEqual(self.run_fetch("--manifest", str(self.MANIFEST), "--versions-file", str(pins)), 1)
 
 
 if __name__ == "__main__":

@@ -83,8 +83,8 @@ def stop_phase(world, pane, sender, thread, scenario):
     world.check("stop: no idle wake followed", len(observe.main_requests(world)) == count,
                 "requests %s -> %s" % (count, len(observe.main_requests(world))))
     world.check("stop: frame header is in the transcript", _l6.frame_in_transcript(_l6.transcript_text(pane), o2))
-    world.check("stop: every step consumed", not _l6.unconsumed(world, scenario, ("wake-join", "stop-tail")),
-                "unconsumed=%s" % _l6.unconsumed(world, scenario, ("wake-join", "stop-tail")))
+    world.check("stop: every step consumed", not _l6.unconsumed(world, scenario, ("stop-tail",)),
+                "unconsumed=%s" % _l6.unconsumed(world, scenario, ("stop-tail",)))
 
 
 def cancel_phase(world, pane, sender, thread):
@@ -180,7 +180,8 @@ def run(world):
     invite, accept = _l6.join(world, sender, pane, thread, seat)
     world.check("the sender invited the agy seat and it accepted", invite.returncode == 0 and accept.returncode == 0,
                 "invite=%s accept=%s" % (invite.stderr.strip(), accept.stderr.strip()))
-    _l5.await_step(world, "wake-join", 10)
+    joined = _l5.await_step(world, "wake-join", 45)
+    world.check("the join's idle wake was served (wake-join on 'herdr-threads: wake up')", joined is not None)
     pane.wait("idle", 30)
     stop_phase(world, pane, sender, thread, stop_scenario)
     cancel_phase(world, pane, sender, thread)

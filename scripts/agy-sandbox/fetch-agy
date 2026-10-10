@@ -6,7 +6,7 @@
 Mirrors the official installer: platform key ``<os>_<arch>``, manifest from the auto-updater
 service (or a saved ``--manifest``), the ``url`` must sit under the public storage prefix,
 redirects to other hosts are refused, the archive sha512 must match the manifest (and
-``agy-versions.json`` when the version is pinned there), ``antigravity`` is extracted to
+``agy-versions.json`` when a pin there covers the manifest's archive), ``antigravity`` is extracted to
 ``DIR/<version>/agy`` (0755, quarantine attribute removed) and the manifest is saved beside it.
 It never runs ``agy install``. ``--archive`` verifies a local tar.gz instead of downloading it.
 """
@@ -76,11 +76,16 @@ def verify_sha512(data, expected, what="archive"):
         raise FetchError("%s sha512 mismatch: expected %s, got %s" % (what, expected[:16] + "...", actual[:16] + "..."))
 
 
-def check_pinned(version, digest, versions_file=None):
-    """If ``version`` is pinned in agy-versions.json its sha512 must equal ``digest``."""
+def check_pinned(version, digest, versions_file=None, url=None):
+    """If a pin in agy-versions.json covers this archive its sha512 must equal ``digest``.
+
+    A pin naming a ``url`` covers exactly that archive; a pin without one covers every archive of the version.
+    """
     path = Path(versions_file or VERSIONS_FILE)
     pins = json.loads(path.read_text()).get("versions", {}) if path.exists() else {}
     pin = pins.get(version)
+    if pin and pin.get("url") and pin["url"] != url:
+        return False
     if pin and pin.get("sha512") and pin["sha512"].lower() != digest.lower():
         raise FetchError("version %s is pinned in %s with a different sha512" % (version, path.name))
     return bool(pin and pin.get("sha512"))
@@ -133,7 +138,7 @@ def run(args):
     version, url, digest = parse_manifest(manifest)
     if args.version and args.version != version:
         raise FetchError("manifest is version %s, not the requested %s" % (version, args.version))
-    check_pinned(version, digest, args.versions_file)
+    check_pinned(version, digest, args.versions_file, url)
     data = Path(args.archive).read_bytes() if args.archive else http_get(url)
     verify_sha512(data, digest)
     return install(args.dest, version, manifest, data)

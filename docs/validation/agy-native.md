@@ -81,9 +81,10 @@ scripts/agy-sandbox/fetch-agy --dest DIR [--version V] [--manifest FILE] [--arch
 
 Mirrors the official installer: the manifest comes from the auto-updater service (or a saved `--manifest`), its URL
 must start with `https://storage.googleapis.com/antigravity-public/antigravity-cli/`, redirects to other hosts are
-refused, the archive sha512 must match the manifest and `agy-versions.json` when the version is pinned there, and
+refused, the archive sha512 must match the manifest and an `agy-versions.json` pin when one covers the manifest's archive (a pin naming a `url` covers exactly that archive; one without covers every archive of its version), and
 `antigravity` is extracted to `DIR/<version>/agy`. `--version` refuses a manifest of another version. It never runs
-`agy install`. `--archive` verifies a local tar.gz instead of downloading.
+`agy install`. `--archive` verifies a local tar.gz instead of downloading. The shipped
+pin covers agy 1.3.2 darwin_arm64 (Google team `EQHXZ8M8AV`).
 
 ## Flows
 
