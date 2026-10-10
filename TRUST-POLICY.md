@@ -438,15 +438,16 @@ limits are deliberate; no adversarial execution verification is added.
 
 A push-channel mod (today the bundled Claude mod) is a second completion source: it completes lazy rows it appended to the transcript
 (`watch ack --via append`), decided by the daemon against A2 under the same checks as the mod delivery ACK
-(A5) and recorded with the `cooperative_mod_delivery` claim "appended to the transcript". Like inbox
+(A5) under the `cooperative_mod_delivery` claim "appended to the transcript" (no per-row source is stored). Like inbox
 completion it is presentation bookkeeping (no ACK actor, adoption or proof of consumption).
 
 A seat that set `wake_on: all` (A5) opts its own lazy rows into push-channel promotion: the daemon marks such a
 row `wakes` in the inbox batch, and the mod delivers it as a `message` line with no ACK to run. The daemon still
 creates no receipt, deadline or wake for it. The mod may complete a promoted row delivered via `context` or
 `submit` (`watch ack --via context|submit`); the daemon completes it as a lazy row (a lazy-mode id completes
-regardless of `via`), decided against A2 under the same checks as above, and records the claim "entered the
-model's context through the mod". Like every lazy completion it is presentation bookkeeping: no ACK actor,
+regardless of `via`), decided against A2 under the same checks as above. The mod's completion is the
+cooperative claim that the row entered the model's context through the mod (`cooperative_mod_delivery`), carried
+by the request; the daemon stores only the row's `displayed` progress and no per-row source. Like every lazy completion it is presentation bookkeeping: no ACK actor,
 adoption or proof of consumption.
 
 A standard native hook (top-level SessionStart, Bash PreToolUse or qualified turn; never a subagent event)
@@ -470,7 +471,7 @@ applies, never `cooperative_hook_context`.
 
 A hook-pull harness's hook is a fourth completion source: it completes lazy rows whose frame header it found in the
 session's transcript (`DeliveryConfirm`), decided by the daemon against A2, restricted to ids offered to the binding
-generation, and recorded with the `cooperative_hook_delivery` claim. Same presentation-bookkeeping limits. It is the only hook path that completes a hook-pull seat's lazy rows.
+generation, under the `cooperative_hook_delivery` claim (no per-row source is stored). Same presentation-bookkeeping limits. It is the only hook path that completes a hook-pull seat's lazy rows.
 
 ## Accepted limits
 
