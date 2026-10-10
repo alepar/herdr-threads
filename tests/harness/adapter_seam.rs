@@ -192,6 +192,7 @@ static MISMATCHED: SettingsKindSpec = SettingsKindSpec {
     owned_allow: None,
     adoption_note: "",
     legacy_upgrade_warning: "",
+    permission_rules: crate::harness::setup::no_permission_rules,
 };
 static MATCHING: SettingsKindSpec = SettingsKindSpec {
     harness: "probe",
@@ -200,6 +201,7 @@ static MATCHING: SettingsKindSpec = SettingsKindSpec {
     owned_allow: None,
     adoption_note: "",
     legacy_upgrade_warning: "",
+    permission_rules: crate::harness::setup::no_permission_rules,
 };
 
 #[test]
@@ -848,6 +850,7 @@ fn member_spec(native_rewrites: bool) -> &'static SettingsKindSpec {
         }),
         adoption_note: "",
         legacy_upgrade_warning: "",
+        permission_rules: crate::harness::setup::no_permission_rules,
     }))
 }
 

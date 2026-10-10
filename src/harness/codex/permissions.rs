@@ -1,5 +1,5 @@
 //! The Codex permission component: `CODEX_HOME/rules/herdr-threads.rules`, a file herdr-threads
-//! owns whole, holding the rendered execpolicy (see [`super::codex::render`]) and recorded in a
+//! owns whole, holding the rendered execpolicy (see [`super::permission_rules::render`]) and recorded in a
 //! manifest of its own.
 //!
 //! Each publication records its intent first (target fingerprint, the file's fingerprint before,
@@ -7,10 +7,11 @@
 //! up first), then clears the intent; the next operation settles an interrupted one the same way
 //! the Claude component does. A file at the owned name that the manifest does not record, or an
 //! owned file someone edited, is never overwritten or deleted.
-use super::{
+use super::permission_rules::render;
+use crate::harness::permissions::{
     OwnedConfigWriteGuard, OwnedPermissionResource, PERMISSION_MANIFEST_VERSION,
     PendingPublication, PermissionBackend, PermissionComponentManifest, PermissionConsent,
-    VerifiedConfigIdentity, codex::render,
+    VerifiedConfigIdentity,
 };
 use crate::harness::setup::{
     SetupError, config_bytes, publish_manifest, remove_user_config, write_replacement,
@@ -22,6 +23,9 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+
+/// This component's backend: its manifest tag and lock name.
+pub const BACKEND: PermissionBackend = PermissionBackend::new("Codex");
 
 /// The fingerprint recorded for an absent file.
 const ABSENT: &str = "absent";
@@ -85,7 +89,7 @@ impl CodexPermissions {
         let manifest: PermissionComponentManifest =
             serde_json::from_slice(&bytes).map_err(|_| SetupError::Invalid)?;
         if manifest.version != PERMISSION_MANIFEST_VERSION
-            || manifest.backend != PermissionBackend::Codex
+            || manifest.backend != BACKEND
             || manifest.resources.len() > 1
             || manifest.resources.iter().any(|r| {
                 r.rule.is_some() || r.pre_existing || r.file.file_name() != self.rules.file_name()
@@ -116,8 +120,8 @@ impl CodexPermissions {
             .ok_or(SetupError::Invalid)?
             .canonicalize()
             .map_err(|_| SetupError::Io)?;
-        let identity = VerifiedConfigIdentity::verify(&home, PermissionBackend::Codex)
-            .map_err(|_| SetupError::Invalid)?;
+        let identity =
+            VerifiedConfigIdentity::verify(&home, BACKEND).map_err(|_| SetupError::Invalid)?;
         OwnedConfigWriteGuard::acquire(&identity, LOCK_TIMEOUT).map_err(|_| SetupError::Io)
     }
 
@@ -175,7 +179,7 @@ impl CodexPermissions {
         let file = self.rules.clone();
         let mut intent = PermissionComponentManifest {
             version: PERMISSION_MANIFEST_VERSION,
-            backend: PermissionBackend::Codex,
+            backend: BACKEND,
             config_root: file
                 .parent()
                 .and_then(Path::parent)

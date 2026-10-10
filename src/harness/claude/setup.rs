@@ -7,12 +7,10 @@ use crate::harness::claude::prompt_suggestion::{self, SuggestionState};
 use crate::harness::setup::legacy::*;
 use crate::harness::{
     claude,
+    claude::permissions::{ClaudePermissionState, ClaudePermissionStatus, ClaudePermissions},
     claude_mod::{self, ManagedPolicy, ManagedPolicySources},
     context::Harness,
-    permissions::{
-        PermissionConsent,
-        claude_settings::{ClaudePermissionState, ClaudePermissionStatus, ClaudePermissions},
-    },
+    permissions::PermissionConsent,
     recipe,
     setup::{
         JsonSetupPlan, NativeObservation, SetupError, allow_rule_json, inspect_user_settings,
@@ -134,8 +132,12 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
         component.apply(PermissionConsent::Undecided)
     };
     if let Err(error) = &permissions
-        && crate::harness::setup::recorded_hook_permission(&settings, &manifest)
-            .map_or(true, |record| record.is_some())
+        && crate::harness::setup::recorded_hook_permission(
+            claude::settings_kind(),
+            &settings,
+            &manifest,
+        )
+        .map_or(true, |record| record.is_some())
     {
         return Err(permission_error(error.clone(), env, &settings));
     }

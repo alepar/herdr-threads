@@ -153,7 +153,12 @@ fn owned_historical_broad_rule_is_taken_over_without_consent() {
     assert_eq!(scope.backups().len(), backups + 1);
     assert!(scope.backups().contains(&before));
     assert_eq!(
-        recorded_hook_permission(&scope.settings, &scope.hooks).unwrap(),
+        recorded_hook_permission(
+            crate::harness::claude::settings_kind(),
+            &scope.settings,
+            &scope.hooks
+        )
+        .unwrap(),
         None
     );
     // A re-run changes nothing.
@@ -212,7 +217,12 @@ fn pre_existing_historical_rule_is_kept_and_reported_foreign() {
     assert_eq!(scope.backups(), backups);
     assert!(!scope.dir.join("permissions.json").exists());
     assert_eq!(
-        recorded_hook_permission(&scope.settings, &scope.hooks).unwrap(),
+        recorded_hook_permission(
+            crate::harness::claude::settings_kind(),
+            &scope.settings,
+            &scope.hooks
+        )
+        .unwrap(),
         None
     );
 }
@@ -292,7 +302,12 @@ fn interrupted_publication_settles_on_the_next_run() {
             1
         );
         assert_eq!(
-            recorded_hook_permission(&scope.settings, &scope.hooks).unwrap(),
+            recorded_hook_permission(
+                crate::harness::claude::settings_kind(),
+                &scope.settings,
+                &scope.hooks
+            )
+            .unwrap(),
             None
         );
     }
@@ -340,7 +355,12 @@ fn deleted_historical_rule_is_not_regranted() {
     value.as_object_mut().unwrap().remove("permissions");
     assert_eq!(scope.value(), value);
     assert_eq!(
-        recorded_hook_permission(&scope.settings, &scope.hooks).unwrap(),
+        recorded_hook_permission(
+            crate::harness::claude::settings_kind(),
+            &scope.settings,
+            &scope.hooks
+        )
+        .unwrap(),
         None
     );
 }
@@ -460,4 +480,54 @@ fn grant_then_hook_upgrade_then_removal_restores_bytes() {
         String::from_utf8(fs::read(&scope.settings).unwrap()).unwrap(),
         String::from_utf8(original.to_vec()).unwrap()
     );
+}
+
+// The on-disk shapes of released v0.6.0: the manifest `backend` spelling, the lock file name and
+// the lock marker bytes (the backend's old `Debug` output).
+#[test]
+fn claude_backend_wire_shapes_are_unchanged() {
+    assert_eq!(serde_json::to_string(&BACKEND).unwrap(), "\"Claude\"");
+    let manifest = br#"{"version":1,"backend":"Claude","config_root":"/tmp/x","resources":[{"file":"/tmp/x/.claude/settings.json","rule":null,"fingerprint":"sha256:ab","pre_existing":false}]}"#;
+    let parsed: PermissionComponentManifest = serde_json::from_slice(manifest).unwrap();
+    assert_eq!(parsed.backend, BACKEND);
+    assert_eq!(serde_json::to_vec(&parsed).unwrap(), manifest);
+    let scope = Scope::new(b"{}");
+    let identity = VerifiedConfigIdentity::verify(&scope.dir, BACKEND).unwrap();
+    assert_eq!(
+        identity.lock_path(),
+        scope.dir.join(".herdr-threads-claude.lock")
+    );
+    assert_eq!(
+        identity.marker(),
+        format!(
+            "herdr-threads owned config lock v1\nClaude\n{}:{}\n{}\n",
+            std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(&scope.dir).unwrap()),
+            std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&scope.dir).unwrap()),
+            scope.dir.display()
+        )
+        .into_bytes()
+    );
+}
+
+// An unknown backend tag fails to parse (invalid); a known tag of another harness parses and is a
+// conflict.
+#[test]
+fn unknown_backend_manifest_is_invalid_and_other_backend_conflicts() {
+    let scope = Scope::new(b"{}");
+    let component = scope.component();
+    let write = |backend: &str| {
+        fs::write(
+            scope.dir.join("permissions.json"),
+            format!(
+                r#"{{"version":1,"backend":"{backend}","config_root":"/tmp/x","resources":[]}}"#
+            ),
+        )
+        .unwrap();
+    };
+    write("Bogus");
+    assert_eq!(component.read(), Err(SetupError::Invalid));
+    write("Codex");
+    assert_eq!(component.read(), Err(SetupError::Conflict));
+    write("Claude");
+    assert!(component.read().unwrap().is_some());
 }

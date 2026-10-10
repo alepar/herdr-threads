@@ -11,6 +11,8 @@
 //! a Bash `PreToolUse` group whose output is `additionalContext` and never a
 //! permission decision or `updatedInput`.
 pub mod doctor;
+pub mod permission_rules;
+pub mod permissions;
 pub mod setup;
 
 mod composer;
@@ -1151,6 +1153,7 @@ pub static SETTINGS_KIND: super::setup::SettingsKindSpec = super::setup::Setting
     owned_allow: None,
     adoption_note: ", so Codex's recorded trust for them stays valid",
     legacy_upgrade_warning: RETRUST_WARNING,
+    permission_rules: super::setup::no_permission_rules,
 };
 /// The engine handle of [`SETTINGS_KIND`].
 pub const fn settings_kind() -> super::setup::SettingsKind {
@@ -2132,6 +2135,9 @@ impl LaunchPolicy for CodexAdapter {
 }
 
 impl InstallerPolicy for CodexAdapter {
+    fn permission_backend(&self) -> Option<crate::harness::permissions::PermissionBackend> {
+        Some(permissions::BACKEND)
+    }
     fn permissions_granted(&self, request: &StatusRequest) -> Result<Option<bool>, SetupFailure> {
         let env = crate::harness::setup::legacy::scoped_legacy_environment(
             Harness::Codex,

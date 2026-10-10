@@ -6,7 +6,7 @@
 //! Escalating commands prompt by their leading words, which the CLI requires an agent
 //! to write first.
 //! These rules do not establish shell decomposition or live classifier acceptance.
-use super::SPELLINGS;
+use crate::harness::permissions::SPELLINGS;
 
 /// Exact Starlark string literals: JSON double-quoted strings share the escapes needed here.
 pub fn render() -> String {

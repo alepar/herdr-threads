@@ -1701,4 +1701,8 @@ pub trait InstallerPolicy: Send + Sync {
     fn permissions_granted(&self, _request: &StatusRequest) -> Result<Option<bool>, SetupFailure> {
         Ok(None)
     }
+    /// The backend of the adapter's permission component, if it has one: its manifest tag and lock name.
+    fn permission_backend(&self) -> Option<crate::harness::permissions::PermissionBackend> {
+        None
+    }
 }

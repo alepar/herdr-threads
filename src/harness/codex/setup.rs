@@ -15,12 +15,11 @@ use crate::ports::ConfiguredHook;
 use crate::{
     daemon::paths::{RuntimeContext, instance_dir},
     harness::{
-        codex, codex_config,
+        codex,
+        codex::permissions::{CodexPermissionState, CodexPermissions},
+        codex_config,
         context::Harness,
-        permissions::{
-            PermissionConsent,
-            codex_rules::{CodexPermissionState, CodexPermissions},
-        },
+        permissions::PermissionConsent,
         recipe,
         setup::{
             self as lib, SetupError, read_settings_manifest, remove_user_settings, shared_command,
