@@ -1404,6 +1404,7 @@ pub fn builtins() -> &'static Registry {
             Registration::new(&crate::harness::claude::ClaudeAdapter),
             Registration::new(&crate::harness::codex::CodexAdapter),
             Registration::new(&crate::harness::hermes::HermesAdapter),
+            Registration::new(&crate::harness::agy::AgyAdapter),
         ];
         #[cfg(feature = "test-support")]
         let registrations = {
@@ -1437,9 +1438,12 @@ mod tests {
             .map(|r| r.metadata().id)
             .collect();
         #[cfg(feature = "test-support")]
-        assert_eq!(rows, ["claude", "codex", "hermes", "synthetic_fourth"]);
+        assert_eq!(
+            rows,
+            ["claude", "codex", "hermes", "agy", "synthetic_fourth"]
+        );
         #[cfg(not(feature = "test-support"))]
-        assert_eq!(rows, ["claude", "codex", "hermes"]);
+        assert_eq!(rows, ["claude", "codex", "hermes", "agy"]);
     }
     fn unsupported(adapter: &'static str, operation: &'static str) -> UnsupportedOperation {
         UnsupportedOperation { adapter, operation }

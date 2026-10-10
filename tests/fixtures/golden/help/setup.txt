@@ -3,7 +3,7 @@ Install the owned herdr-threads hooks for a harness at user level (with no harne
 Usage: herdr-threads setup [OPTIONS] [HARNESS]
 
 Arguments:
-  [HARNESS]  Harness whose hooks to manage. Omitted: every harness (setup: each one found on PATH; unsetup and setup-status: both) [possible values: claude, codex, hermes, synthetic_fourth]
+  [HARNESS]  Harness whose hooks to manage. Omitted: every harness (setup: each one found on PATH; unsetup and setup-status: both) [possible values: claude, codex, hermes, agy, synthetic_fourth]
 
 Options:
       --permissions
@@ -35,7 +35,7 @@ Options:
       --profile <NAME>
           Existing named profile, supported only by the explicitly selected adapter
       --cooperative-harness <COOPERATIVE_HARNESS>
-          Agent harness making the cooperative call [possible values: claude, codex, hermes, synthetic_fourth]
+          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
       --harness-binary <PATH>
           Absolute harness executable (default: the first `claude`/`codex` on PATH). Version metadata is optional; setup uses the declared contract
       --cooperative-role <COOPERATIVE_ROLE>
@@ -83,6 +83,8 @@ Scope (user level, like Herdr's own agent hooks):
           native consent. Installed, configured enabled and native activation are
           separate. Unsetup preserves foreign/modified assets and native YAML/enable
           selection, reporting residue and manual disable guidance.
+  agy: ~/.gemini (plugin config/plugins/herdr-threads; allow entry in antigravity-cli/settings.json)
+
 
 Foreground agents (user-managed, read-only inspection): setup and setup-status report user
 settings and manual advice for every harness. Claude: merge `disableAgentView: true` into
