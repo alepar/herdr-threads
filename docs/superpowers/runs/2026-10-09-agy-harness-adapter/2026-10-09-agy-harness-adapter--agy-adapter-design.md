@@ -466,6 +466,12 @@ The policy:
 
 with the other fields `""`. There is no `foreground_advice`: agy hooks inherit the pane environment (research B §8).
 
+## Design roast round 1 amendments (2026-10-10)
+
+- **D6 `hook_step`** runs for top-level `Observer` events at `PreInvocation` **and** `Stop`. ht-poh.5 confirms delivery at both (root "Design roast round 1 fixes").
+- **D8 composer.** A detection screen showing subagent generation (`Agent(<name>) Generating …`) reads `Unreadable`. L4's captures add a "subagent generating" state.
+- **D10 doctor.** It gains the line "agy delivery: offered, never confirmed (N in generation G)", which ht-poh.5 adds alongside the downgrade line.
+
 ## Acceptance
 
 - **Checks.** `scripts/check-harness-neutral` passes. The agy id appears only under `src/harness/agy/**`, plus the allowlisted `builtins()` row and the `harness/mod.rs` declaration. `nice cargo clippy --locked --all-targets --all-features -- -D warnings`, `nice scripts/check-default-features` and each leaf's focused tests pass.

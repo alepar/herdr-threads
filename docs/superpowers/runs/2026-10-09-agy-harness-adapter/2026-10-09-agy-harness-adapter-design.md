@@ -320,6 +320,15 @@ The final live smoke is gated on the fix loop's exit (super-auto §Gates).
 - **Bootstrap plan V2 (R13 finding, core-sweep subspec D16).** The frozen V1 handoff bootstrap admits only Claude and Codex, so `handoff --kind agy` needs an adapter-neutral V2 (bead ht-poh.8).
 - **`contract::classify` needs a payload discriminator (R13 note).** agy has none, so the adapter injects a synthetic `$event` key and core is not edited.
 
+## Design roast round 1 fixes (2026-10-10)
+
+- **One delivery signal, checked at Stop too (cluster C1).** The only delivery evidence is "the offered frame appears in this generation's transcript". The agy hook evaluates it at every top-level `PreInvocation` **and at top-level `Stop`**. At Stop it reads the bounded transcript tail and sends `DeliveryConfirm` for the offered ids it finds. So content already delivered in a turn's last model call is settled before the seat goes idle, and no idle wake fires for it.
+  - **Injection failure:** if the hook injected during this turn and the frame is absent at Stop, the hook records an injection failure, whatever `terminationReason`/`error` says.
+  - **Downgrade trigger:** an injection failure drives the `userMessage` downgrade (keyed by executable identity), and doctor reports it as "offered, never confirmed". An abort-style Stop error is supporting evidence, not the trigger, so a future agy that silently ignores `systemMessage` is caught within the same turn.
+  - **Version handling** covers what this detects: an injection that does not reach the transcript, whether it aborts or is silently ignored.
+- **Executable identity source.** The agy executable identity is taken from the parent process image of the hook (ppid → `proc_pidpath` on macOS, `/proc/<ppid>/exe` on Linux), followed through symlinks to its target: path, inode, size and mtime. The fallback is the PATH-resolved `agy` target. Fixtures cover a symlinked binary and a launcher-wrapped one; a wrapper whose parent is a shell falls back to the PATH lookup.
+- **Busy agy during subagent work (escalation, parked for the human).** Herdr may report an agy pane idle while a subagent generates (herdr issue #2354). The agy `ComposerPolicy` reads a detection screen showing subagent generation (the status line `Agent(<name>) Generating …`) as `Unreadable`, so no wake is typed. The captures include that state.
+
 ## Non-goals and follow-on
 
 **Out of scope:**

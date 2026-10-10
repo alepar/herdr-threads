@@ -426,6 +426,11 @@ The root §4 startup-enrollment text for agy is ht-poh.4's. The "transcript the 
   - L3: the Claude re-fit (reworked implementation plus callers);
   - L5, L6 and L7: an R11 core feature, not attributable to the agy adapter.
 
+## Design roast round 1 amendments (2026-10-10)
+
+- **`DeliveryConfirm` from any top-level hook.** It may be sent from any top-level hook of the binding: the agy adapter sends it at `Stop` as well as at `PreInvocation`. This needs no wire change.
+- **Wake eligibility.** Items confirmed at Stop are settled, so they are no longer pending and cannot trigger an idle wake.
+
 ## Acceptance
 
 - `HarnessAdapter::delivery_policy()` exists with default `None`.
