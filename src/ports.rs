@@ -2558,6 +2558,20 @@ pub struct ModSeatView {
     pub binding: Option<ModBindingView>,
     pub attention_version: u64,
     pub fingerprint: ModFingerprint,
+    /// The newest informational notice above the current occupant's offered
+    /// frontier (its projection ordinal), if any. Hook-pull only;
+    /// deliberately not part of `ModFingerprint`: notices never wake and the
+    /// mod channel's change detector must not see them.
+    pub newest_pending_notice: Option<i64>,
+}
+
+/// One informational notice a hook-pull page carries: the warning, its
+/// thread's topic and its author (`None` for a programmatic notice).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PulledNotice {
+    pub notice: crate::protocol::results::WarningRef,
+    pub topic: String,
+    pub author: Option<SeatId>,
 }
 
 /// Store implementations inject a clock at construction and sample UTC inside each
@@ -3057,6 +3071,32 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         _budget: &CallBudget,
     ) -> Result<Vec<SeatId>, ApiError> {
         Ok(Vec::new())
+    }
+
+    /// The next page (at most `limit`, oldest first) of informational notices
+    /// not yet offered to the seat's current occupant. Read-only.
+    fn pull_notice_page(
+        &self,
+        _seat: &SeatId,
+        _limit: usize,
+        _budget: &CallBudget,
+    ) -> Result<Vec<PulledNotice>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    /// Settle exactly `carried`, the oldest-first unoffered prefix, for the
+    /// canonical open binding (`generation`, `native_session`). `false`
+    /// when the binding moved or the carried notices are no longer exactly
+    /// that prefix (a check-in carried them first); nothing is written then.
+    fn settle_pulled_notices(
+        &self,
+        _seat: &SeatId,
+        _generation: u64,
+        _native_session: &str,
+        _carried: &[crate::protocol::results::WarningRef],
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
     }
 
     /// Clear a retained window only when canonical ordinary attention is gone.

@@ -401,9 +401,13 @@ recipients. A rejection notice retains its native seat author, exact invitation 
 its audience is the members at the rejection decision plus the rejecting seat, never later members.
 Only the exact native warning backed by the retained rejection record is classified this way.
 Historical info rejection events remain unchanged on replay. Rejection notices are passive for every
-recipient: they create no wake, poke, receipt or ACK obligation. A committed check-in settles only
-the bounded prefix of attributed events it carries to the exact current binding generation and
-execution. A global decision watermark cannot settle uncarried events, including late attribution.
+recipient: they create no wake, poke, receipt or ACK obligation. A committed check-in, or a
+hook-pull harness's `DeliveryPull` page, settles only the bounded prefix of attributed events it
+carries to the exact current binding generation and execution (the pull settles before it replies,
+under the canonical binding's execution; nothing is transcript-confirmed and no provenance is
+recorded). The pull's settle refuses unless the carried notices are still exactly the unoffered
+prefix, so a check-in and a pull never carry the same notice, and a notice shows once. The pull's
+version includes the newest pending notice, so an unchanged reply never hides one; notices never wake. A global decision watermark cannot settle uncarried events, including late attribution.
 History and immutable operation results remain readable. A successor occupant gets its own offers;
 response loss can lose an informational offer after commitment, and an explicit operation retry
 can present the retained result again. Delivery is neither invitation acceptance nor receipt ACK,
@@ -411,8 +415,9 @@ agreement, adoption or task completion. Logical publication tokens stay unchange
 an advertised read-only delivery hint lets hooks drain newly attributed and remaining notice pages.
 Delivery is not a wake. A built-in transition wakes only the affected seat of a still-open
 condition (the hard-deadline backstop for the obligation that seat owes); a clear, and every
-transition about another seat, waits for the member's next check-in offer. Accepted limit: an idle
-member learns of another seat's overdue or cleared obligation only when its pane next checks in. When
+transition about another seat, waits for the member's next check-in offer or hook-pull page. Accepted
+limit: an idle member learns of another seat's overdue or cleared obligation only when its pane next
+checks in or, on a hook-pull harness, at its next turn-start pull. When
 more than the bounded window of pending warnings or unoffered notices is visible, narrowing cannot rule
 out an older waking notice (such as a service notice), so the wake keeps its unnarrowed answer and the
 offer probe stays conservative: it may still wake, never silently drop one.
