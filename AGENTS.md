@@ -38,7 +38,7 @@ and operator repair. Read it before changing anything in `src/identity/`, `src/s
 The goal is token efficiency. Sessions that are done and idle stay idle, spinning sessions get efficient delivery, and nudges are rare, because excessive nudges disorient some models. Every delivery policy must keep these invariants:
 
 1. Messages are lazy by default.
-2. Lazy messages never wake an idle session (unless the seat opted into `wake_on: all`, once `wake_on` exists).
+2. Lazy messages never wake an idle session (unless the seat opted into `wake_on: all`).
 3. Turn hooks and channels deliver every pending item, lazy or not, directly into the model's context, avoiding extra `herdr-threads` calls as far as the harness allows.
 4. A nudge wakes a session only when it is idle. A session that is generating, or running a tool, gets no nudge; it is served by in-turn delivery.
 5. Messages that require an ACK are always nudge-class.

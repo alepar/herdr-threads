@@ -157,7 +157,7 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | `cooperative_mod_channel` | mod channel registrations only (process-local) | The pane's top-level session of a harness whose adapter declares a push delivery channel (today Claude), through that harness's bundled herdr-threads mod's `watch` child, opened a delivery channel for the seat's current binding generation. The daemon decides it against A2 (seat resolved and not held, open `cooperative_top_level` binding with a harness that declares a push delivery channel, native session equal to the claim's, no stall cooldown, `mod_delivery` on). It grants nothing but receiving deliveries and making `cooperative_mod_delivery` claims for that binding generation. Never on bindings or receipts. |
 | `cooperative_mod_delivery` | receipt action observation; lazy completion claim | The mod reported that a delivery path's predicate held (spec D6): for an ordinary message, that its full body entered the model's context through the mod (an answered tool result carrying the mod's context, or a `$.prompt.submit` that resolved without `drop`; or, after a plugin reload disposed the instance whose submit was still in flight, a main turn whose prompt carries the mod's frame naming the id, or the completion of the turn that was open when the successor loaded (the engine does not report the disposed instance's submit outcome)); for a lazy row, that it was appended to the transcript (`$.session.append` resolved without `deny`). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's `cooperative_top_level` provenance separately. A truncated item never carries it. |
 | `cooperative_hook_delivery` | receipt action observation; lazy completion claim | The top-level hook of a harness whose adapter declares hook-pull delivery reported that it found the id's frame header in the session's transcript, after a `DeliveryPull` showed the id (spec delivery-policy DP5/DP6). The daemon decides it against A2 and additionally requires that it recorded the id as offered to that binding generation by a `DeliveryPull` (process-local offered ledger). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's `cooperative_top_level` provenance separately. A truncated item never carries it. |
-| `cooperative_hook_context` | lazy completion claim | A top-level standard native hook wrote and flushed output whose context carried the lazy message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`, which is part of the accountable operation's payload digest (as `AckModDelivered` carries the mod claim); no per-row source is stored. Not proof that the harness ingested it or the model read it. A prefix never carries it. |
+| `cooperative_hook_context` | lazy completion claim | A top-level standard native hook **of a harness whose adapter declares no hook-pull delivery** wrote and flushed output whose context carried the lazy message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`, which is part of the accountable operation's payload digest (as `AckModDelivered` carries the mod claim); no per-row source is stored. Not proof that the harness ingested it or the model read it. A prefix never carries it. The daemon refuses this claim from a hook-pull binding. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
@@ -425,7 +425,7 @@ Lazy delivery creates no receipt, deadline, ACK evidence, wake attention, wake, 
 except that a seat with `wake_on: all` is woken (wake eligibility only; still no receipt, digest
 attention or poke).
 
-Only the caller's default text inbox, a standard native hook, or a push-channel mod as below, may claim completion after complete contiguous body output has
+Only the caller's default text inbox, a standard native hook, a push-channel mod or a hook-pull harness's hook, as below, may claim completion after complete contiguous body output has
 been written and flushed. The completion handler validates the current top-level or human canonical
 caller (A2) and exact published addressed message IDs in its deciding transaction; declared subagents
 cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
@@ -449,14 +449,11 @@ regardless of `via`), decided against A2 under the same checks as above, and rec
 model's context through the mod". Like every lazy completion it is presentation bookkeeping: no ACK actor,
 adoption or proof of consumption.
 
-A hook-pull harness's hook is a third completion source: it completes lazy rows whose frame header it found in the
-session's transcript (`DeliveryConfirm`), decided by the daemon against A2, restricted to ids offered to the binding
-generation, and recorded with the `cooperative_hook_delivery` claim. Same presentation-bookkeeping limits.
-
 A standard native hook (top-level SessionStart, Bash PreToolUse or qualified turn; never a subagent event)
 is a third completion source. Only a digest the hook explicitly requests (`AttentionDigestQuery.lazy`)
 reports pending lazy rows and a lazy token key, so a lazy arrival moves the hook's change marker; the wake
-frontier, wake candidates, prompts, pokes, deadlines and warnings never read lazy rows. When the hook
+frontier, wake candidates, prompts, pokes, deadlines and warnings never read lazy rows, except that a seat
+with `wake_on: all` is woken for its own lazy rows (wake eligibility only, above). When the hook
 presents (marker advanced, or a lifecycle check-in) and no mod channel is live, it reads one bounded
 read-only v2 inbox page and places only complete items in the bytes its ordinary context leaves under the
 context bound. After its stdout was written and flushed, and the adapter reported that the output carries
@@ -466,6 +463,14 @@ decides it under the same checks as inbox completion (A2). The claim is that the
 context, not that the harness ingested it or the model read it. The hook never ACKs: ACK-required
 messages it shows stay pending, with an exact `ack` command for the agent. It writes no local journal
 record. A failed or unknown completion leaves the rows pending and they are shown again (at least once).
+A hook-pull harness's standard hook never reads an inbox page or makes this claim: its lazy rows complete only
+through `DeliveryConfirm` (`cooperative_hook_delivery`) or the caller's own text inbox; the daemon refuses
+`via: hook_context` from a hook-pull binding. So on a hook-pull harness only `cooperative_hook_delivery`
+applies, never `cooperative_hook_context`.
+
+A hook-pull harness's hook is a fourth completion source: it completes lazy rows whose frame header it found in the
+session's transcript (`DeliveryConfirm`), decided by the daemon against A2, restricted to ids offered to the binding
+generation, and recorded with the `cooperative_hook_delivery` claim. Same presentation-bookkeeping limits. It is the only hook path that completes a hook-pull seat's lazy rows.
 
 ## Accepted limits
 

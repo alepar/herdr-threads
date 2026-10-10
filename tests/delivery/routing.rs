@@ -35,3 +35,14 @@ fn push_channel_and_no_policy_omit_exactly_while_the_channel_is_live() {
         }
     }
 }
+
+#[test]
+fn hook_inbox_page_is_never_read_for_a_hook_pull_seat() {
+    let pull = Policy(DeliveryMechanism::HookPull);
+    let push = Policy(DeliveryMechanism::PushChannel);
+    for channel_live in [false, true] {
+        assert!(!hook_inbox_page(Some(&pull), channel_live));
+        assert_eq!(hook_inbox_page(Some(&push), channel_live), !channel_live);
+        assert_eq!(hook_inbox_page(None, channel_live), !channel_live);
+    }
+}
