@@ -1,6 +1,7 @@
 //! Domain dispatch keeps read work separate from writer and host work.
 
 use crate::{
+    harness::adapter::DeliveryMechanism,
     identity::repair::OrdinaryIdentity,
     ports::{
         BootstrapObserver, BootstrapStorePort, DurableWorkAdmission, HostPort, LocalService,
@@ -528,9 +529,14 @@ impl DomainService {
         };
         let binding = self.store.mod_ack_binding(&self.instance, &seat, budget)?;
         let Some(binding) = binding.filter(|binding| {
-            binding.provenance == COOPERATIVE_TOP_LEVEL_PROVENANCE && binding.harness == "claude"
+            binding.provenance == COOPERATIVE_TOP_LEVEL_PROVENANCE
+                && crate::delivery::declares(&binding.harness, DeliveryMechanism::PushChannel)
         }) else {
             // The check-in that opens the binding may not have committed yet.
+            return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
+        };
+        let Ok(binding_harness) = crate::harness::registry::builtins().agent(&binding.harness)
+        else {
             return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
         };
         let same_session = request.claim.native_session == binding.native_session;
@@ -554,7 +560,7 @@ impl DomainService {
                     seat: seat.clone(),
                     binding_generation: binding.generation,
                     role: CallerRole::TopLevel,
-                    harness: Harness::Claude,
+                    harness: Harness::Agent(binding_harness),
                     native_session: binding.native_session.clone(),
                     execution: binding.execution.clone(),
                     target: binding.target.clone(),
@@ -629,10 +635,16 @@ impl LocalService for DomainService {
         sink: Arc<dyn crate::ports::ModChannelSink>,
         budget: &CallBudget,
     ) -> Result<(crate::ports::ModChannelId, u64), crate::protocol::watch::WatchRefusalReason> {
-        use crate::protocol::{authority::Harness, watch::WatchRefusalReason as Refusal};
+        use crate::protocol::watch::WatchRefusalReason as Refusal;
         let claim = &request.claim;
-        if claim.harness != Harness::Claude || claim.role != CallerRole::TopLevel {
-            return Err(Refusal::NotClaude);
+        let Some(policy) = crate::harness::registry::builtins()
+            .delivery_policy(claim.harness.as_str())
+            .filter(|policy| policy.mechanism() == DeliveryMechanism::PushChannel)
+        else {
+            return Err(Refusal::NO_PUSH_CHANNEL);
+        };
+        if claim.role != CallerRole::TopLevel {
+            return Err(Refusal::NO_PUSH_CHANNEL);
         }
         let view = self
             .store
@@ -650,8 +662,8 @@ impl LocalService for DomainService {
         let Some(binding) = view.binding.as_ref() else {
             return Err(Refusal::NoBinding);
         };
-        if binding.harness != Harness::Claude.as_str() {
-            return Err(Refusal::NotClaude);
+        if !crate::delivery::declares(&binding.harness, DeliveryMechanism::PushChannel) {
+            return Err(Refusal::NO_PUSH_CHANNEL);
         }
         if binding.provenance != crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE {
             return Err(Refusal::NoBinding);
@@ -667,7 +679,8 @@ impl LocalService for DomainService {
                 seat: claim.seat.clone(),
                 binding_generation: binding.generation,
                 native_session: claim.native_session.clone(),
-                harness: Harness::Claude,
+                harness: claim.harness,
+                idle_wake: policy.idle_wake(),
                 registered_at: self.clock.utc_now(),
             },
             sink,

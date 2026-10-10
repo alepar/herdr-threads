@@ -176,8 +176,8 @@ pub struct AttentionDigest {
     pub warnings: AttentionClass,
     pub unavailability_open: bool,
     /// Spec D7: a mod delivery channel is live for this seat (grace included); the
-    /// Claude hooks then omit the attention digest and ready commands. Set by the
-    /// domain service, never by the store; absent on the wire when false.
+    /// hooks of a push-channel harness then omit the attention digest and ready
+    /// commands. Set by the domain service, never by the store; absent on the wire when false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub mod_channel_live: bool,
 }

@@ -162,6 +162,7 @@ impl Fixture {
                 binding_generation: generation,
                 native_session: NativeSessionId::new("native"),
                 harness: Harness::Claude,
+                idle_wake: IdleWake::Channel,
                 registered_at: self.now(),
             },
             sink.clone(),
@@ -178,6 +179,7 @@ impl Fixture {
             binding_generation: generation,
             native_session: NativeSessionId::new("native"),
             harness: Harness::Claude,
+            idle_wake: IdleWake::Channel,
             registered_at: self.now(),
         };
         let hook_sink = sink.clone();

@@ -1,14 +1,19 @@
 //! Receipt settlement and availability transitions.
 
 use crate::{
+    delivery::settle::{self, LazyFact, ModeFact, ReceiptFact, SettleFacts, SettlePlan},
+    harness::adapter::DeliveryMechanism,
     ports::TimeBasis,
     protocol::{
-        authority::{COOPERATIVE_MOD_DELIVERY_PROVENANCE, Harness, MutationPermit, ObligationRef},
+        authority::{
+            COOPERATIVE_MOD_DELIVERY_PROVENANCE, CallerClaim, Harness, MutationPermit,
+            ObligationRef,
+        },
         commands::{Ack, AckModDelivered},
-        ids::{MessageId, SeatId, ThreadId},
+        ids::{MessageId, OperationId, SeatId, ThreadId},
         results::{AckResult, ApiError, CommandResult, ErrorCode},
         time::UtcMillis,
-        watch::{ModAckItem, ModAckOutcome, ModAckReason, ModAckReport, WATCH_BODY_LIMIT_BYTES},
+        watch::{ModAckItem, ModAckOutcome, ModAckReport},
     },
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -53,24 +58,14 @@ pub fn ack_mod_delivered_payload(request: &AckModDelivered) -> Value {
     json!({"kind":"ack_mod_delivered","via":request.via,"messages":request.messages,"claim":request.claim})
 }
 
-/// What the deciding transaction will do with one requested id.
-enum ModAckPlan {
-    Settle,
-    Complete,
-    Done(ModAckOutcome, Option<ModAckReason>),
-}
-
-fn refuse(reason: ModAckReason) -> ModAckPlan {
-    ModAckPlan::Done(ModAckOutcome::RefusedTerminal, Some(reason))
-}
-
-/// Per-id classification against the stored rows (spec D6); never errors per id.
-fn plan_mod_ack(
+/// Reads the stored facts of one requested id (spec D6) and lets the pure
+/// [`settle::plan`] decide. Never errors per id.
+fn plan_delivery_ack(
     tx: &Transaction<'_>,
     instance: &str,
     seat: &SeatId,
     id: &MessageId,
-) -> Result<ModAckPlan, ApiError> {
+) -> Result<SettlePlan, ApiError> {
     let row: Option<(String, i64)> = tx
         .query_row(
             "SELECT kind,length(CAST(coalesce(body,'') AS BLOB)) FROM messages WHERE id=?1 AND instance_id=?2",
@@ -79,46 +74,55 @@ fn plan_mod_ack(
         )
         .optional()
         .map_err(store_error)?;
-    let Some((kind, body_len)) = row else {
-        return Ok(refuse(ModAckReason::Unknown));
-    };
-    if kind != "ordinary" {
-        return Ok(refuse(ModAckReason::NotAddressed));
+    let message = row.map(|(kind, body_len)| (kind == "ordinary", body_len as usize));
+    // A non-ordinary id is refused before its mode or receipt is read.
+    if !message.is_some_and(|(ordinary, _)| ordinary) {
+        return Ok(settle::plan(SettleFacts {
+            message,
+            mode: ModeFact::Receipt(None),
+        }));
     }
-    let over_limit = body_len as usize > WATCH_BODY_LIMIT_BYTES;
-    if super::lazy_delivery::recorded_mode(tx, instance, id)?
+    let mode = if super::lazy_delivery::recorded_mode(tx, instance, id)?
         == Some(crate::protocol::commands::DeliveryMode::Lazy)
     {
-        return Ok(
+        ModeFact::Lazy(
             match super::lazy_delivery::lazy_completion_state(tx, instance, seat, id)? {
-                super::lazy_delivery::LazyCompletion::NotAddressed => {
-                    refuse(ModAckReason::NotAddressed)
-                }
-                _ if over_limit => refuse(ModAckReason::Truncated),
-                super::lazy_delivery::LazyCompletion::Completed => {
-                    ModAckPlan::Done(ModAckOutcome::AlreadySettled, None)
-                }
-                super::lazy_delivery::LazyCompletion::Pending => ModAckPlan::Complete,
+                super::lazy_delivery::LazyCompletion::NotAddressed => LazyFact::NotAddressed,
+                super::lazy_delivery::LazyCompletion::Completed => LazyFact::Completed,
+                super::lazy_delivery::LazyCompletion::Pending => LazyFact::Pending,
             },
-        );
-    }
-    let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?;
-    Ok(match receipt.map(|receipt| receipt.state) {
-        None
-        | Some(EffectiveReceiptState::NotRequired | EffectiveReceiptState::RecipientRetired) => {
-            refuse(ModAckReason::NotAddressed)
-        }
-        Some(_) if over_limit => refuse(ModAckReason::Truncated),
-        Some(EffectiveReceiptState::Acknowledged) => {
-            ModAckPlan::Done(ModAckOutcome::AlreadySettled, None)
-        }
-        Some(EffectiveReceiptState::Pending) => ModAckPlan::Settle,
-    })
+        )
+    } else {
+        ModeFact::Receipt(
+            effective::effective_receipt(tx, id.as_str(), seat.as_str())?.map(|receipt| {
+                match receipt.state {
+                    EffectiveReceiptState::Pending => ReceiptFact::Pending,
+                    EffectiveReceiptState::Acknowledged => ReceiptFact::Acknowledged,
+                    EffectiveReceiptState::RecipientRetired => ReceiptFact::RecipientRetired,
+                    EffectiveReceiptState::NotRequired => ReceiptFact::NotRequired,
+                }
+            }),
+        )
+    };
+    Ok(settle::plan(SettleFacts { message, mode }))
+}
+
+/// One delivery settlement request, whatever mechanism carried the items
+/// (delivery-policy DP3). `provenance` is the A3 constant of the harness's
+/// delivery policy; `via` names the delivery path.
+pub struct AckPolicyDelivered<'a> {
+    pub mechanism: DeliveryMechanism,
+    pub provenance: &'static str,
+    pub via: &'static str,
+    pub messages: &'a [MessageId],
+    pub operation: &'a OperationId,
+    pub claim: &'a CallerClaim,
+    pub digest: [u8; 32],
 }
 
 /// Spec D6: settle the mod-delivered ids of the seat one by one. Ordinary
 /// pending receipts settle like `ack_displayed` with the receipt's
-/// `action_provenance` set to `cooperative_mod_delivery` (the binding's
+/// `action_provenance` set to the policy's provenance (the binding's
 /// `cooperative_top_level` provenance stays in the observation); lazy rows
 /// complete as displayed. Every id gets a result; a refusal leaves it pending.
 pub fn ack_mod_delivered(
@@ -126,6 +130,38 @@ pub fn ack_mod_delivered(
     conn: &mut Connection,
     budget: &crate::protocol::time::CallBudget,
     request: &AckModDelivered,
+    permit: &mut MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    let digest = schema::canonical_digest(&ack_mod_delivered_payload(request))?;
+    ack_policy_delivered(
+        context,
+        conn,
+        budget,
+        AckPolicyDelivered {
+            mechanism: DeliveryMechanism::PushChannel,
+            provenance: crate::harness::registry::builtins()
+                .delivery_policy(request.claim.harness.as_str())
+                .filter(|policy| policy.mechanism() == DeliveryMechanism::PushChannel)
+                .map_or(COOPERATIVE_MOD_DELIVERY_PROVENANCE, |policy| {
+                    policy.provenance()
+                }),
+            via: request.via.as_str(),
+            messages: &request.messages,
+            operation: &request.operation,
+            claim: &request.claim,
+            digest,
+        },
+        permit,
+    )
+}
+
+/// The store's settlement entry point (delivery-policy DP3): the claim must be
+/// a top-level claim of a harness whose adapter declares `mechanism`.
+pub fn ack_policy_delivered(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    request: AckPolicyDelivered<'_>,
     permit: &mut MutationPermit,
 ) -> Result<CommandResult, ApiError> {
     if request.messages.is_empty() || request.messages.len() > 100 {
@@ -141,15 +177,15 @@ pub fn ack_mod_delivered(
             "duplicate message in mod delivery ACK batch",
         ));
     }
-    if request.claim.harness != Harness::Claude
-        || request.claim.role != crate::protocol::authority::CallerRole::TopLevel
+    if request.claim.role != crate::protocol::authority::CallerRole::TopLevel
+        || !crate::delivery::declares(request.claim.harness.as_str(), request.mechanism)
     {
         return Err(api_error(
             ErrorCode::InvalidRequest,
-            "mod delivery ACK requires a top-level Claude claim",
+            "delivery ACK requires a top-level claim of a harness with this delivery policy",
         ));
     }
-    let digest = schema::canonical_digest(&ack_mod_delivered_payload(request))?;
+    let digest = request.digest;
     let cooperative = permit.cooperative_metadata();
     let seat = request.claim.seat.clone();
     let instance = request.claim.instance.clone();
@@ -180,34 +216,34 @@ pub fn ack_mod_delivered(
                 tx,
                 decision,
                 permit,
-                &request.claim,
+                request.claim,
                 &seat,
-                &request.operation,
+                request.operation,
                 &ObligationRef::CheckIn(seat.clone()),
                 &digest,
             )?;
             let mut plans = Vec::with_capacity(request.messages.len());
-            for id in &request.messages {
-                plans.push(plan_mod_ack(tx, &instance, &seat, id)?);
+            for id in request.messages {
+                plans.push(plan_delivery_ack(tx, &instance, &seat, id)?);
             }
-            let settle: Vec<MessageId> = request
+            let settle_ids: Vec<MessageId> = request
                 .messages
                 .iter()
                 .zip(&plans)
-                .filter(|(_, plan)| matches!(plan, ModAckPlan::Settle))
+                .filter(|(_, plan)| matches!(plan, SettlePlan::Settle))
                 .map(|(id, _)| id.clone())
                 .collect();
             let mut observation: Value =
                 serde_json::from_str(&actor.observation(decision.utc.0))
                     .map_err(|_| api_error(ErrorCode::StoreCorrupt, "ACK observation malformed"))?;
-            observation["action_provenance"] = json!(COOPERATIVE_MOD_DELIVERY_PROVENANCE);
+            observation["action_provenance"] = json!(request.provenance);
             observation["via"] = json!(request.via);
             settle_pending(
                 tx,
                 decision,
                 &seat,
-                &request.operation,
-                &settle,
+                request.operation,
+                &settle_ids,
                 &observation.to_string(),
                 actor.binding_generation,
                 "ack_mod",
@@ -215,12 +251,12 @@ pub fn ack_mod_delivered(
             let mut results = Vec::with_capacity(plans.len());
             for (id, plan) in request.messages.iter().zip(plans) {
                 let (result, reason) = match plan {
-                    ModAckPlan::Settle => (ModAckOutcome::Settled, None),
-                    ModAckPlan::Complete => {
+                    SettlePlan::Settle => (ModAckOutcome::Settled, None),
+                    SettlePlan::Complete => {
                         super::lazy_delivery::complete_addressed(tx, &instance, &seat, id)?;
                         (ModAckOutcome::Settled, None)
                     }
-                    ModAckPlan::Done(result, reason) => (result, reason),
+                    SettlePlan::Done(result, reason) => (result, reason),
                 };
                 results.push(ModAckItem {
                     id: id.clone(),
