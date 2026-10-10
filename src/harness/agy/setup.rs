@@ -371,6 +371,7 @@ pub(super) fn setup(request: &SetupRequest) -> Result<SetupOutcome, SetupFailure
     environment.executable = request.executable.clone();
     let env = &environment;
     state_dir(env)?;
+    super::delivery::clear_downgrade(env);
     legacy::prepare_state(&SetupEnv::from_snapshot(env)).map_err(legacy::adapter_failure)?;
     let policy = crate::cli::setup::PermissionPolicy::from_options(&request.options);
     let before = allow_entry_state(&roots, env);

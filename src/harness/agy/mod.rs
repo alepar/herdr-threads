@@ -4,6 +4,7 @@
 pub mod composer;
 pub mod contract;
 pub mod decode;
+pub mod delivery;
 pub mod doctor;
 pub mod launch;
 pub mod paths;
@@ -116,7 +117,7 @@ impl HarnessAdapter for AgyAdapter {
             InstallObservation::NotRequested | InstallObservation::ExecutableAvailable { .. } => {
                 AdmissionDecision::ContractDeclared {
                     state: AgyAdmission {
-                        step: InjectionStep::SystemMessage,
+                        step: delivery::admission_step(),
                     },
                     recipe: RECIPE,
                 }
@@ -215,6 +216,12 @@ impl HarnessAdapter for AgyAdapter {
     }
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         Some(&composer::AgyComposer)
+    }
+    fn hook_step(&self) -> Option<&dyn HookStep> {
+        Some(&delivery::AgyHookStep)
+    }
+    fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
+        Some(&delivery::AgyDelivery)
     }
     fn text(&self) -> &'static AdapterText {
         &TEXT
