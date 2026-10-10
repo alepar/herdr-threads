@@ -899,12 +899,13 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
         complete(&iso, request).unwrap_err().code,
         ErrorCode::InvalidRequest
     );
-    for bad in 0..5 {
+    // ht-54r.3: a different harness or native session is a different binding key, so a plain
+    // call from it enrolls its own binding on the seat instead of being refused as "occupant
+    // context changed"; those two cases are no longer bad claims. The rest still are.
+    for bad in [1, 3, 4] {
         let mut caller = claim();
         match bad {
-            0 => caller.harness = Harness::Claude,
             1 => caller.execution = ExecutionId::new("other"),
-            2 => caller.native_session = NativeSessionId::new("other"),
             3 => caller.target = HostTargetId::new("pa"),
             _ => caller = send_request().claim,
         }
@@ -914,7 +915,7 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
             operation: OperationId::new(format!("bad-claim-{bad}")),
             claim: caller,
         };
-        assert!(complete(&iso, request).is_err());
+        assert!(complete(&iso, request).is_err(), "bad case {bad}");
         assert_eq!(
             conn.query_row("SELECT state FROM lazy_recipients", [], |r| r
                 .get::<_, String>(0))
