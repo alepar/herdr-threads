@@ -25,7 +25,7 @@ baseAbsorbed: f3431b31 → d342add2, 14 conflicted files (main v0.6.0 absorbed m
 
 codeBuckets:
   completed: ht-poh.1, ht-poh.7, ht-poh.9, ht-poh.8, ht-poh.2.1–2.8, ht-poh.3.1–3.7, ht-poh.4.1–4.8, ht-poh.5, ht-poh.6.1–6.8, ht-poh.11, ht-poh.14, ht-poh.16, ht-poh.17, ht-poh.18, ht-poh.22, ht-poh.25, ht-poh.28, ht-poh.30, ht-poh.31, ht-poh.35, ht-poh.36, ht-poh.37 (ht-poh.27 closed as superseded)
-  escalated: ht-poh.13 (BLOCKED-AUTH; gated on human ht-poh.19)
+  escalated: none (ht-poh.13 superseded by ht-poh.41 after the human ran the golden generator; gate ht-poh.19 released)
   pendingRetry:
   parked:
   stalled: false
