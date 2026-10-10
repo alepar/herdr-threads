@@ -296,6 +296,39 @@ fn recover(
         other => RunError::Io(io::Error::other(format!("{other:?}{hint}"))),
     }
 }
+/// Decorate failures from caller/connection reads before executor dispatch.
+/// Executor failures already own recovery presentation and never use this seam.
+pub(crate) fn pre_executor_error(
+    error: RunError,
+    parsed: &super::commands::ParsedCli,
+    paths: &crate::daemon::paths::InstancePaths,
+) -> RunError {
+    let super::commands::CliAction::Retry(reference) = &parsed.action else {
+        return error;
+    };
+    let root = paths.instance_dir.join("intents");
+    if super::retry::preflight_original_actor(
+        &root,
+        reference.as_str(),
+        parsed.actor,
+        &parsed.output.context,
+    )
+    .is_err()
+    {
+        return error;
+    }
+    let Ok(journal) = Journal::read_only(root) else {
+        return error;
+    };
+    let Ok(original) = super::retry::load_original_for_actor(&journal, reference.as_str()) else {
+        return error;
+    };
+    let Some((p, claim)) = plan(&original.semantic) else {
+        return error;
+    };
+    recover(error, &journal, &original.header.reference, p, claim)
+}
+
 pub(crate) fn retry<C: LocalClient + ?Sized, W: Write>(
     journal: &Journal,
     reference: &IntentRef,

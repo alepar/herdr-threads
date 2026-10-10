@@ -658,7 +658,15 @@ fn completed_retry_unavailable_retains_original_recovery_files() {
         f.count("operations"),
     ];
     *f.client.lose.lock().unwrap() = Some("unavailable");
-    assert!(f.run(&["retry", &recovery], &mut vec![]).is_err());
+    let error = f.run(&["retry", &recovery], &mut vec![]).unwrap_err();
+    let RunError::Api(api) = error else {
+        panic!("unavailable API error expected")
+    };
+    let argv = api.restart_argv.as_ref().unwrap();
+    assert_eq!(argv.last(), Some(&recovery));
+    assert!(argv.contains(&f.root.to_string_lossy().into_owned()));
+    assert!(argv.contains(&"/isolated-host.sock".to_owned()));
+    assert_eq!(api.detail.matches("recover with ").count(), 1);
     assert_eq!(f.recovery(), recovery);
     assert_eq!(
         [
@@ -809,4 +817,136 @@ fn deterministic_send_refusal_retains_staged_thread_body_and_retry() {
         .unwrap();
     let encoded = serde_json::to_string(&original.semantic).unwrap();
     assert!(encoded.contains("retained"));
+}
+
+#[test]
+fn public_completed_retry_missing_endpoint_retains_files_and_one_frozen_hint() {
+    let f = Fixture::new(false);
+    assert!(
+        f.run(
+            &["send", "--seat", "seat-b", "--body", "hello"],
+            &mut LostOutput
+        )
+        .is_err()
+    );
+    let recovery = f.recovery();
+    let runtime = herdr_threads::daemon::paths::RuntimeContext::explicit(
+        f.root.clone(),
+        "/isolated-host.sock".into(),
+        None,
+    )
+    .unwrap();
+    let paths = herdr_threads::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+    std::fs::create_dir_all(&paths.instance_dir).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&paths.instance_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(&paths.namespace_path, uuid::Uuid::from_u128(1).to_string()).unwrap();
+    std::fs::set_permissions(
+        &paths.namespace_path,
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let public_root = paths.instance_dir.join("intents");
+    let _public = Journal::open(&public_root).unwrap();
+    for entry in std::fs::read_dir(f.root.join("intents")).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::copy(&path, public_root.join(path.file_name().unwrap())).unwrap();
+    }
+    let snapshot = || {
+        let mut files: Vec<_> = std::fs::read_dir(&public_root)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                (
+                    path.file_name().unwrap().to_owned(),
+                    std::fs::read(&path).unwrap(),
+                )
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    let before_files = snapshot();
+    let before_effects = [
+        f.count("messages"),
+        f.count("operations"),
+        f.count("invitations"),
+    ];
+    assert!(!paths.descriptor_path.exists());
+    let expected = vec![
+        "herdr-threads".to_string(),
+        "--state-dir".into(),
+        f.root.to_string_lossy().into_owned(),
+        "--host-endpoint".into(),
+        "/isolated-host.sock".into(),
+        "retry".into(),
+        recovery.clone(),
+    ];
+    let command = expected
+        .iter()
+        .map(|v| shlex::try_quote(v).unwrap().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    for malformed in [false, true] {
+        if malformed {
+            std::fs::write(&paths.descriptor_path, b"{").unwrap();
+            std::fs::set_permissions(
+                &paths.descriptor_path,
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+        for caller in [None, Some("seat-a")] {
+            let mut output = vec![];
+            let error = herdr_threads::cli::run_in_pane(
+                [
+                    "ht",
+                    "--state-dir",
+                    f.root.to_str().unwrap(),
+                    "--host-endpoint",
+                    "/isolated-host.sock",
+                    "retry",
+                    &recovery,
+                ],
+                caller,
+                &mut output,
+            )
+            .unwrap_err();
+            match error {
+                RunError::Api(api) if !malformed => {
+                    assert_eq!(
+                        api.code,
+                        herdr_threads::protocol::results::ErrorCode::HostUnavailable
+                    );
+                    assert_eq!(api.restart_argv.as_ref(), Some(&expected));
+                    assert_eq!(
+                        api.detail
+                            .matches(&format!("recover with {command}"))
+                            .count(),
+                        1
+                    );
+                }
+                RunError::Io(error) if malformed => {
+                    assert_eq!(
+                        error
+                            .to_string()
+                            .matches(&format!("recover with {command}"))
+                            .count(),
+                        1
+                    );
+                }
+                error => panic!("unexpected public boundary error: {error:?}"),
+            }
+            assert!(output.is_empty());
+            assert_eq!(snapshot(), before_files);
+            assert_eq!(
+                [
+                    f.count("messages"),
+                    f.count("operations"),
+                    f.count("invitations")
+                ],
+                before_effects
+            );
+        }
+    }
 }

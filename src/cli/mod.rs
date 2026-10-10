@@ -517,7 +517,8 @@ fn run_parsed_in_pane<W: Write>(
         .as_ref()
         .is_some_and(|selector| selector.direct_id().is_none());
     let try_completed = |parsed: &commands::ParsedCli, writer: &mut W| -> Result<bool, RunError> {
-        let (instance, _, client) = connect(&paths, &clock)?;
+        let (instance, _, client) = connect(&paths, &clock)
+            .map_err(|error| direct_send::pre_executor_error(error, parsed, &paths))?;
         let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
         let selected_context = crate::protocol::output::ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
@@ -548,7 +549,7 @@ fn run_parsed_in_pane<W: Write>(
     if historical_retry && try_completed(&parsed, writer)? {
         return Ok(());
     }
-    panes::resolve_cli_targets(
+    let resolved_targets = panes::resolve_cli_targets(
         &mut parsed,
         || host.topology(&budget()),
         || {
@@ -557,7 +558,9 @@ fn run_parsed_in_pane<W: Write>(
                 .map(|pane| host.current_pane(pane, &budget()))
                 .transpose()
         },
-    )?;
+    );
+    resolved_targets
+        .map_err(|error| direct_send::pre_executor_error(error.into(), &parsed, &paths))?;
     // A deferred name now denotes an exact canonical target; terminal replay
     // still precedes every live caller/SeatInspect/binding-generation guard.
     if historical_retry && deferred_locator && try_completed(&parsed, writer)? {
@@ -1001,12 +1004,16 @@ where
     // Capture omission before default_seat resolves the caller read. The second
     // guard below adds the canonical selected seat while retaining that choice.
     let _origin_inbox = output::InboxInvocationGuard::enter(&parsed, None);
-    let selection = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock)?;
+    let selected = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock);
+    let selection =
+        selected.map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
     resolve_recipient_seats(&mut parsed, paths, connection, clock)?;
     let _inbox =
         output::InboxInvocationGuard::enter(&parsed, selection.as_ref().map(|s| s.seat.clone()));
     if let Some(selection) = selection {
-        let (instance, client) = connection.get()?;
+        let (instance, client) = connection
+            .get()
+            .map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
         run_selected(
             parsed,
             &selection,
