@@ -18,11 +18,15 @@ roastDesignRound: 1
 roast-design: 2026-10-10-thread-search-discovery-roast-design-1.md
 
 codeBuckets:
-  completed: ht-akx.1, ht-akx.2
+  completed: ht-akx.1, ht-akx.2, ht-akx.3
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: pending
+  review: CLEAN
+
+combined-main: effa14a2
+combined-candidate: 65a67dcf
+private-target: /Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/thread-search-discovery/target
 
 HT_LEAK_RUN_ID: c494afe8-aa16-4b6b-a2a8-b9bee8e65cb8

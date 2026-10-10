@@ -33,3 +33,14 @@ Correction: behavior private revalidation was not active during rebase; send_mes
 Merge: ht-akx.1 — rebase clean · seam-review none · gate pass
 Task 1 (ht-akx.1): complete (commits e7592f5a..d61b4720, private source-proven tests/checks; integration gate42/42, compile38.96s execution1.26s)
 Task 1 (ht-akx.1): minor (deferred): sandbox nice priority adjustment denied; cargo checks succeeded, environment noise only.
+Candidate: main effa14a2 merged as65a67dcf before integration sweep; INDEX append conflict kept both independent rows. Clean auto-merges inspected in control.rs (reject vs name setter), commands.rs (Reject vs list search help), tests/store/control.rs (both test families), INDEX.
+Detector: round 2 — parallelism: 1 ready · cap 2 · peak in-flight 1 · hot-file deferrals none · dependency-limited integration leaf
+Merge: ht-akx.3 — rebase clean · seam-review none · gate pass
+Task 3 (ht-akx.3): complete (commits 65a67dcf..35bf2f84, review clean; integration-private v0.6.1 gate42/42 compile2m01s execution1.50s; final leak check no leaked test processes)
+Sweep: declared per-branch sweep deferred to super-auto post-code-roast; .3 focused combined integration verification is recorded separately and does not claim full-suite coverage.
+Metrics: merges 3 · merge-failed 0 · rebase-conflicts 0 · seam-reviews 0 (fixed 0) · gate-fails 0
+Metrics: fix-loop round 1: 0 addressed / 0 entered · round 2: 0 addressed / 0 entered · round 3: 0 addressed / 0 entered · round 4: 0 addressed / 0 entered · round 5: 0 addressed / 0 entered
+Metrics: fix-loop breaker-tripped: 0
+Metrics: ledger-check ok · append-failed 0 · append-retried 0
+Final review: CLEAN — fresh whole-epic review effa14a2..fe464af5; no product findings, deferred nice warnings classified environment-only. Parent post-roast sweep remains pending.
+Finish: stopReason root-closed; completed ht-akx.1,ht-akx.2,ht-akx.3; escalated/pendingRetry/parked none; stalled false; review CLEAN; caller owns finish, integration worktree retained.
