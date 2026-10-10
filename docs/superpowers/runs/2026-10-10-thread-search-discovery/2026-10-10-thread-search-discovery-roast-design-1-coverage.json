@@ -1,0 +1,67 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "rawFindings": 1,
+  "dedupedFindings": 1,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 1,
+  "spotCount": 0,
+  "promotedCount": 0,
+  "judgeCompletionPct": 100,
+  "mode": "design",
+  "iteration": 1,
+  "scoutNames": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "domain:database-query-pagination",
+    "domain:transactional-consistency",
+    "domain:api-compatibility"
+  ],
+  "independence": "same-family (OpenAI) — seat-differentiated panel",
+  "triage": {
+    "lanes": [],
+    "domains": [
+      "database-query-pagination",
+      "transactional-consistency",
+      "api-compatibility"
+    ]
+  },
+  "packets": [
+    {
+      "f": {
+        "claim": "The rename-staleness guarantee assumes that the name revision cannot be captured after candidate reads from an older name state, but the design does not establish that read-order or snapshot invariant.",
+        "location": "Rename consistency; Candidate traversal and result shape; Validation",
+        "category": "domain:transactional-consistency",
+        "external": true,
+        "evidence": "Spec reads name/all for filtered cursors, preserving existing high-water snapshot; no explicit candidate/revision read snapshot/order. Possible failure: skip nonmatching candidate, rename makes it match, then capture new revision, allowing continuation to skip match without staleness. Existing store serialization/read transaction could discharge assumption. SQLite isolation https://www.sqlite.org/isolation.html states reader continues to see unchanging snapshot within read transaction.",
+        "kind": "UNVERIFIED-ASSUMPTION",
+        "suggestedSeverity": "Blocking"
+      },
+      "votes": [
+        {
+          "verdict": "REJECT",
+          "severity": "FYI",
+          "evidence": "Reproduce failure breaks at capturing new name revision after old candidate state: src/store/queries.rs::query_with_output_for_caller begins BEGIN DEFERRED before Command::Directory; connection stays in transaction throughout. src/store/connection.rs::open_query is separate read-only connection. SQLite https://www.sqlite.org/isolation.html explains that commits made during an active read transaction are invisible to it. Candidate names and name/all revision thus share snapshot. Continuation holds old revision then stales."
+        },
+        {
+          "verdict": "REJECT",
+          "severity": "FYI",
+          "evidence": "Refute (a) equivalent mechanism exists: src/store/queries.rs::query_with_output_for_caller BEGIN DEFERRED line 214 before directory dispatch line 277, spanning revision reads, candidates and cursor. SQLite https://www.sqlite.org/isolation.html confirms read transaction unchanging snapshot. (b) claimed skip would violate contract; (c) in scope; (d) material if possible, but read snapshot defeats premise. Design preserves existing query loop, so repeating boundary is documentation suggestion."
+        },
+        {
+          "verdict": "REJECT",
+          "severity": "FYI",
+          "evidence": "Ground premise fails: design preserves existing loop and snapshot; query_with_output_for_caller BEGIN DEFERRED before Command::Directory, transaction open throughout traversal/cursor. New name revision and candidate projections share read snapshot. SQLite primary https://www.sqlite.org/isolation.html explains that the snapshot remains stable for that read transaction. Concurrent rename cannot combine old names/new revision. Additional requirement merely restates invariant."
+        }
+      ],
+      "tier": "panel",
+      "valid": 3
+    }
+  ]
+}
