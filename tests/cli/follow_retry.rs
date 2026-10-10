@@ -438,6 +438,7 @@ impl CompletedRetryFixture {
         };
         let plan = HandoffPlan {
             startup_input: None,
+            bootstrap_input: None,
             request: HandoffRequest {
                 thread: Some(ThreadId::new("t1")),
                 thread_name: None,

@@ -104,10 +104,10 @@ the command line (`HERDR_THREADS_AGY_OPTS="--model gemini-3 --effort high"`). A 
 it is refused after composition.
 
 A handoff starts the new agy with `--prompt-interactive <bootstrap text>` appended, so a caller who
-already passes `-i`/`--prompt-interactive` conflicts with it. Handoff to agy goes through bootstrap
-plan version 2, which freezes agy's own composition of the flags. Use `handoff --pane`; `handoff --new-tab --kind agy` is
-not supported yet: its preflight still appends the prompt as a bare argument, which agy's flag
-grammar refuses.
+already passes `-i`/`--prompt-interactive` conflicts with it. Both `handoff --pane` and
+`handoff --new-tab --kind agy` place the bootstrap text that way; the new-tab path goes through
+bootstrap plan version 2, which freezes agy's own composition of the flags together with that
+placement.
 
 ## `--sandbox`
 

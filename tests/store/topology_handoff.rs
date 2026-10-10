@@ -51,6 +51,7 @@ pub(super) fn identity() -> BootstrapIdentity {
                 name: None,
                 argv: vec!["--model".into(), "fixed".into()],
                 composed_argv: None,
+                startup_input: None,
             },
             handoff_key: OperationId::new("handoff"),
             resolve_key: OperationId::new("resolve"),

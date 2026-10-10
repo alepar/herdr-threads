@@ -226,6 +226,10 @@ pub struct BootstrapLaunch {
     /// Absent (and not serialized) for a V1 plan, so V1 plans stay byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composed_argv: Option<Vec<String>>,
+    /// Bootstrap plan V2 only: the adapter's startup-input placement for `argv`, frozen at plan time.
+    /// Absent (and not serialized) for a V1 plan, so V1 plans stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_input: Option<crate::harness::adapter::StartupInputTemplate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -629,6 +633,11 @@ impl BootstrapLaunch {
                     || composed.iter().any(|a| a.len() > 4096 || a.contains('\0'))
                     || composed.iter().map(String::len).sum::<usize>() > 65536
             })
+            || self.composed_argv.is_some() != self.startup_input.is_some()
+            || self
+                .startup_input
+                .as_ref()
+                .is_some_and(|template| template.validate(self.argv.len()).is_err())
         {
             return Err("invalid frozen bootstrap launch arguments");
         }
@@ -966,6 +975,7 @@ pub(crate) mod topology_contract_tests {
                 name: Some("peer".into()),
                 argv: vec!["--model".into(), "fixed".into()],
                 composed_argv: None,
+                startup_input: None,
             },
             handoff_key: OperationId::new("child"),
             resolve_key: OperationId::new("resolve"),
