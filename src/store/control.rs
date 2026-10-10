@@ -123,11 +123,14 @@ pub(crate) fn begin_retirement_fence(
         schema::clear_open_unavailability_for_seat(tx, seat.as_str(), cutover)?;
         let changed = tx.execute("UPDATE seats SET state='retired',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,generation=generation+1,retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'",
             params![cutover.0,cutover_seq as i64,seat.as_str()]).map_err(store_error)?;
-        tx.execute(
-            "UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL",
-            params![cutover.0, seat.as_str()],
-        )
-        .map_err(store_error)?;
+        // Every open binding disconnects (`seat_retired`, side-effect hooks run) and ends through
+        // the sole transition; an already disconnected binding keeps its own reason.
+        super::bindings::end_open_bindings(
+            tx,
+            &seat,
+            super::bindings::DisconnectReason::SeatRetired,
+            cutover,
+        )?;
         super::catch_up::supersede_stale(tx, &seat, cutover)?;
         tx.execute(
             "DELETE FROM warning_offer WHERE seat_id=?1",

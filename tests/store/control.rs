@@ -9421,3 +9421,179 @@ fn invitation_rejection_human_retains_declared_human_provenance() {
 
 #[path = "topology_attachment_guard.rs"]
 mod topology_attachment;
+
+// ---- ht-54r.14: retirement under multiple bindings ----
+
+/// Seat `s2` with three open bindings on the one terminal: two connected, one already
+/// disconnected (`end_event`), each with a cursor row on thread `t`.
+fn multi_binding_retirement_fixture() -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
+    let (context, conn, path, clock) = fixture(100);
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    for (id, session, live) in [
+        ("b1", "sess-1", true),
+        ("b2", "sess-2", true),
+        ("b3", "sess-3", false),
+    ] {
+        conn.execute("INSERT INTO occupant_bindings(binding_id,seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,'s2',1,'s2','b',1,1,'codex',?2,'00000000-0000-4000-8000-000000000001','verified_current_target',0,'term-s2','inc')", rusqlite::params![id,session]).unwrap();
+        if !live {
+            conn.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=50,disconnect_reason='liveness_end_event' WHERE binding_id=?1", [id]).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES (?1,'t',?2)",
+            rusqlite::params![id, if id == "b1" { 3 } else { 1 }],
+        )
+        .unwrap();
+    }
+    (context, conn, path, clock)
+}
+
+fn retire_s2(context: &StoreContext, conn: &mut Connection) -> crate::ports::RetirementJob {
+    use crate::ports::ClosureEvidence;
+    begin_retirement(
+        context,
+        conn,
+        SeatId::new("s2"),
+        ClosureEvidence {
+            host_boot: HostBootId::new("b"),
+            epoch: 1,
+            target: HostTargetId::new("s2"),
+            generation: 1,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn retirement_disconnects_and_ends_every_binding() {
+    let (context, mut conn, path, _) = multi_binding_retirement_fixture();
+    retire_s2(&context, &mut conn);
+    let rows: Vec<(String, Option<i64>, String, Option<String>)> = conn
+        .prepare("SELECT binding_id,ended_at,liveness,disconnect_reason FROM occupant_bindings WHERE seat_id='s2' ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "b1".into(),
+                Some(100),
+                "disconnected".into(),
+                Some("seat_retired".into())
+            ),
+            (
+                "b2".into(),
+                Some(100),
+                "disconnected".into(),
+                Some("seat_retired".into())
+            ),
+            (
+                "b3".into(),
+                Some(100),
+                "disconnected".into(),
+                Some("liveness_end_event".into())
+            ),
+        ]
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn retirement_keeps_seat_record_and_cursor_rows() {
+    let (context, mut conn, path, _) = multi_binding_retirement_fixture();
+    retire_s2(&context, &mut conn);
+    let seat: (String, i64) = conn
+        .query_row(
+            "SELECT state,retired_at FROM seats WHERE id='s2'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(seat, ("retired".into(), 100));
+    let cursors: Vec<(String, i64)> = conn
+        .prepare(
+            "SELECT binding_id,seq FROM binding_cursors WHERE thread_id='t' ORDER BY binding_id",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        cursors,
+        vec![("b1".into(), 3), ("b2".into(), 1), ("b3".into(), 1)]
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn retirement_with_two_bindings_retires_memberships_settles_receipts_closes_invitations() {
+    use crate::{
+        ports::WorkAdmission,
+        protocol::time::{CallBudget, Cancellation},
+    };
+    let (context, mut conn, path, clock) = multi_binding_retirement_fixture();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','i','topic','goal',0,0)", []).unwrap();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s2','joined',0)",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s2',1,1)", []).unwrap();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('u','s2','invited')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv','u','s2',1,'pending',0,90,90,1)", []).unwrap();
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m1','t',1,'ordinary','body',0,2)", []).unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m1','t','s2','pending',90,0,90)", []).unwrap();
+    conn.execute("UPDATE threads SET next_sequence=5 WHERE id='t'", [])
+        .unwrap();
+    conn.execute("UPDATE host_instances SET decision_seq=30 WHERE id='i'", [])
+        .unwrap();
+    let job = retire_s2(&context, &mut conn);
+    clock.0.store(200, Ordering::SeqCst);
+    let budget = CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Cancellation::default(),
+    };
+    for _ in 0..8 {
+        if advance_retirement(
+            &context,
+            &mut conn,
+            job.id.clone(),
+            WorkAdmission::Background,
+            &budget,
+        )
+        .unwrap()
+        .complete
+        {
+            break;
+        }
+    }
+    let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(
+        count("SELECT count(*) FROM memberships WHERE seat_id='s2' AND state='joined'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM receipts WHERE message_id='m1' AND state='recipient_retired'"),
+        1
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM invitations WHERE id='inv' AND state='recipient_retired'"),
+        1
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL"),
+        0
+    );
+    assert_eq!(count("SELECT count(*) FROM binding_cursors"), 3);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
