@@ -1955,10 +1955,10 @@ fn hook_deadline_window_never_waits_past_the_deadline() {
 // into a command, and reinstating the dead export rule as the only grant.
 #[test]
 fn owned_claude_allow_rule_covers_every_ready_command_form() {
+    use crate::harness::claude::permission_rules::render;
     use crate::harness::claude::{
         CALLER_CONTEXT_ALLOW_RULE, HERDR_THREADS_ALLOW_RULE, bash_rule_covers,
     };
-    use crate::harness::permissions::claude::render;
     use crate::protocol::attention::AttentionRequirement;
     let mut digest = digest(
         &[("invitation-a", "thread-1"), ("invitation-r", "thread-r")],

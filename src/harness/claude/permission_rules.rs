@@ -1,7 +1,7 @@
 //! Claude Bash rules: allow each spelling outright; ask for the immediate `human` namespace and
 //! for every escalating (self-granting) command. Claude applies ask before allow.
-use super::SPELLINGS;
 use crate::cli::commands::ESCALATING_COMMANDS;
+use crate::harness::permissions::SPELLINGS;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClaudePermissionRules {
@@ -29,6 +29,12 @@ pub fn render() -> ClaudePermissionRules {
         }
     }
     rules
+}
+
+/// The rules of [`render`] per `permissions` list, for the settings kind's `permission_rules`.
+pub fn settings_rules() -> Vec<(&'static str, Vec<String>)> {
+    let rules = render();
+    vec![("allow", rules.allow), ("ask", rules.ask)]
 }
 
 #[cfg(test)]

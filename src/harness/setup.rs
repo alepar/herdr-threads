@@ -109,6 +109,14 @@ pub struct SettingsKindSpec {
     pub adoption_note: &'static str,
     /// Pushed when setup rewrites a pre-per-event registration (Codex: the re-trust warning).
     pub legacy_upgrade_warning: &'static str,
+    /// Rules a separate permission component owns in this file, per `permissions` list (`allow`, `ask`), stripped when
+    /// deciding whether the file is still the recorded base plus groups. Empty for a kind whose file holds none.
+    pub permission_rules: fn() -> Vec<(&'static str, Vec<String>)>,
+}
+
+/// The `permission_rules` of a kind whose file holds no rules of a permission component.
+pub fn no_permission_rules() -> Vec<(&'static str, Vec<String>)> {
+    Vec::new()
 }
 
 /// A settings kind, compared by `(harness, file_name)`.
@@ -525,20 +533,24 @@ fn restoration_base(
 /// `current` without the permission component's rendered rules, dropping a list or
 /// `permissions` object they alone left when the recorded base held none: the file as the hook
 /// installation would see it with no grant in place. `None` when either is not composable.
-fn without_permission_rules(current: &[u8], recorded_base: &[u8]) -> Option<Vec<u8>> {
+fn without_permission_rules(
+    kind: SettingsKind,
+    current: &[u8],
+    recorded_base: &[u8],
+) -> Option<Vec<u8>> {
     let mut value = root(current).ok()?;
     let base = root(recorded_base).ok()?;
-    let rendered = super::permissions::claude::render();
+    let rendered = (kind.spec().permission_rules)();
     if let Some(permissions) = value.get_mut("permissions").and_then(Value::as_object_mut) {
-        for (list, rules) in [("allow", &rendered.allow), ("ask", &rendered.ask)] {
-            if let Some(entries) = permissions.get_mut(list).and_then(Value::as_array_mut) {
+        for (list, rules) in &rendered {
+            if let Some(entries) = permissions.get_mut(*list).and_then(Value::as_array_mut) {
                 entries.retain(|entry| {
                     entry
                         .as_str()
                         .is_none_or(|rule| !rules.iter().any(|r| r == rule))
                 });
-                if entries.is_empty() && base["permissions"].get(list).is_none() {
-                    permissions.remove(list);
+                if entries.is_empty() && base["permissions"].get(*list).is_none() {
+                    permissions.remove(*list);
                 }
             }
         }
@@ -559,6 +571,7 @@ struct Resume {
 /// an earlier installation are removed only when exact, edited ones conflict, and an independent
 /// unmarked copy of the hook command refuses publication.
 fn plan_resume(
+    kind: SettingsKind,
     current: &[u8],
     manifest: &OwnershipManifest,
     unmarked_command: &str,
@@ -635,7 +648,7 @@ fn plan_resume(
         // then hooks) still restores it byte for byte.
         let base_plus_grant = !recorded.is_empty()
             && !recorded_base.is_empty()
-            && without_permission_rules(current, recorded_base).is_some_and(|plain| {
+            && without_permission_rules(kind, current, recorded_base).is_some_and(|plain| {
                 compose_json(recorded_base, &recorded, &rules_present)
                     .is_ok_and(|plan| plan.proposed_bytes == plain)
             });
@@ -1268,7 +1281,7 @@ fn install_user_settings_inner<F: FnOnce()>(
                 .collect();
             intent.owned = expected.clone();
             intent.phase = InstallPhase::Prepared;
-            plan_resume(&current, &intent, &unmarked_command)?;
+            plan_resume(kind, &current, &intent, &unmarked_command)?;
             replace_manifest(manifest_path, &intent)?;
             if fault == InstallFault::InterruptAfterIntent {
                 action.take().expect("one fault action")();
@@ -1289,7 +1302,7 @@ fn install_user_settings_inner<F: FnOnce()>(
             manifest.owned = expected.clone();
             replace_manifest(manifest_path, &manifest)?;
         }
-        let resume = plan_resume(&current, &manifest, &unmarked_command)?;
+        let resume = plan_resume(kind, &current, &manifest, &unmarked_command)?;
         if resume.publish {
             if config_bytes(config)? != current {
                 return Err(SetupError::Conflict);
@@ -1638,9 +1651,10 @@ pub struct RecordedPermission {
     manifest: Vec<u8>,
 }
 
-/// The permission record of the Claude hook manifest at `manifest_path` for `config`, validated
+/// The permission record of `kind`'s hook manifest at `manifest_path` for `config`, validated
 /// like removal: only a declared or retired rule with its fingerprint is ever owned.
 pub fn recorded_hook_permission(
+    kind: SettingsKind,
     config: &Path,
     manifest_path: &Path,
 ) -> Result<Option<RecordedPermission>, SetupError> {
@@ -1650,7 +1664,6 @@ pub fn recorded_hook_permission(
     if manifest.permission.is_none() && manifest.superseded_permission.is_none() {
         return Ok(None);
     }
-    let kind = super::claude::settings_kind();
     if !manifest_matches(kind, &manifest, config)? || !recorded_ownership_valid(kind, &manifest) {
         return Err(SetupError::Conflict);
     }

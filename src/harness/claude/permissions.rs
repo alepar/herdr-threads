@@ -13,10 +13,11 @@
 //! `Bash(herdr-threads *)` grant becomes the `herdr-threads` rules (the same allow plus the human
 //! and escalating ask rules) automatically; the `ht` rules need consent. A rule the user already
 //! held is recorded as pre-existing and never removed.
-use super::{
+use super::permission_rules::render;
+use crate::harness::permissions::{
     OwnedConfigWriteGuard, OwnedPermissionResource, PERMISSION_MANIFEST_VERSION,
     PendingPublication, PermissionBackend, PermissionComponentManifest, PermissionConsent,
-    VerifiedConfigIdentity, claude::render,
+    VerifiedConfigIdentity,
 };
 use crate::harness::setup::{
     self, RecordedPermission, SetupError, config_bytes, recorded_hook_permission,
@@ -34,7 +35,9 @@ use std::{
 const LISTS: [&str; 2] = ["allow", "ask"];
 const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Where the component stands, as `setup-status` reports it.
+/// Where the component stands, as `setup-status` reports it./// This component's backend: its manifest tag and lock name.
+pub const BACKEND: PermissionBackend = PermissionBackend::new("Claude");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaudePermissionState {
     /// Nothing is owned or recorded.
@@ -260,7 +263,7 @@ impl ClaudePermissions {
         let file = self.recorded_file();
         // A manifest can never direct removal of a rule it does not fingerprint.
         if manifest.version != PERMISSION_MANIFEST_VERSION
-            || manifest.backend != PermissionBackend::Claude
+            || manifest.backend != BACKEND
             || manifest.resources.iter().any(|r| {
                 file.as_ref().is_some_and(|file| r.file != *file) || resource_list(r).is_none()
             })
@@ -289,15 +292,19 @@ impl ClaudePermissions {
             .parent()
             .ok_or(SetupError::Invalid)?
             .to_path_buf();
-        let identity = VerifiedConfigIdentity::verify(&root, PermissionBackend::Claude)
-            .map_err(|_| SetupError::Invalid)?;
+        let identity =
+            VerifiedConfigIdentity::verify(&root, BACKEND).map_err(|_| SetupError::Invalid)?;
         OwnedConfigWriteGuard::acquire(&identity, LOCK_TIMEOUT).map_err(|_| SetupError::Io)
     }
 
     /// Read-only: what the component owns and what an earlier hook setup recorded.
     pub fn status(&self) -> Result<ClaudePermissionStatus, SetupError> {
         let manifest = self.read()?;
-        let hook = recorded_hook_permission(&self.settings, &self.hooks)?;
+        let hook = recorded_hook_permission(
+            crate::harness::claude::settings_kind(),
+            &self.settings,
+            &self.hooks,
+        )?;
         let settings = self
             .current()
             .map(|bytes| bytes.unwrap_or_else(|| b"{}".to_vec()));
@@ -386,7 +393,11 @@ impl ClaudePermissions {
         let current = hex(&self.current()?.ok_or(SetupError::Conflict)?);
         if current == pending.after {
             if let Some(retired) = &pending.retired {
-                match recorded_hook_permission(&self.settings, &self.hooks)? {
+                match recorded_hook_permission(
+                    crate::harness::claude::settings_kind(),
+                    &self.settings,
+                    &self.hooks,
+                )? {
                     None => {}
                     Some(record) if record.owned == *retired => {
                         retire_hook_permission(&self.hooks, &record)?
@@ -414,7 +425,12 @@ impl ClaudePermissions {
     pub fn apply(&self, consent: PermissionConsent) -> Result<ClaudePermissionStatus, SetupError> {
         if consent != PermissionConsent::Granted
             && self.read()?.is_none()
-            && recorded_hook_permission(&self.settings, &self.hooks)?.is_none()
+            && recorded_hook_permission(
+                crate::harness::claude::settings_kind(),
+                &self.settings,
+                &self.hooks,
+            )?
+            .is_none()
         {
             return self.status();
         }
@@ -425,7 +441,11 @@ impl ClaudePermissions {
         let guard = self.lock()?;
         self.settle(&guard)?;
         let manifest = self.read()?;
-        let hook = recorded_hook_permission(&self.settings, &self.hooks)?;
+        let hook = recorded_hook_permission(
+            crate::harness::claude::settings_kind(),
+            &self.settings,
+            &self.hooks,
+        )?;
         if manifest.is_some() && hook.is_some() {
             // Two owners of one grant: never guess which one to trust.
             return Err(SetupError::Conflict);
@@ -540,7 +560,7 @@ impl ClaudePermissions {
         }
         let desired = PermissionComponentManifest {
             version: PERMISSION_MANIFEST_VERSION,
-            backend: PermissionBackend::Claude,
+            backend: BACKEND,
             config_root: file.parent().ok_or(SetupError::Invalid)?.into(),
             resources,
             created: created.into_iter().collect(),

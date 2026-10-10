@@ -10,6 +10,8 @@
 //! only the 2.1.287 recipe admits compact (spec §9). Model receipt and
 //! durable receipts remain separate, unqualified gates.
 pub mod doctor;
+pub mod permission_rules;
+pub mod permissions;
 pub mod prompt_suggestion;
 pub mod setup;
 
@@ -769,6 +771,7 @@ pub static SETTINGS_KIND: super::setup::SettingsKindSpec = super::setup::Setting
     }),
     adoption_note: "",
     legacy_upgrade_warning: "",
+    permission_rules: permission_rules::settings_rules,
 };
 /// The engine handle of [`SETTINGS_KIND`].
 pub const fn settings_kind() -> super::setup::SettingsKind {
@@ -1328,6 +1331,9 @@ impl LaunchPolicy for ClaudeAdapter {
 }
 
 impl InstallerPolicy for ClaudeAdapter {
+    fn permission_backend(&self) -> Option<crate::harness::permissions::PermissionBackend> {
+        Some(permissions::BACKEND)
+    }
     fn permissions_granted(&self, request: &StatusRequest) -> Result<Option<bool>, SetupFailure> {
         let env = crate::harness::setup::legacy::scoped_legacy_environment(
             Harness::Claude,

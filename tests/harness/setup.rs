@@ -2207,7 +2207,14 @@ fn hook_setup_records_and_writes_no_permission_rule() {
             inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown).unwrap();
         assert!(status.installed);
         assert_eq!(status.allow_rule, None);
-        assert_eq!(recorded_hook_permission(&config, &manifest_path), Ok(None));
+        assert_eq!(
+            recorded_hook_permission(
+                crate::harness::claude::settings_kind(),
+                &config,
+                &manifest_path
+            ),
+            Ok(None)
+        );
         let settled = fs::read(&config).unwrap();
         install_claude_user(&config, &manifest_path, &argv, original).unwrap();
         assert_eq!(fs::read(&config).unwrap(), settled);
@@ -2239,9 +2246,13 @@ fn historical_rule_is_reported_and_blocks_hook_resetup_until_retired() {
         Err(SetupError::Conflict)
     );
     assert_eq!(fs::read(&config).unwrap(), held);
-    let recorded = recorded_hook_permission(&config, &manifest_path)
-        .unwrap()
-        .unwrap();
+    let recorded = recorded_hook_permission(
+        crate::harness::claude::settings_kind(),
+        &config,
+        &manifest_path,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(recorded.owned, vec![RULE.to_owned()]);
     assert!(recorded.created_permissions && recorded.created_allow);
     retire_hook_permission(&manifest_path, &recorded).unwrap();
@@ -2321,7 +2332,11 @@ fn forged_historical_record_is_refused() {
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let before = fs::read(&config).unwrap();
         assert_eq!(
-            recorded_hook_permission(&config, &manifest_path),
+            recorded_hook_permission(
+                crate::harness::claude::settings_kind(),
+                &config,
+                &manifest_path
+            ),
             Err(SetupError::Conflict)
         );
         assert_eq!(
@@ -2825,6 +2840,7 @@ mod extension_proof {
         }),
         adoption_note: "",
         legacy_upgrade_warning: "",
+        permission_rules: crate::harness::setup::no_permission_rules,
     };
     static HOOK_KIND: SettingsKindSpec = SettingsKindSpec {
         harness: ID,
@@ -2833,6 +2849,7 @@ mod extension_proof {
         owned_allow: None,
         adoption_note: "",
         legacy_upgrade_warning: "",
+        permission_rules: crate::harness::setup::no_permission_rules,
     };
 
     fn inspect_ext(bytes: &[u8], report: &mut Value) -> Result<(), String> {
