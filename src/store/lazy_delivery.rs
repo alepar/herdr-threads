@@ -227,6 +227,66 @@ pub fn lazy_completion_state(
     })
 }
 
+/// Bound of the pending-lazy count (a change detector for the mod fingerprint
+/// and the wake frontier, not a count anyone presents).
+pub const PENDING_SUMMARY_CAP: i64 = 1000;
+
+/// `(count, max ordinal)` of the seat's published pending lazy rows, over the
+/// newest `PENDING_SUMMARY_CAP`. Published rows only: a staged row is invisible
+/// to the mod and to wake, and its publication (manifest + message) must change
+/// both. Shared by `mod_seat_view` and `wake_seat_attention`.
+pub fn pending_summary(conn: &Connection, seat: &SeatId) -> Result<(i64, i64), ApiError> {
+    conn.query_row(
+        "SELECT count(*),COALESCE(max(ordinal),0) FROM (SELECT r.ordinal FROM lazy_recipients r INDEXED BY lazy_recipients_pending_seat_ordinal JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=sm.message_id AND m.delivery_mode='lazy' WHERE r.seat_id=?1 AND r.state='pending' ORDER BY r.ordinal DESC LIMIT ?2)",
+        params![seat.as_str(), PENDING_SUMMARY_CAP],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(store_error)
+}
+
+/// The lazy wake frontier of a `wake_on: all` seat: its greatest pending
+/// published lazy ordinal, or `None` when nothing is pending.
+pub fn wake_frontier(conn: &Connection, seat: &str) -> Result<Option<i64>, ApiError> {
+    let (count, max_ordinal) = pending_summary(conn, &SeatId::new(seat))?;
+    Ok((count > 0).then_some(max_ordinal))
+}
+
+/// Publication time of the seat's oldest published pending lazy row; the batch
+/// window treats it like an ordinary receipt's publication time.
+pub fn oldest_pending_at(conn: &Connection, seat: &str) -> Result<Option<i64>, ApiError> {
+    conn.query_row(
+        "SELECT m.decision_at FROM lazy_recipients r INDEXED BY lazy_recipients_pending_seat_ordinal JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=sm.message_id AND m.delivery_mode='lazy' WHERE r.seat_id=?1 AND r.state='pending' ORDER BY r.ordinal LIMIT 1",
+        [seat],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(store_error)
+}
+
+/// Wake discovery probe: the seat is `wake_on: all` and has a pending lazy
+/// recipient row (published or staged). One indexed existence lookup; the
+/// canonical summary decides whether the row is published.
+pub fn has_wake_rows(conn: &Connection, seat: &str) -> Result<bool, ApiError> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND wake_on='all') AND EXISTS(SELECT 1 FROM lazy_recipients INDEXED BY lazy_recipients_pending_seat_ordinal WHERE seat_id=?1 AND state='pending')",
+        [seat],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
+/// Publication of a lazy send: every `wake_on: all` recipient gets the
+/// new-attention write so the dispatcher re-judges it. A `nudge` recipient is
+/// untouched. One set-based statement over the preparation's recipients.
+pub fn note_published(tx: &Transaction<'_>, preparation: &str) -> Result<(), ApiError> {
+    tx.execute(
+        "INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT r.seat_id,1,1 FROM lazy_recipients r INDEXED BY lazy_recipients_preparation_ordinal JOIN seats s ON s.id=r.seat_id WHERE r.preparation_id=?1 AND s.wake_on='all' ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
+        [preparation],
+    )
+    .map_err(store_error)?;
+    Ok(())
+}
+
 pub fn stage_recipient(
     tx: &Transaction<'_>,
     preparation: &str,

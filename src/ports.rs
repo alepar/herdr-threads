@@ -2176,12 +2176,17 @@ pub struct LogicalAttentionFrontier {
     pub invitation: Option<LogicalPublicationKey>,
     pub addressed_receipt: Option<LogicalPublicationKey>,
     pub actionable_warning: Option<LogicalPublicationKey>,
+    /// Greatest pending lazy recipient ordinal, set only for a seat whose
+    /// `wake_on` is `all` (delivery-policy DP8). Ordinals only grow, so a
+    /// larger value is a lazy row the last reservation never covered.
+    pub lazy: Option<i64>,
 }
 impl LogicalAttentionFrontier {
     pub fn advanced_beyond(&self, prior: &Self) -> bool {
         self.invitation > prior.invitation
             || self.addressed_receipt > prior.addressed_receipt
             || self.actionable_warning > prior.actionable_warning
+            || self.lazy > prior.lazy
     }
 }
 
@@ -2215,6 +2220,24 @@ mod logical_attention_frontier_tests {
             ..next
         };
         assert!(warning_batch.advanced_beyond(&next));
+    }
+
+    #[test]
+    fn a_higher_lazy_ordinal_advances_the_frontier_and_none_never_does() {
+        let none = LogicalAttentionFrontier::default();
+        let one = LogicalAttentionFrontier {
+            lazy: Some(1),
+            ..none
+        };
+        let two = LogicalAttentionFrontier {
+            lazy: Some(2),
+            ..none
+        };
+        assert!(one.advanced_beyond(&none));
+        assert!(two.advanced_beyond(&one));
+        assert!(!one.advanced_beyond(&one));
+        assert!(!one.advanced_beyond(&two));
+        assert!(!none.advanced_beyond(&one));
     }
 }
 impl WakeAttentionWitness {
@@ -2311,8 +2334,22 @@ impl WakeCandidate {
         !self.effectively_retired
             && (self.has_pending_invitation
                 || self.has_pending_receipt
+                || self.has_unreserved_lazy()
                 || (self.actionable_warning_seq.is_some()
                     && !self.warning_offered_for_current_occupant()))
+    }
+    /// The lazy frontier a `wake_on: all` seat has pending (None for a `nudge`
+    /// seat, whose lazy rows never wake it).
+    pub fn pending_lazy(&self) -> Option<i64> {
+        self.attention_witness
+            .as_ref()
+            .and_then(|witness| witness.frontier.lazy)
+    }
+    /// A pending lazy row beyond the last reservation's lazy frontier: a seat
+    /// is woken once per lazy frontier, never re-woken for rows it was
+    /// already prompted about.
+    pub fn has_unreserved_lazy(&self) -> bool {
+        self.pending_lazy() > self.last_reserved_frontier.lazy
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

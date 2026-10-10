@@ -4556,10 +4556,6 @@ pub fn record_managed_launch(
     )
 }
 
-/// Bound of the lazy pending count in a mod fingerprint (a change detector,
-/// not a count anyone presents).
-const MOD_LAZY_COUNT_CAP: i64 = 1000;
-
 /// The seat's A2 state for the mod watch channel (spec D2), read-only. Call it
 /// inside the caller's read transaction. `None`: no such seat in `instance`.
 /// The fingerprint is built from the canonical digest (so it moves with every
@@ -4624,15 +4620,7 @@ pub fn mod_seat_view(
     let attention_version = u64::try_from(attention_version)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative attention version"))?;
     let run = super::attention::seat_digest(db, instance, seat, &|| Ok(()))?;
-    let (lazy_pending, max_lazy_rowid): (i64, i64) = db
-        .query_row(
-            // Published rows only: a staged row is invisible to the mod and
-            // its publication (manifest + message) must change the fingerprint.
-            "SELECT count(*),COALESCE(max(ordinal),0) FROM (SELECT r.ordinal FROM lazy_recipients r INDEXED BY lazy_recipients_pending_seat_ordinal JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=sm.message_id AND m.delivery_mode='lazy' WHERE r.seat_id=?1 AND r.state='pending' ORDER BY r.ordinal DESC LIMIT ?2)",
-            params![seat.as_str(), MOD_LAZY_COUNT_CAP],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(store_error)?;
+    let (lazy_pending, max_lazy_rowid) = super::lazy_delivery::pending_summary(db, seat)?;
     let digest = &run.digest;
     // Only warnings that would wake the seat natively raise mod attention
     // (TRUST-POLICY A7): another seat's overdue transition, and every clear,

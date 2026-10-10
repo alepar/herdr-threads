@@ -57,6 +57,7 @@ use crate::{
             AttentionClass, AttentionDigest, AttentionRef, AttentionRequirement, AttentionToken,
             DIGEST_VERSION, MAX_DIGEST_IDS,
         },
+        commands::WakeOn,
         ids::{MessageId, SeatId, ThreadId},
         results::{ApiError, ErrorCode, MAX_PENDING_WARNING_COUNT, WarningRef},
     },
@@ -339,6 +340,7 @@ pub fn seat_digest(
         invitation: frontier_key(&invitations)?,
         addressed_receipt: frontier_key(&receipts)?,
         actionable_warning: frontier_key(&warnings)?,
+        lazy: None,
     };
     let pair = |key: Option<LogicalPublicationKey>| key.map(|k| (k.decision_seq, k.event_offset));
     let digest = AttentionDigest {
@@ -980,7 +982,7 @@ pub const WAKE_PROBES: [WakeProbe; 6] = [
     },
 ];
 
-/// Does any pending access path hold a row for the seat? At most six O(1)
+/// Does any pending access path hold a row for the seat? At most seven O(1)
 /// probes, stopping at the first hit. A hit is only a reason to examine the
 /// seat: the canonical judges still decide whether the work is actionable.
 pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
@@ -1000,7 +1002,8 @@ pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, Api
             return Ok(true);
         }
     }
-    Ok(false)
+    // A `wake_on: all` seat is also examined for a pending lazy row (DP8).
+    super::lazy_delivery::has_wake_rows(db, seat_id)
 }
 
 /// A seat's wake attention: the canonical judgement of what is pending for
@@ -1079,6 +1082,12 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
     let receipts = pending_receipts(db, seat_id, None)?;
     let warnings = wake_warnings(db, seat_id, seat_pending_warnings(db, seat_id, &|| Ok(()))?)?;
     let latest_warning_seq = warnings.items.first().map(|item| item.key.0);
+    // A `wake_on: all` seat is also woken by a pending lazy row (DP8); a
+    // `nudge` seat never is, so its lazy frontier stays absent.
+    let lazy = match super::seats::wake_on(db, &SeatId::new(seat_id))? {
+        WakeOn::All => super::lazy_delivery::wake_frontier(db, seat_id)?,
+        WakeOn::Nudge => None,
+    };
     Ok(WakeSeatAttention {
         attention: effective::EffectiveSeatAttention {
             has_pending_invitation: !invitations.items.is_empty(),
@@ -1088,6 +1097,7 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
                 invitation: frontier_key(&invitations)?,
                 addressed_receipt: frontier_key(&receipts)?,
                 actionable_warning: frontier_key(&warnings)?,
+                lazy,
             },
         },
         decision_seq,

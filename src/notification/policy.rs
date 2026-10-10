@@ -72,7 +72,13 @@ impl<'a> AttentionSnapshot<'a> {
             warnings: candidate.actionable_warning_seq.is_some()
                 && !candidate.warning_offered_for_current_occupant(),
         };
-        (selected.invites || selected.ordinary || selected.warnings).then_some(selected)
+        // A `wake_on: all` seat's unreserved lazy row is eligible work on its
+        // own (DP8); it selects no prompt class, so the rest stays as is.
+        (selected.invites
+            || selected.ordinary
+            || selected.warnings
+            || candidate.has_unreserved_lazy())
+        .then_some(selected)
     }
 }
 
