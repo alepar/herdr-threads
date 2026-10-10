@@ -705,6 +705,13 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   stay pending and the next pull offers them again (at-least-once).
 - **Re-offers are bounded.** An unconfirmed id is shown at most 3 times per binding generation, 60 s apart; after
   that it waits for `inbox`.
+- **An unreadable transcript leaves items pending.** A hook-pull hook confirms only ids whose frame header it
+  found in a transcript it could read: a missing, unreadable or unparseable transcript, or one that grew more
+  than 8 MiB past the recorded injection offset, settles nothing (the items stay pending and are offered again
+  within the re-offer bounds, never settled), and a cancelled or errored turn counts as no evidence about
+  delivery. Absence is a downgrade signal only when the transcript was read in full over two distinct turns of
+  one agent executable identity. The hook trusts the `transcriptPath` its harness payload names (cooperative
+  model; the file is only read, never trusted for authority).
 - **A resume rotates the generation.** The offered set is discarded and items the resumed transcript already
   holds are offered again.
 - **A native wake marker names `inbox`.** A woken pull session may display bodies twice; it never settles twice.

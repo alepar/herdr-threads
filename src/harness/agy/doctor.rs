@@ -2,12 +2,12 @@
 //! read-only witness-health scan, the sandbox note, limitations, repairs and the Debug and
 //! Summary text.
 //!
-//! Extension point (ht-poh.5): the downgrade line and limitation, and the line
-//! `agy delivery: offered, never confirmed (N in generation G)`, are appended in both text forms:
-//! in [`debug_text`] after the `hooks.agy.sandbox` line (as `hooks.agy.delivery: ...`) and in
-//! [`summary_text`] after the plugin line (as `agy: delivery ...`). The limitation goes into
-//! [`doctor_projection`]'s `limitations`. Nothing here reads delivery state.
+//! Delivery (ht-poh.5): `hooks.agy.delivery` carries the downgrade record and the count of ids
+//! offered and never confirmed; the lines `agy delivery: downgraded to userMessage (<reason>) for
+//! <path>` and `agy delivery: offered, never confirmed (N in generation G)` follow the plugin line
+//! in the Summary form and the sandbox line (as `hooks.agy.delivery: ...`) in the Debug form.
 use super::{
+    delivery,
     paths::{self, AgyRoots},
     setup::{self, AllowEntryState},
     witness::{self, BRAIN_ENTRY_CAP},
@@ -222,11 +222,22 @@ pub(super) fn doctor_projection(
     let mut hooks = status.projection.clone();
     hooks["witness"] = health.json();
     hooks["sandbox"] = json!(SANDBOX_NOTE);
-    let limitations = if present {
+    let delivery = delivery::doctor_json(&request.environment);
+    let mut limitations = if present {
         limitations_of(&status, allow, &health)
     } else {
         Vec::new()
     };
+    if present {
+        limitations.extend(
+            delivery::doctor_lines(&delivery)
+                .into_iter()
+                .map(|line| format!("agy delivery: {line}")),
+        );
+    }
+    if delivery.as_object().is_some_and(|facts| !facts.is_empty()) {
+        hooks["delivery"] = delivery;
+    }
     let mut manual_repairs = Vec::new();
     if present && status.enabled == Some(false) {
         manual_repairs.push(json!({
@@ -281,10 +292,14 @@ fn summary_text(hooks: &Value) -> String {
     } else {
         "plugin installed"
     };
-    format!(
+    let mut out = format!(
         "agy: {state}, allow entry {}\n",
         scalar(&hooks["allow_entry"]["state"]).replace('_', "-")
-    )
+    );
+    for line in delivery::doctor_lines(&hooks["delivery"]) {
+        out.push_str(&format!("agy delivery: {line}\n"));
+    }
+    out
 }
 
 fn debug_text(hooks: &Value) -> String {
@@ -336,6 +351,9 @@ fn debug_text(hooks: &Value) -> String {
             "hooks.agy.sandbox: {}\n",
             scalar(&hooks["sandbox"])
         ));
+    }
+    for line in delivery::doctor_lines(&hooks["delivery"]) {
+        out.push_str(&format!("hooks.agy.delivery: {line}\n"));
     }
     out
 }

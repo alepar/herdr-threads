@@ -1,0 +1,4 @@
+[herdr-threads] Messages follow.
+
+[herdr-threads] message msg-a1 in t1 from s2:
+  hello "q"

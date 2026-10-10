@@ -2556,12 +2556,12 @@ mod tests {
         assert!(registry.delivery_policy("test-beta").is_none());
         assert!(registry.delivery_policy("test-alpha").is_some());
         assert_eq!(registry.push_channel_ids(), ["test-alpha"]);
-        // Claude declares a push channel; the test-support synthetic_fourth
-        // declares hook pull; nothing else declares a policy.
+        // Claude declares a push channel; agy and the test-support synthetic_fourth
+        // declare hook pull; nothing else declares a policy.
         for r in builtins().registrations() {
             assert_eq!(
                 builtins().delivery_policy(r.metadata().id).is_some(),
-                matches!(r.metadata().id, "claude" | "synthetic_fourth")
+                matches!(r.metadata().id, "claude" | "agy" | "synthetic_fourth")
             );
         }
         assert_eq!(builtins().push_channel_ids(), ["claude"]);

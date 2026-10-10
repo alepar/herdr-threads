@@ -26,7 +26,7 @@ pub enum InjectionStep {
     UserMessage,
 }
 impl InjectionStep {
-    fn render(self, text: &str) -> Value {
+    pub(super) fn render(self, text: &str) -> Value {
         match self {
             Self::SystemMessage => {
                 json!({"injectSteps": [{"systemMessage": {"systemMessage": text}}]})

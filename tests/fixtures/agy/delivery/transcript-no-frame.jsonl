@@ -1,0 +1,2 @@
+{"step":1,"type":"USER_INPUT","content":"<USER_REQUEST>\nhello\n</USER_REQUEST>"}
+{"step":2,"type":"PLANNER_RESPONSE","content":"Hello."}
