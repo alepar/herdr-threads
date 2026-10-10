@@ -8,6 +8,10 @@ Used by `tests/harness/agy_delivery.rs`.
   `{"source":"SYSTEM_SDK","type":"SYSTEM_MESSAGE","content":...}`, a `userMessage` injection as
   `{"source":"SYSTEM_SDK","type":"USER_INPUT","content":"<USER_REQUEST>\n..."}`; the frame header sits at
   column 0 of a line of `content`.
+- `transcript-genuine-post-tool-call.jsonl`: GENUINE, agy 1.3.2 native gate `wake` flow phase c: a
+  `PreInvocation` `systemMessage` injection after a `run_command` call. agy logs it as its own
+  `SYSTEM_SDK` / `SYSTEM_MESSAGE` record (same shape as the first-call capture; the path-free record is
+  unchanged), so the scan needs no special case. No tool-output record carried the frame id.
 - Every other `transcript-*.jsonl` and `tool-output-line.jsonl` is SYNTHETIC but uses the genuine record
   schema (`step_index`, `source`, `type`, `status`, `created_at`, `content`; model output is
   `MODEL`/`PLANNER_RESPONSE`, tool output `MODEL`/`GENERIC`, user input `USER_EXPLICIT`/`USER_INPUT`).

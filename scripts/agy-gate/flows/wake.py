@@ -81,6 +81,24 @@ def phase_c(world, pane, sender, thread, typed):
     follow_up = [r for r in observe.main_requests(world) if r.get("seq", 0) > (served or {}).get("seq", 0)][:1]
     world.artifact("c-follow-up-body.json", _l7.body_json(world, follow_up[0]) if follow_up else None)
     world.artifact("c-receipts.json", {"N2": _l6.receipt(world, n2), "tables": _l6.tables(world, "receipt_state")})
+    lines, seen = [], set()
+    for path in pane.transcripts():
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if n2 and n2 in line and line not in seen:
+                seen.add(line)
+                lines.append(line)
+    world.artifact("c-transcript-n2.jsonl", "\n".join(lines) + "\n")
+    settled = observe.wait_until(lambda: _l6.receipt(world, n2).get("provenance") == "cooperative_hook_delivery", 20)
+    world.check("c: N2 settles (cooperative_hook_delivery) after the post-tool-call injection", bool(settled),
+                "N2=%s" % _l6.receipt(world, n2))
+    record = _l6.downgrade_record(world)
+    world.check("c: no injection miss is recorded and the identity is not downgraded",
+                record is None or (not record.get("misses") and record.get("downgraded_at") is None),
+                "downgrade.json=%s" % record)
     world.check("c: no untyped user request during or after the busy turn", _l7.untyped_count(world, typed) == base,
                 "untyped %s -> %s" % (base, _l7.untyped_count(world, typed)))
 
