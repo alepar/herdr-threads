@@ -1015,9 +1015,9 @@ pub struct RepairHistory {
     pub continuity_diagnostic: Option<String>,
 }
 /// The outcome of one `RecordManagedLaunch` (TRUST-POLICY A3
-/// `managed_launch`): `recorded` when this decision opened the seat's
-/// unregistered `managed_launch` binding, otherwise the seat already had an
-/// open binding, left unchanged and described here.
+/// `managed_launch`): `recorded` when this decision opened a placeholder
+/// `managed_launch` binding (always, since ht-54r.4; an older daemon instead
+/// left an existing open binding unchanged and described it here).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLaunchRecord {

@@ -75,9 +75,9 @@ pub enum Command {
     /// TRUST-POLICY C1: seatless resume-only reattachment decision.
     ContinuityCheckIn(ContinuityCheckIn),
     /// TRUST-POLICY A3 `managed_launch`: `launch` reports a correlated,
-    /// observed startup so the daemon can open an unregistered occupant
-    /// binding on a seat with no open binding (ht-5n6). Sent only to a daemon
-    /// advertising `seat.managed_launch`.
+    /// observed startup so the daemon can open an unregistered placeholder
+    /// binding carrying the started process's fingerprint (ht-5n6, ht-54r.4).
+    /// Sent only to a daemon advertising `seat.managed_launch`.
     RecordManagedLaunch(RecordManagedLaunch),
     CheckIn(CheckIn),
     /// Person check-in over an agent's binding, as the local account
@@ -619,6 +619,9 @@ pub struct RecordManagedLaunch {
     pub incarnation: String,
     pub host_boot: HostBootId,
     pub target_generation: u64,
+    /// PID and start stamp of the process Herdr's guarded start left in the pane (host process
+    /// info), the placeholder binding's liveness fingerprint.
+    pub fingerprint: crate::protocol::authority::LivenessFingerprint,
 }
 impl RecordManagedLaunch {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -629,6 +632,7 @@ impl RecordManagedLaunch {
             || self.incarnation.len() > 128
             || self.terminal.as_str().is_empty()
             || self.host_boot.as_str().is_empty()
+            || self.fingerprint.pid == 0
         {
             return Err("managed launch evidence out of range");
         }

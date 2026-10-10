@@ -1657,6 +1657,52 @@ fn human_bound_seat_with_agent_in_pane_gets_no_wake_authority() {
     let _ = std::fs::remove_file(path);
 }
 
+/// ht-54r.4: the exclusion keys on "the seat holds an open human binding", not on the seat's
+/// latest binding. A person's seat that also holds a later, disconnected agent binding is still
+/// never woken; once the person's binding is ended it is not human-held.
+/// Kills: a wake exclusion read from the newest binding row.
+#[test]
+fn human_bound_seat_with_a_later_disconnected_agent_binding_gets_no_wake() {
+    let (store, path) = bound_seat_store("human");
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness,disconnected_at,disconnect_reason) VALUES ('s',1,1,'pane','host',0,'codex','dead-session','dead-exec','cooperative_top_level',0,0,'term-pane','inc','disconnected',1,'liveness_process_exit')",
+        [],
+    )
+    .unwrap();
+    let held = |db: &rusqlite::Connection| -> bool {
+        db.query_row(
+            &format!("SELECT {}", crate::store::wake::human_bound_sql("?1")),
+            ["s"],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert!(held(&db));
+    for candidate in &StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+    {
+        assert!(
+            StorePort::reserve_wake(&store, candidate, &budget())
+                .unwrap()
+                .is_none()
+        );
+    }
+    db.execute(
+        "UPDATE occupant_bindings SET ended_at=5 WHERE harness='human'",
+        [],
+    )
+    .unwrap();
+    assert!(
+        !held(&db),
+        "an ended human binding no longer holds the seat"
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
 /// TRUST-POLICY A3 `managed_launch` (ht-5n6): a seat whose agent was launched
 /// without a prompt and never checked in (Codex 0.159.3 runs no SessionStart
 /// before its first turn) still gets the lost-prompt idle-recovery wake: the
@@ -1692,6 +1738,10 @@ fn managed_launch_binding_reserves_a_cooperative_wake() {
             incarnation: "inc".into(),
             host_boot: crate::protocol::ids::HostBootId::new("host"),
             target_generation: 1,
+            fingerprint: crate::protocol::authority::LivenessFingerprint {
+                pid: 4242,
+                start: 1,
+            },
         },
         &budget(),
     )

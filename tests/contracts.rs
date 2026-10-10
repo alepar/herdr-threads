@@ -2529,6 +2529,7 @@ fn process_hint_mode_mismatch_rejects_correlation() {
         epoch: 3,
         submitted_at_mono: MonoInstant(1),
         completed_at_mono: MonoInstant(2),
+        started_process: None,
     };
     assert!(correlation.matches_request(&request, &context));
     correlation.process_hint = true;

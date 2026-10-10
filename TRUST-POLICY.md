@@ -5,7 +5,7 @@ attribution, receipt provenance and operator repair. Where an older design docum
 proof of who is calling, this policy supersedes it. C5's guard is owned by B4 (`ht-p03.2`) and is the one
 guard still marked **required**. Amended 2026-10-02 for thread summaries and deadline extension (epic ht-1ip), and 2026-10-03 for the
 `managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers. Amended 2026-10-10 for the session-keyed binding vocabulary (ht-54r; defined,
-behaviour lands in later beads).
+behaviour lands in later beads; human exclusivity and the launch placeholder landed with ht-54r.4).
 
 ## Abstract
 
@@ -180,7 +180,7 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
-| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), only on a seat with no open binding, decided against the effective observation (A2). Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, and it starts no availability or receipt timer. |
+| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it starts no availability or receipt timer. |
 | `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
 | `cooperative_hook_agent` | binding claims | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
 | `liveness_process_exit` | binding disconnections only (defined; behaviour lands in later beads) | The binding's fingerprinted process (pid and start time) no longer exists, or the pid now has a different start time. Structural evidence; it disconnects the binding and never ends it, moves a seat or merges seats. |
@@ -233,8 +233,8 @@ model open work, and summary closure never changes receipt state or installs glo
   when it is unknown), attachment only; a session id seen on another seat gets a new binding on that seat and
   nothing moves or merges (cross-pane resume). Lineage (copy-before-supersede of a predecessor's cursors) is
   named here and implemented by ht-54r.20 and ht-54r.17. A person and an agent still never hold a seat
-  together and the first agent lifecycle check-in still replaces `managed_launch` (both below, ended as
-  `replaced`), until ht-54r.4 moves them into enroll hooks. A plain human call never enrolls a binding.
+  together and the first agent lifecycle check-in replaces `managed_launch` (both below, ended as
+  `replaced`, through the enroll-hook registry and the one disconnect transition; ht-54r.4). A plain human call never enrolls a binding.
 - *Binding liveness (ht-54r.10)*: a binding is connected or disconnected. Disconnection never ends a
   binding, moves a seat or merges seats, and every disconnect (end event, process exit, pane close,
   supersede, seat retirement or unresolve) goes through the one `store::bindings::disconnect`
@@ -256,16 +256,25 @@ model open work, and summary closure never changes receipt state or installs glo
   fingerprints (ht-54r.5 switches the daemon rule). Until then the daemon admits fingerprint-less claims.
 - *Shared seat*: memberships, invitations and receipts belong to the seat, so any binding's join or leave
   applies to every binding of the seat. Bindings of one seat are not separate participants.
-- *Human to agent*: a hooked agent's lifecycle check-in replaces a human binding. Allowed.
+- *Human to agent* (ht-54r.4): a human-mode seat holds only its human binding. Any agent binding enrolled or
+  reconnected on the seat, and any plain agent call there (a touch included), ends the human binding
+  (disconnect `replaced`, then `ended_at`). Allowed. A resume after that end enrolls a fresh binding: an ended
+  row is never reopened. Human bindings are exempt from the liveness sweep (no process fingerprint; the seat
+  stays human-held until an agent replaces it). Receipt waivers and the wake exclusion key on "the seat holds
+  an open human binding", not on the seat's latest binding.
 - *Agent to agent, same seat*: a lifecycle check-in (startup, `/clear`, resume) replaces the binding. Allowed. A lifecycle check-in by a different agent harness on the same seat retires the pane's
   client-local context of the previous harness before checking in (a hint, A2; the daemon decides the
   check-in against the canonical view).
-  A `managed_launch` binding is replaced this way, and only this way: a Current (tool-boundary) check-in never
-  adopts or registers it, and C1 continuity never matches it. A lifecycle check-in prepared one seat
-  generation before the launch was recorded (the launched agent checking in while `launch` reports it) is
-  accepted against that binding (implemented, ht-5n6).
-- *Agent to human*: the daemon refuses a human lifecycle check-in while the open binding is
-  `cooperative_top_level` or `managed_launch`, unless the request is `--operator` (implemented). `ht human me init` additionally refuses
+  A `managed_launch` placeholder is replaced by the first top-level agent binding of the same harness that a
+  lifecycle check-in enrolls or reconnects on the seat, and only by that: other bindings, other harnesses'
+  placeholders and the person's binding are untouched, a Current (tool-boundary) check-in never adopts or
+  registers it, a `launch:` session is never a caller, C1 continuity never matches it, and it never supersedes
+  a session of the same process (it is no session). The launch keeps the seat generation, so no generation
+  allowance exists (ht-54r.4).
+- *Agent to human*: the daemon refuses a human lifecycle check-in while any agent binding of the seat
+  (`cooperative_*` or `managed_launch`) is connected, unless the request is `--operator`; a successful
+  `ht human me init` ends the seat's disconnected agent bindings (`ended_at`), and with `--operator` also the
+  connected ones (disconnect `replaced` first) (implemented, ht-54r.4). `ht human me init` additionally refuses
   when agent evidence is present: one of the three allowlisted environment markers (`CLAUDECODE`,
   `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), or Herdr reporting a registered adapter's recognized native host kind in the
   pane. Registry metadata alone never establishes native recognition, continuity or caller authority.
@@ -356,7 +365,7 @@ model open work, and summary closure never changes receipt state or installs glo
 | open a mod delivery channel (`watch`) | the pane's top-level Claude session through its mod, for the current `cooperative_top_level` binding with the matching native session; recorded as `cooperative_mod_channel`; it grants no other row |
 | mod delivery ACK (`watch ack`) | the current top-level Claude binding with a live channel (grace included) for its binding generation, or, on resume, for ids delivered under the immediately previous generation of the same native session; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
 | check in | the pane's top-level agent (hook) or a human via `ht human me init` |
-| record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup, on a seat with no open binding; it grants no row above |
+| record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup with one observable started process; it grants no row above |
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
 | service-authored send, notify, and managed-thread controls (ensure, invite, topic, release, archive, reopen) | the registered service connection |
 | summary, summary job, summary submit | the seat's binding or its children (summary workers), all under the seat's claim: read-mostly; submit only stores a validated block for a live lease issued to the seat |
@@ -633,7 +642,8 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   state. Sandbox-writable files are opened without following symlinks (implemented for `allocator.lock`).
 - **Unseen exits.** An agent that exits to its shell stays bound until the next check-in or retirement (C5).
 - **Launch is not check-in.** A successful `launch` means Herdr started the agent, not that it registered.
-  Its only record is a wake-eligible occupant claim (`managed_launch`, A3) on a seat with no open binding: not
+  Its only record is a wake-eligible placeholder binding (`managed_launch`, A3) carrying the started process's
+  fingerprint: not
   a registration, availability, receipt or authority for any accountable action, and replaced by the agent's
   first lifecycle check-in. Launch forms without captured hook evidence are refused (implemented for
   `codex resume`).
@@ -646,9 +656,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   provenance (A1–A3, C1); arbitrary environment overrides remain refused. A possibly submitted start
   with an uncertain response remains unknown, without a safe fallback or inferred binding.
 - **A launch binding can outlive its agent.** Like any binding (Unseen exits), a `managed_launch` binding
-  whose agent exits before checking in stays until a check-in replaces it or the seat is unresolved or
-  retired; a later `launch` into the seat then records nothing (the seat already has an open binding) and a
-  wake for it is refused when Herdr's agent kind differs from the recorded harness.
+  whose agent exits before checking in stays until a check-in of its harness replaces it or the seat is unresolved or
+  retired (the liveness sweep disconnects it once its fingerprinted process is gone, without ending it); a later
+  `launch` into the seat records another placeholder, and a wake for it is refused when Herdr's agent kind
+  differs from the recorded harness.
 - **Restore costs operator time.** A genuinely new role in a restored pane waits for an explicit choice when
   cooperative continuity does not apply.
 - **Any invocation of a seat can enter catch-up.** CLI calls cannot tell a seat's top-level agent from its
@@ -790,7 +801,8 @@ after a stall grants nothing until a block is stored, ht-hqg). The A4 poke rule 
 Codex 0.159.3's TUI runs SessionStart hooks only at the first turn, so an agent launched without an initial
 prompt never checked in, its seat had no open binding, and the lost-prompt idle-recovery wake (which requires
 one, A4 *Wake*) never fired. Decision (user, 2026-10-03): `launch` reports its host-correlated startup and the
-daemon opens an unregistered `managed_launch` binding (A3) on a seat with no open binding; it carries the
+daemon opens an unregistered `managed_launch` binding (A3) on a seat with no open binding (ht-54r.4: now beside
+any bindings the seat holds, with the started process's fingerprint); it carries the
 harness the wake recheck compares and nothing a caller can claim. Rejected: waking a resolved but unbound
 seat whose pane Herdr reports as an idle agent (Herdr's agent field may only suggest, C1/C5); documenting
 lost-prompt recovery as unsupported on Codex 0.159.3 and later.

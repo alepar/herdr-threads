@@ -289,6 +289,12 @@ impl Host {
                         json!({"type":"agent_started","argv":request["params"]["args"],"agent":agent})
                     }
                     "agent.get" => json!({"type":"agent_info","agent":state.agent}),
+                    // The started agent: the one foreground process besides the shell. The
+                    // owned stand-in exits before this read, so the test process stands for it.
+                    "pane.process_info" => json!({"type":"pane_process_info","process_info":{
+                        "pane_id":request["params"]["pane_id"],"shell_pid":1,
+                        "foreground_processes":[{"pid":std::process::id(),"name":"agent","argv0":"agent"}]
+                    }}),
                     other => panic!("unexpected private native request {other}: {request}"),
                 };
                 if state.lose == Some(method) {
