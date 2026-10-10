@@ -67,7 +67,7 @@ fn setup(db: &Connection) {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        29
+        30
     );
     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
         .unwrap();
@@ -1286,7 +1286,7 @@ fn current_main_fresh_and_canonical26_upgrade_to_topology28() {
         assert_eq!(
             db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
                 .unwrap(),
-            29
+            30
         );
         assert!(
             db.query_row(

@@ -65,7 +65,8 @@ const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql"
 const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
 const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
 const V29: &str = include_str!("../../migrations/0029_session_bindings.sql");
-pub(crate) const LATEST_VERSION: i64 = 29;
+const V30: &str = include_str!("../../migrations/0030_archival_scan_scope.sql");
+pub(crate) const LATEST_VERSION: i64 = 30;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -173,6 +174,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V27))
                 .and_then(|_| conn.execute_batch(V28))
                 .and_then(|_| conn.execute_batch(V29))
+                .and_then(|_| conn.execute_batch(V30))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -413,7 +415,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=29 => verify_existing(conn),
+        18..=30 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -585,7 +587,93 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     if (1..=28).contains(&version) {
         migrate_v28_to_v29(conn, now())?;
     }
-    verify_existing_v29(conn)
+    verify_existing_v29(conn)?;
+    if (1..=29).contains(&version) {
+        migrate_v29_to_v30(conn)?;
+    }
+    verify_existing_v30(conn)
+}
+
+/// V30 (ht-54r.15): archival scan scope. Narrows the mutation-revision triggers so the revision
+/// moves only for membership, member-liveness and seat-lifecycle changes.
+fn migrate_v29_to_v30(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V30)
+        .map_err(store_error)
+        .and_then(|_| verify_existing_v30(conn))
+        .and_then(|_| {
+            conn.pragma_update(None, "user_version", 30)
+                .map_err(store_error)
+        });
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+/// V23 triggers that V30 drops or replaces. From schema version 30 the V30 text owns them, so
+/// `verify_existing_v23` skips them and `verify_existing_v30` audits them byte for byte.
+const V30_SUPERSEDED_V23_TRIGGERS: [&str; 5] = [
+    "archival_fence_seats_insert",
+    "archival_fence_seats_update",
+    "archival_fence_memberships_update",
+    "archival_fence_occupant_bindings_insert",
+    "archival_fence_occupant_bindings_update",
+];
+
+/// Audits every object V30 creates exactly as written, and that each trigger it only drops is
+/// absent.
+fn verify_existing_v30(conn: &Connection) -> Result<(), ApiError> {
+    let ddl = V30
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--") && !line.starts_with("DROP "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let normalize = |sql: &str| sql.trim().trim_end_matches(';').trim().to_owned();
+    let mut created = Vec::new();
+    for object in ddl.trim().split("\nCREATE ") {
+        let sql = if object.starts_with("CREATE ") {
+            object.to_owned()
+        } else {
+            format!("CREATE {object}")
+        };
+        let name = sql.split_whitespace().nth(2).unwrap_or_default().to_owned();
+        let installed: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+                [&name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if installed.as_deref().map(normalize) != Some(normalize(&sql)) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered archival scan scope trigger {name}"),
+            ));
+        }
+        created.push(name);
+    }
+    for name in V30_SUPERSEDED_V23_TRIGGERS {
+        let present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",
+                [name],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if present != created.iter().any(|c| c == name) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("unexpected archival scan scope trigger state for {name}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// V29 (ht-54r): session-keyed bindings. The SQL rebuild runs in one transaction; the
@@ -792,6 +880,8 @@ fn verify_existing_v23(conn: &Connection) -> Result<(), ApiError> {
     // Preserve quoted literals and predicate bytes: case/whitespace folding
     // inside a SQL string can silently turn a guard into a different condition.
     let normalize = |sql: &str| sql.trim().trim_end_matches(';').trim().to_owned();
+    // From V30 the scan-scope triggers are owned and audited by `verify_existing_v30`.
+    let v30 = schema_version(conn)? >= 30;
     for object in ddl.trim().split("\nCREATE ") {
         let sql = if object.starts_with("CREATE ") {
             object.to_owned()
@@ -801,6 +891,9 @@ fn verify_existing_v23(conn: &Connection) -> Result<(), ApiError> {
         let mut words = sql.split_whitespace().skip(1);
         let kind = words.next().unwrap_or_default().to_ascii_lowercase();
         let name = words.next().unwrap_or_default();
+        if v30 && kind == "trigger" && V30_SUPERSEDED_V23_TRIGGERS.contains(&name) {
+            continue;
+        }
         let installed: Option<String> = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",

@@ -1,10 +1,15 @@
 //! Bounded, conservative daemon lifecycle qualification. Host reads are supplied
 //! by the worker outside the writer turn; this module performs canonical checks.
 use super::{
+    bindings,
     connection::{api_error, store_error},
     effective, schema,
 };
-use crate::protocol::{ids::ThreadId, results::ErrorCode, service::EventAuthor};
+use crate::protocol::{
+    ids::{SeatId, ThreadId},
+    results::ErrorCode,
+    service::EventAuthor,
+};
 use crate::protocol::{results::ApiError, time::UtcMillis};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
@@ -202,6 +207,44 @@ fn seed(tx: &Transaction<'_>, instance: &str, rt: &Runtime, epoch: i64) -> Resul
     Ok(rows.len() == PAGE || seats.len() == PAGE)
 }
 
+/// How long a migrated binding keeps its seat active for archival after the upgrade (roast r2:
+/// no archival wave on upgrade).
+pub(crate) const MIGRATED_ARCHIVAL_GRACE_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// Spec §3 Archival / decision 11 / r2: a member seat blocks archival only if it is active:
+/// `bindings::seat_active(seat)` (any connected binding; a human seat while its pane exists), or
+/// it holds an open migrated binding (migrated=1, disconnect_reason='migrated') whose
+/// disconnected_at is within 24 h of `now` (no upgrade archival wave). Unresolved and retired
+/// seats are never active.
+pub(crate) fn member_active_for_archival(
+    db: &Connection,
+    seat: &str,
+    now: UtcMillis,
+) -> Result<bool, ApiError> {
+    let resolved: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND state='resolved')",
+            [seat],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !resolved {
+        return Ok(false);
+    }
+    let id = SeatId::parse(seat)
+        .map_err(|e| api_error(ErrorCode::StoreCorrupt, format!("invalid seat id: {e}")))?;
+    if bindings::seat_active(db, &id)? {
+        return Ok(true);
+    }
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL \
+         AND migrated=1 AND liveness='disconnected' AND disconnect_reason='migrated' AND disconnected_at>?2)",
+        params![seat, now.0.saturating_sub(MIGRATED_ARCHIVAL_GRACE_MS)],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
 fn defer(tx: &Transaction<'_>, thread: &str, rt: &Runtime) -> Result<(), ApiError> {
     tx.execute("UPDATE channel_archival SET scan_revision=NULL,scan_phase=0,scan_cursor=0,scan_key='',due_mono=?2 WHERE thread_id=?1",params![thread,rt.mono.saturating_add(CADENCE_MS)]).map_err(store_error)?;
     Ok(())
@@ -272,8 +315,8 @@ fn advance_channel(
     }
     let (visited, exhausted, blocked) = match phase {
         0 => scan_members(tx, instance, thread, rt, epoch, cursor, registry)?,
-        1 => scan_invitations(tx, thread, cursor)?,
-        2 => scan_receipts(tx, thread)?,
+        1 => scan_invitations(tx, thread, cursor, rt.utc)?,
+        2 => scan_receipts(tx, thread, rt.utc)?,
         3 => scan_preparations(tx, thread)?,
         4 => scan_service_preparations(tx, thread, cursor)?,
         _ => {
@@ -331,6 +374,15 @@ fn scan_members(
         .collect::<Result<Vec<_>, _>>()
         .map_err(store_error)?;
     for (ordinal, seat) in &rows {
+        if !member_active_for_archival(tx, seat, rt.utc)? {
+            // An inactive member never blocks; it is passed over, not sampled.
+            tx.execute(
+                "UPDATE channel_archival SET scan_cursor=?2 WHERE thread_id=?1",
+                params![thread, ordinal],
+            )
+            .map_err(store_error)?;
+            continue;
+        }
         let qualified:Option<(i64,String)>=tx.query_row("SELECT a.last_mono,b.harness FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN host_instances h ON h.id=s.instance_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness=a.harness AND b.observation_provenance='cooperative_top_level' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=s.instance_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
         let Some((last, harness)) = qualified else {
             return Ok((rows.len(), false, true));
@@ -368,8 +420,9 @@ fn scan_invitations(
     tx: &Transaction<'_>,
     thread: &str,
     cursor: i64,
+    now: UtcMillis,
 ) -> Result<(usize, bool, bool), ApiError> {
-    let mut statement=tx.prepare("SELECT d.ordinal,s.state FROM digest_pending_invitations d JOIN seats s ON s.id=d.seat_id WHERE d.thread_id=?1 AND d.ordinal>?2 ORDER BY d.ordinal LIMIT ?3").map_err(store_error)?;
+    let mut statement=tx.prepare("SELECT d.ordinal,d.seat_id FROM digest_pending_invitations d JOIN seats s ON s.id=d.seat_id WHERE d.thread_id=?1 AND d.ordinal>?2 ORDER BY d.ordinal LIMIT ?3").map_err(store_error)?;
     let rows = statement
         .query_map(params![thread, cursor, PAGE as i64], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
@@ -384,13 +437,21 @@ fn scan_invitations(
         )
         .map_err(store_error)?;
     }
-    Ok((
-        rows.len(),
-        rows.len() < PAGE,
-        rows.iter().any(|(_, state)| state != "retired"),
-    ))
+    // A pending invitation to an inactive seat never blocks (decision 11).
+    let mut blocked = false;
+    for (_, seat) in &rows {
+        if member_active_for_archival(tx, seat, now)? {
+            blocked = true;
+            break;
+        }
+    }
+    Ok((rows.len(), rows.len() < PAGE, blocked))
 }
-fn scan_receipts(tx: &Transaction<'_>, thread: &str) -> Result<(usize, bool, bool), ApiError> {
+fn scan_receipts(
+    tx: &Transaction<'_>,
+    thread: &str,
+    now: UtcMillis,
+) -> Result<(usize, bool, bool), ApiError> {
     let saved=tx.query_row("SELECT receipt_physical_after,receipt_manifest_after,receipt_physical_high,receipt_manifest_high,receipt_next_manifest FROM channel_archival WHERE thread_id=?1",[thread],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,Option<i64>>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,bool>(4)?))).map_err(store_error)?;
     let position = saved
         .2
@@ -412,13 +473,17 @@ fn scan_receipts(tx: &Transaction<'_>, thread: &str) -> Result<(usize, bool, boo
     )?;
     let p = page.position;
     tx.execute("UPDATE channel_archival SET receipt_physical_after=?2,receipt_manifest_after=?3,receipt_physical_high=?4,receipt_manifest_high=?5,receipt_next_manifest=?6 WHERE thread_id=?1",params![thread,p.physical_after,p.manifest_after,p.physical_high_water,p.manifest_high_water,p.next_manifest]).map_err(store_error)?;
-    Ok((
-        usize::from(page.visited),
-        !page.has_more,
-        page.items
-            .iter()
-            .any(|r| r.state == effective::EffectiveReceiptState::Pending),
-    ))
+    // An obligation owed by an inactive seat never blocks (decision 11).
+    let mut blocked = false;
+    for receipt in &page.items {
+        if receipt.state == effective::EffectiveReceiptState::Pending
+            && member_active_for_archival(tx, &receipt.seat_id, now)?
+        {
+            blocked = true;
+            break;
+        }
+    }
+    Ok((usize::from(page.visited), !page.has_more, blocked))
 }
 fn scan_preparations(tx: &Transaction<'_>, thread: &str) -> Result<(usize, bool, bool), ApiError> {
     let key: String = tx
