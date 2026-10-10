@@ -8,6 +8,7 @@ pub mod handoff;
 pub mod handoff_delivery;
 pub mod hook;
 pub mod hook_evidence;
+pub mod hook_inbox;
 pub mod human;
 pub mod input;
 pub mod installer;

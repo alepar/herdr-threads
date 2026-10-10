@@ -531,6 +531,11 @@ impl BodyReadRequest {
 #[serde(deny_unknown_fields)]
 pub struct AttentionDigestQuery {
     pub seat: SeatId,
+    /// Also report pending lazy rows (`AttentionDigest.lazy`, the token's lazy
+    /// key). Sent only to a daemon advertising `hook.lazy_delivery_v1`; lazy
+    /// rows never enter the wake frontier either way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lazy: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -766,12 +771,24 @@ pub struct MessageDeliveryModesQuery {
     pub messages: Vec<MessageId>,
 }
 
+/// Which presentation the completing caller claims. Absent: its default text
+/// inbox wrote and flushed the complete body (the original claim).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LazyCompletionVia {
+    /// A standard native hook wrote and flushed output whose context carried
+    /// the complete body (`hook.lazy_delivery_v1`).
+    HookContext,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompleteInboxDelivery {
     pub messages: Vec<MessageId>,
     pub operation: OperationId,
     pub claim: CallerClaim,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<LazyCompletionVia>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

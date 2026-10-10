@@ -17,6 +17,10 @@ pub const DIGEST_VERSION: u32 = 1;
 /// At most this many exact IDs per class; `has_more` reports the rest.
 pub const MAX_DIGEST_IDS: usize = 4;
 const TOKEN_PREFIX: &str = "v1";
+/// A token carrying a lazy key: `v2.INV.REC.WARN.LAZY.EPISODE`. A token
+/// without one keeps the v1 spelling, so existing marks and readers are
+/// unchanged until lazy rows are requested and pending.
+const TOKEN_PREFIX_LAZY: &str = "v2";
 
 /// One logical publication key: (decision sequence, event offset).
 pub type PublicationKey = (u64, u64);
@@ -29,6 +33,11 @@ pub struct AttentionToken {
     pub receipt: Option<PublicationKey>,
     pub warning: Option<PublicationKey>,
     pub unavailability_episode: u64,
+    /// Newest pending published lazy row addressed to the seat: (publication
+    /// decision sequence, recipient ordinal). Only in digests that asked for
+    /// lazy rows. It advances the hook's change marker, never the wake
+    /// frontier: lazy mail is presented at the next hook, never nudged.
+    pub lazy: Option<PublicationKey>,
 }
 
 impl AttentionToken {
@@ -43,6 +52,7 @@ impl AttentionToken {
         self.invitation > mark.invitation
             || self.receipt > mark.receipt
             || self.warning > mark.warning
+            || self.lazy > mark.lazy
     }
 
     /// Component-wise maximum. A mark only ever grows, so an item leaving and
@@ -55,6 +65,7 @@ impl AttentionToken {
             unavailability_episode: self
                 .unavailability_episode
                 .max(other.unavailability_episode),
+            lazy: self.lazy.max(other.lazy),
         }
     }
 
@@ -63,13 +74,23 @@ impl AttentionToken {
             Some((seq, offset)) => format!("{seq}-{offset}"),
             None => "_".to_owned(),
         };
-        format!(
-            "{TOKEN_PREFIX}.{}.{}.{}.{}",
-            key(self.invitation),
-            key(self.receipt),
-            key(self.warning),
-            self.unavailability_episode
-        )
+        match self.lazy {
+            None => format!(
+                "{TOKEN_PREFIX}.{}.{}.{}.{}",
+                key(self.invitation),
+                key(self.receipt),
+                key(self.warning),
+                self.unavailability_episode
+            ),
+            lazy => format!(
+                "{TOKEN_PREFIX_LAZY}.{}.{}.{}.{}.{}",
+                key(self.invitation),
+                key(self.receipt),
+                key(self.warning),
+                key(lazy),
+                self.unavailability_episode
+            ),
+        }
     }
 
     pub fn decode(raw: &str) -> Result<Self, &'static str> {
@@ -77,12 +98,23 @@ impl AttentionToken {
             return Err("attention token too long");
         }
         let parts: Vec<&str> = raw.split('.').collect();
-        let [prefix, invitation, receipt, warning, episode] = parts[..] else {
-            return Err("malformed attention token");
+        let (invitation, receipt, warning, lazy, episode) = match parts[..] {
+            [TOKEN_PREFIX, invitation, receipt, warning, episode] => {
+                (invitation, receipt, warning, None, episode)
+            }
+            [
+                TOKEN_PREFIX_LAZY,
+                invitation,
+                receipt,
+                warning,
+                lazy,
+                episode,
+            ] => (invitation, receipt, warning, Some(lazy), episode),
+            [prefix, ..] if prefix != TOKEN_PREFIX && prefix != TOKEN_PREFIX_LAZY => {
+                return Err("unsupported attention token version");
+            }
+            _ => return Err("malformed attention token"),
         };
-        if prefix != TOKEN_PREFIX {
-            return Err("unsupported attention token version");
-        }
         let number = |text: &str| -> Result<u64, &'static str> {
             if text.is_empty() || text.len() > 20 || !text.bytes().all(|b| b.is_ascii_digit()) {
                 return Err("malformed attention token number");
@@ -101,6 +133,7 @@ impl AttentionToken {
             receipt: key(receipt)?,
             warning: key(warning)?,
             unavailability_episode: number(episode)?,
+            lazy: lazy.map(key).transpose()?.flatten(),
         };
         if token.encode() != raw {
             return Err("non-canonical attention token");
@@ -175,6 +208,11 @@ pub struct AttentionDigest {
     /// Actionable warnings the seat receives.
     pub warnings: AttentionClass,
     pub unavailability_open: bool,
+    /// Pending lazy rows addressed to the seat, only when the query asked for
+    /// them (`AttentionDigestQuery.lazy`). Presentation-only attention: it
+    /// changes the hook's marker and summary, never wakes or nudges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lazy: Option<AttentionClass>,
     /// Spec D7: a mod delivery channel is live for this seat (grace included); the
     /// Claude hooks then omit the attention digest and ready commands. Set by the
     /// domain service, never by the store; absent on the wire when false.
@@ -187,7 +225,13 @@ impl AttentionDigest {
         if self.version != DIGEST_VERSION {
             return Err("unsupported attention digest version");
         }
-        for class in [&self.invitations, &self.receipts, &self.warnings] {
+        if self.token.lazy.is_some() && self.lazy.as_ref().is_none_or(|lazy| lazy.count == 0) {
+            return Err("lazy attention key without pending lazy rows");
+        }
+        for class in [&self.invitations, &self.receipts, &self.warnings]
+            .into_iter()
+            .chain(&self.lazy)
+        {
             if class.items.len() > MAX_DIGEST_IDS
                 || class.items.len() as u64 > class.count
                 || class.has_more != (class.count > class.items.len() as u64)
@@ -200,7 +244,10 @@ impl AttentionDigest {
 
     /// Nothing asks for attention now.
     pub fn is_empty(&self) -> bool {
-        self.invitations.count == 0 && self.receipts.count == 0 && self.warnings.count == 0
+        self.invitations.count == 0
+            && self.receipts.count == 0
+            && self.warnings.count == 0
+            && self.lazy.as_ref().is_none_or(|lazy| lazy.count == 0)
     }
 
     /// Compact fixed-shape summary (service-generated identifiers only).
@@ -223,8 +270,12 @@ impl AttentionDigest {
                 if class.has_more { " +more" } else { "" }
             )
         };
+        let lazy = self
+            .lazy
+            .as_ref()
+            .map_or_else(String::new, |lazy| format!("; {}", class("lazy", lazy)));
         format!(
-            "attention digest: {}; {}; {}",
+            "attention digest: {}; {}; {}{lazy}",
             class("invitations", &self.invitations),
             class("receipts", &self.receipts),
             class("warnings", &self.warnings)

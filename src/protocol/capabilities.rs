@@ -30,6 +30,9 @@ pub const INVITATION_REJECT: &str = "invitation.reject_v1";
 pub const LAZY_SEND: &str = "send.lazy_v1";
 pub const INBOX_BATCH_V2: &str = "inbox.batch_v2";
 pub const MESSAGE_DELIVERY_MODES: &str = "messages.delivery_modes_v1";
+/// Lazy rows in the attention digest (`AttentionDigestQuery.lazy`) and
+/// `CompleteInboxDelivery.via = hook_context` (standard hook inbox pages).
+pub const LAZY_HOOK_DELIVERY: &str = "hook.lazy_delivery_v1";
 
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
 pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
@@ -66,6 +69,7 @@ pub const ADVERTISED: &[&str] = &[
     LAZY_SEND,
     INBOX_BATCH_V2,
     MOD_WATCH,
+    LAZY_HOOK_DELIVERY,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

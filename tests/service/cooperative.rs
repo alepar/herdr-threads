@@ -1471,6 +1471,7 @@ fn lazy_inbox_fix_real_service_completion() {
     };
     let id = send("lazy");
     let request = CompleteInboxDelivery {
+        via: None,
         messages: vec![id.clone()],
         operation: OperationId::new("done"),
         claim: recipient.clone(),
@@ -1511,6 +1512,7 @@ fn lazy_inbox_fix_real_service_completion() {
     db.execute("UPDATE occupant_bindings SET harness='human',observation_provenance='operator_human' WHERE seat_id='recipient' AND ended_at IS NULL", []).unwrap();
     assert_eq!(
         invoke(CompleteInboxDelivery {
+            via: None,
             messages: vec![human.clone()],
             operation: OperationId::new("human-done"),
             claim: CallerClaim {

@@ -274,13 +274,21 @@ pub fn query_with_output(
         Command::InboxBatch(q) => inbox_batch(&db, store, instance, q, output, budget),
         Command::InboxBatchV2(q) => inbox_v2::query(&db, store, instance, q, output, budget),
         Command::AttentionDigest(q) => {
-            super::attention::seat_digest(&db, instance, &q.seat, &|| db.check_budget())
-                .map(|run| CommandResult::AttentionDigest(run.digest))
-        }
-        Command::AttentionDigestDelivery(q) => {
-            let digest =
+            let mut digest =
                 super::attention::seat_digest(&db, instance, &q.seat, &|| db.check_budget())?
                     .digest;
+            if q.lazy {
+                super::attention::add_lazy(&db, instance, &mut digest)?;
+            }
+            Ok(CommandResult::AttentionDigest(digest))
+        }
+        Command::AttentionDigestDelivery(q) => {
+            let mut digest =
+                super::attention::seat_digest(&db, instance, &q.seat, &|| db.check_budget())?
+                    .digest;
+            if q.lazy {
+                super::attention::add_lazy(&db, instance, &mut digest)?;
+            }
             let notices_pending = super::attention::seat_has_pending_notices(&db, q.seat.as_str())?;
             Ok(CommandResult::AttentionDigestDelivery {
                 digest,

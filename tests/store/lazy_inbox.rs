@@ -443,6 +443,7 @@ fn lazy_inbox_completion_exact_id_idempotent_authority() {
         DeliveryMode::Ordinary,
     );
     let request = CompleteInboxDelivery {
+        via: None,
         messages: vec![id.clone()],
         operation: OperationId::new("done"),
         claim: claim(),
@@ -526,6 +527,7 @@ fn lazy_inbox_addressed_leave_retire_archive() {
             .any(|i| matches!(i,InboxBatchV2Item::LazyMessage{message,..} if message==&id))
     );
     let done = CompleteInboxDelivery {
+        via: None,
         messages: vec![id],
         operation: OperationId::new("human-done"),
         claim: CallerClaim {
@@ -675,6 +677,7 @@ fn lazy_inbox_v2_late_publication_and_completion_do_not_hide_other_mail() {
     complete(
         &iso,
         CompleteInboxDelivery {
+            via: None,
             messages: vec![first],
             operation: OperationId::new("settle-first"),
             claim: claim(),
@@ -832,6 +835,7 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
         DeliveryMode::Lazy,
     );
     let request = CompleteInboxDelivery {
+        via: None,
         messages: vec![id.clone(), MessageId::new("missing")],
         operation: OperationId::new("mixed-bad"),
         claim: claim(),
@@ -850,6 +854,7 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
             _ => caller = send_request().claim,
         }
         let request = CompleteInboxDelivery {
+            via: None,
             messages: vec![id.clone()],
             operation: OperationId::new(format!("bad-claim-{bad}")),
             claim: caller,
@@ -908,6 +913,7 @@ fn lazy_inbox_retirement_retains_pending_rows_and_excludes_new_sends() {
         complete(
             &iso,
             CompleteInboxDelivery {
+                via: None,
                 messages: vec![id],
                 operation: OperationId::new("retired-done"),
                 claim: claim()
@@ -941,6 +947,7 @@ fn lazy_inbox_completion_mismatched_permit_is_write_free() {
     )
     .unwrap();
     let request = CompleteInboxDelivery {
+        via: None,
         messages: vec![id],
         operation: OperationId::new("original-done"),
         claim: claim(),
@@ -1006,6 +1013,7 @@ fn lazy_inbox_fix_partial_concurrent_completion() {
     complete(
         &iso,
         CompleteInboxDelivery {
+            via: None,
             messages: vec![first],
             operation: OperationId::new("concurrent"),
             claim: claim(),

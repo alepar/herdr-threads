@@ -398,6 +398,7 @@ fn guide_send_passive_and_explicit_receipt_controls() {
             assert_eq!(f.inbox("agent").as_slice(), std::slice::from_ref(&id));
             f.mutate(PermitMutation::CompleteInboxDelivery(
                 CompleteInboxDelivery {
+                    via: None,
                     messages: vec![id],
                     operation: OperationId::new("display-complete"),
                     claim: f.claim("agent"),
@@ -570,6 +571,78 @@ fn lazy_attention_current_startup_stable_across_restart() {
             assert_eq!(f.inbox("agent").as_slice(), std::slice::from_ref(&id));
         }
     }
+}
+
+/// Lazy hook delivery (user clarification 2026-10-09): a lazy publication
+/// moves the digest a hook asks for with lazy rows (its change marker), so
+/// the next standard hook presents it, while every wake input stays
+/// untouched: no attention producer, no wake candidate, no wake frontier
+/// change. Catches lazy left out of the hook marker, and lazy leaking into
+/// wake (the nudge must stay skipped).
+#[test]
+fn lazy_attention_moves_the_lazy_digest_marker_but_never_wake() {
+    let f = Fixture::new();
+    let lazy_digest = || {
+        let mut digest = attention::seat_digest(&f.db, "i", &SeatId::new("agent"), &|| Ok(()))
+            .unwrap()
+            .digest;
+        attention::add_lazy(&f.db, "i", &mut digest).unwrap();
+        digest.validate().unwrap();
+        digest
+    };
+    let wake = || {
+        format!(
+            "{:?}",
+            attention::wake_seat_attention(&f.db, "agent")
+                .unwrap()
+                .attention
+        )
+    };
+    let before = lazy_digest();
+    assert_eq!(before.lazy.as_ref().unwrap().count, 0);
+    assert!(before.token.lazy.is_none() && before.is_empty());
+    let wake_before = wake();
+    let first = f.send("lazy", DeliveryMode::Lazy);
+    let after = lazy_digest();
+    assert!(after.token.advanced_beyond(&before.token));
+    assert!(!after.is_empty());
+    let class = after.lazy.as_ref().unwrap();
+    assert_eq!(
+        (class.count, class.items[0].id.as_str()),
+        (1, first.as_str())
+    );
+    assert!(
+        after
+            .summary()
+            .ends_with(&format!("; lazy=1 [{}@t]", first.as_str()))
+    );
+    // The default digest (wake fingerprint inputs, old clients) is unchanged.
+    let plain = attention::seat_digest(&f.db, "i", &SeatId::new("agent"), &|| Ok(()))
+        .unwrap()
+        .digest;
+    assert!(plain.lazy.is_none() && plain.token.lazy.is_none() && plain.is_empty());
+    assert_eq!(wake(), wake_before);
+    assert!(
+        !f.store
+            .wake_candidates(PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .iter()
+            .any(|c| c.has_actionable_work())
+    );
+    f.assert_passive();
+    // A second arrival moves it again; the joined mark never regresses.
+    let second = f.send("lazy-2", DeliveryMode::Lazy);
+    let later = lazy_digest();
+    assert!(
+        later
+            .token
+            .advanced_beyond(&after.token.join(&before.token))
+    );
+    assert_eq!(later.lazy.as_ref().unwrap().count, 2);
+    assert_eq!(later.lazy.as_ref().unwrap().items[0].id, second.as_str());
+    assert_eq!(wake(), wake_before);
+    f.assert_passive();
 }
 
 /// Catches indirect materialization of receipts/warnings by outstanding work.
@@ -760,6 +833,7 @@ fn lazy_addressed_survives_leave_retire_archive_and_excludes_postjoin() {
     );
     f.mutate(PermitMutation::CompleteInboxDelivery(
         CompleteInboxDelivery {
+            via: None,
             messages: vec![id.clone()],
             operation: OperationId::new("display-human"),
             claim: f.claim("human"),
@@ -817,6 +891,7 @@ fn lazy_addressed_survives_leave_retire_archive_and_excludes_postjoin() {
     let error = f
         .mutate(PermitMutation::CompleteInboxDelivery(
             CompleteInboxDelivery {
+                via: None,
                 messages: vec![id],
                 operation: OperationId::new("retired"),
                 claim: retired_claim,
@@ -899,6 +974,7 @@ fn lazy_attention_backlog_allows_qualified_quiet_archive() {
     assert_eq!(f.inbox("agent").as_slice(), std::slice::from_ref(&id));
     f.mutate(PermitMutation::CompleteInboxDelivery(
         CompleteInboxDelivery {
+            via: None,
             messages: vec![id],
             operation: OperationId::new("after-archive"),
             claim: f.claim("agent"),

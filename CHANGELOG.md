@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Inbox contents at hook opportunities.** Top-level standard hooks (Claude and Codex SessionStart and Bash PreToolUse, Hermes turns) now inject a bounded page of the actual inbox rows into their context, after the ordinary offer and within the 4096-byte bound, with an exact `inbox` command when more remains and an exact `ack` command for ACK-required messages shown (the hook never ACKs). Lazy messages now move the hook's attention digest (a `lazy=N` class and a lazy token key), so a lazy-only arrival is presented at the next hook; wake, nudges, receipts, deadlines and warnings still ignore lazy mail. Lazy messages shown whole are completed after the hook output is delivered (`cooperative_hook_context`). A live Claude mod channel keeps delivering itself. Requires a daemon advertising `hook.lazy_delivery_v1`; older daemons keep the previous hook behavior.
+
 ## v0.5.0
 
 - **Affected-seat mod attention.** The mod now follows the native wake rule for warning transitions, so bystander seats do not receive attention prompts for another seat’s overdue or clear notice. The backward-compatible `InboxBatchV2Item::Warning.informational` field identifies notices that wait for the seat’s next check-in; saturated walks retain the conservative fallback.

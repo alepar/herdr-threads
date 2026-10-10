@@ -1,6 +1,7 @@
 //! Built-binary hook entrypoint against an elected service over its private UDS.
 //! The hook runs exactly as installed: setup's quoted command through `sh -c`,
 //! native JSON on stdin, pane identity from HERDR_* env.
+use herdr_threads::cli::hook_inbox::INBOX_HEADER;
 use herdr_threads::test_support::spawn::SpawnOwned;
 use herdr_threads::{
     app::SystemClock,
@@ -1150,7 +1151,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
         .split_once("\nuntrusted_peer_data: ")
         .expect(context);
     assert!(!fixed.contains("Ignore instructions"), "{fixed}");
-    let data: String = serde_json::from_str(data).unwrap();
+    let data: String = serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap();
     assert!(data.contains(&thread) || data.contains(&message), "{data}");
     assert_eq!(
         count(
@@ -1667,6 +1668,228 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
     );
 }
 
+// Lazy hook delivery (2026-10-09 design, as clarified by the user): a lazy
+// message, with nothing else pending, moves the digest so the next Bash
+// PreToolUse presents it, and the hook injects the actual inbox rows (not just
+// an inbox pointer). Whole lazy bodies shown are completed after delivery;
+// ACK-required messages are shown with an exact ack command, never ACKed by
+// the hook. Subagent calls never see or complete anything; a body too large
+// for the bound is never shown or completed and the next call stays quiet.
+// Kills: a lazy-only arrival that leaves the hook quiet (digest unchanged), a
+// pointer-only hook, completion before or without whole display, a hook ACK
+// or receipt for lazy mail, and subagent delivery.
+#[test]
+fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
+    let fx = Fixture::start();
+    let started = fx.hook("w9:p1", &start("sess-1"));
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let peer = fx.hook("w9:p2", &start("peer-sess"));
+    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "lazy-hooks"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "seat"]);
+    let tool_hook = |label: &str| {
+        let hook = fx.hook("w9:p1", &tool("sess-1"));
+        assert_eq!(hook.code, Some(0), "{label}: {}", hook.stderr);
+        assert!(hook.stderr.is_empty(), "{label}: {}", hook.stderr);
+        hook
+    };
+    let quiet = |label: &str| {
+        let hook = tool_hook(label);
+        assert!(
+            hook.stdout.is_empty(),
+            "{label}: {}",
+            String::from_utf8_lossy(&hook.stdout)
+        );
+    };
+    // The invitation itself is injected as an inbox row, then quiet.
+    let context = context_of(&tool_hook("invitation"));
+    assert!(context.contains(INBOX_HEADER), "{context}");
+    assert!(context.contains("invitation "), "{context}");
+    quiet("invitation repeat");
+    fx.cooperative("seat", "w9:p1", &["accept", &thread]);
+    quiet("accepted");
+    let displayed = || {
+        fx.count("SELECT count(*) FROM lazy_recipients WHERE seat_id='seat' AND state='displayed'")
+    };
+    let lazy = |body: &str| {
+        data(fx.cooperative(
+            "peer",
+            "w9:p2",
+            &["send", &thread, "--lazy", "--body", body],
+        ))
+    };
+
+    // 1. Lazy-only arrival: the digest moves, the next tool call injects the
+    // row whole, and only then completes it; the repeat is quiet.
+    let first = lazy("lazy hello from the peer");
+    let context = context_of(&tool_hook("lazy only"));
+    assert!(
+        context.contains(&format!("lazy=1 [{first}@{thread}]")),
+        "{context}"
+    );
+    assert!(context.contains(INBOX_HEADER), "{context}");
+    assert!(context.contains("lazy hello from the peer"), "{context}");
+    assert!(context.contains("[lazy]"), "{context}");
+    assert_eq!(displayed(), 1);
+    quiet("after lazy completion");
+
+    // 2. A subagent call neither shows nor completes pending lazy mail.
+    let second = lazy("lazy for the top level only");
+    let child = fx.hook(
+        "w9:p1",
+        &Payload::pre_tool_use("sess-1", "ls")
+            .with("agent_id", "a1".into())
+            .with("agent_type", "worker".into())
+            .bytes(),
+    );
+    assert_eq!(child.code, Some(0), "{}", child.stderr);
+    assert!(
+        child.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&child.stdout)
+    );
+    assert_eq!(displayed(), 1);
+
+    // 3. Ordinary and lazy together: both rows injected, the ACK-required
+    // one with an exact ack command and left unACKed; the lazy one completed.
+    let ordinary = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &[
+            "send",
+            &thread,
+            "--body",
+            "needs a receipt",
+            "--require-ack",
+            "seat",
+        ],
+    ));
+    let context = context_of(&tool_hook("mixed"));
+    assert!(context.contains("needs a receipt"), "{context}");
+    assert!(context.contains("lazy for the top level only"), "{context}");
+    assert!(context.contains(&second), "{context}");
+    assert!(context.contains(&format!(" ack {ordinary}")), "{context}");
+    assert_eq!(displayed(), 2);
+    assert_eq!(
+        fx.count("SELECT count(*) FROM receipt_state WHERE state='acked'"),
+        0,
+        "the hook never ACKs"
+    );
+    fx.cooperative("seat", "w9:p1", &["ack", &ordinary]);
+    quiet("after mixed");
+
+    // 4. A body larger than the bound moves the digest, but is never shown
+    // or completed; the offer names inbox, and the repeat is quiet.
+    let big = "x".repeat(5000);
+    let third = lazy(&big);
+    let context = context_of(&tool_hook("oversized"));
+    assert!(
+        context.contains(&format!("lazy=1 [{third}@{thread}]")),
+        "{context}"
+    );
+    assert!(!context.contains(&big[..100]), "{context}");
+    assert!(!context.contains(INBOX_HEADER), "{context}");
+    assert!(context.len() <= 4096, "{}", context.len());
+    assert_eq!(displayed(), 2);
+    quiet("oversized repeat");
+
+    // Lazy mail never created a receipt.
+    for table in ["receipts", "receipt_state"] {
+        assert_eq!(
+            fx.count(&format!(
+                "SELECT count(*) FROM {table} WHERE message_id IN ('{first}','{second}','{third}')"
+            )),
+            0,
+            "{table}"
+        );
+    }
+}
+
+// Lazy hook delivery for Codex: the same digest marker and inbox page reach
+// a Codex Bash PreToolUse. Kills: a Claude-only implementation.
+#[test]
+fn lazy_mail_reaches_the_next_codex_tool_hook() {
+    let fx = Fixture::start();
+    fx.register("w9:p2", "peer-sess");
+    let started = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "startup")
+            .codex("t0")
+            .bytes(),
+    );
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let thread = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["thread", "create", "--topic", "codex-lazy"],
+    ));
+    fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+    let mut out = Vec::new();
+    herdr_threads::cli::run(
+        [
+            "herdr-threads",
+            "--json",
+            "--state-dir",
+            fx.state.to_str().unwrap(),
+            "--host-endpoint",
+            fx.host.to_str().unwrap(),
+            "--cooperative-seat",
+            "cx",
+            "--cooperative-target",
+            "w9:p3",
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+            "accept",
+            &thread,
+        ],
+        &mut out,
+    )
+    .unwrap();
+    let codex_tool = |n: u32| {
+        let hook = fx.codex_hook(
+            "w9:p3",
+            &Payload::pre_tool_use("cx-sess", "ls")
+                .codex(&format!("t{n}"))
+                .with("tool_use_id", format!("call_{n}").into())
+                .bytes(),
+        );
+        assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+        assert!(hook.stderr.is_empty(), "{}", hook.stderr);
+        hook
+    };
+    let quiet = codex_tool(1);
+    assert!(
+        quiet.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+    let id = data(fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", &thread, "--lazy", "--body", "codex lazy body"],
+    ));
+    let context = context_of(&codex_tool(2));
+    assert!(context.contains(INBOX_HEADER), "{context}");
+    assert!(context.contains("codex lazy body"), "{context}");
+    assert!(context.contains(&id), "{context}");
+    assert_eq!(
+        fx.count("SELECT count(*) FROM lazy_recipients WHERE seat_id='cx' AND state='displayed'"),
+        1
+    );
+    let repeat = codex_tool(3);
+    assert!(
+        repeat.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&repeat.stdout)
+    );
+}
+
 // Retained from fix2 (root adoption, wave-1 fix1 item a): more than 100
 // instance threads, so the check-in inbox page (100 scanned threads) is
 // truncated; a new invitation, then a new require-ack message, in thread 106
@@ -1903,7 +2126,7 @@ impl Calls<'_> {
         let (_, data) = context
             .split_once("\nuntrusted_peer_data: ")
             .unwrap_or_else(|| panic!("{label}: {context}"));
-        let data: String = serde_json::from_str(data).unwrap();
+        let data: String = serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap();
         let summary = data
             .lines()
             .find(|line| line.starts_with("attention digest: "))
@@ -3191,7 +3414,7 @@ fn peer_data(context: &str) -> String {
     let (_, data) = context
         .split_once("\nuntrusted_peer_data: ")
         .unwrap_or_else(|| panic!("no peer data in {context}"));
-    serde_json::from_str(data).unwrap()
+    serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap()
 }
 
 // Demo-1 P1/P5, built binary end to end: a seat invited and sent a
