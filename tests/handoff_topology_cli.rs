@@ -39,7 +39,7 @@ use std::{
 use uuid::Uuid;
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
-const WAIT: Duration = Duration::from_secs(60);
+const WAIT: Duration = Duration::from_secs(15);
 pub(super) const BODY: &str = "literal '$HOME' \"quoted\" work\n--agent-arg=body stays here";
 const OPTIONS: &str = "--model 'env model' --config 'note=\"literal $HOME\"' --config repeat=true";
 const FROZEN: &[&str] = &[
