@@ -243,6 +243,12 @@ class FrameTests(unittest.TestCase):
         self.assertEqual((f[1]["kind"], f[1]["id"], f[1]["sender"]), ("reply", "m2", "bob"))
         self.assertEqual(f[1]["marker"], "")
 
+    def test_frames_with_quoted_thread_and_sender_names(self):
+        f = sc.frames('[herdr-threads] message m9 in tAb1 "gate \\"x\\" topic" from sCd2 "Ann" [human]:\n  hi\n')
+        self.assertEqual(len(f), 1)
+        self.assertEqual((f[0]["id"], f[0]["thread"], f[0]["sender"], f[0]["marker"]),
+                         ("m9", "tAb1", "sCd2", " [human]"))
+
     def test_frames_ignores_mid_line_header(self):
         self.assertEqual(sc.frames("see [herdr-threads] message m1 in t from a:"), [])
 
