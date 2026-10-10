@@ -117,3 +117,6 @@ mod lazy_sweep;
 
 #[path = "cli/readme_commands.rs"]
 mod readme_commands;
+
+#[path = "cli/direct_send.rs"]
+mod direct_send;
