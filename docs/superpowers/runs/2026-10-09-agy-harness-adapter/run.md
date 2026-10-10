@@ -73,17 +73,12 @@ cluster dropped: stale-docs — make one pass over every doc and comment the bra
 scope-filter: 4 in-scope · 20 punch-listed
 
 parked:
-- super-code invocation 4 · escalation · "DC-3 (delivery-contract audit): the ActiveTurn poke branch still contradicts contract rule 4 (nudge only idle sessions); dormant. Needs the human: fix (remove/align) or accept as a documented exception."
-- super-code invocation 4 · escalation · "ht-poh.18/Task 42: 'unsetup agy' leaves main v0.6's settings backup (and the directory when setup created settings.json); a test assertion was dropped to allow it. R6 says reversible. Needs the human: keep v0.6's backup-retention model for agy, or remove backups setup created."
 - super-code invocation 1 · graph-change · "ht-poh.5 <- ht-poh.4.5 drop (edge audit, safe no: .5 declares IdleWake::Native but does not call the composer)"
-- super-code invocation 5 · degraded-verdict · "ht-poh.13 (R17) unhooked from the integration sweep: uncovered scope until the human releases gate ht-poh.19"
-- super-code invocation 1 · degraded-verdict · "ht-poh.13 (R17) BLOCKED-AUTH: permission classifier refused 'node scripts/gen-frame-goldens.mjs' twice as Security Weaken; partial work uncommitted in its task worktree; needs the human to run or allow it"
 - graph-pass · graph-change · "ht-poh.2.7 <- ht-poh.7 drop (safe no: 2.7 notes snapshots follow ht-poh.7's audit fixes) — with the 4.4 drop, depth 11→10"
 - graph-pass · graph-change · "ht-poh.4.4 <- ht-poh.3.6 drop (safe no: 4.4 consumes the SKILL_MD wake-on section; would need a placeholder golden)"
 - graph-pass · graph-change · "proposal: seam-contract agy doctor extension point (delivery::doctor_lines) between ht-poh.4.7 and ht-poh.5"
 - graph-pass · graph-change · "proposal: split-file src/cli/hook.rs runner-helper boundary between ht-poh.2.6 and ht-poh.4.1"
 - 2026-10-10-agy-harness-adapter-roast-design-1.md · escalation · "R5/contract rule 4: Herdr may report agy idle while a subagent generates (herdr issue #2354, open per 2 seats; PR #4278 status and fullyIdle semantics unverified), so a Native wake could type a nudge into a busy agy. Patched in-design: agy ComposerPolicy reads the subagent 'Generating' status as Unreadable (no wake); human to confirm on Herdr 0.9.1."
-- 2026-10-10-agy-harness-adapter-roast-design-2.md · escalation · "Stop-time downgrade assumes agy writes the injected systemMessage step to the transcript before the Stop hook on every termination path (UNVERIFIED external). Mitigated in-design: misses count only on normal terminations with a readable transcript, and need two distinct turns (or an abort error); the native gate (ht-poh.6.6) asserts presence at Stop and non-evidence on Esc/API-error paths."
 
 graph-pass: depth 11→11 · width 3.5→3.5 · applied 2 · parked 4
 
