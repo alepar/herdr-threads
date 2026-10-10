@@ -15,7 +15,6 @@ use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCli {
     pub actor: super::actor_route::InvocationActor,
-    pub permissions: PermissionCliInputs,
     pub output: OutputSpec,
     /// Terminal presentation of text output; never sent to the daemon.
     pub presentation: crate::cli::output::Presentation,
@@ -323,33 +322,6 @@ pub fn ordinary_catalog() -> OrdinaryCatalog {
     }
 }
 
-/// Syntactic inputs only; neither executable ownership nor consent attestation.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Args)]
-pub struct PermissionCliInputs {
-    #[arg(long)]
-    pub permissions: bool,
-    #[arg(long, conflicts_with = "without_permissions")]
-    pub with_permissions: bool,
-    #[arg(long)]
-    pub without_permissions: bool,
-    #[arg(long, value_parser = permission_path)]
-    pub permission_installed_binary: Option<String>,
-    #[arg(long, requires = "permission_installed_binary", value_parser = permission_path)]
-    pub permission_link_path: Option<String>,
-    #[arg(long, requires = "permission_installed_binary", value_parser = permission_path)]
-    pub permission_alias_path: Option<String>,
-}
-fn permission_path(value: &str) -> Result<String, String> {
-    if value.is_empty()
-        || value.len() > 4096
-        || value.chars().any(char::is_control)
-        || !std::path::Path::new(value).is_absolute()
-    {
-        return Err("permission inventory must be a nonempty absolute path without controls, at most 4096 UTF-8 bytes".into());
-    }
-    Ok(value.to_owned())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CooperativeSelection {
     pub seat: SeatId,
@@ -384,6 +356,7 @@ pub enum CliAction {
     SetupAll(
         super::setup::SetupVerb,
         super::setup::PromptSuggestionPolicy,
+        super::setup::PermissionPolicy,
     ),
     /// Managed native launch into one explicit existing empty shell pane.
     Launch(super::launch::LaunchRequest),
@@ -417,6 +390,7 @@ pub enum CliAction {
     /// Hidden `internal json-field PATH`: print a field of the JSON on stdin.
     InstallerIntegrations {
         confirm_missing: bool,
+        without_permissions: bool,
     },
     InternalJsonField {
         path: String,
@@ -1159,8 +1133,9 @@ enum InternalSub {
         /// Explicitly confirm installation of every missing integration (installer --setup).
         #[arg(long)]
         confirm_missing: bool,
-        #[command(flatten)]
-        permissions: PermissionCliInputs,
+        /// Skip the permissions component (installer --without-permissions).
+        #[arg(long)]
+        without_permissions: bool,
     },
     /// Read JSON on stdin and print the value at a dotted path (exit 1 when absent).
     JsonField { path: String },
@@ -1534,8 +1509,13 @@ struct SearchArgs {
 }
 #[derive(Args)]
 struct SetupArgs {
-    #[command(flatten)]
-    permissions: PermissionCliInputs,
+    /// setup: let agents run herdr-threads commands without prompting (person and setup
+    /// commands keep asking). Default: keep what is there, asking on a terminal when missing.
+    #[arg(long, conflicts_with = "without_permissions")]
+    with_permissions: bool,
+    /// setup: remove the permission rules setup owns, keeping the hooks.
+    #[arg(long)]
+    without_permissions: bool,
     /// Harness whose hooks to manage. Omitted: every harness (setup: each
     /// one found on PATH; unsetup and setup-status: both).
     harness: Option<String>,
@@ -1652,7 +1632,22 @@ fn setup_action(
     args: SetupArgs,
     registry: &crate::harness::registry::Registry,
 ) -> Result<CliAction, ApiError> {
-    use super::setup::PromptSuggestionPolicy;
+    use super::setup::{PermissionPolicy, PromptSuggestionPolicy};
+    if verb != super::setup::SetupVerb::Install
+        && (args.with_permissions || args.without_permissions)
+    {
+        return Err(invalid(
+            "--with-permissions and --without-permissions apply to setup only (unsetup removes \
+             the permission rules with the hooks)",
+        ));
+    }
+    let permissions = if args.with_permissions {
+        PermissionPolicy::Grant
+    } else if args.without_permissions {
+        PermissionPolicy::Decline
+    } else {
+        PermissionPolicy::Ask
+    };
     let prompt_suggestions = if args.disable_prompt_suggestions {
         PromptSuggestionPolicy::Disable
     } else if args.keep_prompt_suggestions {
@@ -1715,7 +1710,7 @@ fn setup_action(
                 "--harness-binary needs a harness: `setup claude|codex --harness-binary PATH`",
             ));
         }
-        return Ok(CliAction::SetupAll(verb, prompt_suggestions));
+        return Ok(CliAction::SetupAll(verb, prompt_suggestions, permissions));
     };
     let harness = crate::harness::registry::OccupantHarness::Agent(
         registry
@@ -1735,6 +1730,7 @@ fn setup_action(
         harness_binary: args.harness_binary,
         prompt_suggestions,
         hooks_only: args.hooks_only,
+        permissions,
     }))
 }
 
@@ -2006,7 +2002,7 @@ where
             super::setup::SetupVerb::Remove => Some(&["unsetup"]),
             super::setup::SetupVerb::Status => None,
         },
-        CliAction::SetupAll(verb, _) => match verb {
+        CliAction::SetupAll(verb, ..) => match verb {
             super::setup::SetupVerb::Install => Some(&["setup"]),
             super::setup::SetupVerb::Remove => Some(&["unsetup"]),
             super::setup::SetupVerb::Status => None,
@@ -2122,21 +2118,6 @@ fn parse_cli_in_registry(
             },
         }),
         command => command,
-    };
-    let permissions = match &cli.command {
-        Top::Setup(args) => args.permissions.clone(),
-        Top::Unsetup(args) | Top::SetupStatus(args) => {
-            if args.permissions.with_permissions || args.permissions.without_permissions {
-                return Err(invalid(
-                    "permission consent flags are only valid for setup or installer-integrations",
-                ));
-            }
-            args.permissions.clone()
-        }
-        Top::Internal {
-            command: InternalSub::InstallerIntegrations { permissions, .. },
-        } => permissions.clone(),
-        _ => PermissionCliInputs::default(),
     };
     let cooperative_selector =
         cli.cooperative_target
@@ -2974,9 +2955,13 @@ fn parse_cli_in_registry(
         Top::Internal {
             command:
                 InternalSub::InstallerIntegrations {
-                    confirm_missing, ..
+                    confirm_missing,
+                    without_permissions,
                 },
-        } => CliAction::InstallerIntegrations { confirm_missing },
+        } => CliAction::InstallerIntegrations {
+            confirm_missing,
+            without_permissions,
+        },
         Top::Internal {
             command: InternalSub::JsonField { path },
         } => CliAction::InternalJsonField { path },
@@ -3024,7 +3009,6 @@ fn parse_cli_in_registry(
     }
     Ok(ParsedCli {
         actor: super::actor_route::InvocationActor::Agent,
-        permissions,
         output,
         presentation: if cli.human {
             crate::cli::output::Presentation::Human

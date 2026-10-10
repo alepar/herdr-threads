@@ -4877,3 +4877,70 @@ fn codex_setup_writes_no_rules_without_consent_and_leaves_foreign_rules() {
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
     assert_eq!(fs::read(&rules).unwrap(), b"# mine\n");
 }
+
+/// Consent round trip: plain setup only advises; `--with-permissions` grants
+/// the Claude rules (both spellings, person and setup commands asking) and the
+/// Codex rules file; `--without-permissions` takes them back and keeps the
+/// hooks; unsetup after a grant restores Claude settings byte for byte.
+/// Kills: granting without consent, a grant that misses `ht` or lets `human`
+/// through, revocation that drops the hooks, and an inexact unsetup.
+#[test]
+fn permission_consent_grants_revokes_and_unsetup_restores() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::write(s.settings(), ORIGINAL).unwrap();
+    let rules = s.codex_home.join("rules/herdr-threads.rules");
+
+    let plain = json(&s.run(&["setup", "claude", "--json"]));
+    assert_eq!(plain["permissions"]["action"], "advised", "{plain}");
+    assert!(
+        plain["permissions"]["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("setup claude --with-permissions")),
+        "{plain}"
+    );
+
+    for harness in ["claude", "codex"] {
+        let grant = s.run(&["setup", harness, "--with-permissions", "--json"]);
+        assert_eq!(grant.status.code(), Some(0), "{}", text(&grant.stderr));
+        let report = json(&grant);
+        assert_eq!(report["permissions"]["action"], "granted", "{report}");
+        assert_eq!(report["permissions"]["state"], "installed", "{report}");
+    }
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+    for (list, rule) in [
+        ("allow", "Bash(herdr-threads *)"),
+        ("allow", "Bash(ht *)"),
+        ("ask", "Bash(herdr-threads human *)"),
+        ("ask", "Bash(ht setup *)"),
+    ] {
+        assert!(
+            settings["permissions"][list]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(rule)),
+            "{list} {rule}: {settings}"
+        );
+    }
+    assert!(text(&fs::read(&rules).unwrap()).contains("\"human\"], decision = \"prompt\""));
+
+    for harness in ["claude", "codex"] {
+        let revoke = json(&s.run(&["setup", harness, "--without-permissions", "--json"]));
+        assert_eq!(revoke["permissions"]["action"], "removed", "{revoke}");
+        assert_eq!(revoke["permissions"]["state"], "not_installed", "{revoke}");
+        let status = json(&s.run(&["--json", "setup-status", harness]));
+        assert_eq!(status["installed"], true, "hooks stay: {status}");
+    }
+    assert!(!rules.exists());
+    let settings = text(&fs::read(s.settings()).unwrap());
+    assert!(!settings.contains("Bash(herdr-threads"), "{settings}");
+
+    let regrant = s.run(&["setup", "claude", "--with-permissions"]);
+    assert_eq!(regrant.status.code(), Some(0), "{}", text(&regrant.stderr));
+    let unsetup = s.run(&["unsetup", "claude"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+}

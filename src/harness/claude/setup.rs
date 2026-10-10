@@ -1,7 +1,7 @@
 //! Owned Claude local setup backend.
 use crate::cli::{
     RunError,
-    setup::{PromptSuggestionPolicy, SetupEnv, SetupRequest, SetupVerb},
+    setup::{PermissionPolicy, PromptSuggestionPolicy, SetupEnv, SetupRequest, SetupVerb},
 };
 use crate::harness::setup::legacy::*;
 use crate::harness::{
@@ -134,6 +134,7 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
         )
         .ok()
         .and_then(|inspection| inspection.allow_rule);
+        let permissions = permission_step(request.permissions, env, &settings, &permissions)?;
         let command = shared_command(&installed.owned).unwrap_or_default();
         let prompt_suggestions =
             prompt_suggestion_step(request.prompt_suggestions, env, &settings, &mut warnings)?;
@@ -152,7 +153,7 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
             "command": command,
             "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
             "allow_rule": allow_rule_json(allow_rule.as_ref()),
-            "permissions": permissions_json(env, &settings, &permissions),
+            "permissions": permissions,
             "harness_version": observation_json(&Ok((observed, None))),
             "prompt_suggestions": prompt_suggestions,
             "mod": delivery_mod,
@@ -253,6 +254,95 @@ fn permissions_json(env: &SetupEnv, settings: &Path, status: &ClaudePermissionSt
         report["foreign_broad_rules"] = json!(status.foreign_broad);
     }
     report
+}
+
+/// Apply the requested permission policy once the hooks are in place, and report it.
+/// `existing` is the component after the pre-hook step (which only keeps or takes over).
+fn permission_step(
+    policy: PermissionPolicy,
+    env: &SetupEnv,
+    settings: &Path,
+    existing: &ClaudePermissionStatus,
+) -> Result<Value, RunError> {
+    let component = permission_component(env, settings)?;
+    let (status, action) = match policy {
+        PermissionPolicy::Grant => (component.apply(PermissionConsent::Granted), "granted"),
+        PermissionPolicy::Decline => (component.remove(), "removed"),
+        PermissionPolicy::Ask if existing.state == ClaudePermissionState::Missing => {
+            (Ok(existing.clone()), "advised")
+        }
+        PermissionPolicy::Ask => (Ok(existing.clone()), "kept"),
+    };
+    let status = status.map_err(|error| permission_error(error, env, settings))?;
+    let mut report = permissions_json(env, settings, &status);
+    report["action"] = json!(action);
+    if action == "advised" {
+        report["note"] = json!(PERMISSION_ADVICE.replace("<harness>", "claude"));
+    }
+    Ok(report)
+}
+
+/// The permission component as doctor reports it; best effort.
+pub(crate) fn permission_status_json(env: &SetupEnv) -> Value {
+    let Ok(settings) = env.claude_settings() else {
+        return json!({"state": "unreadable"});
+    };
+    match permission_component(env, &settings).map(|c| c.status()) {
+        Ok(Ok(status)) => permissions_json(env, &settings, &status),
+        _ => json!({"state": "unreadable"}),
+    }
+}
+
+/// Whether the permission grant is installed (the installer's permissions component).
+pub(crate) fn permissions_granted(env: &SetupEnv) -> Result<bool, RunError> {
+    let settings = env.claude_settings()?;
+    permission_component(env, &settings)?
+        .status()
+        .map(|status| status.state == ClaudePermissionState::Installed)
+        .map_err(|error| permission_error(error, env, &settings))
+}
+
+/// The non-interactive advice when nothing is granted (nothing was changed).
+pub(crate) const PERMISSION_ADVICE: &str = "agents are asked before each herdr-threads command: \
+    re-run `herdr-threads setup <harness> --with-permissions` to let them run herdr-threads \
+    commands without prompting (the person and setup commands keep asking), or \
+    --without-permissions to keep it this way";
+
+/// The question an interactive setup asks when nothing is granted.
+pub(crate) const PERMISSION_QUESTION: &str = "Let agents run herdr-threads commands without \
+    prompting? Person and setup commands still ask [Y/n] ";
+
+/// Ask on a terminal when setup only advised; a yes (the default) grants.
+pub fn settle_permissions<R: io::BufRead + ?Sized, W: Write + ?Sized>(
+    env: &SetupEnv,
+    report: &mut Value,
+    input: &mut R,
+    out: &mut W,
+) -> Result<(), RunError> {
+    if report["permissions"]["action"] != "advised" {
+        return Ok(());
+    }
+    write!(out, "{PERMISSION_QUESTION}")?;
+    out.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    let settings = env.claude_settings()?;
+    if matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "" | "y" | "yes"
+    ) {
+        let status = permission_component(env, &settings)?
+            .apply(PermissionConsent::Granted)
+            .map_err(|error| permission_error(error, env, &settings))?;
+        report["permissions"] = permissions_json(env, &settings, &status);
+        report["permissions"]["action"] = json!("granted");
+    } else {
+        report["permissions"]["action"] = json!("declined");
+        if let Some(note) = report["permissions"].as_object_mut() {
+            note.remove("note");
+        }
+    }
+    Ok(())
 }
 
 /// Report form of the recorded allow rule; `null` when no manifest is recorded.

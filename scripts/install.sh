@@ -21,9 +21,10 @@
 #   4. registers the package with Herdr (`herdr plugin link`; Herdr does not
 #      build a linked plugin, and the package's build command keeps the
 #      prebuilt binary), and ensures the daemon if Herdr runs;
-#   5. reconciles hooks and skills for each detected supported harness:
-#      missing components need confirmation; owned integrations update silently;
-#      --setup confirms missing integrations, --no-setup skips all;
+#   5. reconciles hooks, skills and permissions for each detected supported
+#      harness: missing components need confirmation; owned integrations update
+#      silently; --setup confirms missing integrations, --no-setup skips all,
+#      --without-permissions skips the permissions (agents keep prompting);
 #   6. prints the next steps and ONE final status line.
 #
 # The final status line and the exit status (docs/install.md has the table):
@@ -63,6 +64,7 @@ setup=ask
 register=1
 force=0
 yes=0
+without_permissions=0
 
 say() { printf '%s\n' "herdr-threads: $*"; }
 warn() { printf '%s\n' "herdr-threads: warning: $*" >&2; }
@@ -87,8 +89,12 @@ usage() {
 usage: install.sh [options]
 
   --version TAG      install this release (vX.Y.Z or X.Y.Z; default: latest)
-  --setup            confirm installation of missing harness hooks and skills
+  --setup            confirm installation of missing harness hooks, skills and
+                     permissions (agents run herdr-threads commands without
+                     prompting; person and setup commands still ask)
   --no-setup         skip all harness integration checks and updates
+  --without-permissions
+                     never grant permissions: agents keep prompting
   --no-herdr         do not register the plugin with Herdr
   --prefix DIR       install directory (default ~/.local/share/herdr-threads)
   --bin-dir DIR      herdr-threads and ht symlink directory (default ~/.local/bin)
@@ -108,6 +114,7 @@ while [ $# -gt 0 ]; do
         --version=*) version=${1#*=}; shift ;;
         --setup) setup=yes; shift ;;
         --no-setup) setup=no; shift ;;
+        --without-permissions) without_permissions=1; shift ;;
         --no-herdr) register=0; shift ;;
         --prefix) [ $# -ge 2 ] || die "--prefix needs a value"; install_dir=$2; shift 2 ;;
         --bin-dir) [ $# -ge 2 ] || die "--bin-dir needs a value"; bin_dir=$2; shift 2 ;;
@@ -691,7 +698,15 @@ elif ! user_level_setup; then
 elif installer_integrations; then
     integration_arg=''
     if [ "$setup" = yes ]; then integration_arg=--confirm-missing; fi
-    if "$installed_binary" internal installer-integrations ${integration_arg:+"$integration_arg"}; then
+    permission_arg=''
+    # Only builds that grant permissions know the flag; older ones never grant.
+    if [ "${without_permissions:-0}" = 1 ]; then
+        case $("$installed_binary" internal installer-integrations --help 2>/dev/null || true) in
+            *--without-permissions*) permission_arg=--without-permissions ;;
+        esac
+    fi
+    if "$installed_binary" internal installer-integrations ${integration_arg:+"$integration_arg"} \
+        ${permission_arg:+"$permission_arg"}; then
         OUT_SETUP=complete
     else
         OUT_SETUP=failed

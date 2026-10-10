@@ -724,6 +724,7 @@ pub(crate) fn legacy_claude_projection(
                 })),
             });
             claude["allow_rule"] = super::setup::allow_rule_json(inspection.allow_rule.as_ref());
+            claude["permissions"] = crate::harness::claude::setup::permission_status_json(&env);
             claude["prompt_suggestions"] = super::setup::prompt_suggestion_status(
                 &env,
                 &settings,
@@ -839,6 +840,7 @@ pub(crate) fn legacy_codex_projection(
         "scope": "user",
         "detail": "Codex hooks are user-level ($CODEX_HOME/hooks.json, set up by `herdr-threads setup codex`); Codex runs them only once trusted",
         "setup": codex_setup,
+        "permissions": crate::harness::codex::setup::permission_status_json(&env),
         "trust": codex_trust,
         "recipes": crate::harness::recipe::describe(crate::harness::codex::RECIPES),
         "installed": installed,
@@ -1437,6 +1439,21 @@ fn clean(value: &str) -> String {
     escape_for_terminal(value, Context::SingleLine).into_owned()
 }
 
+/// `hooks.<harness>.permissions: <state>`, with the note when there is one.
+fn permission_line(harness: &str, permissions: &Value) -> String {
+    let mut line = format!(
+        "hooks.{harness}.permissions: {}\n",
+        scalar(&permissions["state"])
+    );
+    if permissions["note"].is_string() {
+        line.push_str(&format!(
+            "hooks.{harness}.permissions.note: {}\n",
+            scalar(&permissions["note"])
+        ));
+    }
+    line
+}
+
 fn scalar(value: &Value) -> String {
     match value {
         Value::String(text) => clean(text),
@@ -1677,6 +1694,9 @@ pub fn render_debug_text(report: &Value) -> String {
                 ));
             }
         }
+        if claude["permissions"].is_object() {
+            out.push_str(&permission_line("claude", &claude["permissions"]));
+        }
         let suggestions = &claude["prompt_suggestions"];
         if suggestions.is_object() {
             out.push_str(&format!(
@@ -1745,6 +1765,10 @@ pub fn render_debug_text(report: &Value) -> String {
         if let Some(line) = legacy_registration_line("codex", setup) {
             out.push_str(&line);
         }
+        out.push_str(&permission_line(
+            "codex",
+            &report["hooks"]["codex"]["permissions"],
+        ));
         out.push_str(&format!(
             "hooks.codex.trust.status: {}\n",
             scalar(&report["hooks"]["codex"]["trust"]["status"])

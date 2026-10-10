@@ -760,6 +760,15 @@ impl Registration {
             .ok_or_else(|| SetupFailure::Invalid("installer policy unavailable".into()))?
             .inspect_hooks(request, budget)
     }
+    pub fn installer_permissions_granted(
+        &self,
+        request: &StatusRequest,
+    ) -> Result<Option<bool>, SetupFailure> {
+        match self.installer_policy() {
+            Some(policy) => policy.permissions_granted(request),
+            None => Ok(None),
+        }
+    }
     pub fn installer_skill_destination(
         &self,
         scope: &ResolvedSetupScope,

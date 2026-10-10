@@ -408,8 +408,17 @@ fn run_parsed_in_pane<W: Write>(
         writer.flush()?;
         return Ok(());
     }
-    if let CliAction::InstallerIntegrations { confirm_missing } = &parsed.action {
-        return installer::run(*confirm_missing, &parsed.output, writer);
+    if let CliAction::InstallerIntegrations {
+        confirm_missing,
+        without_permissions,
+    } = &parsed.action
+    {
+        return installer::run(
+            *confirm_missing,
+            *without_permissions,
+            &parsed.output,
+            writer,
+        );
     }
     if let CliAction::InternalJsonField { path } = &parsed.action {
         let mut input = String::new();
@@ -422,8 +431,14 @@ fn run_parsed_in_pane<W: Write>(
     if let CliAction::Setup(request) = &parsed.action {
         return setup::run(request, &parsed.output, writer);
     }
-    if let CliAction::SetupAll(verb, prompt_suggestions) = &parsed.action {
-        return setup::run_all(*verb, *prompt_suggestions, &parsed.output, writer);
+    if let CliAction::SetupAll(verb, prompt_suggestions, permissions) = &parsed.action {
+        return setup::run_all(
+            *verb,
+            *prompt_suggestions,
+            *permissions,
+            &parsed.output,
+            writer,
+        );
     }
     // Fresh native options are data: resolve them once before host locators,
     // caller mapping, connection, journal creation or any durable work. Retry

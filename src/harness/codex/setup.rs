@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::cli::{
     RunError,
-    setup::{SetupEnv, SetupRequest, SetupVerb},
+    setup::{PermissionPolicy, SetupEnv, SetupRequest, SetupVerb},
 };
 use crate::harness::setup::legacy::*;
 use crate::{
@@ -625,6 +625,63 @@ fn permissions_json(component: &CodexPermissions, state: CodexPermissionState) -
     report
 }
 
+/// The permission component as doctor reports it; best effort.
+pub(crate) fn permission_status_json(env: &SetupEnv) -> Value {
+    match permission_component(env) {
+        Ok(permissions) => match permissions.status() {
+            Ok(state) => permissions_json(&permissions, state),
+            Err(_) => json!({"state": "unreadable"}),
+        },
+        Err(_) => json!({"state": "unreadable"}),
+    }
+}
+
+/// Whether the permission grant is installed (the installer's permissions component).
+pub(crate) fn permissions_granted(env: &SetupEnv) -> Result<bool, RunError> {
+    let permissions = permission_component(env)?;
+    permissions
+        .status()
+        .map(|state| state == CodexPermissionState::Installed)
+        .map_err(|error| permission_error(error, permissions.rules_file()))
+}
+
+/// Ask on a terminal when setup only advised; a yes (the default) grants.
+pub fn settle_permissions<R: io::BufRead + ?Sized, W: io::Write + ?Sized>(
+    env: &SetupEnv,
+    report: &mut Value,
+    input: &mut R,
+    out: &mut W,
+) -> Result<(), RunError> {
+    if report["permissions"]["action"] != "advised" {
+        return Ok(());
+    }
+    write!(
+        out,
+        "{}",
+        crate::harness::claude::setup::PERMISSION_QUESTION
+    )?;
+    out.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    let permissions = permission_component(env)?;
+    if matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "" | "y" | "yes"
+    ) {
+        let state = permissions
+            .apply(PermissionConsent::Granted)
+            .map_err(|error| permission_error(error, permissions.rules_file()))?;
+        report["permissions"] = permissions_json(&permissions, state);
+        report["permissions"]["action"] = json!("granted");
+    } else {
+        report["permissions"]["action"] = json!("declined");
+        if let Some(note) = report["permissions"].as_object_mut() {
+            note.remove("note");
+        }
+    }
+    Ok(())
+}
+
 fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
     env.hook_argv(Harness::Codex)?;
     let paths = codex_paths(env)?;
@@ -669,16 +726,6 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         ));
     }
     prepare_state(env)?;
-    let permissions = permission_component(env)?;
-    // The rules file is independent of the hooks: a problem with it is reported, never a
-    // reason to leave the hooks out.
-    let permission_report = match permissions.apply(PermissionConsent::Undecided) {
-        Ok(state) => permissions_json(&permissions, state),
-        Err(error) => json!({
-            "state": "error",
-            "error": permission_error(error, permissions.rules_file()).to_string(),
-        }),
-    };
     let mut warnings = Vec::new();
     let mut hooks_file = OwnedFile::new(paths.hooks.clone(), paths.hooks_manifest.clone(), b"{}");
     let (installed, already, adopted) = install_settings(
@@ -688,6 +735,41 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         &mut hooks_file,
         &mut warnings,
     )?;
+    let permissions = permission_component(env)?;
+    // After the hooks (which create CODEX_HOME). The rules file is independent of the hooks: a problem with it is reported, never a
+    // reason to leave the hooks out.
+    let (result, action) = match request.permissions {
+        PermissionPolicy::Grant => (permissions.apply(PermissionConsent::Granted), "granted"),
+        PermissionPolicy::Decline => (permissions.remove(), "removed"),
+        PermissionPolicy::Ask => (permissions.apply(PermissionConsent::Undecided), "kept"),
+    };
+    let permission_report = match result {
+        // An explicit grant that cannot be honoured fails the command; otherwise the rules
+        // file never keeps the hooks out.
+        Err(error) if request.permissions == PermissionPolicy::Grant => {
+            return Err(permission_error(error, permissions.rules_file()));
+        }
+        Ok(state) => {
+            let mut report = permissions_json(&permissions, state);
+            report["action"] = json!(
+                if action == "kept" && state == CodexPermissionState::Missing {
+                    "advised"
+                } else {
+                    action
+                }
+            );
+            if report["action"] == "advised" {
+                report["note"] = json!(
+                    crate::harness::claude::setup::PERMISSION_ADVICE.replace("<harness>", "codex")
+                );
+            }
+            report
+        }
+        Err(error) => json!({
+            "state": "error",
+            "error": permission_error(error, permissions.rules_file()).to_string(),
+        }),
+    };
     for layer in &layers {
         if layer.has_other_herdr_threads_hook && layer.path != paths.hooks {
             warnings.push(format!(

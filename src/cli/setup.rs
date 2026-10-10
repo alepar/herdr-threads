@@ -161,6 +161,46 @@ pub struct SetupRequest {
     /// `setup claude --hooks-only`: install or keep the hooks, and remove the
     /// delivery mod's `CLAUDE_CODE_PLUGIN_DIRS` path and files.
     pub hooks_only: bool,
+    /// `setup`: what to do about the harness's herdr-threads permission rules.
+    pub permissions: PermissionPolicy,
+}
+
+/// `setup`: whether agents may run herdr-threads commands without prompting
+/// (the person and setup commands always keep asking).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionPolicy {
+    /// Keep what is there; ask on an interactive terminal when nothing is
+    /// granted, otherwise advise.
+    #[default]
+    Ask,
+    /// `--with-permissions`: grant without asking.
+    Grant,
+    /// `--without-permissions`: remove an owned grant, keeping the hooks.
+    Decline,
+}
+
+/// Setup options carrying a [`PermissionPolicy`] to the adapters that own
+/// permission rules.
+pub const WITH_PERMISSIONS: &str = "with-permissions";
+pub const WITHOUT_PERMISSIONS: &str = "without-permissions";
+
+impl PermissionPolicy {
+    pub fn option(self) -> Option<&'static str> {
+        match self {
+            Self::Ask => None,
+            Self::Grant => Some(WITH_PERMISSIONS),
+            Self::Decline => Some(WITHOUT_PERMISSIONS),
+        }
+    }
+    pub fn from_options(options: &crate::harness::adapter::SetupOptions) -> Self {
+        if options.get(WITH_PERMISSIONS) == Some(&true) {
+            Self::Grant
+        } else if options.get(WITHOUT_PERMISSIONS) == Some(&true) {
+            Self::Decline
+        } else {
+            Self::Ask
+        }
+    }
 }
 
 /// `setup claude`: whether to set Claude's [`claude::PROMPT_SUGGESTION_SETTING`]
@@ -501,7 +541,8 @@ pub fn run<W: Write>(
     let env = SetupEnv::from_process(output)?;
     let mut report = execute(request, &env)?;
     if request.verb == SetupVerb::Install
-        && request.prompt_suggestions == PromptSuggestionPolicy::Ask
+        && (request.prompt_suggestions == PromptSuggestionPolicy::Ask
+            || request.permissions == PermissionPolicy::Ask)
         && interactive()
     {
         let registry = crate::harness::registry::builtins();
@@ -609,6 +650,14 @@ pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError
             crate::harness::claude::setup::HOOKS_ONLY_OPTION.into(),
             true,
         );
+    }
+    if let Some(option) = request.permissions.option()
+        && registration
+            .setup_options()
+            .iter()
+            .any(|declared| declared.name == option)
+    {
+        options.insert(option.into(), true);
     }
     execute_registered(
         registration,
@@ -769,13 +818,15 @@ pub(crate) fn execute_registered_with_expected_scope(
 pub fn run_all<W: Write>(
     verb: SetupVerb,
     prompt_suggestions: PromptSuggestionPolicy,
+    permissions: PermissionPolicy,
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
     let env = SetupEnv::from_process(output)?;
-    let mut report = execute_all(verb, prompt_suggestions, &env)?;
+    let mut report = execute_all(verb, prompt_suggestions, permissions, &env)?;
     if verb == SetupVerb::Install
-        && prompt_suggestions == PromptSuggestionPolicy::Ask
+        && (prompt_suggestions == PromptSuggestionPolicy::Ask
+            || permissions == PermissionPolicy::Ask)
         && interactive()
         && let Some(entries) = report["harnesses"].as_array_mut()
     {
@@ -849,12 +900,14 @@ fn verb_name(verb: SetupVerb) -> &'static str {
 pub fn execute_all(
     verb: SetupVerb,
     prompt_suggestions: PromptSuggestionPolicy,
+    permissions: PermissionPolicy,
     env: &SetupEnv,
 ) -> Result<Value, RunError> {
-    execute_all_registered(
+    execute_all_registered_with(
         crate::harness::registry::builtins(),
         verb,
         prompt_suggestions,
+        permissions,
         &env.snapshot(),
     )
 }
@@ -863,6 +916,22 @@ pub fn execute_all_registered(
     registry: &crate::harness::registry::Registry,
     verb: SetupVerb,
     prompt_suggestions: PromptSuggestionPolicy,
+    snapshot: &crate::harness::adapter::SetupEnvironment,
+) -> Result<Value, RunError> {
+    execute_all_registered_with(
+        registry,
+        verb,
+        prompt_suggestions,
+        PermissionPolicy::Ask,
+        snapshot,
+    )
+}
+
+pub fn execute_all_registered_with(
+    registry: &crate::harness::registry::Registry,
+    verb: SetupVerb,
+    prompt_suggestions: PromptSuggestionPolicy,
+    permissions: PermissionPolicy,
     snapshot: &crate::harness::adapter::SetupEnvironment,
 ) -> Result<Value, RunError> {
     let env = &SetupEnv::from_snapshot(snapshot);
@@ -934,7 +1003,7 @@ pub fn execute_all_registered(
                     prompt_suggestions == PromptSuggestionPolicy::Disable
                 }
                 "keep-prompt-suggestions" => prompt_suggestions == PromptSuggestionPolicy::Keep,
-                _ => false,
+                name => permissions.option() == Some(name),
             };
             if enabled {
                 options.insert(option.name.into(), true);

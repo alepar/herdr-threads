@@ -1573,7 +1573,7 @@ fn local_profile_and_options_are_validated_before_dispatch() {
     assert!(parse_argv(["herdr-threads", "setup", "codex", "--disable-prompt-suggestions"]).is_err());
     assert!(parse_argv(["herdr-threads", "setup", "claude", "--disable-prompt-suggestions", "--keep-prompt-suggestions"]).is_err());
     let bare = parse_argv(["herdr-threads", "setup", "--disable-prompt-suggestions"]).unwrap();
-    assert!(matches!(bare.action, CliAction::SetupAll(_, crate::cli::setup::PromptSuggestionPolicy::Disable)));
+    assert!(matches!(bare.action, CliAction::SetupAll(_, crate::cli::setup::PromptSuggestionPolicy::Disable, _)));
 }
 
 #[test]
@@ -1854,12 +1854,6 @@ fn actor_route_legacy_person_operator_forms_require_human() {
     }
 }
 #[test]
-fn permission_cli_inputs_are_bounded_and_command_scoped() {
-    assert!(parse_argv(["ht", "setup", "--permissions", "--with-permissions", "--permission-installed-binary", "/private/a space/$binary"]).is_ok());
-    assert!(parse_argv(["ht", "setup", "--permission-link-path", "/private/ht"]).is_err());
-}
-
-#[test]
 fn ordinary_catalog_exports_positive_syntax_contract() {
     let catalog = ordinary_catalog();
     for prefix in [&["send"][..], &["join"], &["launch"], &["seat", "resolve"], &["service", "inspect"], &["--skill"], &["thread", "rename"], &["--version"], &["--help"]] {
@@ -2003,36 +1997,33 @@ fn actor_route_os_string_identity_is_preserved() {
 }
 
 #[test]
-fn permission_cli_inputs_preserve_installer_spellings() {
-    let binary = "/private/a space/$binary;`literal`'quoted'";
-    for verb in ["setup", "unsetup", "setup-status"] {
-        let parsed = parse_argv(["ht", verb, "--permissions", "--permission-installed-binary", binary, "--permission-link-path", "/private/link", "--permission-alias-path", "/private/alias"]).unwrap();
-        assert!(parsed.permissions.permissions);
-        assert_eq!(parsed.permissions.permission_installed_binary.as_deref(), Some(binary));
-        assert_eq!(parsed.permissions.permission_link_path.as_deref(), Some("/private/link"));
-        assert_eq!(parsed.permissions.permission_alias_path.as_deref(), Some("/private/alias"));
-        assert_eq!(parse_argv(["ht", verb]).unwrap().permissions, PermissionCliInputs::default());
+fn permission_consent_flags_are_setup_scoped() {
+    use crate::cli::setup::PermissionPolicy;
+    for (flag, policy) in [
+        (None, PermissionPolicy::Ask),
+        (Some("--with-permissions"), PermissionPolicy::Grant),
+        (Some("--without-permissions"), PermissionPolicy::Decline),
+    ] {
+        let named: Vec<&str> = ["ht", "setup", "claude"].into_iter().chain(flag).collect();
+        let CliAction::Setup(request) = parse_argv(named).unwrap().action else { panic!("setup") };
+        assert_eq!(request.permissions, policy);
+        let bare: Vec<&str> = ["ht", "setup"].into_iter().chain(flag).collect();
+        assert!(matches!(parse_argv(bare).unwrap().action, CliAction::SetupAll(_, _, p) if p == policy));
+    }
+    assert!(parse_argv(["ht", "setup", "--with-permissions", "--without-permissions"]).is_err());
+    for verb in ["unsetup", "setup-status"] {
         for flag in ["--with-permissions", "--without-permissions"] {
-            assert_eq!(parse_argv(["ht", verb, flag]).is_ok(), verb == "setup");
+            assert!(parse_argv(["ht", verb, "claude", flag]).is_err(), "{verb} {flag}");
         }
     }
-    for flag in ["--with-permissions", "--without-permissions"] {
-        let parsed = parse_argv(["ht", "internal", "installer-integrations", "--confirm-missing", flag, "--permission-installed-binary", binary]).unwrap();
-        assert!(matches!(parsed.action, CliAction::InstallerIntegrations { confirm_missing: true }));
-        assert_eq!(parsed.permissions.with_permissions, flag == "--with-permissions");
-        assert_eq!(parsed.permissions.without_permissions, flag == "--without-permissions");
-        assert_eq!(parsed.permissions.permission_installed_binary.as_deref(), Some(binary));
-    }
-    for args in [vec!["setup", "--with-permissions", "--without-permissions"], vec!["internal", "installer-integrations", "--with-permissions", "--without-permissions"], vec!["inbox", "--permissions"], vec!["setup", "--permission-alias-path", "/private/alias"], vec!["setup", "--permission-installed-binary", "/private/a", "--permission-installed-binary", "/private/a"]] {
+    assert!(matches!(
+        parse_argv(["ht", "internal", "installer-integrations", "--without-permissions"]).unwrap().action,
+        CliAction::InstallerIntegrations { confirm_missing: false, without_permissions: true }
+    ));
+    // The executable inventory flags are gone with absolute-path spellings.
+    for args in [vec!["inbox", "--with-permissions"], vec!["setup", "--permissions"], vec!["setup", "--permission-installed-binary", "/private/a"]] {
         assert!(parse_argv(["ht"].into_iter().chain(args)).is_err());
     }
-    for path in ["".into(), "relative".into(), "/private/line\nfeed".into(), "/private/tab\t".into(), format!("/{}", "x".repeat(4096))] {
-        for flag in ["--permission-installed-binary", "--permission-link-path", "--permission-alias-path"] {
-            assert!(parse_argv(["ht", "setup", flag, &path]).is_err(), "{flag}: {path:?}");
-        }
-    }
-    let maximum = format!("/{}", "x".repeat(4095));
-    assert_eq!(parse_argv(["ht", "setup", "--permission-installed-binary", &maximum]).unwrap().permissions.permission_installed_binary, Some(maximum));
 }
 
 #[test]
