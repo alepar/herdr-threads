@@ -2,3 +2,4 @@
 - [2026-10-09] base-merge: startup_enrollment_hermes_unowned_turn_fallback and _concurrent_start_and_first_turn fail under a parallel focused run, pass alone (real 1.2 s cap outside the serializing nextest group; ht-4ne punch-list item).
 - [2026-10-10] coverage r1: reviewer prompt (16 KB) passed by file path (one Read) instead of inline, to keep orchestrator context; template says no tool calls.
 - [2026-10-10] design roast r1: rung Workflow (super-roast engine via assemble-args --script).
+- [2026-10-10] account switch: coordinator stopped mid-round (user-authorized handoff to aisw claude-2); ht-54r.3 in-flight work kept as WIP commit on its task branch; relaunch with resumeFromRunId wf_c01646a6-b33.
