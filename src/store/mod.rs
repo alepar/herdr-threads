@@ -2603,7 +2603,9 @@ impl StorePort for SqliteStore {
             &mut writer,
             |tx| {
                 let scan = attention::wake_seat_attention(tx, seat.as_str())?;
-                Ok(!scan.attention.has_pending_invitation && !scan.attention.has_pending_receipt)
+                Ok(!scan.attention.has_pending_invitation
+                    && !scan.attention.has_pending_receipt
+                    && scan.attention.frontier.lazy.is_none())
             },
             |tx, _, empty| {
                 if empty {
@@ -2802,6 +2804,9 @@ mod service_reads_tests;
 #[cfg(test)]
 #[path = "../../tests/store/facade.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "../../tests/store/wake_on_wake.rs"]
+mod wake_on_wake_tests;
 #[cfg(test)]
 #[path = "../../tests/store/wake.rs"]
 mod wake_tests;

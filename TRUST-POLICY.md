@@ -399,7 +399,9 @@ independent of sender role, relay and human intent. A lazy audience is frozen by
 and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
 Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
 Unpublished rows are invisible and may be discarded in bounded cleanup; published progress is retained.
-Lazy delivery creates no receipt, deadline, ACK evidence, attention, wake, poke or automatic adoption.
+Lazy delivery creates no receipt, deadline, ACK evidence, attention, wake, poke or automatic adoption,
+except that a seat with `wake_on: all` is woken (wake eligibility only; still no receipt, digest
+attention or poke).
 
 Only the caller's default text inbox, or a push-channel mod as below, may claim completion after complete contiguous body output has
 been written and flushed. The completion handler validates the current top-level or human canonical

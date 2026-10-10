@@ -774,6 +774,7 @@ impl DispatchState {
                     invitation: seen.invitation.max(reserved.invitation),
                     addressed_receipt: seen.addressed_receipt.max(reserved.addressed_receipt),
                     actionable_warning: seen.actionable_warning.max(reserved.actionable_warning),
+                    lazy: seen.lazy.max(reserved.lazy),
                 });
         if state.guard.durable().ever_reserved && current.advanced_beyond(&prior) {
             state.guard = state.guard.new_attention()?;
@@ -782,6 +783,7 @@ impl DispatchState {
             invitation: prior.invitation.max(current.invitation),
             addressed_receipt: prior.addressed_receipt.max(current.addressed_receipt),
             actionable_warning: prior.actionable_warning.max(current.actionable_warning),
+            lazy: prior.lazy.max(current.lazy),
         });
         Ok(())
     }
