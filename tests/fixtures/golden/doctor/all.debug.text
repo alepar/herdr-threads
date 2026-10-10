@@ -20,9 +20,7 @@ hooks.claude.installed.binary: <root>/bin dir/claude
 hooks.claude.installed.version: none
 hooks.claude.installed.admission: contract_declared
 hooks.claude.installed.recipe: claude-hooks-2.1.283
-hooks.claude.allow_rule.rule: Bash(herdr-threads *)
-hooks.claude.allow_rule.ownership: owned
-hooks.claude.allow_rule.present: yes
+hooks.claude.permissions: not_installed
 hooks.claude.prompt_suggestions: default (enabled) (`promptSuggestionEnabled` in <root>/claude config/settings.json)
 hooks.claude.prompt_suggestions.note: Claude soft-deadline pokes skip a pane that shows a prompt suggestion; run `herdr-threads setup claude --disable-prompt-suggestions` to turn them off
 hooks.claude.observed: unknown
@@ -32,9 +30,16 @@ hooks.codex: Codex hooks are user-level ($CODEX_HOME/hooks.json, set up by `herd
 hooks.codex.recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}
 hooks.codex.hooks_file: <root>/codex home/hooks.json
 hooks.codex.setup_installed: no
+hooks.codex.permissions: not_installed
 hooks.codex.trust.status: not_installed
 hooks.codex.installed: contract_declared; runtime metadata unavailable; rich optional capabilities unavailable
 hooks.codex.socket_policy_validation: not_run
+hooks.agy.plugin: <root>/home/.gemini/config/plugins/herdr-threads installed=no current=no enabled=yes version=none
+hooks.agy.hooks_file: <root>/home/.gemini/config/plugins/herdr-threads/hooks.json
+hooks.agy.allow_entry: command(herdr-threads) missing in <root>/home/.gemini/antigravity-cli/settings.json
+hooks.agy.installed: unavailable (binary none)
+hooks.agy.witness: presence_dir=no brain_entries=0 bounded=yes recent_top_level_without_lock=0
+hooks.agy.sandbox: agy --sandbox sessions may not reach the herdr-threads daemon socket (untested); launch refuses --sandbox
 limitation: codex is on PATH (<root>/bin dir/codex) but its hooks are not installed in <root>/codex home/hooks.json: run `herdr-threads setup codex` with this CODEX_HOME
 claude local_config_root : installed: true, enabled: unknown, admitted: true, observed: unknown
   Native enablement and runtime observation are separate from local installation

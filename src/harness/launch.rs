@@ -650,7 +650,7 @@ pub fn launch_registration(
     let super::registry::OccupantHarness::Agent(id) = harness else {
         return Err(error(
             ErrorCode::UnsupportedHarness,
-            "launch starts agents only; a person uses `herdr-threads me init`",
+            "launch starts agents only; a person uses `herdr-threads human me init`",
         ));
     };
     let registration = registry

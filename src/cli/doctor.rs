@@ -1059,6 +1059,21 @@ pub(crate) fn clean(value: &str) -> String {
     escape_for_terminal(value, Context::SingleLine).into_owned()
 }
 
+/// `hooks.<harness>.permissions: <state>`, with the note when there is one.
+pub(crate) fn permission_line(harness: &str, permissions: &Value) -> String {
+    let mut line = format!(
+        "hooks.{harness}.permissions: {}\n",
+        scalar(&permissions["state"])
+    );
+    if permissions["note"].is_string() {
+        line.push_str(&format!(
+            "hooks.{harness}.permissions.note: {}\n",
+            scalar(&permissions["note"])
+        ));
+    }
+    line
+}
+
 pub(crate) fn scalar(value: &Value) -> String {
     match value {
         Value::String(text) => clean(text),
@@ -1504,6 +1519,7 @@ fn apply_owned_repairs(
 }
 
 pub(crate) fn run<W: Write>(parsed: &ParsedCli, writer: &mut W) -> Result<(), RunError> {
+    let _backups = crate::harness::setup::BackupSession::start();
     run_registered(parsed, crate::harness::registry::builtins(), None, writer)
 }
 

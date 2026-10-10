@@ -2028,8 +2028,25 @@ mod pacer_lanes {
         assert!(status.last_error().is_some(), "Health shows the failure");
         drop(failpoint);
         // The pass after the fault clears succeeds: backoff resets, a tick is
-        // recorded and the failure is gone.
-        wait_until("recovery", || pacer.attempts() == 0);
+        // recorded and the failure is gone. The last step made the 13th pass
+        // due; under load it can run before the fault clears and back off
+        // again, so bring the fake clock to any retry still pending.
+        let until = Instant::now() + Duration::from_secs(5);
+        while pacer.attempts() != 0 {
+            if let Some(at) = pacer.next_retry_at()
+                && at.0 > f.clock.now()
+            {
+                f.clock.set(at.0, &pacer);
+            }
+            assert!(
+                Instant::now() < until,
+                "timed out waiting for recovery: attempts={} next_retry_at={:?} now={}",
+                pacer.attempts(),
+                pacer.next_retry_at(),
+                f.clock.now()
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(status.last_tick().is_some());
         wait_until("health to clear", || status.last_error().is_none());
     }

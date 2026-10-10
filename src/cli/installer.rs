@@ -16,10 +16,30 @@ fn failure(detail: impl Into<String>) -> RunError {
 }
 
 /// Consent is asked separately per missing component; owned writes are validated by their backend.
+#[cfg(test)]
 fn execute_for_registry<F: FnMut(&str) -> io::Result<bool>>(
     registry: &crate::harness::registry::Registry,
     env: &SetupEnv,
     confirm_missing: bool,
+    interactive: bool,
+    confirm: F,
+) -> Value {
+    execute_for_registry_with(registry, env, confirm_missing, false, interactive, confirm)
+}
+
+/// The question for the permissions component of one harness.
+pub(crate) fn permission_question(harness: &str) -> String {
+    format!(
+        "Let agents in {harness} run herdr-threads commands without prompting? Person and setup \
+         commands still ask"
+    )
+}
+
+fn execute_for_registry_with<F: FnMut(&str) -> io::Result<bool>>(
+    registry: &crate::harness::registry::Registry,
+    env: &SetupEnv,
+    confirm_missing: bool,
+    without_permissions: bool,
     interactive: bool,
     mut confirm: F,
 ) -> Value {
@@ -121,12 +141,14 @@ fn execute_for_registry<F: FnMut(&str) -> io::Result<bool>>(
                         ));
                     }
                     let mut options = SetupOptions::new();
-                    if registration
-                        .setup_options()
-                        .iter()
-                        .any(|o| o.name == "keep-prompt-suggestions")
-                    {
-                        options.insert("keep-prompt-suggestions".into(), true);
+                    for option in registration.setup_options() {
+                        // --without-permissions also undoes the takeover of an earlier grant.
+                        if option.name == "keep-prompt-suggestions"
+                            || (without_permissions
+                                && option.name == crate::cli::setup::WITHOUT_PERMISSIONS)
+                        {
+                            options.insert(option.name.into(), true);
+                        }
                     }
                     let report = setup::execute_registered_with_expected_scope(
                         registration,
@@ -152,19 +174,117 @@ fn execute_for_registry<F: FnMut(&str) -> io::Result<bool>>(
             }
             entries.push(entry);
         }
+        // Permissions follow the hooks: granted only where the hooks are in place.
+        let granted = request
+            .as_ref()
+            .map_err(|e| failure(e.to_string()))
+            .and_then(|request| {
+                registration
+                    .installer_permissions_granted(request)
+                    .map_err(|e| failure(e.to_string()))
+            });
+        let hooks_ready = entries.iter().any(|e| {
+            e["harness"] == name
+                && e["component"] == "hooks"
+                && matches!(e["outcome"].as_str(), Some("installed" | "updated"))
+        });
+        // An adapter without a permission component (its integration needs no grant) has no
+        // permissions entry.
+        let granted = match granted {
+            Ok(None) => continue,
+            // Asked for no permissions: nothing to inspect or fail on.
+            _ if without_permissions => {
+                entries.push(json!({"harness":name,"component":"permissions",
+                    "outcome":"skipped","detail":"--without-permissions"}));
+                continue;
+            }
+            Ok(Some(granted)) => Ok(granted),
+            Err(error) => Err(error),
+        };
+        let mut entry = json!({"harness":name,"component":"permissions"});
+        let result = granted.and_then(|granted| {
+            if granted {
+                entry["outcome"] = json!("kept");
+                return Ok(());
+            }
+            if !hooks_ready {
+                entry["outcome"] = json!("skipped");
+                entry["detail"] = json!("hooks not installed");
+                return Ok(());
+            }
+            if !confirm_missing {
+                if !interactive {
+                    entry["outcome"] = json!("skipped");
+                    entry["detail"] = json!(
+                        "missing; no terminal; rerun install.sh --setup to grant, or run \
+                         `herdr-threads setup <harness> --with-permissions`"
+                    );
+                    return Ok(());
+                }
+                if !confirm(&permission_question(name))? {
+                    entry["outcome"] = json!("declined");
+                    return Ok(());
+                }
+            }
+            let mut options = SetupOptions::new();
+            for option in registration.setup_options() {
+                if option.name == "keep-prompt-suggestions"
+                    || option.name == crate::cli::setup::WITH_PERMISSIONS
+                {
+                    options.insert(option.name.into(), true);
+                }
+            }
+            let report = setup::execute_registered(
+                registration,
+                SetupVerb::Install,
+                &SetupScopeRequest::Default,
+                None,
+                options,
+                &snapshot,
+            )?;
+            if report["permissions"]["state"] != "installed" {
+                return Err(failure(format!(
+                    "permission rules not installed: {}",
+                    report["permissions"]["error"]
+                        .as_str()
+                        .or(report["permissions"]["note"].as_str())
+                        .unwrap_or("unknown state")
+                )));
+            }
+            entry["outcome"] = json!("installed");
+            Ok(())
+        });
+        if let Err(error) = result {
+            failed = true;
+            entry["outcome"] = json!("failed");
+            entry["detail"] = json!(error.to_string());
+        }
+        entries.push(entry);
     }
     json!({"integrations":entries,"exit_status":if failed {1} else {0}})
 }
+#[cfg(test)]
 fn execute<F: FnMut(&str) -> io::Result<bool>>(
     env: &SetupEnv,
     confirm_missing: bool,
     interactive: bool,
     confirm: F,
 ) -> Value {
-    execute_for_registry(
+    execute_with(env, confirm_missing, false, interactive, confirm)
+}
+
+fn execute_with<F: FnMut(&str) -> io::Result<bool>>(
+    env: &SetupEnv,
+    confirm_missing: bool,
+    without_permissions: bool,
+    interactive: bool,
+    confirm: F,
+) -> Value {
+    execute_for_registry_with(
         crate::harness::registry::builtins(),
         env,
         confirm_missing,
+        without_permissions,
         interactive,
         confirm,
     )
@@ -195,9 +315,11 @@ fn printable(text: &str) -> String {
 
 pub fn run<W: Write>(
     confirm_missing: bool,
+    without_permissions: bool,
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    let _backups = crate::harness::setup::BackupSession::start();
     let env = SetupEnv::from_process(output)?;
     // The controlling terminal works with curl | bash; redirected stdout never prompts.
     let terminal = io::stdout().is_terminal() && output.format != OutputFormat::Json;
@@ -209,11 +331,17 @@ pub fn run<W: Write>(
                 .open("/dev/tty")
         })
         .and_then(Result::ok);
-    let report = execute(&env, confirm_missing, tty.is_some(), |question| {
-        let tty = tty.as_mut().expect("interactive terminal");
-        let mut input = io::BufReader::new(tty.try_clone()?);
-        confirm(question, &mut input, tty)
-    });
+    let report = execute_with(
+        &env,
+        confirm_missing,
+        without_permissions,
+        tty.is_some(),
+        |question| {
+            let tty = tty.as_mut().expect("interactive terminal");
+            let mut input = io::BufReader::new(tty.try_clone()?);
+            confirm(question, &mut input, tty)
+        },
+    );
     if output.format == OutputFormat::Json {
         serde_json::to_writer(&mut *writer, &report).map_err(io::Error::other)?;
         writeln!(writer)?;

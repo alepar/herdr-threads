@@ -49,6 +49,7 @@ struct PausedHost(Arc<AtomicBool>);
 struct TempRoot(PathBuf);
 impl Drop for TempRoot {
     fn drop(&mut self) {
+        super::print_daemon_logs_if_panicking(&self.0);
         let _ = fs::remove_dir_all(&self.0);
     }
 }

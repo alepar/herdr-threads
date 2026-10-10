@@ -50,6 +50,23 @@ src/harness/mod.rs:pub mod codex_config; — registration: adapter module declar
 src/harness/mod.rs:pub mod codex_evidence; — registration: adapter module declaration (permanent registration)
 src/harness/mod.rs:pub mod codex_schema; — registration: adapter module declaration (permanent registration)
 src/harness/mod.rs:pub mod hermes; — registration: adapter module declaration (permanent registration)
+src/harness/permissions.rs:Claude — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions.rs:Codex — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions.rs:claude — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions.rs:claude_settings — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions.rs:codex — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions.rs:codex_rules — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions/claude.rs:ClaudePermissionRules — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions/claude_settings.rs:Claude — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions/claude_settings.rs:ClaudePermissionState — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions/claude_settings.rs:ClaudePermissionStatus — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions/claude_settings.rs:ClaudePermissions — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions/claude_settings.rs:claude — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions/codex_rules.rs:Codex — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions/codex_rules.rs:CodexPermissionState — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions/codex_rules.rs:CodexPermissions — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions/codex_rules.rs:codex — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/permissions/codex_rules.rs:codex_home — history: absorbed from main v0.6.0 — migrate in ht-poh.16
 src/harness/registry.rs:CLAUDE — registration: builtins() row, registry identity or its assert (permanent registration)
 src/harness/registry.rs:CODEX — registration: builtins() row, registry identity or its assert (permanent registration)
 src/harness/registry.rs:Registration::new(&crate::harness::agy::AgyAdapter), — registration: builtins() row, registry identity or its assert (permanent registration)
@@ -64,6 +81,8 @@ src/harness/registry.rs:pub const Claude: Self = Self::Agent(CLAUDE); — regist
 src/harness/registry.rs:pub const Codex: Self = Self::Agent(CODEX); — registration: builtins() row, registry identity or its assert (permanent registration)
 src/harness/registry.rs:registry.agent("claude").expect("built-in Claude missing"), — registration: builtins() row, registry identity or its assert (permanent registration)
 src/harness/registry.rs:registry.agent("codex").expect("built-in Codex missing"), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/setup.rs:let kind = super::claude::settings_kind(); — history: absorbed from main v0.6.0 — migrate in ht-poh.16
+src/harness/setup.rs:super::permissions::claude::render() — history: absorbed from main v0.6.0 — migrate in ht-poh.16
 src/protocol/commands.rs:if !matches!(report.harness.as_str(), "claude" | "codex") — frozen-wire: v1 HookParseFailure validation (frozen wire shape)
 src/protocol/commands.rs:if !matches!(self.harness.as_str(), "claude" | "codex") — frozen-wire: v1 HarnessEvidence::validate (frozen wire shape)
 src/protocol/results.rs:claude: HarnessState::Unknown, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)

@@ -75,11 +75,15 @@ fn run_in_pane(
         args
     };
     command
-        .arg("--state-dir")
-        .arg(state)
-        .arg("--host-endpoint")
-        .arg(host)
-        .args(args)
+        .args(herdr_threads::test_support::isolation::routed_argv(
+            &[
+                std::ffi::OsStr::new("--state-dir"),
+                AsRef::<std::ffi::OsStr>::as_ref(&state),
+                std::ffi::OsStr::new("--host-endpoint"),
+                AsRef::<std::ffi::OsStr>::as_ref(&host),
+            ],
+            args,
+        ))
         .env_remove("HERDR_PLUGIN_STATE_DIR")
         .env_remove("HERDR_SOCKET_PATH")
         .env_remove("HERDR_PANE_ID")
@@ -100,11 +104,15 @@ fn run_in_pane(
 fn run_with_path(state: &Path, host: &Path, args: &[&str], path: &Path) -> Output {
     let mut command = scrubbed_command(BIN);
     command
-        .arg("--state-dir")
-        .arg(state)
-        .arg("--host-endpoint")
-        .arg(host)
-        .args(args)
+        .args(herdr_threads::test_support::isolation::routed_argv(
+            &[
+                std::ffi::OsStr::new("--state-dir"),
+                AsRef::<std::ffi::OsStr>::as_ref(&state),
+                std::ffi::OsStr::new("--host-endpoint"),
+                AsRef::<std::ffi::OsStr>::as_ref(&host),
+            ],
+            args,
+        ))
         .env_remove("HERDR_PLUGIN_STATE_DIR")
         .env_remove("HERDR_SOCKET_PATH")
         .env_remove("HERDR_PANE_ID")
@@ -1312,11 +1320,15 @@ fn setup_codex_installs_hooks_only_and_preserves_legacy_socket_allowance() {
     let invoke = |args: &[&str]| {
         let mut command = scrubbed_command(BIN);
         command
-            .arg("--state-dir")
-            .arg(&state)
-            .arg("--host-endpoint")
-            .arg(&host)
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&state),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&host),
+                ],
+                args,
+            ))
             .env("PATH", &bin);
         scratch_homes(&mut command, &state);
         let out = command.output().unwrap();
@@ -1390,7 +1402,7 @@ fn setup_codex_installs_hooks_only_and_preserves_legacy_socket_allowance() {
         .as_str()
         .unwrap();
     assert!(warning.contains("metadata is unavailable") && warning.contains("unsetup codex"));
-    let removed_output = invoke(&["--json", "unsetup", "codex"]);
+    let removed_output = invoke(&["unsetup", "codex", "--json"]);
     let removed =
         serde_json::from_slice::<serde_json::Value>(&removed_output.stdout).unwrap()["setup"]
             .clone();
@@ -1424,11 +1436,11 @@ fn setup_codex_withholds_new_sandbox_allowances_for_every_available_wrapper() {
         let setup = |verb: &str| {
             let mut command = scrubbed_command(BIN);
             command
+                .args([verb, "codex", "--harness-binary", &codex, "--json"])
                 .arg("--state-dir")
                 .arg(&state)
                 .arg("--host-endpoint")
                 .arg(&host)
-                .args(["--json", verb, "codex", "--harness-binary", &codex])
                 .env_remove("HERDR_SOCKET_PATH")
                 .env_remove("HERDR_PLUGIN_STATE_DIR")
                 .env("PATH", "/usr/bin:/bin");
@@ -1495,11 +1507,15 @@ fn legacy_codex_allowance_warns_with_unavailable_runtime_and_preserves_foreign_b
     let invoke = |bin: &Path, args: &[&str]| {
         let mut command = scrubbed_command(BIN);
         command
-            .arg("--state-dir")
-            .arg(&state)
-            .arg("--host-endpoint")
-            .arg(&host)
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&state),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&host),
+                ],
+                args,
+            ))
             .env_remove("HERDR_SOCKET_PATH")
             .env_remove("HERDR_PLUGIN_STATE_DIR")
             .env_remove("HERDR_PANE_ID")
@@ -1616,7 +1632,7 @@ fn legacy_codex_allowance_warns_with_unavailable_runtime_and_preserves_foreign_b
     );
 
     // After unsetup no legacy allowance remains; foreground advice stays independent.
-    let out = invoke(&upgraded, &["--json", "unsetup", "codex"]);
+    let out = invoke(&upgraded, &["unsetup", "codex", "--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     let removed =
         serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["setup"].clone();

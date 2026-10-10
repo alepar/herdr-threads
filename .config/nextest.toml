@@ -100,7 +100,7 @@ priority = 100
 # front (about 11 s together); the cap and every assertion are unchanged.
 [[profile.default.overrides]]
 filter = """
-binary_id(herdr-threads) & test(/^cli::hook::tests::registered_resume::(task52_accepted_kind_replay_and_refused_neighbors_preserve_original_eligibility|task52_facade_declared_reset_clear_has_hot_rows_guidance_and_precise_ack|hermes_qualified_turn_reset_and_rotation_never_infer_resume|registered_fourth_nonresume_never_replays_continuity|startup_enrollment_hermes_qualified_unowned_never_resolves)$/)
+binary_id(herdr-threads) & test(/^cli::hook::tests::registered_resume::(task52_accepted_kind_replay_and_refused_neighbors_preserve_original_eligibility|task52_facade_declared_reset_clear_has_hot_rows_guidance_and_precise_ack|hermes_qualified_turn_reset_and_rotation_never_infer_resume|registered_fourth_nonresume_never_replays_continuity|startup_enrollment_hermes_qualified_unowned_never_resolves|hermes_qualified_turn_injects_inbox_page_and_defers_lazy_completion)$/)
 """
 threads-required = "num-test-threads"
 priority = 100

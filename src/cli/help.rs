@@ -11,6 +11,11 @@ installed or skipped (not on PATH);
 every registered harness. Hook-trust reminders are printed once at the end. The exit status is that
 of the first harness that failed; skipped harnesses are not failures.
 
+Agent permissions: --with-permissions grants them, --without-permissions removes them and
+keeps the hooks; otherwise setup asks on a terminal and keeps an existing grant current.
+Every changed configuration file is first backed up beside it as
+<name>.<UTC timestamp>-<uuid>.herdr-threads.
+
 "#;
 const SETUP_SCOPE_HEAD: &str = r#"Scope (user level, like Herdr's own agent hooks):"#;
 const SETUP_FOREGROUND_HEAD: &str = r#"Foreground agents (user-managed, read-only inspection): setup and setup-status report user
@@ -279,9 +284,11 @@ pub fn me_init_help_in(registry: &Registry) -> String {
         "Run it in your own shell pane, then use `ht human` for thread create, invite, send, \
 read, ack and accept there with no --cooperative-* flags. Your actions are recorded as \
 operator_human, never as an agent. Messages remain readable, but a human seat owes no ACK and \
-gets no overdue-ACK warning, even when a sender uses --require-ack. Re-run `human me init` after a daemon restart to \
+gets no overdue-ACK warning, even when a sender uses --require-ack. Re-run `ht human me init` after a daemon restart to \
 mark yourself available again. It is refused where {refusal} present, and over \
-a seat bound to an agent; `human me init --operator` overrides that as the local account (later \
-commands in this pane then run as you)."
+a seat bound to an agent; `ht human me init --operator` overrides that as the local account (later \
+commands in this pane then run as you). Put --state-dir, --host-endpoint and output flags \
+after human. --human changes output only. Recover retained person/operator intents with \
+`ht human retry REF`."
     )
 }

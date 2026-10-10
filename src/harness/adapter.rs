@@ -1696,4 +1696,9 @@ pub trait InstallerPolicy: Send + Sync {
         budget: &CallBudget,
     ) -> Result<InstallerHookState, SetupFailure>;
     fn skill_destination(&self, scope: &ResolvedSetupScope) -> Option<InstallerSkillDestination>;
+    /// Whether the harness's herdr-threads permission grant is in place; `None` when the
+    /// adapter has no permission component (its integration needs no grant).
+    fn permissions_granted(&self, _request: &StatusRequest) -> Result<Option<bool>, SetupFailure> {
+        Ok(None)
+    }
 }

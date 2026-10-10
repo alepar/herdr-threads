@@ -1032,6 +1032,10 @@ fn run_hook_event_reporting_inner<C: LocalClient + ?Sized, W: Write>(
     Ok(())
 }
 
+/// Lazy rows join the digest whenever the daemon can report them; the token's
+/// lazy key moves the hook marker only (never a wake).
+use crate::protocol::capabilities::LAZY_HOOK_DELIVERY;
+
 /// Read the seat's server-side attention digest (root adoption, wave-1 fix2
 /// (a)): one read-only, seat-scoped query whose token is complete by
 /// construction. The hook compares only that token with its per-execution
@@ -1044,6 +1048,7 @@ pub fn read_digest<C: LocalClient + ?Sized>(
     let result = client.call(
         Command::AttentionDigest(crate::protocol::commands::AttentionDigestQuery {
             seat: seat.clone(),
+            lazy: client.supports_capability(LAZY_HOOK_DELIVERY, budget),
         }),
         budget,
     )?;
@@ -1172,6 +1177,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
         match client.call(
             Command::AttentionDigestDelivery(crate::protocol::commands::AttentionDigestQuery {
                 seat: claim.seat.clone(),
+                lazy: client.supports_capability(LAZY_HOOK_DELIVERY, budget),
             }),
             budget,
         ) {

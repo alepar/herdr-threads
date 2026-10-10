@@ -298,6 +298,7 @@ impl crate::ports::LocalService for Service {
                     warnings: none(),
                     unavailability_open: false,
                     mod_channel_live: false,
+                    lazy: None,
                 }))
             }
             Command::CheckIn(check_in) => {

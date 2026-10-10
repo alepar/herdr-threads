@@ -4,8 +4,8 @@
 use crate::{
     cli::doctor::{
         AdmissionState, InstalledHarnessJson, captured_legacy_status, clean, event_registration,
-        installed_declared, legacy_registration_line, legacy_summary_lines, repairs_allowed,
-        scalar,
+        installed_declared, legacy_registration_line, legacy_summary_lines, permission_line,
+        repairs_allowed, scalar,
     },
     harness::{adapter::DoctorTextForm, context::Harness},
     protocol::{
@@ -283,6 +283,7 @@ pub(super) fn legacy_claude_projection(
                 super::settings_kind(),
                 inspection.allow_rule.as_ref(),
             );
+            claude["permissions"] = super::setup::permission_status_json(&env);
             claude["prompt_suggestions"] = super::setup::prompt_suggestion_status(
                 &env,
                 &settings,
@@ -391,6 +392,9 @@ fn debug_text(claude: &Value) -> String {
                 scalar(&allow_rule["note"])
             ));
         }
+    }
+    if claude["permissions"].is_object() {
+        out.push_str(&permission_line("claude", &claude["permissions"]));
     }
     let suggestions = &claude["prompt_suggestions"];
     if suggestions.is_object() {

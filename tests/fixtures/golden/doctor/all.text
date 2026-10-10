@@ -4,6 +4,7 @@ claude: contract_declared, hooks installed
 claude: runtime metadata unavailable; rich optional capabilities unavailable
 codex: contract_declared, hooks missing
 codex: runtime metadata unavailable; rich optional capabilities unavailable
+agy: plugin missing, allow entry missing
 issue: codex is on PATH (<root>/bin dir/codex) but its hooks are not installed in <root>/codex home/hooks.json: run `herdr-threads setup codex` with this CODEX_HOME
 fix: herdr-threads doctor fix
 claude local_config_root : installed: true, enabled: unknown, admitted: true, observed: unknown

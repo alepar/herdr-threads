@@ -20,7 +20,21 @@ roast-design: 2026-10-10-agy-harness-adapter-roast-design-1.md, 2026-10-10-agy-h
 stepBackDesign-round-1: patch — two findings share one cause (transcript-confirm read only at next PreInvocation; Stop used only for error-string detection); cluster C1 rule applied in root + subspecs; executable-identity source patched separately
 
 
+codeBuckets:
+  completed: ht-poh.7, ht-poh.1, ht-poh.6.1, ht-poh.6.3, ht-poh.9, ht-poh.6.2, ht-poh.3.1, ht-poh.2.7, ht-poh.3.5, ht-poh.3.2, ht-poh.2.1, ht-poh.2.5, ht-poh.2.6, ht-poh.3.3, ht-poh.2.3, ht-poh.3.7, ht-poh.2.2, ht-poh.3.6, ht-poh.2.4, ht-poh.4.1, ht-poh.8, ht-poh.3.4, ht-poh.2.8, ht-poh.4.2, ht-poh.4.4, ht-poh.4.3, ht-poh.6.5, ht-poh.4.6, ht-poh.4.7, ht-poh.4.8, ht-poh.6.4
+  escalated: ht-poh.4.5, ht-poh.13
+  pendingRetry:
+  parked:
+  stalled: false
+  review: not ready (epic incomplete; main v0.6.0 drift with 14 conflicts; agy docs claim unimplemented delivery; must-fix list in the invocation-1 final review)
+  sweep: SWEEP DEFERRED (caller-owned)
+  slowness: round 1 allowlist hot-file cap raised to 4; round 2 graph-bound, edge audit armed; audit 1 left ht-poh.5 <- ht-poh.4.5 drop for an operator (parked)
+  worktreesKept: task-ht-poh.13 — uncommitted partial R17 work (BLOCKED-AUTH), task-ht-poh.4.5 — unmerged (blocked on agy binary, since resolved)
+  processSweep: stopped 0 · survived 0
+
 parked:
+- super-code invocation 1 · graph-change · "ht-poh.5 <- ht-poh.4.5 drop (edge audit, safe no: .5 declares IdleWake::Native but does not call the composer)"
+- super-code invocation 1 · degraded-verdict · "ht-poh.13 (R17) BLOCKED-AUTH: permission classifier refused 'node scripts/gen-frame-goldens.mjs' twice as Security Weaken; partial work uncommitted in its task worktree; needs the human to run or allow it"
 - graph-pass · graph-change · "ht-poh.2.7 <- ht-poh.7 drop (safe no: 2.7 notes snapshots follow ht-poh.7's audit fixes) — with the 4.4 drop, depth 11→10"
 - graph-pass · graph-change · "ht-poh.4.4 <- ht-poh.3.6 drop (safe no: 4.4 consumes the SKILL_MD wake-on section; would need a placeholder golden)"
 - graph-pass · graph-change · "proposal: seam-contract agy doctor extension point (delivery::doctor_lines) between ht-poh.4.7 and ht-poh.5"

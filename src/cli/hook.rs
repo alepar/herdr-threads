@@ -227,6 +227,9 @@ pub struct HookOutcome {
     pub diagnostic: Option<String>,
     /// Attention frontier to record once `stdout` has been delivered.
     pub attention: Option<AttentionCommit>,
+    /// Lazy rows whose complete bodies `stdout` carries, completed only once
+    /// it has been delivered.
+    pub lazy: Option<super::hook_inbox::LazyCommit>,
 }
 
 enum Failure {
@@ -1250,7 +1253,7 @@ fn report_parse_failure_to_daemon(
         return;
     }
     let client = LocalSocketClient::new(
-        descriptor.endpoint,
+        descriptor.endpoint.clone(),
         Arc::clone(&clock),
         instance,
         Some(descriptor.boot_id),
@@ -1405,6 +1408,10 @@ struct CheckedIn {
     /// Hot-thread recovery block (top-level Compact/Resume/Clear only).
     recovery: Option<RecoveryRows>,
     attention: Option<AttentionCommit>,
+    /// The bounded inbox page read for this top-level event.
+    lazy: Option<super::hook_inbox::InboxOffer>,
+    /// Daemon route for the lazy completion (stamped by `check_in`).
+    link: Option<super::hook_inbox::CompletionLink>,
 }
 
 /// The attention token delivered to one execution. Committed only after stdout
@@ -1448,7 +1455,14 @@ fn bridge_failure(error: bridge::BridgeError) -> Failure {
 fn connect_existing(
     paths: &InstancePaths,
     clock: Arc<dyn Clock>,
-) -> Result<(uuid::Uuid, LocalSocketClient), Failure> {
+) -> Result<
+    (
+        uuid::Uuid,
+        LocalSocketClient,
+        super::hook_inbox::CompletionLink,
+    ),
+    Failure,
+> {
     let instance = read_existing_namespace(paths)
         .map_err(|e| Failure::Unavailable(format!("daemon namespace: {:?}", e.kind())))?
         .ok_or_else(|| Failure::Unavailable("daemon namespace unavailable".into()))?;
@@ -1459,12 +1473,18 @@ fn connect_existing(
     crate::daemon::lifecycle::check_protocol(&descriptor)
         .map_err(|error| api_failure("daemon protocol", &error))?;
     let client = LocalSocketClient::new(
-        descriptor.endpoint,
-        clock,
+        descriptor.endpoint.clone(),
+        Arc::clone(&clock),
         instance,
         Some(descriptor.boot_id),
     );
-    Ok((instance, client))
+    let link = super::hook_inbox::CompletionLink {
+        endpoint: descriptor.endpoint,
+        instance,
+        boot: Some(descriptor.boot_id),
+        clock,
+    };
+    Ok((instance, client, link))
 }
 
 /// Composition over the existing daemon/client/bridge APIs. Returns bridge text.
@@ -1517,8 +1537,11 @@ fn check_in(
             });
         }
     }
-    let (instance, client) = connect_existing(&paths, Arc::clone(&clock))?;
+    let (instance, client, link) = connect_existing(&paths, Arc::clone(&clock))?;
     let stamp = |mut done: CheckedIn| {
+        if done.lazy.is_some() {
+            done.link = Some(link.clone());
+        }
         done.command_routing = CommandRouting::from_context(
             &instance.to_string(),
             &ContinuationContext {
@@ -1954,6 +1977,8 @@ impl PaneCall<'_> {
                 overview: None,
                 recovery: None,
                 attention: None,
+                lazy: None,
+                link: None,
             });
         // A resumed session is a lifecycle start: it gets the standing
         // instruction a lifecycle check-in presents, ahead of any attention.
@@ -2038,6 +2063,8 @@ impl PaneCall<'_> {
                     overview: None,
                     recovery: None,
                     attention: None,
+                    lazy: None,
+                    link: None,
                 });
             }
             return Ok(CheckedIn {
@@ -2050,6 +2077,8 @@ impl PaneCall<'_> {
                 overview: None,
                 recovery: None,
                 attention: None,
+                lazy: None,
+                link: None,
             });
         }
         let contexts = super::seat_contexts(paths, instance, seat)
@@ -2078,6 +2107,17 @@ impl PaneCall<'_> {
             ),
             other => bridge_failure(other),
         })?;
+            // The inbox page rides only with a presented offer; a live mod
+            // channel delivers itself.
+            let lazy = (!boundary.live && !boundary.text.is_empty())
+                .then(|| {
+                    self.inbox_offer(
+                        &contexts,
+                        event,
+                        boundary.mark.map(|(execution, _)| execution),
+                    )
+                })
+                .flatten();
             let attention = boundary.mark.map(|(execution, token)| AttentionCommit {
                 contexts,
                 execution,
@@ -2093,6 +2133,8 @@ impl PaneCall<'_> {
                 overview: None,
                 recovery: self.recovery_rows(event, seat),
                 attention,
+                lazy,
+                link: None,
             });
         }
         let mut done = lifecycle_check_in(
@@ -2118,7 +2160,41 @@ impl PaneCall<'_> {
             ..event.clone()
         };
         done.recovery = self.recovery_rows(&recovery_event, seat);
+        // Only a fresh (not replayed or historical) offer whose digest was
+        // read and found no live mod channel seeds a mark; only then does the
+        // hook add a page, under exactly the execution that check-in
+        // registered.
+        if let Some(execution) = done.attention.as_ref().map(|mark| mark.execution) {
+            done.lazy = super::seat_contexts(paths, instance, seat)
+                .ok()
+                .and_then(|contexts| self.inbox_offer(&contexts, event, Some(execution)));
+        }
         Ok(done)
+    }
+
+    /// One bounded inbox page for the registered top-level execution, read
+    /// within the hook deadline; any failure shows none.
+    fn inbox_offer(
+        &self,
+        contexts: &crate::harness::context::ContextJournal,
+        event: &LifecycleEvent,
+        execution: Option<uuid::Uuid>,
+    ) -> Option<super::hook_inbox::InboxOffer> {
+        let saved = contexts.current().ok()??;
+        // The claim must be the execution this event presented for, never a
+        // context that replaced it in between.
+        if saved.harness != event.harness
+            || execution.is_some_and(|execution| execution != saved.execution)
+            || event
+                .native_session
+                .as_ref()
+                .is_some_and(|native| saved.session != SessionReference::Native(native.clone()))
+        {
+            return None;
+        }
+        let claim = bridge::caller_claim(&saved).ok()?;
+        let capped = self.deadline.min(Instant::now() + INBOX_READ_BUDGET);
+        super::hook_inbox::read_page(self.client, claim, &budget(capped, self.clock.as_ref()))
     }
 
     /// The recovery block of a top-level Compact/Resume/Clear event: one
@@ -2143,6 +2219,9 @@ const RECOVERY_READ_BUDGET: Duration = Duration::from_secs(2);
 /// failed open without it. Still capped by the hook's own deadline.
 #[cfg(test)]
 const RECOVERY_READ_BUDGET: Duration = Duration::from_secs(10);
+
+/// Own budget of the hook's inbox page read, inside the hook deadline.
+const INBOX_READ_BUDGET: Duration = Duration::from_millis(500);
 
 /// Recovery text keys on the event kind regardless of harness, and only on a
 /// top-level event: subagent events (including summary workers) never get it.
@@ -2523,6 +2602,8 @@ fn lifecycle_check_in(
         overview,
         recovery: None,
         attention,
+        lazy: None,
+        link: None,
     })
 }
 
@@ -2757,7 +2838,7 @@ fn run_hook_step(
             .ok()
             .and_then(|context| InstancePaths::resolve_read_only(&context).ok())
             .and_then(|paths| connect_existing(&paths, Arc::new(SystemClock::new())).ok())
-            .map(|(_, client)| client);
+            .map(|(_, client, _)| client);
     let daemon = connected.as_ref().map(|client| HookStepClient {
         client,
         clock,
@@ -2779,6 +2860,7 @@ fn run_hook_step(
         stdout,
         diagnostic: None,
         attention: None,
+        lazy: None,
     }
 }
 fn decode_failure_detail(registration: &Registration, error: &DecodeFailure) -> String {
@@ -2840,6 +2922,7 @@ fn quiet_outcome(detail: String) -> HookOutcome {
         stdout: vec![],
         diagnostic: Some(detail),
         attention: None,
+        lazy: None,
     }
 }
 fn child_endpoint_available(args: &HookArgs) -> bool {
@@ -3058,6 +3141,7 @@ fn run_admitted_hook_since(
             stdout,
             diagnostic,
             attention: None,
+            lazy: None,
         };
     }
     // Verify registration/handle/event before any canonical operation.
@@ -3109,6 +3193,8 @@ fn run_admitted_hook_since(
             overview,
             recovery,
             attention,
+            lazy,
+            link,
         }) => {
             let composition_event = LifecycleEvent {
                 kind: prepared_kind.unwrap_or(event.kind),
@@ -3126,18 +3212,46 @@ fn run_admitted_hook_since(
                 recovery.as_ref(),
                 command_routing.as_ref(),
             );
+            // Inbox contents are the lowest priority: they only fill what
+            // the ordinary context left under the bound, whole items only.
+            let (context, shown) = match &lazy {
+                Some(offer) => {
+                    // The fallback is the pane prefix plus `inbox --seat SEAT`.
+                    let prefix = match fallback.len().checked_sub(3) {
+                        Some(at) if fallback[at..].first().is_some_and(|w| w == "inbox") => {
+                            fallback[..at].to_vec()
+                        }
+                        _ => vec![CLI_ARGV0.to_owned()],
+                    };
+                    super::hook_inbox::append(context, offer, &prefix, MAX_CONTEXT)
+                }
+                None => (context, Vec::new()),
+            };
             let (stdout, consumes, diagnostic) =
                 encode_prepared_result(registration, admitted, decoded, prepared_kind, context);
+            let lazy = match (consumes, lazy, link) {
+                (true, Some(offer), Some(link)) if !shown.is_empty() => {
+                    Some(super::hook_inbox::LazyCommit {
+                        link,
+                        claim: offer.claim,
+                        messages: shown,
+                        deadline,
+                    })
+                }
+                _ => None,
+            };
             HookOutcome {
                 stdout,
                 diagnostic,
                 attention: if consumes { attention } else { None },
+                lazy,
             }
         }
         Err(Failure::Quiet(detail)) => HookOutcome {
             stdout: Vec::new(),
             diagnostic: Some(detail),
             attention: None,
+            lazy: None,
         },
         Err(failure @ (Failure::Unavailable(_) | Failure::UnavailableDetail(..))) => {
             let (reason, detail) = match failure {
@@ -3167,6 +3281,7 @@ fn run_admitted_hook_since(
                 },
                 diagnostic: Some(detail),
                 attention: None,
+                lazy: None,
             }
         }
     }
@@ -3272,6 +3387,7 @@ pub fn parse_failure_outcome(detail: String, env: &HookEnv) -> HookOutcome {
         stdout: Vec::new(),
         diagnostic: (env.herdr_env && env.pane.is_some()).then_some(detail),
         attention: None,
+        lazy: None,
     }
 }
 
@@ -3438,6 +3554,8 @@ pub fn run_process_with(
                 .unwrap_or_else(|_| quiet_outcome("internal error".into()))
             })();
             let delivered = emit(&outcome);
+            // The local mark first: a slow completion (or the watchdog) must
+            // never cost it.
             if let (true, Some(attention)) = (delivered, outcome.attention)
                 && let Err(error) = attention.commit()
             {
@@ -3445,6 +3563,16 @@ pub fn run_process_with(
                 let _ = writeln!(
                     io::stderr(),
                     "herdr-threads hook: attention mark not saved: {error:?}"
+                );
+            }
+            if let (true, Some(lazy)) = (delivered, outcome.lazy)
+                && let Err(error) = lazy.commit()
+            {
+                let _guard = OUTPUT.lock().unwrap_or_else(|p| p.into_inner());
+                let _ = writeln!(
+                    io::stderr(),
+                    "herdr-threads hook: lazy delivery not completed (rows stay pending): {:?}",
+                    error.code
                 );
             }
             deadline

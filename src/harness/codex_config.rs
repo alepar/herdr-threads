@@ -21,6 +21,7 @@
 //! Codex's own later writes (for example `hooks.state` trust hashes) are kept.
 use super::setup::{
     InstallPhase, SetupError, config_bytes, fingerprint, publish_manifest, write_replacement,
+    write_user_config,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -528,7 +529,7 @@ pub fn install(
             if config_bytes(config)? != current {
                 return Err(SetupError::Conflict.into());
             }
-            write_replacement(config, &bytes, false)?;
+            write_user_config(config, &current, &bytes)?;
             manifest.phase = InstallPhase::Installed;
             manifest.installed_fingerprint = fingerprint(&bytes);
             manifest.upgrade_base = None;
@@ -564,7 +565,7 @@ pub fn install(
         if config_bytes(config)? != current {
             return Err(SetupError::Conflict.into());
         }
-        write_replacement(config, &bytes, false)?;
+        write_user_config(config, &current, &bytes)?;
     }
     let mut installed = manifest;
     installed.phase = InstallPhase::Installed;
@@ -608,7 +609,7 @@ fn upgrade(
         if config_bytes(config)? != current {
             return Err(SetupError::Conflict.into());
         }
-        write_replacement(config, &bytes, false)?;
+        write_user_config(config, current, &bytes)?;
     }
     manifest.phase = InstallPhase::Installed;
     manifest.upgrade_base = None;
@@ -671,7 +672,7 @@ pub fn remove(config: &Path, manifest_path: &Path) -> Result<bool, SetupError> {
         return Err(SetupError::Conflict);
     }
     if removed != current {
-        write_replacement(config, &removed, false)?;
+        write_user_config(config, &current, &removed)?;
     }
     std::fs::remove_file(manifest_path).map_err(|_| SetupError::Io)?;
     Ok(true)
@@ -688,6 +689,28 @@ mod tests {
     }
 
     const SOCK: &str = "/s d/instances/abc/daemon.sock";
+
+    /// Kills config.toml install or removal without keeping the prior version.
+    #[test]
+    fn install_and_removal_back_up_config_toml() {
+        use crate::harness::setup::user_config_backups;
+        let dir = tmp();
+        let config = dir.join("config.toml");
+        let manifest = dir.join("m.json");
+        let original = b"# mine\nmodel = \"x\"\n".to_vec();
+        std::fs::write(&config, &original).unwrap();
+        assert!(install(&config, &manifest, SOCK, &[]).unwrap().changed);
+        let installed = std::fs::read(&config).unwrap();
+        assert_eq!(
+            user_config_backups(&config),
+            std::slice::from_ref(&original)
+        );
+        assert!(remove(&config, &manifest).unwrap());
+        let mut expected = vec![original, installed];
+        expected.sort();
+        assert_eq!(user_config_backups(&config), expected);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// Kills: a write that loses comments or unrelated tables, an allowance under the wrong
     /// table, re-defining an existing `[features]` table (invalid TOML), or a non-exact restore.

@@ -87,6 +87,20 @@ lists the owned keys and whether a hash is recorded. Setup appends, so the
 trust keys of existing hooks keep their positions. Approval policy is
 untouched.
 
+**Command rules.** Hooks grant no permission. A separate permission component
+(with consent, or `setup codex --with-permissions`) owns the whole file
+`$CODEX_HOME/rules/herdr-threads.rules`: one execpolicy `prefix_rule` allowing
+`["herdr-threads","ht"]`, and `prompt` rules for `human`, `setup`, `unsetup`,
+`doctor fix` and `internal installer-integrations`, which act for the person or
+could let an agent grant itself permissions. A file at that path that setup did
+not write, or one edited since, is reported (`permissions.state: foreign` /
+`edited`) and never overwritten or deleted. `--without-permissions` and `unsetup
+codex` remove the owned file; doctor's text output has a `hooks.codex.permissions:`
+line. Before replacing or deleting `hooks.json`, `config.toml` or the rules file,
+setup keeps the previous bytes beside it as
+`<name>.<UTC timestamp>-<uuid>.herdr-threads` (mode 0600, never pruned). See
+[Agent permissions](../../docs/install.md#agent-permissions).
+
 `parse_event_for_version` parses with the witness recipe's input schema
 (`HooksV1` for both versions), requires a
 native session, and requires the complete `SubagentStart` shape
@@ -163,8 +177,8 @@ denial**: the refused operation belongs to the calling command's execution polic
 These errors can also reflect filesystem permissions, so preserve the error and
 confirm the execution context instead of treating every denial as a daemon outage.
 
-For an agent tool call, use an existing approved rule whose prefix names the
-`herdr-threads` / `ht` executable. Otherwise request outside-sandbox execution of
+For an agent tool call, use the owned rules file or another approved rule whose
+prefix names the `herdr-threads` / `ht` executable. Otherwise request outside-sandbox execution of
 that exact CLI command with `sandbox_permissions="require_escalated"`, a justification,
 and a CLI-only `prefix_rule`. Do not approve a general shell such as `sh`, `bash` or
 `zsh`. Retry the CLI only after permission is granted; keep unrelated commands
@@ -180,8 +194,8 @@ is still a refusal. Do not retry through a policy bypass, full-access mode or br
 networking. Do not restart the daemon to try to overcome the policy decision.
 
 On the measured Codex 0.160.0 noninteractive `exec` path, approval is `never` and
-explicit escalation requests are unavailable. A user must approve a CLI-only rule
-before the session starts; then the agent uses ordinary calls under that rule.
+explicit escalation requests are unavailable. A user must grant the owned rules
+(`setup codex --with-permissions`) or another CLI-only rule before the session starts; then the agent uses ordinary calls under that rule.
 Without an applicable rule, report the limitation and wait for an authorized
 execution path. An interactive session can request approval only when its effective
 policy permits it. Guidance grants no permissions and never overrides a deny rule.

@@ -178,6 +178,17 @@ pub fn query_with_output(
     output: &OutputSpec,
     budget: &CallBudget,
 ) -> Result<CommandResult, ApiError> {
+    query_with_output_for_caller(store, instance, command, output, budget, None)
+}
+
+pub(super) fn query_with_output_for_caller(
+    store: &StoreContext,
+    instance: &str,
+    command: &Command,
+    output: &OutputSpec,
+    budget: &CallBudget,
+    caller: Option<&OperationReadScope>,
+) -> Result<CommandResult, ApiError> {
     command
         .validate()
         .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
@@ -209,6 +220,18 @@ pub fn query_with_output(
             output,
         )
     })?;
+    // Only the requesting dispatch scope can choose person command spelling.
+    // A Human subject/recipient of an ordinary discovery read proves nothing
+    // about its viewer. Read the caller binding in this query's snapshot.
+    let human = match caller {
+        Some(OperationReadScope::Operator(_)) => true,
+        Some(OperationReadScope::Seat(seat)) => db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND b.ended_at IS NULL AND b.harness='human')",
+            params![seat.as_str(), instance], |row| row.get::<_, bool>(0),
+        ).map_err(|error| db.map_error(error))?,
+        _ => false,
+    };
+    let _namespace = crate::protocol::output::CommandNamespaceGuard::enter(human);
     let result = match command {
         Command::ResolveThread(q) => resolve_thread(&db, instance, q),
         Command::ThreadName(q) => {
@@ -295,13 +318,21 @@ pub fn query_with_output(
         Command::InboxBatch(q) => inbox_batch(&db, store, instance, q, output, budget),
         Command::InboxBatchV2(q) => inbox_v2::query(&db, store, instance, q, output, budget),
         Command::AttentionDigest(q) => {
-            super::attention::seat_digest(&db, instance, &q.seat, &|| db.check_budget())
-                .map(|run| CommandResult::AttentionDigest(run.digest))
-        }
-        Command::AttentionDigestDelivery(q) => {
-            let digest =
+            let mut digest =
                 super::attention::seat_digest(&db, instance, &q.seat, &|| db.check_budget())?
                     .digest;
+            if q.lazy {
+                super::attention::add_lazy(&db, instance, &mut digest)?;
+            }
+            Ok(CommandResult::AttentionDigest(digest))
+        }
+        Command::AttentionDigestDelivery(q) => {
+            let mut digest =
+                super::attention::seat_digest(&db, instance, &q.seat, &|| db.check_budget())?
+                    .digest;
+            if q.lazy {
+                super::attention::add_lazy(&db, instance, &mut digest)?;
+            }
             let notices_pending = super::attention::seat_has_pending_notices(&db, q.seat.as_str())?;
             Ok(CommandResult::AttentionDigestDelivery {
                 digest,
@@ -2788,6 +2819,7 @@ fn contextual_argv(argv: Vec<String>, output: &OutputSpec) -> Vec<String> {
         result.push("--json".into());
     }
     result.extend(parts);
+    crate::protocol::output::namespace_argv(&mut result);
     result
 }
 
@@ -6337,15 +6369,14 @@ mod inbox_v2 {
         if state.publication_decision_high_water > decision as u64 {
             return Err(invalid("inbox snapshot is in the future"));
         }
-        let registered_ids = serde_json::to_string(
-            &crate::harness::registry::builtins()
-                .registrations()
-                .iter()
-                .map(|r| r.metadata().id)
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_else(|_| "[]".into());
-        let current_agent:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND harness IN (SELECT value FROM json_each(?2)) AND observation_provenance='cooperative_top_level')",params![seat.as_str(),registered_ids],|r|r.get(0)).map_err(store_error)?;
+        // Receipt eligibility is canonical registered-agent eligibility (as
+        // in inbox v1, with its exact current-binding predicate, and display-ACK
+        // settlement), never a fixed harness list:
+        // a Hermes binding's pending receipts are ACK candidates too.
+        let current_harness:Option<String>=db.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>''",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
+        let current_agent = current_harness
+            .as_deref()
+            .is_some_and(|harness| crate::harness::registry::builtins().agent(harness).is_ok());
         if let Some(body) = &state.body {
             let lazy = state.source == Source::Lazy;
             if message(db, body.message.as_str(), lazy, current_agent, &state)?.is_none() {

@@ -779,11 +779,11 @@ pub const fn settings_kind() -> super::setup::SettingsKind {
 static TEXT: AdapterText = AdapterText {
     setup_scope: "  claude  $CLAUDE_CONFIG_DIR/settings.json (default ~/.claude/settings.json), created as `{}`
           when absent. Adds the hook groups (SessionStart, Bash PreToolUse) beside the hooks
-          already there, and the permission allow rule `Bash(herdr-threads *)`: Claude may then
-          run any single `herdr-threads ...` command (including the ready commands the hook
-          suggests) without asking; chained commands are still checked separately. A rule you
-          already have is left as yours. Re-running setup on an older installation replaces its
-          owned `Bash(export HERDR_THREADS_CALLER_CONTEXT=*)` rule, which allowed nothing in use.",
+          already there. Agent permissions are a separate component, written only with
+          consent: allow rules for `herdr-threads` and `ht`, and ask rules for `human`, `setup`,
+          `unsetup`, `doctor fix` and `internal installer-integrations`. An older installation's
+          owned `Bash(herdr-threads *)` rule is kept and gains the ask rules. A rule you already
+          have is left as yours.",
     setup_foreground: "Claude: merge `disableAgentView: true` into
 user settings.json, or set its env.CLAUDE_CODE_DISABLE_AGENT_VIEW to `1`.",
     setup_notes: "Claude prompt suggestions: Claude shows a dim prompt suggestion in its input box after every
@@ -1083,6 +1083,14 @@ impl HarnessAdapter for ClaudeAdapter {
                 name: setup::HOOKS_ONLY_OPTION,
                 conflicts: &[],
             },
+            SetupOption {
+                name: crate::cli::setup::WITH_PERMISSIONS,
+                conflicts: &[crate::cli::setup::WITHOUT_PERMISSIONS],
+            },
+            SetupOption {
+                name: crate::cli::setup::WITHOUT_PERMISSIONS,
+                conflicts: &[crate::cli::setup::WITH_PERMISSIONS],
+            },
         ]
     }
     fn setup_environment_inputs(&self) -> &'static [&'static str] {
@@ -1100,13 +1108,10 @@ impl HarnessAdapter for ClaudeAdapter {
         reader: &mut dyn std::io::BufRead,
         writer: &mut dyn std::io::Write,
     ) -> Result<(), SetupFailure> {
-        setup::settle_prompt_suggestions(
-            &crate::cli::setup::SetupEnv::from_snapshot(environment),
-            projection,
-            reader,
-            writer,
-        )
-        .map_err(super::setup::legacy::adapter_failure)
+        let env = crate::cli::setup::SetupEnv::from_snapshot(environment);
+        setup::settle_prompt_suggestions(&env, projection, reader, writer)
+            .and_then(|()| setup::settle_permissions(&env, projection, reader, writer))
+            .map_err(super::setup::legacy::adapter_failure)
     }
     fn setup(&self, request: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
         setup::setup(request)
@@ -1323,6 +1328,16 @@ impl LaunchPolicy for ClaudeAdapter {
 }
 
 impl InstallerPolicy for ClaudeAdapter {
+    fn permissions_granted(&self, request: &StatusRequest) -> Result<Option<bool>, SetupFailure> {
+        let env = crate::harness::setup::legacy::scoped_legacy_environment(
+            Harness::Claude,
+            &request.scope,
+            &request.environment,
+        )?;
+        setup::permissions_granted(&env)
+            .map(Some)
+            .map_err(|error| SetupFailure::Invalid(error.to_string()))
+    }
     fn inspect_hooks(
         &self,
         request: &StatusRequest,

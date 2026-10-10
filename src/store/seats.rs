@@ -3560,7 +3560,7 @@ pub fn decide_continuity(
                 } else {
                     api_error(
                         ErrorCode::Conflict,
-                        "resumed session matches several unresolved seats; repair with seat rebind --operator",
+                        "resumed session matches several unresolved seats; repair with herdr-threads human seat rebind --operator",
                     )
                 });
             };
@@ -3724,7 +3724,7 @@ fn owned_target_refusal(
         (Some(new), Some(old)) => api_error(
             ErrorCode::TargetAlreadyOwned,
             format!(
-                "target {target} is owned by live seat {new}; seats are never merged. Abandon the old seat: `herdr-threads seat retire {old} --operator`, or abandon the new role: `herdr-threads seat rebind {old} --pane {target} --replace {new} --operator`",
+                "target {target} is owned by live seat {new}; seats are never merged. Abandon the old seat: `herdr-threads human seat retire {old} --operator`, or abandon the new role: `herdr-threads human seat rebind {old} --pane {target} --replace {new} --operator`",
                 old = old.as_str()
             ),
         ),
@@ -4275,7 +4275,7 @@ pub fn register_available(
                 return Err(api_error(
                     ErrorCode::Unauthorized,
                     format!(
-                        "seat {} is bound to a {} agent ({}); a person's check-in never replaces an agent's binding. Run it in your own shell pane, or override as the local account: `herdr-threads me init --operator`",
+                        "seat {} is bound to a {} agent ({}); a person's check-in never replaces an agent's binding. Run it in your own shell pane, or override as the local account: `herdr-threads human me init --operator`",
                         seat.as_str(),
                         open.harness,
                         if open.provenance == crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE

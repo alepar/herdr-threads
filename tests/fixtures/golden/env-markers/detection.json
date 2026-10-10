@@ -15,7 +15,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -27,7 +27,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -51,7 +51,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CODEX_SANDBOX is set). Run them in your own shell pane, or override as the local account with `herdr-threads me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CODEX_SANDBOX is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -63,7 +63,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CODEX_SANDBOX_NETWORK_DISABLED is set). Run them in your own shell pane, or override as the local account with `herdr-threads me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CODEX_SANDBOX_NETWORK_DISABLED is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
     "stdout": ""
   },
   {
@@ -79,7 +79,7 @@
       ]
     ],
     "exit": 2,
-    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
+    "stderr": "herdr-threads: pane w1:p1: `me init` and person-pane commands never act as an agent (environment variable CLAUDECODE is set). Run them in your own shell pane, or override as the local account with `herdr-threads human me init --operator` (later commands in this pane then run as you) (invalid_request)\n",
     "stdout": ""
   },
   {

@@ -41,6 +41,14 @@ gets no seat and no context (TRUST-POLICY accepted limits). Native `delegate_tas
 children run with platform `subagent`; their parented `pre_llm_call` gets the
 subagent restriction locally and every other subagent callback is ignored.
 
+The plugin also registers a `pre_tool_call` person gate, independent of the bridge
+(it stays registered when the bridge cannot start): a terminal command that runs
+`herdr-threads`/`ht` with `human`, `setup`, `unsetup`, `doctor fix` or
+`internal installer-integrations` returns `approve`, so Hermes asks the person
+first. Ordinary herdr-threads commands need no grant. The gate splits command
+lines with `shlex` and checks each segment; like every rule here it is cooperative,
+not a sandbox.
+
 ## Runtime and evidence
 
 The bridge captures runtime/build identity once in its initialized native context,

@@ -264,6 +264,7 @@ fn capability_constants_are_stable() {
     assert_eq!(HARNESS_STATES, "harness.states");
     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
+    assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -286,7 +287,8 @@ fn capability_constants_are_stable() {
             "inbox.batch_v2",
             "mod.watch_v1",
             "seat.wake_on_v1",
-            "delivery.pull_v1"
+            "delivery.pull_v1",
+            "hook.lazy_delivery_v1"
         ]
     );
 }
@@ -352,6 +354,7 @@ fn every_advertised_capability_has_a_handler() {
                 let command = Command::AttentionDigestDelivery(
                     crate::protocol::commands::AttentionDigestQuery {
                         seat: crate::protocol::ids::SeatId::new("s"),
+                        lazy: false,
                     },
                 );
                 assert!(command.validate().is_ok());
@@ -387,6 +390,27 @@ fn every_advertised_capability_has_a_handler() {
                 let command = Command::WakeOn(crate::protocol::commands::WakeOnQuery {
                     seat: crate::protocol::ids::SeatId::new("nobody"),
                 });
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
+            LAZY_HOOK_DELIVERY => {
+                // The lazy digest request is routed to the store's
+                // seat-scoped read: an unknown seat is NotFound.
+                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let command = Command::AttentionDigestDelivery(
+                    crate::protocol::commands::AttentionDigestQuery {
+                        seat: crate::protocol::ids::SeatId::new("s"),
+                        lazy: true,
+                    },
+                );
                 assert!(command.validate().is_ok());
                 let json = serde_json::to_value(&command).unwrap();
                 assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
@@ -514,7 +538,8 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "inbox.batch_v2",
             "mod.watch_v1",
             "seat.wake_on_v1",
-            "delivery.pull_v1"
+            "delivery.pull_v1",
+            "hook.lazy_delivery_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);

@@ -54,6 +54,7 @@ mod manifest_tests;
 #[cfg(test)]
 #[path = "../../tests/harness/optimistic_render.rs"]
 mod optimistic_render;
+pub mod permissions;
 pub mod process;
 pub mod recipe;
 #[cfg(test)]

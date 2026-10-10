@@ -358,14 +358,26 @@ impl Scratch {
         command
     }
 
-    /// The instance flags, then `args`.
+    /// The instance flags, then `args`. An escalating command's leading words (`setup`,
+    /// `unsetup`, `doctor fix`) come first: the CLI refuses options before them.
     fn instance_args<'a>(&self, command: &'a mut Command, args: &[&str]) -> &'a mut Command {
+        let at = args
+            .iter()
+            .position(|arg| !arg.starts_with('-'))
+            .unwrap_or(args.len());
+        let words = match &args[at..] {
+            ["setup" | "unsetup", ..] => 1,
+            ["doctor", "fix", ..] => 2,
+            _ => 0,
+        };
         command
+            .args(&args[at..at + words])
             .arg("--state-dir")
             .arg(&self.state)
             .arg("--host-endpoint")
             .arg(self.host())
-            .args(args)
+            .args(&args[..at])
+            .args(&args[at + words..])
     }
 
     fn run(&self, args: &[&str]) -> Output {

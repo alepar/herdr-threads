@@ -740,3 +740,21 @@ fn completed_human_retry_malformed_record_retained_without_output() {
         assert_eq!(fixture.snapshot(), before);
     }
 }
+
+#[test]
+fn frozen_human_ordinary_retry_root_refuses() {
+    let fx = crate::cli::cooperative_tests::OrdinaryHumanRetryFixture::new(true);
+    let before = fx.snapshot();
+    let mut output = vec![];
+    let failure = crate::cli::run_in_pane(fx.argv(false), Some("w:p1"), &mut output).unwrap_err();
+    assert!(
+        matches!(failure, crate::cli::RunError::Io(ref error) if error.to_string().contains("person/operator retry requires immediate human namespace")),
+        "{failure:?}"
+    );
+    assert!(output.is_empty());
+    assert_eq!(fx.snapshot(), before);
+    assert!(
+        fx.client.calls.lock().unwrap().is_empty(),
+        "root refusal precedes transport and effects"
+    );
+}

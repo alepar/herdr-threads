@@ -1512,9 +1512,11 @@ impl Mailbox {
         newest.sort_by(|a, b| b.1.cmp(&a.1));
         newest.truncate(MAX_DIGEST_IDS);
         AttentionDigest {
+            lazy: None,
             version: DIGEST_VERSION,
             seat: crate::protocol::ids::SeatId::new("seat"),
             token: AttentionToken {
+                lazy: None,
                 receipt: pending.iter().map(|(_, seq)| (*seq, 0)).max(),
                 unavailability_episode: 1 + *self.own_episodes.lock().unwrap(),
                 ..Default::default()

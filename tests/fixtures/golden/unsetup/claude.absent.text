@@ -3,6 +3,11 @@ harness: claude
 manifest: <root>/state/setup/claude-user-<hash32>.json
 mod: not_recorded
 note: no herdr-threads installation is recorded for these settings and this state directory; nothing changed
+permissions.allow: []
+permissions.ask: []
+permissions.manifest: <root>/state/setup/claude-permissions-<hash32>.json
+permissions.pre_existing: []
+permissions.state: not_installed
 prompt_suggestions: not_recorded
 scope: user
 settings: <root>/claude config/settings.json

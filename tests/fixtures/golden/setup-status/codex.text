@@ -27,6 +27,8 @@ instance.source: {"host_endpoint":"--host-endpoint","state_dir":"--state-dir"}
 instance.state_dir: <root>/state
 manifest: <root>/state/setup/codex-user-<hash32>.json
 observed: unknown
+permissions.rules_file: <root>/codex home/rules/herdr-threads.rules
+permissions.state: not_installed
 recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}
 recorded_phase: installed
 sandbox.omitted: setup uses approved outside-sandbox commands and installs no sandbox allowance

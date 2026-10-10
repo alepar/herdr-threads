@@ -16,9 +16,9 @@ Use **Herdr 0.9.1 or newer** on **macOS arm64**, with Claude Code or Codex on `P
 curl -fsSL https://raw.githubusercontent.com/alepar/herdr-threads/main/scripts/install.sh | bash -s -- --setup
 ```
 
-The installer downloads the latest published release, verifies its SHA-256, installs into `~/.local/share/herdr-threads`, links `~/.local/bin/herdr-threads`, and registers the plugin with Herdr. It ensures the daemon when the Herdr server is running. `--setup` confirms installation of missing user-level hooks and the ht skill for each detected supported harness; existing owned integrations update automatically; keep `~/.local/bin` on the agents' `PATH`. Re-run the installer to upgrade. [Installation guide](docs/install.md): pinned releases, building from source, setup, updating, and removal.
+The installer downloads the latest published release, verifies its SHA-256, installs into `~/.local/share/herdr-threads`, links `~/.local/bin/herdr-threads`, and registers the plugin with Herdr. It ensures the daemon when the Herdr server is running. `--setup` confirms installation of missing user-level hooks, the ht skill and permissions (agents run herdr-threads commands without prompting; person and setup commands still ask) for each detected supported harness, and `--without-permissions` never grants them; existing owned integrations update automatically; keep `~/.local/bin` on the agents' `PATH`. Re-run the installer to upgrade. [Installation guide](docs/install.md): pinned releases, building from source, setup, updating, and removal.
 
-Codex requires one-time interactive hook review and permission for CLI commands; follow the installer's next steps and [command approval guide](docs/install.md#codex-command-approvals). Linux archives are experimental: real Herdr integration remains unverified until the [clean-machine rehearsal](docs/release.md#post-merge-follow-on-checklist). Intel macOS archives are cross-built but unexercised; Windows is unsupported.
+Codex requires one-time interactive hook review; without granted permissions it also asks for CLI commands. Follow the installer's next steps and [command approval guide](docs/install.md#codex-command-approvals). Linux archives are experimental: real Herdr integration remains unverified until the [clean-machine rehearsal](docs/release.md#post-merge-follow-on-checklist). Intel macOS archives are cross-built but unexercised; Windows is unsupported.
 
 ## Try it yourself
 
@@ -60,7 +60,7 @@ herdr-threads human handoff --thread review --pane bob --kind codex \
   "You are Bob. Make the case for tabs in this thread. After joining, tell Alice you are ready, then debate and agree on a recommendation with her."
 ```
 
-Approve Codex's CLI permission request when it appears. Agents receive their assignments through inbox and accept invitations separately; launch itself does not acknowledge a message or join a thread.
+Without granted permissions, approve Codex's CLI permission request when it appears. Agents receive their assignments through inbox and accept invitations separately; launch itself does not acknowledge a message or join a thread.
 
 **5. Watch and participate.**
 

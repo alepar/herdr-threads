@@ -4,7 +4,7 @@
 use crate::{
     cli::doctor::{
         captured_legacy_status, event_registration, installed_declared, legacy_registration_line,
-        legacy_summary_lines, scalar,
+        legacy_summary_lines, permission_line, scalar,
     },
     harness::{adapter::DoctorTextForm, context::Harness},
     protocol::time::CallBudget,
@@ -136,6 +136,7 @@ pub(super) fn legacy_codex_projection(
         "scope": "user",
         "detail": "Codex hooks are user-level ($CODEX_HOME/hooks.json, set up by `herdr-threads setup codex`); Codex runs them only once trusted",
         "setup": codex_setup,
+        "permissions": super::setup::permission_status_json(&env),
         "trust": codex_trust,
         "recipes": crate::harness::recipe::describe(super::RECIPES),
         "installed": installed,
@@ -215,6 +216,7 @@ fn debug_text(codex: &Value) -> String {
     ) {
         out.push_str(&line);
     }
+    out.push_str(&permission_line("codex", &codex["permissions"]));
     out.push_str(&format!(
         "hooks.codex.trust.status: {}\n",
         scalar(&codex["trust"]["status"])

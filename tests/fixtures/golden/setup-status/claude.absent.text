@@ -36,6 +36,11 @@ mod.recorded: false
 mod.settings_value_contains_mod_dir: false
 mod.shell_env: none
 observed: unknown
+permissions.allow: []
+permissions.ask: []
+permissions.manifest: <root>/state/setup/claude-permissions-<hash32>.json
+permissions.pre_existing: []
+permissions.state: not_installed
 prompt_suggestions.note: Claude soft-deadline pokes skip a pane that shows a prompt suggestion; run `herdr-threads setup claude --disable-prompt-suggestions` to turn them off
 prompt_suggestions.set_by_setup: false
 prompt_suggestions.setting: promptSuggestionEnabled

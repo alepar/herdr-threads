@@ -30,6 +30,10 @@ instance.state_dir: <root>/state
 manifest: <root>/state/setup/codex-user-<hash32>.json
 note: installed is not observed: run `herdr-threads doctor` for native evidence. Codex sessions with another CODEX_HOME, or launched with --ignore-user-config, do not load these hooks
 observed: unknown
+permissions.action: advised
+permissions.note: agents are asked before each herdr-threads command: re-run `herdr-threads setup codex --with-permissions` to let them run herdr-threads commands without prompting (the person and setup commands keep asking), or --without-permissions to keep it this way
+permissions.rules_file: <root>/codex home/rules/herdr-threads.rules
+permissions.state: not_installed
 sandbox.omitted: setup uses approved outside-sandbox commands and installs no sandbox allowance
 sandbox.present: false
 sandbox.recorded: false

@@ -23,7 +23,7 @@ use super::{
         DISABLE_SIDELOAD_FLAGS_KEY, MANAGED_SETTINGS_DROPIN_DIR, MANAGED_SETTINGS_LINUX,
         MANAGED_SETTINGS_MACOS, MOD_MIN_VERSION, PLUGIN_DIRS_ENV, SERVER_MANAGED_SETTINGS_CACHE,
     },
-    setup::{SetupError, config_bytes, publish_manifest, write_replacement},
+    setup::{SetupError, config_bytes, publish_manifest, write_replacement, write_user_config},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -631,7 +631,7 @@ pub fn install(input: &InstallInput) -> Result<InstallOutcome, SetupError> {
         if config_bytes(input.settings)? != current {
             return Err(SetupError::Conflict);
         }
-        write_replacement(input.settings, &written, false)
+        write_user_config(input.settings, &current, &written)
     })();
     if let Err(error) = published {
         // Nothing was written: drop a record this run created, keep an earlier one.
@@ -749,7 +749,7 @@ fn revert_key(settings: &Path, manifest: &ModManifest) -> Result<RevertOutcome, 
     if config_bytes(settings)? != current {
         return Err(SetupError::Conflict);
     }
-    write_replacement(settings, &restored, false)?;
+    write_user_config(settings, &current, &restored)?;
     Ok(RevertOutcome::Reverted)
 }
 

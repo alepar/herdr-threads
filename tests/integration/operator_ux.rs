@@ -516,7 +516,6 @@ fn scratch(prefix: &str) -> (PathBuf, Scratch, PathBuf) {
     (root, guard, socket)
 }
 
-const OVERRIDE_ARGV: &str = "herdr-threads me init --operator";
 const HUMAN_OVERRIDE_ARGV: &str = "herdr-threads human me init --operator";
 
 /// TRUST-POLICY A4, client side: an agent environment marker refuses `me init`
@@ -532,7 +531,7 @@ fn me_init_refuses_with_claudecode_or_codex_marker() {
     plugin.ok(None, None, &["daemon", "ensure"]);
     for marker in [("CLAUDECODE", "1"), ("CODEX_SANDBOX", "seatbelt")] {
         let refused = plugin.refused_with_env(Some("w1:p1"), &["human", "me", "init"], &[marker]);
-        assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
+        assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
         assert!(refused.contains(marker.0), "{refused}");
     }
     // Nothing was recorded for the refused attempts.
@@ -575,7 +574,7 @@ fn me_init_refuses_where_stand_in_herdr_reports_claude_or_codex() {
     for (pane, kind) in [("w1:p1", "claude"), ("w1:p2", "codex")] {
         let refused = plugin.refused(Some(pane), &["human", "me", "init"]);
         assert!(refused.contains(kind), "{refused}");
-        assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
+        assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
     }
     // A plain shell pane is fine.
     assert_eq!(
@@ -697,7 +696,7 @@ fn flagless_command_from_human_context_with_agent_marker_refuses() {
         &["human", "thread", "create", "--topic", "x"],
         &[("CLAUDECODE", "1")],
     );
-    assert!(refused.contains(OVERRIDE_ARGV), "{refused}");
+    assert!(refused.contains(HUMAN_OVERRIDE_ARGV), "{refused}");
     assert!(refused.contains("CLAUDECODE"), "{refused}");
 }
 
@@ -858,4 +857,114 @@ fn legacy_root_person_operations_refuse_before_effects() {
         .query_row("SELECT count(*) FROM occupant_bindings", [], |r| r.get(0))
         .unwrap();
     assert_eq!(bindings, 1);
+}
+
+/// A person can execute the real summary command emitted by accept, using
+/// the same pane and the explicitly pinned private state/socket selectors.
+#[test]
+fn human_accept_summary_guidance_is_executable() {
+    use herdr_threads::{
+        cli::actor_route::InvocationActor,
+        cli::commands::parse_argv,
+        daemon::paths::{InstancePaths, RuntimeContext},
+        test_support::spawn::SpawnOwned,
+    };
+    use std::{os::unix::fs::PermissionsExt, process::Stdio};
+    let (root, _scratch, socket) = scratch("htsummary");
+    let _host = FakeHost::start(
+        &socket,
+        vec![pane("w1:p1", "term-a"), pane("w1:p2", "term-b")],
+    );
+    let plugin = Plugin {
+        state: root.join("person's state"),
+        host: socket.clone(),
+    };
+    let context = RuntimeContext::explicit(plugin.state.clone(), socket.clone(), None).unwrap();
+    let paths = InstancePaths::resolve(&context).unwrap();
+    paths.prepare_instance_dir().unwrap();
+    let settings = paths.instance_dir.join("settings.json");
+    fs::write(&settings, r#"{"summary":{"chunk_bytes":128}}"#).unwrap();
+    fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
+    plugin.ok(None, None, &["daemon", "ensure"]);
+    let person =
+        plugin.ok(Some("w1:p1"), None, &["human", "me", "init"])["data"]["context"]["seat"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    let agent = plugin.ok(None, None, &["seat", "resolve", "--pane", "w1:p2"])["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let caller = Some((agent.as_str(), "w1:p2"));
+    plugin.ok(
+        None,
+        caller,
+        &["check-in", "--lifecycle-event", "summary-start"],
+    );
+    let thread = plugin.ok(
+        None,
+        caller,
+        &[
+            "thread",
+            "create",
+            "--topic",
+            "herdr-threads human summary peer",
+        ],
+    )["data"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    plugin.ok(
+        None,
+        caller,
+        &["send", &thread, "--body", &"summary content ".repeat(30)],
+    );
+    plugin.ok(None, caller, &["invite", &thread, "--seat", &person]);
+    let mut command = herdr_threads::test_support::spawn::command(BIN);
+    command
+        .args(["human", "--human", "--state-dir"])
+        .arg(&plugin.state)
+        .arg("--host-endpoint")
+        .arg(&socket)
+        .args(["accept", &thread])
+        .env("HERDR_PANE_ID", "w1:p1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = command.spawn_owned().unwrap().wait_with_output().unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success(),
+        "{} {text}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let line = text
+        .lines()
+        .find_map(|line| line.strip_prefix("summary available: "))
+        .expect("accept summary guidance");
+    let argv = shlex::split(line).unwrap();
+    let parsed = parse_argv(argv.clone()).unwrap();
+    assert_eq!(parsed.actor, InvocationActor::Human, "{line}");
+    assert_eq!(&argv[..2], &["herdr-threads", "human"]);
+    assert!(
+        argv.windows(2)
+            .any(|pair| pair == ["--state-dir", plugin.state.to_str().unwrap()])
+    );
+    assert!(
+        argv.windows(2)
+            .any(|pair| pair == ["--host-endpoint", socket.to_str().unwrap()])
+    );
+    let mut followup = herdr_threads::test_support::spawn::command(BIN);
+    followup
+        .args(&argv[1..])
+        .env("HERDR_PANE_ID", "w1:p1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = followup.spawn_owned().unwrap().wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "summary followup failed: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("work"));
 }

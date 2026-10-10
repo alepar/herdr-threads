@@ -36,11 +36,15 @@ impl Smoke {
             .herdr
             .command(BIN)
             .arg("--json")
-            .arg("--state-dir")
-            .arg(&self.plugin_state)
-            .arg("--host-endpoint")
-            .arg(self.herdr.socket_path())
-            .args(args)
+            .args(herdr_threads::test_support::isolation::routed_argv(
+                &[
+                    std::ffi::OsStr::new("--state-dir"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&&self.plugin_state),
+                    std::ffi::OsStr::new("--host-endpoint"),
+                    AsRef::<std::ffi::OsStr>::as_ref(&self.herdr.socket_path()),
+                ],
+                args,
+            ))
             .env_remove("HERDR_PLUGIN_STATE_DIR")
             .env_remove("HERDR_PANE_ID")
             .env_remove("HERDR_BIN_PATH")

@@ -1,8 +1,6 @@
 action: status
 adopted: none
-allow_rule.ownership: owned
-allow_rule.present: true
-allow_rule.rule: Bash(herdr-threads *)
+allow_rule: none
 command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'claude' # herdr-threads-owner:<uuid>
 current_command_matches: true
 foreground.CLAUDE_CODE_DISABLE_AGENT_VIEW: none
@@ -41,6 +39,11 @@ mod.recorded: true
 mod.settings_value_contains_mod_dir: true
 mod.shell_env: none
 observed: unknown
+permissions.allow: []
+permissions.ask: []
+permissions.manifest: <root>/state/setup/claude-permissions-<hash32>.json
+permissions.pre_existing: []
+permissions.state: not_installed
 prompt_suggestions.note: Claude soft-deadline pokes skip a pane that shows a prompt suggestion; run `herdr-threads setup claude --disable-prompt-suggestions` to turn them off
 prompt_suggestions.set_by_setup: false
 prompt_suggestions.setting: promptSuggestionEnabled

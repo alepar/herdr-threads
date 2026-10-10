@@ -346,6 +346,7 @@ fn startup_tells_top_level_agent_how_to_accept_required_membership() {
     assert!(procedure.contains("revision"));
     assert!(procedure.contains("release"));
     let mut digest = crate::protocol::attention::AttentionDigest {
+        lazy: None,
         version: 1,
         seat: crate::protocol::ids::SeatId::new("seat-1"),
         token: Default::default(),
