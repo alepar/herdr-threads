@@ -9,3 +9,8 @@
 - Friction: fork-all descendants lacked parent exec outputs; bounded reads additionally exposed wrapper output cap and packet suffix split bug.
 - Adaptation: caller approved immutable packet acquisition with no repository/tracker exploration, explicit outer output caps, missing-checks suffix-only repair. All9 final reviews complete; no spec/tree drift during review. Seven+two capacity batching disclosed.
 - Improvement: dispatch literal self-contained packet through a prompt-file capable task interface; assert full output template terminal marker before fanout.
+
+### 2026-10-10 final coverage hard output limit
+- Friction: explicit inner/outer30000 still produced middle truncation of oversized packets.
+- Adaptation: preserve valid reasoning and acquire missing full tree only; final independent reviewers read four fixed sections below cap, text(result.output) only. All9 final reports complete, no exploratory reads.
+- Improvement: bounded sections should be the initial transport; full artifact remains reviewable source of truth.
