@@ -10,6 +10,7 @@ base: main
 spec: 2026-10-10-session-keyed-seat-bindings-design.md
 epic: ht-54r
 roastDesignRound: 1
+stepBackDesign-round-1: patch — four clusters (supersede rule, V29 row classes, human-seat transitions, claim-source completeness), no recurrence; root goal stands
 roast-design: 2026-10-10-session-keyed-seat-bindings-roast-design-1.md
 
 approvals:

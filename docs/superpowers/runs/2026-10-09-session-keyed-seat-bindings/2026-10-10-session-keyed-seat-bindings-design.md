@@ -62,7 +62,7 @@ Run: `docs/superpowers/runs/2026-10-09-session-keyed-seat-bindings/` (branch
    - A new binding's cursor starts at the seat's maximum cursor in each thread.
    - Once, at first contact, it gets per-thread counts of the history before that cursor.
 6. **Resume** continues from the binding's cursor. When the backlog exceeds one ordinary inbox
-   page, it fast-forwards instead (§5).
+   page, it fast-forwards instead (§2).
 7. **ACK obligations stay per seat.** The first top-level binding that fully displays a message
    settles it. Per-binding obligations were rejected, because they would turn a binding into a
    full participant.
@@ -82,14 +82,18 @@ Run: `docs/superpowers/runs/2026-10-09-session-keyed-seat-bindings/` (branch
     with a connected binding still need the idle-sample check. Human seats count as active while
     their pane exists.
 12. **Callers are attributed from the harness environment** (see the table in §1). MCP is not used.
-    PID ancestry is used for liveness only.
+    PID ancestry picks *which* harness is calling (the innermost harness rule, §1) and supplies
+    the liveness fingerprint. It never supplies the session identity itself.
 13. **Subagents** (Claude Agent-tool subagents, Codex spawned threads, Hermes delegate children)
     get their own binding and cursor. They are **read-only**: they may not ACK, send, accept,
     reject, leave, invite, check in for the seat, or do any other write.
 14. **Human seats (`me init`) are exclusive, as today.**
     - A human-mode seat holds only its human binding.
-    - An agent's lifecycle check-in in that pane ends the human binding.
-    - `me init` is refused while any agent binding is connected, unless `--operator`.
+    - Any agent binding that is enrolled or reconnected on a human-mode seat, whether by a
+      lifecycle check-in, a plain CLI or hook call, or a touch, ends the human binding.
+    - `me init` is refused while any agent binding is connected, unless `--operator`. A
+      successful `me init` ends the seat's disconnected agent bindings.
+    - Human bindings migrate as they are (V29) and are exempt from the liveness sweep.
     - Receipt waivers and the no-wake rule keep their meaning.
     - Human seats keep today's pane-context attribution path.
 15. **No session id means refusal for agents.** An agent CLI or hook call without a session id is
@@ -108,8 +112,8 @@ Run: `docs/superpowers/runs/2026-10-09-session-keyed-seat-bindings/` (branch
 
 Constraints and index changes:
 - The partial unique index `occupant_bindings_current` is dropped.
-- It is replaced by uniqueness of (seat, harness, native_session, agent_id) among bindings of a
-  non-retired seat.
+- It is replaced by a partial unique index on (seat, harness, native_session, agent_id) over
+  rows with `ended_at IS NULL`. Historical ended rows never conflict with it.
 - `ended_at` now means "ended with the seat" (retire, unresolve or rebind).
 - Disconnection is the separate `liveness` state.
 
@@ -122,10 +126,17 @@ binding", are rewritten to select bindings by identity or by liveness.
 
 | Harness | Session | Subagent identification | Liveness fingerprint |
 |---|---|---|---|
-| Claude Code (≥2.1.214) | `CLAUDE_CODE_SESSION_ID` (equal to the hook `session_id`; updated on `/clear`) | `--agent-id=<agent_id>`, inserted right after argv0 by herdr-threads' PreToolUse hook through `updatedInput`, with **no** permission decision. The hook rewrites only commands that start with `herdr-threads`/`ht`. Spike-verified: existing `Bash(herdr-threads:*)` allow rules keep matching, and a hook `allow` would approve whole compound commands. | `CLAUDE_PID` plus that process's start time |
+| Claude Code (≥2.1.214) | `CLAUDE_CODE_SESSION_ID` (equal to the hook `session_id`; updated on `/clear`) | `--agent-id=<agent_id>`, inserted right after the `herdr-threads`/`ht` command word by herdr-threads' PreToolUse hook through `updatedInput`, with **no** permission decision. The hook rewrites every simple command in the Bash line whose command word is `herdr-threads`/`ht`. It parses the line into simple commands separated by `;`, `&&`, `\|\|` and `\|`, and skips leading `VAR=value` assignments and the wrappers `env`, `command`, `nice`, `timeout`, `time` and `nohup`. Shapes it cannot recognize (a script that calls `ht`, `eval`, `$(…)`) are attributed to the parent session. This is an accepted limit, recorded in TRUST-POLICY.md. Spike-verified: existing `Bash(herdr-threads:*)` allow rules keep matching, and a hook `allow` would approve whole compound commands. | `CLAUDE_PID` plus that process's start time |
 | Codex (≥0.148) | `CODEX_THREAD_ID` | `CODEX_THREAD_ID` ≠ `CODEX_SESSION_ID` means a subagent whose parent is the binding of `CODEX_SESSION_ID`. Hook payloads carry `session_id` (the root) and `agent_id` (the subagent thread). | the agent ancestor process of the caller. A process under `codex app-server --managed-daemon` is **refused**, with a hint (keep Codex in its pane: the pane-env block from branch `codex-daemon-env`, or `--no-daemon`) |
 | Hermes | `HERMES_SESSION_ID` (fresh in every local command) | A delegate child is known through the `subagent_start` hook, which reports the child session with its parent. A CLI call whose session is a registered child acts as that subagent binding. | the Hermes process (ancestor of the command or hook) |
 | Human (`me init`) | today's pane `OccupantContext` path | n/a | today's rules |
+
+**Innermost harness rule.** When several harnesses' variables are present, the caller's harness
+is the nearest harness process among its ancestors: `claude`, `codex`, or the Hermes process
+shape. That harness's own session variable is used, and variables inherited from an outer harness
+are ignored. For example, `hermes -z` run from Claude's Bash tool sees `CLAUDE_CODE_SESSION_ID`
+and `HERMES_SESSION_ID`. Its nearest harness ancestor is Hermes, so it claims the Hermes session.
+If the nearest harness's session variable is missing, the call is refused (decision 15).
 
 **Refusals:**
 - An agent call with no session id is refused.
@@ -133,7 +144,8 @@ binding", are rewritten to select bindings by identity or by liveness.
 - These refusals carry stable error codes and name the missing variable or harness requirement.
 
 **The daemon decides (A2).** It matches the claim to a binding of the pane's seat:
-- an existing binding is touched, and becomes `connected` if it was disconnected;
+- an existing binding is touched, and becomes `connected` if it was disconnected. A touch
+  applies the same-PID supersede rule (§3), so the binding the process just left disconnects;
 - an unknown session is enrolled (§2);
 - a subagent claim attaches to its parent binding.
 
@@ -143,8 +155,16 @@ marks become per binding (§2).
 
 **Lineage.** A successor session that carries the conversation forward copies its predecessor's
 cursors (`lineage_from`).
-- **Known lineage:** Hermes compression and `/branch`, through `parent_session_id`; Claude
-  `--resume <id>`, which is the same id and therefore the same binding.
+- **Known lineage:**
+  - Hermes compression and `/branch`: the source is the `parent_session_id` in the Hermes
+    `pre_llm_call` payload. On the first turn of the successor session, the bridge reports
+    (session, parent session). When the parent is a top-level binding of the same Hermes
+    process, the successor inherits its cursors. A delegate child is distinguished by
+    `platform="subagent"` and its `subagent_start`.
+  - Claude `--resume <id>`: the same id, and therefore the same binding.
+- **If the successor's first claim arrives as a plain CLI call** before its first `pre_llm_call`,
+  it enrolls at the seat maximum. That is safe: it skips nothing a predecessor had not seen. The
+  later `pre_llm_call` then links `lineage_from` but does not move cursors backwards.
 - **Everything else** gets a new binding: Claude fork (its predecessor is not exposed), `/new`,
   `/clear` and a fresh start.
 
@@ -216,7 +236,9 @@ per binding. Each binding gets its own new-mail notices, and one binding's displ
 from another.
 
 **Subagent bindings are read-only.** Their CLI writes are refused cooperatively, using the
-recognized subagent claim. This makes enforceable the skill rule that subagents never write.
+recognized subagent claim. This enforces the skill rule that subagents never write, for every call
+the harness identifies as a subagent's. Claude subagent calls whose shape the rewrite cannot
+recognize are the accepted limit in §1.
 
 ## §3 Liveness, wake, delivery channel and cleanup
 
@@ -226,13 +248,19 @@ records or refreshes its fingerprint.
 **Becoming disconnected** (never deleted):
 - **The process exited.** The daemon re-checks fingerprints of connected bindings on a timer and
   before wake decisions.
-- **A newer session reports the same PID and harness** (Claude `/clear`, Hermes `/new`). The older
-  binding disconnects.
+- **Same-PID supersede.** Any claim from a `top_level` binding (enrollment, touch or reconnect)
+  disconnects every other connected `top_level` binding with the same harness and the same
+  liveness PID (Claude `/clear`, Hermes `/new`, or switching back to an older session). The most
+  recent claimer wins.
+  - Subagent bindings never supersede, and are never superseded.
+  - A lineage successor supersedes its predecessor only after copying its cursors.
 - **A harness end event:** Codex SessionEnd/SubagentStop, Claude SubagentStop, Hermes
   `on_session_end`/`subagent_stop`.
 - **The seat retires or becomes unresolved.**
 
-There is no timeout. A binding without a fingerprint is never admitted (decision 9).
+There is no timeout. A binding without a fingerprint is never admitted (decision 9). Migrated
+bindings start disconnected (V29), so no exception is needed. Human bindings are exempt from the
+sweep (decision 14).
 
 **Presence.**
 - A seat is **active** iff at least one of its bindings is connected. A human seat is active while
@@ -245,8 +273,10 @@ There is no timeout. A binding without a fingerprint is never admitted (decision
 - **Mod delivery channel:** the registry in `service/mod_channels.rs` becomes keyed by binding,
   so each Claude binding has its own channel. `BindingChanged`/`Replaced` closes apply to that
   binding only, and stall cooldowns are keyed per binding.
-- **Pane-level composer wake** (typing into the pane): it targets the binding Herdr reports as the
-  pane's foreground agent with `agent_status` idle. It fires at most once per seat per wake.
+- **Pane-level composer wake** (typing into the pane): it fires only when Herdr reports the pane's
+  foreground agent as idle (`agent_status`). It targets that harness's connected `top_level` binding
+  that made the most recent claim. If that harness has no connected binding on the seat, no
+  composer wake fires. It fires at most once per seat per wake.
 - **Bindings with no channel** (headless one-shots, subagents) are skipped; they pick up mail
   through their hooks and `inbox`.
 - Human seats are never woken.
@@ -307,13 +337,27 @@ both keep receiving notices and ACKing, sends are attributed to each one's own b
 one-shot disconnects when it exits.
 
 **Migration V29** (`src/store/schema.rs`):
-- Each open binding becomes a top-level binding keyed by its stored native session, with liveness
-  `connected` and no fingerprint. On its next call it must present one, or it is disconnected the
-  first time a liveness check finds no fingerprint.
+- **Every affected table and row class is listed with its fate:**
+  - **Open agent bindings** become `top_level` bindings keyed by their stored native session,
+    marked `migrated` (that session is the key re-adoption matches), with liveness
+    `disconnected` (reason `migrated`). An agent's next call carrying that session reconnects the
+    binding, with its fingerprint and cursors. An idle agent waiting at its prompt gets no wake
+    until its next turn. This is an accepted, one-time upgrade cost, documented in the release
+    notes and the docs.
+  - **Open human bindings** migrate as they are (role `top_level`, harness human), exempt from
+    the liveness sweep.
+  - **Historical ended rows** get a synthetic `binding_id`, role `top_level` and liveness
+    `disconnected`. They keep `ended_at`, so they stay outside the partial unique index.
+  - **Receipts** gain `ack_binding_id`; **messages** gain `sender_binding_id`. Both are NULL
+    before V29.
+  - **Other tables that store a binding generation** (`seat_availability`, `wake_work`,
+    `warning_offer`, `digest_notice_offer`, `catch_up`, `seat_archival`) are keyed by the migrated
+    binding's `binding_id`, or dropped where the cursor replaces them. The owning beads (§2, §3)
+    add their migrations after 0029.
 - One cursor per (binding, joined thread), at the thread's current head, so nothing is delivered
   twice.
 - Per-seat delivery state either moves to that binding or is dropped where the cursor replaces it.
-- Receipts are unchanged, since they are per seat.
+- Receipt obligations stay per seat.
 - Archived and retired data are untouched.
 
 **Protocol.**
