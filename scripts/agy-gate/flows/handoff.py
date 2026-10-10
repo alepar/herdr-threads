@@ -30,9 +30,7 @@ def child_tab_present(world):
 
 
 def run(world):
-    scenario = _l4.load_scenario(SCENARIO)
-    scenario["vars"] = dict(scenario.get("vars", {}), AGY=_l4.wrapper(world))
-    world.backend.load(scenario)
+    scenario = _l4.load_into(world, SCENARIO, AGY=_l4.wrapper(world))
     world.check("setup agy succeeds", world.setup_agy().returncode == 0)
     pane = world.start_agy()
     # The first turn enrolls the parent; the handoff turn then runs as an enrolled top-level seat.

@@ -30,6 +30,25 @@ a private Herdr session, a herdr-threads daemon, the fake server, a `cp -c` clon
 `~/.codex`, `~/.aisw`, `~/.hermes`, writes only under the root) and an isolated HOME. `world.ht(...)` refuses any
 environment whose HOME is outside the root, so a flow can never touch the real home.
 
+### Running against genuine agy 1.3.2
+
+- `setup` and `unsetup` run through the `human` namespace, as the operator of the gate's isolated world: since
+  herdr-threads v0.6.0 an agent-actor call of an escalating command must start with that word, and `World.ht`
+  always puts `--state-dir` first.
+- `World.start_agy` walks agy's first-run wizard (color scheme, Terms of Service) in each fresh HOME, then waits for
+  the composer footer. It never answers a trust prompt (the `allow-rewrite` flow owns that one). A pane agy reaches
+  without `start_agy` (`launch`) walks the wizard itself.
+- Every pane shell finds the sandbox `agy` wrapper first (`<root>/home/.zshenv`), since `launch` and `handoff`
+  type `agy` by name into a new pane.
+- Scripted `run_command` calls carry all five properties the genuine declaration requires (`CommandLine`, `Cwd`,
+  `WaitMsBeforeAsync`, `toolSummary`, `toolAction`), with `Cwd` bound to the world's `ws`; `invoke_subagent` carries
+  `Subagents`, `toolSummary` and `toolAction`. The `permission` flow's denied command ends in `touch`, because agy
+  runs `; true` unprompted.
+- The `subagent` flow enrolls the parent with a first turn (agy fires no enrolling hook at startup) and expects one
+  more parent request after the child reports.
+- Acceptance: `scripts/agy-native-gate --flow boot --flow setup --flow permission --flow allow-rewrite --flow unsetup
+  --flow launch --flow handoff --flow enroll --flow subagent --flow clear --flow resume`.
+
 ### Exit codes
 
 | Code | Meaning |

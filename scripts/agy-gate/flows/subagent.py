@@ -14,6 +14,7 @@ for _dir in (GATE_DIR, GATE_DIR / "flows", GATE_DIR.parent / "agy-sandbox"):
     if str(_dir) not in sys.path:
         sys.path.insert(0, str(_dir))
 
+import _l4  # noqa: E402
 import _l5  # noqa: E402
 import observe  # noqa: E402
 from gate import Flow  # noqa: E402
@@ -31,15 +32,21 @@ def run(world):
     setup = world.setup_agy()
     world.check("setup agy succeeds", setup.returncode == 0, (setup.stderr or setup.stdout).strip()[:200])
     pane = world.start_agy()
+    # Genuine agy enrolls on its first turn (no SessionStart binding at startup), so enroll the parent first.
+    _l5.run_turn(world, pane, "PARENT-ENROLL hello", "enroll")
     before = _l5.await_binding(world, lambda b: True)
-    world.check("the parent is enrolled before the prompt", before is not None,
+    world.check("the parent is enrolled before the subagent turn", before is not None,
                 "bindings=%s" % _l5.live_bindings(world))
     seats_before = _l5.seat_count(world)
     pane.prompt("PARENT-GO start")
     child_request = _l5.await_step(world, "child", 60)
     parent_final = _l5.await_step(world, "parent-final", 60)
+    # The subagent runs in the background; when it finishes, agy wakes the parent once more to read its report.
+    _l5.await_step(world, "parent-report", 60)
     settled = pane.wait("idle", 60)
-    world.check("the parent invoked the subagent", _l5.request_for(world, "parent-call") is not None)
+    parent_call = _l5.request_for(world, "parent-call")
+    world.check("the parent invoked the subagent", parent_call is not None)
+    world.artifact("invoke-subagent-declaration.json", _l4.tool_declaration(world, parent_call, "invoke_subagent"))
     world.check("the child request was served", child_request is not None)
     world.check("the parent resumed after the child", parent_final is not None)
     world.check("agy returned to idle", settled)

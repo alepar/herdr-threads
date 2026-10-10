@@ -3,7 +3,9 @@
 Everything runs in one pane so the seat is the same. After ``--conversation A``: same seat, binding
 native session A, no new seat. ``-c`` resumes the most recent conversation, which is A only because
 A was the most recent at that point: no rotation, generation unchanged. Neither resume start fires
-``SessionStart``, so no request carries a second startup check-in.
+``SessionStart``, so no request carries a second SessionStart-injected startup check-in. The Resume
+lifecycle's own notice ("this conversation is the pane's top-level session") restates the startup
+text by design (PRE_INVOCATION_LIFECYCLE_PREFIX) and is not a SessionStart injection.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ import observe  # noqa: E402
 from gate import Flow  # noqa: E402
 
 SCENARIO = GATE_DIR / "scenarios" / "resume.json"
+SESSION_START_PREFIX = "The following system message was injected by a SessionStart hook"
 
 
 def run(world):
@@ -71,7 +74,9 @@ def run(world):
     pane.exit()
 
     mains = observe.main_requests(world)
-    doubled = [r.get("seq") for r in mains if _l5.startup_count(r) > 1]
+    doubled = [r.get("seq") for r in mains
+               if sum(1 for m in r.get("system_messages", [])
+                      if _l5.STARTUP_MARK in m and m.startswith(SESSION_START_PREFIX)) > 1]
     world.check("no request carries a second startup check-in", not doubled, "requests=%s" % doubled)
     _l5.finish_checks(world, scenario)
 

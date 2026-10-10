@@ -4,16 +4,23 @@
   "aux_text": "Gate subagent title",
   "default": {"text": "SUBAGENT-UNEXPECTED"},
   "steps": [
+    {"label": "enroll",
+     "match": {"contains": ["PARENT-ENROLL"]},
+     "reply": {"text": "PARENT-ENROLLED"}},
     {"label": "parent-call",
      "match": {"contains": ["PARENT-GO"], "not_contains": ["CHILD-PROMPT"]},
      "reply": {"call": "invoke_subagent",
                "args": {"Subagents": [{"Model": "inherit", "Prompt": "CHILD-PROMPT say hi",
-                                       "Role": "Gate Child", "TypeName": "self"}]}}},
+                                       "Role": "Gate Child", "TypeName": "self"}],
+                        "toolSummary": "gate", "toolAction": "gate"}}},
     {"label": "child",
      "match": {"contains": ["CHILD-PROMPT"]},
      "reply": {"text": "CHILD-OK"}},
     {"label": "parent-final",
      "match": {"contains": ["PARENT-GO"], "not_contains": ["CHILD-PROMPT"]},
-     "reply": {"text": "PARENT-DONE"}}
+     "reply": {"text": "PARENT-DONE"}},
+    {"label": "parent-report",
+     "match": {"contains": ["PARENT-GO"], "not_contains": ["CHILD-PROMPT"]},
+     "reply": {"text": "PARENT-REPORTED"}}
   ]
 }

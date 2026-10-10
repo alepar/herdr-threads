@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -116,6 +117,27 @@ class IsolationTests(unittest.TestCase):
             self.assertEqual(argv, "--state-dir %s/ht --host-endpoint %s/h.sock inbox" % (tmp, tmp))
             self.assertEqual(pane, "p_1")
 
+    def _fake_ht_world(self, tmp):
+        script = Path(tmp) / "fake-ht"
+        script.write_text('#!/bin/sh\necho "$*"\n')
+        script.chmod(0o755)
+        w = self.world(tmp)
+        w.herdr_threads_bin = str(script)
+        return w
+
+    def test_setup_agy_runs_in_the_human_namespace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            w = self._fake_ht_world(tmp)
+            base = "human --state-dir %s/ht --host-endpoint %s/h.sock setup agy" % (tmp, tmp)
+            self.assertEqual(w.setup_agy().stdout.strip(), base + " --with-permissions")
+            self.assertEqual(w.setup_agy(permissions=False).stdout.strip(), base)
+
+    def test_unsetup_agy_runs_in_the_human_namespace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            w = self._fake_ht_world(tmp)
+            self.assertEqual(w.unsetup_agy().stdout.strip(),
+                             "human --state-dir %s/ht --host-endpoint %s/h.sock unsetup agy" % (tmp, tmp))
+
     def test_herdr_env_drops_inherited_herdr_variables(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.environ["HERDR_PANE_ID"] = "leaked"
@@ -154,6 +176,59 @@ class PaneTests(unittest.TestCase):
         self.assertIsNone(self.pane(1, '{"error":{"code":"agent_not_found"}}').agent_name())
         self.assertIsNone(self.pane(0, "not json").agent_name())
         self.assertIsNone(self.pane(0, '{"result":{"agent":null}}').agent_name())
+
+    class ScreenWorld(object):
+        """Returns successive screens for ``pane read`` and records ``agent send-keys``."""
+        timeout_scale = 1.0
+
+        def __init__(self, screens):
+            self.screens = list(screens)
+            self.sent = []
+
+        def herdr(self, *argv, **kwargs):
+            if argv[:2] == ("pane", "read"):
+                text = self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
+                return PaneTests.Result(0, text)
+            if argv[:2] == ("agent", "send-keys"):
+                self.sent.append(tuple(argv[3:]))
+            return PaneTests.Result(0, "")
+
+    def walk_pane(self, screens):
+        world = self.ScreenWorld(screens)
+        return world, agyenv.AgyPane(world, "w1:p2")
+
+    COLOR = "Choose your color scheme\n> dark"
+    TERMS = "Terms of Service\n[ ] share data\n[Done]"
+    FOOTER = "? for shortcuts"
+
+    def test_onboarding_walk_dismisses_color_then_terms_and_stops_at_the_footer(self):
+        world, pane = self.walk_pane([self.COLOR, self.TERMS, self.FOOTER])
+        with mock.patch.object(agyenv.time, "sleep"):
+            pages = pane.dismiss_onboarding()
+        self.assertEqual(pages, ["color", "terms"])
+        self.assertEqual(world.sent, [("Enter",), ("Down",), ("Right",), ("Enter",)])
+
+    def test_onboarding_walk_is_a_no_op_at_the_composer(self):
+        world, pane = self.walk_pane([self.FOOTER])
+        with mock.patch.object(agyenv.time, "sleep"):
+            self.assertEqual(pane.dismiss_onboarding(), [])
+        self.assertEqual(world.sent, [])
+
+    def test_onboarding_walk_leaves_a_trust_prompt_alone(self):
+        world, pane = self.walk_pane(["Do you trust the files in this folder?\n1. Yes\n2. No"])
+        with mock.patch.object(agyenv.time, "sleep"):
+            self.assertEqual(pane.dismiss_onboarding(), [])
+        self.assertEqual(world.sent, [])
+
+    def test_survey_dismissal_sends_zero_only_when_the_survey_shows(self):
+        world, pane = self.walk_pane([agyenv.SURVEY + "\n[0] Skip"])
+        with mock.patch.object(agyenv.time, "sleep"):
+            self.assertTrue(pane.dismiss_survey())
+        self.assertEqual(world.sent, [("0",)])
+        world, pane = self.walk_pane([self.FOOTER])
+        with mock.patch.object(agyenv.time, "sleep"):
+            self.assertFalse(pane.dismiss_survey())
+        self.assertEqual(world.sent, [])
 
     def test_scrub_agent_env_drops_identity_and_credentials(self):
         env = {"CLAUDECODE": "1", "OPENROUTER_API_KEY": "k", "GEMINI_API_KEY": "g", "PATH": "/bin", "HOME": "/h"}

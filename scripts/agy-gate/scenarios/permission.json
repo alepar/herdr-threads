@@ -5,6 +5,9 @@
   "default": {
     "text": "PERMISSION-UNEXPECTED"
   },
+  "vars": {
+    "cwd": "/unset"
+  },
   "steps": [
     {
       "label": "allowed-call",
@@ -16,7 +19,11 @@
       "reply": {
         "call": "run_command",
         "args": {
-          "CommandLine": "herdr-threads --version"
+          "CommandLine": "herdr-threads --version",
+          "Cwd": "{var.cwd}",
+          "WaitMsBeforeAsync": 1000,
+          "toolAction": "gate",
+          "toolSummary": "gate"
         }
       }
     },
@@ -41,7 +48,11 @@
       "reply": {
         "call": "run_command",
         "args": {
-          "CommandLine": "herdr-threads --version; true"
+          "CommandLine": "herdr-threads --version; touch gate-marker",
+          "Cwd": "{var.cwd}",
+          "WaitMsBeforeAsync": 1000,
+          "toolAction": "gate",
+          "toolSummary": "gate"
         }
       }
     },

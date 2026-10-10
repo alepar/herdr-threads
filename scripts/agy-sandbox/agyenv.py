@@ -303,6 +303,10 @@ class Sender(object):
         return self.world.ht(argv, pane=self.pane_id, check=check)
 
 
+ONBOARDING_FOOTER = "? for shortcuts"
+SURVEY = "How's the CLI experience so far"
+
+
 class AgyPane(object):
     def __init__(self, world, pane_id):
         self.world = world
@@ -358,6 +362,42 @@ class AgyPane(object):
         result = self.world.herdr("agent", "wait", self.pane_id, *states, "--timeout",
                                   str(int(scaled * 1000)), check=False, timeout=scaled + 15)
         return result.returncode == 0
+
+    def dismiss_onboarding(self, limit=10):
+        """Walk a first-run wizard (color scheme, then Terms of Service) until the prompt footer shows.
+
+        The genuine agy 1.3.2 shows it on every fresh HOME and Herdr reports the wizard as ``idle``, so a
+        prompt typed into it is lost. Recognises only the wizard pages (never the trust prompt). Returns
+        the pages it dismissed (empty when there was none)."""
+        pages = []
+        for _ in range(limit):
+            tail = "\n".join(self.read_pane(80).splitlines()[-30:])
+            if ONBOARDING_FOOTER in tail:
+                break
+            if "Choose your color scheme" in tail:
+                pages.append("color")
+                self.keys("Enter")
+            elif "Terms of Service" in tail and "[Done]" in tail:
+                pages.append("terms")
+                self.keys("Down")
+                self.keys("Right")
+                self.keys("Enter")
+            elif "Done" in tail and "Navigate" in tail:
+                pages.append("confirm")
+                self.keys("Enter")
+            else:
+                break
+            time.sleep(1.5)
+        return pages
+
+    def dismiss_survey(self):
+        """Skip agy's feedback survey (``[0] Skip``), which appears after an executor error and swallows
+        the next typed prompt. True when it was showing."""
+        if SURVEY not in "\n".join(self.read_pane(80).splitlines()[-20:]):
+            return False
+        self.keys("0")
+        time.sleep(1)
+        return True
 
     def exit(self):
         """``/exit`` bounded by 5 s; the world's teardown sweeps whatever survives."""
@@ -524,6 +564,8 @@ class World(object):
                     "cache", "data"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
         seed_settings(self.root)
+        # Every pane shell (a launch or handoff target types `agy` by name) finds the wrapper first.
+        (self.root / "home" / ".zshenv").write_text('export PATH=%s:"$PATH"\n' % shlex.quote(str(self.root / "bin")))
         (self.root / "loopback.sb").write_text(render_profile(self.root, real_home()))
         ih("ih_start", self.root, "agy-gate", owner=self.owner_pid, run_id=self.run_id, timeout=60)
         link = self.root / "bin" / "herdr-threads"
@@ -542,12 +584,17 @@ class World(object):
 
         ``permissions`` passes ``--with-permissions``: agy's allow member is installed only with
         consent, so a plain ``setup agy`` (``permissions=False``) adds it only when a grant is recorded.
+
+        Runs in the ``human`` namespace: since v0.6.0 an agent-actor call of an escalating command must
+        start with that word, and ``World.ht`` always puts ``--state-dir`` first. The gate acts as the
+        operator of its isolated world.
         """
         argv = ["setup", "agy"] + (["--with-permissions"] if permissions else [])
-        return self.ht(argv, check=False)
+        return self.ht(argv, check=False, human=True)
 
     def unsetup_agy(self):
-        return self.ht(["unsetup", "agy"], check=False)
+        """``herdr-threads unsetup agy`` in the isolated HOME, as the operator (``human`` namespace)."""
+        return self.ht(["unsetup", "agy"], check=False, human=True)
 
     def _stage(self):
         """Clone the binary to ``agybin/<n>/agy`` (``cp -c``, else copy) and write the wrapper."""
@@ -612,6 +659,13 @@ class World(object):
             time.sleep(1)
         if result.returncode != 0:
             raise WorldError("agy in pane %s never became idle: %s" % (pane, (result.stderr or result.stdout).strip()[:300]))
+        pages = agy_pane.dismiss_onboarding()
+        if pages:
+            self.artifact("onboarding-pages.txt", ",".join(pages))
+        # Herdr reports `idle` before the composer takes input: keystrokes typed at once lose their first
+        # characters (genuine agy 1.3.2 on a restart in a used HOME), so wait for the footer and let it settle.
+        wait_until(lambda: ONBOARDING_FOOTER in agy_pane.read_pane(80), 30 * self.timeout_scale, step=0.5)
+        time.sleep(1.5)
         return agy_pane
 
     def agy_running(self):

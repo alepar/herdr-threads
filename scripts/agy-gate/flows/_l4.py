@@ -94,13 +94,22 @@ def allow_state(status):
 def setup_json(world, permissions=True):
     """``setup agy`` with ``--json``: ``(returncode, data)``; ``permissions`` adds ``--with-permissions``."""
     argv = ["--json", "setup", "agy"] + (["--with-permissions"] if permissions else [])
-    result = world.ht(argv, check=False)
+    result = world.ht(argv, check=False, human=True)  # the operator route: an agent call must start with `setup`
     try:
         doc = json.loads(result.stdout)
     except ValueError:
         return result.returncode, {}
     data = doc.get("result", {}).get("data", doc) if isinstance(doc, dict) else {}
     return result.returncode, data
+
+
+def load_into(world, path, **extra_vars):
+    """Load a scenario into the world's fake server with ``cwd`` bound to the world's ``ws``
+    (agy's ``run_command`` requires ``Cwd``) plus ``extra_vars``; returns the scenario."""
+    scenario = load_scenario(path)
+    scenario["vars"] = dict(scenario.get("vars", {}), cwd=str(world.ws), **extra_vars)
+    world.backend.load(scenario)
+    return scenario
 
 
 def agy_cli(world, *args, timeout=30):
@@ -138,6 +147,29 @@ def body_text(world, request):
         return (Path(world.ctl) / rel).read_text()
     except OSError:
         return ""
+
+
+def tool_declaration(world, request, name):
+    """The ``functionDeclarations`` entry called ``name`` in a saved request body (None when absent)."""
+    try:
+        body = json.loads(body_text(world, request))
+    except ValueError:
+        return None
+    found = None
+
+    def walk(node):
+        nonlocal found
+        if isinstance(node, dict):
+            if node.get("name") == name and ("parameters" in node or "parametersJsonSchema" in node):
+                found = found or node
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(body)
+    return found
 
 
 def version_token(world):

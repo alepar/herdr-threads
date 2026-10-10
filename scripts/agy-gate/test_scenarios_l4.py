@@ -58,7 +58,7 @@ class L4ScenarioTests(unittest.TestCase):
         self.assertEqual(cursor.select(history)["label"], "denied-final")
         steps = {s["label"]: s for s in load("permission")["steps"]}
         self.assertEqual(steps["allowed-call"]["reply"]["args"]["CommandLine"], "herdr-threads --version")
-        self.assertEqual(steps["denied-call"]["reply"]["args"]["CommandLine"], "herdr-threads --version; true")
+        self.assertEqual(steps["denied-call"]["reply"]["args"]["CommandLine"], "herdr-threads --version; touch gate-marker")
 
     def test_handoff_command_uses_new_tab_kind_agy_and_a_var_for_the_binary(self):
         data = load("handoff")
@@ -77,6 +77,54 @@ class L4ScenarioTests(unittest.TestCase):
         self.assertIn(helper().LAUNCH_REFUSAL, source)
         self.assertIn('ALLOW_RULE: &str = "%s"' % helper().ALLOW_RULE,
                       (HERE.parents[1] / "src" / "harness" / "agy" / "setup.rs").read_text())
+
+
+    def test_every_run_command_carries_the_properties_agy_requires(self):
+        required = {"CommandLine", "Cwd", "WaitMsBeforeAsync", "toolAction", "toolSummary"}
+        for name in REQUIRES:
+            sc = load(name)
+            for step in sc["steps"]:
+                reply = step["reply"]
+                for call in ([reply] if "call" in reply else reply.get("calls", [])):
+                    if call["call"] != "run_command":
+                        continue
+                    self.assertTrue(required <= set(call["args"]), (name, step["label"], call["args"]))
+                    self.assertEqual(call["args"]["Cwd"], "{var.cwd}", (name, step["label"]))
+                    self.assertIn("cwd", sc.get("vars", {}), name)
+
+
+class L4WorldHelperTests(unittest.TestCase):
+    def test_setup_json_runs_in_the_human_namespace(self):
+        calls = []
+
+        class Result(object):
+            returncode = 0
+            stdout = '{"result":{"data":{"action":"installed"}}}'
+
+        class World(object):
+            def ht(self, argv, check=True, human=False, **kwargs):
+                calls.append((argv, check, human))
+                return Result()
+
+        rc, data = helper().setup_json(World())
+        self.assertEqual((rc, data), (0, {"action": "installed"}))
+        self.assertEqual(calls, [(["--json", "setup", "agy", "--with-permissions"], False, True)])
+
+    def test_load_into_binds_cwd_and_extra_vars(self):
+        loaded = []
+
+        class Backend(object):
+            def load(self, scenario):
+                loaded.append(scenario)
+
+        class World(object):
+            ws = Path("/x/ws")
+            backend = Backend()
+
+        sc = helper().load_into(World(), HERE / "scenarios" / "handoff.json", AGY="/bin/agy")
+        self.assertEqual(sc["vars"]["cwd"], "/x/ws")
+        self.assertEqual(sc["vars"]["AGY"], "/bin/agy")
+        self.assertEqual(loaded, [sc])
 
 
 class L4HelperTests(unittest.TestCase):
