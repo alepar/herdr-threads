@@ -812,6 +812,25 @@ fn invitations_and_warnings_collapse_into_one_attention_line_per_version() {
 }
 
 #[test]
+fn the_attention_line_follows_the_command_prefix() {
+    let mut state = EmitState::new(None).with_command_prefix(vec![
+        "/opt/ht".into(),
+        "--state-dir".into(),
+        "/s".into(),
+    ]);
+    let (_, got) = run_drain(&paged_client(vec![vec![invitation()]]), 5, &mut state);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].id, "attention:5");
+    assert_eq!(
+        got[0].item,
+        WatchItem::Attention(crate::protocol::watch::WatchAttention {
+            attention_version: 5,
+            text: "herdr-threads: attention pending; run /opt/ht --state-dir /s inbox".to_owned(),
+        })
+    );
+}
+
+#[test]
 fn a_drain_that_finds_nothing_pending_retracts_the_last_attention_line() {
     let mut state = EmitState::default();
     let ids = |got: &[WatchLine]| got.iter().map(|l| l.id.clone()).collect::<Vec<_>>();

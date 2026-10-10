@@ -384,6 +384,29 @@ fn truncation_marker_quotes_selector_paths() {
 }
 
 #[test]
+fn attention_marker_for_the_default_prefix_is_the_marker() {
+    let marker = crate::notification::policy::MARKER;
+    assert_eq!(attention_marker_for(&[]), marker);
+    assert_eq!(attention_marker_for(&["herdr-threads".to_owned()]), marker);
+}
+
+#[test]
+fn attention_marker_for_follows_the_prefix() {
+    let prefix: Vec<String> = ["/opt/ht", "--state-dir", "/s"].map(String::from).to_vec();
+    assert_eq!(
+        attention_marker_for(&prefix),
+        "herdr-threads: attention pending; run /opt/ht --state-dir /s inbox"
+    );
+    let spaced: Vec<String> = ["herdr-threads", "--state-dir", "/tmp/my state"]
+        .map(String::from)
+        .to_vec();
+    assert_eq!(
+        attention_marker_for(&spaced),
+        "herdr-threads: attention pending; run herdr-threads --state-dir '/tmp/my state' inbox"
+    );
+}
+
+#[test]
 fn truncation_marker_for_empty_prefix_is_bare() {
     let id = MessageId::new("m9");
     assert_eq!(

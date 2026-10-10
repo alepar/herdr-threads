@@ -667,6 +667,103 @@ fn the_marker_prefix_reaches_the_truncation_marker() {
     assert!(page(reply).text.contains("/opt/ht --state-dir /s body big"));
 }
 
+/// One pending invitation for seat `s` (what wakes a seat without a message).
+fn pending_invitation(f: &Fixture) {
+    let decision: i64 =
+        f.db.query_row(
+            "SELECT decision_seq+1 FROM host_instances WHERE id='i'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    f.db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t2','i','topic','goal',0,0,1)", []).unwrap();
+    f.db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES('inv','t2','s',1,'pending',0,?1,300,300)", [decision]).unwrap();
+    bump_wake_attention(f);
+}
+fn pull_with_prefix(
+    f: &Fixture,
+    claim: &CallerClaim,
+    seen: Option<u64>,
+    prefix: &[&str],
+) -> DeliveryPullReply {
+    let command = Command::DeliveryPull(DeliveryPull {
+        claim: claim.clone(),
+        seen_attention_version: seen,
+        marker_prefix: prefix.iter().map(|part| (*part).to_owned()).collect(),
+    });
+    match f.service.handle(command, peer(), &budget()).unwrap() {
+        CommandResult::DeliveryPulled(reply) => reply,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn attention_block_is_present_with_a_pending_invitation_and_follows_the_marker_prefix() {
+    let f = fixture(0);
+    pending_invitation(&f);
+    let context = pull_seat(&f);
+    let first = page(pull_with_prefix(
+        &f,
+        &context,
+        None,
+        &["/opt/ht", "--state-dir", "/s"],
+    ));
+    assert!(
+        first.text.contains(&format!(
+            "[herdr-threads] attention {}:",
+            first.attention_version
+        )),
+        "{}",
+        first.text
+    );
+    assert!(
+        first.text.contains("run /opt/ht --state-dir /s inbox"),
+        "{}",
+        first.text
+    );
+    // The default prefix keeps the wake marker byte for byte.
+    let f = fixture(0);
+    pending_invitation(&f);
+    let context = pull_seat(&f);
+    let default = page(pull(&f, &context, None));
+    assert!(
+        default.text.contains(crate::notification::policy::MARKER),
+        "{}",
+        default.text
+    );
+}
+
+#[test]
+fn attention_block_is_absent_when_the_version_was_seen() {
+    let f = fixture(0);
+    pending_invitation(&f);
+    let context = pull_seat(&f);
+    let first = page(pull(&f, &context, None));
+    assert!(first.text.contains("attention"), "{}", first.text);
+    assert_eq!(
+        pull(&f, &context, Some(first.attention_version)),
+        DeliveryPullReply::Unchanged {
+            attention_version: first.attention_version
+        }
+    );
+}
+
+#[test]
+fn an_attention_only_page_answers_page() {
+    let f = fixture(0);
+    pending_invitation(&f);
+    let context = pull_seat(&f);
+    let only = page(pull(&f, &context, None));
+    assert!(only.offered.is_empty(), "{:?}", only.offered);
+    assert!(only.truncated.is_empty(), "{:?}", only.truncated);
+    assert!(only.text.contains("attention"), "{}", only.text);
+    assert!(
+        !only.text.contains("[herdr-threads] message"),
+        "{}",
+        only.text
+    );
+}
+
 #[test]
 fn attention_version_moves_with_every_fingerprint_field() {
     use crate::ports::ModFingerprint;

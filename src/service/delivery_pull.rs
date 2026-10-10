@@ -296,7 +296,7 @@ impl DomainService {
             blocks.push(FrameItem {
                 kind: "attention".to_owned(),
                 id: version.to_string(),
-                body: crate::notification::policy::MARKER.to_owned(),
+                body: crate::protocol::watch::attention_marker_for(&pull.marker_prefix),
                 ..FrameItem::default()
             });
         }

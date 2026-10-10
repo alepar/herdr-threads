@@ -127,6 +127,25 @@ pub fn truncation_marker_for(prefix: &[String], id: &MessageId, lazy: bool) -> S
     }
 }
 
+/// The attention block's text: the same sentence as
+/// `notification::policy::MARKER`, with the command spelled by `prefix` (the
+/// invocation the agent's shell must use, as for [`truncation_marker_for`]);
+/// empty means bare `herdr-threads`, which gives `MARKER` byte for byte.
+pub fn attention_marker_for(prefix: &[String]) -> String {
+    let program = [MARKER_PROGRAM.to_owned()];
+    let prefix = if prefix.is_empty() {
+        &program[..]
+    } else {
+        prefix
+    };
+    let mut argv = prefix.to_vec();
+    argv.push("inbox".to_owned());
+    format!(
+        "herdr-threads: attention pending; run {}",
+        super::output::format_command_argv(&argv)
+    )
+}
+
 /// Daemon setting `mod_delivery` (`src/daemon/settings.rs` re-uses it).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
