@@ -347,24 +347,14 @@ fn with_the_daemon_down_a_routine_hook_prints_nothing_and_exits_zero() {
     }
 }
 
-/// With the daemon stopped, a lifecycle hook (a top-level `SessionStart`, a `/clear`, and the inv0
-/// turn starts that carry a fresh start or a resume) still exits 0 (ht-poh.11), inside its
-/// production 5 s lifecycle budget (the hook runs unscaled). Unlike the routine `hook_step` events
-/// these run the core check-in, which ensures a daemon within that budget; with no Herdr behind
-/// it the check-in is refused and the one step the hook may print is the locked-shape "check-in
-/// unavailable" notice: never the startup context, never a binding.
-#[test]
-fn with_the_daemon_down_the_lifecycle_hooks_exit_zero_and_enroll_nothing() {
-    for (layout, event, name) in [
-        ("top-level", "SessionStart", "session-start-top"),
-        ("clear", "SessionStart", "session-start-after-clear"),
-        ("top-level", "PreInvocation", "pre-invocation-inv0-fresh"),
-        (
-            "resume-stale-lock",
-            "PreInvocation",
-            "pre-invocation-inv0-resume",
-        ),
-    ] {
+/// With the daemon stopped, each lifecycle case still exits 0 (ht-poh.11) inside its production 5 s
+/// lifecycle budget (the hook runs unscaled) and prints, as the Claude and Codex lifecycle hooks do,
+/// the shared "check-in unavailable" notice as exactly one valid `systemMessage` step: never the
+/// startup context, never a malformed step, and never a binding (ht-poh.47). Unlike the routine
+/// `hook_step` events these run the core check-in, which ensures a daemon within that budget; with
+/// no Herdr behind it the check-in is refused.
+fn daemon_down_prints_one_check_in_unavailable_message(cases: &[(&str, &str, &str)]) {
+    for &(layout, event, name) in cases {
         let mut fx = Fixture::start();
         let home = home_with(&fx, layout);
         fx.stop();
@@ -380,20 +370,58 @@ fn with_the_daemon_down_the_lifecycle_hooks_exit_zero_and_enroll_nothing() {
             "{layout} {event} {name}: the lifecycle bound is 5 s, took {:?}",
             hook.elapsed
         );
-        if !hook.stdout.is_empty() {
-            let text = system_message(&hook);
-            assert!(
-                text.contains("check-in unavailable"),
-                "{layout} {name}: {text}"
-            );
-            assert!(!text.contains("Use inbox"), "{layout} {name}: {text}");
-        }
+        // Exactly one JSON value, then at most one newline.
+        let body = hook.stdout.strip_suffix(b"\n").unwrap_or(&hook.stdout);
+        let mut values = serde_json::Deserializer::from_slice(body).into_iter::<Value>();
+        assert!(
+            values.next().is_some_and(|v| v.is_ok()),
+            "{layout} {name}: stdout is not a JSON value: {:?}",
+            String::from_utf8_lossy(&hook.stdout)
+        );
+        assert!(
+            values.next().is_none(),
+            "{layout} {name}: more than one JSON value: {:?}",
+            String::from_utf8_lossy(&hook.stdout)
+        );
+        let text = system_message(&hook);
+        assert!(
+            text.contains("herdr-threads: check-in unavailable ("),
+            "{layout} {name}: {text}"
+        );
+        assert!(!text.contains("Use inbox"), "{layout} {name}: {text}");
+        assert!(
+            text.len()
+                <= herdr_threads::cli::hook::MAX_CONTEXT
+                    + herdr_threads::harness::agy::decode::PRE_INVOCATION_LIFECYCLE_PREFIX.len(),
+            "{layout} {name}: {} bytes",
+            text.len()
+        );
         assert_eq!(
             live_bindings(&fx),
             0,
             "{layout} {name}: nothing was enrolled"
         );
     }
+}
+
+#[test]
+fn with_the_daemon_down_session_start_prints_one_check_in_unavailable_system_message() {
+    daemon_down_prints_one_check_in_unavailable_message(&[
+        ("top-level", "SessionStart", "session-start-top"),
+        ("clear", "SessionStart", "session-start-after-clear"),
+    ]);
+}
+
+#[test]
+fn with_the_daemon_down_inv0_prints_one_check_in_unavailable_system_message() {
+    daemon_down_prints_one_check_in_unavailable_message(&[
+        ("top-level", "PreInvocation", "pre-invocation-inv0-fresh"),
+        (
+            "resume-stale-lock",
+            "PreInvocation",
+            "pre-invocation-inv0-resume",
+        ),
+    ]);
 }
 
 /// `herdr-threads --json <command>` as the cooperative stand-in caller `seat` on `pane`, whose

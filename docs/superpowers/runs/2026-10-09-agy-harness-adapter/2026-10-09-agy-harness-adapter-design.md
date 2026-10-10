@@ -359,3 +359,5 @@ The final live smoke is gated on the fix loop's exit (super-auto §Gates).
 ## Post-Implementation Notes
 
 > *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+- 2026-10-10 (ht-poh.47, human decision): §3 "Output discipline (R4)" is amended toward harness parity: with the daemon down, the lifecycle hooks (SessionStart, inv0 fresh/resume/clear) print the shared `check-in unavailable` notice as one valid `systemMessage` step, as Claude and Codex do; routine `PreInvocation` and `Stop` still print nothing. Pinned by `tests/hook_entrypoint/agy.rs` `with_the_daemon_down_*`.
