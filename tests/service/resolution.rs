@@ -1872,12 +1872,13 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(generation, 1);
+    // ht-54r.3: the check-in registers a binding and leaves the generation (0) alone.
+    assert_eq!(generation, 0);
     let ack = Command::Ack(Ack {
         messages: vec![MessageId::new("search-message")],
         operation: OperationId::new("ack-during-held-search"),
         claim: CallerClaim {
-            binding_generation: 1,
+            binding_generation: 0,
             ..claim
         },
     });

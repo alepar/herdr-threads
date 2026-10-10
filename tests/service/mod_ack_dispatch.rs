@@ -255,7 +255,9 @@ fn older_generation_ack_is_stale_generation() {
         ),
         "ci-2",
     );
-    assert!(second.binding_generation > first.binding_generation);
+    // ht-54r.3: a second session is a binding of its own; the mapping generation holds, and the
+    // old session's ack is stale because it is no longer the seat's mod-channel session.
+    assert_eq!(second.binding_generation, first.binding_generation);
     let report = ack(&f, first, &["m1"], "op").unwrap();
     assert_eq!(all(&report), vec![(ModAckOutcome::StaleGeneration, None)]);
     assert_eq!(state(&f, "m1"), "pending");
@@ -275,9 +277,8 @@ fn resume_previous_generation_same_native_session_settles() {
         "ci-2",
     );
     assert_eq!(
-        second.binding_generation,
-        first.binding_generation + 1,
-        "the same native session still rotates the generation"
+        second.binding_generation, first.binding_generation,
+        "the same native session re-registers its binding; the mapping generation holds"
     );
     let report = ack(&f, first, &["m1"], "op").unwrap();
     assert_eq!(all(&report), vec![(ModAckOutcome::Settled, None)]);

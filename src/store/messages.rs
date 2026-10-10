@@ -218,7 +218,7 @@ fn prepare_send_step_impl(
             delivery,
             crate::protocol::authority::HandoffRequirement::Delivery(_)
         ) {
-            super::seats::cooperative_mapping(&tx, &request.claim, None)?;
+            super::seats::cooperative_bound_mapping(&tx, &request.claim, None)?;
         }
         super::handoff::validate_handoff_requirement(&tx, delivery, false)?;
     }

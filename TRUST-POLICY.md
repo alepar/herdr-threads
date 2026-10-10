@@ -47,8 +47,13 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 
 - **Seat**: a durable plugin identity for one role. Threads, invitations and receipts belong to seats.
 - **Target**: a Herdr pane address the seat is currently mapped to. A locator, not an identity.
-- **Binding**: the seat's current occupant record: harness (`claude`, `codex`, `human`), harness session,
-  execution, generation, the daemon boot and host epoch it was recorded under, and its provenance.
+- **Binding**: one occupant record of a seat, keyed by (seat, harness, native session, agent id) with the
+  agent id empty for a top-level session. A seat holds many bindings, each with its own `binding_id`, role
+  (`top_level` or `subagent`, a subagent pointing at its parent binding), execution, the mapping generation,
+  the daemon boot and host epoch it was recorded under, and its provenance. Liveness (connected or
+  disconnected, with a process fingerprint) is a separate property from identity: a disconnected binding is
+  still that session's binding. `seats.generation` is the seat's *mapping* generation, bumped only by rebind,
+  unresolve and retire, never by a check-in.
 - **Herdr boot / incarnation**: one Herdr server process. A Herdr restart is a new incarnation; terminal ids
   and pane addresses from the old one prove nothing about the new one.
 - **Daemon boot**: one herdr-threads daemon process. A daemon restart does not change the Herdr incarnation.
@@ -167,8 +172,8 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
 | `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), only on a seat with no open binding, decided against the effective observation (A2). Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, and it starts no availability or receipt timer. |
-| `cooperative_env_session` | binding claims (defined; behaviour lands in later beads) | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
-| `cooperative_hook_agent` | binding claims (defined; behaviour lands in later beads) | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
+| `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
+| `cooperative_hook_agent` | binding claims | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
 | `liveness_process_exit` | binding disconnections only (defined; behaviour lands in later beads) | The binding's fingerprinted process (pid and start time) no longer exists, or the pid now has a different start time. Structural evidence; it disconnects the binding and never ends it, moves a seat or merges seats. |
 | `liveness_end_event` | binding disconnections only (defined; behaviour lands in later beads) | The harness reported an end event for this session (Codex SessionEnd/SubagentStop, Claude SubagentStop, Hermes `on_session_finalize`/`subagent_stop`). It disconnects the binding and never ends it, moves a seat or merges seats. |
 | `canonical_binding_composer` | archival sample association only | The daemon associated a fresh registered-parser composer read with an already registered cooperative top-level binding after exact canonical binding, structural, activity and timing validation. The harness/session/execution in the association come from that binding; the host does not attest occupancy or current execution. This value authorizes no seat, binding, membership, receipt or invitation transition. |
@@ -209,6 +214,25 @@ No send or inbox operation automatically resolves this work, no classified sourc
 model open work, and summary closure never changes receipt state or installs global instructions.
 
 **A4. Binding-kind transitions.**
+- *Binding transitions (ht-54r.3)*, decided by the daemon against the canonical view (A2):
+  enrollment adds a binding for an unknown (seat, harness, session, agent id) and never ends another one,
+  idempotently per key; a lifecycle check-in reconnects and re-registers the session's own binding in place
+  (the only claim that changes liveness); a plain call touches its binding, refreshes its fingerprint and
+  never changes liveness; a session unresolved with its seat and seen again after the seat is rebound reopens
+  its own binding (ended only as `seat_unresolved`; cursors kept), while a binding ended any other way is
+  never reopened; a subagent claim attaches a `subagent` binding to its parent (enrolling the parent first
+  when it is unknown), attachment only; a session id seen on another seat gets a new binding on that seat and
+  nothing moves or merges (cross-pane resume). Lineage (copy-before-supersede of a predecessor's cursors) is
+  named here and implemented by ht-54r.20 and ht-54r.17. A person and an agent still never hold a seat
+  together and the first agent lifecycle check-in still replaces `managed_launch` (both below, ended as
+  `replaced`), until ht-54r.4 moves them into enroll hooks. A plain human call never enrolls a binding.
+- *Refusals*: an agent call without a harness session id (empty, a `launch:` placeholder, and from
+  ht-54r.5 a `plugin_context:` session), reads included, is refused with `session_claim_required`. An agent
+  call that would enroll, reconnect or reopen a binding without a liveness fingerprint is refused with
+  `liveness_fingerprint_required`; this is implemented and tested but enforced only once every client sends
+  fingerprints (ht-54r.5 switches the daemon rule). Until then the daemon admits fingerprint-less claims.
+- *Shared seat*: memberships, invitations and receipts belong to the seat, so any binding's join or leave
+  applies to every binding of the seat. Bindings of one seat are not separate participants.
 - *Human to agent*: a hooked agent's lifecycle check-in replaces a human binding. Allowed.
 - *Agent to agent, same seat*: a lifecycle check-in (startup, `/clear`, resume) replaces the binding. Allowed. A lifecycle check-in by a different agent harness on the same seat retires the pane's
   client-local context of the previous harness before checking in (a hint, A2; the daemon decides the

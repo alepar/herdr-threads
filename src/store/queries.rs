@@ -836,8 +836,10 @@ fn seat_inspect_cursor(
         .map_err(|e| api_error(ErrorCode::InvalidCursor, e))
 }
 
-/// The seat's open (not ended) binding, or none: the one answer every A4
-/// guard (launch, wake, cooperative check-in) reads.
+/// The seat's latest open (not ended) binding, or none: for presentation and the human branch
+/// only (launch, wake and the human check-in guard read it). A seat holds many bindings
+/// (ht-54r.3); the cooperative check-in path resolves a claim to its own binding by key and
+/// never reads this.
 pub(crate) fn open_binding(
     db: &Connection,
     seat: &str,
@@ -845,6 +847,31 @@ pub(crate) fn open_binding(
     db.query_row(
         "SELECT observation_provenance,harness,target_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1",
         [seat],
+        |r| {
+            Ok(OpenBindingSummary {
+                provenance: r.get(0)?,
+                harness: r.get(1)?,
+                target: HostTargetId::new(r.get::<_, String>(2)?),
+            })
+        },
+    )
+    .optional()
+    .map_err(store_error)
+}
+
+/// The open binding holding exactly this key (seat, harness, native session, agent id).
+pub(crate) fn open_binding_for(
+    db: &Connection,
+    key: &crate::store::bindings::BindingKey,
+) -> Result<Option<OpenBindingSummary>, ApiError> {
+    db.query_row(
+        "SELECT observation_provenance,harness,target_id FROM occupant_bindings WHERE seat_id=?1 AND harness=?2 AND native_session=?3 AND agent_id=?4 AND ended_at IS NULL",
+        rusqlite::params![
+            key.seat.as_str(),
+            key.harness,
+            key.native_session.as_str(),
+            key.agent_id.as_ref().map_or("", |a| a.as_str())
+        ],
         |r| {
             Ok(OpenBindingSummary {
                 provenance: r.get(0)?,

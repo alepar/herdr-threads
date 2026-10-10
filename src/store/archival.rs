@@ -571,7 +571,7 @@ pub(crate) fn observation_ticket_with_registry(
     if runtime_boot != rt.boot {
         return Ok(None);
     }
-    let mapping = match super::seats::cooperative_mapping(db, &claim, None) {
+    let mapping = match super::seats::cooperative_bound_mapping(db, &claim, None) {
         Ok(mapping) => mapping,
         Err(_) => return Ok(None),
     };
@@ -700,7 +700,7 @@ pub(crate) fn record_sample_in_with_registry(
         )
         .map_err(store_error)?;
     let proof = observation.verified_structural_proof();
-    let mapping = super::seats::cooperative_mapping(tx, claim, None).ok();
+    let mapping = super::seats::cooperative_bound_mapping(tx, claim, None).ok();
     let current = effective::effective_observation(tx, &claim.instance, claim.target.as_str())?;
     let positive = rt.coherent
         && ticket.runtime_boot == rt.boot

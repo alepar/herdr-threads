@@ -331,6 +331,10 @@ pub enum ErrorCode {
     /// sandbox that does not allow that Unix socket. Restarting the daemon
     /// cannot fix it; the sandbox must allow the stable socket pathname.
     TransportDenied,
+    /// An agent call without a harness session id (ht-54r.3): the daemon cannot key a binding.
+    SessionClaimRequired,
+    /// An agent call without a liveness fingerprint (ht-54r.3, enforced from ht-54r.5).
+    LivenessFingerprintRequired,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1705,6 +1709,8 @@ impl ErrorCode {
         ErrorCode::MembershipRequired,
         ErrorCode::StaleRequirementAcceptance,
         ErrorCode::TransportDenied,
+        ErrorCode::SessionClaimRequired,
+        ErrorCode::LivenessFingerprintRequired,
     ];
 
     /// The failure class this code defaults to, or `None` for codes that
@@ -1752,6 +1758,8 @@ impl ErrorCode {
             ErrorCode::MembershipRequired => None,
             ErrorCode::StaleRequirementAcceptance => None,
             ErrorCode::TransportDenied => Some(ErrorClass::Unavailable),
+            ErrorCode::SessionClaimRequired => None,
+            ErrorCode::LivenessFingerprintRequired => None,
             // The daemon restarted between the caller's view and the request
             // (B5, protocol 2): retry against the new boot.
             ErrorCode::DaemonBootChanged => Some(ErrorClass::Transient),
@@ -1825,6 +1833,8 @@ api_error_constructors! {
     required_invitation_needs_managed_thread => RequiredInvitationNeedsManagedThread,
     membership_required => MembershipRequired, stale_requirement_acceptance => StaleRequirementAcceptance,
     transport_denied => TransportDenied, daemon_boot_changed => DaemonBootChanged,
+    session_claim_required => SessionClaimRequired,
+    liveness_fingerprint_required => LivenessFingerprintRequired,
 }
 
 #[cfg(test)]

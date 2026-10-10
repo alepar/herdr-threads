@@ -4852,7 +4852,7 @@ fn retirement_rejects_exhausted_binding_generation_before_fence() {
 }
 
 #[test]
-fn registration_rejects_exhausted_binding_generation_without_anchor() {
+fn registration_ignores_an_exhausted_binding_history_generation_and_rolls_back_without_anchor() {
     use crate::{
         protocol::commands::{CheckIn, CheckInMode},
         store::seats,
@@ -4884,10 +4884,18 @@ fn registration_rejects_exhausted_binding_generation_without_anchor() {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
         },
-        |_tx, _seat, _seq| panic!("offer must not run after exhausted generation"),
+        // ht-54r.3: a check-in no longer computes a next generation, so a binding history at the
+        // maximum is not an error and the offer is reached. Failing it rolls everything back.
+        |_tx, _seat, _seq| {
+            Err(crate::protocol::results::ApiError::new(
+                ErrorCode::Conflict,
+                "offer reached",
+            ))
+        },
     )
     .unwrap_err();
-    assert_eq!(error.code, ErrorCode::SequenceExhausted);
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert_eq!(error.detail, "offer reached");
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM seat_availability WHERE seat_id='s2'",

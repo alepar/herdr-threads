@@ -129,7 +129,8 @@ fn elected_owner_checks_in_and_uses_returned_context_without_native_evidence() {
     let (service, db) = fixture();
     let original = lifecycle(claim(), "first");
     let result = checked(&service, original.clone());
-    assert_eq!(result.context.binding_generation, 1);
+    // ht-54r.3: the seat starts at generation 0 here and a check-in never bumps it.
+    assert_eq!(result.context.binding_generation, 0);
     assert_eq!(checked(&service, original), result);
     assert_eq!(
         checked(
@@ -385,12 +386,13 @@ fn changed_context_is_fenced_and_historical_replay_cannot_restore_predecessor() 
         replay.context_disposition,
         CheckInContextDisposition::Historical
     );
-    assert_eq!(successor.context.binding_generation, 2);
+    // ht-54r.3: the same session re-registers in place; the mapping generation stays 0.
+    assert_eq!(successor.context.binding_generation, 0);
     assert_eq!(
         db.query_row("SELECT generation FROM seats WHERE id='s'", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        2
+        0
     );
     let mut mismatch = claim();
     mismatch.native_session = NativeSessionId::new("plugin_context:changed");
@@ -626,8 +628,10 @@ fn stale_sender_cannot_publish_a_prepared_message() {
             SendPreparationProgress::Committed(_) => panic!("unexpected committed send"),
         }
     }
-    // Retain the prepared snapshot while simulating a changed durable occupant.
-    db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002' WHERE ended_at IS NULL",[]).unwrap();
+    // Retain the prepared snapshot while simulating a rebind of the seat (a new mapping
+    // generation), which fences every context prepared before it.
+    db.execute("UPDATE seats SET generation=generation+1", [])
+        .unwrap();
     assert_eq!(
         service
             .handle(Command::SendMessage(send), peer, &budget())
@@ -707,7 +711,7 @@ fn fixture_retains_wal_and_durable_rows_across_both_drop_orders_and_reopen() {
                 checked(&service, lifecycle(claim(), "durable"))
                     .context
                     .binding_generation,
-                1
+                0
             );
             drop(service);
         }
@@ -841,7 +845,7 @@ fn fixture_worker_keeps_sqlite_alive_after_callers_drop_and_cleans_on_panic() {
                     checked(&service, lifecycle(claim(), "worker"))
                         .context
                         .binding_generation,
-                    1
+                    0
                 );
                 let reopened = OwnedFixture {
                     value: Connection::open(worker_path).unwrap(),
@@ -1524,5 +1528,81 @@ fn lazy_inbox_fix_real_service_completion() {
         })
         .unwrap(),
         CommandResult::InboxDeliveryCompleted(vec![human])
+    );
+}
+
+#[test]
+fn two_sessions_on_one_seat_both_send() {
+    use crate::protocol::commands::SendMessage;
+    let (service, db) = fixture();
+    let session = |name: &str, execution: &str| CallerClaim {
+        native_session: NativeSessionId::new(name),
+        execution: ExecutionId::new(execution),
+        ..claim()
+    };
+    let a = checked(
+        &service,
+        lifecycle(
+            session("sess-A", "00000000-0000-4000-8000-0000000000a1"),
+            "a",
+        ),
+    )
+    .context;
+    let b = checked(
+        &service,
+        lifecycle(
+            session("sess-B", "00000000-0000-4000-8000-0000000000b1"),
+            "b",
+        ),
+    )
+    .context;
+    let peer = PeerIdentity::from_kernel(501);
+    let CommandResult::ThreadCreated(thread) = service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "topic".into(),
+                goal: "goal".into(),
+                operation: OperationId::new("thread"),
+                claim: a.clone(),
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong result")
+    };
+    for (who, claim) in [("a", a), ("b", b)] {
+        let sent = service
+            .handle(
+                Command::SendMessage(SendMessage {
+                    delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                    thread: thread.clone(),
+                    body: format!("from {who}"),
+                    invited_recipients: vec![],
+                    deadline_millis: None,
+                    operation: OperationId::new(format!("send-{who}")),
+                    claim,
+                    relays_user: false,
+                    user_intent: None,
+                }),
+                peer,
+                &budget(),
+            )
+            .unwrap();
+        assert!(
+            matches!(sent, CommandResult::MessageSent(_)),
+            "{who}: {sent:?}"
+        );
+    }
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
     );
 }

@@ -1214,8 +1214,12 @@ fn rebind_during_pending_work_invalidates_old_context() {
     let (s, old, thread) = m.pair();
     let sent = m.send(&s, &thread, "hello", &[], "send-1").unwrap();
     let successor = m.check_in("r");
-    assert!(successor.binding_generation > old.binding_generation);
-    let error = m.ack(&old, &[&sent], "ack-old").unwrap_err();
+    // ht-54r.3: the same session re-registers its binding in place and the mapping generation
+    // holds; a context from another mapping generation is what stays fenced.
+    assert_eq!(successor.binding_generation, old.binding_generation);
+    let mut stale = old.clone();
+    stale.binding_generation += 1;
+    let error = m.ack(&stale, &[&sent], "ack-old").unwrap_err();
     assert_eq!(error.code, ErrorCode::CallerUnverified, "{error:?}");
     assert_eq!(m.receipt_state(&sent, "r"), "pending");
     assert_eq!(m.pending("r"), vec![sent.clone()]);
@@ -2167,7 +2171,8 @@ fn incomplete_capture_and_lost_events_recover_by_snapshot_without_retirement() {
     let r = m.cli_context(&cli);
     assert_eq!(r.seat, pair.r.seat);
     assert_ne!(r.execution, r_before.execution);
-    assert!(r.binding_generation as i64 > invalidated_generation);
+    // The invalidation already bumped the mapping generation; the check-in registers at it.
+    assert_eq!(r.binding_generation as i64, invalidated_generation);
     m.cli(&cli, &["ack", pair.sent.as_str()]).unwrap();
     assert_eq!(m.receipt_state(&pair.sent, pair.r.seat.as_str()), "acked");
     assert_eq!(m.ack_events(r.seat.as_str()), 1);
@@ -2507,8 +2512,8 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
         .unwrap();
     let context = m.cli_context(&cli);
     assert_eq!(context.seat, seat_u);
-    assert_eq!(context.binding_generation as i64, generation_u + 1);
-    assert_eq!(m.seat_generation(&seat_u), generation_u + 1);
+    assert_eq!(context.binding_generation as i64, generation_u);
+    assert_eq!(m.seat_generation(&seat_u), generation_u);
     assert_eq!(
         m.db()
             .query_row(
@@ -2518,7 +2523,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
             )
             .unwrap(),
         (
-            generation_u + 1,
+            generation_u,
             Some("term-pane-u".to_string()),
             Some("inc".to_string()),
             true,
@@ -2536,7 +2541,11 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
     assert_eq!(m.seat_states(), "resolved:- resolved:- resolved:-");
     m.cli(&cli, &["check-in", "--lifecycle-event", "hook-u-2"])
         .unwrap();
-    assert!(m.cli_context(&cli).binding_generation as i64 > generation_u + 1);
+    // The second invalidation bumped the mapping generation once; the check-in registers at it.
+    assert_eq!(
+        m.cli_context(&cli).binding_generation as i64,
+        generation_u + 1
+    );
     assert_eq!(operator_ops(), operator_before, "no operator repair");
 }
 

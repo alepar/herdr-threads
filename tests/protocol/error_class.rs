@@ -56,6 +56,8 @@ const EXPECTED: &[(ErrorCode, Option<ErrorClass>)] = &[
     (ErrorCode::MembershipRequired, None),
     (ErrorCode::StaleRequirementAcceptance, None),
     (ErrorCode::TransportDenied, Some(ErrorClass::Unavailable)),
+    (ErrorCode::SessionClaimRequired, None),
+    (ErrorCode::LivenessFingerprintRequired, None),
 ];
 
 #[test]

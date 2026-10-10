@@ -77,9 +77,10 @@ pub const COOPERATIVE_MOD_CHANNEL_PROVENANCE: &str = "cooperative_mod_channel";
 /// for an item the mod reported delivered (spec D6). Not proof of reading.
 pub const COOPERATIVE_MOD_DELIVERY_PROVENANCE: &str = "cooperative_mod_delivery";
 
-/// TRUST-POLICY A3; defined, behaviour lands in later beads (ht-54r).
+/// TRUST-POLICY A3: a plain cooperative call enrolled its session's binding (and a Codex or
+/// Hermes subagent attached to its parent) from the harness environment, without a hook.
 pub const COOPERATIVE_ENV_SESSION_PROVENANCE: &str = "cooperative_env_session";
-/// TRUST-POLICY A3; defined, behaviour lands in later beads (ht-54r).
+/// TRUST-POLICY A3: a Claude subagent's binding, attached from its hook-carried agent id.
 pub const COOPERATIVE_HOOK_AGENT_PROVENANCE: &str = "cooperative_hook_agent";
 /// TRUST-POLICY A3; defined, behaviour lands in later beads (ht-54r).
 pub const LIVENESS_PROCESS_EXIT_PROVENANCE: &str = "liveness_process_exit";
@@ -98,8 +99,12 @@ pub const OPERATOR_HUMAN_PROVENANCE: &str = "operator_human";
 /// C4: bindings a structural reconfirmation carries to a new host epoch;
 /// native `verified_current_target` bindings re-register instead. The planner
 /// predicate and the applier both read this one set.
-pub const CARRIED_BINDING_PROVENANCES: [&str; 2] =
-    [COOPERATIVE_TOP_LEVEL_PROVENANCE, OPERATOR_HUMAN_PROVENANCE];
+pub const CARRIED_BINDING_PROVENANCES: [&str; 4] = [
+    COOPERATIVE_TOP_LEVEL_PROVENANCE,
+    OPERATOR_HUMAN_PROVENANCE,
+    COOPERATIVE_ENV_SESSION_PROVENANCE,
+    COOPERATIVE_HOOK_AGENT_PROVENANCE,
+];
 /// TRUST-POLICY A3/C1: a seat was reattached because a resumed harness
 /// session id matched an unresolved seat's last binding. Seat rebinds only
 /// (the `allocation_decisions.kind` of the reattachment); never on receipts
@@ -120,8 +125,12 @@ pub const MANAGED_LAUNCH_PLACEHOLDER_PREFIX: &str = "launch:";
 /// TRUST-POLICY A4: the open-binding provenances that are an agent's, which a
 /// person's `me init` never replaces without `--operator` and a second
 /// `launch` respects.
-pub const AGENT_BINDING_PROVENANCES: [&str; 2] =
-    [COOPERATIVE_TOP_LEVEL_PROVENANCE, MANAGED_LAUNCH_PROVENANCE];
+pub const AGENT_BINDING_PROVENANCES: [&str; 4] = [
+    COOPERATIVE_TOP_LEVEL_PROVENANCE,
+    MANAGED_LAUNCH_PROVENANCE,
+    COOPERATIVE_ENV_SESSION_PROVENANCE,
+    COOPERATIVE_HOOK_AGENT_PROVENANCE,
+];
 
 /// Obtained from the local socket kernel credential, never from JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
