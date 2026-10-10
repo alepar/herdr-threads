@@ -6321,9 +6321,10 @@ mod inbox_v2 {
             return Err(invalid("inbox snapshot is in the future"));
         }
         // Receipt eligibility is canonical registered-agent eligibility (as
-        // in inbox v1 and display-ACK settlement), never a fixed harness list:
+        // in inbox v1, with its exact current-binding predicate, and display-ACK
+        // settlement), never a fixed harness list:
         // a Hermes binding's pending receipts are ACK candidates too.
-        let current_harness:Option<String>=db.query_row("SELECT harness FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND observation_provenance='cooperative_top_level'",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
+        let current_harness:Option<String>=db.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>''",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
         let current_agent = current_harness
             .as_deref()
             .is_some_and(|harness| crate::harness::registry::builtins().agent(harness).is_ok());
