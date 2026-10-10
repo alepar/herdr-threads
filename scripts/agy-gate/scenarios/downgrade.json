@@ -24,7 +24,7 @@
       "label": "wake-join",
       "match": {
         "contains": [
-          "attention pending"
+          "herdr-threads: wake up"
         ],
         "not_contains": [
           "DOWN-BUSY1"

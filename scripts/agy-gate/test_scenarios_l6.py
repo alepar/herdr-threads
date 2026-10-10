@@ -106,5 +106,28 @@ class L6ScenarioTests(unittest.TestCase):
         self.assertEqual(labels[:4], ["ign-busy1", "ign-go1", "ign-busy2", "ign-go2"])
 
 
+    def test_wake_join_routes_on_the_content_free_wake_text(self):
+        for name, warm in (("delivery-stop", "DELIV-WARM hello"), ("downgrade", "DOWN-WARM hello")):
+            cursor = scenario.Cursor(load(name))
+            self.assertEqual(cursor.select(warm)["label"], "warm")
+            self.assertEqual(cursor.select(warm + "\nherdr-threads: wake up")["label"], "wake-join")
+
+    def test_no_scenario_routes_on_the_inbox_marker(self):
+        for path in sorted((HERE / "scenarios").glob("*.json")):
+            for step in scenario.load(str(path))["steps"]:
+                for text in (step.get("match") or {}).get("contains", []):
+                    self.assertNotIn("attention pending", text, "%s step %s" % (path.name, step["label"]))
+
+    def test_wake_text_is_the_core_constant(self):
+        source = (HERE.parent.parent / "src/notification/policy.rs").read_text()
+        self.assertIn('pub const WAKE_UP: &str = "herdr-threads: wake up";', source)
+
+    def test_the_join_wake_is_not_optional(self):
+        for flow in ("delivery", "downgrade"):
+            text = (HERE / "flows" / (flow + ".py")).read_text()
+            self.assertIn('await_step(world, "wake-join", 45)', text, flow)
+            self.assertNotIn('("wake-join"', text, flow)
+
+
 if __name__ == "__main__":
     unittest.main()
