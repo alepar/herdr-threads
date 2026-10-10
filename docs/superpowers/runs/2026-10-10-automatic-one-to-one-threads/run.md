@@ -15,4 +15,9 @@ approvals:
 - coverage-round-2 · requirements: 22 · mapped: 21 · unmapped: 1 (R22) · auto COV2-01/COV1-04 → terminal sweep ht-e99.5 owns exact default-feature/leak/budget gate; auto COV2-02 parser candidate rejected against nested explicit new-tab ownership, shared grammar boundary clarified without new edge; trajectory 6→2, novel 1/2, count shrank. No third coverage round.
 
 roastDesignRound: 2
-roast-design: 2026-10-10-automatic-one-to-one-threads-roast-design-1.md
+roast-design: 2026-10-10-automatic-one-to-one-threads-roast-design-1.md, 2026-10-10-automatic-one-to-one-threads-roast-design-2.md
+
+parked:
+- 2026-10-10-automatic-one-to-one-threads-roast-design-2.md · degraded-verdict · "clean (0 nits) [low coverage] — proceeded, not re-roasted; auto under explicit fully-autonomous delegation. All9scouts valid/completed; zero raw findings triggers reporter literal rule; no failed stages or missing applicable judges. Prior Blocking resolved, no new/carried/regressed; no escalations/beyond caps."
+
+Design hand-off: ht-e99 ready for caller-owned code phase; two design-roast rounds, one design-only repair ht-e99.6 closed at ce11790f. No implementation code delivered.
