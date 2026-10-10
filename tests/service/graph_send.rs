@@ -63,6 +63,7 @@ use uuid::Uuid;
 struct TempRoot(PathBuf);
 impl Drop for TempRoot {
     fn drop(&mut self) {
+        super::print_daemon_logs_if_panicking(&self.0);
         let _ = fs::remove_dir_all(&self.0);
     }
 }
@@ -111,7 +112,7 @@ impl WakeHost {
             target: target.clone(),
             host_boot: HostBootId::new("fixture-host"),
             epoch: 1,
-            generation: 0,
+            generation: 1,
             observed_at_utc: UtcMillis(0),
             observed_at_mono: at,
             provenance: ObservationProvenance::FreshCurrentTarget,
@@ -382,8 +383,11 @@ fn user_intent_service_send_stays_unclassified() {
         let seed_seat = |seat: &str, target: Option<&str>| {
             match target {
                 Some(target) => {
-                    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?3,0,0,0)", rusqlite::params![seat, instance.to_string(), target]).unwrap();
-                    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'fixture-host',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", rusqlite::params![instance.to_string(), target]).unwrap();
+                    // The structural proof matches what WakeHost enumerates: the
+                    // running daemon reconciles each new host snapshot, and it
+                    // unresolves a resolved seat that carries no proof.
+                    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_incarnation_kind,structural_host_boot,structural_host_epoch,structural_connection_epoch,structural_observation_sequence,created_at) VALUES (?1,?2,'resolved','native',?3,0,1,'term-'||?3,'inc','coherent_enumeration','fixture-host',1,1,1,0)", rusqlite::params![seat, instance.to_string(), target]).unwrap();
+                    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'fixture-host',1,1,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc','coherent_enumeration',1)", rusqlite::params![instance.to_string(), target]).unwrap();
                 }
                 None => {
                     db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,?2,'resolved','native',1,0)", rusqlite::params![seat, instance.to_string()]).unwrap();

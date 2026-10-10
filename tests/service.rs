@@ -10,6 +10,38 @@ pub(crate) fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::pro
     command
 }
 
+/// An in-process `run_elected` daemon redirects this process's stdout and
+/// stderr into its `daemon.log` until it stops, so a test's own panic message
+/// lands there. A failing test's cleanup prints those logs (after the daemon
+/// has stopped and restored stderr) before it deletes the root.
+pub(crate) fn print_daemon_logs_if_panicking(root: &std::path::Path) {
+    if !std::thread::panicking() {
+        return;
+    }
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push(path);
+            } else if path.file_name().is_some_and(|name| name == "daemon.log")
+                && let Ok(bytes) = std::fs::read(&path)
+            {
+                let tail = &bytes[bytes.len().saturating_sub(64 * 1024)..];
+                eprintln!(
+                    "--- {} (last {} bytes) ---\n{}",
+                    path.display(),
+                    tail.len(),
+                    String::from_utf8_lossy(tail)
+                );
+            }
+        }
+    }
+}
+
 static IN_PROCESS_DAEMON: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// SQLite busy timeout for a fake host's "host I/O is not called under the
