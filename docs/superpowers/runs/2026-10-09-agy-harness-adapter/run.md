@@ -11,7 +11,7 @@ idea: let's pick up adding support for agy. we implemented a prototype of routin
 branch: super-auto/agy-harness-adapter
 base: main
 
-roastDesignRound: 1
+roastDesignRound: 2
 roast-design: 2026-10-10-agy-harness-adapter-roast-design-1.md
 
 stepBackDesign-round-1: patch — two findings share one cause (transcript-confirm read only at next PreInvocation; Stop used only for error-string detection); cluster C1 rule applied in root + subspecs; executable-identity source patched separately
