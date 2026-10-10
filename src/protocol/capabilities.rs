@@ -41,7 +41,7 @@ pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 pub const MOD_WATCH: &str = "mod.watch_v1";
 
 /// Hook-pull delivery (`protocol::delivery`, delivery-policy DP4). Defined by the
-/// ht-poh.3.1 seam; advertised only when its handlers land (L4).
+/// ht-poh.3.1 seam; its handlers (`service::delivery_pull`) landed with L4.
 pub const DELIVERY_PULL: &str = "delivery.pull_v1";
 
 /// Everything this daemon build serves. A capability is listed only once its
@@ -72,6 +72,7 @@ pub const ADVERTISED: &[&str] = &[
     INBOX_BATCH_V2,
     MOD_WATCH,
     SEAT_WAKE_ON_V1,
+    DELIVERY_PULL,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

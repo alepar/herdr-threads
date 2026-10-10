@@ -31,15 +31,16 @@ struct BootstrapRuntime {
 }
 
 pub struct DomainService {
-    instance: String,
-    store: Arc<dyn StorePort>,
-    clock: Arc<dyn Clock>,
+    pub(super) instance: String,
+    pub(super) store: Arc<dyn StorePort>,
+    pub(super) clock: Arc<dyn Clock>,
     search: BoundedLane,
     current_target: Option<Arc<OrdinaryIdentity>>,
     operator_owner_uid: Option<u32>,
     cooperative_runtime: Option<(u32, Arc<FairWriter>)>,
     bootstrap: Option<BootstrapRuntime>,
     mod_channels: Arc<dyn crate::ports::ModChannels>,
+    pub(super) delivery_pull: super::delivery_pull::DeliveryPullState,
 }
 
 impl DomainService {
@@ -54,6 +55,7 @@ impl DomainService {
             cooperative_runtime: None,
             bootstrap: None,
             mod_channels: Arc::new(crate::ports::NoModChannels),
+            delivery_pull: Default::default(),
         }
     }
     /// The shared registry of live mod delivery channels (spec D2).
@@ -388,7 +390,7 @@ impl DomainService {
             .bootstrap_mutate(&runtime.canonical, mutation, permit, None, budget)
     }
 
-    fn cooperative_mutation(
+    pub(super) fn cooperative_mutation(
         &self,
         mutation: PermitMutation,
         peer: PeerIdentity,
@@ -825,10 +827,8 @@ impl LocalService for DomainService {
             Command::AckModDelivered(request) => {
                 self.ack_mod_delivered(request, peer, budget, read)
             }
-            // Inert seam (delivery-policy DP4): the wire exists, no handler is served yet.
-            Command::DeliveryPull(_) | Command::DeliveryConfirm(_) => {
-                Err(error(ErrorCode::Unsupported, "delivery pull is not served"))
-            }
+            Command::DeliveryPull(pull) => self.delivery_pull(pull, budget, &read),
+            Command::DeliveryConfirm(confirm) => self.delivery_confirm(confirm, peer, budget, read),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
@@ -1014,7 +1014,7 @@ impl LocalService for DomainService {
     }
 }
 
-fn error(code: ErrorCode, detail: &str) -> ApiError {
+pub(super) fn error(code: ErrorCode, detail: &str) -> ApiError {
     ApiError::new(code, detail)
 }
 

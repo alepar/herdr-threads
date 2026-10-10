@@ -269,66 +269,7 @@ fn results_round_trip_through_the_result_envelope() {
 }
 
 #[test]
-fn capability_is_defined_but_not_advertised() {
+fn capability_is_defined_and_advertised() {
     assert_eq!(capabilities::DELIVERY_PULL, "delivery.pull_v1");
-    assert!(!capabilities::ADVERTISED.contains(&capabilities::DELIVERY_PULL));
-}
-
-/// The inert seam: the domain service decodes both commands but serves neither.
-#[test]
-fn domain_service_answers_unsupported_for_both_commands() {
-    use crate::{
-        ports::{LocalService, StorePort},
-        protocol::{
-            authority::PeerIdentity,
-            results::ErrorCode,
-            time::{CallBudget, Clock, MonoInstant, UtcMillis},
-        },
-        service::{dispatch::DomainService, fair_writer::FairWriter},
-        store::{SqliteStore, StoreSettings, connection::StoreContext},
-    };
-    use std::sync::Arc;
-    struct FixedClock;
-    impl Clock for FixedClock {
-        fn utc_now(&self) -> UtcMillis {
-            UtcMillis(100)
-        }
-        fn monotonic_now(&self) -> MonoInstant {
-            MonoInstant(100)
-        }
-    }
-    use std::os::unix::fs::DirBuilderExt;
-    let directory = std::env::temp_dir().join(format!("delivery-inert-{}", uuid::Uuid::new_v4()));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&directory)
-        .unwrap();
-    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
-    let context = StoreContext::new(directory.join("store.db"), clock.clone());
-    let db = context.open_writer().unwrap();
-    db.execute(
-        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,3)",
-        [],
-    )
-    .unwrap();
-    let store: Arc<dyn StorePort> =
-        Arc::new(SqliteStore::new(context, "i", StoreSettings::default()).unwrap());
-    let service = DomainService::new("i".into(), store, clock)
-        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
-    let budget = CallBudget {
-        deadline: MonoInstant(1000),
-        cancellation: Default::default(),
-    };
-    for command in [
-        Command::DeliveryPull(pull()),
-        Command::DeliveryConfirm(confirm(1)),
-    ] {
-        let error = service
-            .handle(command, PeerIdentity::from_kernel(501), &budget)
-            .unwrap_err();
-        assert_eq!(error.code, ErrorCode::Unsupported);
-        assert_eq!(error.detail, "delivery pull is not served");
-    }
-    drop(db);
-    std::fs::remove_dir_all(directory).unwrap();
+    assert!(capabilities::ADVERTISED.contains(&capabilities::DELIVERY_PULL));
 }

@@ -1582,10 +1582,10 @@ impl StorePort for SqliteStore {
                 let mut permit = permit;
                 receipts::ack_mod_delivered(&self.context, &mut writer, budget, &v, &mut permit)
             }
-            PermitMutation::DeliveryConfirm(_) => Err(api_error(
-                ErrorCode::Unsupported,
-                "delivery pull is not served",
-            )),
+            PermitMutation::DeliveryConfirm(v) => {
+                let mut permit = permit;
+                receipts::delivery_confirm(&self.context, &mut writer, budget, &v, &mut permit)
+            }
             PermitMutation::Leave(v) => {
                 control::leave(&self.context, &mut writer, budget, &v, permit)
             }
@@ -2986,7 +2986,7 @@ pub fn cooperative_permit_request(
             v.claim.clone(),
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
-            control::cooperative_payload_hash("delivery_confirm", v)?,
+            schema::canonical_digest(&receipts::delivery_confirm_payload(v))?,
             None,
         ),
         PermitMutation::CompleteInboxDelivery(v) => (

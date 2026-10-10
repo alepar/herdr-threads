@@ -141,6 +141,7 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | `cooperative_inbox_display` | receipt action observation | The selected top-level agent's text `inbox` command fully wrote and flushed a bounded page before claiming that its listed complete messages were displayed. It is a cooperative output claim, not proof that the model consumed the text. The receipt retains the binding's `cooperative_top_level` provenance separately. JSON, machine, foreign-seat and other read commands do not make this claim. |
 | `cooperative_mod_channel` | mod channel registrations only (process-local) | The pane's top-level session of a harness whose adapter declares a push delivery channel (today Claude), through that harness's bundled herdr-threads mod's `watch` child, opened a delivery channel for the seat's current binding generation. The daemon decides it against A2 (seat resolved and not held, open `cooperative_top_level` binding with a harness that declares a push delivery channel, native session equal to the claim's, no stall cooldown, `mod_delivery` on). It grants nothing but receiving deliveries and making `cooperative_mod_delivery` claims for that binding generation. Never on bindings or receipts. |
 | `cooperative_mod_delivery` | receipt action observation; lazy completion claim | The mod reported that a delivery path's predicate held (spec D6): for an ordinary message, that its full body entered the model's context through the mod (an answered tool result carrying the mod's context, or a `$.prompt.submit` that resolved without `drop`; or, after a plugin reload disposed the instance whose submit was still in flight, a main turn whose prompt carries the mod's frame naming the id, or the completion of the turn that was open when the successor loaded (the engine does not report the disposed instance's submit outcome)); for a lazy row, that it was appended to the transcript (`$.session.append` resolved without `deny`). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's `cooperative_top_level` provenance separately. A truncated item never carries it. |
+| `cooperative_hook_delivery` | receipt action observation; lazy completion claim | The top-level hook of a harness whose adapter declares hook-pull delivery reported that it found the id's frame header in the session's transcript, after a `DeliveryPull` showed the id (spec delivery-policy DP5/DP6). The daemon decides it against A2 and additionally requires that it recorded the id as offered to that binding generation by a `DeliveryPull` (process-local offered ledger). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's `cooperative_top_level` provenance separately. A truncated item never carries it. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
@@ -272,6 +273,10 @@ model open work, and summary closure never changes receipt state or installs glo
   - *Retry spacing.* A seat whose poke was skipped or failed is re-evaluated no sooner than the wake retry
     spacing afterwards, so an ineligible seat costs one observation per spacing rather than one per tick.
     The spacing is in memory; a restart re-evaluates once.
+- *Hook-pull delivery*: a harness whose adapter declares `HookPull` has no channel and no wake change: the
+  existing native wake applies, and its turn's `PreInvocation` pull delivers. Tool-boundary check-ins of such a
+  seat omit the attention digest and ready commands; its lifecycle check-in keeps them. Pending attention stays
+  pending, and deadlines and hard-deadline warnings keep running.
 
 **A5. Who may do what.**
 
@@ -281,6 +286,7 @@ model open work, and summary closure never changes receipt state or installs glo
 | display ACK after text inbox output | the current top-level agent binding, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
 | open a mod delivery channel (`watch`) | the pane's top-level session of a push-channel harness through its mod, for the current `cooperative_top_level` binding with the matching native session; recorded as `cooperative_mod_channel`; it grants no other row |
 | mod delivery ACK (`watch ack`) | the current top-level binding of a push-channel harness with a live channel (grace included) for its binding generation, or, on resume, for ids delivered under the immediately previous generation of the same native session; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
+| hook-pull delivery (`DeliveryPull`, `DeliveryConfirm`) | the current top-level binding of a hook-pull harness with a matching native session, from any of its top-level hooks (including `Stop`); settlement only for ids the daemon offered to that canonical binding generation; the daemon decides each id against A2 again; recorded as `cooperative_hook_delivery` |
 | set `wake_on` (`wake-on [nudge\|all]`) | the seat's current top-level binding (cooperative; changes wake eligibility only, never receipts or authority) |
 | check in | the pane's top-level agent (hook) or a human via `me init` |
 | record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup, on a seat with no open binding; it grants no row above |
@@ -426,6 +432,10 @@ creates no receipt, deadline or wake for it. The mod may complete a promoted row
 regardless of `via`), decided against A2 under the same checks as above, and records the claim "entered the
 model's context through the mod". Like every lazy completion it is presentation bookkeeping: no ACK actor,
 adoption or proof of consumption.
+
+A hook-pull harness's hook is a third completion source: it completes lazy rows whose frame header it found in the
+session's transcript (`DeliveryConfirm`), decided by the daemon against A2, restricted to ids offered to the binding
+generation, and recorded with the `cooperative_hook_delivery` claim. Same presentation-bookkeeping limits.
 
 ## Accepted limits
 
@@ -606,6 +616,16 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Mod delivery claims are cooperative.** A same-user process could run `herdr-threads watch ack` and settle
   receipts as `cooperative_mod_delivery`; the daemon checks the canonical binding, its generation and a live
   channel, not the process.
+- **Hook delivery claims are cooperative.** A same-user process could send `DeliveryConfirm` for ids the daemon
+  offered and settle them as `cooperative_hook_delivery`; the daemon checks the canonical binding, its
+  generation and its offered ledger, not the process.
+- **The offered ledger is process-local.** A daemon restart loses it: a later confirm is `not_offered`, the items
+  stay pending and the next pull offers them again (at-least-once).
+- **Re-offers are bounded.** An unconfirmed id is shown at most 3 times per binding generation, 60 s apart; after
+  that it waits for `inbox`.
+- **A resume rotates the generation.** The offered set is discarded and items the resumed transcript already
+  holds are offered again.
+- **A native wake marker names `inbox`.** A woken pull session may display bodies twice; it never settles twice.
 - **Engine-reported idleness is trusted.** The mod takes busy and idle from Claude Code's turn events; the
   post-abort hold bounds the known Esc takeover.
 - **A remote mods kill switch returns seats to native wake.** A mod that never loads looks like no channel.

@@ -6,14 +6,18 @@ use crate::{
     ports::TimeBasis,
     protocol::{
         authority::{
-            COOPERATIVE_MOD_DELIVERY_PROVENANCE, CallerClaim, Harness, MutationPermit,
-            ObligationRef,
+            COOPERATIVE_HOOK_DELIVERY_PROVENANCE, COOPERATIVE_MOD_DELIVERY_PROVENANCE, CallerClaim,
+            Harness, MutationPermit, ObligationRef,
         },
         commands::{Ack, AckModDelivered},
+        delivery::{
+            DeliveryConfirm, DeliveryConfirmItem, DeliveryConfirmOutcome, DeliveryConfirmReason,
+            DeliveryConfirmReport,
+        },
         ids::{MessageId, OperationId, SeatId, ThreadId},
         results::{AckResult, ApiError, CommandResult, ErrorCode},
         time::UtcMillis,
-        watch::{ModAckItem, ModAckOutcome, ModAckReport},
+        watch::{ModAckItem, ModAckOutcome, ModAckReason, ModAckReport},
     },
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -153,6 +157,68 @@ pub fn ack_mod_delivered(
         },
         permit,
     )
+}
+
+pub fn delivery_confirm_payload(request: &DeliveryConfirm) -> Value {
+    json!({"kind":"delivery_confirm","messages":request.ids,"claim":request.claim})
+}
+
+/// Delivery-policy DP6: settle the ids a hook-pull harness found in its
+/// session transcript, one by one, under `cooperative_hook_delivery`. The
+/// service has already checked the ids against its offered ledger; the store
+/// decides each id against A2 again exactly as `ack_mod_delivered` does.
+pub fn delivery_confirm(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    request: &DeliveryConfirm,
+    permit: &mut MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    let digest = schema::canonical_digest(&delivery_confirm_payload(request))?;
+    let result = ack_policy_delivered(
+        context,
+        conn,
+        budget,
+        AckPolicyDelivered {
+            mechanism: DeliveryMechanism::HookPull,
+            provenance: COOPERATIVE_HOOK_DELIVERY_PROVENANCE,
+            via: "transcript",
+            messages: &request.ids,
+            operation: &request.operation,
+            claim: &request.claim,
+            digest,
+        },
+        permit,
+    )?;
+    let CommandResult::ModDeliveryAcked(report) = result else {
+        return Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "delivery settlement returned another result",
+        ));
+    };
+    Ok(CommandResult::DeliveryConfirmed(DeliveryConfirmReport {
+        results: report
+            .results
+            .into_iter()
+            .map(|item| DeliveryConfirmItem {
+                id: item.id,
+                result: match item.result {
+                    ModAckOutcome::Settled => DeliveryConfirmOutcome::Settled,
+                    ModAckOutcome::AlreadySettled => DeliveryConfirmOutcome::AlreadySettled,
+                    ModAckOutcome::RefusedTerminal => DeliveryConfirmOutcome::RefusedTerminal,
+                    ModAckOutcome::StaleGeneration => DeliveryConfirmOutcome::StaleGeneration,
+                    ModAckOutcome::Retryable => DeliveryConfirmOutcome::Retryable,
+                },
+                reason: item.reason.map(|reason| match reason {
+                    ModAckReason::Unknown => DeliveryConfirmReason::Unknown,
+                    ModAckReason::NotAddressed => DeliveryConfirmReason::NotAddressed,
+                    ModAckReason::Truncated => DeliveryConfirmReason::Truncated,
+                    ModAckReason::NoLiveChannel => DeliveryConfirmReason::NoHookPull,
+                    ModAckReason::Busy | ModAckReason::Unreachable => DeliveryConfirmReason::Busy,
+                }),
+            })
+            .collect(),
+    }))
 }
 
 /// The store's settlement entry point (delivery-policy DP3): the claim must be

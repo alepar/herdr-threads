@@ -1220,7 +1220,8 @@ fn delivery_pairing_allowed(policy: &dyn DeliveryPolicy) -> bool {
             provenance == crate::protocol::authority::COOPERATIVE_MOD_DELIVERY_PROVENANCE
         }
         DeliveryMechanism::HookPull => {
-            provenance == "cooperative_hook_delivery" && idle_wake == IdleWake::Native
+            provenance == crate::protocol::authority::COOPERATIVE_HOOK_DELIVERY_PROVENANCE
+                && idle_wake == IdleWake::Native
         }
     }
 }
@@ -2542,11 +2543,12 @@ mod tests {
         assert!(registry.delivery_policy("test-beta").is_none());
         assert!(registry.delivery_policy("test-alpha").is_some());
         assert_eq!(registry.push_channel_ids(), ["test-alpha"]);
-        // Only the Claude adapter declares a delivery policy today.
+        // Claude declares a push channel; the test-support synthetic_fourth
+        // declares hook pull; nothing else declares a policy.
         for r in builtins().registrations() {
             assert_eq!(
                 builtins().delivery_policy(r.metadata().id).is_some(),
-                r.metadata().id == "claude"
+                matches!(r.metadata().id, "claude" | "synthetic_fourth")
             );
         }
         assert_eq!(builtins().push_channel_ids(), ["claude"]);
