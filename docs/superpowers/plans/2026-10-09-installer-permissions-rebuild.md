@@ -24,6 +24,11 @@ landed on main (merge-base `3573b9f5`).
   `herdr-threads human …` terminal commands. No Hermes YAML edits; ordinary commands need no grant.
 - `setup`, `unsetup`, `doctor fix` and `internal installer-integrations` leave the ordinary agent
   allow catalog: an agent must not be able to grant itself permissions.
+- Rules stay simple (user decision 2026-10-09, replacing the finite ordinary-form catalog):
+  per spelling `herdr-threads` and `ht` only, allow the whole executable, ask/prompt for the
+  immediate `human` namespace and each escalating command. No absolute-path spellings, routing
+  or output-flag forms. The CLI refuses `human` and escalating words anywhere but first; quoting
+  a word to dodge a text rule is deliberate evasion, outside the cooperative trust model.
 - Lighter process: focused tests + `nice cargo clippy --locked --all-targets --all-features -- -D warnings`,
   `nice scripts/check-default-features`, `cargo fmt`, `git diff --check`; one independent review per
   phase; plain-language progress notes. Per-worktree `CARGO_TARGET_DIR` (a shared target dir hands
@@ -51,21 +56,22 @@ landed on main (merge-base `3573b9f5`).
    `escalating` list. The CLI requires an agent to write those words first with every option after
    them, so one bare Claude ask / Codex prompt rule per command always matches (ask wins over the
    broader `doctor` allow). Frozen retry replays only from the same caller location.
-4. **Claude component.** Add `HarnessAdapter::permission_policy()` beside `installer_policy()`,
-   forwarded through `ErasedAdapter`/`Registration`. Split the allow rule out of the hooks transaction (`DECLARED_RULE`,
-   `OwnedPermission` in the hook manifest stay readable for historical state). Migration of the
-   historical broad rule: permission manifest records pending intent (settings fingerprints
-   before/after) → one atomic settings.json write adds the narrow rules and removes the broad rule →
-   hook manifest drops its permission record → pending intent cleared. Recovery: settings match
-   before or after ⇒ finish the remaining steps; anything else ⇒ refuse with guidance.
-   Pre-existing/foreign rules untouched. User decision 2026-10-09: plain hook setup (no consent)
-   still narrows an owned historical broad rule automatically to the bare `herdr-threads` forms plus
-   human/escalating ask rules; new spellings (`ht`, absolute paths) need consent.
-5. **Codex and Hermes.** Codex `CODEX_HOME/rules/herdr-threads.rules`: allow prefix rule for the
-   spelling union, prompt rule for `… human`; own manifest; backed writes. Hermes: plugin
+4. **Claude component.** (done) `harness/permissions/claude_settings.rs`: own manifest in the
+   state dir (`claude-permissions`), cooperative config-root lock, intent-first publication
+   (manifest records target plus settings fingerprints before/after → backed settings write →
+   retire hook record → clear intent; next run settles: before ⇒ restore previous, after ⇒
+   finish, else refuse). Hook setup records and writes no permission rule and refuses a
+   manifest that still records one; `setup claude` runs the component first, so an owned
+   historical `Bash(herdr-threads *)` is taken over in place (plus ask rules) without consent,
+   a retired export rule is replaced, a pre-existing one is left and reported. Unsetup removes
+   the component's rules, then the hooks, restoring bytes exactly. `permission_policy()` on the
+   adapter is deferred to phase 6, where wiring needs it.
+5. **Codex and Hermes.** Codex `CODEX_HOME/rules/herdr-threads.rules`: allow prefix rule for
+   `["herdr-threads","ht"]`, prompt rules for `… human` and escalating commands; own manifest;
+   backed writes. Hermes: plugin
    `register(ctx)` adds the `pre_tool_call` approve hook; status reports it as part of the plugin.
-6. **Wiring.** Consent flags (`--permissions`, `--with-permissions`, `--without-permissions`,
-   inventory paths) through setup/status/unsetup/bare setup, `internal installer-integrations`
+6. **Wiring.** Consent flags (`--permissions`, `--with-permissions`, `--without-permissions`;
+   no inventory paths any more) through setup/status/unsetup/bare setup, `internal installer-integrations`
    (permissions component + prompt), `install.sh` (`--without-permissions`, capability probe,
    uninstall), doctor (report; fix only narrows). Behaviour spec and tests ported from the old
    branch's `setup_cli.rs`, `installer_integrations.rs`, `tests/cli/installer.rs`,

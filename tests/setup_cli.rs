@@ -365,15 +365,15 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
     assert!(report.contains("observed: unknown\n"), "{report}");
     let installed: serde_json::Value =
         serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+    // Hook setup grants nothing: permissions are their own component, consented separately.
     assert_eq!(
-        installed["permissions"]["allow"],
-        serde_json::json!(["Bash(ls:*)", RULE])
+        installed["permissions"],
+        serde_json::json!({"allow": ["Bash(ls:*)"]})
     );
     assert!(
-        report.contains(&format!("allow_rule.rule: {RULE}\n")),
+        report.contains("permissions.state: not_installed\n"),
         "{report}"
     );
-    assert!(report.contains("allow_rule.ownership: owned\n"), "{report}");
     assert_eq!(installed["model"], "x");
     assert_eq!(
         installed["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
@@ -393,10 +393,8 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
     assert_eq!(status.status.code(), Some(0), "{}", text(&status.stderr));
     let status = json(&status);
     assert_eq!(status["installed"], true);
-    assert_eq!(
-        status["allow_rule"],
-        serde_json::json!({"rule": RULE, "ownership": "owned", "present": true})
-    );
+    assert!(status["allow_rule"].is_null(), "{status}");
+    assert_eq!(status["permissions"]["state"], "not_installed");
     assert_eq!(status["current_command_matches"], true);
     assert_eq!(status["harness_version"]["admission"], "contract_declared");
 
@@ -407,10 +405,7 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
         report.contains("hooks.claude.setup_installed: yes\n"),
         "{report}"
     );
-    assert!(
-        report.contains(&format!("hooks.claude.allow_rule.rule: {RULE}\n")),
-        "{report}"
-    );
+    assert!(!report.contains("hooks.claude.allow_rule"), "{report}");
     assert!(
         report.contains(&format!(
             "hooks.claude.settings: {}\n",
@@ -422,7 +417,7 @@ fn claude_install_status_remove_round_trip_restores_settings_byte_for_byte() {
     let unsetup = s.run(&["unsetup", "claude"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
     assert!(text(&unsetup.stdout).contains("action: removed\n"));
-    assert!(text(&unsetup.stdout).contains("allow_rule: removed\n"));
+    assert!(text(&unsetup.stdout).contains("allow_rule: not_recorded\n"));
     assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
 
     let status = s.run(&["--json", "setup-status", "claude"]);
@@ -1101,12 +1096,11 @@ fn setup_help_documents_scope_and_exit_statuses() {
     assert!(!stdout.contains("no adapter recipe covers"), "{stdout}");
 }
 
-/// A user who already allows the identical rule keeps exactly one copy, and
-/// it survives unsetup; setup-status and doctor report it as pre-existing.
-/// Kills: duplicating the user's rule, recording it as owned, or removing it
-/// on unsetup.
+/// A user who already allows the broad rule keeps it: setup and unsetup never
+/// touch it, and setup-status reports it as a foreign broad grant. Kills:
+/// recording the user's rule as owned, or removing or duplicating it.
 #[test]
-fn preexisting_identical_allow_rule_is_not_duplicated_or_removed() {
+fn preexisting_broad_rule_is_reported_and_left_alone() {
     let s = Scratch::new();
     s.harness("claude", "2.1.284 (Claude Code)");
     fs::create_dir(&s.claude_config).unwrap();
@@ -1115,7 +1109,13 @@ fn preexisting_identical_allow_rule_is_not_duplicated_or_removed() {
 
     let setup = s.run(&["setup", "claude", "--json"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
-    assert_eq!(json(&setup)["allow_rule"]["ownership"], "pre_existing");
+    let report = json(&setup);
+    assert!(report["allow_rule"].is_null(), "{report}");
+    assert_eq!(report["permissions"]["state"], "not_installed");
+    assert_eq!(
+        report["permissions"]["foreign_broad_rules"],
+        serde_json::json!([RULE])
+    );
     let installed: serde_json::Value =
         serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
     assert_eq!(
@@ -1123,130 +1123,132 @@ fn preexisting_identical_allow_rule_is_not_duplicated_or_removed() {
         serde_json::json!([RULE, "Read"])
     );
 
-    let status = s.run(&["--json", "setup-status", "claude"]);
-    let status = json(&status);
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
     assert_eq!(status["installed"], true);
     assert_eq!(
-        status["allow_rule"],
-        serde_json::json!({"rule": RULE, "ownership": "pre_existing", "present": true})
+        status["permissions"]["foreign_broad_rules"],
+        serde_json::json!([RULE])
     );
 
     let unsetup = s.run(&["unsetup", "claude", "--json"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
-    assert_eq!(json(&unsetup)["allow_rule"], "left_pre_existing");
     assert_eq!(fs::read(s.settings()).unwrap(), original.as_bytes());
 }
 
-/// A recorded rule removed by hand is reported, re-setup refuses (status 1)
-/// without re-adding it, and unsetup still removes the owned hooks. Kills:
-/// silently re-adding the rule, reporting installed without it, or unsetup
-/// refusing because the owned rule is already gone.
-#[test]
-fn hand_removed_allow_rule_is_reported_and_refused_but_unsetup_works() {
-    let s = Scratch::new();
-    s.harness("claude", "2.1.284 (Claude Code)");
-    let setup = s.run(&["setup", "claude"]);
-    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
-    let mut v: serde_json::Value =
+/// Rewrite a current installation into the shape an earlier setup recorded:
+/// `rule` added to `permissions.allow` and recorded as owned in the hook
+/// manifest.
+fn record_earlier_grant(s: &Scratch, manifest_path: &Path, rule: &str) {
+    use sha2::Digest;
+    let mut settings: serde_json::Value =
         serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
-    v["permissions"]["allow"] = serde_json::json!([]);
-    fs::write(s.settings(), serde_json::to_vec(&v).unwrap()).unwrap();
-    let edited = fs::read(s.settings()).unwrap();
-
-    let status = json(&s.run(&["--json", "setup-status", "claude"]));
-    assert_eq!(status["installed"], false);
-    assert_eq!(status["allow_rule"]["present"], false);
-    assert_eq!(status["allow_rule"]["ownership"], "owned");
-
-    let again = s.run(&["setup", "claude"]);
-    assert_eq!(again.status.code(), Some(1), "{}", text(&again.stdout));
-    assert!(
-        text(&again.stderr).contains(RULE),
-        "{}",
-        text(&again.stderr)
-    );
-    assert_eq!(fs::read(s.settings()).unwrap(), edited);
-
-    let unsetup = s.run(&["unsetup", "claude"]);
-    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
-    let after = text(&fs::read(s.settings()).unwrap());
-    assert!(!after.contains("herdr-threads-owner"), "{after}");
-    assert!(!after.contains(RULE), "{after}");
+    settings["permissions"]["allow"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!(rule));
+    let bytes = serde_json::to_vec(&settings).unwrap();
+    fs::write(s.settings(), &bytes).unwrap();
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest_path).unwrap()).unwrap();
+    manifest["permission"] = serde_json::json!({
+        "rule": rule,
+        "fingerprint": format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&serde_json::json!({ "allow": rule })).unwrap())
+        ),
+        "pre_existing": false,
+    });
+    manifest["installed_fingerprint"] =
+        serde_json::json!(format!("sha256:{:x}", sha2::Sha256::digest(&bytes)));
+    fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 }
 
-/// P6 upgrade path: an installation made by the previous setup (manifest and
-/// settings holding the retired `Bash(export HERDR_THREADS_CALLER_CONTEXT=*)`
-/// rule) is reported as superseded by setup-status and doctor; re-running
-/// setup replaces the owned export rule with `Bash(herdr-threads *)`; unsetup
-/// then restores the original bytes. Kills: reporting the old installation as
-/// installed, keeping the dead export rule after re-setup, and an upgrade that
-/// breaks byte-exact unsetup.
+/// Upgrade path (user decision 2026-10-09): an installation whose earlier
+/// setup granted the broad `Bash(herdr-threads *)` (or the retired export
+/// rule) is reported as historical; a plain re-setup, with no consent, gives
+/// the permission component the `herdr-threads` allow rule (replacing the
+/// export rule) and makes human and self-granting commands ask. Unsetup then leaves
+/// the user's settings byte for byte. Kills: human commands still allowed, widening
+/// to other spellings without consent, losing the backup, or a migration that
+/// strands rules on unsetup.
 #[test]
-fn resetup_replaces_the_retired_export_rule_and_unsetup_restores_bytes() {
-    use sha2::Digest;
-    const RETIRED: &str = "Bash(export HERDR_THREADS_CALLER_CONTEXT=*)";
-    let s = Scratch::new();
-    s.harness("claude", "2.1.285 (Claude Code)");
-    fs::create_dir(&s.claude_config).unwrap();
-    fs::write(s.settings(), ORIGINAL).unwrap();
-    let setup = s.run(&["setup", "claude", "--json"]);
-    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
-    let manifest_path = PathBuf::from(json(&setup)["manifest"].as_str().unwrap());
+fn resetup_takes_over_an_earlier_broad_grant_and_unsetup_restores() {
+    for rule in [RULE, "Bash(export HERDR_THREADS_CALLER_CONTEXT=*)"] {
+        let s = Scratch::new();
+        s.harness("claude", "2.1.285 (Claude Code)");
+        fs::create_dir(&s.claude_config).unwrap();
+        fs::write(s.settings(), ORIGINAL).unwrap();
+        let setup = s.run(&["setup", "claude", "--json"]);
+        assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+        let manifest_path = PathBuf::from(json(&setup)["manifest"].as_str().unwrap());
+        record_earlier_grant(&s, &manifest_path, rule);
+        let earlier = fs::read(s.settings()).unwrap();
 
-    // Rewrite into the previous setup's shape.
-    let settings = text(&fs::read(s.settings()).unwrap());
-    assert_eq!(settings.matches(RULE).count(), 1, "{settings}");
-    let old = settings.replace(RULE, RETIRED);
-    fs::write(s.settings(), &old).unwrap();
-    let mut manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    manifest["permission"]["rule"] = serde_json::json!(RETIRED);
-    manifest["permission"]["fingerprint"] = serde_json::json!(format!(
-        "sha256:{:x}",
-        sha2::Sha256::digest(serde_json::to_vec(&serde_json::json!({ "allow": RETIRED })).unwrap())
-    ));
-    manifest["installed_fingerprint"] =
-        serde_json::json!(format!("sha256:{:x}", sha2::Sha256::digest(old.as_bytes())));
-    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let status = json(&s.run(&["--json", "setup-status", "claude"]));
+        assert_eq!(status["installed"], true, "{status}");
+        assert_eq!(status["permissions"]["state"], "historical", "{status}");
+        assert_eq!(
+            status["permissions"]["historical"],
+            serde_json::json!([rule])
+        );
 
-    let status = json(&s.run(&["--json", "setup-status", "claude"]));
-    assert_eq!(status["installed"], false);
-    assert_eq!(status["allow_rule"]["rule"], RULE);
-    assert_eq!(status["allow_rule"]["ownership"], "superseded");
-    assert_eq!(status["allow_rule"]["present"], false);
-    assert!(
-        status["allow_rule"]["note"]
-            .as_str()
-            .is_some_and(|n| n.contains(RETIRED) && n.contains("setup claude")),
-        "{status}"
-    );
-    let doctor = s.run(&["doctor", "--debug"]);
-    let report = text(&doctor.stdout);
-    assert!(
-        report.contains("hooks.claude.allow_rule.ownership: superseded\n"),
-        "{report}"
-    );
-    assert!(
-        report.contains("hooks.claude.allow_rule.note: "),
-        "{report}"
-    );
+        let again = s.run(&["setup", "claude", "--json"]);
+        assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+        let report = json(&again);
+        assert!(report["allow_rule"].is_null(), "{report}");
+        assert_eq!(report["permissions"]["state"], "installed", "{report}");
+        let settings: serde_json::Value =
+            serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+        let allow: Vec<&str> = settings["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        let ask: Vec<&str> = settings["permissions"]["ask"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        let mut sorted = allow.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            ["Bash(herdr-threads *)", "Bash(herdr-threads)", "Bash(ls:*)"]
+        );
+        assert_eq!(allow[0], "Bash(ls:*)", "{settings}");
+        assert!(ask.contains(&"Bash(herdr-threads human *)"), "{settings}");
+        assert!(ask.contains(&"Bash(herdr-threads setup *)"), "{settings}");
+        assert!(
+            ask.iter().all(|r| r.starts_with("Bash(herdr-threads ")),
+            "{settings}"
+        );
+        let backups: Vec<Vec<u8>> = fs::read_dir(&s.claude_config)
+            .unwrap()
+            .map(|e| e.unwrap())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".herdr-threads"))
+            .map(|e| fs::read(e.path()).unwrap())
+            .collect();
+        assert!(
+            backups.contains(&earlier),
+            "the pre-migration settings are kept"
+        );
+        // A re-run changes nothing.
+        let settled = fs::read(s.settings()).unwrap();
+        let rerun = s.run(&["setup", "claude", "--json"]);
+        assert_eq!(rerun.status.code(), Some(0), "{}", text(&rerun.stderr));
+        assert_eq!(json(&rerun)["action"], "already_installed");
+        assert_eq!(fs::read(s.settings()).unwrap(), settled);
 
-    let again = s.run(&["setup", "claude", "--json"]);
-    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
-    assert_eq!(json(&again)["action"], "installed");
-    assert_eq!(json(&again)["allow_rule"]["ownership"], "owned");
-    let upgraded: serde_json::Value =
-        serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
-    assert_eq!(
-        upgraded["permissions"]["allow"],
-        serde_json::json!(["Bash(ls:*)", RULE])
-    );
-    let status = json(&s.run(&["--json", "setup-status", "claude"]));
-    assert_eq!(status["installed"], true);
-
-    let unsetup = s.run(&["unsetup", "claude"]);
-    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
-    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+        let unsetup = s.run(&["unsetup", "claude", "--json"]);
+        assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+        assert_eq!(
+            fs::read(s.settings()).unwrap(),
+            ORIGINAL,
+            "{rule}: byte-exact"
+        );
+    }
 }
 
 fn outcomes(report: &serde_json::Value) -> Vec<(String, String)> {
@@ -1684,10 +1686,9 @@ fn copied_codex_hooks_are_adopted_without_changing_bytes() {
     assert_eq!(fs::read(s.hooks()).unwrap(), first);
 }
 
-/// The Claude counterpart: a copied settings.json (with the allow rule) is
-/// reported installed (adopted), adopted byte-identically with the rule
-/// recorded as pre-existing, and unsetup removes only its hook groups.
-/// Kills: Claude adoption duplicating groups or removing the rule.
+/// The Claude counterpart: a copied settings.json is reported installed
+/// (adopted), adopted byte-identically, and unsetup removes only its hook
+/// groups. Kills: Claude adoption duplicating groups or touching user rules.
 #[test]
 fn copied_claude_settings_are_adopted_without_changing_bytes() {
     let s = Scratch::new();
@@ -1722,15 +1723,15 @@ fn copied_claude_settings_are_adopted_without_changing_bytes() {
     assert_eq!(status["adopted"]["recorded"], false);
     let adopt = json(&run(&["setup", "claude", "--json"]));
     assert_eq!(adopt["action"], "adopted", "{adopt}");
-    assert_eq!(adopt["allow_rule"]["ownership"], "pre_existing");
+    assert!(adopt["allow_rule"].is_null(), "{adopt}");
     assert_eq!(fs::read(&copied).unwrap(), first);
     let unsetup = json(&run(&["unsetup", "claude", "--json"]));
     assert_eq!(unsetup["action"], "removed", "{unsetup}");
-    assert_eq!(unsetup["allow_rule"], "left_pre_existing");
+    assert_eq!(unsetup["allow_rule"], "not_recorded");
     let left: serde_json::Value = serde_json::from_slice(&fs::read(&copied).unwrap()).unwrap();
     assert_eq!(
         left["permissions"]["allow"],
-        serde_json::json!(["Bash(ls:*)", RULE])
+        serde_json::json!(["Bash(ls:*)"])
     );
     assert!(
         !String::from_utf8(fs::read(&copied).unwrap())

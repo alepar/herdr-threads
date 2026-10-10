@@ -152,13 +152,6 @@ const DECLARED_RULE: &str = super::claude::HERDR_THREADS_ALLOW_RULE;
 /// The allow rule earlier setups installed; recognized in their manifests only, so re-setup can
 /// replace and unsetup can remove an owned copy.
 const RETIRED_RULE: &str = super::claude::CALLER_CONTEXT_ALLOW_RULE;
-fn permission_record(pre_existing: bool) -> OwnedPermission {
-    OwnedPermission {
-        rule: DECLARED_RULE.into(),
-        fingerprint: permission_fingerprint(DECLARED_RULE),
-        pre_existing,
-    }
-}
 /// A recorded permission is owned only for a rule this adapter declares or once declared, with a
 /// matching fingerprint: a manifest can never direct removal of an arbitrary user rule.
 fn permission_valid(permission: &OwnedPermission) -> bool {
@@ -275,7 +268,7 @@ fn owned(event: &str, group: Value) -> Result<OwnedEntry, SetupError> {
         fingerprint: fingerprint(&bytes),
     })
 }
-fn root(bytes: &[u8]) -> Result<Value, SetupError> {
+pub(crate) fn root(bytes: &[u8]) -> Result<Value, SetupError> {
     if bytes.len() > 1_048_576 {
         return Err(SetupError::TooLarge);
     }
@@ -910,7 +903,7 @@ pub struct HookInspection {
     pub observed: NativeObservation,
     /// Present only for an exact, owned installation; suitable for managed launch.
     pub configured_hook: Option<ConfiguredHook>,
-    /// Claude project only: the recorded permission allow rule and whether it is present now.
+    /// Claude only: the allow rule an earlier setup recorded and whether it is present now.
     pub allow_rule: Option<AllowRuleInspection>,
     /// The owned groups belong to another setup's installation (they carry its owner marker),
     /// adopted for this file: recorded by a manifest, or found by inspection with none yet.
@@ -931,17 +924,15 @@ pub struct Adoption {
     pub recorded: bool,
 }
 
-/// Who holds the declared allow rule, as recorded by the ownership manifest.
+/// Who holds the allow rule an earlier hook setup recorded, until the permission component
+/// retires the record (current hook setup records none).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllowRuleOwnership {
     /// Setup added the rule and unsetup removes it.
     Owned,
     /// The user's settings held the identical rule before setup; unsetup leaves it.
     PreExisting,
-    /// The manifest records no rule (installed before the rule was declared): re-run setup.
-    NotRecorded,
-    /// The manifest records only the retired `claude::CALLER_CONTEXT_ALLOW_RULE`: re-run setup
-    /// to replace it (an owned copy is removed) with the declared rule.
+    /// The manifest records the retired `claude::CALLER_CONTEXT_ALLOW_RULE`.
     Superseded,
 }
 
@@ -1256,36 +1247,15 @@ fn install_user_settings_inner<F: FnOnce()>(
         }
         let unmarked_command = shell_command(hook_argv)?;
         let current = config_bytes(config)?;
-        let rule_count = allow_count(&root(&current)?, DECLARED_RULE)?;
-        // A manifest recorded before the declared rule (none, or only the retired export rule)
-        // gains it now. Earlier setups never wrote the declared rule, so an identical rule
-        // already present is the user's own. A legacy unmarked installation cannot record the
-        // intent safely: remove and set up again.
-        // A kind without the allow rule has nothing to record: its permission is always current.
-        let recorded_current = !kind.manages_permission()
-            || manifest.permission.as_ref().is_some_and(permission_current);
-        let permission = match &manifest.permission {
-            _ if !kind.manages_permission() => None,
-            Some(permission) if recorded_current => Some(permission.clone()),
-            _ if manifest.installation_id.is_empty() => return Err(SetupError::Conflict),
-            _ => Some(permission_record(rule_count > 0)),
-        };
-        // An owned retired rule is replaced: record it so an interruption still removes it.
-        let retiring = manifest
-            .permission
-            .as_ref()
-            .filter(|p| !permission_current(p) && !p.pre_existing)
-            .cloned()
-            .or_else(|| manifest.superseded_permission.clone());
+        // The permission rule is not part of the hook installation: a manifest that still records
+        // one is first settled by the permission component, which retires the record.
+        if manifest.permission.is_some() || manifest.superseded_permission.is_some() {
+            return Err(SetupError::Conflict);
+        }
         if manifest.phase == InstallPhase::Installed {
-            // Every recorded owned group must still be exact before anything is claimed, and a
-            // recorded declared rule must still be present (setup never silently re-adds a
-            // removed rule). A retired rule already gone is fine: the upgrade removes it anyway.
+            // Every recorded owned group must still be exact before anything is claimed.
             uninstall_json(&current, &manifest.owned)?;
-            if kind.manages_permission() && recorded_current && rule_count == 0 {
-                return Err(SetupError::Conflict);
-            }
-            if manifest.owned == expected && recorded_current {
+            if manifest.owned == expected {
                 return Ok(manifest);
             }
             // Upgrade to the current declaration. Prove the target composes before durably
@@ -1298,8 +1268,6 @@ fn install_user_settings_inner<F: FnOnce()>(
                 .cloned()
                 .collect();
             intent.owned = expected.clone();
-            intent.permission = permission;
-            intent.superseded_permission = retiring;
             intent.phase = InstallPhase::Prepared;
             plan_resume(&current, &intent, &unmarked_command)?;
             replace_manifest(manifest_path, &intent)?;
@@ -1320,12 +1288,6 @@ fn install_user_settings_inner<F: FnOnce()>(
                 }
             }
             manifest.owned = expected.clone();
-            manifest.permission = permission;
-            manifest.superseded_permission = retiring;
-            replace_manifest(manifest_path, &manifest)?;
-        } else if !recorded_current {
-            manifest.permission = permission;
-            manifest.superseded_permission = retiring;
             replace_manifest(manifest_path, &manifest)?;
         }
         let resume = plan_resume(&current, &manifest, &unmarked_command)?;
@@ -1343,7 +1305,6 @@ fn install_user_settings_inner<F: FnOnce()>(
         manifest.installed_fingerprint = fingerprint(&resume.bytes);
         manifest.installation_base_bytes = resume.base;
         manifest.superseded.clear();
-        manifest.superseded_permission = None;
         replace_manifest(manifest_path, &manifest)?;
         return Ok(manifest);
     }
@@ -1363,24 +1324,11 @@ fn install_user_settings_inner<F: FnOnce()>(
     {
         return Err(SetupError::Conflict);
     }
-    // Never duplicate the user's identical allow rule: record it as pre-existing instead.
-    let permission = if kind.manages_permission() {
-        Some(permission_record(
-            allow_count(&baseline, DECLARED_RULE)? > 0,
-        ))
-    } else {
-        None
-    };
     let installation_id = uuid::Uuid::new_v4().to_string();
     let plan = compose_json(
         expected_base,
         &kind.entries(&owned_command(hook_argv, &installation_id)?)?,
-        &permission
-            .as_ref()
-            .filter(|p| !p.pre_existing)
-            .map(|p| p.rule.as_str())
-            .into_iter()
-            .collect::<Vec<_>>(),
+        &[],
     )?;
     let manifest = OwnershipManifest {
         version: 2,
@@ -1394,7 +1342,7 @@ fn install_user_settings_inner<F: FnOnce()>(
         installed_fingerprint: fingerprint(&plan.proposed_bytes),
         phase: InstallPhase::Prepared,
         superseded: Vec::new(),
-        permission,
+        permission: None,
         superseded_permission: None,
         adopted: false,
     };
@@ -1478,6 +1426,83 @@ fn read_manifest(path: &Path) -> Result<Option<OwnershipManifest>, SetupError> {
     Ok(Some(manifest))
 }
 
+/// The permission rules an earlier Claude hook setup recorded in its manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedPermission {
+    /// The rules that setup added, which are owned: never a rule the user already held.
+    pub owned: Vec<String>,
+    /// Whether the user's settings had no `permissions` / `permissions.allow` before that setup
+    /// (unknown for a legacy manifest without a recorded base: then both are kept).
+    pub created_permissions: bool,
+    pub created_allow: bool,
+    /// The exact manifest bytes the record was read from.
+    manifest: Vec<u8>,
+}
+
+/// The permission record of the Claude hook manifest at `manifest_path` for `config`, validated
+/// like removal: only a declared or retired rule with its fingerprint is ever owned.
+pub fn recorded_hook_permission(
+    config: &Path,
+    manifest_path: &Path,
+) -> Result<Option<RecordedPermission>, SetupError> {
+    let Some(manifest) = read_manifest(manifest_path)? else {
+        return Ok(None);
+    };
+    if manifest.permission.is_none() && manifest.superseded_permission.is_none() {
+        return Ok(None);
+    }
+    if !manifest_matches(SettingsKind::ClaudeUser, &manifest, config)?
+        || !recorded_ownership_valid(&manifest)
+    {
+        return Err(SetupError::Conflict);
+    }
+    let owned = owned_rule(&manifest)
+        .into_iter()
+        .chain(superseded_rule(&manifest))
+        .map(str::to_owned)
+        .collect();
+    let base = root(&manifest.installation_base_bytes).ok();
+    Ok(Some(RecordedPermission {
+        owned,
+        created_permissions: base
+            .as_ref()
+            .is_some_and(|base| base.get("permissions").is_none()),
+        created_allow: base
+            .as_ref()
+            .is_some_and(|base| base["permissions"].get("allow").is_none()),
+        manifest: fs::read(manifest_path).map_err(|_| SetupError::Io)?,
+    }))
+}
+
+/// Drop the permission record [`recorded_hook_permission`] read, once the permission component
+/// owns its outcome. A manifest that changed since is a conflict; one already without a record
+/// is done.
+pub fn retire_hook_permission(
+    manifest_path: &Path,
+    recorded: &RecordedPermission,
+) -> Result<(), SetupError> {
+    let Some(mut manifest) = read_manifest(manifest_path)? else {
+        return Err(SetupError::Conflict);
+    };
+    if manifest.permission.is_none() && manifest.superseded_permission.is_none() {
+        return Ok(());
+    }
+    if fs::read(manifest_path).map_err(|_| SetupError::Io)? != recorded.manifest {
+        return Err(SetupError::Conflict);
+    }
+    manifest.permission = None;
+    manifest.superseded_permission = None;
+    // The installation's own published state no longer includes the rule, so a later removal
+    // of a file back to exactly the base plus the hooks still restores the base byte for byte.
+    if manifest.phase == InstallPhase::Installed
+        && !manifest.installation_base_bytes.is_empty()
+        && let Ok(plan) = compose_json(&manifest.installation_base_bytes, &manifest.owned, &[])
+    {
+        manifest.installed_fingerprint = fingerprint(&plan.proposed_bytes);
+    }
+    replace_manifest(manifest_path, &manifest)
+}
+
 /// The recorded ownership manifest, if one exists. The setup CLI passes its
 /// `original_bytes` back as the install baseline on a re-run and shows its
 /// recorded command; ownership decisions stay in install/inspect/remove.
@@ -1527,27 +1552,15 @@ pub fn inspect_user_settings_for(
             && let Ok(Some(adoptable)) = adoptable_user_settings(kind, config, argv)
             && let Ok(current) = config_bytes(config)
         {
-            let rule_present = root(&current)
-                .and_then(|value| allow_count(&value, DECLARED_RULE))
-                .is_ok_and(|count| count > 0);
-            let installed = !kind.manages_permission() || rule_present;
             return Ok(HookInspection {
-                installed,
+                installed: true,
                 observed,
-                configured_hook: installed.then(|| ConfiguredHook {
+                configured_hook: Some(ConfiguredHook {
                     scope: kind.scope().into(),
                     path: config.to_string_lossy().into_owned(),
                     fingerprint: fingerprint(&current),
                 }),
-                allow_rule: kind.manages_permission().then_some(AllowRuleInspection {
-                    rule: DECLARED_RULE,
-                    ownership: if rule_present {
-                        AllowRuleOwnership::PreExisting
-                    } else {
-                        AllowRuleOwnership::NotRecorded
-                    },
-                    present: rule_present,
-                }),
+                allow_rule: None,
                 adopted: Some(Adoption {
                     owner: adoptable.installation_id,
                     recorded: false,
@@ -1573,30 +1586,29 @@ pub fn inspect_user_settings_for(
     let declaration_valid = recorded_ownership_valid(&manifest)
         && shared_command(&manifest.owned).is_some_and(|s| !s.is_empty())
         && (is_current_declaration(kind, &manifest.owned) || legacy);
-    let rule = DECLARED_RULE;
-    let rule_present = serde_json::from_slice::<Value>(&current)
-        .ok()
-        .and_then(|v| allow_count(&v, rule).ok())
-        .is_some_and(|count| count > 0);
-    let allow_rule = AllowRuleInspection {
-        rule,
-        ownership: match &manifest.permission {
-            Some(p) if !permission_current(p) => AllowRuleOwnership::Superseded,
-            Some(p) if p.pre_existing => AllowRuleOwnership::PreExisting,
-            Some(_) => AllowRuleOwnership::Owned,
-            None => AllowRuleOwnership::NotRecorded,
-        },
-        present: rule_present,
-    };
-    // Installed also means the declared allow rule (Claude) is recorded and present.
+    // A rule recorded by an earlier setup stays reported until the permission component
+    // retires the record; current hook setup records none.
+    let allow_rule = manifest.permission.as_ref().map(|p| {
+        let rule = if permission_current(p) {
+            DECLARED_RULE
+        } else {
+            RETIRED_RULE
+        };
+        AllowRuleInspection {
+            rule,
+            ownership: match p {
+                _ if !permission_current(p) => AllowRuleOwnership::Superseded,
+                p if p.pre_existing => AllowRuleOwnership::PreExisting,
+                _ => AllowRuleOwnership::Owned,
+            },
+            present: serde_json::from_slice::<Value>(&current)
+                .ok()
+                .and_then(|v| allow_count(&v, rule).ok())
+                .is_some_and(|count| count > 0),
+        }
+    });
     let installed = manifest.phase == InstallPhase::Installed
         && declaration_valid
-        && (!kind.manages_permission()
-            || (manifest
-                .permission
-                .as_ref()
-                .is_some_and(|p| permission_valid(p) && permission_current(p))
-                && rule_present))
         && manifest.owned.iter().all(|entry| {
             serde_json::from_slice::<Value>(&current)
                 .ok()
@@ -1613,7 +1625,7 @@ pub fn inspect_user_settings_for(
             path: manifest.path.clone(),
             fingerprint: fingerprint(&current),
         }),
-        allow_rule: kind.manages_permission().then_some(allow_rule),
+        allow_rule,
         adopted: manifest.adopted.then(|| Adoption {
             owner: manifest.installation_id.clone(),
             recorded: true,
@@ -1827,12 +1839,6 @@ pub fn adopt_user_settings(
         return Ok(None);
     };
     let current = config_bytes(config)?;
-    let permission =
-        if kind.manages_permission() && allow_count(&root(&current)?, DECLARED_RULE)? > 0 {
-            Some(permission_record(true))
-        } else {
-            None
-        };
     let manifest = OwnershipManifest {
         version: 2,
         harness: kind.harness().into(),
@@ -1845,7 +1851,7 @@ pub fn adopt_user_settings(
         installed_fingerprint: fingerprint(&current),
         phase: InstallPhase::Installed,
         superseded: Vec::new(),
-        permission,
+        permission: None,
         superseded_permission: None,
         adopted: true,
     };

@@ -1831,7 +1831,7 @@ fn prepared_install_under_earlier_declaration_converges_on_resetup() {
             json!({"other":1,"later":"keep","hooks":{
                 "SessionStart":[expected[0].group.clone()],
                 "PreToolUse":[expected[1].group.clone()]
-            },"permissions":{"allow":[crate::harness::claude::HERDR_THREADS_ALLOW_RULE]}}),
+            }}),
             "{name}"
         );
         assert!(
@@ -2104,46 +2104,59 @@ fn changed_file_drift_upgrade_keeps_empty_owned_event_arrays_the_recorded_base_h
     }
 }
 
-// ---------------------------------------------------------------- owned allow rule
+// ---------------------------------------------------------------- historical allow rule
+//
+// Hook setup no longer writes a permission rule: the permission component owns permissions.
+// Manifests recorded by earlier setups can still hold the broad rule (or the retired export
+// rule); they stay readable, block a hook re-setup until the permission component retires the
+// record, and unsetup still removes an owned copy.
 
 const RULE: &str = crate::harness::claude::HERDR_THREADS_ALLOW_RULE;
+const RETIRED: &str = crate::harness::claude::CALLER_CONTEXT_ALLOW_RULE;
 
-fn allow_of(config: &std::path::Path) -> Value {
+fn count_of(config: &std::path::Path, rule: &str) -> usize {
     let v: Value = serde_json::from_slice(&fs::read(config).unwrap()).unwrap();
-    v["permissions"]["allow"].clone()
-}
-
-fn rule_count(config: &std::path::Path) -> usize {
-    allow_of(config)
+    v["permissions"]["allow"]
         .as_array()
-        .map_or(0, |a| a.iter().filter(|r| r.as_str() == Some(RULE)).count())
+        .map_or(0, |a| a.iter().filter(|r| r.as_str() == Some(rule)).count())
 }
 
-fn allow_rule(config: &std::path::Path, manifest_path: &std::path::Path) -> AllowRuleInspection {
-    inspect_claude_user(config, manifest_path, NativeObservation::Unknown)
-        .unwrap()
-        .allow_rule
-        .unwrap()
+fn permission_record(rule: &str, pre_existing: bool) -> OwnedPermission {
+    OwnedPermission {
+        rule: rule.into(),
+        fingerprint: format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&json!({ "allow": rule })).unwrap())
+        ),
+        pre_existing,
+    }
 }
 
-/// Rewrites a current installation into the shape recorded before the rule was declared:
-/// no recorded permission and (unless the user holds it) no rule in settings.
-fn strip_recorded_rule(config: &std::path::Path, manifest_path: &std::path::Path) {
+/// Rewrites a current installation into the shape an earlier setup recorded: `rule` recorded
+/// and, unless the user held it, appended to `permissions.allow` as that setup published it.
+fn record_historical(
+    config: &std::path::Path,
+    manifest_path: &std::path::Path,
+    rule: &str,
+    pre_existing: bool,
+) {
     let mut manifest = read_manifest_file(manifest_path);
-    let owned_rule = manifest.permission.take().is_some_and(|p| !p.pre_existing);
-    if owned_rule {
+    manifest.permission = Some(permission_record(rule, pre_existing));
+    if !pre_existing {
         let mut settings: Value = serde_json::from_slice(&fs::read(config).unwrap()).unwrap();
-        let allow = settings["permissions"]["allow"].as_array_mut().unwrap();
-        allow.retain(|r| r.as_str() != Some(RULE));
-        if allow.is_empty() {
-            settings["permissions"]
-                .as_object_mut()
-                .unwrap()
-                .remove("allow");
-        }
-        if settings["permissions"].as_object().unwrap().is_empty() {
-            settings.as_object_mut().unwrap().remove("permissions");
-        }
+        let permissions = settings
+            .as_object_mut()
+            .unwrap()
+            .entry("permissions")
+            .or_insert_with(|| json!({}));
+        permissions
+            .as_object_mut()
+            .unwrap()
+            .entry("allow")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .unwrap()
+            .push(json!(rule));
         let bytes = serde_json::to_vec(&settings).unwrap();
         fs::write(config, &bytes).unwrap();
         manifest.installed_fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
@@ -2151,98 +2164,113 @@ fn strip_recorded_rule(config: &std::path::Path, manifest_path: &std::path::Path
     fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 }
 
-// Kills: not composing the rule on install, removing a pre-existing rule, duplicating it, or
-// leaving an owned rule (or an emptied permissions/allow residue) behind on unsetup.
+// Kills: hook setup composing (or recording) a permission rule, inspection requiring one, or
+// removal touching a rule the user holds.
 #[test]
-fn allow_rule_install_status_remove_round_trip_with_and_without_preexisting_rule() {
-    let bases: [(&str, &[u8], bool); 5] = [
-        ("empty", b"{}", false),
-        ("no permissions", br#"{"other":1}"#, false),
-        (
-            "other rules",
-            br#"{"permissions":{"allow":["Read","Bash(echo *)"],"deny":["Bash(rm *)"]}}"#,
-            false,
-        ),
-        (
-            "preexisting",
-            br#"{"permissions":{"allow":["Read","Bash(herdr-threads *)"]}}"#,
-            true,
-        ),
-        (
-            "preexisting only",
-            br#"{"permissions":{"allow":["Bash(herdr-threads *)"]},"x":[]}"#,
-            true,
-        ),
+fn hook_setup_records_and_writes_no_permission_rule() {
+    let bases: [&[u8]; 3] = [
+        b"{}",
+        br#"{"permissions":{"allow":["Read"],"deny":["Bash(rm *)"]}}"#,
+        br#"{"permissions":{"allow":["Bash(herdr-threads *)"]},"x":[]}"#,
     ];
-    for (name, original, pre_existing) in bases {
+    for original in bases {
         let (dir, config, manifest_path) = claude_scope();
         fs::write(&config, original).unwrap();
         let argv = vec!["/tmp/owned".into()];
         let manifest = install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-        let recorded = manifest.permission.clone().unwrap();
-        assert_eq!(recorded.rule, RULE, "{name}");
-        assert_eq!(recorded.pre_existing, pre_existing, "{name}");
-        assert_eq!(rule_count(&config), 1, "{name}: never duplicated");
+        assert_eq!(manifest.permission, None);
+        let mut v: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("hooks");
+        let mut expected: Value = serde_json::from_slice(original).unwrap();
+        expected.as_object_mut().unwrap().remove("hooks");
+        assert_eq!(v, expected, "only hooks change");
         let status =
             inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown).unwrap();
-        assert!(status.installed, "{name}");
-        let rule = status.allow_rule.unwrap();
-        assert!(rule.present, "{name}");
-        assert_eq!(
-            rule.ownership,
-            if pre_existing {
-                AllowRuleOwnership::PreExisting
-            } else {
-                AllowRuleOwnership::Owned
-            },
-            "{name}"
-        );
-        // Idempotent re-run.
+        assert!(status.installed);
+        assert_eq!(status.allow_rule, None);
+        assert_eq!(recorded_hook_permission(&config, &manifest_path), Ok(None));
         let settled = fs::read(&config).unwrap();
         install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-        assert_eq!(fs::read(&config).unwrap(), settled, "{name}");
+        assert_eq!(fs::read(&config).unwrap(), settled);
         remove_claude_user(&config, &manifest_path).unwrap();
-        assert_eq!(fs::read(&config).unwrap(), original, "{name}: byte-exact");
+        assert_eq!(fs::read(&config).unwrap(), original, "byte-exact");
         fs::remove_dir_all(dir).unwrap();
     }
 }
 
-// Kills: structural removal (after an unrelated edit) that keeps the owned rule, removes a
-// pre-existing rule, removes a user duplicate, or drops an allow array the base held.
+// Kills: a hook re-setup that re-adds, keeps managing or silently drops a historical rule
+// instead of leaving it to the permission component, and a retirement that loses the hooks.
 #[test]
-fn allow_rule_structural_removal_after_unrelated_edit() {
-    let cases: [(&str, &[u8]); 4] = [
-        ("absent", br#"{"other":1}"#),
-        ("empty allow", br#"{"permissions":{"allow":[]}}"#),
-        ("empty permissions", br#"{"permissions":{}}"#),
+fn historical_rule_is_reported_and_blocks_hook_resetup_until_retired() {
+    let (dir, config, manifest_path) = claude_scope();
+    fs::write(&config, b"{}").unwrap();
+    let argv = vec!["/tmp/owned".into()];
+    install_claude_user(&config, &manifest_path, &argv, b"{}").unwrap();
+    record_historical(&config, &manifest_path, RULE, false);
+    let status = inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown).unwrap();
+    assert!(status.installed);
+    let rule = status.allow_rule.unwrap();
+    assert_eq!(
+        (rule.rule, rule.ownership, rule.present),
+        (RULE, AllowRuleOwnership::Owned, true)
+    );
+    let held = fs::read(&config).unwrap();
+    assert_eq!(
+        install_claude_user(&config, &manifest_path, &argv, b"{}"),
+        Err(SetupError::Conflict)
+    );
+    assert_eq!(fs::read(&config).unwrap(), held);
+    let recorded = recorded_hook_permission(&config, &manifest_path)
+        .unwrap()
+        .unwrap();
+    assert_eq!(recorded.owned, vec![RULE.to_owned()]);
+    assert!(recorded.created_permissions && recorded.created_allow);
+    retire_hook_permission(&manifest_path, &recorded).unwrap();
+    assert_eq!(read_manifest_file(&manifest_path).permission, None);
+    // Retiring again is done, not a conflict; the hooks stay installed.
+    retire_hook_permission(&manifest_path, &recorded).unwrap();
+    install_claude_user(&config, &manifest_path, &argv, b"{}").unwrap();
+    assert_eq!(fs::read(&config).unwrap(), held);
+    assert_eq!(
+        count_of(&config, RULE),
+        1,
+        "the rule is the component's to change"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+// Kills: unsetup of a never-migrated installation that keeps an owned historical rule, removes
+// a user's own, removes a user duplicate, or loses byte-exact restoration.
+#[test]
+fn unsetup_removes_only_an_owned_historical_rule() {
+    let cases: [(&[u8], &str, bool); 4] = [
+        (br#"{"other":1}"#, RULE, false),
+        (br#"{"permissions":{"allow":["Read"]}}"#, RETIRED, false),
         (
-            "preexisting",
             br#"{"permissions":{"allow":["Bash(herdr-threads *)"]}}"#,
+            RULE,
+            true,
         ),
+        (br#"{"permissions":{"allow":[]}}"#, RULE, false),
     ];
-    for (name, original) in cases {
+    for (original, rule, pre_existing) in cases {
         let (dir, config, manifest_path) = claude_scope();
         fs::write(&config, original).unwrap();
-        let argv = vec!["/tmp/owned".into()];
-        install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-        let mut v: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-        v["later"] = json!("keep");
-        fs::write(&config, serde_json::to_vec(&v).unwrap()).unwrap();
+        install_claude_user(&config, &manifest_path, &["/tmp/owned".into()], original).unwrap();
+        record_historical(&config, &manifest_path, rule, pre_existing);
         remove_claude_user(&config, &manifest_path).unwrap();
-        let mut expected: Value = serde_json::from_slice(original).unwrap();
-        expected["later"] = json!("keep");
-        assert!(!owned_command_present(&config), "{name}");
-        // Structural hook removal may leave emptied event arrays (existing behaviour); the
-        // assertion here is about everything outside `hooks`.
-        let mut after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-        after.as_object_mut().unwrap().remove("hooks");
-        assert_eq!(after, expected, "{name}");
+        assert_eq!(
+            fs::read(&config).unwrap(),
+            original,
+            "{rule} {pre_existing}"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
-    // A user duplicate added after install survives: only the owned occurrence is removed.
+    // A user duplicate added later survives: only the owned occurrence goes.
     let (dir, config, manifest_path) = claude_scope();
     fs::write(&config, b"{}").unwrap();
     install_claude_user(&config, &manifest_path, &["/tmp/owned".into()], b"{}").unwrap();
+    record_historical(&config, &manifest_path, RULE, false);
     let mut v: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
     v["permissions"]["allow"]
         .as_array_mut()
@@ -2250,634 +2278,38 @@ fn allow_rule_structural_removal_after_unrelated_edit() {
         .push(json!(RULE));
     fs::write(&config, serde_json::to_vec(&v).unwrap()).unwrap();
     remove_claude_user(&config, &manifest_path).unwrap();
-    assert_eq!(rule_count(&config), 1);
+    assert_eq!(count_of(&config, RULE), 1);
+    assert!(!owned_command_present(&config));
     fs::remove_dir_all(dir).unwrap();
 }
 
-// Kills: silently re-adding (or ignoring) a recorded rule the user removed, and removal refusing
-// when the owned rule is already gone.
+// Kills: accepting a recorded rule other than the declared or retired one (a forged manifest
+// could otherwise direct removal of an arbitrary user rule) or one with a stale fingerprint.
 #[test]
-fn removed_allow_rule_is_reported_and_resetup_refuses_but_unsetup_succeeds() {
-    for original in [
-        &br#"{"other":1}"#[..],
-        &br#"{"permissions":{"allow":["Bash(herdr-threads *)"]}}"#[..],
-    ] {
-        let (dir, config, manifest_path) = claude_scope();
-        fs::write(&config, original).unwrap();
-        let argv = vec!["/tmp/owned".into()];
-        install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-        let mut v: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-        v["permissions"]["allow"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|r| r.as_str() != Some(RULE));
-        fs::write(&config, serde_json::to_vec(&v).unwrap()).unwrap();
-        let edited = fs::read(&config).unwrap();
-        let status =
-            inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown).unwrap();
-        assert!(!status.installed);
-        assert!(!status.allow_rule.unwrap().present);
-        assert_eq!(
-            install_claude_user(&config, &manifest_path, &argv, original),
-            Err(SetupError::Conflict)
-        );
-        assert_eq!(fs::read(&config).unwrap(), edited);
-        remove_claude_user(&config, &manifest_path).unwrap();
-        assert!(!owned_command_present(&config));
-        assert_eq!(rule_count(&config), 0);
-        assert!(!manifest_path.exists());
-        fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-// Kills: accepting a manifest-recorded rule other than the declared one (a forged manifest could
-// otherwise direct unsetup to delete an arbitrary user rule) or a rule with a stale fingerprint.
-#[test]
-fn recorded_permission_must_be_the_declared_rule_with_its_fingerprint() {
+fn forged_historical_record_is_refused() {
     for forge in [
-        |p: &mut OwnedPermission| {
-            // A self-consistent record of a different (user) rule.
-            p.rule = "Read".into();
-            p.fingerprint = format!(
-                "sha256:{:x}",
-                sha2::Sha256::digest(serde_json::to_vec(&json!({"allow":"Read"})).unwrap())
-            );
-        },
-        |p: &mut OwnedPermission| p.fingerprint = "sha256:00".into(),
+        |m: &mut OwnershipManifest| m.permission = Some(permission_record("Read", false)),
+        |m: &mut OwnershipManifest| m.permission.as_mut().unwrap().fingerprint = "sha256:00".into(),
+        |m: &mut OwnershipManifest| m.superseded_permission = Some(permission_record(RULE, true)),
     ] {
         let (dir, config, manifest_path) = claude_scope();
         let original = br#"{"permissions":{"allow":["Read"]}}"#;
         fs::write(&config, original).unwrap();
         install_claude_user(&config, &manifest_path, &["/tmp/owned".into()], original).unwrap();
-        let mut manifest = read_manifest_file(&manifest_path);
-        forge(manifest.permission.as_mut().unwrap());
-        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-        let before = fs::read(&config).unwrap();
-        assert!(
-            !inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown)
-                .unwrap()
-                .installed
-        );
-        assert_eq!(
-            remove_claude_user(&config, &manifest_path),
-            Err(SetupError::Conflict)
-        );
-        assert_eq!(fs::read(&config).unwrap(), before);
-        fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-// Kills: an installation recorded before the rule was declared counting as installed, re-setup
-// not adding the rule, claiming a user's rule as owned, or losing byte-exact restoration.
-#[test]
-fn installation_without_recorded_rule_upgrades_on_resetup() {
-    for (name, original) in [
-        ("absent", &br#"{"other":1}"#[..]),
-        (
-            "user holds it",
-            &br#"{"permissions":{"allow":["Bash(herdr-threads *)"]}}"#[..],
-        ),
-    ] {
-        let (dir, config, manifest_path) = claude_scope();
-        fs::write(&config, original).unwrap();
-        let argv = vec!["/tmp/owned".into()];
-        let first = install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-        strip_recorded_rule(&config, &manifest_path);
-        let status =
-            inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown).unwrap();
-        assert!(!status.installed, "{name}");
-        assert_eq!(
-            status.allow_rule.unwrap().ownership,
-            AllowRuleOwnership::NotRecorded,
-            "{name}"
-        );
-        let upgraded = install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-        assert_eq!(upgraded.permission, first.permission, "{name}");
-        assert_eq!(upgraded.phase, InstallPhase::Installed, "{name}");
-        assert_eq!(rule_count(&config), 1, "{name}");
-        assert!(allow_rule(&config, &manifest_path).present, "{name}");
-        assert!(
-            inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown)
-                .unwrap()
-                .installed,
-            "{name}"
-        );
-        remove_claude_user(&config, &manifest_path).unwrap();
-        assert_eq!(fs::read(&config).unwrap(), original, "{name}: byte-exact");
-        fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-// Kills: a crash between recording the rule intent and publishing it (or between publishing and
-// finalizing) that strands the rule, loses it, or breaks byte-exact removal.
-#[test]
-fn interrupted_rule_upgrade_resumes_or_removes_from_each_real_boundary() {
-    for fault in [
-        InstallFault::InterruptAfterIntent,
-        InstallFault::InterruptAfterPublication,
-    ] {
-        for resume in [true, false] {
-            let (dir, config, manifest_path) = claude_scope();
-            let original = br#"{"permissions":{"deny":["Bash(rm *)"]}}"#;
-            fs::write(&config, original).unwrap();
-            let argv = vec!["/tmp/owned".into()];
-            install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-            strip_recorded_rule(&config, &manifest_path);
-            let interrupted = install_claude_user_with_fault(
-                &config,
-                &manifest_path,
-                &argv,
-                original,
-                fault,
-                || {},
-            );
-            assert_eq!(interrupted, Err(SetupError::Io), "{fault:?}");
-            let intent = read_manifest_file(&manifest_path);
-            assert_eq!(intent.phase, InstallPhase::Prepared, "{fault:?}");
-            assert!(intent.permission.is_some_and(|p| !p.pre_existing));
-            assert_eq!(
-                rule_count(&config),
-                usize::from(fault == InstallFault::InterruptAfterPublication),
-                "{fault:?}"
-            );
-            if resume {
-                let resumed =
-                    install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-                assert_eq!(resumed.phase, InstallPhase::Installed);
-                assert_eq!(rule_count(&config), 1);
-                assert!(
-                    inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown)
-                        .unwrap()
-                        .installed
-                );
-            }
-            remove_claude_user(&config, &manifest_path).unwrap();
-            assert!(!owned_command_present(&config));
-            assert_eq!(rule_count(&config), 0, "{fault:?} resume={resume}");
-            if resume {
-                assert_eq!(fs::read(&config).unwrap(), original, "{fault:?}");
-            } else {
-                // Prepared removal is structural: only emptied hook arrays may remain.
-                let after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-                assert_eq!(after["permissions"], json!({"deny":["Bash(rm *)"]}));
-            }
-            fs::remove_dir_all(dir).unwrap();
-        }
-    }
-}
-
-// Kills: a fresh install interrupted at a real boundary that, on retry, publishes without the
-// rule or duplicates a pre-existing one, and prepared removal that leaves a published owned rule
-// or removes a pre-existing one.
-#[test]
-fn interrupted_fresh_install_publishes_or_removes_the_rule() {
-    for pre_existing in [false, true] {
-        let original: &[u8] = if pre_existing {
-            br#"{"permissions":{"allow":["Bash(herdr-threads *)"]}}"#
-        } else {
-            br#"{"other":1}"#
-        };
-        let argv: Vec<String> = vec!["/tmp/owned".into()];
-        // Boundary 1: manifest prepared, settings changed concurrently before publication.
-        for resume in [true, false] {
-            let (dir, config, manifest_path) = claude_scope();
-            fs::write(&config, original).unwrap();
-            let mut edited: Value = serde_json::from_slice(original).unwrap();
-            edited["later"] = json!("keep");
-            let edited = serde_json::to_vec(&edited).unwrap();
-            assert_eq!(
-                install_claude_user_with_fault(
-                    &config,
-                    &manifest_path,
-                    &argv,
-                    original,
-                    InstallFault::AfterManifest,
-                    || fs::write(&config, &edited).unwrap()
-                ),
-                Err(SetupError::Conflict)
-            );
-            let prepared = read_manifest_file(&manifest_path);
-            assert_eq!(prepared.phase, InstallPhase::Prepared);
-            assert_eq!(
-                prepared.permission.as_ref().unwrap().pre_existing,
-                pre_existing
-            );
-            assert_eq!(fs::read(&config).unwrap(), edited);
-            if resume {
-                install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-                assert_eq!(rule_count(&config), 1, "pre_existing={pre_existing}");
-                assert!(
-                    inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown)
-                        .unwrap()
-                        .installed
-                );
-            }
-            remove_claude_user(&config, &manifest_path).unwrap();
-            assert_eq!(
-                fs::read(&config).unwrap(),
-                edited,
-                "pre_existing={pre_existing} resume={resume}"
-            );
-            fs::remove_dir_all(dir).unwrap();
-        }
-        // Boundary 2: settings published, manifest not yet finalized.
-        for resume in [true, false] {
-            let (dir, config, manifest_path) = claude_scope();
-            fs::write(&config, original).unwrap();
-            install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-            let mut manifest = read_manifest_file(&manifest_path);
-            manifest.phase = InstallPhase::Prepared;
-            fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-            let published = fs::read(&config).unwrap();
-            if resume {
-                install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-                assert_eq!(fs::read(&config).unwrap(), published);
-                assert_eq!(
-                    read_manifest_file(&manifest_path).phase,
-                    InstallPhase::Installed
-                );
-            }
-            remove_claude_user(&config, &manifest_path).unwrap();
-            assert_eq!(rule_count(&config), usize::from(pre_existing));
-            assert!(!owned_command_present(&config));
-            if resume {
-                assert_eq!(fs::read(&config).unwrap(), original);
-            }
-            fs::remove_dir_all(dir).unwrap();
-        }
-    }
-}
-
-// The retired rule (still recognized in old manifests) matches exactly the export prefix the
-// unused `updatedInput` encoder emits; the installed rule is the herdr-threads command rule.
-#[test]
-fn retired_rule_is_the_adapter_rewrite_prefix_and_installed_rule_is_the_cli() {
-    use crate::harness::claude;
-    assert_eq!(RULE, "Bash(herdr-threads *)");
-    assert_eq!(
-        claude::CALLER_CONTEXT_ALLOW_RULE,
-        format!("Bash({}*)", claude::CALLER_CONTEXT_EXPORT_PREFIX)
-    );
-    let input = br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"t","session_id":"s","tool_input":{"command":"echo hi"}}"#;
-    let out = claude::encode_tool_response(input, "2.1.283", "ctx_Ab-19", "", 4096).unwrap();
-    let v: Value = serde_json::from_slice(&out).unwrap();
-    let command = v["hookSpecificOutput"]["updatedInput"]["command"]
-        .as_str()
-        .unwrap();
-    let first = command.split(";\n").next().unwrap();
-    assert_eq!(first, "export HERDR_THREADS_CALLER_CONTEXT='ctx_Ab-19'");
-    assert!(first.starts_with(claude::CALLER_CONTEXT_EXPORT_PREFIX));
-}
-
-// Kills: composing the owned rule again when it is already present (a hook-declaration upgrade
-// over a file that holds the published rule would duplicate it).
-#[test]
-fn hook_upgrade_over_published_rule_does_not_duplicate_it() {
-    let (dir, config, manifest_path) = claude_scope();
-    let original = br#"{"other":1}"#;
-    fs::write(&config, original).unwrap();
-    let argv = vec!["/tmp/owned".into()];
-    install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-    downgrade_to_bash_only(&config, &manifest_path);
-    let mut v: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-    v["later"] = json!("keep");
-    fs::write(&config, serde_json::to_vec(&v).unwrap()).unwrap();
-    install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-    assert_eq!(rule_count(&config), 1);
-    assert!(
-        inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown)
-            .unwrap()
-            .installed
-    );
-    remove_claude_user(&config, &manifest_path).unwrap();
-    assert_eq!(rule_count(&config), 0);
-    assert!(!owned_command_present(&config));
-    fs::remove_dir_all(dir).unwrap();
-}
-
-// ---------------------------------------------------------------- retired export rule upgrade
-
-const RETIRED: &str = crate::harness::claude::CALLER_CONTEXT_ALLOW_RULE;
-
-fn count_of(config: &std::path::Path, rule: &str) -> usize {
-    allow_of(config)
-        .as_array()
-        .map_or(0, |a| a.iter().filter(|r| r.as_str() == Some(rule)).count())
-}
-
-fn retired_record(pre_existing: bool) -> OwnedPermission {
-    OwnedPermission {
-        rule: RETIRED.into(),
-        fingerprint: format!(
-            "sha256:{:x}",
-            sha2::Sha256::digest(serde_json::to_vec(&json!({ "allow": RETIRED })).unwrap())
-        ),
-        pre_existing,
-    }
-}
-
-/// Rewrites a current installation into exactly what the previous setup wrote: the manifest
-/// records the retired export rule (`retired_pre_existing`: the user's own) and the settings hold
-/// the retired rule where setup appended it, instead of an owned declared rule.
-fn record_as_retired(
-    config: &std::path::Path,
-    manifest_path: &std::path::Path,
-    retired_pre_existing: bool,
-) {
-    let mut manifest = read_manifest_file(manifest_path);
-    let declared_owned = !manifest.permission.as_ref().unwrap().pre_existing;
-    let mut settings: Value = serde_json::from_slice(&fs::read(config).unwrap()).unwrap();
-    let allow = settings["permissions"]["allow"].as_array_mut().unwrap();
-    if declared_owned {
-        allow.retain(|r| r.as_str() != Some(RULE));
-    }
-    if !retired_pre_existing {
-        allow.push(json!(RETIRED));
-    }
-    if allow.is_empty() {
-        settings["permissions"]
-            .as_object_mut()
-            .unwrap()
-            .remove("allow");
-    }
-    if settings["permissions"].as_object().unwrap().is_empty() {
-        settings.as_object_mut().unwrap().remove("permissions");
-    }
-    let bytes = serde_json::to_vec(&settings).unwrap();
-    fs::write(config, &bytes).unwrap();
-    manifest.installed_fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
-    manifest.permission = Some(retired_record(retired_pre_existing));
-    fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-}
-
-const RETIRED_BASES: [(&str, &[u8], bool, bool); 5] = [
-    // (name, original, retired rule is the user's own, declared rule is the user's own)
-    ("empty", b"{}", false, false),
-    ("other rules", br#"{"permissions":{"allow":["Read"],"deny":["Bash(rm *)"]},"x":1}"#, false, false),
-    (
-        "user held retired",
-        br#"{"permissions":{"allow":["Bash(export HERDR_THREADS_CALLER_CONTEXT=*)","Read"]}}"#,
-        true,
-        false,
-    ),
-    (
-        "user held declared",
-        br#"{"permissions":{"allow":["Bash(herdr-threads *)"]}}"#,
-        false,
-        true,
-    ),
-    (
-        "user held both",
-        br#"{"permissions":{"allow":["Bash(herdr-threads *)","Bash(export HERDR_THREADS_CALLER_CONTEXT=*)"]}}"#,
-        true,
-        true,
-    ),
-];
-
-// Kills: reporting an export-rule installation as installed, re-setup that keeps the owned
-// export rule, removes a user's export rule, claims a user's declared rule as owned, duplicates
-// either rule, or loses byte-exact restoration on the later unsetup.
-#[test]
-fn resetup_upgrades_retired_export_rule_installation() {
-    for (name, original, retired_user, declared_user) in RETIRED_BASES {
-        let (dir, config, manifest_path) = claude_scope();
-        fs::write(&config, original).unwrap();
-        let argv = vec!["/tmp/owned".into()];
-        install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-        record_as_retired(&config, &manifest_path, retired_user);
-        let status =
-            inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown).unwrap();
-        assert!(!status.installed, "{name}");
-        let rule = status.allow_rule.unwrap();
-        assert_eq!(rule.ownership, AllowRuleOwnership::Superseded, "{name}");
-        assert_eq!(rule.rule, RULE, "{name}");
-        assert_eq!(rule.present, declared_user, "{name}");
-
-        let upgraded = install_claude_user(&config, &manifest_path, &argv, original)
-            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
-        let permission = upgraded.permission.clone().unwrap();
-        assert_eq!(permission.rule, RULE, "{name}");
-        assert_eq!(permission.pre_existing, declared_user, "{name}");
-        assert_eq!(upgraded.superseded_permission, None, "{name}");
-        assert_eq!(upgraded.phase, InstallPhase::Installed, "{name}");
-        assert_eq!(count_of(&config, RULE), 1, "{name}: declared rule once");
-        assert_eq!(
-            count_of(&config, RETIRED),
-            usize::from(retired_user),
-            "{name}: owned retired rule removed, user's kept"
-        );
-        let status =
-            inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown).unwrap();
-        assert!(status.installed, "{name}");
-        assert_eq!(
-            status.allow_rule.unwrap().ownership,
-            if declared_user {
-                AllowRuleOwnership::PreExisting
-            } else {
-                AllowRuleOwnership::Owned
-            },
-            "{name}"
-        );
-        // Idempotent afterwards.
-        let settled = fs::read(&config).unwrap();
-        install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-        assert_eq!(fs::read(&config).unwrap(), settled, "{name}");
-        remove_claude_user(&config, &manifest_path).unwrap();
-        assert_eq!(fs::read(&config).unwrap(), original, "{name}: byte-exact");
-        fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-// Kills: unsetup of a never-upgraded export-rule installation that keeps the owned export rule,
-// removes a user's own, or loses byte-exact restoration.
-#[test]
-fn unsetup_of_retired_export_rule_installation_removes_only_the_owned_rule() {
-    for (name, original, retired_user, _) in RETIRED_BASES {
-        let (dir, config, manifest_path) = claude_scope();
-        fs::write(&config, original).unwrap();
-        install_claude_user(&config, &manifest_path, &["/tmp/owned".into()], original).unwrap();
-        record_as_retired(&config, &manifest_path, retired_user);
-        remove_claude_user(&config, &manifest_path).unwrap();
-        assert_eq!(fs::read(&config).unwrap(), original, "{name}: byte-exact");
-        assert!(!manifest_path.exists(), "{name}");
-        fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-// Kills: re-setup refusing (or re-adding the export rule) when the user already deleted the
-// owned retired rule by hand: the upgrade removes it anyway.
-#[test]
-fn upgrade_tolerates_hand_removed_retired_rule() {
-    let (dir, config, manifest_path) = claude_scope();
-    let original = br#"{"other":1}"#;
-    fs::write(&config, original).unwrap();
-    let argv = vec!["/tmp/owned".into()];
-    install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-    record_as_retired(&config, &manifest_path, false);
-    let mut v: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-    v.as_object_mut().unwrap().remove("permissions");
-    fs::write(&config, serde_json::to_vec(&v).unwrap()).unwrap();
-    install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-    assert_eq!(count_of(&config, RULE), 1);
-    assert_eq!(count_of(&config, RETIRED), 0);
-    assert!(
-        inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown)
-            .unwrap()
-            .installed
-    );
-    remove_claude_user(&config, &manifest_path).unwrap();
-    assert_eq!(count_of(&config, RULE), 0);
-    assert!(!owned_command_present(&config));
-    fs::remove_dir_all(dir).unwrap();
-}
-
-// Kills: an upgrade interrupted after recording intent (or after publication) that forgets the
-// owned export rule, strands it on resume or on prepared removal, or strands the new rule.
-#[test]
-fn interrupted_export_rule_upgrade_resumes_or_removes_both_rules() {
-    for fault in [
-        InstallFault::InterruptAfterIntent,
-        InstallFault::InterruptAfterPublication,
-    ] {
-        for resume in [true, false] {
-            let (dir, config, manifest_path) = claude_scope();
-            let original = br#"{"permissions":{"deny":["Bash(rm *)"]}}"#;
-            fs::write(&config, original).unwrap();
-            let argv = vec!["/tmp/owned".into()];
-            install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-            record_as_retired(&config, &manifest_path, false);
-            assert_eq!(
-                install_claude_user_with_fault(
-                    &config,
-                    &manifest_path,
-                    &argv,
-                    original,
-                    fault,
-                    || {},
-                ),
-                Err(SetupError::Io),
-                "{fault:?}"
-            );
-            let intent = read_manifest_file(&manifest_path);
-            assert_eq!(intent.phase, InstallPhase::Prepared, "{fault:?}");
-            assert_eq!(intent.superseded_permission, Some(retired_record(false)));
-            assert_eq!(intent.permission.as_ref().unwrap().rule, RULE);
-            let published = fault == InstallFault::InterruptAfterPublication;
-            assert_eq!(count_of(&config, RULE), usize::from(published), "{fault:?}");
-            assert_eq!(
-                count_of(&config, RETIRED),
-                usize::from(!published),
-                "{fault:?}"
-            );
-            if resume {
-                let resumed =
-                    install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-                assert_eq!(resumed.phase, InstallPhase::Installed);
-                assert_eq!(resumed.superseded_permission, None);
-                assert_eq!(count_of(&config, RULE), 1);
-                assert_eq!(count_of(&config, RETIRED), 0);
-            }
-            remove_claude_user(&config, &manifest_path).unwrap();
-            assert!(!owned_command_present(&config));
-            assert_eq!(count_of(&config, RULE), 0, "{fault:?} resume={resume}");
-            assert_eq!(count_of(&config, RETIRED), 0, "{fault:?} resume={resume}");
-            if resume {
-                assert_eq!(fs::read(&config).unwrap(), original, "{fault:?}");
-            } else {
-                // Prepared removal is structural: only emptied hook arrays may remain.
-                let mut after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-                after.as_object_mut().unwrap().remove("hooks");
-                assert_eq!(
-                    after,
-                    json!({"permissions":{"deny":["Bash(rm *)"]}}),
-                    "{fault:?}"
-                );
-            }
-            fs::remove_dir_all(dir).unwrap();
-        }
-    }
-}
-
-// Kills: a manifest that forges a superseded rule (a user's pre-existing export rule, the
-// declared rule, or one outside a prepared upgrade) directing removal of a rule setup never
-// added.
-#[test]
-fn forged_superseded_permission_is_refused() {
-    let forgeries: [fn(&mut OwnershipManifest); 3] = [
-        |m| {
-            m.phase = InstallPhase::Prepared;
-            m.superseded_permission = Some(retired_record(true));
-        },
-        |m| {
-            m.phase = InstallPhase::Prepared;
-            m.superseded_permission = m.permission.clone();
-        },
-        |m| m.superseded_permission = Some(retired_record(false)),
-    ];
-    for forge in forgeries {
-        let (dir, config, manifest_path) = claude_scope();
-        let original =
-            br#"{"permissions":{"allow":["Bash(export HERDR_THREADS_CALLER_CONTEXT=*)"]}}"#;
-        fs::write(&config, original).unwrap();
-        install_claude_user(&config, &manifest_path, &["/tmp/owned".into()], original).unwrap();
+        record_historical(&config, &manifest_path, RULE, false);
         let mut manifest = read_manifest_file(&manifest_path);
         forge(&mut manifest);
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let before = fs::read(&config).unwrap();
         assert_eq!(
+            recorded_hook_permission(&config, &manifest_path),
+            Err(SetupError::Conflict)
+        );
+        assert_eq!(
             remove_claude_user(&config, &manifest_path),
             Err(SetupError::Conflict)
         );
         assert_eq!(fs::read(&config).unwrap(), before);
-        fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-// Kills: the structural upgrade path (settings edited since install, so the recorded base cannot
-// be reused) removing a user's own export rule, keeping the owned one, or duplicating either
-// rule; and unsetup afterwards dropping the unrelated edit.
-#[test]
-fn upgrade_after_unrelated_edit_replaces_only_the_owned_export_rule() {
-    for (name, original, retired_user, declared_user) in RETIRED_BASES {
-        let (dir, config, manifest_path) = claude_scope();
-        fs::write(&config, original).unwrap();
-        let argv = vec!["/tmp/owned".into()];
-        install_claude_user(&config, &manifest_path, &argv, original).unwrap();
-        record_as_retired(&config, &manifest_path, retired_user);
-        let mut v: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-        v["later"] = json!("keep");
-        fs::write(&config, serde_json::to_vec(&v).unwrap()).unwrap();
-        install_claude_user(&config, &manifest_path, &argv, original)
-            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
-        assert_eq!(count_of(&config, RULE), 1, "{name}");
-        assert_eq!(
-            count_of(&config, RETIRED),
-            usize::from(retired_user),
-            "{name}"
-        );
-        assert!(
-            inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown)
-                .unwrap()
-                .installed,
-            "{name}"
-        );
-        remove_claude_user(&config, &manifest_path).unwrap();
-        assert!(!owned_command_present(&config), "{name}");
-        assert_eq!(
-            count_of(&config, RULE),
-            usize::from(declared_user),
-            "{name}"
-        );
-        assert_eq!(
-            count_of(&config, RETIRED),
-            usize::from(retired_user),
-            "{name}"
-        );
-        let mut after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
-        after.as_object_mut().unwrap().remove("hooks");
-        let mut expected: Value = serde_json::from_slice(original).unwrap();
-        expected["later"] = json!("keep");
-        assert_eq!(after, expected, "{name}");
         fs::remove_dir_all(dir).unwrap();
     }
 }

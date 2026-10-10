@@ -8,6 +8,10 @@ use crate::harness::{
     claude,
     claude_mod::{self, ManagedPolicy, ManagedPolicySources},
     context::Harness,
+    permissions::{
+        PermissionConsent,
+        claude_settings::{ClaudePermissionState, ClaudePermissionStatus, ClaudePermissions},
+    },
     prompt_suggestion::{self, SuggestionState},
     recipe,
     setup::{
@@ -96,6 +100,11 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
     let manifest = claude_manifest(env, &settings)?;
     let mut file = OwnedFile::new(settings.clone(), manifest.clone(), b"{}");
     let mut warnings = Vec::new();
+    // Permissions first: a historical broad rule an earlier hook setup recorded is narrowed (and
+    // its record retired) before the hook installer reads its manifest.
+    let permissions = permission_component(env, &settings)?
+        .apply(PermissionConsent::Undecided)
+        .map_err(|error| permission_error(error, env, &settings))?;
     // The hook installer's byte-exact restore needs the file as it left it.
     // When it is about to rewrite the hooks, take the mod's settings entry
     // out first (the files stay) and put it back afterwards.
@@ -143,6 +152,7 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
             "command": command,
             "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
             "allow_rule": allow_rule_json(allow_rule.as_ref()),
+            "permissions": permissions_json(env, &settings, &permissions),
             "harness_version": observation_json(&Ok((observed, None))),
             "prompt_suggestions": prompt_suggestions,
             "mod": delivery_mod,
@@ -159,6 +169,92 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
     result
 }
 
+/// The permission component of this Claude config and state directory.
+fn permission_component(env: &SetupEnv, settings: &Path) -> Result<ClaudePermissions, RunError> {
+    Ok(ClaudePermissions::new(
+        settings.to_path_buf(),
+        manifest_path(env.state_dir()?, "claude-permissions", settings),
+        claude_manifest(env, settings)?,
+    ))
+}
+
+fn permission_error(error: SetupError, env: &SetupEnv, settings: &Path) -> RunError {
+    let manifest = env
+        .state_dir()
+        .map(|state| manifest_path(state, "claude-permissions", settings))
+        .map_or_else(
+            |_| "the permission record".to_owned(),
+            |p| p.display().to_string(),
+        );
+    let settings = settings.display();
+    match error {
+        SetupError::Invalid => invalid(format!(
+            "cannot update the herdr-threads permission rules in {settings}: it must be a JSON \
+             object with array `permissions.allow`/`ask`, in a directory you own that is not \
+             group- or world-writable; nothing was changed"
+        )),
+        SetupError::TooLarge => invalid(format!(
+            "{settings} would exceed the setup size bound with the permission rules; nothing \
+             was changed"
+        )),
+        SetupError::Conflict => api(
+            ErrorCode::Conflict,
+            format!(
+                "the herdr-threads permission rules in {settings} cannot be settled: the file \
+                 changed while an update was interrupted, or the hook record and {manifest} \
+                 both claim them. Review `permissions.allow`/`ask` there, remove {manifest}, \
+                 then re-run the command; nothing was changed"
+            ),
+        ),
+        SetupError::Io => failed(format!(
+            "could not update the herdr-threads permission rules in {settings} (another setup \
+             may hold its lock); re-run the command"
+        )),
+    }
+}
+
+/// Report form of the permission component.
+fn permissions_json(env: &SetupEnv, settings: &Path, status: &ClaudePermissionStatus) -> Value {
+    let rules = |rules: &[(String, bool)]| rules.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>();
+    let mut report = json!({
+        "state": match status.state {
+            ClaudePermissionState::Missing => "not_installed",
+            ClaudePermissionState::Installed => "installed",
+            ClaudePermissionState::Historical => "historical",
+            ClaudePermissionState::Pending => "interrupted",
+        },
+        "allow": rules(&status.allow),
+        "ask": rules(&status.ask),
+        "pre_existing": status
+            .allow
+            .iter()
+            .chain(&status.ask)
+            .filter(|(_, pre)| *pre)
+            .map(|(r, _)| r.clone())
+            .collect::<Vec<_>>(),
+        "manifest": env
+            .state_dir()
+            .ok()
+            .map(|state| manifest_path(state, "claude-permissions", settings).display().to_string()),
+    });
+    if !status.historical.is_empty() {
+        report["historical"] = json!(status.historical);
+        report["note"] = json!(
+            "an earlier setup granted every herdr-threads command; re-run `herdr-threads setup \
+             claude` to keep that grant with human and setup commands asking"
+        );
+    } else if status.state == ClaudePermissionState::Pending {
+        report["note"] = json!(
+            "a permission update was interrupted; re-run `herdr-threads setup claude` (or \
+             unsetup) to settle it"
+        );
+    }
+    if !status.foreign_broad.is_empty() {
+        report["foreign_broad_rules"] = json!(status.foreign_broad);
+    }
+    report
+}
+
 /// Report form of the recorded allow rule; `null` when no manifest is recorded.
 pub fn allow_rule_json(allow_rule: Option<&AllowRuleInspection>) -> Value {
     match allow_rule {
@@ -169,7 +265,6 @@ pub fn allow_rule_json(allow_rule: Option<&AllowRuleInspection>) -> Value {
                 "ownership": match rule.ownership {
                     AllowRuleOwnership::Owned => "owned",
                     AllowRuleOwnership::PreExisting => "pre_existing",
-                    AllowRuleOwnership::NotRecorded => "not_recorded",
                     AllowRuleOwnership::Superseded => "superseded",
                 },
                 "present": rule.present,
@@ -313,6 +408,10 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
     let reverted =
         prompt_suggestion::revert(&settings, &prompt_suggestion_manifest(env, &settings)?)
             .map_err(|error| prompt_suggestion_error(error, &settings))?;
+    // The component's own rules; a historical hook-recorded rule goes with the hooks below.
+    let permissions = permission_component(env, &settings)?
+        .remove()
+        .map_err(|error| permission_error(error, env, &settings))?;
     let mut report = json!({
         "harness": "claude",
         "scope": "user",
@@ -320,6 +419,7 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
         "manifest": manifest.display().to_string(),
         "prompt_suggestions": reverted.as_str(),
         "mod": mod_reverted.as_str(),
+        "permissions": permissions_json(env, &settings, &permissions),
     });
     let mut recorded = read_settings_manifest(&manifest)
         .map_err(|e| settings_error(e, SetupVerb::Remove, kind, &settings, &manifest))?;
@@ -369,6 +469,12 @@ fn claude_status(
         "harness_version": observation_json(&observation),
     });
     settings_status(SettingsKind::ClaudeUser, env, &settings, &mut report)?;
+    if env.state_dir().is_ok() {
+        report["permissions"] = match permission_component(env, &settings)?.status() {
+            Ok(status) => permissions_json(env, &settings, &status),
+            Err(_) => json!({"state": "unreadable"}),
+        };
+    }
     report["prompt_suggestions"] = prompt_suggestion_status(
         env,
         &settings,
