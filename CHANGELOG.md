@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.6.0
+
+- **Explicit harness permissions.** Hooks and command permission rules are separate owned components for Claude, Codex and Hermes. Setup and installation offer explicit permission choices; human and self-granting commands ask for approval. Write escalating command words first, with routing and output options after them.
+- **Configuration backups.** Each existing user configuration file changed by a command gets one timestamped `.herdr-threads` pre-image before replacement or deletion, including empty files. Foreign rules are preserved, first publication is exclusive, and interrupted ownership changes remain recoverable.
+- **Linux support.** Native peer witnessing uses `SO_PEERCRED` and procfs; portable `O_NOFOLLOW` protects configuration paths. CI runs two Linux test shards and lint on both Linux and macOS. Real Linux Herdr integration remains unqualified.
+
 - **Inbox contents at hook opportunities.** Top-level standard hooks (Claude and Codex SessionStart and Bash PreToolUse, Hermes turns) now inject a bounded page of the actual inbox rows into their context, after the ordinary offer and within the 4096-byte bound, with an exact `inbox` command when more remains and an exact `ack` command for ACK-required messages shown (the hook never ACKs). Lazy messages now move the hook's attention digest (a `lazy=N` class and a lazy token key), so a lazy-only arrival is presented at the next hook; wake, nudges, receipts, deadlines and warnings still ignore lazy mail. Lazy messages shown whole are completed after the hook output is delivered (`cooperative_hook_context`). A live Claude mod channel keeps delivering itself. Requires a daemon advertising `hook.lazy_delivery_v1`; older daemons keep the previous hook behavior.
 
 ## v0.5.0
