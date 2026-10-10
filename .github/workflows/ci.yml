@@ -190,6 +190,12 @@ jobs:
 
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Harness-neutral core check
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/check-harness-neutral
+          python3 -m unittest discover -s scripts/tests -p 'test_check_harness_neutral.py'
       - name: Package build script and manifest paths
         shell: bash
         run: |
