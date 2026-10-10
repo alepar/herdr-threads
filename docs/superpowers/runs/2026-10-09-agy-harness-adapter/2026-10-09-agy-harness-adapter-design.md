@@ -311,6 +311,15 @@ Target: once the neutral core lands, the agy adapter needs zero edits outside `s
 
 The final live smoke is gated on the fix loop's exit (super-auto §Gates).
 
+## Refinements from the nested designs (2026-10-09)
+
+- **Role decision placement (agy-adapter subspec D4).** The harness-neutral witness rule `RoleWitness::decide`, which fails toward child, is applied in the hook runner over facts that the agy adapter maps from files (`local_evidence`). The resulting role travels as the ordinary cooperative `claim.role`, exactly as payload-declared roles do for Claude and Codex. The daemon decides every enrollment, rotation and reattachment against A2, and there is no wire change. TRUST-POLICY states this honestly. It refines "the daemon decides" in R2 and §3.
+- **Hook argv** is the existing registered form `hook agy --event <SessionStart|PreInvocation|Stop>`, not `internal hook agy <event>`.
+- **`agy -c` is `--continue`** (the most recent conversation), not an alias of `--conversation`. TUI `Stop` reports `terminationReason: "NO_TOOL_CALL"`.
+- **Second neutral seam, `hook_step` (R13 finding).** The delivery leaf has no core files, so the runner gains a neutral `HookStep` seam for top-level observer events. It provides a claim hint, a one-shot daemon caller and the adapter's private state dir.
+- **Bootstrap plan V2 (R13 finding, core-sweep subspec D16).** The frozen V1 handoff bootstrap admits only Claude and Codex, so `handoff --kind agy` needs an adapter-neutral V2 (bead ht-poh.8).
+- **`contract::classify` needs a payload discriminator (R13 note).** agy has none, so the adapter injects a synthetic `$event` key and core is not edited.
+
 ## Non-goals and follow-on
 
 **Out of scope:**
