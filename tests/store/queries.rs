@@ -5557,3 +5557,217 @@ fn human_guidance_canonical_requesting_caller_before_page_fit() {
         assert_eq!(result.items.len(), 1);
     }
 }
+
+#[test]
+fn directory_name_or_topic_literal_matching_and_scopes() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('other',0);
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name,archived) VALUES
+        ('named','i','announcements','goal',1,1,'psa-global',1),
+        ('both','i','psa-global','goal',2,2,'psa-global',0),
+        ('literal','i','unrelated','goal',3,3,'雪 %_ café',0),
+        ('foreign','other','psa-global','goal',9,9,'psa-global',0);
+        INSERT INTO memberships(thread_id,seat_id,state) VALUES ('named','s','joined'),('both','s','invited');").unwrap();
+    for recent in [false, true] {
+        for (needle, expected) in [
+            (Some("psa-global"), vec!["named", "both"]),
+            (Some("PSA-global"), vec![]),
+            (Some("雪 %_ "), vec!["literal"]),
+            (Some("literal"), vec![]),
+            (Some("topic"), vec!["t"]),
+            (Some(""), vec!["t", "named", "both", "literal"]),
+            (None, vec!["t", "named", "both", "literal"]),
+        ] {
+            let command = Command::Directory(DirectoryQuery {
+                recent,
+                membership: None,
+                membership_filter: DirectoryMembership::All,
+                topic_contains: needle.map(str::to_owned),
+                page: page(None),
+            });
+            let CommandResult::Directory(result) = query(&store, "i", &command, &budget()).unwrap()
+            else {
+                panic!()
+            };
+            let mut want = expected;
+            if recent {
+                want.reverse();
+            }
+            assert_eq!(
+                result
+                    .items
+                    .iter()
+                    .map(|t| t.thread.as_str())
+                    .collect::<Vec<_>>(),
+                want,
+                "{recent} {needle:?}"
+            );
+        }
+        for (scope, expected) in [
+            (DirectoryMembership::Default, vec!["named", "both"]),
+            (DirectoryMembership::Joined, vec!["named"]),
+            (DirectoryMembership::Invited, vec!["both"]),
+        ] {
+            let command = Command::Directory(DirectoryQuery {
+                recent,
+                membership: Some(SeatId::new("s")),
+                membership_filter: scope,
+                topic_contains: Some("psa-global".into()),
+                page: page(None),
+            });
+            let CommandResult::Directory(result) = query(&store, "i", &command, &budget()).unwrap()
+            else {
+                panic!()
+            };
+            let mut want = expected;
+            if recent {
+                want.reverse();
+            }
+            assert_eq!(
+                result
+                    .items
+                    .iter()
+                    .map(|t| t.thread.as_str())
+                    .collect::<Vec<_>>(),
+                want
+            );
+        }
+    }
+}
+
+#[test]
+fn directory_name_hit_after_empty_work_page_has_no_skips_or_duplicates() {
+    let (store, db) = fixture();
+    for n in 0..205 {
+        db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,name) VALUES (?1,'i','unrelated','goal',0,0,?2)",params![format!("candidate-{n}"), if n==150 {Some("psa-global")} else {None}]).unwrap();
+    }
+    for recent in [false, true] {
+        // Move the name-only hit beyond the first 100 candidates in either order.
+        db.execute(
+            "UPDATE threads SET name=CASE WHEN id=?1 THEN 'psa-global' ELSE NULL END",
+            [if recent {
+                "candidate-50"
+            } else {
+                "candidate-150"
+            }],
+        )
+        .unwrap();
+        let mut cursor = None;
+        let mut ids = Vec::new();
+        let mut pages = 0;
+        loop {
+            let command = Command::Directory(DirectoryQuery {
+                recent,
+                membership: None,
+                membership_filter: DirectoryMembership::All,
+                topic_contains: Some("psa-global".into()),
+                page: page(cursor),
+            });
+            let CommandResult::Directory(result) = query(&store, "i", &command, &budget()).unwrap()
+            else {
+                panic!()
+            };
+            if pages == 0 {
+                assert!(result.items.is_empty());
+                assert_eq!(
+                    result.stop_reason,
+                    crate::protocol::pagination::StopReason::Work
+                );
+                assert!(result.has_more);
+            }
+            ids.extend(
+                result
+                    .items
+                    .into_iter()
+                    .map(|t| t.thread.as_str().to_owned()),
+            );
+            cursor = result.next_cursor;
+            pages += 1;
+            if cursor.is_none() {
+                break;
+            }
+            assert!(pages < 10);
+        }
+        assert_eq!(
+            ids,
+            vec![if recent {
+                "candidate-50"
+            } else {
+                "candidate-150"
+            }]
+        );
+    }
+}
+
+#[test]
+fn directory_filtered_name_revision_is_selected_and_rejects_legacy_keys() {
+    let (store, db) = fixture();
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('other',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic','goal',0,0);").unwrap();
+    for recent in [false, true] {
+        let make = |cursor| {
+            Command::Directory(DirectoryQuery {
+                recent,
+                membership: None,
+                membership_filter: DirectoryMembership::All,
+                topic_contains: Some("topic".into()),
+                page: PageRequest {
+                    cursor,
+                    limit: 1,
+                    max_bytes: 65536,
+                },
+            })
+        };
+        let CommandResult::Directory(first) = query(&store, "i", &make(None), &budget()).unwrap()
+        else {
+            panic!()
+        };
+        let raw = first.next_cursor.unwrap();
+        db.execute("INSERT INTO filter_revisions(instance_id,scope_kind,scope_key,revision) VALUES ('other','directory','name/all',1) ON CONFLICT DO UPDATE SET revision=revision+1",[]).unwrap();
+        db.execute("INSERT INTO filter_revisions(instance_id,scope_kind,scope_key,revision) VALUES ('i','directory','all',1) ON CONFLICT DO UPDATE SET revision=revision+1",[]).unwrap();
+        assert!(query(&store, "i", &make(Some(raw.clone())), &budget()).is_ok());
+        let mut legacy = Cursor::decode(&raw).unwrap();
+        // Reissue the structurally decoded position with its original binding,
+        // replacing only the old opaque directory key.
+        legacy.binding = None;
+        legacy.instance = "i".into();
+        legacy.scope_key = "*".into();
+        let base_filter = (None::<&str>, DirectoryMembership::All, Some("topic"));
+        legacy.filter_digest = if recent {
+            digest(&(base_filter, "recent")).unwrap()
+        } else {
+            digest(&base_filter).unwrap()
+        };
+
+        legacy.last_examined_key = Some(if recent {
+            format!(
+                "0:0:{}",
+                db.query_row(
+                    "SELECT last_activity FROM threads WHERE ordinal=?1",
+                    [legacy.after_ordinal as i64],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap()
+            )
+        } else {
+            "0".into()
+        });
+        assert_eq!(
+            query(
+                &store,
+                "i",
+                &make(Some(legacy.encode().unwrap())),
+                &budget()
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::CursorStale
+        );
+        db.execute("INSERT INTO filter_revisions(instance_id,scope_kind,scope_key,revision) VALUES ('i','directory','name/all',1) ON CONFLICT DO UPDATE SET revision=revision+1",[]).unwrap();
+        assert_eq!(
+            query(&store, "i", &make(Some(raw)), &budget())
+                .unwrap_err()
+                .code,
+            ErrorCode::CursorStale
+        );
+    }
+}

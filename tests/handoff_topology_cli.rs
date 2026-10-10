@@ -2119,3 +2119,31 @@ fn pending_public_retry_from_different_valid_caller_is_silent() {
     assert_eq!(f.count("SELECT count(*) FROM bootstrap_handoffs"), 0);
     assert_eq!(f.original_bytes(), original);
 }
+
+#[test]
+fn directory_search_discovers_canonical_name_with_unrelated_topic() {
+    let f = Fixture::new();
+    successful(f.run(
+        &[
+            "thread",
+            "create",
+            "--name",
+            "psa-global",
+            "--topic",
+            "Important system wide announcements",
+            "--goal",
+            "Discovery regression",
+        ],
+        "",
+    ));
+    let thread: String = f
+        .db()
+        .query_row("SELECT id FROM threads WHERE name='psa-global'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let output = successful(f.run(&["thread", "list", "--search", "psa-global"], ""));
+    let text = output.to_string();
+    assert!(text.contains(&thread), "{text}");
+    assert!(text.contains("psa-global"), "{text}");
+}
