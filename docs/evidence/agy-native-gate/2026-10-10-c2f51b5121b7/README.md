@@ -37,3 +37,6 @@ of another epic (ht-54r.4, started 14:11 before this run) in another tab. The de
 run id. It was left untouched (shared-Herdr rule: never stop processes this run did not start). Everything under this
 run's temp root (`/tmp/sp-525916de/ht-poh.6.9`) and worktree was checked with `stop-run-processes --check`: no match.
 `scripts/check-no-leaked-processes --run-id <this run>` still lists the foreign pid for the same reason.
+
+Follow-up after the live smoke: the foreign server had exited, and `scripts/check-no-leaked-processes --run-id <this run>`
+printed `no leaked test processes`.
