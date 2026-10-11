@@ -5738,6 +5738,399 @@ fn presentation_registered_channel_materializes_each_published_warn_before_drain
     registry.unregister(channel, f.clock.utc_now());
 }
 
+// These fixtures issue through the real V2 service and settle through the real
+// canonical ACK writers. No offers or terminal receipt states are preseeded.
+struct OfferWindowFixture {
+    f: Fixture,
+    recipient: CallerClaim,
+    sender: CallerClaim,
+    watch: Option<(
+        Arc<crate::service::mod_channels::ModChannelRegistry>,
+        crate::ports::ModChannelId,
+        String,
+    )>,
+}
+
+impl OfferWindowFixture {
+    fn new(watch: bool) -> Self {
+        use crate::{
+            ports::{ModChannelSink, ModChannels, ModStoreReads},
+            protocol::watch::{ModDeliverySetting, WatchFrame, WatchRequest},
+            service::mod_channels::ModChannelRegistry,
+        };
+        struct Sink;
+        impl ModChannelSink for Sink {
+            fn push(&self, _: WatchFrame) -> bool {
+                true
+            }
+        }
+        let mut f = fixture(0);
+        let recipient = if watch {
+            check_in(
+                &f,
+                claim("c", "pc", Harness::Claude, "offer-window-recipient", 0),
+                "offer-window-recipient-ci",
+            )
+        } else {
+            pull_seat(&f)
+        };
+        let sender = check_in(
+            &f,
+            claim("x", "px", fourth(), "offer-window-sender", 0),
+            "offer-window-sender-ci",
+        );
+        let watch = watch.then(|| {
+            let reads: Arc<dyn ModStoreReads> = f.store.clone();
+            let registry = Arc::new(ModChannelRegistry::new(
+                f.clock.clone(),
+                reads,
+                "i".into(),
+                Arc::new(|| {}),
+                ModDeliverySetting::On,
+            ));
+            f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
+                .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+                .with_delivery_pull(f.state.clone())
+                .with_mod_channels(registry.clone());
+            let (channel, _) = f
+                .service
+                .watch_register(
+                    &WatchRequest {
+                        claim: recipient.clone(),
+                    },
+                    Arc::new(Sink),
+                    &budget(),
+                )
+                .unwrap();
+            let lease = registry.presentation_lease(channel).unwrap();
+            (registry, channel, lease)
+        });
+        Self {
+            f,
+            recipient,
+            sender,
+            watch,
+        }
+    }
+
+    fn send(
+        &self,
+        n: usize,
+        mode: crate::protocol::commands::DeliveryMode,
+        body: &str,
+    ) -> MessageId {
+        use crate::protocol::commands::SendMessage;
+        let CommandResult::MessageSent(id) = self
+            .f
+            .service
+            .handle(
+                Command::SendMessage(SendMessage {
+                    delivery_mode: mode,
+                    user_intent: None,
+                    thread: ThreadId::new("t"),
+                    body: body.into(),
+                    direct_recipient: Some(self.recipient.seat.clone()),
+                    invited_recipients: vec![],
+                    deadline_millis: None,
+                    operation: OperationId::new(format!("offer-window-send-{n}")),
+                    claim: self.sender.clone(),
+                    relays_user: false,
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("real send result")
+        };
+        id
+    }
+
+    fn pull(&self) -> crate::protocol::delivery::DeliveryPullReplyV2 {
+        use crate::protocol::delivery::{
+            DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
+        };
+        let Some((_, _, lease)) = &self.watch else {
+            let reply = presentation_test_pull(&self.f, &self.recipient);
+            self.confirm_nonmessage_presentation(&reply);
+            return reply;
+        };
+        let CommandResult::DeliveryPulledV2(reply) = self
+            .f
+            .service
+            .handle(
+                Command::DeliveryPullV2(DeliveryPullV2 {
+                    claim: self.recipient.clone(),
+                    consumer: PresentationConsumer::Watch,
+                    render: PresentationRenderRequest::WatchJsonLinesV1,
+                    presentation_lease: Some(lease.clone()),
+                    marker_prefix: vec![],
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("real V2 pull result")
+        };
+        self.confirm_nonmessage_presentation(&reply);
+        reply
+    }
+
+    fn confirm_nonmessage_presentation(
+        &self,
+        reply: &crate::protocol::delivery::DeliveryPullReplyV2,
+    ) {
+        use crate::protocol::delivery::{
+            DeliveryPresentationConfirmV2, DeliveryPullReplyV2, PresentationConsumer,
+        };
+        if let DeliveryPullReplyV2::Page(page) = reply
+            && let Some(token) = &page.presentation_token
+        {
+            self.f.service.handle(
+                Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
+                    claim: self.recipient.clone(),
+                    consumer: if self.watch.is_some() { PresentationConsumer::Watch } else { PresentationConsumer::Hook },
+                    token: token.clone(),
+                    presentation_lease: self.watch.as_ref().map(|(_, _, lease)| lease.clone()),
+                    emitted_controls: page.emitted_controls.clone(),
+                }), peer(), &budget(),
+            ).unwrap();
+        }
+    }
+
+    fn offers(&self) -> std::collections::BTreeMap<MessageId, crate::delivery::ledger::Offer> {
+        self.f
+            .state
+            .lock()
+            .get(&self.recipient.seat)
+            .unwrap()
+            .offers
+            .clone()
+    }
+
+    fn drain(&self, wanted: usize) -> std::collections::BTreeSet<MessageId> {
+        use crate::protocol::delivery::DeliveryPullReplyV2;
+        let mut shown = std::collections::BTreeSet::new();
+        for _ in 0..256 {
+            match self.pull() {
+                DeliveryPullReplyV2::Page(page) => {
+                    for id in page.offered.iter().chain(&page.truncated) {
+                        assert!(shown.insert(id.clone()), "early duplicate offer {id:?}");
+                    }
+                }
+                DeliveryPullReplyV2::Unchanged { .. } => {}
+                other => panic!("admitted V2 drain refused: {other:?}"),
+            }
+            let work = self.f.service.presentation.last_work.lock().unwrap().unwrap();
+            assert!(
+                work.initial + work.context + work.revisit + work.ordinary + work.notices <= 433,
+                "fresh discovery bound stays independent of ledger reconciliation: {work:?}"
+            );
+            if shown.len() == wanted {
+                return shown;
+            }
+        }
+        panic!("bounded V2 drain showed {} of {wanted} messages", shown.len());
+    }
+
+    fn ack(&self, messages: &[MessageId], mod_ack: bool, operation: &str) {
+        use crate::protocol::{
+            commands::{Ack, AckModDelivered},
+            watch::{ModAckOutcome, ModDeliveryVia},
+        };
+        for (n, batch) in messages.chunks(100).enumerate() {
+            let operation = OperationId::new(format!("{operation}-{n}"));
+            let command = if mod_ack {
+                Command::AckModDelivered(AckModDelivered {
+                    via: ModDeliveryVia::Context,
+                    messages: batch.to_vec(),
+                    operation,
+                    claim: self.recipient.clone(),
+                })
+            } else {
+                Command::Ack(Ack {
+                    messages: batch.to_vec(),
+                    operation,
+                    claim: self.recipient.clone(),
+                })
+            };
+            let result = self.f.service.handle(command, peer(), &budget()).unwrap();
+            if mod_ack {
+                let CommandResult::ModDeliveryAcked(report) = result else {
+                    panic!("actual Watch ACK result")
+                };
+                assert_eq!(report.results.len(), batch.len());
+                assert!(
+                    report.results.iter().all(|v| v.result == ModAckOutcome::Settled),
+                    "real canonical delivery settlement: {report:?}"
+                );
+            }
+        }
+    }
+}
+
+impl Drop for OfferWindowFixture {
+    fn drop(&mut self) {
+        use crate::ports::ModChannels;
+        if let Some((registry, channel, _)) = &self.watch {
+            registry.unregister(*channel, self.f.clock.utc_now());
+        }
+    }
+}
+
+fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
+    use crate::{
+        delivery::ledger::MAX_OFFERS_PER_SEAT,
+        protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2},
+    };
+    let window = OfferWindowFixture::new(watch);
+    let mode = if lazy { DeliveryMode::Lazy } else { DeliveryMode::Ordinary };
+    let sent = (0..MAX_OFFERS_PER_SEAT)
+        .map(|n| window.send(n, mode, "complete canonical offer window"))
+        .collect::<Vec<_>>();
+    assert_eq!(window.drain(256), sent.iter().cloned().collect());
+    assert_eq!(window.offers().len(), 256, "real V2 issuance filled live capacity");
+    window.ack(&sent, watch, "offer-window-settle");
+    for id in &sent {
+        let state: String = window.f.db.query_row(
+            if lazy {
+                "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2"
+            } else {
+                "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2"
+            },
+            params![id.as_str(), window.recipient.seat.as_str()],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(state, if lazy { "displayed" } else { "acked" });
+    }
+    let successor = window.send(256, mode, "new identity after cumulative capacity");
+    let mut emitted = false;
+    for _ in 0..16 {
+        if let DeliveryPullReplyV2::Page(page) = window.pull() {
+            assert!(page.truncated.is_empty());
+            assert!(page.offered.iter().all(|id| id == &successor));
+            emitted |= page.offered.contains(&successor);
+        }
+        if emitted { break; }
+    }
+    assert!(emitted, "canonical terminal offers must free capacity in the same V2 binding");
+    assert_eq!(window.offers().keys().cloned().collect::<Vec<_>>(), vec![successor]);
+    let ledger = window.f.state.lock();
+    let entry = ledger.get(&window.recipient.seat).unwrap();
+    assert_eq!(entry.generation, window.recipient.binding_generation);
+    assert_eq!(entry.native_session, window.recipient.native_session.as_str());
+}
+
+// Kills: treating MAX_OFFERS_PER_SEAT as cumulative lifetime throughput when
+// Watch settles actual receipt-state rows through AckModDelivered.
+#[test]
+fn presentation_watch_settled_receipts_reclaim_live_offer_capacity() {
+    assert_v2_offer_window_reclaimed(true, false);
+}
+
+// Kills: reconciling only the mod ACK route, leaving actual manual ACKs stuck
+// in a capable Hook consumer's live-offer table.
+#[test]
+fn presentation_hook_manual_ack_reclaims_live_offer_capacity() {
+    assert_v2_offer_window_reclaimed(false, false);
+}
+
+// Kills: checking only ordinary receipts and retaining displayed published
+// lazy rows forever even after the canonical Watch completion writer runs.
+#[test]
+fn presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity() {
+    assert_v2_offer_window_reclaimed(true, true);
+}
+
+// Kills: cap eviction, reclaiming truncated/pending offers as presentation
+// success, and resetting an unsettled id's count/timestamps during reclamation.
+#[test]
+fn presentation_reclamation_preserves_pending_truncated_and_reoffer_history() {
+    use crate::{
+        protocol::{
+            commands::{AckModDelivered, DeliveryMode},
+            delivery::{DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer, PresentationRenderRequest},
+            watch::{ModAckOutcome, ModAckReason, ModDeliveryVia},
+        },
+    };
+    let window = OfferWindowFixture::new(true);
+    let big = "x".repeat(WATCH_BODY_LIMIT_BYTES + 1);
+    let sent = (0..257)
+        .map(|n| window.send(n, DeliveryMode::Ordinary, if n == 0 { &big } else { "pending" }))
+        .collect::<Vec<_>>();
+    assert_eq!(window.drain(256), sent[..256].iter().cloned().collect());
+    let first = window.offers();
+    assert!(first[&sent[0]].truncated);
+    for _ in 0..4 { window.pull(); }
+    assert_eq!(window.offers(), first, "pending offers neither evict nor reoffer early");
+    let CommandResult::ModDeliveryAcked(report) = window.f.service.handle(
+        Command::AckModDelivered(AckModDelivered {
+            via: ModDeliveryVia::Context,
+            messages: vec![sent[0].clone()],
+            operation: OperationId::new("offer-window-truncated-refusal"),
+            claim: window.recipient.clone(),
+        }), peer(), &budget(),
+    ).unwrap() else { panic!("truncated ACK result") };
+    assert_eq!(report.results[0].result, ModAckOutcome::RefusedTerminal);
+    assert_eq!(report.results[0].reason, Some(ModAckReason::Truncated));
+    window.pull();
+    assert_eq!(window.offers(), first, "refused delivery ACK is not settlement");
+    advance(&window.f, REOFFER_AFTER_MS);
+    assert_eq!(window.drain(256), sent[..256].iter().cloned().collect());
+    let second = window.offers();
+    assert!(second.values().all(|v| v.count == 2));
+    // Manual ACK is allowed after the body continuation was read, including
+    // the previously truncated identity. Keep one short offer canonically pending.
+    window.ack(&sent[..255], false, "offer-window-manual-settle");
+    let mut emitted = false;
+    for _ in 0..16 {
+        if let DeliveryPullReplyV2::Page(page) = window.pull() {
+            emitted |= page.offered.contains(&sent[256]);
+            assert!(!page.offered.contains(&sent[255]), "surviving pending offer is not due");
+        }
+        if emitted { break; }
+    }
+    assert!(emitted, "manual ACK of a truncated offer must reclaim its slot");
+    let retained = window.offers();
+    assert_eq!(retained.len(), 2);
+    assert_eq!(retained[&sent[255]], second[&sent[255]], "reconciliation preserves live reoffer history");
+    let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { reason: Refusal::SessionMismatch }) = window.f.service.handle(
+        Command::DeliveryPullV2(DeliveryPullV2 {
+            claim: window.recipient.clone(),
+            consumer: PresentationConsumer::Watch,
+            render: PresentationRenderRequest::WatchJsonLinesV1,
+            presentation_lease: Some("ffffffffffffffffffffffffffffffff".into()),
+            marker_prefix: vec![],
+        }), peer(), &budget(),
+    ).unwrap() else { panic!("stale owner must refuse") };
+    assert_eq!(window.offers(), retained, "refused owner cannot reconcile another owner's ledger");
+    advance(&window.f, REOFFER_AFTER_MS);
+    assert_eq!(window.drain(2), [sent[255].clone(), sent[256].clone()].into_iter().collect());
+    assert_eq!(window.offers()[&sent[255]].count, MAX_OFFERS_PER_GENERATION);
+    advance(&window.f, REOFFER_AFTER_MS);
+    assert_eq!(window.drain(1), [sent[256].clone()].into_iter().collect());
+    let parked = window.offers();
+    assert!(parked.values().all(|v| v.count == MAX_OFFERS_PER_GENERATION));
+    advance(&window.f, REOFFER_AFTER_MS);
+    for _ in 0..4 { window.pull(); }
+    assert_eq!(window.offers(), parked, "pending offers remain parked at the original generation limit");
+
+    // A real canonical check-in rotates the binding. The old owner/claim must
+    // refuse before it can drop the prior generation's retained offers.
+    let next = check_in(
+        &window.f,
+        fresh_execution(
+            claim("c", "pc", Harness::Claude, "offer-window-next", window.recipient.binding_generation),
+            2,
+        ),
+        "offer-window-next-ci",
+    );
+    assert!(next.binding_generation > window.recipient.binding_generation);
+    assert!(matches!(window.pull(), DeliveryPullReplyV2::Refused { .. }));
+    assert_eq!(window.offers(), parked, "stale generation cannot reconcile ledger state");
+}
+
 #[test]
 fn presentation_publication_foreign_refresh_refuses_without_touching_hook_or_watch() {
     let f = fixture(0);
