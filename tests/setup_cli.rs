@@ -469,7 +469,8 @@ fn installed_command_is_the_hook_entrypoint_argv() {
             .unwrap();
         assert!(
             command.starts_with(&format!(
-                "{quoted} '--event' '{event}' # herdr-threads-owner:"
+                "{} '{event}'",
+                quoted.replace("'hook' 'claude'", "'hook-event' 'claude'")
             )),
             "{event}: {command}"
         );
@@ -767,7 +768,8 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
             .unwrap();
         assert!(
             owned.starts_with(&format!(
-                "{command} '--event' '{event}' # herdr-threads-owner:"
+                "{} '{event}'",
+                command.replace("'hook' 'codex'", "'hook-event' 'codex'")
             )),
             "{event}: {owned}"
         );
@@ -943,14 +945,18 @@ fn codex_setup_keeps_existing_user_hooks_in_their_own_layers() {
         let groups = hooks["hooks"][event].as_array().unwrap();
         let owned: Vec<_> = groups
             .iter()
-            .filter(|g| g.to_string().contains("herdr-threads-owner"))
+            .filter(|g| {
+                g["hooks"][0]["command"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("'hook-event' 'codex'"))
+            })
             .collect();
         assert_eq!(owned.len(), 1, "{event}");
         assert!(
             owned[0]["hooks"][0]["command"]
                 .as_str()
                 .unwrap()
-                .starts_with(&command),
+                .starts_with(&command.replace("'hook' 'codex'", "'hook-event' 'codex'")),
             "{event}"
         );
         assert!(!owned[0].to_string().contains("hcom"), "{event}");
@@ -1558,16 +1564,10 @@ fn bare_setup_exits_nonzero_only_for_a_failed_harness() {
     }
 }
 
-/// A set-up `hooks.json` copied (with its Codex trust) into a second
-/// CODEX_HOME carries the first installation's owner marker. Status and
-/// doctor report it installed (adopted), setup adopts it without changing a
-/// byte, re-setup is idempotent, and unsetup there removes only that file's
-/// adopted groups while the first CODEX_HOME keeps its installation. Kills:
-/// reporting the copy as not installed, adding a second marked set (which
-/// changes Codex's trust hashes), unsetup touching the other CODEX_HOME, and
-/// adopting a copy whose command really differs.
+/// Copying stable hooks into another profile does not copy the private ownership evidence.
+/// Status, setup and unsetup preserve the foreign bytes in both profiles.
 #[test]
-fn copied_codex_hooks_are_adopted_without_changing_bytes() {
+fn copied_stable_codex_hooks_remain_foreign_without_manifest() {
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.158.0");
     fs::create_dir(&s.codex_home).unwrap();
@@ -1586,111 +1586,25 @@ fn copied_codex_hooks_are_adopted_without_changing_bytes() {
     let run = |args: &[&str]| s.run_env(&s.root, Some(&profile), args);
 
     let status = json(&run(&["--json", "setup-status", "codex"]));
-    assert_eq!(status["installed"], true, "{status}");
-    assert_eq!(status["adopted"]["recorded"], false, "{status}");
-    assert_eq!(status["current_command_matches"], true, "{status}");
-    let owner = status["adopted"]["owner"].as_str().unwrap().to_owned();
-    assert!(
-        status["command"]
-            .as_str()
-            .unwrap()
-            .ends_with(&format!("# herdr-threads-owner:{owner}"))
-    );
-    let text_status = text(&run(&["setup-status"]).stdout);
-    assert!(
-        text_status.contains("codex: installed (adopted from another setup)"),
-        "{text_status}"
-    );
-
-    let doctor = run(&["--json", "doctor"]);
-    let report: serde_json::Value = serde_json::from_slice(&doctor.stdout)
-        .unwrap_or_else(|e| panic!("{e}: {}", text(&doctor.stderr)));
-    let doctor = &report["doctor"];
-    assert_eq!(
-        doctor["hooks"]["codex"]["setup"]["installed"], true,
-        "{doctor}"
-    );
-    assert_eq!(doctor["hooks"]["codex"]["setup"]["adopted"]["owner"], owner);
-    assert!(
-        doctor["limitations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|l| !l.as_str().unwrap().contains("hooks are not installed")),
-        "{doctor}"
-    );
-
-    let adopt = run(&["setup", "codex", "--json"]);
-    assert_eq!(adopt.status.code(), Some(0), "{}", text(&adopt.stderr));
-    let adopt = json(&adopt);
-    assert_eq!(adopt["action"], "adopted", "{adopt}");
-    assert_eq!(adopt["adopted"], owner);
-    assert_eq!(fs::read(&copied).unwrap(), first);
-    let again = json(&run(&["setup", "codex", "--json"]));
-    assert_eq!(again["action"], "already_installed", "{again}");
-    assert_eq!(fs::read(&copied).unwrap(), first);
-    let status = json(&run(&["--json", "setup-status", "codex"]));
-    assert_eq!(status["installed"], true);
-    assert_eq!(status["adopted"]["recorded"], true);
-
-    let unsetup = run(&["unsetup", "codex", "--json"]);
-    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
-    let unsetup = json(&unsetup);
-    assert_eq!(unsetup["action"], "removed");
-    assert_eq!(unsetup["adopted"], owner);
-    assert!(
-        unsetup["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|w| w.as_str().unwrap().contains("review again")),
-        "{unsetup}"
-    );
-    assert_eq!(fs::read(&copied).unwrap(), mine);
-    // The first CODEX_HOME keeps its installation untouched.
-    assert_eq!(fs::read(s.hooks()).unwrap(), first);
-    assert_eq!(
-        json(&s.run(&["--json", "setup-status", "codex"]))["installed"],
-        true
-    );
-
-    // Unsetup with no prior setup in the profile also removes only the copy.
-    fs::write(&copied, &first).unwrap();
-    let direct = json(&run(&["unsetup", "codex", "--json"]));
-    assert_eq!(direct["action"], "removed", "{direct}");
-    assert_eq!(fs::read(&copied).unwrap(), mine);
-    assert_eq!(fs::read(s.hooks()).unwrap(), first);
-
-    // A copy whose command really differs (another state directory) is not
-    // adopted: status stays not installed and setup installs its own set.
-    let foreign = String::from_utf8(first.clone())
-        .unwrap()
-        .replace(&s.state.display().to_string(), "/elsewhere/state");
-    fs::write(&copied, &foreign).unwrap();
-    let status = json(&run(&["--json", "setup-status", "codex"]));
     assert_eq!(status["installed"], false, "{status}");
-    assert!(status["adopted"].is_null());
-    let doctor = run(&["--json", "doctor"]);
-    let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
-    assert_eq!(
-        doctor["doctor"]["hooks"]["codex"]["setup"]["installed"],
-        false
+    assert!(status["adopted"].is_null(), "{status}");
+    let refused = run(&["setup", "codex", "--json"]);
+    assert!(!refused.status.success(), "{}", text(&refused.stdout));
+    assert!(
+        text(&refused.stderr).contains("unowned identical"),
+        "{}",
+        text(&refused.stderr)
     );
-    assert!(doctor["doctor"]["hooks"]["codex"]["setup"]["adopted"].is_null());
-    let installed = json(&run(&["setup", "codex", "--json"]));
-    assert_eq!(installed["action"], "installed", "{installed}");
-    assert!(installed["adopted"].is_null());
-    let unsetup = json(&run(&["unsetup", "codex", "--json"]));
-    assert_eq!(unsetup["action"], "removed");
-    assert_eq!(fs::read(&copied).unwrap(), foreign.as_bytes());
+    assert_eq!(fs::read(&copied).unwrap(), first);
+    let removed = run(&["unsetup", "codex", "--json"]);
+    assert!(removed.status.success(), "{}", text(&removed.stderr));
+    assert_eq!(fs::read(&copied).unwrap(), first);
     assert_eq!(fs::read(s.hooks()).unwrap(), first);
 }
 
-/// The Claude counterpart: a copied settings.json is reported installed
-/// (adopted), adopted byte-identically, and unsetup removes only its hook
-/// groups. Kills: Claude adoption duplicating groups or touching user rules.
+/// The Claude counterpart preserves copied stable groups and user rules as foreign.
 #[test]
-fn copied_claude_settings_are_adopted_without_changing_bytes() {
+fn copied_stable_claude_settings_remain_foreign_without_manifest() {
     let s = Scratch::new();
     s.harness("claude", "2.1.284 (Claude Code)");
     fs::create_dir(&s.claude_config).unwrap();
@@ -1719,25 +1633,19 @@ fn copied_claude_settings_are_adopted_without_changing_bytes() {
             .unwrap()
     };
     let status = json(&run(&["--json", "setup-status", "claude"]));
-    assert_eq!(status["installed"], true, "{status}");
-    assert_eq!(status["adopted"]["recorded"], false);
-    let adopt = json(&run(&["setup", "claude", "--json"]));
-    assert_eq!(adopt["action"], "adopted", "{adopt}");
-    assert!(adopt["allow_rule"].is_null(), "{adopt}");
-    assert_eq!(fs::read(&copied).unwrap(), first);
-    let unsetup = json(&run(&["unsetup", "claude", "--json"]));
-    assert_eq!(unsetup["action"], "removed", "{unsetup}");
-    assert_eq!(unsetup["allow_rule"], "not_recorded");
-    let left: serde_json::Value = serde_json::from_slice(&fs::read(&copied).unwrap()).unwrap();
-    assert_eq!(
-        left["permissions"]["allow"],
-        serde_json::json!(["Bash(ls:*)"])
-    );
+    assert_eq!(status["installed"], false, "{status}");
+    assert!(status["adopted"].is_null(), "{status}");
+    let refused = run(&["setup", "claude", "--json"]);
+    assert!(!refused.status.success(), "{}", text(&refused.stdout));
     assert!(
-        !String::from_utf8(fs::read(&copied).unwrap())
-            .unwrap()
-            .contains("herdr-threads-owner")
+        text(&refused.stderr).contains("unowned identical"),
+        "{}",
+        text(&refused.stderr)
     );
+    assert_eq!(fs::read(&copied).unwrap(), first);
+    let removed = run(&["unsetup", "claude", "--json"]);
+    assert!(removed.status.success(), "{}", text(&removed.stderr));
+    assert_eq!(fs::read(&copied).unwrap(), first);
     assert_eq!(fs::read(s.settings()).unwrap(), first);
 }
 
@@ -1817,7 +1725,7 @@ fn versionless_setup_upgrades_owned_hooks_with_large_legacy_allowance_manifest()
         let command = hooks["hooks"][event][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
-        assert!(command.contains(&format!(" '--event' '{event}'")));
+        assert!(command.ends_with(&format!(" 'hook-event' 'codex' '{event}'")));
     }
     assert_eq!(s.run(&["unsetup", "codex"]).status.code(), Some(0));
     assert_eq!(fs::read_to_string(&config).unwrap(), original);
@@ -2215,18 +2123,40 @@ fn downgrade_to_legacy(s: &Scratch, kind: &str, file: &Path) {
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     let mut settings = fs::read_to_string(file).unwrap();
+    let identity = manifest["installation_id"].as_str().unwrap().to_owned();
+    manifest["version"] = serde_json::json!(2);
     let shown = manifest.to_string();
     for entry in manifest["owned"]
         .as_array_mut()
         .unwrap_or_else(|| panic!("no owned list in {manifest_path:?}: {shown}"))
     {
-        let pair = format!(" '--event' '{}'", entry["event"].as_str().unwrap());
-        assert!(settings.contains(&pair), "{pair} missing from {settings}");
-        settings = settings.replace(&pair, "");
-        let command = entry["group"]["hooks"][0]["command"]
+        let event = entry["event"].as_str().unwrap();
+        let old = entry["group"]["hooks"][0]["command"]
             .as_str()
             .unwrap()
-            .replace(&pair, "");
+            .to_owned();
+        let native = format!(
+            "'hook-event' '{}' '{event}'",
+            if kind == "claude-user" {
+                "claude"
+            } else {
+                "codex"
+            }
+        );
+        assert!(old.contains(&native), "{old}");
+        let legacy = old.replace(
+            &native,
+            &format!(
+                "'hook' '{}'",
+                if kind == "claude-user" {
+                    "claude"
+                } else {
+                    "codex"
+                }
+            ),
+        );
+        let command = format!("{legacy} # herdr-threads-owner:{identity}");
+        settings = settings.replace(&old, &command);
         entry["group"]["hooks"][0]["command"] = serde_json::json!(command);
         entry["fingerprint"] = serde_json::json!(format!(
             "sha256:{:x}",
@@ -2265,9 +2195,7 @@ fn doctor_flags_legacy_event_registration_without_degrading() {
         current["hooks"]["claude"]["setup"]["event_registration"],
         "current"
     );
-    assert!(
-        !text(&s.run(&["doctor", "--debug"]).stdout).contains("predate per-event registration")
-    );
+    assert!(!text(&s.run(&["doctor", "--debug"]).stdout).contains("use legacy commands"));
 
     downgrade_claude_to_legacy(&s);
     let legacy = json_doctor(&s);
@@ -2281,16 +2209,16 @@ fn doctor_flags_legacy_event_registration_without_degrading() {
     );
     assert_eq!(legacy["limitations"], current["limitations"], "{legacy}");
     assert_eq!(legacy["result"], current["result"]);
-    let line = "claude hooks predate per-event registration (no --event): re-run \
-                `herdr-threads setup claude`\n";
+    let line = "claude hooks use legacy commands: re-run \
+                `herdr-threads setup claude` to migrate to stable hook-event commands\n";
     assert!(text(&s.run(&["doctor", "--debug"]).stdout).contains(line));
 
-    // Re-running setup rewrites the hooks with --event: doctor is back to current.
+    // Re-running setup migrates the hooks to stable entrypoints: doctor is back to current.
     let again = s.run(&["setup", "claude"]);
     assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
     assert!(
         text(&again.stdout).contains(
-            "warning: the hook commands now carry --event; a herdr-threads build from \
+            "warning: the hook commands now use hook-event; a herdr-threads build from \
              before per-event registration rejects them, so to downgrade herdr-threads first \
              run `herdr-threads unsetup claude` with this build\n"
         ),
@@ -2307,7 +2235,7 @@ fn doctor_flags_legacy_event_registration_without_degrading() {
     assert!(
         fs::read_to_string(s.settings())
             .unwrap()
-            .contains("'--event' 'SessionStart'")
+            .contains("'hook-event' 'claude' 'SessionStart'")
     );
 }
 
@@ -2541,8 +2469,8 @@ fn codex_legacy_registration_rerun_warns_about_retrust() {
     let doctor = text(&s.run(&["doctor", "--debug"]).stdout);
     assert!(
         doctor.contains(
-            "codex hooks predate per-event registration (no --event): re-run \
-             `herdr-threads setup codex`; Codex then asks to review (trust) the rewritten hooks \
+            "codex hooks use legacy commands: re-run \
+             `herdr-threads setup codex` to migrate to stable hook-event commands; Codex then asks to review (trust) the rewritten hooks \
              again\n"
         ),
         "{doctor}"
@@ -2553,7 +2481,7 @@ fn codex_legacy_registration_rerun_warns_about_retrust() {
     let out = text(&again.stdout);
     assert!(
         out.contains(
-            "warning: the hook commands now carry --event; a herdr-threads build from \
+            "warning: the hook commands now use hook-event; a herdr-threads build from \
              before per-event registration rejects them, so to downgrade herdr-threads first \
              run `herdr-threads unsetup codex` with this build\n"
         ),
@@ -4971,4 +4899,158 @@ fn permission_consent_grants_revokes_and_unsetup_restores() {
     let unsetup = s.run(&["unsetup", "claude"]);
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
     assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+}
+
+#[test]
+fn stable_codex_reinstall_status_preserves_trust_records_and_group_indices() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.codex_home).unwrap();
+    let config = s.codex_home.join("config.toml");
+    let native_trust = "model = \"mine\"\n[hooks.state.\"foreign:session_start:0:0\"]\ntrusted_hash = \"retain-me\"\n";
+    fs::write(&config, native_trust).unwrap();
+    let first = s.run(&["setup", "codex", "--json"]);
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    let first_report = json(&first);
+    let mut hooks: serde_json::Value =
+        serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
+    hooks["hooks"]["SessionStart"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"hooks":[{"type":"command","command":"after"}]}));
+    let bytes = serde_json::to_vec(&hooks).unwrap();
+    fs::write(s.hooks(), &bytes).unwrap();
+    let again = s.run(&["setup", "codex", "--json"]);
+    assert!(again.status.success(), "{}", text(&again.stderr));
+    assert_eq!(fs::read(s.hooks()).unwrap(), bytes);
+    assert_eq!(fs::read_to_string(&config).unwrap(), native_trust);
+    let status = json(&s.run(&["setup-status", "codex", "--json"]));
+    assert_eq!(status["commands"], first_report["commands"]);
+    assert_eq!(status["current_command_matches"], true);
+    assert_eq!(status["trust"]["hooks"], first_report["trust"]["hooks"]);
+    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+        assert_eq!(
+            status["commands"][event],
+            hooks["hooks"][event][0]["hooks"][0]["command"]
+        );
+    }
+    assert!(s.run(&["unsetup", "codex"]).status.success());
+    assert_eq!(fs::read_to_string(&config).unwrap(), native_trust);
+}
+
+/// Supported legacy commands are conflicts, never ownership evidence for another route.
+/// Exercise the public fresh/reinstall/status/unsetup paths independently for each form.
+fn legacy_foreign_registration_case(harness: &str, evented: bool, installed: bool) {
+    let s = Scratch::new();
+    s.harness(
+        harness,
+        if harness == "claude" {
+            "2.1.284 (Claude Code)"
+        } else {
+            "codex-cli 0.158.0"
+        },
+    );
+    let config = if harness == "claude" {
+        fs::create_dir(&s.claude_config).unwrap();
+        s.settings()
+    } else {
+        fs::create_dir(&s.codex_home).unwrap();
+        s.hooks()
+    };
+    let before = serde_json::json!({"hooks":[{"type":"command","command":"echo before"}]});
+    let after = serde_json::json!({"hooks":[{"type":"command","command":"echo after"}]});
+    fs::write(
+        &config,
+        serde_json::to_vec(&serde_json::json!({
+            "model":"mine", "hooks":{"SessionStart":[before.clone()]}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let setup_args = if harness == "claude" {
+        vec!["setup", harness, "--hooks-only", "--json"]
+    } else {
+        vec!["setup", harness, "--json"]
+    };
+    let manifest =
+        herdr_threads::cli::setup::manifest_path(&s.state, &format!("{harness}-user"), &config);
+    if installed {
+        let first = s.run(&setup_args);
+        assert!(first.status.success(), "{}", text(&first.stderr));
+    }
+    let event = if evented {
+        " '--event' 'SessionStart'"
+    } else {
+        ""
+    };
+    let foreign = serde_json::json!({"hooks":[{"type":"command","command":format!(
+        "'/foreign/herdr-threads' '--state-dir' '/foreign/state' '--host-endpoint' '/foreign/host.sock' 'hook' '{harness}'{event} # herdr-threads-owner:0b5e8f3c-1111-4222-8333-444455556666"
+    )}]});
+    let mut config_value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    config_value["hooks"]["SessionStart"]
+        .as_array_mut()
+        .unwrap()
+        .extend([foreign.clone(), after.clone()]);
+    let config_bytes = serde_json::to_vec(&config_value).unwrap();
+    fs::write(&config, &config_bytes).unwrap();
+    let manifest_bytes = fs::read(&manifest).ok();
+    let status = json(&s.run(&["setup-status", harness, "--json"]));
+    assert_eq!(status["installed"], installed, "{status}");
+    let refused = s.run(&setup_args);
+    assert!(
+        !refused.status.success(),
+        "{harness} evented={evented} installed={installed}: {}{}",
+        text(&refused.stdout),
+        text(&refused.stderr)
+    );
+    assert!(
+        text(&refused.stderr).contains("conflicting herdr-threads registration for the same event"),
+        "{}",
+        text(&refused.stderr)
+    );
+    assert_eq!(status["registration_conflict"], true, "{status}");
+    assert_eq!(fs::read(&config).unwrap(), config_bytes);
+    assert_eq!(fs::read(&manifest).ok(), manifest_bytes);
+    let removed = s.run(&["unsetup", harness, "--json"]);
+    assert!(removed.status.success(), "{}", text(&removed.stderr));
+    let remaining: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(remaining["model"], "mine");
+    assert_eq!(
+        remaining["hooks"]["SessionStart"],
+        serde_json::json!([before, foreign, after])
+    );
+}
+
+#[test]
+fn legacy_foreign_registration_claude_evented_fresh() {
+    legacy_foreign_registration_case("claude", true, false);
+}
+#[test]
+fn legacy_foreign_registration_claude_shared_fresh() {
+    legacy_foreign_registration_case("claude", false, false);
+}
+#[test]
+fn legacy_foreign_registration_codex_evented_fresh() {
+    legacy_foreign_registration_case("codex", true, false);
+}
+#[test]
+fn legacy_foreign_registration_codex_shared_fresh() {
+    legacy_foreign_registration_case("codex", false, false);
+}
+#[test]
+fn legacy_foreign_registration_claude_evented_installed() {
+    legacy_foreign_registration_case("claude", true, true);
+}
+#[test]
+fn legacy_foreign_registration_claude_shared_installed() {
+    legacy_foreign_registration_case("claude", false, true);
+}
+#[test]
+fn legacy_foreign_registration_codex_evented_installed() {
+    legacy_foreign_registration_case("codex", true, true);
+}
+#[test]
+fn legacy_foreign_registration_codex_shared_installed() {
+    legacy_foreign_registration_case("codex", false, true);
 }

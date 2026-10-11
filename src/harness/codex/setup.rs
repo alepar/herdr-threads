@@ -169,12 +169,26 @@ pub fn observe_codex_layer(path: &Path, owned_command: &str) -> Option<CodexLaye
     };
     // TOML basic and JSON strings escape `"` and `\` the same way; the shell
     // form itself uses only single quotes.
-    let escaped = serde_json::to_string(owned_command).unwrap_or_default();
-    let escaped = escaped.trim_matches('"');
-    layer.has_owned_command = text.contains(owned_command) || text.contains(escaped);
+    let contains = |command: &str| {
+        let escaped = serde_json::to_string(command).unwrap_or_default();
+        text.contains(command) || text.contains(escaped.trim_matches('"'))
+    };
+    let stable_commands = shlex::split(owned_command)
+        .and_then(|argv| {
+            lib::native_entries(SettingsKind::CodexUser, &argv)
+                .ok()
+                .flatten()
+        })
+        .unwrap_or_default();
+    layer.has_owned_command = contains(owned_command)
+        || stable_commands.iter().any(|entry| {
+            entry.group["hooks"][0]["command"]
+                .as_str()
+                .is_some_and(contains)
+        });
     layer.has_other_herdr_threads_hook = !layer.has_owned_command
         && text.contains("herdr-threads")
-        && text.contains("'hook' 'codex'");
+        && (text.contains("'hook' 'codex'") || text.contains("'hook-event' 'codex'"));
     Some(layer)
 }
 
@@ -448,6 +462,9 @@ pub(crate) fn codex_trust_json(paths: &CodexPaths, command: Option<&str>) -> Val
     let Some(command) = command else {
         return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
     };
+    let recorded = lib::read_settings_manifest(&paths.hooks_manifest)
+        .ok()
+        .flatten();
     let hooks: Value = fs::read(&paths.hooks)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -465,9 +482,18 @@ pub(crate) fn codex_trust_json(paths: &CodexPaths, command: Option<&str>) -> Val
         };
         for (index, group) in groups.iter().enumerate() {
             let registered = group["hooks"][0]["command"].as_str();
-            if registered == Some(command)
-                || registered == Some(lib::event_command(command, hook.event).as_str())
-            {
+            if recorded.as_ref().map_or_else(
+                || {
+                    registered == Some(command)
+                        || registered == Some(lib::event_command(command, hook.event).as_str())
+                },
+                |manifest| {
+                    manifest
+                        .owned
+                        .iter()
+                        .any(|entry| entry.event == hook.event && &entry.group == group)
+                },
+            ) {
                 let key = format!("{path}:{}:{index}:0", snake(hook.event));
                 let recorded = state.as_ref().is_some_and(|doc| {
                     doc.get("hooks")
@@ -805,6 +831,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         "instance": instance_json(env),
         "hook_argv": env.hook_argv(Harness::Codex)?,
         "command": command,
+        "commands": lib::commands_json(&installed.owned),
         "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
         "sandbox": with_unmeasured(
             allowance_json(inspection.as_ref()),
@@ -893,7 +920,7 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
         if recorded.adopted {
             report["adopted"] = json!(recorded.installation_id);
             warnings.push(format!(
-                "removing only the adopted hook groups (owner marker {}) from {}; the setup \
+                "removing only the hook groups with adopted installation identity {} from {}; the setup \
                  that wrote them keeps its own hooks.json. Codex trusts hooks by position, so \
                  any group that shifts in this file needs review again",
                 recorded.installation_id,
