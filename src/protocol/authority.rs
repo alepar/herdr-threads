@@ -23,7 +23,16 @@ pub struct CallerClaim {
     pub liveness: Option<LivenessFingerprint>,
 }
 
+/// The stable detail of `ErrorCode::SubagentReadOnly`.
+pub const SUBAGENT_READ_ONLY_DETAIL: &str = "subagent bindings are read-only: they may read, summarize and advance their own cursor, never ACK, send, accept, reject, leave, invite or check in for the seat";
+
 impl CallerClaim {
+    /// A subagent claim (ht-54r.20): the declared role or any agent id. Cooperative recognition,
+    /// not verification (TRUST-POLICY).
+    pub fn is_subagent(&self) -> bool {
+        self.role == CallerRole::Subagent || self.agent_id.is_some()
+    }
+
     /// Wire-level checks of the binding fields (ids are validated by their types).
     pub fn validate_binding_fields(&self) -> Result<(), &'static str> {
         if self.liveness.is_some_and(|f| f.pid == 0) {

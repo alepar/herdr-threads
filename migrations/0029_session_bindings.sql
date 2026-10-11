@@ -90,4 +90,5 @@ SELECT b.binding_id, m.thread_id, COALESCE((SELECT MAX(x.sequence) FROM messages
 FROM occupant_bindings b JOIN memberships m ON m.seat_id=b.seat_id AND m.state='joined'
 WHERE b.ended_at IS NULL;
 ALTER TABLE receipts ADD COLUMN ack_binding_id TEXT;
+ALTER TABLE receipt_state ADD COLUMN ack_binding_id TEXT;
 ALTER TABLE messages ADD COLUMN sender_binding_id TEXT;

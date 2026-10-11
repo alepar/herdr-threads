@@ -776,6 +776,17 @@ impl LocalService for DomainService {
             output: output.clone(),
             operation_scope: None,
         };
+        // Subagent bindings are read-only (ht-54r.20). Checked here, before `validate()` would
+        // turn it into a generic invalid-request string, so the code is stable.
+        if command
+            .accountable_claim()
+            .is_some_and(crate::protocol::authority::CallerClaim::is_subagent)
+        {
+            return Err(error(
+                ErrorCode::SubagentReadOnly,
+                crate::protocol::authority::SUBAGENT_READ_ONLY_DETAIL,
+            ));
+        }
         if matches!(&command, Command::Search(_)) {
             let _search = self.search.enter(budget, self.clock.as_ref())?;
             return self.store.query(&command, &read, budget);

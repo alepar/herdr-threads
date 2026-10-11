@@ -307,6 +307,7 @@ fn is_deterministic_rejection(code: &ErrorCode) -> bool {
         code,
         ErrorCode::InvalidRequest
             | ErrorCode::Unauthorized
+            | ErrorCode::SubagentReadOnly
             | ErrorCode::Archived
             | ErrorCode::Conflict
             | ErrorCode::OperationPayloadMismatch

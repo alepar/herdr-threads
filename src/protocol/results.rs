@@ -337,6 +337,9 @@ pub enum ErrorCode {
     SessionClaimRequired,
     /// An agent call without a liveness fingerprint (ht-54r.3, enforced from ht-54r.5).
     LivenessFingerprintRequired,
+    /// A subagent claim attempted an accountable command (ht-54r.20): subagent bindings are
+    /// read-only. Stable; the refusal is cooperative, on the recognized claim.
+    SubagentReadOnly,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1743,6 +1746,7 @@ impl ErrorCode {
         ErrorCode::TransportDenied,
         ErrorCode::SessionClaimRequired,
         ErrorCode::LivenessFingerprintRequired,
+        ErrorCode::SubagentReadOnly,
     ];
 
     /// The failure class this code defaults to, or `None` for codes that
@@ -1792,6 +1796,7 @@ impl ErrorCode {
             ErrorCode::TransportDenied => Some(ErrorClass::Unavailable),
             ErrorCode::SessionClaimRequired => None,
             ErrorCode::LivenessFingerprintRequired => None,
+            ErrorCode::SubagentReadOnly => None,
             // The daemon restarted between the caller's view and the request
             // (B5, protocol 2): retry against the new boot.
             ErrorCode::DaemonBootChanged => Some(ErrorClass::Transient),
@@ -1867,6 +1872,7 @@ api_error_constructors! {
     transport_denied => TransportDenied, daemon_boot_changed => DaemonBootChanged,
     session_claim_required => SessionClaimRequired,
     liveness_fingerprint_required => LivenessFingerprintRequired,
+    subagent_read_only => SubagentReadOnly,
 }
 
 #[cfg(test)]

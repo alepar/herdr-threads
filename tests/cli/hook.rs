@@ -3495,6 +3495,7 @@ mod continuity_gate {
             match code {
                 ErrorCode::InvalidRequest
                 | ErrorCode::Unauthorized
+                | ErrorCode::SubagentReadOnly
                 | ErrorCode::Archived
                 | ErrorCode::Conflict
                 | ErrorCode::OperationPayloadMismatch
@@ -3584,6 +3585,7 @@ mod continuity_gate {
             ErrorCode::TransportDenied,
             ErrorCode::SessionClaimRequired,
             ErrorCode::LivenessFingerprintRequired,
+            ErrorCode::SubagentReadOnly,
         ];
         for code in &all {
             assert_eq!(

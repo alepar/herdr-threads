@@ -721,6 +721,8 @@ pub(super) enum PublicationAuthor<'a> {
     Native {
         seat: &'a SeatId,
         observation: &'a str,
+        /// The acting binding, recorded as `messages.sender_binding_id` (spec §2).
+        binding: &'a crate::protocol::ids::BindingId,
         relays_user: bool,
         user_intent: Option<crate::protocol::summary::UserIntent>,
     },
@@ -812,10 +814,11 @@ pub(super) fn insert_publication(
         PublicationAuthor::Native {
             seat,
             observation,
+            binding,
             relays_user,
             user_intent,
         } => {
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode]).map_err(store_error)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding.as_str()]).map_err(store_error)?;
         }
         PublicationAuthor::Programmatic(author) => {
             tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service')",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq as i64,author.as_str()]).map_err(store_error)?;
@@ -968,6 +971,7 @@ pub fn publish_send(
                 PublicationAuthor::Native {
                     seat: &seat,
                     observation: &observation,
+                    binding: &actor.binding_id,
                     relays_user: request.relays_user,
                     user_intent: request.user_intent,
                 },

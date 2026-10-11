@@ -957,6 +957,30 @@ pub const MAX_SEARCH_CANDIDATES: u16 = 100;
 pub const MAX_BATCH_ITEMS: usize = 100;
 
 impl Command {
+    /// The caller claim of an accountable command, if it carries one. Queries, `Summary` and
+    /// `AdvanceCursors` carry none here, so a subagent may issue them.
+    pub fn accountable_claim(&self) -> Option<&crate::protocol::authority::CallerClaim> {
+        match self {
+            Self::CheckIn(v) | Self::OperatorCheckIn(v) => Some(&v.claim),
+            Self::BeginHandoff(v) | Self::CompleteHandoff(v) => Some(&v.identity.claim),
+            Self::CreateThread(v) => Some(&v.claim),
+            Self::Invite(v) => Some(&v.claim),
+            Self::Join(v) => Some(&v.claim),
+            Self::Accept(v) => Some(&v.claim),
+            Self::AcceptRequired(v) => Some(&v.claim),
+            Self::Reject(v) => Some(&v.claim),
+            Self::SendMessage(v) => Some(&v.claim),
+            Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
+            Self::AckModDelivered(v) => Some(&v.claim),
+            Self::CompleteInboxDelivery(v) => Some(&v.claim),
+            Self::Leave(v) => Some(&v.claim),
+            Self::SetTopic(v) => Some(&v.claim),
+            Self::SetThreadName(v) => Some(&v.claim),
+            Self::Archive(v) | Self::Reopen(v) => Some(&v.claim),
+            _ => None,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
             Self::HandoffDelivery(v) => return v.validate(),
@@ -1045,25 +1069,7 @@ impl Command {
                 }
             }
         }
-        let claim = match self {
-            Self::CheckIn(v) | Self::OperatorCheckIn(v) => Some(&v.claim),
-            Self::BeginHandoff(v) | Self::CompleteHandoff(v) => Some(&v.identity.claim),
-            Self::CreateThread(v) => Some(&v.claim),
-            Self::Invite(v) => Some(&v.claim),
-            Self::Join(v) => Some(&v.claim),
-            Self::Accept(v) => Some(&v.claim),
-            Self::AcceptRequired(v) => Some(&v.claim),
-            Self::Reject(v) => Some(&v.claim),
-            Self::SendMessage(v) => Some(&v.claim),
-            Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
-            Self::AckModDelivered(v) => Some(&v.claim),
-            Self::CompleteInboxDelivery(v) => Some(&v.claim),
-            Self::Leave(v) => Some(&v.claim),
-            Self::SetTopic(v) => Some(&v.claim),
-            Self::SetThreadName(v) => Some(&v.claim),
-            Self::Archive(v) | Self::Reopen(v) => Some(&v.claim),
-            _ => None,
-        };
+        let claim = self.accountable_claim();
         if let Some(claim) = claim {
             claim.validate_binding_fields()?;
         }

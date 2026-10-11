@@ -922,7 +922,8 @@ pub struct ResolveRequest<'a> {
     /// A lifecycle check-in: the only claim that (re)connects and supersedes (r2).
     pub lifecycle: bool,
     pub placement: &'a BindingPlacement,
-    /// Lineage predecessor (spec §1). Always None in this task; ht-54r.20 / ht-54r.17 pass it.
+    /// Lineage predecessor hint (spec §1), honoured only when [`validate_lineage`] holds.
+    /// The Hermes bridge (ht-54r.17) passes it.
     pub lineage: Option<&'a BindingId>,
 }
 
@@ -1006,6 +1007,49 @@ pub fn end_open_bindings(
     )
     .map_err(store_error)?;
     Ok(open.len())
+}
+
+/// Spec §1 Lineage. The predecessor must be a top_level binding on the same seat with the same
+/// harness and the same process fingerprint (pid and start) as the successor; otherwise the hint
+/// is ignored (fresh seed) - never trusted blindly. Enrolling successor: `resolve_claim` with
+/// `ResolveRequest.lineage` seeds via SeedMode::Lineage (copy, then fill). Already-enrolled
+/// successor (CLI-first, accepted limit): `link_lineage` sets lineage_from and copies with MAX,
+/// so no cursor moves backwards.
+pub fn validate_lineage(
+    db: &Connection,
+    successor_claim: &CallerClaim,
+    predecessor: &BindingId,
+) -> Result<bool, ApiError> {
+    let Some(fp) = successor_claim.liveness else {
+        return Ok(false);
+    };
+    if successor_claim.is_subagent() {
+        return Ok(false);
+    }
+    let Some(prev) = get(db, predecessor)? else {
+        return Ok(false);
+    };
+    Ok(prev.role == BindingRole::TopLevel
+        && prev.seat == successor_claim.seat
+        && prev.harness == successor_claim.harness.as_str()
+        && prev.fingerprint == Some(fp))
+}
+
+/// Records `predecessor` as the lineage of an already-enrolled `successor` and copies the
+/// predecessor's cursors with MAX (never backwards). The caller validated the pair with
+/// [`validate_lineage`]. A successor keeps the first lineage recorded; a repeat only re-copies.
+/// Returns the number of cursors written.
+pub fn link_lineage(
+    tx: &Connection,
+    successor: &BindingId,
+    predecessor: &BindingId,
+) -> Result<usize, ApiError> {
+    tx.execute(
+        "UPDATE occupant_bindings SET lineage_from=?2 WHERE binding_id=?1 AND lineage_from IS NULL",
+        params![successor.as_str(), predecessor.as_str()],
+    )
+    .map_err(store_error)?;
+    read_cursors::copy_lineage(tx, predecessor, successor)
 }
 
 pub fn resolve_claim(
@@ -1243,7 +1287,12 @@ fn resolve_claim_inner(
                 key: &key,
                 role: BindingRole::TopLevel,
                 parent: None,
-                lineage: request.lineage,
+                lineage: match request.lineage {
+                    Some(predecessor) if validate_lineage(tx, claim, predecessor)? => {
+                        Some(predecessor)
+                    }
+                    _ => None,
+                },
                 fingerprint: claim.liveness,
                 placement: &place,
                 trigger,

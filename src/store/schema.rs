@@ -865,6 +865,7 @@ fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
     audit_rebuilt_objects(conn, V29, &V29_AUDITED, "session binding")?;
     for (table, column) in [
         ("receipts", "ack_binding_id"),
+        ("receipt_state", "ack_binding_id"),
         ("messages", "sender_binding_id"),
     ] {
         let present: bool = conn

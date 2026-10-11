@@ -356,12 +356,12 @@ fn no_binding_or_codex_binding_is_retryable() {
 }
 
 #[test]
-fn subagent_claim_rejected_by_validation() {
+fn subagent_claim_is_refused_read_only() {
     let f = fixture();
     let mut child = claude(&f, "n1");
     child.role = CallerRole::Subagent;
     let error = ack(&f, child, &["m1"], "op").unwrap_err();
-    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert_eq!(error.code, ErrorCode::SubagentReadOnly);
     assert_eq!(state(&f, "m1"), "pending");
     assert!(f.channels.asked.lock().unwrap().is_empty());
 }

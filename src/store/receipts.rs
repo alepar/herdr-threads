@@ -216,6 +216,7 @@ pub fn ack_mod_delivered(
                 &settle,
                 &observation.to_string(),
                 actor.binding_generation,
+                &actor.binding_id,
                 "ack_mod",
             )?;
             let mut results = Vec::with_capacity(plans.len());
@@ -311,7 +312,7 @@ fn ack_impl(
                     ));
                 }
                 let exact: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND b.generation=?2 AND b.harness=?3 AND b.native_session=?4 AND b.execution_id=?5 AND b.target_id=?6 AND b.ended_at IS NULL AND b.observation_provenance='cooperative_top_level')",
+                    "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND b.generation=?2 AND b.harness=?3 AND b.native_session=?4 AND b.execution_id=?5 AND b.target_id=?6 AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance='cooperative_top_level')",
                     params![seat.as_str(),i64::try_from(request.claim.binding_generation).map_err(|_| api_error(ErrorCode::CallerUnverified,"binding generation exceeds storage range"))?,request.claim.harness.as_str(),request.claim.native_session.as_str(),request.claim.execution.as_str(),request.claim.target.as_str()],|r|r.get(0)
                 ).map_err(store_error)?;
                 if !exact {
@@ -361,6 +362,14 @@ fn ack_impl(
                 &ObligationRef::CheckIn(seat.clone()),
                 &digest,
             )?;
+            // Any connected top-level binding of the seat may settle (spec §2 ACK); a
+            // disconnected one is refused like any stale-context ACK.
+            if !actor.binding_connected {
+                return Err(api_error(
+                    ErrorCode::CallerUnverified,
+                    "cooperative occupant context changed",
+                ));
+            }
             let mut newly = Vec::new();
             let mut prior = Vec::new();
             for id in &request.messages {
@@ -390,6 +399,7 @@ fn ack_impl(
                 &newly,
                 &observation,
                 actor.binding_generation,
+                &actor.binding_id,
                 "ack",
             )?;
             failpoint!("ack.before_commit", context.failpoint_scope());
@@ -417,6 +427,7 @@ fn settle_pending(
     newly: &[MessageId],
     observation: &str,
     binding_generation: u64,
+    binding: &BindingId,
     event_prefix: &str,
 ) -> Result<(), ApiError> {
     let mut by_thread: BTreeMap<ThreadId, Vec<MessageId>> = BTreeMap::new();
@@ -462,11 +473,11 @@ fn settle_pending(
             )
             .map_err(store_error)?;
         if manifest {
-            tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES (?1,?2,'acked',?3,?4,?2,?5,?6,?7) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',ack_actor_seat_id=excluded.ack_actor_seat_id,ack_generation=excluded.ack_generation,ack_observation=excluded.ack_observation,acked_at=excluded.acked_at WHERE receipt_state.state='pending'",
-                params![id.as_str(),seat.as_str(),receipt.available_at,receipt.deadline_at,binding_generation as i64,observation,decision.utc.0]).map_err(store_error)?;
+            tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES (?1,?2,'acked',?3,?4,?2,?5,?6,?7,?8) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',ack_actor_seat_id=excluded.ack_actor_seat_id,ack_generation=excluded.ack_generation,ack_observation=excluded.ack_observation,acked_at=excluded.acked_at,ack_binding_id=excluded.ack_binding_id WHERE receipt_state.state='pending'",
+                params![id.as_str(),seat.as_str(),receipt.available_at,receipt.deadline_at,binding_generation as i64,observation,decision.utc.0,binding.as_str()]).map_err(store_error)?;
         } else {
-            tx.execute("UPDATE receipts SET state='acked',ack_actor_seat_id=?1,ack_generation=?2,ack_observation=?3,acked_at=?4 WHERE message_id=?5 AND seat_id=?1 AND state='pending'",
-                params![seat.as_str(),binding_generation as i64,observation,decision.utc.0,id.as_str()]).map_err(store_error)?;
+            tx.execute("UPDATE receipts SET state='acked',ack_actor_seat_id=?1,ack_generation=?2,ack_observation=?3,acked_at=?4,ack_binding_id=?6 WHERE message_id=?5 AND seat_id=?1 AND state='pending'",
+                params![seat.as_str(),binding_generation as i64,observation,decision.utc.0,id.as_str(),binding.as_str()]).map_err(store_error)?;
         }
     }
     for thread in by_thread.keys() {

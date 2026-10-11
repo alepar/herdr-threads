@@ -1865,6 +1865,11 @@ pub(crate) struct AccountableActor {
     pub binding_generation: u64,
     pub observed_at_utc: UtcMillis,
     pub provenance: &'static str,
+    /// The acting binding (spec §2): receipts record it as `ack_binding_id`, sends as
+    /// `sender_binding_id`.
+    pub binding_id: crate::protocol::ids::BindingId,
+    /// Whether the acting binding was connected when the decision resolved it.
+    pub binding_connected: bool,
 }
 impl AccountableActor {
     /// The one durable observation JSON for every accountable decision (send,
@@ -1908,7 +1913,7 @@ pub(crate) fn decide_accountable(
             operation.as_str(),
         )?;
     }
-    let (mapping, _binding) = super::seats::decide_cooperative(
+    let (mapping, resolution) = super::seats::decide_cooperative(
         tx,
         at,
         &claim.instance,
@@ -1919,6 +1924,15 @@ pub(crate) fn decide_accountable(
         obligation,
         digest,
     )?;
+    let binding = resolution.binding();
+    // Defence in depth for a binding that resolved to a subagent row (a Hermes registered
+    // child, ht-54r.11): the wire-level check in dispatch only sees the claim.
+    if binding.role == super::bindings::BindingRole::Subagent {
+        return Err(api_error(
+            ErrorCode::SubagentReadOnly,
+            crate::protocol::authority::SUBAGENT_READ_ONLY_DETAIL,
+        ));
+    }
     Ok(AccountableActor {
         harness: claim.harness,
         native_session: claim.native_session.clone(),
@@ -1928,6 +1942,8 @@ pub(crate) fn decide_accountable(
         binding_generation: mapping.generation,
         observed_at_utc: at.utc,
         provenance: claim.harness.cooperative_provenance(),
+        binding_id: binding.binding_id.clone(),
+        binding_connected: binding.liveness == super::bindings::Liveness::Connected,
     })
 }
 

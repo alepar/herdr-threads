@@ -267,6 +267,25 @@ model open work, and summary closure never changes receipt state or installs glo
   call that would enroll, reconnect or reopen a binding without a liveness fingerprint is refused with
   `liveness_fingerprint_required`; this is implemented and tested but enforced only once every client sends
   fingerprints (ht-54r.5 switches the daemon rule). Until then the daemon admits fingerprint-less claims.
+- *Subagent read-only* (ht-54r.20): a subagent claim (the declared subagent role, or any agent id) is
+  refused `subagent_read_only` before dispatch for every accountable command: check-in, handoff, create
+  thread, invite, join, accept, reject, send, ACK, display ACK, mod-delivery ACK, completion of an inbox
+  delivery, leave, topic and name changes, archive and reopen. A claim that resolves to a `subagent`
+  binding row is refused the same way in the deciding transaction. Subagents may read, summarize and
+  advance their own binding's cursor. This is cooperative, on the recognized claim: a Claude shape the
+  hook cannot recognize stays attributed to the parent session (the accepted limit from ht-54r.6) and is
+  not refused.
+- *Receipt settlement by a top-level binding* (ht-54r.20): receipt obligations stay per seat. The first
+  connected top-level binding of the seat to ACK or fully display a message settles the obligation, once;
+  the receipt records that binding as `ack_binding_id` (beside the historical `ack_generation`, which is
+  the mapping generation). A later ACK of an already settled obligation, by any binding, succeeds with no
+  change and the first `ack_binding_id` stays. A disconnected binding's ACK is refused as a stale-context
+  ACK (`caller_unverified`); only a lifecycle check-in reconnects it. Each ordinary send records the acting
+  binding as `messages.sender_binding_id`; service-authored sends leave it empty.
+- *Lineage* (ht-54r.20): a successor copies its predecessor's cursors, then supersedes it, only when the
+  predecessor is a top-level binding of the same seat and harness with the same process fingerprint (pid
+  and start time) as the successor's claim; otherwise the hint is ignored and the successor seeds fresh.
+  Linking an already enrolled successor copies with a maximum, so no cursor moves backwards.
 - *Shared seat*: memberships, invitations and receipts belong to the seat, so any binding's join or leave
   applies to every binding of the seat. Bindings of one seat are not separate participants.
 - *Human to agent* (ht-54r.4): a human-mode seat holds only its human binding. Any agent binding enrolled or
@@ -373,8 +392,8 @@ model open work, and summary closure never changes receipt state or installs glo
 
 | Action | Who |
 |---|---|
-| ACK, accept, reject an ordinary invitation, send, leave, archive, reopen | the seat's current binding (top-level agent or declared human) |
-| display ACK after text inbox output | the current top-level agent binding, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
+| ACK, accept, reject an ordinary invitation, send, leave, archive, reopen | a connected top-level binding of the seat (top-level agent or declared human); never a subagent binding |
+| display ACK after text inbox output | any connected top-level agent binding of the seat, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
 | open a mod delivery channel (`watch`) | the pane's top-level Claude session through its mod, for the current `cooperative_top_level` binding with the matching native session; recorded as `cooperative_mod_channel`; it grants no other row |
 | mod delivery ACK (`watch ack`) | the current top-level Claude binding with a live channel (grace included) for its binding generation, or, on resume, for ids delivered under the immediately previous generation of the same native session; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
 | check in | the pane's top-level agent (hook) or a human via `ht human me init` |
