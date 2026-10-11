@@ -1943,6 +1943,7 @@ fn native_ordinary_offer_after_required_offer_can_be_accepted_after_join() {
         panic!()
     };
     let native_invite = Invite {
+        confirmation: None,
         thread: thread.clone(),
         seat: SeatId::new("s2"),
         deadline_millis: Some(1000),
@@ -3465,6 +3466,7 @@ fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
         )
         .unwrap();
     let first = Invite {
+        confirmation: None,
         thread: thread.clone(),
         seat: SeatId::new("s2"),
         deadline_millis: None,
@@ -3509,6 +3511,7 @@ fn pending_reinvite_keeps_first_deadline_and_new_invites_use_precedence() {
         .unwrap();
     assert_eq!(saved, (120_000, 120_100));
     let again = Invite {
+        confirmation: None,
         deadline_millis: Some(500_000),
         operation: OperationId::new("invite2"),
         ..first
@@ -3645,6 +3648,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         panic!()
     };
     let invitation_request = Invite {
+        confirmation: None,
         thread: thread.clone(),
         seat: SeatId::new("s2"),
         deadline_millis: None,
@@ -3711,6 +3715,7 @@ fn late_accept_in_archived_thread_warns_once_and_leave_keeps_receipts() {
         CommandResult::Accepted(invitation.clone().into())
     );
     let joined_invite = Invite {
+        confirmation: None,
         thread: thread.clone(),
         seat: SeatId::new("s2"),
         deadline_millis: Some(1),
@@ -4718,6 +4723,7 @@ fn inviting_directly_joined_creator_is_truthful_replayable_noop() {
         panic!()
     };
     let request = Invite {
+        confirmation: None,
         thread: thread.clone(),
         seat: SeatId::new("s1"),
         deadline_millis: Some(42),
@@ -8845,6 +8851,7 @@ fn rejection_offer_with_recipient_harness(
         panic!()
     };
     let offer = Invite {
+        confirmation: None,
         thread: thread.clone(),
         seat: SeatId::new("s2"),
         deadline_millis: Some(10),
@@ -9610,6 +9617,7 @@ fn invitation_rejection_accept_races_have_one_winner_and_reinvite_is_fresh() {
                 ErrorCode::Conflict
             );
             let offer = Invite {
+                confirmation: None,
                 thread: thread.clone(),
                 seat: SeatId::new("s2"),
                 deadline_millis: Some(50),
@@ -9898,6 +9906,7 @@ fn invitation_rejection_restores_left_only_from_recorded_leave_evidence() {
             conn.execute("UPDATE membership_intervals SET left_seq=left_seq+1000 WHERE thread_id=?1 AND seat_id='s2'",[thread.as_str()]).unwrap();
         }
         let offer = Invite {
+            confirmation: None,
             thread: thread.clone(),
             seat: SeatId::new("s2"),
             deadline_millis: Some(50),
@@ -10198,4 +10207,82 @@ fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() 
             let _ = std::fs::remove_file(path);
         }
     }
+}
+
+#[test]
+fn invitation_confirmation_refuses_wire_semantics_before_lifecycle_activation() {
+    let (context, mut conn, path, _) = bound_fixture(100);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let create = CreateThread {
+        name: None,
+        topic: "topic".into(),
+        goal: "goal".into(),
+        operation: OperationId::new("create-confirmation"),
+        claim: claim("s1"),
+    };
+    let digest = cooperative_payload_hash("create_thread", &create).unwrap();
+    let CommandResult::ThreadCreated(thread) = create_thread(
+        &context,
+        &mut conn,
+        &budget,
+        &create,
+        permit(
+            "s1",
+            "create-confirmation",
+            ObligationRef::CheckIn(SeatId::new("s1")),
+            digest,
+            100,
+        ),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let before = conn.total_changes();
+    for confirmation in [
+        crate::protocol::commands::InvitationConfirmation::Lazy,
+        crate::protocol::commands::InvitationConfirmation::RequireAck,
+    ] {
+        let command = Invite {
+            confirmation: Some(confirmation),
+            thread: thread.clone(),
+            seat: SeatId::new("s2"),
+            deadline_millis: None,
+            operation: OperationId::new(format!("invite-{confirmation:?}")),
+            claim: claim("s1"),
+        };
+        let digest = cooperative_payload_hash("invite", &command).unwrap();
+        let error = invite(
+            &context,
+            &mut conn,
+            &budget,
+            &command,
+            permit(
+                "s1",
+                command.operation.as_str(),
+                ObligationRef::Control(thread.clone()),
+                digest,
+                100,
+            ),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+    }
+    assert_eq!(
+        conn.total_changes(),
+        before,
+        "unsupported semantics must not write even operation results"
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM invitations", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    drop(conn);
+    drop(context);
+    let _ = std::fs::remove_file(path);
 }

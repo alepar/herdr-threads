@@ -1658,3 +1658,44 @@ fn probe_thread_join() {
         ErrorCode::NotFound
     );
 }
+
+#[test]
+fn invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_requests() {
+    let legacy = r#"{"kind":"invite","args":{"thread":"t","seat":"s","deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}}"#;
+    let original: serde_json::Value = serde_json::from_str(legacy).unwrap();
+    let historical: Command = serde_json::from_str(legacy).unwrap();
+    assert_eq!(serde_json::to_string(&historical).unwrap(), legacy);
+    let digest = crate::store::schema::canonical_digest(&historical).unwrap();
+    let digest_hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        digest_hex,
+        "828be585cb68fe75bc8decd1a9d5e23f5f8c5e2da738fb9bb4bb175e8430d3ad"
+    );
+    for mode in ["lazy", "require_ack"] {
+        let mut modern = original.clone();
+        modern["args"]["confirmation"] = serde_json::json!(mode);
+        let command: Command = serde_json::from_value(modern.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&command).unwrap(), modern);
+        assert_ne!(
+            crate::store::schema::canonical_digest(&command).unwrap(),
+            crate::store::schema::canonical_digest(&historical).unwrap()
+        );
+        assert!(command.validate().is_ok());
+        if mode == "require_ack" {
+            modern["args"]["deadline_millis"] = serde_json::json!(17);
+            let timed: Command = serde_json::from_value(modern.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&timed).unwrap(), modern);
+            assert!(timed.validate().is_ok());
+            modern["args"]["claim"]["harness"] = serde_json::json!("human");
+            let human: Command = serde_json::from_value(modern).unwrap();
+            assert!(human.validate().is_err());
+        } else {
+            modern["args"]["deadline_millis"] = serde_json::json!(10);
+            let conflict: Command = serde_json::from_value(modern).unwrap();
+            assert!(conflict.validate().is_err());
+        }
+    }
+}

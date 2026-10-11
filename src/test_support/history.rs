@@ -604,6 +604,7 @@ pub fn write_pending_invitations(
             }
         };
         let invite = Invite {
+            confirmation: None,
             thread: thread.clone(),
             seat: SeatId::new(invitee),
             deadline_millis: Some(deadline_millis),

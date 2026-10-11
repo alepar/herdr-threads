@@ -1144,6 +1144,7 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
             .unwrap()
     );
     let invite = Command::Invite(herdr_threads::protocol::commands::Invite {
+        confirmation: None,
         thread: completed.retained.thread.clone(),
         seat: completed.retained.recipient.clone(),
         deadline_millis: None,
@@ -1438,6 +1439,7 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
                 .unwrap(),
         );
     let invite = Command::Invite(herdr_threads::protocol::commands::Invite {
+        confirmation: None,
         thread: thread.clone(),
         seat: attachment.resolved_seat.clone(),
         deadline_millis: None,

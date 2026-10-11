@@ -1524,6 +1524,14 @@ pub fn invite(
     mut permit: MutationPermit,
     installation_default_ms: Option<u64>,
 ) -> Result<CommandResult, ApiError> {
+    // Activation boundary: replace this refusal only when the canonical lifecycle
+    // honors confirmation and advertises INVITATION_CONFIRMATION_V1.
+    if command.confirmation.is_some() {
+        return Err(api_error(
+            ErrorCode::Unsupported,
+            "invitation confirmation lifecycle is not active",
+        ));
+    }
     let duration = command
         .deadline_millis
         .or(installation_default_ms)

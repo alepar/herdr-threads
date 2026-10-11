@@ -367,6 +367,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
     };
     let invitation = w.call(
         SemanticMutation::Invite {
+            confirmation: None,
             thread: thread.clone(),
             seat: recipient,
             deadline_millis: None,

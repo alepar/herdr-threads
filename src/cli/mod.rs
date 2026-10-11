@@ -2746,6 +2746,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 require_rejection_capability(client, clock)?;
             }
             let semantic = SemanticMutation::freeze(cooperative_semantic(mutation)?, claim)?;
+            require_invitation_confirmation_capability(client, clock, &semantic)?;
             if semantic.is_lazy_send() {
                 require_lazy_send_capability(client, clock)?;
             }
@@ -2842,6 +2843,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 if pending.semantic.kind() == crate::protocol::results::IntentKind::Reject {
                     require_rejection_capability(client, clock)?;
                 }
+                require_invitation_confirmation_capability(client, clock, &pending.semantic)?;
                 if pending.semantic.is_lazy_send() {
                     require_lazy_send_capability(client, clock)?;
                 }
@@ -2897,6 +2899,7 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
             deadline_millis,
             operator: false,
         } => SemanticMutation::Invite {
+            confirmation: None,
             thread,
             seat,
             deadline_millis,
@@ -2992,6 +2995,23 @@ impl LocalClient for SelectedSocketClient<'_> {
         }
         self.client.call_with_output(command, output, budget)
     }
+}
+
+/// Explicit invitation policies must be understood before intent creation/replay.
+fn require_invitation_confirmation_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    semantic: &SemanticMutation,
+) -> Result<(), RunError> {
+    if semantic.has_invitation_confirmation() {
+        require_mutation_capability(
+            client,
+            clock,
+            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
+            "requesting invitation confirmation policy",
+        )?;
+    }
+    Ok(())
 }
 
 /// Older daemons are refused before any rejection intent is submitted.

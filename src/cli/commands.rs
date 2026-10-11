@@ -399,6 +399,7 @@ impl MutationSpec {
                 deadline_millis,
                 operator: false,
             } => WireCommand::Invite(Invite {
+                confirmation: None,
                 thread,
                 seat,
                 deadline_millis,

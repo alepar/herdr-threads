@@ -4593,6 +4593,7 @@ mod main539_composition {
     fn joined_result_is_refused_by_handoff_invitation_stage_and_durable_retry() {
         let f = Fixture::new(false);
         let invite = SemanticMutation::Invite {
+            confirmation: None,
             thread: ThreadId::new("t"),
             seat: SeatId::new("recipient"),
             deadline_millis: None,
@@ -5163,4 +5164,98 @@ fn frozen_human_ordinary_retry_pending_canonical_refuses() {
             .any(|command| matches!(command, Command::CreateThread(_))),
         "refusal must come from canonical replay, after frozen dispatch"
     );
+}
+
+#[test]
+fn invitation_confirmation_saved_intent_retains_explicit_mode_and_legacy_bytes() {
+    let legacy = r#"{"kind":"invite","thread":"t","seat":"s","deadline_millis":null}"#;
+    let semantic: SemanticMutation = serde_json::from_str(legacy).unwrap();
+    assert_eq!(serde_json::to_string(&semantic).unwrap(), legacy);
+    for mode in ["lazy", "require_ack"] {
+        let mut modern: serde_json::Value = serde_json::from_str(legacy).unwrap();
+        modern["confirmation"] = serde_json::json!(mode);
+        let semantic: SemanticMutation = serde_json::from_value(modern.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&semantic).unwrap(), modern);
+        let wire = semantic
+            .to_command(OperationId::new("op"), Some(claim()))
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(wire).unwrap()["args"]["confirmation"],
+            mode
+        );
+    }
+}
+
+#[test]
+fn invitation_confirmation_capability_refuses_modern_and_bypasses_legacy() {
+    use crate::protocol::{
+        results::{ApiError, CapabilityList},
+        time::{CallBudget, Clock, MonoInstant, UtcMillis},
+    };
+    struct Time;
+    impl Clock for Time {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(0)
+        }
+    }
+    struct Client {
+        supported: bool,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl crate::ports::LocalClient for Client {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            assert_eq!(
+                command,
+                Command::Capabilities,
+                "negotiation must not submit a mutation"
+            );
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(CommandResult::Capabilities(CapabilityList {
+                capabilities: if self.supported {
+                    vec![crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.into()]
+                } else {
+                    vec![]
+                },
+            }))
+        }
+    }
+    let legacy: SemanticMutation =
+        serde_json::from_str(r#"{"kind":"invite","thread":"t","seat":"s","deadline_millis":null}"#)
+            .unwrap();
+    for supported in [false, true] {
+        let client = Client {
+            supported,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        super::require_invitation_confirmation_capability(&client, &Time, &legacy).unwrap();
+        assert_eq!(
+            client.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "old intents require no new capability"
+        );
+        for mode in ["lazy", "require_ack"] {
+            let modern: SemanticMutation = serde_json::from_value(serde_json::json!({"kind":"invite","thread":"t","seat":"s","deadline_millis":null,"confirmation":mode})).unwrap();
+            assert_eq!(
+                super::require_invitation_confirmation_capability(&client, &Time, &modern).is_ok(),
+                supported
+            );
+            let frozen = SemanticMutation::freeze(modern, claim()).unwrap();
+            assert_eq!(
+                super::require_invitation_confirmation_capability(&client, &Time, &frozen).is_ok(),
+                supported
+            );
+        }
+        assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+    }
 }

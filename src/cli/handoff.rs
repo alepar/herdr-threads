@@ -222,6 +222,7 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
             }
             call(
                 SemanticMutation::Invite {
+                    confirmation: None,
                     thread: thread.clone(),
                     seat: plan.recipient.clone(),
                     deadline_millis: None,

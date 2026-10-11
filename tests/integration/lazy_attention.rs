@@ -736,6 +736,7 @@ fn lazy_attention_mixed_ordinary_positive_controls() {
     );
     f.member("outsider", "resolved", "left", Harness::Codex);
     f.mutate(PermitMutation::Invite(Invite {
+        confirmation: None,
         thread: ThreadId::new("t"),
         seat: SeatId::new("outsider"),
         deadline_millis: None,
