@@ -147,6 +147,8 @@ fn fixture(name: &str) -> (TestIsolation, StoreContext, Connection) {
     )
     .unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','b',1,1)", []).unwrap();
+    // A binding open while its seat joins holds a cursor for the thread (join seeds it).
+    conn.execute("INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',0 FROM occupant_bindings WHERE seat_id='b'", []).unwrap();
     (iso, context, conn)
 }
 fn send(

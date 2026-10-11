@@ -156,9 +156,19 @@ fn store(fx: &Fx) -> crate::store::SqliteStore {
 }
 
 fn send(fx: &mut Fx, body: &str) -> MessageId {
+    send_mode(fx, body, crate::protocol::commands::DeliveryMode::Ordinary)
+}
+fn send_lazy(fx: &mut Fx, body: &str) -> MessageId {
+    send_mode(fx, body, crate::protocol::commands::DeliveryMode::Lazy)
+}
+fn send_mode(
+    fx: &mut Fx,
+    body: &str,
+    delivery_mode: crate::protocol::commands::DeliveryMode,
+) -> MessageId {
     fx.sends += 1;
     let request = SendMessage {
-        delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+        delivery_mode,
         user_intent: None,
         thread: ThreadId::new("t"),
         body: body.into(),
@@ -219,6 +229,8 @@ fn send(fx: &mut Fx, body: &str) -> MessageId {
 enum Row {
     /// A whole ordinary message and whether the caller may ACK it by displaying it.
     Msg(String, bool),
+    /// A lazy (passive) message; it carries no ACK.
+    Lazy(String),
     Invitation(String),
 }
 
@@ -253,6 +265,9 @@ fn page(fx: &Fx, claim: Option<&CallerClaim>) -> Vec<Row> {
                 message.as_str().to_owned(),
                 ack_candidate.is_some(),
             )),
+            InboxBatchV2Item::LazyMessage { message, .. } => {
+                Some(Row::Lazy(message.as_str().to_owned()))
+            }
             InboxBatchV2Item::Invitation { thread, .. } => {
                 Some(Row::Invitation(thread.as_str().to_owned()))
             }
@@ -694,4 +709,77 @@ fn binding_of_in(conn: &Connection, claim: &CallerClaim) -> BindingId {
         .unwrap()
         .unwrap()
         .binding_id
+}
+
+/// Spec §2: every binding sees its own full lazy stream; one binding's display never hides a lazy
+/// message from another, and a subagent keeps its own cursor.
+#[test]
+fn bound_lazy_stream_is_per_binding() {
+    let mut fx = fx("bi-lazy-per-binding");
+    let parent = binding_of(&fx, &claim_b1());
+    insert_binding(
+        &fx.conn,
+        "b",
+        "nb1",
+        EXEC_B1,
+        Some((parent.as_str(), "agent-1")),
+    );
+    let sub = claim("b", "nb1", EXEC_B1, Some("agent-1"));
+    let m = send_lazy(&mut fx, "passive");
+    let shows = |fx: &Fx, c: &CallerClaim| {
+        page(fx, Some(c))
+            .iter()
+            .any(|row| matches!(row, Row::Lazy(id) if id == m.as_str()))
+    };
+    assert!(shows(&fx, &claim_b1()), "nb1 displays the lazy message");
+    advance(&fx, &claim_b1(), "lazy-adv-1", &[&m]);
+    assert!(
+        !shows(&fx, &claim_b1()),
+        "nb1 is not shown it again while nb2 is still unread"
+    );
+    assert!(shows(&fx, &claim_b2()), "nb2 still sees it");
+    advance(&fx, &claim_b2(), "lazy-adv-2", &[&m]);
+    assert!(shows(&fx, &sub), "the subagent's own cursor is short of it");
+    advance(&fx, &sub, "lazy-adv-sub", &[&m]);
+    assert!(!shows(&fx, &sub), "the subagent's cursor passed it");
+}
+
+/// A binding enrolled after its seat left a thread owns no cursor row for it; a missing row must
+/// not read as "everything unread".
+#[test]
+fn binding_enrolled_after_leave_gets_no_old_lazy_history() {
+    let mut fx = fx("bi-lazy-left");
+    let m = send_lazy(&mut fx, "old");
+    fx.conn
+        .execute(
+            "UPDATE memberships SET state='left' WHERE thread_id='t' AND seat_id='b'",
+            [],
+        )
+        .unwrap();
+    insert_binding(&fx.conn, "b", "nb3", EXEC_B3, None);
+    let nb3 = claim("b", "nb3", EXEC_B3, None);
+    assert!(
+        !page(&fx, Some(&nb3))
+            .iter()
+            .any(|row| matches!(row, Row::Lazy(id) if id == m.as_str())),
+        "a left thread's lazy history is not unread for a new binding"
+    );
+    // The seat form is "some connected top-level binding finds it unread": nb1 and nb2 keep
+    // their cursors from before the leave, so the addressed message stays theirs.
+    assert_eq!(
+        crate::store::lazy_delivery::seat_lazy_pending(&fx.conn, &SeatId::new("b"), 100)
+            .unwrap()
+            .0,
+        1
+    );
+    assert!(
+        page(&fx, Some(&claim_b1()))
+            .iter()
+            .any(|row| matches!(row, Row::Lazy(id) if id == m.as_str())),
+        "leaving does not erase already addressed delivery"
+    );
+    assert!(
+        !crate::store::lazy_delivery::binding_has_unread_lazy(&fx.conn, &binding_of(&fx, &nb3))
+            .unwrap()
+    );
 }

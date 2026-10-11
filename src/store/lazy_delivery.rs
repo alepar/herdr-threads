@@ -38,12 +38,34 @@ pub struct PendingPage {
     pub has_more: bool,
 }
 
+/// The one per-binding lazy-unread predicate over aliases `b` (the `occupant_bindings` row), `r`
+/// (the lazy recipient row) and `m` (its message). A lazy message is unread for a binding when
+/// its cursor is short of the message. A missing cursor row reads as 0, which would make a
+/// thread's whole history unread for a binding enrolled after its seat left (or never joined) it,
+/// so a binding WITHOUT a cursor row for the thread also needs the seat to have it joined (the
+/// lazy twin of `read_cursors::UNREAD_EXTRA`). A binding that holds a cursor row keeps its
+/// addressed rows after the seat leaves, as the lazy spec requires ("Leaving does not erase
+/// already addressed delivery"). The legacy branch (rows carried pending from before V31,
+/// delivered to top-level bindings until displayed) is deliberately not membership-gated, so no
+/// pre-upgrade pending lazy row disappears.
+macro_rules! binding_lazy_unread_sql {
+    () => {
+        "((m.sequence>COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),0) AND (EXISTS(SELECT 1 FROM binding_cursors c2 WHERE c2.binding_id=b.binding_id AND c2.thread_id=r.thread_id) OR EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=r.thread_id AND mb.seat_id=r.seat_id AND mb.state='joined'))) OR (r.legacy_pending=1 AND b.role='top_level'))"
+    };
+}
+pub(crate) use binding_lazy_unread_sql;
+
 /// A lazy recipient row `r` (with its message `m`, possibly absent) is unread at seat level when
 /// it is legacy pending (carried from before V31) or some connected top-level binding of the seat
-/// has a cursor short of the message. Post-V31 delivery never reads `lazy_recipients.state`.
+/// finds it unread (`binding_lazy_unread_sql!`). Post-V31 delivery never reads
+/// `lazy_recipients.state`.
 macro_rules! seat_unread_sql {
     () => {
-        "(r.legacy_pending=1 OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.ended_at IS NULL AND b.role='top_level' AND b.liveness='connected' AND m.sequence>COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),0)))"
+        concat!(
+            "(r.legacy_pending=1 OR EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=r.seat_id AND b.ended_at IS NULL AND b.role='top_level' AND b.liveness='connected' AND ",
+            $crate::store::lazy_delivery::binding_lazy_unread_sql!(),
+            "))"
+        )
     };
 }
 pub(crate) use seat_unread_sql;
@@ -52,6 +74,12 @@ pub(crate) use seat_unread_sql;
 pub const PENDING_CANDIDATES_SQL: &str = concat!(
     "SELECT r.ordinal,r.preparation_id,r.message_id,r.thread_id,r.seat_id FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND (m.id IS NULL OR ",
     seat_unread_sql!(),
+    ") AND r.ordinal>?2 AND r.ordinal<=?3 ORDER BY r.ordinal LIMIT ?4"
+);
+/// The binding-keyed twin of `PENDING_CANDIDATES_SQL` (`?5` is the reading binding).
+pub const BINDING_PENDING_CANDIDATES_SQL: &str = concat!(
+    "SELECT r.ordinal,r.preparation_id,r.message_id,r.thread_id,r.seat_id FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id JOIN occupant_bindings b ON b.binding_id=?5 AND b.seat_id=r.seat_id WHERE r.seat_id=?1 AND (m.id IS NULL OR ",
+    binding_lazy_unread_sql!(),
     ") AND r.ordinal>?2 AND r.ordinal<=?3 ORDER BY r.ordinal LIMIT ?4"
 );
 pub const ADDRESSED_SQL: &str = "SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?3)";
@@ -82,10 +110,13 @@ pub fn recorded_mode(
     .transpose()
 }
 
+/// With a `binding`, the high water counts only rows unread for that binding (staged rows still
+/// count); without one, the seat form.
 pub fn capture_high_water(
     conn: &Connection,
     instance: &str,
     seat: &SeatId,
+    binding: Option<&BindingId>,
 ) -> Result<HighWater, ApiError> {
     let publication_decision = conn
         .query_row(
@@ -107,17 +138,30 @@ pub fn capture_high_water(
             "lazy recipient instance mismatch",
         ));
     }
-    let recipient_ordinal = conn
-        .query_row(
-            concat!(
-                "SELECT coalesce(max(r.ordinal),0) FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND (m.id IS NULL OR ",
-                seat_unread_sql!(),
-                ")"
-            ),
-            [seat.as_str()],
-            |r| r.get(0),
-        )
-        .map_err(store_error)?;
+    let recipient_ordinal = match binding {
+        None => conn
+            .query_row(
+                concat!(
+                    "SELECT coalesce(max(r.ordinal),0) FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND (m.id IS NULL OR ",
+                    seat_unread_sql!(),
+                    ")"
+                ),
+                [seat.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?,
+        Some(binding) => conn
+            .query_row(
+                concat!(
+                    "SELECT coalesce(max(r.ordinal),0) FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id JOIN occupant_bindings b ON b.binding_id=?2 AND b.seat_id=r.seat_id WHERE r.seat_id=?1 AND (m.id IS NULL OR ",
+                    binding_lazy_unread_sql!(),
+                    ")"
+                ),
+                params![seat.as_str(), binding.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?,
+    };
     Ok(HighWater {
         recipient_ordinal,
         publication_decision,
@@ -134,11 +178,13 @@ pub fn publication_eligible(
 }
 
 /// Seek candidates first, then test publication. Excluded rows consume work and
-/// advance the cursor, even when a page returns no visible recipient.
+/// advance the cursor, even when a page returns no visible recipient. With a `binding` the
+/// candidates are that binding's own unread lazy rows; without one, the seat form.
 pub fn pending_page(
     conn: &Connection,
     instance: &str,
     seat: &SeatId,
+    binding: Option<&BindingId>,
     after: i64,
     high_water: HighWater,
     work_limit: usize,
@@ -163,28 +209,48 @@ pub fn pending_page(
             "lazy recipient instance mismatch",
         ));
     }
-    let mut stmt = conn.prepare(PENDING_CANDIDATES_SQL).map_err(store_error)?;
-    let candidates = stmt
-        .query_map(
-            params![
-                seat.as_str(),
-                after,
-                high_water.recipient_ordinal,
-                work_limit as i64
-            ],
-            |r| {
-                Ok(Recipient {
-                    ordinal: r.get(0)?,
-                    preparation_id: r.get(1)?,
-                    message: MessageId::new(r.get::<_, String>(2)?),
-                    thread: ThreadId::new(r.get::<_, String>(3)?),
-                    seat: SeatId::new(r.get::<_, String>(4)?),
-                })
-            },
-        )
-        .map_err(store_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(store_error)?;
+    let read_row = |r: &rusqlite::Row<'_>| {
+        Ok(Recipient {
+            ordinal: r.get(0)?,
+            preparation_id: r.get(1)?,
+            message: MessageId::new(r.get::<_, String>(2)?),
+            thread: ThreadId::new(r.get::<_, String>(3)?),
+            seat: SeatId::new(r.get::<_, String>(4)?),
+        })
+    };
+    let candidates = match binding {
+        None => conn
+            .prepare(PENDING_CANDIDATES_SQL)
+            .map_err(store_error)?
+            .query_map(
+                params![
+                    seat.as_str(),
+                    after,
+                    high_water.recipient_ordinal,
+                    work_limit as i64
+                ],
+                read_row,
+            )
+            .map_err(store_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(store_error)?,
+        Some(binding) => conn
+            .prepare(BINDING_PENDING_CANDIDATES_SQL)
+            .map_err(store_error)?
+            .query_map(
+                params![
+                    seat.as_str(),
+                    after,
+                    high_water.recipient_ordinal,
+                    work_limit as i64,
+                    binding.as_str()
+                ],
+                read_row,
+            )
+            .map_err(store_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(store_error)?,
+    };
     let inspected = candidates.len();
     let last_inspected = candidates.last().map_or(after, |r| r.ordinal);
     let mut recipients = Vec::new();
@@ -259,7 +325,11 @@ pub fn lazy_completion_state(
     let pending = match binding {
         Some(binding) => conn
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN lazy_recipients r ON r.seat_id=b.seat_id JOIN messages m ON m.id=r.message_id WHERE b.binding_id=?1 AND r.ordinal=?2 AND (r.legacy_pending=1 AND b.role='top_level' OR m.sequence>COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),0)))",
+                concat!(
+                    "SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN lazy_recipients r ON r.seat_id=b.seat_id JOIN messages m ON m.id=r.message_id WHERE b.binding_id=?1 AND r.ordinal=?2 AND ",
+                    binding_lazy_unread_sql!(),
+                    ")"
+                ),
                 params![binding.as_str(), ordinal],
                 |r| r.get::<_, bool>(0),
             )
@@ -282,9 +352,9 @@ pub struct LazyUnread {
     pub sequence: u64,
 }
 
-/// A lazy message is unread for a binding until its cursor passes the message; a legacy pending
-/// row (carried from before V31) is also unread for every top-level binding until displayed.
-const BINDING_UNREAD_WHERE: &str = "b.binding_id=?1 AND (m.sequence>COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),0) OR (r.legacy_pending=1 AND b.role='top_level'))";
+/// A lazy message is unread for a binding by `binding_lazy_unread_sql!`: its cursor is short of
+/// it and the seat has the thread joined, or it is a legacy pending row and the binding is top-level.
+const BINDING_UNREAD_WHERE: &str = concat!("b.binding_id=?1 AND ", binding_lazy_unread_sql!());
 const BINDING_UNREAD_FROM: &str = "FROM occupant_bindings b JOIN lazy_recipients r ON r.seat_id=b.seat_id JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=r.message_id AND m.delivery_mode='lazy'";
 
 pub fn binding_lazy_unread(

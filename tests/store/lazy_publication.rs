@@ -199,8 +199,9 @@ fn lazy_publication_creates_no_receipt_warning_or_attention() {
         &conn,
         "i",
         &seat,
+        None,
         0,
-        lazy_delivery::capture_high_water(&conn, "i", &seat).unwrap(),
+        lazy_delivery::capture_high_water(&conn, "i", &seat, None).unwrap(),
         16,
     )
     .unwrap();
@@ -228,8 +229,9 @@ fn lazy_publication_creates_no_receipt_warning_or_attention() {
         &conn,
         "i",
         &seat,
+        None,
         0,
-        lazy_delivery::capture_high_water(&conn, "i", &seat).unwrap(),
+        lazy_delivery::capture_high_water(&conn, "i", &seat, None).unwrap(),
         16,
     )
     .unwrap();

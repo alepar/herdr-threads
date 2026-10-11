@@ -88,6 +88,8 @@ impl Fixture {
             .unwrap();
         if membership == "joined" {
             self.db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t',?1,1,1)",[seat]).unwrap();
+            // A binding open while its seat joins holds a cursor for the thread (join seeds it).
+            self.db.execute("INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',0 FROM occupant_bindings WHERE seat_id=?1",[seat]).unwrap();
         }
     }
     fn claim(&self, seat: &str) -> CallerClaim {

@@ -6234,7 +6234,8 @@ mod inbox_v2 {
         seat: &SeatId,
         reader: &Reader,
     ) -> Result<State, ApiError> {
-        let high = super::super::lazy_delivery::capture_high_water(db, instance, seat)?;
+        let high =
+            super::super::lazy_delivery::capture_high_water(db, instance, seat, bound(reader))?;
         let (generation, execution) =
             identity(db, seat, reader)?.map_or((None, None), |(g, e)| (Some(g), Some(e)));
         let max = |table: &str| -> Result<i64, ApiError> {
@@ -6521,6 +6522,19 @@ mod inbox_v2 {
                         params![seat.as_str(), body.message.as_str()],
                         |r| r.get(0),
                     ).map_err(store_error)?;
+                    // The membership half of the lazy predicate: a binding with no cursor row for
+                    // the thread (enrolled after the seat left it) gets no content from a thread
+                    // the seat no longer has joined.
+                    if let Some(binding) = reading {
+                        let visible: bool = db.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM messages m WHERE m.id=?2 AND (EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=?3 AND c.thread_id=m.thread_id) OR EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=m.thread_id AND mb.seat_id=?1 AND mb.state='joined')))",
+                            params![seat.as_str(), body.message.as_str(), binding.as_str()],
+                            |r| r.get(0),
+                        ).map_err(store_error)?;
+                        if !visible {
+                            return Err(invalid("continued body is not captured unread content"));
+                        }
+                    }
                     let item = message(db, body.message.as_str(), true, false, state)?;
                     state.lazy_after_ordinal = ordinal as u64;
                     return Ok((item, 1));
@@ -6529,6 +6543,7 @@ mod inbox_v2 {
                     db,
                     instance,
                     seat,
+                    reading,
                     state.lazy_after_ordinal as i64,
                     super::super::lazy_delivery::HighWater {
                         recipient_ordinal: state.lazy_high_water_ordinal as i64,

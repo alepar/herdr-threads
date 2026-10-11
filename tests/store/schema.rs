@@ -6734,8 +6734,8 @@ fn upgrade_from_v28_with_pending_lazy_and_catch_up_mail_delivers_exactly_once() 
             .collect()
     };
     let seat_page = |db: &Connection| -> Vec<MessageId> {
-        let high = lazy_delivery::capture_high_water(db, "i", &seat).unwrap();
-        lazy_delivery::pending_page(db, "i", &seat, 0, high, 100)
+        let high = lazy_delivery::capture_high_water(db, "i", &seat, None).unwrap();
+        lazy_delivery::pending_page(db, "i", &seat, None, 0, high, 100)
             .unwrap()
             .recipients
             .into_iter()
