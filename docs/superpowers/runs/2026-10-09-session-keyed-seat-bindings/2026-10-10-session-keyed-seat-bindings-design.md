@@ -153,11 +153,14 @@ If the nearest harness's session variable is missing, the call is refused (decis
 - These refusals carry stable error codes and name the missing variable or harness requirement.
 
 **The daemon decides (A2).** It matches the claim to a binding of the pane's seat:
-- an existing binding is touched. Only an enrollment or a lifecycle check-in (re)connects a
-  binding and applies the same-PID supersede rule (§3). A plain touch from a disconnected
-  binding is served as that binding (attribution and cursor) but leaves its liveness unchanged.
-  This keeps a stale caller from flapping, for example a background process that still carries a
-  pre-`/clear` session id;
+- an existing binding is touched. A binding (re)connects on enrollment, on a lifecycle check-in,
+  or on a plain call carrying its fingerprint after it was disconnected because its process
+  exited or by migration (re-adoption), unless a connected lifecycle-claimed binding already
+  holds that process. A binding disconnected as superseded, by an end event, by seat retirement
+  or unresolve stays disconnected on a plain call: the call is served as that binding
+  (attribution and cursor), and its liveness is unchanged, so a stale caller (for example a
+  background process still carrying a pre-`/clear` session id) never flaps. Only an enrollment
+  or a lifecycle check-in applies the same-PID supersede rule (§3);
 - an unknown session is enrolled (§2);
 - a subagent claim attaches to its parent binding.
 
@@ -259,8 +262,13 @@ recognize are the accepted limit in §1.
 
 ## §3 Liveness, wake, delivery channel and cleanup
 
-**Becoming connected:** on a lifecycle check-in, or on any call the binding makes. The call
-records or refreshes its fingerprint.
+**Becoming connected:** on enrollment, on a lifecycle check-in, or on a plain call carrying its
+fingerprint after it was disconnected because its process exited or by migration (re-adoption),
+unless a connected lifecycle-claimed binding already holds that process. A binding disconnected
+as superseded, by an end event, by seat retirement or unresolve stays disconnected on a plain
+call: the call is served as that binding (attribution and cursor), and its liveness is
+unchanged, so a stale caller (for example a background process still carrying a pre-`/clear`
+session id) never flaps. The call records or refreshes its fingerprint.
 
 **Becoming disconnected** (never deleted):
 - **The process exited.** The daemon re-checks fingerprints of connected bindings on a timer and

@@ -2107,10 +2107,11 @@ fn hermes_child_start_registers_the_child_session_and_its_cli_claim_is_read_only
     );
 }
 
-/// Kills: a Hermes child's CLI call after `subagent_stop` that leaves the child disconnected, or
-/// that reconnects it as a top-level binding or disturbs the parent (ht-54r.81, spec 3).
+/// Kills: a Hermes child's CLI call after `subagent_stop` that reconnects the child (a plain
+/// call never reconnects an end-event binding, ht-54r.87), enrolls a new top-level binding for it
+/// or disturbs the parent (ht-54r.81, spec 3).
 #[test]
-fn hermes_registered_child_call_after_subagent_stop_reconnects_it() {
+fn hermes_registered_child_call_after_subagent_stop_stays_disconnected() {
     use crate::protocol::commands::{
         AdvanceCursors,
         BindingEventKind::{SubagentStart, SubagentStop},
@@ -2157,15 +2158,28 @@ fn hermes_registered_child_call_after_subagent_stop_reconnects_it() {
         states[1].1, "subagent",
         "still the read-only subagent binding"
     );
-    assert_eq!(states[1].2, "connected", "reconnected by its own call");
-    assert_eq!(states[1].3, None);
+    assert_eq!(states[1].2, "disconnected", "the harness declared it over");
+    assert_eq!(states[1].3.as_deref(), Some("liveness_end_event"));
     assert_eq!(states[0].2, "connected", "the parent is untouched");
 }
 
-/// Kills: a Hermes child's CLI call that arrives before `subagent_start` enrolls a top-level
-/// binding with the parent's process fingerprint and supersedes the parent (ht-54r.79).
-#[test]
-fn hermes_child_cli_call_before_subagent_start_leaves_the_parent_connected() {
+struct AliveTable;
+impl crate::ports::ProcessInfo for AliveTable {
+    fn process(&self, pid: u32) -> Option<crate::ports::ProcessRecord> {
+        let fingerprint = crate::protocol::authority::LivenessFingerprint::TEST;
+        (pid == fingerprint.pid).then(|| crate::ports::ProcessRecord {
+            pid,
+            parent: None,
+            start: fingerprint.start,
+            argv: Vec::new(),
+        })
+    }
+}
+
+/// One run of the early-child scenario: the parent is enrolled by a lifecycle check-in
+/// (`parent_lifecycle`) or by a plain `current` claim, then the child's plain call enrolls a
+/// stray top-level row, then `subagent_start` registers the child.
+fn hermes_child_early_call_then_subagent_start(parent_lifecycle: bool) {
     use crate::protocol::commands::{AdvanceCursors, BindingEventKind::SubagentStart};
     let (service, db) = fixture();
     let peer = PeerIdentity::from_kernel(501);
@@ -2174,7 +2188,19 @@ fn hermes_child_cli_call_before_subagent_start_leaves_the_parent_connected() {
         native_session: NativeSessionId::new("hermes-parent"),
         ..claim()
     });
-    checked(&service, lifecycle(parent.clone(), "parent-check-in"));
+    if parent_lifecycle {
+        checked(&service, lifecycle(parent.clone(), "parent-check-in"));
+    } else {
+        checked(
+            &service,
+            Command::CheckIn(CheckIn {
+                lineage_parent: None,
+                mode: CheckInMode::Current,
+                claim: parent.clone(),
+                operation: OperationId::new("parent-current"),
+            }),
+        );
+    }
     // The child's plain call, under its own session and the parent's fingerprint, before any
     // `subagent_start` registered that session.
     let child_cli = CallerClaim {
@@ -2182,17 +2208,20 @@ fn hermes_child_cli_call_before_subagent_start_leaves_the_parent_connected() {
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000002"),
         ..parent.clone()
     };
-    service
-        .handle(
-            Command::AdvanceCursors(AdvanceCursors {
-                claim: child_cli.clone(),
-                operation: OperationId::new("child-early"),
-                displayed: vec![],
-            }),
-            peer,
-            &budget(),
-        )
-        .unwrap();
+    let advance = |operation: &str| {
+        service
+            .handle(
+                Command::AdvanceCursors(AdvanceCursors {
+                    claim: child_cli.clone(),
+                    operation: OperationId::new(operation),
+                    displayed: vec![],
+                }),
+                peer,
+                &budget(),
+            )
+            .unwrap();
+    };
+    advance("child-early");
     let rows: Vec<(String, String, String, String)> = db
         .prepare(
             "SELECT native_session,role,liveness,observation_provenance FROM occupant_bindings ORDER BY ordinal",
@@ -2213,42 +2242,120 @@ fn hermes_child_cli_call_before_subagent_start_leaves_the_parent_connected() {
         ("hermes-child", "top_level", "cooperative_env_session"),
         "{rows:?}"
     );
-    // The liveness worker does not group the plain-call child with its parent either.
-    struct Alive;
-    impl crate::ports::ProcessInfo for Alive {
-        fn process(&self, pid: u32) -> Option<crate::ports::ProcessRecord> {
-            let fingerprint = crate::protocol::authority::LivenessFingerprint::TEST;
-            (pid == fingerprint.pid).then(|| crate::ports::ProcessRecord {
-                pid,
-                parent: None,
-                start: fingerprint.start,
-                argv: Vec::new(),
-            })
-        }
-    }
+    // The worker ranks the plain-call child below a lifecycle-claimed parent (it can lose, never
+    // win); with a plain-call parent too, nothing claims the process and nothing changes.
     let candidates = crate::store::bindings::liveness_candidates(&db, None).unwrap();
     assert_eq!(candidates.len(), 2);
-    assert_eq!(
-        crate::service::liveness::classify(&candidates, &Alive),
-        vec![],
-        "no Superseded verdict for the parent"
-    );
-    // The child's `subagent_start` registers it; the parent is still connected.
+    let verdicts = crate::service::liveness::classify(&candidates, &AliveTable);
+    let child_row = candidates
+        .iter()
+        .find(|c| c.binding.native_session == "hermes-child")
+        .unwrap();
+    if parent_lifecycle {
+        assert_eq!(
+            verdicts.len(),
+            1,
+            "the child loses to the parent: {verdicts:?}"
+        );
+        assert_eq!(verdicts[0].binding, child_row.binding.binding_id);
+        assert_eq!(
+            verdicts[0].reason,
+            crate::store::bindings::DisconnectReason::Superseded
+        );
+    } else {
+        assert_eq!(verdicts, vec![], "two plain-only bindings stay as they are");
+    }
+    // The child's `subagent_start` registers it and converts the early row.
     assert_eq!(
         recorded(
             &service,
-            binding_event(parent, SubagentStart, Some("hermes-child"), "start")
+            binding_event(parent.clone(), SubagentStart, Some("hermes-child"), "start")
         ),
         1
     );
-    let parent_state: String = db
+    let tops: Vec<(String, String, Option<String>)> = db
+        .prepare(
+            "SELECT native_session,liveness,disconnect_reason FROM occupant_bindings WHERE role='top_level' ORDER BY ordinal",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        tops,
+        vec![
+            ("hermes-parent".to_owned(), "connected".to_owned(), None),
+            (
+                "hermes-child".to_owned(),
+                "disconnected".to_owned(),
+                Some("superseded".to_owned())
+            ),
+        ]
+    );
+    // The parent is the unique wake target and the composer wake picks it.
+    let seat = parent.seat.clone();
+    let targets = crate::store::wake::wake_targets(&db, &seat, true).unwrap();
+    assert_eq!(targets.len(), 1, "{targets:?}");
+    let parent_id: String = db
         .query_row(
-            "SELECT liveness FROM occupant_bindings WHERE native_session='hermes-parent' AND role='top_level'",
+            "SELECT binding_id FROM occupant_bindings WHERE native_session='hermes-parent'",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(parent_state, "connected");
+    let authority = crate::ports::ReservedWakeAuthority::Cooperative {
+        terminal: crate::protocol::ids::TerminalId::new("t"),
+        incarnation: "i".into(),
+        binding_generation: None,
+        harness: None,
+        targets,
+    };
+    match authority.composer_choice(Some(
+        crate::protocol::authority::LivenessFingerprint::TEST.pid,
+    )) {
+        crate::ports::ComposerChoice::Binding(target) => {
+            assert_eq!(target.binding.as_str(), parent_id);
+        }
+        other => panic!("expected the parent, got {other:?}"),
+    }
+    // A later child plain call resolves to the subagent row and reconnects nothing.
+    advance("child-late");
+    let early: (String, Option<String>) = db
+        .query_row(
+            "SELECT liveness,disconnect_reason FROM occupant_bindings WHERE native_session='hermes-child' AND role='top_level'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        early,
+        ("disconnected".to_owned(), Some("superseded".to_owned()))
+    );
+    // And the child stays read-only.
+    let error = service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "t".into(),
+                goal: "g".into(),
+                operation: OperationId::new("child-thread"),
+                claim: child_cli.clone(),
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::SubagentReadOnly, "{error:?}");
+}
+
+/// Kills: a Hermes child's CLI call that arrives before `subagent_start` enrolls a top-level
+/// binding that survives the registration as a second connected wake target with a frozen
+/// cursor (ht-54r.79, ht-54r.87), or that supersedes the parent.
+#[test]
+fn hermes_child_early_call_then_subagent_start_leaves_only_the_parent_connected() {
+    hermes_child_early_call_then_subagent_start(true);
+    hermes_child_early_call_then_subagent_start(false);
 }
 
 /// Kills: read-only decided from the claim's shape alone. A Hermes child's CLI claim is

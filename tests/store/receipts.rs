@@ -3816,6 +3816,14 @@ mod binding_attribution {
         let (_first, second) = two_bindings_on_b(&conn);
         conn.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='liveness_process_exit' WHERE native_session='nb2'", []).unwrap();
         let id = publish_to_b(&context, &mut conn, "send-1");
+        // The sender's call fingerprinted its binding with the ACK's own fingerprint; a connected
+        // lifecycle-claimed binding of the instance on that fingerprint would keep the process
+        // (ht-54r.87), so the sender runs in another process.
+        conn.execute(
+            "UPDATE occupant_bindings SET liveness_pid=2000 WHERE native_session='n'",
+            [],
+        )
+        .unwrap();
         // `claim_of` carries a liveness fingerprint, so the ACK reconnects the binding first.
         let b = claim_of("nb2", B2_EXECUTION);
         ack_as(&context, &mut conn, b, vec![id.clone()], "ack-b", false).unwrap();
@@ -3932,7 +3940,7 @@ fn display_ack_settles_for_a_plain_call_enrolled_binding() {
 #[test]
 fn display_ack_reconnects_a_disconnected_plain_call_enrolled_binding() {
     let (context, mut conn, _) = setup();
-    conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='disconnected',disconnected_at=1,registered_at=0 WHERE seat_id='b'", []).unwrap();
+    conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='disconnected',disconnected_at=1,disconnect_reason='liveness_process_exit',registered_at=0 WHERE seat_id='b'", []).unwrap();
     display_ack_for_b(&context, &mut conn).unwrap();
     assert_eq!(receipt_state_b(&conn), "acked");
     let liveness: String = conn

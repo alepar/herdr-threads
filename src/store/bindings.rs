@@ -146,8 +146,10 @@ pub struct BindingRow {
 
 impl BindingRow {
     /// True unless only plain calls have touched the binding (provenance
-    /// `cooperative_env_session`, which no tool-boundary check-in rewrites). A liveness-ranking
-    /// fact for the same-process rule, not a delivery or authority gate.
+    /// `cooperative_env_session`, which no tool-boundary check-in rewrites; a V32-migrated row a
+    /// plain call re-adopted is plain-only too). A liveness-ranking fact for the same-process
+    /// rule, not a delivery or authority gate: a plain-only binding ranks below every
+    /// lifecycle-claimed binding of its process (it can lose, never win).
     pub fn lifecycle_claimed(&self) -> bool {
         self.provenance != crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE
     }
@@ -395,7 +397,9 @@ pub fn match_claim(db: &Connection, key: &BindingKey) -> Result<Option<BindingRo
 }
 
 /// Refresh the fingerprint of an open binding; NEVER changes liveness (spec §1, r2). It is the
-/// primitive: `plain_reconnect` decides whether a plain call also reconnects. Returns whether an
+/// primitive: `plain_reconnect` decides whether a plain call also reconnects, and only a binding
+/// disconnected by process exit or migration ever does (ht-54r.87); every other plain call on a
+/// disconnected binding ends here. Returns whether an
 /// open binding was found.
 pub fn touch(
     tx: &Connection,
@@ -491,7 +495,10 @@ pub(crate) fn disconnect_with_hooks(
 }
 
 /// What brought a binding back to connected: enrollment, a lifecycle check-in, or a plain call
-/// carrying a fingerprint (spec §3: any call the binding makes).
+/// carrying a fingerprint. `PlainCall` is reached only through `plain_reconnect_allowed`: a
+/// binding disconnected by process exit or migration, with no lifecycle-claimed connected binding
+/// on the same fingerprint (spec §3). A superseded, end-event, retired or unresolved binding
+/// never reconnects on a plain call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectTrigger {
     Enrollment,
@@ -694,29 +701,32 @@ pub fn apply_liveness(
     Ok(changed)
 }
 
-/// The winner key of a same-process group of lifecycle-claimed bindings: the latest lifecycle
-/// claim, ties by ordinal. The liveness worker's `service::liveness::classify` must use the same
-/// ordering and the same membership filter (`lifecycle_claimed`); it carries its own copy.
-fn supersede_rank(candidate: &LivenessCandidate) -> (i64, i64) {
-    (candidate.claimed_at, candidate.binding.ordinal)
+/// The winner key of a same-process group: lifecycle-claimed beats plain-call-only
+/// (`false < true`), then the latest lifecycle claim, ties by ordinal. The liveness worker's
+/// `service::liveness::classify` must use the same ordering and the same membership filter (every
+/// alive top-level candidate, plain-only ones included); it carries its own copy.
+fn supersede_rank(candidate: &LivenessCandidate) -> (bool, i64, i64) {
+    (
+        candidate.binding.lifecycle_claimed(),
+        candidate.claimed_at,
+        candidate.binding.ordinal,
+    )
 }
 
 /// Re-runs the winner selection against the candidates read inside the write transaction: a
 /// `Superseded` verdict was judged on an unlocked read, and the judged loser may have checked in
 /// since (spec §3: "the most recent lifecycle claimer wins"). True only while `candidate` shares
-/// its process with another top-level candidate that out-ranks it.
+/// its process with another top-level candidate that out-ranks it and the group's top-ranked
+/// member is lifecycle-claimed: a plain-call-only binding never wins, and a group with no
+/// lifecycle claimer is left as it is.
 fn is_superseded_now(current: &[LivenessCandidate], candidate: &LivenessCandidate) -> bool {
-    if candidate.binding.role != BindingRole::TopLevel
-        || !candidate.binding.lifecycle_claimed()
-        || candidate.binding.fingerprint.is_none()
-    {
+    if candidate.binding.role != BindingRole::TopLevel || candidate.binding.fingerprint.is_none() {
         return false;
     }
     let Some(winner) = current
         .iter()
         .filter(|c| {
             c.binding.role == BindingRole::TopLevel
-                && c.binding.lifecycle_claimed()
                 && c.instance == candidate.instance
                 && c.binding.harness == candidate.binding.harness
                 && c.binding.fingerprint == candidate.binding.fingerprint
@@ -725,7 +735,7 @@ fn is_superseded_now(current: &[LivenessCandidate], candidate: &LivenessCandidat
     else {
         return false;
     };
-    winner.binding.binding_id != candidate.binding.binding_id
+    winner.binding.lifecycle_claimed() && winner.binding.binding_id != candidate.binding.binding_id
 }
 
 /// Enroll hook: an enrollment *by a lifecycle check-in*, or a lifecycle check-in, of a top-level binding disconnects
@@ -1054,6 +1064,49 @@ pub fn registered_child_claim(
     })
 }
 
+/// `subagent_start` registered a Hermes child session (`child_claim` is its registered-child
+/// claim: `(seat, harness, child, agent_id = child)`). A child that called the CLI before its
+/// start event enrolled a top-level plain-call row `(seat, harness, child, '')` with the parent's
+/// fingerprint; that row is now a stray connected wake target with a frozen cursor, so it is
+/// disconnected `Superseded` (the registered subagent binding replaces it) through the sole
+/// disconnect transition, and the child resolves to its read-only subagent row from then on (a
+/// plain call never reconnects a superseded binding). A lifecycle-claimed row is left alone: the
+/// rule names plain-call rows only. Returns whether a row changed.
+pub fn supersede_plain_child_row(
+    tx: &Connection,
+    child_claim: &CallerClaim,
+    now: UtcMillis,
+) -> Result<bool, ApiError> {
+    let Some(child) = child_claim.agent_id.as_ref() else {
+        return Ok(false);
+    };
+    if !crate::harness::registry::builtins()
+        .binding_policy(child_claim.harness.as_str())
+        .registered_child_sessions
+    {
+        return Ok(false);
+    }
+    let stray = match_claim(
+        tx,
+        &BindingKey {
+            seat: child_claim.seat.clone(),
+            harness: child_claim.harness.as_str().to_owned(),
+            native_session: NativeSessionId::new(child.as_str()),
+            agent_id: None,
+        },
+    )?;
+    let Some(stray) = stray else {
+        return Ok(false);
+    };
+    if stray.role != BindingRole::TopLevel
+        || stray.liveness != Liveness::Connected
+        || stray.lifecycle_claimed()
+    {
+        return Ok(false);
+    }
+    disconnect(tx, &stray.binding_id, DisconnectReason::Superseded, now)
+}
+
 /// The open Hermes subagent binding registered for the child session `key` names
 /// (`(seat, harness, X, agent_id = X)`), if any. Only a harness whose `BindingPolicy` registers
 /// child sessions does so.
@@ -1256,20 +1309,70 @@ pub(crate) fn resolve_claim_with_hooks(
     Ok(resolution)
 }
 
-/// A plain (non-lifecycle) call by an open binding: reconnect it when it is disconnected, its seat
-/// is resolved and the call carries a liveness fingerprint (spec §3), else touch it. A plain
-/// reconnect records the fingerprint and keeps the lifecycle claim time, placement, provenance and
-/// cursors; it runs no enroll hook, so it never supersedes or replaces a placeholder. Returns
-/// whether the binding reconnected.
+/// Whether a plain (non-lifecycle) call may reconnect `row` (TRUST-POLICY A4, spec §3). Only a
+/// binding disconnected because its process exited or by the V32 migration comes back on a plain
+/// call; a binding disconnected as superseded, by an end event, by seat retirement or unresolve,
+/// or `replaced` stays disconnected (the call is a stale caller, spec §1). The claim must carry
+/// a liveness fingerprint (derived at call time from the caller's running harness ancestor, so
+/// it is the "live fingerprint"; the store has no process table), the seat must be resolved, and
+/// for a top-level row no other connected lifecycle-claimed top-level binding of the same
+/// instance and harness may already hold that fingerprint (it would win the worker's
+/// same-process rule anyway). A subagent shares its parent's process and never supersedes or is
+/// superseded, so it skips the last check.
+fn plain_reconnect_allowed(
+    tx: &Connection,
+    row: &BindingRow,
+    claim: &CallerClaim,
+) -> Result<bool, ApiError> {
+    let Some(fingerprint) = claim.liveness else {
+        return Ok(false);
+    };
+    if row.liveness != Liveness::Disconnected
+        || !matches!(
+            row.disconnect_reason.as_deref(),
+            Some(reason) if reason == DisconnectReason::ProcessExit.as_str()
+                || reason == DisconnectReason::Migrated.as_str()
+        )
+        || !seat_is_resolved(tx, &row.seat)?
+    {
+        return Ok(false);
+    }
+    if row.role != BindingRole::TopLevel {
+        return Ok(true);
+    }
+    let held: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected' \
+             AND role='top_level' AND binding_id<>?1 AND harness=?2 AND liveness_pid=?3 AND liveness_start=?4 \
+             AND observation_provenance<>?5 \
+             AND seat_id IN (SELECT id FROM seats WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?6)))",
+            params![
+                row.binding_id.as_str(),
+                row.harness,
+                i64::from(fingerprint.pid),
+                to_i64(fingerprint.start, "liveness start")?,
+                crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE,
+                row.seat.as_str(),
+            ],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    Ok(!held)
+}
+
+/// A plain (non-lifecycle) call by an open binding: reconnect it when
+/// [`plain_reconnect_allowed`] says so, else touch it. A plain reconnect records the fingerprint
+/// and keeps the lifecycle claim time, placement, provenance and cursors; it runs no enroll hook,
+/// so it never supersedes or replaces a placeholder. A rejected call is still served as that
+/// binding (attribution and cursor, spec §1) and leaves its liveness unchanged: `touch` never
+/// writes `liveness`. Returns whether the binding reconnected.
 fn plain_reconnect(
     tx: &Connection,
     row: &BindingRow,
     claim: &CallerClaim,
     now: UtcMillis,
 ) -> Result<bool, ApiError> {
-    if row.liveness == Liveness::Disconnected
-        && claim.liveness.is_some()
-        && seat_is_resolved(tx, &row.seat)?
+    if plain_reconnect_allowed(tx, row, claim)?
         && connect(
             tx,
             &row.binding_id,
@@ -1321,8 +1424,18 @@ fn resolve_claim_inner(
             "cooperative occupant context changed".to_owned(),
         ));
     }
-    let readopts = found.as_ref().is_some_and(is_migrated_disconnected);
-    let creates_or_connects = request.lifecycle || found.is_none() || readopts;
+    // A plain call on a migrated row asks to re-adopt it, so it needs a fingerprint (the admit
+    // check below). It succeeds under the same guard as a plain reconnect: a lifecycle-claimed
+    // binding already holding the process keeps it, and the call falls through to the plain
+    // branch with the row left disconnected.
+    let migrated_found = found.as_ref().is_some_and(is_migrated_disconnected);
+    let readopts = match found.as_ref() {
+        Some(row) if !request.lifecycle && migrated_found => {
+            plain_reconnect_allowed(tx, row, claim)?
+        }
+        _ => false,
+    };
+    let creates_or_connects = request.lifecycle || found.is_none() || migrated_found;
     if !human {
         admit_agent_claim(claim, creates_or_connects)?;
     }

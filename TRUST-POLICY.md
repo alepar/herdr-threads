@@ -234,9 +234,12 @@ model open work, and summary closure never changes receipt state or installs glo
 - *Binding transitions (ht-54r.3)*, decided by the daemon against the canonical view (A2):
   enrollment adds a binding for an unknown (seat, harness, session, agent id) and never ends another one,
   idempotently per key; a lifecycle check-in reconnects and re-registers the session's own binding in place;
-  a plain call touches its binding and refreshes its fingerprint, and when that binding is open, disconnected
-  and on a resolved seat and the call carries a liveness fingerprint, reconnects it (spec §3: any call the
-  binding makes). A plain reconnect records the call's fingerprint and keeps the binding's lifecycle claim
+  a plain call touches its binding and refreshes its fingerprint, and reconnects it only when that binding is
+  open, on a resolved seat, disconnected for `liveness_process_exit` or `migrated`, the call carries a liveness
+  fingerprint and no connected lifecycle-claimed top-level binding of the same instance and harness already
+  holds that fingerprint (spec §3). A binding disconnected `superseded`, `liveness_end_event`, `seat_retired`,
+  `seat_unresolved` or `replaced` never reconnects on a plain call: the call is served as that binding
+  (attribution and cursor) and its liveness is unchanged, so a stale caller never flaps it. A plain reconnect records the call's fingerprint and keeps the binding's lifecycle claim
   time, placement, provenance and cursors; it runs no enroll hook, so it never supersedes, never replaces a
   placeholder and never fast-forwards; a session unresolved with its seat and seen again after the seat is rebound reopens
   its own binding (ended only as `seat_unresolved`; cursors kept), while a binding ended any other way is
@@ -245,24 +248,31 @@ model open work, and summary closure never changes receipt state or installs glo
   nothing moves or merges (cross-pane resume). Lineage (copy-before-supersede of a predecessor's cursors) is
   specified under *Lineage* below (ht-54r.20, ht-54r.17). A person and an agent still never hold a seat
   together and the first agent lifecycle check-in replaces `managed_launch` (both below, ended as
-  `replaced`, through the enroll-hook registry and the one disconnect transition; ht-54r.4). A plain human call never enrolls a binding. Re-adoption (ht-54r.24) is the plain reconnect of a V32-migrated binding (`migrated`, disconnected for reason `migrated`); it also refreshes the placement and seeds its cursors (`Readopt`), and happens on any agent call whose claim matches its stored session exactly (the key the migration kept); a claim with another session enrolls its own binding and nothing is matched by heuristic.
+  `replaced`, through the enroll-hook registry and the one disconnect transition; ht-54r.4). A plain human call never enrolls a binding. Re-adoption (ht-54r.24) is the plain reconnect of a V32-migrated binding (`migrated`, disconnected for reason `migrated`); it also refreshes the placement and seeds its cursors (`Readopt`), and happens on any agent call whose claim matches its stored session exactly (the key the migration kept), unless a connected lifecycle-claimed binding already holds the call's fingerprint (then the row stays `migrated`); a claim with another session enrolls its own binding and nothing is matched by heuristic.
 - *Binding liveness (ht-54r.10)*: a binding is connected or disconnected. Disconnection never ends a
   binding, moves a seat or merges seats, and every disconnect (end event, process exit, pane close,
   supersede, seat retirement or unresolve) goes through the one `store::bindings::disconnect`
   transition, which records the reason (`liveness_process_exit`, `liveness_end_event`, `seat_retired`,
   `seat_unresolved`, `superseded`, plus `replaced` and `migrated`) and runs the registered side-effect
-  hooks. A binding connects on enrollment, on a lifecycle check-in, or on any
-  call of its session that carries a liveness fingerprint (above). Same-process supersede: an enrollment by a lifecycle check-in, or a lifecycle check-in, of a
+  hooks. A binding (re)connects on enrollment, on a lifecycle check-in, or on a plain call
+  carrying its fingerprint after it was disconnected because its process exited or by migration
+  (re-adoption), unless a connected lifecycle-claimed binding already holds that process. A binding
+  disconnected as superseded, by an end event, by seat retirement or unresolve stays disconnected on a
+  plain call: the call is served as that binding (attribution and cursor), and its liveness is unchanged,
+  so a stale caller never flaps. Same-process supersede: an enrollment by a lifecycle check-in, or a lifecycle check-in, of a
   top-level binding disconnects every other connected top-level binding of the same instance and harness with the same
   process fingerprint (pid and start time). This is structural evidence, not a heuristic (a reused pid
   has a different start time and never matches); the most recent claimer wins, so switching back to an
   older session in the same process disconnects the one just left. A plain call never supersedes: a
   binding enrolled by a plain call (provenance `cooperative_env_session`, recorded honestly and never
-  rewritten by a later tool-boundary check-in) neither supersedes nor is superseded until its first
-  lifecycle check-in, so a delegate child's early CLI call never disconnects its parent. Subagents never supersede and are
-  never superseded, and a supersede-induced disconnect never triggers fast-forward. A superseded binding that a stale
-  caller reconnects does not disconnect its supersessor; the liveness worker's same-process rule disconnects it
-  `superseded` again on its next pass or the pre-wake re-check, so the supersessor stays connected throughout.
+  rewritten by a later tool-boundary check-in) never supersedes; in the liveness worker's same-process
+  rule it ranks below every lifecycle-claimed binding of that process (it can lose, never win; this
+  includes a V32-migrated binding re-adopted by a plain call), and a group with no lifecycle claimer is
+  left as it is, so a delegate child's early CLI call never disconnects its parent. When `subagent_start`
+  registers a child session, the child's connected top-level plain-call row on that seat is disconnected
+  `superseded` (the registered subagent binding replaces it), so the child is read-only from then on.
+  Subagents never supersede and are never superseded, and a supersede-induced disconnect never triggers
+  fast-forward. A superseded binding never reconnects on a plain call.
   A lineage successor
   supersedes its predecessor only after copying its cursors. A seat is active while any open binding is
   connected, or while its open human binding sits on a resolved seat.
@@ -276,8 +286,9 @@ model open work, and summary closure never changes receipt state or installs glo
   cursors kept), else enrolls one at the seat's read position, runs the enroll hooks, and records the
   hook's current fingerprint (a retried intent submits the current one, never the journaled one); a
   reattachment request without one is refused `liveness_fingerprint_required` (decision 9). Among connected top-level bindings
-  **with a lifecycle claim** of one instance and harness sharing one fingerprint, only the latest lifecycle claim stays connected
-  and the others are disconnected `superseded` (subagents excluded). Disconnection on liveness evidence
+  of one instance and harness sharing one fingerprint, the latest lifecycle claim stays connected
+  and the others, plain-call-only bindings included, are disconnected `superseded`; a group with no
+  lifecycle claim is left as it is (subagents excluded). Disconnection on liveness evidence
   is structural evidence, never a heuristic: it goes through the one `store::bindings::disconnect`
   transition, and the worker never ends a binding, retires, moves or merges a seat. It never judges a
   human binding (a person has no harness process), and it skips seats that are unresolved or retired
@@ -696,8 +707,7 @@ moves only the resumed binding's cursors. The seat's still-pending ACK obligatio
 inbox keeps listing them until they are settled, so a fast-forward never hides or settles one, and a subagent
 binding's fast-forward moves only its own cursors. Accepted limit: a binding a plain call reconnected is
 already connected when its own lifecycle resume arrives, so that resume is not a reconnect and does not
-fast-forward; normally the liveness worker has disconnected it again by then (a stale caller's reconnect of a
-superseded binding).
+fast-forward. The limit covers only a binding a plain call reconnected after a process exit.
 
 ## Accepted limits
 

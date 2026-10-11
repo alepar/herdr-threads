@@ -245,55 +245,106 @@ fn same_fingerprint_newer_session_disconnects_the_older() {
     assert!(!fx.episode_open("s"));
 }
 
+/// Marks a binding as enrolled or last touched by a plain call only.
+fn mark_plain(fx: &Fx, binding: &str) {
+    fx.raw()
+        .execute(
+            "UPDATE occupant_bindings SET observation_provenance='cooperative_env_session' WHERE binding_id=?1",
+            [binding],
+        )
+        .unwrap();
+}
+
+fn superseded() -> (String, Option<String>) {
+    ("disconnected".into(), Some("superseded".into()))
+}
+
 #[test]
-fn a_plain_call_only_binding_neither_supersedes_nor_is_superseded() {
-    let fx = Fx::new("liveness-plain-call");
+fn a_plain_call_only_binding_loses_to_a_lifecycle_claimed_one_and_never_wins() {
+    // Older lifecycle plus newer plain: the newer plain one loses, the older stays.
+    let fx = Fx::new("liveness-plain-newer");
     fx.table.set(100, 5);
     let older = fx.bind("s", "claude", "A", Some((100, 5)), 10);
     let newer = fx.bind("s", "claude", "B", Some((100, 5)), 20);
-    let plain = |binding: &str| {
-        fx.raw()
-            .execute(
-                "UPDATE occupant_bindings SET observation_provenance='cooperative_env_session' WHERE binding_id=?1",
-                [binding],
-            )
-            .unwrap();
-    };
-    // The newer binding was enrolled by a plain call only: it does not take the process.
-    plain(&newer);
+    mark_plain(&fx, &newer);
+    let candidates = fx.store.liveness_candidates(None, &budget()).unwrap();
+    let verdicts = classify(&candidates, fx.table.as_ref());
+    assert_eq!(
+        verdicts
+            .iter()
+            .map(|d| (d.binding.as_str().to_owned(), d.reason))
+            .collect::<Vec<_>>(),
+        vec![(newer.clone(), DisconnectReason::Superseded)]
+    );
+    fx.worker.pass(&budget()).unwrap();
+    assert!(fx.connected(&older));
+    assert_eq!(fx.state(&newer), superseded());
+
+    // Older plain plus newer lifecycle: the older plain one is superseded.
+    let fx = Fx::new("liveness-plain-older");
+    fx.table.set(100, 5);
+    let older = fx.bind("s", "claude", "A", Some((100, 5)), 10);
+    let newer = fx.bind("s", "claude", "B", Some((100, 5)), 20);
+    mark_plain(&fx, &older);
+    let candidates = fx.store.liveness_candidates(None, &budget()).unwrap();
+    let verdicts = classify(&candidates, fx.table.as_ref());
+    assert_eq!(
+        verdicts
+            .iter()
+            .map(|d| d.binding.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        vec![older.clone()]
+    );
+    fx.worker.pass(&budget()).unwrap();
+    assert_eq!(fx.state(&older), superseded());
+    assert!(fx.connected(&newer));
+
+    // Both plain: nothing claims the process, so nothing changes.
+    let fx = Fx::new("liveness-plain-both");
+    fx.table.set(100, 5);
+    let older = fx.bind("s", "claude", "A", Some((100, 5)), 10);
+    let newer = fx.bind("s", "claude", "B", Some((100, 5)), 20);
+    mark_plain(&fx, &older);
+    mark_plain(&fx, &newer);
     let candidates = fx.store.liveness_candidates(None, &budget()).unwrap();
     assert_eq!(classify(&candidates, fx.table.as_ref()), vec![]);
     fx.worker.pass(&budget()).unwrap();
     assert!(fx.connected(&older));
     assert!(fx.connected(&newer));
-    // And the older plain-call-only binding is not superseded by a newer lifecycle one either.
-    plain(&older);
-    fx.raw()
-        .execute(
-            "UPDATE occupant_bindings SET observation_provenance='cooperative_top_level' WHERE binding_id=?1",
-            [&newer],
-        )
-        .unwrap();
-    fx.worker.pass(&budget()).unwrap();
-    assert!(fx.connected(&older));
-    assert!(fx.connected(&newer));
+
     // Control: both lifecycle-claimed, the older is superseded.
-    fx.raw()
-        .execute(
-            "UPDATE occupant_bindings SET observation_provenance='cooperative_top_level'",
-            [],
-        )
-        .unwrap();
+    let fx = Fx::new("liveness-plain-control");
+    fx.table.set(100, 5);
+    let older = fx.bind("s", "claude", "A", Some((100, 5)), 10);
+    let newer = fx.bind("s", "claude", "B", Some((100, 5)), 20);
     fx.worker.pass(&budget()).unwrap();
-    assert_eq!(
-        fx.state(&older),
-        ("disconnected".into(), Some("superseded".into()))
-    );
+    assert_eq!(fx.state(&older), superseded());
     assert!(fx.connected(&newer));
 }
 
-/// What a plain call carrying `fingerprint` does to a disconnected binding (the store's
-/// plain-call reconnect primitive; the rig has no resolver).
+#[test]
+fn a_plain_readopted_binding_loses_to_the_lifecycle_binding_of_its_process() {
+    let fx = Fx::new("liveness-readopted");
+    fx.table.set(100, 5);
+    let readopted = fx.bind("s", "claude", "A", Some((100, 5)), 30);
+    let lifecycle = fx.bind("s", "claude", "B", Some((100, 5)), 20);
+    // A V32-migrated row that a plain call re-adopted: migrated, plain-call provenance, and a
+    // later claim time than the lifecycle binding.
+    fx.raw()
+        .execute(
+            "UPDATE occupant_bindings SET migrated=1, migrated_session='A', observation_provenance='cooperative_env_session' WHERE binding_id=?1",
+            [&readopted],
+        )
+        .unwrap();
+    fx.worker.pass(&budget()).unwrap();
+    assert_eq!(fx.state(&readopted), superseded());
+    assert!(fx.connected(&lifecycle));
+}
+
+/// Drives the store's `connect` primitive with the plain-call trigger directly (the rig has no
+/// resolver). The store no longer produces this state from a plain call on a superseded binding
+/// (ht-54r.87), so the tests using it are worker-only guards: the worker still converges if such
+/// a reconnect ever happens (a lifecycle reconnect, a process-exit reconnect).
 fn plain_reconnect(fx: &Fx, binding: &str, fingerprint: (u32, u64)) {
     let reconnected = crate::store::bindings::connect(
         &fx.raw(),
@@ -310,7 +361,7 @@ fn plain_reconnect(fx: &Fx, binding: &str, fingerprint: (u32, u64)) {
 }
 
 #[test]
-fn a_stale_callers_reconnect_of_a_superseded_binding_is_superseded_again() {
+fn a_reconnected_superseded_lifecycle_binding_is_superseded_again() {
     let fx = Fx::new("liveness-stale-reconnect");
     fx.table.set(100, 5);
     let older = fx.bind("s", "claude", "A", Some((100, 5)), 10);
