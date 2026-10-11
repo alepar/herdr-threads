@@ -5829,7 +5829,9 @@ impl OfferWindowFixture {
                     user_intent: None,
                     thread: ThreadId::new("t"),
                     body: body.into(),
-                    direct_recipient: Some(self.recipient.seat.clone()),
+                    // This fixture's existing thread has joined memberships;
+                    // it is not an automatic direct-pair channel.
+                    direct_recipient: None,
                     invited_recipients: vec![],
                     deadline_millis: None,
                     operation: OperationId::new(format!("offer-window-send-{n}")),
