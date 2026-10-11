@@ -1,4 +1,8 @@
-# Cumulative active-D final source review at 5f879abb
+# Cumulative active-D source review: scoped f7aa1cc2 successor
+
+2026-10-11 current scoped successor: **Cumulative SourceSpec PASS / source Quality PASS at `f7aa1cc2a02de47ebb381191f1a2bb219048538c`, tree `6db4b6783f2cb4efbb91557461bb74fd548614fa`. AF-RUNTIME-1 CLOSED for this scope: actual314/314 PASS, leaks0, required source gates PASS. D is eligible for composition on this evidence; final epic/merged-tree readiness is not claimed.** The original5f review and failure are retained below, followed by the exact scoped successor reassessment.
+
+## Original5f verdict (historical)
 
 2026-10-11. **Cumulative SourceSpec PASS; cumulative source Quality PASS. Runtime clearance OPEN: the exact 314-test matrix is 313 PASS / 1 FAIL.** No new independently established production-source defect was found in this review. The existing full-capacity CLI failure remains actionable and unresolved; neither source PASS nor the 20 new passing leaves clears it. No merge, delivery completion or final readiness claim is made.
 
@@ -159,6 +163,38 @@ Historical failures are not erased: inactive whole D-WHOLE-4's lazy-only token/C
 | `tests/store/queries.rs` | carried | yes | `f7e1288f39abe596a47308ad7d8a36c4c8432951` | `741c9b67a30ed5e06fb5039e468854e6bc607b8874c1a17510daccdfd0d06ae5` |
 | `tests/store/schema.rs` | carried | yes | `097cd776f37368e0bc3201741dc6a30dc8523f2b` | `ccf65898a0445227cb0d74d334127b0d6aa2d6d400edd2ef33bd8b78a7328dcd` |
 
-## Review disposition
+## Original5f review disposition (superseded by scoped successor below)
 
 Cumulative SourceSpec and source Quality PASS at this immutable tree, with82/82 mapped and no newly established static defect. Runtime readiness is OPEN because AF-RUNTIME-1 fails on this same freeze. Resolve that actual failure with causal evidence and a separately reviewed successor, then refresh source identity and affected final checks. Prior unrelated identical-blob coverage can be carried only at its recorded depth. No claim of actual complete active inventory clearance, merge readiness or finished delivery is made.
+
+## Scoped final successor reassessment: f7aa1cc2
+
+Reviewed immutable `5f879abb3e6609fa2b7ed2695bfd551a3e590536 → f7aa1cc2a02de47ebb381191f1a2bb219048538c`, tree `6db4b6783f2cb4efbb91557461bb74fd548614fa`. Read the entire actual delta and unchanged CapacityFlow frame/reply gating, `resume-capacity-contract-review.md` through its immutable073 review and verified actual-case appendix, actual final314 artifacts, causal diagnostic/triage sections and relevant unchanged relevance/work/scheduler source. This is a scoped reassessment; the cumulative audit above is not repeated.
+
+**Exact source-binding override.** Only `tests/integration/mod_delivery.rs` differs:113 insertions/2 deletions. No production, TRUST, plugin, Cargo or other test blob changed. The cumulative inventory remains82 paths;81 current blobs are identical to reviewed5f and inherit the exact prior depth. The historical82-row5f table above remains historical evidence. For the currentf7 map, replace its single integration row with:
+
+| Path | Coverage | Current Git blob | Current SHA256 |
+|---|---|---|---|
+| `tests/integration/mod_delivery.rs` | scoped5f→f7 semantic fixture/diagnostic review | `11c7590200aba9af1123210f49627b949d1e2aa5` | `766a85c775227d26cf22b350a729f929baec6198a3c56284962aad820462bc01` |
+
+Every production blob is exactly the previously reviewed5f object; no production-source verdict is extended to changed production because there is none. D observed clean at exactf7 HEAD/tree. Independent calculation of immutable delta paths and current test blob/SHA verifies this override. No Cargo/tests/build/plugin/Herdr/Git mutation or source edits were performed; only this existing report was updated.
+
+### AF-RUNTIME-1 diagnosis and repair assessment
+
+The diagnostic successor established that the actual first resumed empty Page.more came from a newly captured **unfinished pending send_attention relevance sweep**, not the blocked unknown ordinary carry. Its persisted proof changed from cached Absent/fence2117 to absent=false/fence2121, source10 high259/after144/exhausted=false. Outbox token, emitted controls and ordinary IDs were absent; normal carry remained one and normal/publication/context work was parked. Unchanged `presentation_relevance.rs` source10/11 enumerate pending/failed send_attention jobs; cached absence requires a matching canonical fence/frontier, and Unknown validly contributes `proof.more`. The old strict immediate-parking fixture had not established completion of that finite background prerequisite. Freezing UTC or withholding frames does not stop canonical workers changing the fence.
+
+The final tests-only repair places the completion barrier **after the initial real sequential drain has reached a held false/Unchanged response and exact256 unique offered set has been verified**. The child cannot receive that terminal reply or issue its next Pull; Attention credits remain0. Real existing Deadline worker quanta are paced by one ordinary probe kick per newly observed idle generation, within existing STEP. Aggregate completion requires every send_attention job complete, including bootstrap, and `total==complete>=257`; no SQL state, receipt, ledger, warning or response is fabricated. Query-only passive waiting and pre-Watch pacing failures remain failures in the capacity review: passive waiting did not complete jobs within STEP, and pre-Watch completion removed the required queued real Attention. Those revisions do not count as successful runtime evidence.
+
+Canonical completion is a meaningful monotone prerequisite under this no-later-Send/Notify fixture: completed jobs cannot reopen via `commit_work_prefix`, and the deadline driver otherwise advances only one job per discovery/safety opportunity. The setup pacing finishes before snapshots/terminal release; it does not continue during the actual resumed Pull. The test still independently requires a queued **actual daemon Attention**, successful full-frame write, exactly one forwarded frame and strictly later real Pull. Completion is not used as a substitute for that stimulus witness.
+
+Original discrimination is retained:64 initial-response failing guard and65 overall-request ceiling; actual initial finite parking; exact first256 identities, unknown257 exact carry body, all257 receipts pending/noACK; strict first-resumed false/Unchanged with empty offered/truncated/items; exact seven-field normal tuple equality. The barrier occurs after the original finite-drain assertion, so it cannot rescue the old permanent retained-carry continuation fault in that phase. No timeout increase, eventual-quiet relaxation, extra frame, UTC advance, unconditional/manual Pull, ACK or acceptance is added. Diagnostic metadata is bounded and body-free; failed waits retain diagnostics then resume the original panic, never turn timeout into success. Static scoped **SourceSpec PASS / Quality PASS**, consistent with independent immutable073 review (same tree6db4).
+
+### Actual runtime and gates at the same freeze
+
+Independently read `/private/tmp/ht-owner-capacity-held-terminal/execution.json` SHA256 `9c602407bbe054e91fe8998acefca28e9762edbcbec8d14ed1ae1ced17556c0b`, `run.log` SHA256 `98dea7243eb30dfe38833ea7848273b27f22dceff617865fd59ab7b1ae2306a0`, and `leaks.log`. Exactf7/tree6db4, one correctly selected integration case, exit0; test7.289s (summary7.291s, wrapper7.597s). Recorded integration binary SHA256 `b519ee24ff842d86d6c46f319f40b4f723968610a3ac7fc09f72a15aef4112fe`. Run UUID `84dbb020-07e0-4479-893c-f24470a81585`, scoped leak0. Full leaf execution therefore reaches the actual frame witness and all unchanged resumed/output/tuple assertions, not just the new barrier.
+
+Independently read `/private/tmp/ht-owner-final-f7aa1cc2/execution.json` SHA256 `34b8d40debba8f80a3cf1aa3b5f79f7e77ff42abbdd912a8f3e00d1b5e6d856d`, `nextest-run.log` SHA256 `afd545b0ab72e3b4591080f62799f9e7535fb9ae9b37a8a21cda7a7e3c58309d`, `run-selection.json` SHA256 `967fc5428c5b6af31b458a324725a755b47ef875549956567f361cd1a8c80a9c` and scoped leak log. Execution records clean matchingf7/tree6db4 before/after enumeration/run,61 source fingerprints verified, matching314 selection (lib291, hook_entrypoint5, integration18), exit0. Actual **314/314 PASS, nextest11.836s** (wrapper12.118s), all20 added leaves PASS. Capacity case11.813s, unchanged immediate reconnect3.234s; no historical result is substituted for this full refreshed matrix. Installed executable SHA256 remains `af4970ddb3516535b68dde2f06aa1c0b9383d923ca138e88ab7cabd6a56a9272`. Fresh UUID `ee8f71ff-1b53-4a87-a33d-a0359bd06b84`, scoped leak exit0 and no leaked test processes.
+
+Read durable RUN `resume-owner-replay-evidence/f7aa1cc2-source-gates.json`: exact matchingf7/tree6db4; fmt--check0, harness-neutral0, strict `nice cargo clippy --locked --all-targets --all-features -- -D warnings` exit0/Cargo2.17s, default-features guard exit0. Parent reports default wrapper0.167s warm. These are actual parent-owned gates, not commands executed by this auditor. No source changes during/after the final314 are reported, and the inspected current source identity matches.
+
+**Final scoped disposition: AF-RUNTIME-1 CLOSED at f7; cumulative SourceSpec PASS / source Quality PASS; actual314 matrix and required source gates PASS.** The earlier313/1 freeze remains a real failed historical checkpoint with its diagnosed fixture premise. Current D is eligible for composition on the reviewed source, refreshed actual selection, required gates and scoped cleanup evidence. This does not declare the whole epic finished, clear a future composed tree, claim all scheduler interleavings are explored, or replace any later composition review/roast/integration obligations.
