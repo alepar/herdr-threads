@@ -2439,10 +2439,18 @@ fn restart_keeps_registered_seat_available(provenance: &str) {
     };
     {
         // The seat's agent has checked in at the current epoch.
+        let fingerprint =
+            herdr_threads::test_support::isolation::stand_in_fingerprint("claude", "x");
         let db = fixture.db();
         db.execute(
-            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'claude','plugin_context:x','exec-x',?2,1,1,s.structural_terminal_id,s.structural_incarnation FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
-            rusqlite::params![seat.as_str(), provenance],
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'claude','plugin_context:x','exec-x',?2,1,1,s.structural_terminal_id,s.structural_incarnation,?3,?4 FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+            // A live fingerprint: the liveness worker (decision 9) disconnects a binding without one.
+            rusqlite::params![
+                seat.as_str(),
+                provenance,
+                i64::from(fingerprint.pid),
+                fingerprint.start as i64
+            ],
         )
         .unwrap();
         assert_eq!(available(&db).as_deref(), Some(provenance));

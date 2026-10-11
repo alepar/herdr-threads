@@ -257,9 +257,10 @@ model open work, and summary closure never changes receipt state or installs glo
   connected, or while its open human binding sits on a resolved seat.
 - *Liveness worker (ht-54r.23)*: the daemon re-checks the process fingerprint of every connected,
   open, non-human binding on a cadence (5 s) and, for the candidate's seat, before each wake decision.
-  A binding whose process no longer exists, whose pid now has another start time, or that is a migrated
-  binding connected with no fingerprint is disconnected `liveness_process_exit` (a non-migrated binding
-  without a fingerprint is absence of evidence and is left alone); among connected top-level bindings
+  A binding whose process no longer exists, whose pid now has another start time, or that is
+  connected with no fingerprint is disconnected `liveness_process_exit` (decision 9: every
+  connected agent binding without a fingerprint is disconnected, migrated or not; the migrated 24 h
+  grace is archival only; human bindings stay exempt); among connected top-level bindings
   of one instance and harness sharing one fingerprint, only the latest lifecycle claim stays connected
   and the others are disconnected `superseded` (subagents excluded). Disconnection on liveness evidence
   is structural evidence, never a heuristic: it goes through the one `store::bindings::disconnect`
