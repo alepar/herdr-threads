@@ -38,7 +38,7 @@ codeBuckets:
   parked: ht-54r.5 ht-54r.12 ht-54r.19
   stalled: false
   review: not ready (final review 4 @ 212dbd0c: continuity reattach inserts binding without cursors → history unread after Herdr restart; cursor stuck after mod/hook-pull ACK of ordinary msg; agy hook delivery lost after upgrade (SessionMismatch on disconnected); S3 continuity_candidates newest-row; S4 Hermes child pre-subagent_start supersedes parent; S5 provenance-gated mod channel + overwrite; single-target composer wake ignores foreground PID; stale TRUST-POLICY/SKILL/CHILD_RESTRICTION text)
-  sweep: abe1bf03 — 5471 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 258s) @ abe1bf03
+  sweep: 6abfd4f9 — 5522 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 224s) @ 6abfd4f9
   slowness: round 1 hook.rs hot-file cap raised to 4; merge queue peaked at 3
   worktreesKept: 
   processSweep: stopped 0 · survived 0
@@ -73,3 +73,4 @@ feedback: parked — docs/superpowers/runs/2026-10-09-session-keyed-seat-binding
 - security flag · escalation · "background commit security review (details lost to reader errors) flagged: authorization/state-bypass in src/store/bindings.rs; control regression in src/store/receipts.rs. Post-round audit roast must scrutinize: reconnect-on-call (ht-54r.81) must not let a call bypass supersede/retire/subagent read-only; ACK cursor advance (ht-54r.76) must not settle or advance for another binding or a subagent."
 - base drift · escalation · "main moved to v0.8.1 (026ad3ab, schema 31 unchanged, ht-clj fix). Absorb after the post-hand-back fix round, before the re-sweep."
 - post-hand-back fix round 2 · decision · "final review 5 must-fix → ht-54r.87 ht-54r.88 ht-54r.89 ht-54r.90 ht-54r.91; agy run_command env escalation RESOLVED by ht-54r.84 live probe (agy 1.3.3 carries ANTIGRAVITY_CONVERSATION_ID; evidence/ht-54r.84/)."
+sweepFix: 1 failing (sweep 3 @ eb28b769: cli::skill::tests::skill_file_is_a_well_formed_concise_guide, stale needle) → fixed inline 6abfd4f9 · re-run 6abfd4f9 — 5522 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 224s) @ 6abfd4f9
