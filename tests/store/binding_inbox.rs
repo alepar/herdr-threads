@@ -4,7 +4,7 @@
 use super::*;
 use crate::ports::StorePort;
 use crate::protocol::{
-    authority::{CallerClaim, CallerRole, Harness, ObligationRef},
+    authority::{CallerClaim, CallerRole, Harness, LivenessFingerprint, ObligationRef},
     commands::{Ack, AdvanceCursors, Join, PermitMutation, SendMessage},
     ids::*,
     results::InboxBatchV2Item,
@@ -126,6 +126,14 @@ fn claim(seat: &str, session: &str, execution: &str, agent: Option<&str>) -> Cal
         target: HostTargetId::new(format!("p{seat}")),
         agent_id: agent.map(AgentId::new),
         liveness: None,
+    }
+}
+/// `claim(..)` carrying a liveness fingerprint, which the daemon requires of every call that
+/// enrolls, reconnects or reopens a binding (decision 9).
+fn claim_fp(seat: &str, session: &str, execution: &str) -> CallerClaim {
+    CallerClaim {
+        liveness: Some(LivenessFingerprint::TEST),
+        ..claim(seat, session, execution, None)
     }
 }
 fn claim_a() -> CallerClaim {
@@ -531,11 +539,30 @@ fn join_gives_every_open_binding_a_cursor_at_the_join_point() {
     assert_eq!(cursor(&fx, &c1), Some(head));
 }
 
+// The store migrates V28 to the current LATEST_VERSION. The guarantee checked: nothing displayed
+// before the upgrade is delivered again, and pending obligations are listed once. The migrated
+// binding is disconnected, so its first call re-adopts it and must carry a fingerprint
+// (spec section 4 Migration V29, decision 9; the 24 h grace is archival only).
 // Kills: re-showing a message that was already displayed before the upgrade (the migrated
-// binding's cursors start at each thread's head), losing a pending obligation, and listing one
-// twice (once as unread and once as an obligation).
+// binding's cursors start at each thread's head), losing a pending obligation, listing one
+// twice (once as unread and once as an obligation), a re-adoption without a fingerprint being
+// admitted, and a re-adoption enrolling a second binding.
 #[test]
 fn no_duplicate_delivery_after_v29_migration() {
+    v29_migration_scenario(false);
+}
+
+// The same scenario with the exact page rows, ACK-candidate flags included. The product lists
+// these messages with a false flag today because an env-session binding is not yet an accountable
+// top-level (ht-54r.59), so this stays ignored until that bead lands; then drop the ignore and the
+// `strict` parameter.
+#[test]
+#[ignore = "ht-54r.59: ACK-candidate flag of env-session bindings"]
+fn v29_migration_pages_carry_ack_candidate_flags() {
+    v29_migration_scenario(true);
+}
+
+fn v29_migration_scenario(strict: bool) {
     let old = crate::store::connection::tests::adapter_historical_database(28);
     old.execute_batch(
         "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,50);
@@ -587,21 +614,109 @@ fn no_duplicate_delivery_after_v29_migration() {
     );
     let want = vec![Row::Msg("m2".into(), true), Row::Msg("m3".into(), true)];
     assert_eq!(page(&fx, Some(&claim("b", "nb1", EXEC_B1, None))), want);
-    // Re-adopting the binding (its first call after the upgrade) neither lowers its cursors nor
-    // delivers anything again.
-    advance(
-        &fx,
-        &claim("b", "nb1", EXEC_B1, None),
-        "readopt",
-        &[&MessageId::new("m2")],
+    let state = |conn: &Connection| {
+        conn.query_row(
+            "SELECT liveness, disconnect_reason, liveness_pid, liveness_start, migrated FROM occupant_bindings WHERE binding_id=?1",
+            [migrated.as_str()],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+    let before = state(&conn);
+    assert_eq!(
+        (before.0.as_str(), before.1.as_deref(), before.4),
+        ("disconnected", Some("migrated"), 1)
+    );
+    // The re-adopting call without a fingerprint is refused and changes nothing.
+    let refused = store(&fx)
+        .advance_cursors(
+            &AdvanceCursors {
+                claim: claim("b", "nb1", EXEC_B1, None),
+                operation: OperationId::new("readopt-nofp"),
+                displayed: vec![MessageId::new("m2")],
+            },
+            &budget(),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::LivenessFingerprintRequired);
+    assert_eq!(
+        state(&conn),
+        before,
+        "a refused call leaves the binding as migrated"
     );
     assert_eq!(
         read_cursors::cursor_for(&conn, &migrated, &ThreadId::new("t")).unwrap(),
         Some(3)
     );
-    assert_eq!(page(&fx, Some(&claim("b", "nb1", EXEC_B1, None))), want);
+    // Re-adopting the binding (its first call after the upgrade, with its fingerprint) neither
+    // lowers its cursors nor delivers anything again.
+    let readopter = claim_fp("b", "nb1", EXEC_B1);
+    advance(&fx, &readopter, "readopt", &[&MessageId::new("m2")]);
+    let after = state(&conn);
+    assert_eq!(
+        (after.0.as_str(), after.1.clone(), after.2, after.3),
+        ("connected", None, Some(1), Some(1)),
+        "re-adoption reconnects the migrated binding with the caller's fingerprint"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='b' AND native_session='nb1' AND ended_at IS NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1,
+        "re-adoption must not enroll a second binding"
+    );
+    assert_eq!(
+        binding_of_in(&conn, &readopter),
+        migrated,
+        "the same binding is re-adopted"
+    );
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &migrated, &ThreadId::new("t")).unwrap(),
+        Some(3)
+    );
+    // With `strict` unset the ACK-candidate flag is not compared (ht-54r.59, see above).
+    let flags = |rows: &[Row]| {
+        if strict {
+            rows.to_vec()
+        } else {
+            ignoring_ack_flag(rows)
+        }
+    };
+    let rows = page(&fx, Some(&readopter));
+    let listed = flags(&rows);
+    assert!(
+        !ignoring_ack_flag(&rows).is_empty()
+            && !rows.contains(&Row::Msg("m1".into(), true))
+            && !rows.contains(&Row::Msg("m1".into(), false)),
+        "no duplicate delivery: m1 was displayed and ACKed before the upgrade, got {rows:?}"
+    );
+    assert_eq!(listed, want, "pending obligations are listed once each");
     // A session the upgrade never saw starts at the seat maximum: the same obligations, once.
-    assert_eq!(page(&fx, Some(&claim("b", "fresh", EXEC_B2, None))), want);
+    assert_eq!(
+        flags(&page(&fx, Some(&claim_fp("b", "fresh", EXEC_B2)))),
+        want
+    );
+}
+
+/// The rows with every message's ACK-candidate flag set (see ht-54r.59 in the test above).
+fn ignoring_ack_flag(rows: &[Row]) -> Vec<Row> {
+    rows.iter()
+        .map(|row| match row {
+            Row::Msg(id, _) => Row::Msg(id.clone(), true),
+            other => other.clone(),
+        })
+        .collect()
 }
 
 fn binding_of_in(conn: &Connection, claim: &CallerClaim) -> BindingId {
