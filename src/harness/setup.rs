@@ -265,6 +265,35 @@ fn native_command_route(command: &str, event: &str) -> Option<String> {
     .ok()
 }
 
+/// Historical shared/evented registrations remain executable alongside stable hooks. Accept
+/// only our canonical legacy encoding, optionally followed by a real UUID owner comment.
+/// Recognition is diagnostic conflict evidence; exact manifest groups alone prove ownership.
+fn legacy_command_route(command: &str, event: &str) -> Option<String> {
+    let command = owner_marker_index(command).map_or(command, |at| &command[..at]);
+    let argv = shlex::split(command)?;
+    let words = argv
+        .iter()
+        .map(std::ffi::OsString::from)
+        .collect::<Vec<_>>();
+    let parsed = crate::cli::hook::parse_hook_argv(&words)?.ok()?;
+    if parsed.event.as_deref().is_some_and(|name| name != event) {
+        return None;
+    }
+    let route = shell_command(&crate::cli::hook::installed_argv(
+        &argv[0],
+        parsed.state_dir.as_ref().and_then(|p| p.to_str()),
+        parsed.host_endpoint.as_ref().and_then(|p| p.to_str()),
+        parsed.harness,
+    ))
+    .ok()?;
+    let expected = if parsed.event.is_some() {
+        event_command(&route, event)
+    } else {
+        route.clone()
+    };
+    (command == expected).then_some(route)
+}
+
 /// Exact per-event command strings for diagnostics. This is never an ownership grant.
 pub(crate) fn commands_json(entries: &[OwnedEntry]) -> Value {
     Value::Object(
@@ -302,6 +331,7 @@ fn conflicting_native_registration(
                             hooks.iter().any(|hook| {
                                 hook["command"].as_str().is_some_and(|command| {
                                     native_command_route(command, &entry.event)
+                                        .or_else(|| legacy_command_route(command, &entry.event))
                                         .and_then(|route| shlex::split(&route))
                                         .is_some_and(|argv| {
                                             argv.last()

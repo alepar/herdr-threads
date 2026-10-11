@@ -4937,3 +4937,120 @@ fn stable_codex_reinstall_status_preserves_trust_records_and_group_indices() {
     assert!(s.run(&["unsetup", "codex"]).status.success());
     assert_eq!(fs::read_to_string(&config).unwrap(), native_trust);
 }
+
+/// Supported legacy commands are conflicts, never ownership evidence for another route.
+/// Exercise the public fresh/reinstall/status/unsetup paths independently for each form.
+fn legacy_foreign_registration_case(harness: &str, evented: bool, installed: bool) {
+    let s = Scratch::new();
+    s.harness(
+        harness,
+        if harness == "claude" {
+            "2.1.284 (Claude Code)"
+        } else {
+            "codex-cli 0.158.0"
+        },
+    );
+    let config = if harness == "claude" {
+        fs::create_dir(&s.claude_config).unwrap();
+        s.settings()
+    } else {
+        fs::create_dir(&s.codex_home).unwrap();
+        s.hooks()
+    };
+    let before = serde_json::json!({"hooks":[{"type":"command","command":"echo before"}]});
+    let after = serde_json::json!({"hooks":[{"type":"command","command":"echo after"}]});
+    fs::write(
+        &config,
+        serde_json::to_vec(&serde_json::json!({
+            "model":"mine", "hooks":{"SessionStart":[before.clone()]}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let setup_args = if harness == "claude" {
+        vec!["setup", harness, "--hooks-only", "--json"]
+    } else {
+        vec!["setup", harness, "--json"]
+    };
+    let manifest =
+        herdr_threads::cli::setup::manifest_path(&s.state, &format!("{harness}-user"), &config);
+    if installed {
+        let first = s.run(&setup_args);
+        assert!(first.status.success(), "{}", text(&first.stderr));
+    }
+    let event = if evented {
+        " '--event' 'SessionStart'"
+    } else {
+        ""
+    };
+    let foreign = serde_json::json!({"hooks":[{"type":"command","command":format!(
+        "'/foreign/herdr-threads' '--state-dir' '/foreign/state' '--host-endpoint' '/foreign/host.sock' 'hook' '{harness}'{event} # herdr-threads-owner:0b5e8f3c-1111-4222-8333-444455556666"
+    )}]});
+    let mut config_value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    config_value["hooks"]["SessionStart"]
+        .as_array_mut()
+        .unwrap()
+        .extend([foreign.clone(), after.clone()]);
+    let config_bytes = serde_json::to_vec(&config_value).unwrap();
+    fs::write(&config, &config_bytes).unwrap();
+    let manifest_bytes = fs::read(&manifest).ok();
+    let status = json(&s.run(&["setup-status", harness, "--json"]));
+    assert_eq!(status["installed"], installed, "{status}");
+    let refused = s.run(&setup_args);
+    assert!(
+        !refused.status.success(),
+        "{harness} evented={evented} installed={installed}: {}{}",
+        text(&refused.stdout),
+        text(&refused.stderr)
+    );
+    assert!(
+        text(&refused.stderr).contains("conflicting herdr-threads registration for the same event"),
+        "{}",
+        text(&refused.stderr)
+    );
+    assert_eq!(status["registration_conflict"], true, "{status}");
+    assert_eq!(fs::read(&config).unwrap(), config_bytes);
+    assert_eq!(fs::read(&manifest).ok(), manifest_bytes);
+    let removed = s.run(&["unsetup", harness, "--json"]);
+    assert!(removed.status.success(), "{}", text(&removed.stderr));
+    let remaining: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(remaining["model"], "mine");
+    assert_eq!(
+        remaining["hooks"]["SessionStart"],
+        serde_json::json!([before, foreign, after])
+    );
+}
+
+#[test]
+fn legacy_foreign_registration_claude_evented_fresh() {
+    legacy_foreign_registration_case("claude", true, false);
+}
+#[test]
+fn legacy_foreign_registration_claude_shared_fresh() {
+    legacy_foreign_registration_case("claude", false, false);
+}
+#[test]
+fn legacy_foreign_registration_codex_evented_fresh() {
+    legacy_foreign_registration_case("codex", true, false);
+}
+#[test]
+fn legacy_foreign_registration_codex_shared_fresh() {
+    legacy_foreign_registration_case("codex", false, false);
+}
+#[test]
+fn legacy_foreign_registration_claude_evented_installed() {
+    legacy_foreign_registration_case("claude", true, true);
+}
+#[test]
+fn legacy_foreign_registration_claude_shared_installed() {
+    legacy_foreign_registration_case("claude", false, true);
+}
+#[test]
+fn legacy_foreign_registration_codex_evented_installed() {
+    legacy_foreign_registration_case("codex", true, true);
+}
+#[test]
+fn legacy_foreign_registration_codex_shared_installed() {
+    legacy_foreign_registration_case("codex", false, true);
+}
