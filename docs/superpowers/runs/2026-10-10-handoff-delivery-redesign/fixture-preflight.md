@@ -1,0 +1,10 @@
+# Fixture preflight for remaining implementation leaves
+
+Before the first expensive build, inspect every new fixture against the actual canonical call path and SQL schema. This preflight supplements observed RED/GREEN; it does not substitute for tests or permit assertions/timeouts to be weakened.
+
+- Trace caller claim, seat, binding generation, membership and any service preparation prerequisites. Seed complete canonical relationships and verify fixture context IDs match those rows. A setup refusal before the intended cutpoint is not behavior evidence.
+- For historical upgrades, execute the real immutable migrations through the claimed old version. Assert user_version after seeding and physical reopen before upgrade; do not use current initialize during fixture setup. Check the old FK graph, including unrelated dependent rows introduced by the fixture. Preserve exact old rows, histories, indexes/triggers, rootpages where required, and bytes/digests.
+- Inventory changed schema version/table/index/trigger guards and actual encoded ceilings in every affected suite before compiling. Only new objects are excluded from preservation snapshots. Approved capacity changes update exact-bound and max+1 fixtures, without weakening independent timing/memory budgets.
+- For retained retries, select an actual failure cutpoint: some reply-loss paths deliberately self-recover within the same call. Ensure retained state obeys all identity/possible-start invariants and later assertions are reachable.
+- For body limits, serialize actual repeated/nested payloads and test every real consumer/loader, including archival coverage. Header/generic limits remain separate. An owned fresh artifact is valid evidence only for source/tests unchanged since that exact compilation; report newer uncompiled assertions as pending.
+- Record only meaningful observed failures. Keep source frozen during builds. Diagnose fixture failures precisely before the next covering compile; do not repeat a passed check purely for presentation style.

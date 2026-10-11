@@ -97,7 +97,8 @@
       "src/store/schema.rs",
       "migrations/0029_handoff_body_bounds.sql",
       "src/archival_legacy.rs",
-      "tests/store/archival_legacy.rs"
+      "tests/store/archival_legacy.rs",
+      "tests/store/topology_attempts.rs"
     ]
   },
   {
