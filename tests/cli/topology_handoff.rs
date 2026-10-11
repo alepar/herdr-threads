@@ -7034,14 +7034,14 @@ fn automatic_bootstrap_preparation_freezes_v2_without_invite_or_create_child() {
     assert!(!temp.path().join("intents").exists());
 }
 
-#[test]
-fn automatic_bootstrap_retry_loads_its_frozen_original_without_v1_decode() {
+fn seam_automatic_bootstrap_identity(
+    root: &std::path::Path,
+) -> crate::protocol::handoff::AutomaticBootstrapIdentity {
     use crate::protocol::handoff::{
         AutomaticBootstrapIdentity, AutomaticBootstrapKeys, AutomaticBootstrapPayload,
         AutomaticBootstrapPlan, AutomaticHandoffPayload,
     };
-    let temp = Temp::new();
-    let legacy = prepared(&request(), temp.path()).unwrap();
+    let legacy = prepared(&request(), root).unwrap();
     let compound = crate::protocol::ids::OperationId::new("automatic-test-parent");
     let handoff = AutomaticHandoffPayload::new(
         legacy.payload.handoff.namespace.clone(),
@@ -7049,7 +7049,7 @@ fn automatic_bootstrap_retry_loads_its_frozen_original_without_v1_decode() {
         legacy.payload.handoff.body.clone(),
     )
     .unwrap();
-    let identity = AutomaticBootstrapIdentity::new(
+    AutomaticBootstrapIdentity::new(
         legacy.scope,
         legacy.claim,
         AutomaticBootstrapPlan {
@@ -7067,7 +7067,13 @@ fn automatic_bootstrap_retry_loads_its_frozen_original_without_v1_decode() {
             },
         },
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn automatic_bootstrap_retry_loads_its_frozen_original_without_v1_decode() {
+    let temp = Temp::new();
+    let identity = seam_automatic_bootstrap_identity(temp.path());
     let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
     let reference = journal
         .record(identity.scope.clone(), identity.semantic(), 1)
@@ -7076,4 +7082,151 @@ fn automatic_bootstrap_retry_loads_its_frozen_original_without_v1_decode() {
         super::super::retry::load_original_for_actor(&journal, &reference.recovery_ref()).unwrap();
     assert_eq!(original.header.reference, reference);
     assert_eq!(original.semantic, identity.semantic());
+}
+
+/// These are intentionally malformed *local* retained-family collisions. The
+/// exact classifier diagnostic must win before either terminal decoder runs.
+fn assert_retained_family_collision(
+    journal: &super::super::journal::Journal,
+    recovery: &str,
+    terminal_names: &[String],
+    expected: &str,
+) {
+    use std::collections::BTreeMap;
+    for name in terminal_names {
+        std::fs::write(journal.root().join(name), b"{not a terminal").unwrap();
+    }
+    let snapshot = || -> BTreeMap<std::ffi::OsString, Vec<u8>> {
+        std::fs::read_dir(journal.root())
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), std::fs::read(entry.path()).unwrap())
+            })
+            .collect()
+    };
+    let before = snapshot();
+    let error = super::super::retry::load_original_for_actor(journal, recovery).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), expected);
+    assert_eq!(
+        snapshot(),
+        before,
+        "retry classifier changed original files"
+    );
+    // This loader accepts no client or output port, so refusal cannot send or present.
+}
+
+#[test]
+fn retained_family_collision_bootstrap_same_kind_refuses_before_decoder() {
+    let temp = Temp::new();
+    let legacy = prepared(&request(), temp.path()).unwrap();
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let v1 = publish(&journal, &legacy, 1).unwrap();
+    assert_retained_family_collision(
+        &journal,
+        &v1.recovery_ref(),
+        &[format!(
+            "automatic-bootstrap-{:020}-{}.terminal",
+            v1.ordinal,
+            v1.operation.as_str()
+        )],
+        "conflicting original intent and automatic bootstrap terminal",
+    );
+
+    let temp = Temp::new();
+    let identity = seam_automatic_bootstrap_identity(temp.path());
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let v2 = journal
+        .record(identity.scope.clone(), identity.semantic(), 1)
+        .unwrap();
+    assert_retained_family_collision(
+        &journal,
+        &v2.recovery_ref(),
+        &[format!(
+            "bootstrap-{:020}-{}.terminal",
+            v2.ordinal,
+            v2.operation.as_str()
+        )],
+        "conflicting original intent and bootstrap terminal",
+    );
+}
+
+#[test]
+fn retained_family_collision_delivery_same_kind_refuses_before_decoder() {
+    use super::super::journal::{DeliveryPlan, SemanticMutation};
+    use crate::protocol::handoff::{
+        AutomaticDeliveryPlan, AutomaticHandoffPayload, AutomaticOriginal,
+    };
+    use crate::protocol::ids::{OperationId, SeatId};
+
+    let temp = Temp::new();
+    let legacy = prepared(&request(), temp.path()).unwrap();
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let v1_semantic = SemanticMutation::freeze(
+        SemanticMutation::HandoffDelivery(Box::new(DeliveryPlan {
+            version: 1,
+            payload: legacy.payload.handoff.clone(),
+            recipient: SeatId::new("recipient"),
+        })),
+        legacy.claim.clone(),
+    )
+    .unwrap();
+    let v1 = journal
+        .record(legacy.scope.clone(), v1_semantic, 1)
+        .unwrap();
+    assert_retained_family_collision(
+        &journal,
+        &v1.recovery_ref(),
+        &[format!(
+            "automatic-{:020}-{}.terminal",
+            v1.ordinal,
+            v1.operation.as_str()
+        )],
+        "conflicting automatic original",
+    );
+
+    let temp = Temp::new();
+    let legacy = prepared(&request(), temp.path()).unwrap();
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let payload = AutomaticHandoffPayload::new(
+        legacy.payload.handoff.namespace.clone(),
+        OperationId::new("automatic-delivery-seam"),
+        legacy.payload.handoff.body.clone(),
+    )
+    .unwrap();
+    let plan = AutomaticDeliveryPlan::new(payload, SeatId::new("recipient")).unwrap();
+    let v2 = journal
+        .record(
+            legacy.scope,
+            AutomaticOriginal::Delivery(Box::new(plan)).semantic(legacy.claim),
+            1,
+        )
+        .unwrap();
+    assert_retained_family_collision(
+        &journal,
+        &v2.recovery_ref(),
+        &[format!(
+            "delivery-{:020}-{}.terminal",
+            v2.ordinal,
+            v2.operation.as_str()
+        )],
+        "conflicting original intent and delivery terminal",
+    );
+}
+
+#[test]
+fn retained_family_collision_two_v2_terminals_refuses_before_decoder() {
+    let temp = Temp::new();
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let operation = uuid::Uuid::new_v4();
+    assert_retained_family_collision(
+        &journal,
+        "local:1",
+        &[
+            format!("automatic-{:020}-{operation}.terminal", 1),
+            format!("automatic-bootstrap-{:020}-{operation}.terminal", 1),
+        ],
+        "ambiguous original intent reference",
+    );
 }
