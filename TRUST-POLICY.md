@@ -122,7 +122,7 @@ live seat, the refusal offers exactly two resolutions, each as ready argv:
 
 **C4. Availability ends only on evidence.** A joined seat stays available across a daemon restart when its
 mapping is structurally reconfirmed; the open cooperative or operator binding carries forward to the new host epoch (implemented; a native binding re-registers instead, and a send before the first reconciliation pass assumes the carry rather than warning). A `managed_launch` binding is never availability, so it is not carried; it stays open and unregistered until a check-in replaces it. Availability ends when the mapping becomes
-unresolved, the seat retires, or a check-in replaces the binding. Availability is derived per binding: a seat is available while any open, connected, registered binding of it is confirmed by the effective observation, so the last connected binding disconnecting (for example on liveness evidence) opens the seat's unavailability episode, and a lifecycle check-in that reconnects a binding closes it.
+unresolved, the seat retires, or the binding disconnects or ends. Availability is derived per binding: a seat is available while any open, connected, registered binding of it is confirmed by the effective observation, so the last connected binding disconnecting (for example on liveness evidence) opens the seat's unavailability episode, and a lifecycle check-in that reconnects a binding closes it.
 Herdr not answering (a timed-out or refused connection, a read that finishes past its budget) and a
 daemon-side failure to stage a capture are missing evidence, not evidence of change: they write no host
 invalidation, so seats, bindings and the published view stay **frozen** until Herdr answers (implemented,
@@ -324,9 +324,9 @@ model open work, and summary closure never changes receipt state or installs glo
   row is never reopened. Human bindings are exempt from the liveness sweep (no process fingerprint; the seat
   stays human-held until an agent replaces it). Receipt waivers and the wake exclusion key on "the seat holds
   an open human binding", not on the seat's latest binding.
-- *Agent to agent, same seat*: a lifecycle check-in (startup, `/clear`, resume) replaces the binding. Allowed. A lifecycle check-in by a different agent harness on the same seat retires the pane's
-  client-local context of the previous harness before checking in (a hint, A2; the daemon decides the
-  check-in against the canonical view).
+- *Agent to agent, same seat*: a lifecycle check-in (startup, `/clear`, resume) adds the session's own binding, or reconnects it; it
+  disconnects another binding only through the same-process rule or lineage (A4). Allowed. A check-in by a different
+  agent harness on the same seat adds its own binding; no client-local context of another harness is retired.
   A `managed_launch` placeholder is replaced by the first top-level agent binding of the same harness that a
   lifecycle check-in enrolls or reconnects on the seat, and only by that: other bindings, other harnesses'
   placeholders and the person's binding are untouched, a Current (tool-boundary) check-in never adopts or
@@ -810,10 +810,15 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   `ANTIGRAVITY_CONVERSATION_ID` to the processes it starts; a `herdr-threads` call under an `agy`
   process is attributed to that conversation's binding (`cooperative_env_session`, A3), and refused
   with `session_claim_required` when the variable is absent (decision 15), never attributed to the
-  pane. A child conversation's calls carry the child's conversation id, which names no top-level
-  binding of the seat; they are not enrolled as subagent bindings (agy reports no agent id).
+  pane. A child conversation's call carries the child's conversation id; when a parent's subagent
+  listing names it, the call is a read-only subagent claim of that parent (native session swapped to the
+  parent's conversation, the child id as agent id, `cooperative_env_session`) and enrolls as a subagent
+  binding of the parent. A conversation with neither a presence lock nor a listing, or whose witnesses
+  cannot be read, is refused `unattributed_session`, never attributed to the parent's top level.
 - **Hermes enrolls through its CLI hooks.** The witness is Hermes's native `platform == "cli"`
-  (cooperative, A1): delegated children run with platform `subagent` and are answered locally, and an
+  (cooperative, A1): delegated children run with platform `subagent`: the bridge answers them locally with the subagent
+  restriction, and their `subagent_start` registers the child session as a read-only subagent binding of
+  the parent (`subagent_stop` disconnects it). An
   empty or missing platform never enrolls. The start callback enrolls without a check-in (Hermes ignores
   its return value); the first qualified turn checks in. An older installed bridge (no
   `enrollment_witness`) keeps launch-only behavior until `setup hermes --profile NAME` is re-run. There
@@ -822,7 +827,7 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   bare macOS Hermes is not process-detected by Herdr, so its seat is not woken while idle; `launch --kind
   hermes` stays the way to get a wakeable Hermes. CLI side agents (`/background`: platform `cli`, own
   session, no parent, no native side-agent flag) are indistinguishable from the foreground session: they
-  enroll no new seat, but their turns check in and replace the binding, as on a launch-created seat
+  enroll no new seat, but their turns check in as their own binding of the seat, as on a launch-created seat
   (follow-on ht-e73). Operator retire: retiring the seat of a running bare Hermes leaves the pane
   `Unowned`, so its next CLI turn re-enrolls a fresh seat through the ordinary resolver, never the retired
   one.

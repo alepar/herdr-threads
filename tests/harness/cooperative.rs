@@ -312,7 +312,7 @@ fn each_role_renders_one_child_restriction_and_only_top_level_receipt_instructio
             text.matches("after output is written and flushed").count(),
             top_level_count
         );
-        assert!(text.contains("subagents use inbox --machine or --json"));
+        assert!(text.contains("inbox --machine or --json are read-only too"));
         // Demo-1 P4: no rows, no (always-empty) mail section.
         assert_eq!(text.matches("Mail data (JSON):").count(), 0);
         assert!(!text.contains("Mail data (JSON)"), "{text}");

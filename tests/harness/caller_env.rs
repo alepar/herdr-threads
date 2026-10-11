@@ -341,3 +341,117 @@ fn refusal_codes_and_messages_are_stable() {
             .contains("claude, codex, hermes or other registered agent harness")
     );
 }
+
+/// A throwaway `HOME` holding agy's witness tree, removed on drop.
+struct AgyHome(std::path::PathBuf);
+impl AgyHome {
+    fn new() -> Self {
+        let home = std::env::temp_dir().join(format!("ht-agy-derive-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(home.join(".gemini/antigravity-cli")).unwrap();
+        Self(home)
+    }
+    fn data(&self) -> std::path::PathBuf {
+        self.0.join(".gemini/antigravity-cli")
+    }
+    fn presence_lock(&self, conversation: &str) {
+        let dir = self.data().join("presence");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{conversation}.lock")), b"").unwrap();
+    }
+    fn subagent_listing(&self, parent: &str, child: &str) {
+        let dir = self
+            .data()
+            .join("brain")
+            .join(parent)
+            .join(".system_generated/subagents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{child}.json")), b"{}").unwrap();
+    }
+    fn home(&self) -> &str {
+        self.0.to_str().unwrap()
+    }
+}
+impl Drop for AgyHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn agy_table() -> FakeTable {
+    FakeTable(vec![
+        rec(100, 90, 1000, &["herdr-threads", "inbox"]),
+        rec(90, 80, 900, &["sh"]),
+        rec(80, 1, 800, &["agy"]),
+    ])
+}
+
+fn run_agy(home: &AgyHome, conversation: &str) -> Result<EnvClaim, EnvRefusal> {
+    run(
+        &agy_table(),
+        &[
+            ("HOME", home.home()),
+            ("ANTIGRAVITY_CONVERSATION_ID", conversation),
+        ],
+        None,
+    )
+}
+
+fn assert_agy_unattributed(result: Result<EnvClaim, EnvRefusal>) {
+    match result {
+        Err(refusal @ EnvRefusal::UnattributedSession { harness: "agy", .. }) => {
+            assert_eq!(refusal.code(), "unattributed_session");
+        }
+        other => panic!("expected an agy unattributed_session refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn agy_child_conversation_is_a_subagent_claim_of_its_parent() {
+    let home = AgyHome::new();
+    home.subagent_listing("parent-1", "child-1");
+    let claim = run_agy(&home, "child-1").unwrap();
+    assert_eq!(claim.native_session.as_str(), "parent-1");
+    assert_eq!(claim.agent_id, Some(AgentId::new("child-1")));
+    assert_eq!(claim.role, CallerRole::Subagent);
+    assert_eq!(claim.provenance, "cooperative_env_session");
+    assert_eq!(
+        claim.fingerprint,
+        LivenessFingerprint {
+            pid: 80,
+            start: 800
+        }
+    );
+}
+
+#[test]
+fn agy_top_level_conversation_with_a_presence_lock() {
+    let home = AgyHome::new();
+    home.presence_lock("conv-1");
+    let claim = run_agy(&home, "conv-1").unwrap();
+    assert_eq!(claim.native_session.as_str(), "conv-1");
+    assert_eq!(claim.agent_id, None);
+    assert_eq!(claim.role, CallerRole::TopLevel);
+    assert_eq!(claim.fingerprint.pid, 80);
+}
+
+#[test]
+fn agy_conversation_without_lock_or_listing_is_unattributed() {
+    let home = AgyHome::new();
+    assert_agy_unattributed(run_agy(&home, "conv-1"));
+}
+
+#[test]
+fn agy_unreadable_listing_is_unattributed_never_top_level() {
+    let home = AgyHome::new();
+    // `brain` is a regular file: its `read_dir` fails with not-a-directory.
+    std::fs::write(home.data().join("brain"), b"").unwrap();
+    assert_agy_unattributed(run_agy(&home, "conv-1"));
+}
+
+#[test]
+fn agy_invalid_conversation_id_is_unattributed() {
+    let home = AgyHome::new();
+    // Printable (so it parses as a session id) but path material: `../x` would escape `presence/`.
+    home.presence_lock("bad!id");
+    assert_agy_unattributed(run_agy(&home, "bad!id"));
+}
