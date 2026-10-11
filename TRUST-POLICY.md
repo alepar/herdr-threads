@@ -291,6 +291,9 @@ model open work, and summary closure never changes receipt state or installs glo
   additionally refused before dispatch: an early refusal with the stable code, never the authority.
   Subagents read, summarize and advance their own binding's cursor: a subagent's text `inbox` displays
   its own stream and sends only `AdvanceCursors` (never a display ACK or a delivery completion).
+  Where the subagent has no stream of its own (no recognizable agent id in its environment, or a daemon
+  without per-binding cursors), its text `inbox` is the plain read-only read: it carries no claim, moves
+  no cursor and settles nothing.
   Client-side role derivation fails closed: a malformed subagent marker (a `CODEX_THREAD_ID` that is not
   a valid id) is refused, never read as the top-level session. This is cooperative, on the recognized
   claim: a Claude shape the hook cannot recognize stays attributed to the parent session (the accepted
