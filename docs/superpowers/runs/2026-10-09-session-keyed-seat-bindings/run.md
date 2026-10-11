@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-session-keyed-seat-bindings
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: fix-loop
+phase: report
 codeMechanism: Workflow
 
 idea: Goal: implement the new herdr-threads seat-bindings model we designed in this session, absorbing the Hermes global-enrollment work (ht-4ne, branch super-auto/hermes-global-enrollment, unmerged) it sprang from. Flags: planOneShot=false (interactive Mode A design for remaining questions), skipPlanRoast=false, skipCodeRoast=false, autonomous=true from after the design. The Codex CODEX_EXEC_SERVER_URL pane-env installer step runs separately on branch codex-daemon-env and is out of scope here.
@@ -51,6 +51,7 @@ approvals:
 baseAbsorbed: cb6052fc → 520a1780, 1 conflicted files
 baseAbsorbed: 02041b93 → 8d5120ed, 45 conflicted files
 baseAbsorbed: 43cc19cd → 12300b4c, 0 conflicted files
+baseAbsorbed: 026ad3ab → 2ef00231, 1 conflicted files
 parked:
 - 2026-10-10-session-keyed-seat-bindings-roast-design-1.md · escalation · "harness sandboxes (Linux bwrap PID namespace, Codex seatbelt) may hide the agent ancestor PID/start time so sandboxed calls are refused — spike: with the Claude sandbox on, read CLAUDE_PID start time from a sandboxed Bash call"
 - 2026-10-10-session-keyed-seat-bindings-roast-design-1.md · escalation · "a sibling Bash PreToolUse hook returning updatedInput/ask may drop the --agent-id rewrite (claude-code issue 83353, last hook wins) — subagent misattributed to parent"
