@@ -39,7 +39,7 @@ use crate::{
     harness::adapter::IdleWake,
     ports::{
         ModChannelId, ModChannelRegistration, ModChannelSink, ModChannels, ModFingerprint,
-        ModStoreReads,
+        ModStoreReads, WatchReplayScope, WatchReplaySnapshot,
     },
     protocol::{
         authority::Harness,
@@ -68,6 +68,7 @@ const STALL_READ_BUDGET_MS: u64 = 1_000;
 struct Entry {
     channel: Option<ModChannelId>,
     presentation_lease: String,
+    owner_replay: Option<WatchReplaySnapshot>,
     sink: Option<Arc<dyn ModChannelSink>>,
     generation: u64,
     native_session: String,
@@ -543,6 +544,91 @@ impl ModChannels for ModChannelRegistry {
                 && entry.presentation_lease == lease
         })
     }
+    fn presentation_replay_snapshot(
+        &self,
+        claim: &crate::protocol::authority::CallerClaim,
+        lease: &str,
+        known: &crate::delivery::ledger::OrdinaryDueSnapshot,
+    ) -> Option<WatchReplaySnapshot> {
+        let state = self.lock();
+        let entry = state.entries.get(&claim.seat)?;
+        if entry.state != ModChannelState::Live
+            || entry.generation != claim.binding_generation
+            || entry.native_session != claim.native_session.as_str()
+            || entry.presentation_lease != lease
+            || known.generation != claim.binding_generation
+            || known.native_session != claim.native_session.as_str()
+        {
+            return None;
+        }
+        let scope = WatchReplayScope {
+            seat: claim.seat.clone(),
+            generation: claim.binding_generation,
+            native_session: claim.native_session.as_str().to_owned(),
+            execution: claim.execution.clone(),
+            lease: lease.to_owned(),
+            incarnation: known.incarnation,
+        };
+        // Capture transiently. Even an empty successful capture is terminal for
+        // this lease; an error must leave the Entry uninitialized.
+        let mut snapshot = match &entry.owner_replay {
+            None => WatchReplaySnapshot {
+                scope,
+                remaining: known.stamps.clone(),
+                active: !known.stamps.is_empty(),
+            },
+            Some(saved) => WatchReplaySnapshot {
+                remaining: if saved.scope == scope {
+                    saved.remaining.clone()
+                } else {
+                    Default::default()
+                },
+                active: !saved.remaining.is_empty(),
+                scope,
+            },
+        };
+        snapshot
+            .remaining
+            .retain(|id, stamp| known.stamps.get(id) == Some(stamp));
+        Some(snapshot)
+    }
+    fn apply_presentation_replay(
+        &self,
+        mut snapshot: WatchReplaySnapshot,
+        completed: &std::collections::BTreeMap<
+            crate::protocol::ids::MessageId,
+            crate::delivery::ledger::Offer,
+        >,
+        current: &crate::delivery::ledger::OrdinaryDueSnapshot,
+    ) {
+        let mut state = self.lock();
+        let Some(entry) = state.entries.get_mut(&snapshot.scope.seat) else {
+            return;
+        };
+        if entry.state != ModChannelState::Live
+            || entry.generation != snapshot.scope.generation
+            || entry.native_session != snapshot.scope.native_session
+            || entry.presentation_lease != snapshot.scope.lease
+        {
+            return;
+        }
+        let saved = entry.owner_replay.get_or_insert_with(|| {
+            snapshot.active = false;
+            snapshot.clone()
+        });
+        if saved.scope != snapshot.scope
+            || saved.scope.incarnation != current.incarnation
+            || saved.scope.generation != current.generation
+            || saved.scope.native_session != current.native_session
+        {
+            // Incarnation loss abandons the pass, never recaptures in this lease.
+            saved.remaining.clear();
+            return;
+        }
+        saved.remaining.retain(|id, stamp| {
+            current.stamps.get(id) == Some(stamp) && completed.get(id) != Some(stamp)
+        });
+    }
     fn register(
         &self,
         registration: ModChannelRegistration,
@@ -582,6 +668,7 @@ impl ModChannels for ModChannelRegistry {
                 registration.seat.clone(),
                 Entry {
                     channel: Some(id),
+                    owner_replay: None,
                     presentation_lease: uuid::Uuid::new_v4().simple().to_string(),
                     sink: Some(sink),
                     generation: registration.binding_generation,

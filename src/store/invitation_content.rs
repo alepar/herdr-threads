@@ -1784,6 +1784,32 @@ fn validate_due_snapshot(input: &PresentationInput) -> Result<(), ApiError> {
     Ok(())
 }
 
+fn validate_owner_replay(input: &PresentationInput) -> Result<(), ApiError> {
+    let Some(replay) = &input.owner_replay else {
+        return Ok(());
+    };
+    let valid = input.ordinary_due_snapshot.as_ref().is_some_and(|known| {
+        input.pull.consumer == crate::protocol::delivery::PresentationConsumer::Watch
+            && replay.scope.seat == input.pull.claim.seat
+            && replay.scope.generation == input.pull.claim.binding_generation
+            && replay.scope.native_session == input.pull.claim.native_session.as_str()
+            && replay.scope.execution == input.pull.claim.execution
+            && Some(replay.scope.lease.as_str()) == input.pull.presentation_lease.as_deref()
+            && replay.scope.incarnation == known.incarnation
+            && replay.remaining.len() <= crate::delivery::ledger::MAX_OFFERS_PER_SEAT
+            && (replay.active || replay.remaining.is_empty())
+            && replay.remaining.iter().all(|(id, stamp)| {
+                stamp.count != 0
+                    && MessageId::parse(id.as_str()).is_ok()
+                    && known.stamps.get(id) == Some(stamp)
+            })
+    });
+    if !valid {
+        return Err(ApiError::invalid_request("invalid ordinary due snapshot"));
+    }
+    Ok(())
+}
+
 fn due_update(
     input: &PresentationInput,
     state: &State,
@@ -1918,6 +1944,7 @@ pub(super) fn pull(
     };
     input.pull.validate().map_err(ApiError::invalid_request)?;
     validate_due_snapshot(&input)?;
+    validate_owner_replay(&input)?;
     if !input.render_profile.validate() {
         return Err(ApiError::invalid_request("invalid presentation profile"));
     }
@@ -1931,6 +1958,7 @@ pub(super) fn pull(
             work: PresentationWork::default(),
             reclaimed_messages: Vec::new(),
             ordinary_due_update: None,
+            owner_replay: Default::default(),
         });
     }
     if render_selection(db, claim, consumer)?.as_ref()
@@ -1943,6 +1971,7 @@ pub(super) fn pull(
             work: PresentationWork::default(),
             reclaimed_messages: Vec::new(),
             ordinary_due_update: None,
+            owner_replay: Default::default(),
         });
     }
     if let Some(frozen) = &input.frozen_render
@@ -1955,6 +1984,25 @@ pub(super) fn pull(
     }
     let mut work = PresentationWork::default();
     let reclaimed_messages = reclaim_terminal_offers(db, &mut input, &mut work)?;
+    let mut owner_progress = crate::ports::WatchReplayProgress::default();
+    let recovery_active = input.owner_replay.as_ref().is_some_and(|v| v.active);
+    if recovery_active {
+        owner_progress.source = crate::ports::OrdinaryPresentationSource::RecoveryControlOnly;
+    }
+    if let Some(replay) = &mut input.owner_replay {
+        replay.remaining.retain(|id, stamp| {
+            if reclaimed_messages.contains(id) {
+                owner_progress.completed.insert(id.clone(), *stamp);
+                false
+            } else {
+                true
+            }
+        });
+    }
+    let owner_pending = input
+        .owner_replay
+        .as_ref()
+        .is_some_and(|v| !v.remaining.is_empty());
     let claim = &input.pull.claim;
     let mut state = load(db, claim, consumer)?;
     let mut sizer = presentation::Sizer::new();
@@ -1994,15 +2042,17 @@ pub(super) fn pull(
         &mut work,
         &mut sizer,
         proof.relevance,
-        proof.more || publications.more || replay_ordinary,
+        proof.more || publications.more || replay_ordinary || owner_pending,
     )? {
         save(db, claim, consumer, &state)?;
+        owner_progress.snapshot = input.owner_replay.take();
         return finish(
             reply,
             work,
             &mut sizer,
             reclaimed_messages,
             ordinary_due_update,
+            owner_progress,
         );
     }
     if state.render_key != render_key {
@@ -2113,7 +2163,17 @@ pub(super) fn pull(
     }
     // A walk freezes its native/passive tuple at START. A later publication
     // never resets an active body/carry or consumes its next capture signal.
-    let normal_mode = input.new_message_slots > 0;
+    let owner_mode = owner_pending;
+    let normal_mode = !owner_mode && input.new_message_slots > 0;
+    owner_progress.source = if control_only {
+        owner_progress.source
+    } else if owner_mode {
+        crate::ports::OrdinaryPresentationSource::OwnerReplay
+    } else if normal_mode {
+        crate::ports::OrdinaryPresentationSource::Normal
+    } else {
+        crate::ports::OrdinaryPresentationSource::LogicalDue
+    };
     if normal_mode
         && !control_only
         && state.ordinary_done == 1
@@ -2227,7 +2287,18 @@ pub(super) fn pull(
     for n in 0..if control_only { 0 } else { 5 } {
         let class = (state.rotation as usize + n) % 5;
         if class == 0 && !normal_mode {
-            let candidates = due_keys(&input, ordinary_due_update.as_ref(), &[]);
+            let candidates = if owner_mode {
+                input
+                    .owner_replay
+                    .as_ref()
+                    .expect("owner mode snapshot")
+                    .remaining
+                    .keys()
+                    .cloned()
+                    .collect()
+            } else {
+                due_keys(&input, ordinary_due_update.as_ref(), &[])
+            };
             if !candidates.is_empty() && outputs.len() < 32 {
                 let due_context = super::queries::ordinary_due_context(
                     db,
@@ -2254,11 +2325,21 @@ pub(super) fn pull(
                         due_context,
                         &mut work,
                     )?;
-                    let update = ordinary_due_update
-                        .as_mut()
-                        .expect("due keys require snapshot");
+                    let stamp = ordinary_due_update
+                        .as_ref()
+                        .expect("exact keys require snapshot")
+                        .stamps[&id];
                     let Some(value) = value else {
-                        update.cache.deferred.insert(id.clone(), update.stamps[&id]);
+                        if owner_mode {
+                            owner_progress.completed.insert(id, stamp);
+                        } else {
+                            ordinary_due_update
+                                .as_mut()
+                                .expect("exact snapshot")
+                                .cache
+                                .deferred
+                                .insert(id, stamp);
+                        }
                         continue;
                     };
                     work.ordinary_due_hydrated += 1;
@@ -2274,8 +2355,21 @@ pub(super) fn pull(
                         if !outputs.is_empty() {
                             break;
                         }
-                        update.cache.deferred.insert(id.clone(), update.stamps[&id]);
+                        if owner_mode {
+                            owner_progress.completed.insert(id, stamp);
+                        } else {
+                            ordinary_due_update
+                                .as_mut()
+                                .expect("exact snapshot")
+                                .cache
+                                .deferred
+                                .insert(id, stamp);
+                        }
                         continue;
+                    }
+                    if owner_mode {
+                        owner_progress.completed.insert(id.clone(), stamp);
+                        owner_progress.emitted.insert(id.clone(), stamp);
                     }
                     outputs.push(output);
                     if message.content.content.truncated {
@@ -2466,12 +2560,21 @@ pub(super) fn pull(
         || work.notices > carried_notices.len()
         || invitation_rows.len() > descriptors.len();
     state.outbox_more = i64::from(nonordinary_more);
+    // Physical owner replay never consumes an unchanged logical due episode.
     let consumed = offered
         .iter()
         .chain(&truncated)
+        .filter(|id| !owner_progress.emitted.contains_key(*id))
         .cloned()
         .collect::<Vec<_>>();
+    let owner_more = input.owner_replay.as_ref().is_some_and(|replay| {
+        replay
+            .remaining
+            .iter()
+            .any(|(id, stamp)| owner_progress.completed.get(id) != Some(stamp))
+    });
     let more = nonordinary_more
+        || owner_more
         || ordinary_runnable(
             &input,
             &state,
@@ -2502,12 +2605,14 @@ pub(super) fn pull(
         )?
     };
     save(db, claim, consumer, &state)?;
+    owner_progress.snapshot = input.owner_replay.take();
     finish(
         reply,
         work,
         &mut sizer,
         reclaimed_messages,
         ordinary_due_update,
+        owner_progress,
     )
 }
 fn finish(
@@ -2516,6 +2621,7 @@ fn finish(
     sizer: &mut crate::delivery::presentation::Sizer,
     reclaimed_messages: Vec<MessageId>,
     ordinary_due_update: Option<crate::delivery::ledger::OrdinaryDueSnapshot>,
+    owner_replay: crate::ports::WatchReplayProgress,
 ) -> Result<PresentationOutput, ApiError> {
     sizer
         .rpc(&crate::protocol::results::CommandResult::DeliveryPulledV2(
@@ -2531,6 +2637,7 @@ fn finish(
         work,
         reclaimed_messages,
         ordinary_due_update,
+        owner_replay,
     })
 }
 

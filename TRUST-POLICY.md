@@ -452,12 +452,13 @@ its audience is the members at the rejection decision plus the rejecting seat, n
 Only the exact native warning backed by the retained rejection record is classified this way.
 Historical info rejection events remain unchanged on replay. Rejection notices are passive for every
 recipient: they create no wake, poke, receipt or ACK obligation. A committed check-in, or a
-hook-pull harness's `DeliveryPull` page, settles only the bounded prefix of attributed events it
-carries to the exact current binding generation and execution (the pull settles before it replies,
+hook-pull harness's `DeliveryPull` page or a capable Watch presentation page, settles only the
+bounded prefix of attributed events it carries to the exact current binding generation and execution (the pull settles before it replies,
 under the canonical binding's execution; nothing is transcript-confirmed and no provenance is
 recorded). The pull's settle refuses unless the carried notices are still exactly the unoffered
-prefix, so a check-in and a pull never carry the same notice, and a notice shows once. The pull's
-version includes the newest pending notice, so an unchanged reply never hides one; notices never wake. A global decision watermark cannot settle uncarried events, including late attribution.
+prefix, so check-in, Hook and capable Watch share one exact-occupant notice frontier.
+A fresh allocation carries each notice once; bounded recovery may restream its existing outbox
+token. The pull's version includes the newest pending notice, so an unchanged reply never hides one; notices never wake. A global decision watermark cannot settle uncarried events, including late attribution.
 History and immutable operation results remain readable. A successor occupant gets its own offers;
 response loss can lose an informational offer after commitment, and so can a hook-pull injection
 that the harness accepts but the model never sees (an agy `systemMessage` that silently misses;
@@ -1196,7 +1197,7 @@ IDs then use exact canonical keys instead of the normal ordinary source: at most
 100 attempts and 32 hydrated candidates per call, charged separately as at most
 1303 keyed relation probes and 100 indexed single-row availability seeks. The
 existing reconciliation allowance (256 keys/1280 probes), physical discovery433,
-32 blocks/65536 encoded output bytes, sizing352, carry155731 and partial49415
+32 blocks/65536 encoded output bytes, sizing352, carry 155731 and partial 49415
 bounds do not grow. Canonical pending/addressed/publication checks still decide
 eligibility; a missing key cannot authorize settlement or an offer-history reset.
 
@@ -1221,3 +1222,39 @@ render/canonical scope, without a logical offer or delivery evidence. A declared
 scope change retries it. Topic-only shortening is not guaranteed to retry until
 such a scope change occurs. This adds no wake timer, delivery guarantee, larger
 output limit or receipt authority.
+
+
+A newly admitted live Watch owner may physically restream its captured pending
+ordinary offers once per presentation lease, independently of DP5 logical retry
+eligibility. Recovery preserves every full logical Offer stamp, including
+nonzero recorded u8 counts above the three-offer eligibility threshold from
+supported concurrent recording. Canonical exact-key eligibility still decides
+addressing, publication, effective pending receipts and lazy state. Physical
+replay is not ACK, lazy completion, acceptance, health evidence or native wake
+outlook; logical due continuation excludes only actual logical allocations.
+
+The process-local registry retains at most 64 owner worklists, each at most 256
+ID/full-stamp pairs plus bounded scope: 256*(128 ID bytes +16 timestamp bytes
++1 count byte +1 truncation byte), a <=128-byte execution, 16-byte incarnation
+and fixed bookkeeping; bounded tree/allocator overhead is additional. Each
+live request has one worklist snapshot and the existing bounded logical ledger
+snapshot. Initialization/progress installs only on successful store return;
+refusal/rollback installs neither. The exact Live lease and canonical binding
+fence every pull. Grace cannot use replay authority. Replacement starts a fresh
+pass; ledger incarnation loss abandons remaining work without same-lease refill.
+Removal, disabled/stopped registry and daemon restart discard this local state.
+Successful allocation followed by response/output loss consumes that lease's
+attempt; replacement can recover canonically pending content. Existing downstream
+silent-loss and daemon-restart limits remain unchanged.
+
+Recovery replaces the ordinary source slice: at most 100 exact attempts, 32
+hydrated bodies, 1303 keyed probes and 100 availability seeks. Reconciliation
+256/1280, fresh discovery 433, sizing 352, 32 blocks/65536 actual encoded bytes,
+carry 155731 and partial 49415 remain unchanged. No normal cursor/carry/partial
+or captured scan tuple advances during replay. Missing or standalone-unrenderable
+keys finish physical attempts without proving settlement or releasing capacity.
+The existing nonordinary outbox must be replayed/confirmed normally before fresh
+ordinary recovery; no Message descriptor enters that outbox. Full stamp and
+incarnation pruning at snapshot/application cannot overwrite newer logical
+history. Recovery leaves current post-store native outlook unchanged, including
+empty, mixed, final and active-recovery outbox/control-only quanta.

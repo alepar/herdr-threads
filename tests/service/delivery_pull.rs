@@ -2809,6 +2809,7 @@ fn presentation_refresh_preserves_live_presentation_header_and_outbox_across_reb
         f.store
             .presentation_pull(
                 PresentationInput {
+                    owner_replay: None,
                     ordinary_due_snapshot: None,
                     frozen_render: presentation_watch_frozen(&f, &claim),
                     render_profile:
@@ -3098,6 +3099,7 @@ fn presentation_final_watch_codec_counts_escaped_canonical_invitation_batch() {
             .store
             .presentation_pull(
                 PresentationInput {
+                    owner_replay: None,
                     ordinary_due_snapshot: None,
                     frozen_render: presentation_watch_frozen(&f, &recipient),
                     render_profile:
@@ -3228,6 +3230,7 @@ fn presentation_final_cleanup_preserves_passive_removal_observation() {
     f.store
         .presentation_pull(
             PresentationInput {
+                owner_replay: None,
                 ordinary_due_snapshot: None,
                 frozen_render: presentation_watch_frozen(&f, &recipient),
                 render_profile:
@@ -3881,6 +3884,7 @@ fn presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded() {
             .store
             .presentation_pull(
                 PresentationInput {
+                    owner_replay: None,
                     ordinary_due_snapshot: None,
                     frozen_render,
                     render_profile: profile.clone(),
@@ -5241,7 +5245,7 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
                 .unwrap();
         }
         let pull = |claim: &CallerClaim| {
-            f.store.presentation_pull(PresentationInput{ordinary_due_snapshot:None,frozen_render:presentation_watch_frozen(&f,claim),render_profile:crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,pull:DeliveryPullV2{claim:claim.clone(),consumer:PresentationConsumer::Watch,render:crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,presentation_lease:Some("0123456789abcdef0123456789abcdef".into()),marker_prefix:vec![]},attention_version:0,ordinary_version:0,with_attention:false,retry_messages:false,blocked_messages:vec![],known_messages:vec![],new_message_slots:256},&budget()).unwrap()
+            f.store.presentation_pull(PresentationInput{owner_replay:None,ordinary_due_snapshot:None,frozen_render:presentation_watch_frozen(&f,claim),render_profile:crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,pull:DeliveryPullV2{claim:claim.clone(),consumer:PresentationConsumer::Watch,render:crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,presentation_lease:Some("0123456789abcdef0123456789abcdef".into()),marker_prefix:vec![]},attention_version:0,ordinary_version:0,with_attention:false,retry_messages:false,blocked_messages:vec![],known_messages:vec![],new_message_slots:256},&budget()).unwrap()
         };
         let refresh = |claim: &CallerClaim| {
             f.store
@@ -5746,15 +5750,20 @@ fn presentation_registered_channel_materializes_each_published_warn_before_drain
 // notice, overwriting a valid shared frontier and reoffering settled notices.
 #[test]
 fn presentation_hook_notice_settles_current_execution_without_reoffer() {
-    presentation_notice_settles_current_execution(false);
+    presentation_notice_settles_current_execution(false, false);
 }
 
 #[test]
 fn presentation_watch_notice_settles_current_execution_without_reoffer() {
-    presentation_notice_settles_current_execution(true);
+    presentation_notice_settles_current_execution(true, false);
 }
 
-fn presentation_notice_settles_current_execution(watch: bool) {
+#[test]
+fn presentation_watch_notice_continuation_preserves_remaining_confirming_condition() {
+    presentation_notice_settles_current_execution(true, true);
+}
+
+fn presentation_notice_settles_current_execution(watch: bool, remaining_condition: bool) {
     use crate::{
         ports::{
             ServiceAuthorityGate, ServiceConnectionAuthority, ServiceDecisionGuard,
@@ -5859,8 +5868,47 @@ fn presentation_notice_settles_current_execution(watch: bool) {
     let before = frontier();
     assert_eq!(before.0 as u64, recipient.binding_generation);
     assert_eq!(before.1, recipient.execution.as_str());
+    if remaining_condition {
+        use crate::protocol::commands::{CreateThread, InvitationConfirmation, Invite};
+        let CommandResult::ThreadCreated(thread) = f
+            .service
+            .handle(
+                Command::CreateThread(CreateThread {
+                    name: None,
+                    topic: "remaining condition".into(),
+                    goal: "review".into(),
+                    operation: OperationId::new("notice-condition-thread"),
+                    claim: window.sender.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("real thread")
+        };
+        f.service
+            .handle(
+                Command::Invite(Invite {
+                    confirmation: Some(InvitationConfirmation::RequireAck),
+                    thread,
+                    seat: recipient.seat.clone(),
+                    deadline_millis: Some(60_000),
+                    operation: OperationId::new("notice-condition-invite"),
+                    claim: window.sender.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+    }
     let second = notify("frontier-second-notify");
-    let DeliveryPullReplyV2::Page(page) = window.pull() else {
+    let initial_reply = if watch {
+        window.raw_watch_pull()
+    } else {
+        presentation_test_pull(f, recipient)
+    };
+    let DeliveryPullReplyV2::Page(page) = &initial_reply else {
         panic!("actual V2 notice page")
     };
     assert_eq!(
@@ -5888,17 +5936,91 @@ fn presentation_notice_settles_current_execution(watch: bool) {
         )
         .unwrap();
     assert!(after.2 >= ordinal && after.2 > before.2);
-    let mut quiet = false;
+    use crate::protocol::delivery::PresentationControlStampV2;
+    let attention = page
+        .emitted_controls
+        .iter()
+        .find_map(|stamp| match stamp {
+            PresentationControlStampV2::Attention { epoch, version } => {
+                Some((epoch.clone(), *version))
+            }
+            _ => None,
+        })
+        .expect("notice's actual Attention episode");
+    assert!(
+        page.more,
+        "settling the carried witness must advertise continuation"
+    );
+    if watch {
+        let replay = window.raw_watch_pull();
+        let DeliveryPullReplyV2::Page(replayed) = &replay else {
+            panic!("lost-output notice replay")
+        };
+        assert_eq!(replayed.presentation_token, page.presentation_token);
+        assert!(
+            replayed.more,
+            "durable notice continuation survives lost output"
+        );
+        assert_eq!(
+            window
+                .f
+                .service
+                .presentation
+                .last_work
+                .lock()
+                .unwrap()
+                .unwrap()
+                .ordinary,
+            0
+        );
+        window.confirm_nonmessage_presentation(&replay);
+    } else {
+        window.confirm_nonmessage_presentation(&initial_reply);
+    }
+    let mut more = page.more;
+    let mut cleared = false;
     for _ in 0..32 {
-        match window.pull() {
-            DeliveryPullReplyV2::Page(page) => assert!(!page.items.iter().any(|item| matches!(item,
-                PresentationItemV2::Notice { warning, .. } if warning == &first || warning == &second)),
-                "settled notices never reappear in subsequent V2 pages"),
-            DeliveryPullReplyV2::Unchanged { .. } => { quiet = true; break; }
-            other => panic!("admitted real V2 drain refused: {other:?}"),
+        if !more {
+            break;
+        }
+        let reply = window.pull();
+        let work = window
+            .f
+            .service
+            .presentation
+            .last_work
+            .lock()
+            .unwrap()
+            .unwrap();
+        assert_eq!(work.relevance_calls, 1);
+        assert!(work.output_passes <= 352 && work.output_bytes <= 65536);
+        match reply {
+            DeliveryPullReplyV2::Page(page) => {
+                assert!(!page.items.iter().any(|item| matches!(item,
+                    PresentationItemV2::Notice { warning, .. } if warning == &first || warning == &second)));
+                for stamp in &page.emitted_controls {
+                    if let PresentationControlStampV2::Cleared { epoch, version } = stamp {
+                        assert_eq!((epoch, version), (&attention.0, &attention.1));
+                        cleared = true;
+                    }
+                }
+                more = page.more;
+            }
+            DeliveryPullReplyV2::Unchanged { .. } => {
+                more = false;
+            }
+            other => panic!("admitted continuation refused: {other:?}"),
         }
     }
-    assert!(quiet, "finite notice/control drain reaches unchanged");
+    assert!(!more, "advertised continuation terminates");
+    assert_eq!(
+        cleared, !remaining_condition,
+        "only canonical absence clears the actual episode"
+    );
+    assert!(
+        window.offers().is_empty(),
+        "no receipt ACK used to drive continuation"
+    );
     assert_eq!(
         frontier(),
         after,
@@ -6049,6 +6171,64 @@ impl OfferWindowFixture {
             panic!("real V2 pull result")
         };
         self.confirm_nonmessage_presentation(&reply);
+        reply
+    }
+
+    fn replace_watch(&mut self) -> String {
+        use crate::{
+            ports::{ModChannelSink, ModChannels},
+            protocol::watch::{WatchFrame, WatchRequest},
+        };
+        struct Sink;
+        impl ModChannelSink for Sink {
+            fn push(&self, _: WatchFrame) -> bool {
+                true
+            }
+        }
+        let (registry, _, old_lease) = self.watch.as_ref().unwrap();
+        let old_lease = old_lease.clone();
+        let (channel, _) = self
+            .f
+            .service
+            .watch_register(
+                &WatchRequest {
+                    claim: self.recipient.clone(),
+                },
+                Arc::new(Sink),
+                &budget(),
+            )
+            .unwrap();
+        let lease = registry.presentation_lease(channel).unwrap();
+        self.watch = Some((registry.clone(), channel, lease));
+        old_lease
+    }
+
+    fn watch_request(&self) -> crate::protocol::delivery::DeliveryPullV2 {
+        use crate::protocol::delivery::{
+            DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
+        };
+        DeliveryPullV2 {
+            claim: self.recipient.clone(),
+            consumer: PresentationConsumer::Watch,
+            render: PresentationRenderRequest::WatchJsonLinesV1,
+            presentation_lease: Some(self.watch.as_ref().unwrap().2.clone()),
+            marker_prefix: vec![],
+        }
+    }
+
+    fn raw_watch_pull(&self) -> crate::protocol::delivery::DeliveryPullReplyV2 {
+        let CommandResult::DeliveryPulledV2(reply) = self
+            .f
+            .service
+            .handle(
+                Command::DeliveryPullV2(self.watch_request()),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("actual Watch response")
+        };
         reply
     }
 
@@ -6678,6 +6858,7 @@ fn offer_reconciliation_input(
         DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
     };
     crate::ports::PresentationInput {
+        owner_replay: None,
         ordinary_due_snapshot: None,
         frozen_render: presentation_watch_frozen(f, claim),
         render_profile: crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
@@ -7592,6 +7773,7 @@ fn pull_private_invitation_id(
         });
     f.store.presentation_pull(
         PresentationInput {
+            owner_replay: None,
             ordinary_due_snapshot: None,
             frozen_render,
             render_profile: PresentationRenderProfile::Hook {
@@ -8993,4 +9175,1473 @@ fn presentation_capacity_due_size_failure_after_passive_output_retries_standalon
     assert_eq!(page.truncated, vec![id]);
     assert!(!page.more);
     assert_eq!(next.work.ordinary_due_hydrated, 1);
+}
+
+// Kills physical recovery recording a logical offer, refilling on signal/render,
+// positive-capacity omission, and body/marker/receipt regressions.
+#[test]
+fn presentation_owner_replay_nonfull_once_per_lease_preserves_physical_metadata() {
+    use crate::protocol::{
+        commands::DeliveryMode,
+        delivery::{DeliveryPullReplyV2, PresentationItemV2},
+    };
+    for (mode, promoted, large) in [
+        (DeliveryMode::Ordinary, false, false),
+        (DeliveryMode::Ordinary, false, true),
+        (DeliveryMode::Lazy, false, false),
+        (DeliveryMode::Lazy, true, true),
+    ] {
+        let mut window = OfferWindowFixture::new(true);
+        if promoted {
+            window
+                .f
+                .db
+                .execute("UPDATE seats SET wake_on='all' WHERE id='c'", [])
+                .unwrap();
+        }
+        let body = if large {
+            "body".repeat(4096)
+        } else {
+            "whole body".into()
+        };
+        let id = window.send(0, mode, &body);
+        window.drain(1);
+        for _ in 0..4 {
+            window.pull();
+        }
+        let stamps = window.offers();
+        let walk = capacity_normal_state(&window);
+        let old_lease = window.replace_watch();
+        let mut stale = window.watch_request();
+        stale.presentation_lease = Some(old_lease);
+        assert!(matches!(
+            window
+                .f
+                .service
+                .handle(Command::DeliveryPullV2(stale), peer(), &budget())
+                .unwrap(),
+            CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { .. })
+        ));
+        let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
+            panic!("immediate owner replay")
+        };
+        assert_capacity_watch_page_bound(&page);
+        assert_eq!(page.offered.contains(&id), !large);
+        assert_eq!(page.truncated.contains(&id), large);
+        let message = page
+            .items
+            .iter()
+            .find_map(|item| match item {
+                PresentationItemV2::Message {
+                    id: actual,
+                    lazy,
+                    content,
+                } if actual == &id => Some((*lazy, content)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(message.0, mode == DeliveryMode::Lazy && !promoted);
+        assert_eq!(message.1.truncated, large);
+        assert_eq!(
+            message.1.body.matches("herdr-threads body").count(),
+            usize::from(large)
+        );
+        if mode == DeliveryMode::Lazy {
+            assert!(!message.1.ack_required);
+            assert!(!message.1.body.contains("herdr-threads ack"));
+            assert_eq!(
+                window
+                    .f
+                    .db
+                    .query_row(
+                        "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='c'",
+                        [id.as_str()],
+                        |r| r.get::<_, String>(0)
+                    )
+                    .unwrap(),
+                "pending"
+            );
+        }
+        assert_eq!(window.offers(), stamps);
+        assert_eq!(capacity_normal_state(&window), walk);
+        window.confirm_nonmessage_presentation(&DeliveryPullReplyV2::Page(page));
+        // Successful response loss consumes only this lease's physical attempt.
+        for n in 0..4 {
+            let mut request = window.watch_request();
+            request.marker_prefix = vec![format!("prefix-{n}")];
+            let CommandResult::DeliveryPulledV2(reply) = window
+                .f
+                .service
+                .handle(Command::DeliveryPullV2(request), peer(), &budget())
+                .unwrap()
+            else {
+                panic!("V2 response")
+            };
+            if let DeliveryPullReplyV2::Page(page) = &reply {
+                assert!(page.offered.is_empty() && page.truncated.is_empty());
+            }
+            window.confirm_nonmessage_presentation(&reply);
+        }
+        assert_eq!(window.offers(), stamps);
+        window.replace_watch();
+        let DeliveryPullReplyV2::Page(again) = window.pull() else {
+            panic!("new lease recovers lost output")
+        };
+        assert!(again.offered.contains(&id) || again.truncated.contains(&id));
+        assert_eq!(window.offers(), stamps);
+    }
+}
+
+// Kills zero-capacity omission, combined physical consumed IDs (WRD-2), normal
+// walk reset/carry consumption, and physical offer recording.
+#[test]
+fn presentation_owner_replay_full_final_page_keeps_logical_due_continuation() {
+    use crate::protocol::delivery::DeliveryPullReplyV2;
+    let (mut window, sent) = full_pending_offer_window_with_fresh_carry();
+    for _ in 0..4 {
+        window.pull();
+    }
+    let due = window.offers().keys().last().unwrap().clone();
+    {
+        let mut ledger = window.f.state.lock();
+        let entry = ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap();
+        // Actual supported recorder reaches parked three and one due two.
+        let ids = entry.offers.keys().cloned().collect::<Vec<_>>();
+        for id in ids {
+            entry.record(&id, window.f.clock.utc_now(), entry.offers[&id].truncated);
+            if id != due {
+                entry.record(&id, window.f.clock.utc_now(), entry.offers[&id].truncated);
+            }
+        }
+    }
+    advance(&window.f, REOFFER_AFTER_MS);
+    let stamps = window.offers();
+    let walk = capacity_normal_state(&window);
+    window.replace_watch();
+    let mut shown = std::collections::BTreeSet::new();
+    for _ in 0..32 {
+        let DeliveryPullReplyV2::Page(page) = window.pull() else {
+            panic!("owner recovery must continue")
+        };
+        assert_capacity_watch_page_bound(&page);
+        for id in page.offered.iter().chain(&page.truncated) {
+            assert!(shown.insert(id.clone()));
+        }
+        assert_eq!(window.offers(), stamps);
+        assert_eq!(capacity_normal_state(&window), walk);
+        assert_full_pending_offer_work(&window);
+        assert!(
+            page.more,
+            "final physical page leaves the unchanged logical due key runnable"
+        );
+        if shown.len() == 256 {
+            assert!(
+                page.offered.contains(&due) || page.truncated.contains(&due),
+                "due key sorts onto final physical page"
+            );
+            break;
+        }
+    }
+    assert_eq!(shown.len(), 256);
+    assert!(!shown.contains(&sent[256]));
+    let DeliveryPullReplyV2::Page(logical) = window.pull() else {
+        panic!("logical third offer follows owner completion")
+    };
+    assert_eq!(
+        logical
+            .offered
+            .iter()
+            .chain(&logical.truncated)
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![due.clone()]
+    );
+    let after = window.offers();
+    for (id, stamp) in &stamps {
+        if id == &due {
+            assert_eq!(after[id].count, 3);
+        } else {
+            assert_eq!(&after[id], stamp);
+        }
+    }
+    assert_eq!(capacity_normal_state(&window), walk);
+    window.ack(
+        std::slice::from_ref(&due),
+        false,
+        false,
+        "owner-full-resume",
+    );
+    let DeliveryPullReplyV2::Page(resumed) = window.pull() else {
+        panic!("ACK resumes carried unknown257")
+    };
+    assert!(resumed.offered.contains(&sent[256]));
+}
+
+fn owner_outlook(window: &OfferWindowFixture) -> (bool, Option<u64>, Option<u64>, NextPull) {
+    let ledger = window.f.state.lock();
+    let entry = ledger.get(&window.recipient.seat).unwrap();
+    (
+        entry.more_pending,
+        entry.read_attention,
+        entry.whole_read,
+        entry.next_pull(777, window.f.clock.utc_now()),
+    )
+}
+
+// Kills filtered-false assignment and loss of the empty/final recovery disposition.
+#[test]
+fn presentation_owner_replay_missing_quanta_preserve_current_native_outlook() {
+    use crate::protocol::delivery::DeliveryPullReplyV2;
+    for more in [false, true] {
+        let mut window = OfferWindowFixture::new(true);
+        for _ in 0..4 {
+            window.pull();
+        }
+        {
+            let mut ledger = window.f.state.lock();
+            let entry = ledger
+                .seat_mut(
+                    &window.recipient.seat,
+                    window.recipient.binding_generation,
+                    window.recipient.native_session.as_str(),
+                )
+                .unwrap();
+            for n in 0..256 {
+                entry.record(
+                    &MessageId::new(format!("missing-owner-{n:03}")),
+                    window.f.clock.utc_now(),
+                    false,
+                );
+            }
+            entry.more_pending = more;
+            entry.read_attention = Some(777);
+            entry.whole_read = Some(888);
+        }
+        let stamps = window.offers();
+        let outlook = owner_outlook(&window);
+        let walk = capacity_normal_state(&window);
+        window.replace_watch();
+        for (n, attempts) in [100, 100, 56].into_iter().enumerate() {
+            let reply = window.raw_watch_pull();
+            assert_eq!(owner_outlook(&window), outlook, "empty quantum {n}");
+            assert_eq!(window.offers(), stamps, "missing is not terminal authority");
+            assert_eq!(capacity_normal_state(&window), walk);
+            let work = window
+                .f
+                .service
+                .presentation
+                .last_work
+                .lock()
+                .unwrap()
+                .unwrap();
+            assert_eq!(work.ordinary, attempts);
+            assert_eq!(work.ordinary_due_hydrated, 0);
+            assert!(work.ordinary_due_key_probes <= 1303 && work.ordinary_due_seeks <= 100);
+            if n < 2 {
+                assert!(
+                    matches!(reply, DeliveryPullReplyV2::Page(ref page) if page.more && page.items.is_empty())
+                );
+            } else {
+                assert!(matches!(reply, DeliveryPullReplyV2::Unchanged { .. }));
+            }
+        }
+        assert!(matches!(
+            window.raw_watch_pull(),
+            DeliveryPullReplyV2::Unchanged { .. }
+        ));
+        assert_eq!(
+            window
+                .f
+                .service
+                .presentation
+                .last_work
+                .lock()
+                .unwrap()
+                .unwrap()
+                .ordinary,
+            0
+        );
+    }
+}
+
+// Kills replacing/retiring the old nonordinary outbox to unlock recovery,
+// hydrating ordinary bodies on outbox replay, and clearing native outlook there.
+#[test]
+fn presentation_owner_replay_waits_for_original_outbox_then_continues() {
+    use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
+    for more in [false, true] {
+        let mut window = OfferWindowFixture::new(true);
+        for _ in 0..4 {
+            window.pull();
+        }
+        let id = window.send(0, DeliveryMode::Ordinary, "pending across outbox");
+        canonical_lazy_invitation_backlog(
+            &window.f,
+            &window.recipient,
+            &window.sender,
+            1,
+            "owner-outbox",
+        );
+        let first = window.raw_watch_pull();
+        let DeliveryPullReplyV2::Page(page) = &first else {
+            panic!("mixed original output")
+        };
+        assert!(page.offered.contains(&id));
+        let token = page
+            .presentation_token
+            .clone()
+            .expect("real nonordinary token");
+        let before = owner_outbox_state(&window);
+        let stamps = window.offers();
+        {
+            let mut ledger = window.f.state.lock();
+            let entry = ledger
+                .seat_mut(
+                    &window.recipient.seat,
+                    window.recipient.binding_generation,
+                    window.recipient.native_session.as_str(),
+                )
+                .unwrap();
+            entry.more_pending = more;
+            entry.read_attention = Some(777);
+            entry.whole_read = Some(888);
+        }
+        let outlook = owner_outlook(&window);
+        window.replace_watch();
+        let replay = window.raw_watch_pull();
+        let DeliveryPullReplyV2::Page(page) = &replay else {
+            panic!("old outbox recovery")
+        };
+        assert_eq!(page.presentation_token.as_ref(), Some(&token));
+        assert!(page.more && page.offered.is_empty() && page.truncated.is_empty());
+        assert_eq!(owner_outbox_state(&window), before);
+        assert_eq!(owner_outlook(&window), outlook);
+        assert_eq!(
+            window
+                .f
+                .service
+                .presentation
+                .last_work
+                .lock()
+                .unwrap()
+                .unwrap()
+                .ordinary,
+            0
+        );
+        window.confirm_nonmessage_presentation(&replay);
+        let DeliveryPullReplyV2::Page(next) = window.raw_watch_pull() else {
+            panic!("advertised immediate ordinary continuation")
+        };
+        assert!(next.offered.contains(&id));
+        assert_eq!(window.offers(), stamps);
+        assert_eq!(owner_outlook(&window), outlook);
+    }
+}
+
+fn owner_outbox_state(window: &OfferWindowFixture) -> String {
+    window.f.db.query_row("SELECT json_array(outbox_token,outbox_descriptors,outbox_retired_mask,outbox_confirmed_mask,outbox_selection,outbox_codec_key) FROM invitation_presentation_consumers WHERE seat_id='c' AND consumer='watch'", [], |r| r.get(0)).unwrap()
+}
+
+fn owner_store_input(
+    f: &Fixture,
+    claim: &CallerClaim,
+    registry: &dyn crate::ports::ModChannels,
+    lease: &str,
+) -> crate::ports::PresentationInput {
+    let due = f
+        .state
+        .lock()
+        .seat_mut(
+            &claim.seat,
+            claim.binding_generation,
+            claim.native_session.as_str(),
+        )
+        .unwrap()
+        .due_snapshot(crate::protocol::delivery::PresentationConsumer::Watch);
+    let mut input = offer_reconciliation_input(f, claim, due.stamps.keys().cloned().collect());
+    input.pull.presentation_lease = Some(lease.into());
+    input.blocked_messages = due
+        .stamps
+        .iter()
+        .filter(|(_, stamp)| !stamp.is_due(f.clock.utc_now()))
+        .map(|(id, _)| id.clone())
+        .collect();
+    input.retry_messages = true;
+    input.owner_replay = registry.presentation_replay_snapshot(claim, lease, &due);
+    input.ordinary_due_snapshot = Some(due);
+    input
+}
+
+// WR2 deliberately uses real V1 admission/recording and canonical Watch store
+// allocation: current adapters expose mutually exclusive HookPull/PushChannel.
+// No binding rewrite or fabricated count-four stamp is used.
+#[test]
+fn presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work() {
+    use crate::{
+        ports::{ModChannelRegistration, ModChannelSink, ModChannels, ModStoreReads},
+        protocol::{
+            commands::DeliveryMode,
+            delivery::{DeliveryPullReplyV2, PresentationItemV2},
+            watch::{ModDeliverySetting, WatchFrame},
+        },
+        service::mod_channels::ModChannelRegistry,
+    };
+    struct Sink;
+    impl ModChannelSink for Sink {
+        fn push(&self, _: WatchFrame) -> bool {
+            true
+        }
+    }
+    let window = OfferWindowFixture::new(false);
+    let id = window.send(0, DeliveryMode::Ordinary, "actual concurrent V1 history");
+    {
+        let mut ledger = window.f.state.lock();
+        let entry = ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap();
+        for _ in 0..2 {
+            entry.record(&id, window.f.clock.utc_now(), false);
+        }
+    }
+    advance(&window.f, REOFFER_AFTER_MS);
+    let race_claim = window.recipient.clone();
+    let race_id = id.clone();
+    let now = window.f.clock.utc_now();
+    *window.f.state.probe.before_record.lock().unwrap() = Some(Box::new(move |ledger| {
+        let entry = ledger
+            .seat_mut(
+                &race_claim.seat,
+                race_claim.binding_generation,
+                race_claim.native_session.as_str(),
+            )
+            .unwrap();
+        assert_eq!(entry.offers[&race_id].count, 2);
+        entry.record(&race_id, now, false);
+    }));
+    assert!(
+        page(pull(&window.f, &window.recipient, None))
+            .offered
+            .contains(&id)
+    );
+    let stamps = window.offers();
+    assert_eq!(stamps[&id].count, 4);
+    let reads: Arc<dyn ModStoreReads> = window.f.store.clone();
+    let registry = ModChannelRegistry::new(
+        window.f.clock.clone(),
+        reads,
+        "i".into(),
+        Arc::new(|| {}),
+        ModDeliverySetting::On,
+    );
+    let channel = registry
+        .register(
+            ModChannelRegistration {
+                seat: window.recipient.seat.clone(),
+                binding_generation: window.recipient.binding_generation,
+                native_session: window.recipient.native_session.clone(),
+                harness: window.recipient.harness,
+                idle_wake: crate::harness::adapter::IdleWake::Native,
+                registered_at: now,
+            },
+            Arc::new(Sink),
+        )
+        .unwrap();
+    let lease = registry.presentation_lease(channel).unwrap();
+    service_notice(&window.f, "owner-count-four-notice");
+    let input = owner_store_input(&window.f, &window.recipient, &registry, &lease);
+    let output = window
+        .f
+        .store
+        .presentation_pull(input.clone(), &budget())
+        .unwrap();
+    let DeliveryPullReplyV2::Page(page) = &output.reply else {
+        panic!("count-four physical recovery")
+    };
+    assert!(page.offered.contains(&id));
+    assert!(page.items.iter().any(|item| matches!(item, PresentationItemV2::Notice { warning, .. } if warning.as_str()=="owner-count-four-notice")));
+    assert_eq!(output.owner_replay.emitted.get(&id), Some(&stamps[&id]));
+    assert_eq!(window.offers(), stamps);
+    registry.apply_presentation_replay(
+        input.owner_replay.unwrap(),
+        &output.owner_replay.completed,
+        input.ordinary_due_snapshot.as_ref().unwrap(),
+    );
+    let next = owner_store_input(&window.f, &window.recipient, &registry, &lease);
+    assert!(next.owner_replay.as_ref().unwrap().remaining.is_empty());
+    registry.unregister(channel, now);
+}
+
+// Kills eager initialization on snapshot/refusal, reset after LRU recreation,
+// stamp-only-last_at comparisons, stale lease progress and same-lease refill.
+#[test]
+fn presentation_owner_replay_registry_success_scope_and_incarnation_lifetime() {
+    use crate::ports::ModChannels;
+    use crate::protocol::delivery::PresentationConsumer;
+    let mut window = OfferWindowFixture::new(true);
+    let (registry, _, lease) = window.watch.as_ref().unwrap();
+    let registry = registry.clone();
+    let lease = lease.clone();
+    let id = MessageId::new("owner-lifetime-missing");
+    {
+        let mut ledger = window.f.state.lock();
+        ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap()
+            .record(&id, window.f.clock.utc_now(), false);
+    }
+    let initial = owner_store_input(&window.f, &window.recipient, registry.as_ref(), &lease);
+    let captured = initial.owner_replay.clone().unwrap();
+    assert_eq!(captured.remaining.len(), 1);
+    assert_eq!(
+        owner_store_input(&window.f, &window.recipient, registry.as_ref(), &lease).owner_replay,
+        Some(captured.clone()),
+        "snapshot getter installs no progress"
+    );
+    {
+        let mut ledger = window.f.state.lock();
+        let entry = ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap();
+        entry.record(&id, window.f.clock.utc_now(), true); // same last_at; full stamp changed
+    }
+    // First successful application must abandon the obsolete captured stamp.
+    let current = window
+        .f
+        .state
+        .lock()
+        .seat_mut(
+            &window.recipient.seat,
+            window.recipient.binding_generation,
+            window.recipient.native_session.as_str(),
+        )
+        .unwrap()
+        .due_snapshot(PresentationConsumer::Watch);
+    registry.apply_presentation_replay(captured.clone(), &Default::default(), &current);
+    assert!(
+        owner_store_input(&window.f, &window.recipient, registry.as_ref(), &lease)
+            .owner_replay
+            .unwrap()
+            .remaining
+            .is_empty()
+    );
+    // A newer registration captures the current tuple; old progress cannot touch it.
+    window.replace_watch();
+    let new_lease = window.watch.as_ref().unwrap().2.clone();
+    let successor = owner_store_input(&window.f, &window.recipient, registry.as_ref(), &new_lease)
+        .owner_replay
+        .unwrap();
+    registry.apply_presentation_replay(captured, &current.stamps, &current);
+    assert_eq!(
+        owner_store_input(&window.f, &window.recipient, registry.as_ref(), &new_lease).owner_replay,
+        Some(successor.clone())
+    );
+    registry.apply_presentation_replay(successor, &Default::default(), &current);
+    // Genuine ledger lifetime reset with unchanged canonical generation.
+    *window.f.state.lock() = crate::delivery::ledger::OfferedLedger::new();
+    {
+        let mut ledger = window.f.state.lock();
+        ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap()
+            .record(&id, window.f.clock.utc_now(), false);
+    }
+    let recreated = owner_store_input(&window.f, &window.recipient, registry.as_ref(), &new_lease);
+    assert!(
+        recreated
+            .owner_replay
+            .as_ref()
+            .unwrap()
+            .remaining
+            .is_empty()
+    );
+    registry.apply_presentation_replay(
+        recreated.owner_replay.unwrap(),
+        &Default::default(),
+        recreated.ordinary_due_snapshot.as_ref().unwrap(),
+    );
+    assert!(
+        owner_store_input(&window.f, &window.recipient, registry.as_ref(), &new_lease)
+            .owner_replay
+            .unwrap()
+            .remaining
+            .is_empty()
+    );
+    registry.unregister(window.watch.as_ref().unwrap().1, window.f.clock.utc_now());
+    assert!(
+        registry
+            .presentation_replay_snapshot(&window.recipient, &new_lease, &current)
+            .is_none(),
+        "grace grants no replay authority"
+    );
+}
+
+// Kills snapshot initialization before store success and progress on rollback.
+#[test]
+fn presentation_owner_replay_refusal_and_store_error_do_not_consume_first_capture() {
+    use crate::{
+        ports::ModChannels,
+        protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2, results::ErrorCode},
+        test_support::failpoints::Failpoint,
+    };
+    let mut window = OfferWindowFixture::new(true);
+    let id = window.send(0, DeliveryMode::Ordinary, "recover after rollback");
+    window.drain(1);
+    window.replace_watch();
+    let scope = window
+        .f
+        .directory
+        .join("store.db")
+        .to_string_lossy()
+        .into_owned();
+    let fault = Failpoint::error("store.writer.acquired", scope, ErrorCode::StoreBusy);
+    assert!(
+        window
+            .f
+            .service
+            .handle(
+                Command::DeliveryPullV2(window.watch_request()),
+                peer(),
+                &budget()
+            )
+            .is_err()
+    );
+    assert_eq!(fault.fired(), 1);
+    drop(fault);
+    window.f.db.execute_batch("CREATE TRIGGER owner_replay_save_failure BEFORE UPDATE ON invitation_presentation_consumers BEGIN SELECT RAISE(ABORT,'owner replay rollback'); END;").unwrap();
+    assert!(
+        window
+            .f
+            .service
+            .handle(
+                Command::DeliveryPullV2(window.watch_request()),
+                peer(),
+                &budget()
+            )
+            .is_err()
+    );
+    window
+        .f
+        .db
+        .execute_batch("DROP TRIGGER owner_replay_save_failure;")
+        .unwrap();
+    let cancelled = budget();
+    cancelled.cancellation.cancel();
+    assert!(matches!(
+        window.f.service.handle(
+            Command::DeliveryPullV2(window.watch_request()),
+            peer(),
+            &cancelled,
+        ),
+        Err(_)
+            | Ok(CommandResult::DeliveryPulledV2(
+                DeliveryPullReplyV2::Refused { .. }
+            ))
+    ));
+    let mut stale = window.watch_request();
+    stale.claim.execution = ExecutionId::new("other-execution");
+    assert!(matches!(
+        window
+            .f
+            .service
+            .handle(Command::DeliveryPullV2(stale), peer(), &budget())
+            .unwrap(),
+        CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { .. })
+    ));
+    let (registry, _, lease) = window.watch.as_ref().unwrap();
+    let input = owner_store_input(&window.f, &window.recipient, registry.as_ref(), lease);
+    assert!(
+        input
+            .owner_replay
+            .as_ref()
+            .unwrap()
+            .remaining
+            .contains_key(&id)
+    );
+    // Getter remains pure after refused/error store work.
+    let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
+        panic!("first successful recovery")
+    };
+    assert!(page.offered.contains(&id));
+    assert_eq!(window.offers()[&id].count, 1);
+    let current = window
+        .f
+        .state
+        .lock()
+        .seat_mut(
+            &window.recipient.seat,
+            window.recipient.binding_generation,
+            window.recipient.native_session.as_str(),
+        )
+        .unwrap()
+        .due_snapshot(crate::protocol::delivery::PresentationConsumer::Watch);
+    assert!(
+        registry
+            .presentation_replay_snapshot(&window.recipient, lease, &current)
+            .unwrap()
+            .remaining
+            .is_empty()
+    );
+}
+
+// WR17: the existing scoped store barrier runs after the service snapshot.
+// This changes the same shared fields as a concurrent V1 completion, without
+// inventing a dual-mechanism harness. It kills pre-store snapshot restoration.
+#[test]
+fn presentation_owner_replay_preserves_post_snapshot_native_outlook_and_newer_stamp() {
+    use crate::{
+        protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2},
+        test_support::failpoints::Failpoint,
+    };
+    for more in [false, true] {
+        let mut window = OfferWindowFixture::new(true);
+        let id = window.send(0, DeliveryMode::Ordinary, "concurrent ledger update");
+        window.drain(1);
+        for _ in 0..4 {
+            window.pull();
+        }
+        {
+            let mut ledger = window.f.state.lock();
+            let entry = ledger
+                .seat_mut(
+                    &window.recipient.seat,
+                    window.recipient.binding_generation,
+                    window.recipient.native_session.as_str(),
+                )
+                .unwrap();
+            entry.more_pending = !more;
+            entry.read_attention = Some(111);
+            entry.whole_read = Some(222);
+        }
+        window.replace_watch();
+        let state = window.f.state.clone();
+        let claim = window.recipient.clone();
+        let now = window.f.clock.utc_now();
+        let replayed = id.clone();
+        let barrier = Failpoint::connection(
+            "store.writer.acquired",
+            window.f.directory.join("store.db").to_string_lossy(),
+            move |_| {
+                let mut ledger = state.lock();
+                let entry = ledger
+                    .seat_mut(
+                        &claim.seat,
+                        claim.binding_generation,
+                        claim.native_session.as_str(),
+                    )
+                    .unwrap();
+                entry.record(&replayed, now, true);
+                entry.more_pending = more;
+                entry.read_attention = Some(777);
+                entry.whole_read = Some(888);
+            },
+        );
+        let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
+            panic!("concurrent physical replay")
+        };
+        assert!(page.offered.contains(&id));
+        assert_eq!(barrier.fired(), 1);
+        drop(barrier);
+        let outlook = owner_outlook(&window);
+        assert_eq!(
+            (outlook.0, outlook.1, outlook.2),
+            (more, Some(777), Some(888))
+        );
+        assert_eq!(
+            outlook.3,
+            if more {
+                NextPull::Delivers
+            } else {
+                NextPull::ReofferAt(UtcMillis(now.0 + REOFFER_AFTER_MS))
+            }
+        );
+        let stamp = window.offers()[&id];
+        assert_eq!(
+            (stamp.count, stamp.truncated),
+            (2, true),
+            "physical replay cannot overwrite newer logical stamp"
+        );
+        for _ in 0..3 {
+            let reply = window.raw_watch_pull();
+            if let DeliveryPullReplyV2::Page(page) = reply {
+                assert!(!page.offered.contains(&id));
+            }
+        }
+        assert_eq!(window.offers()[&id], stamp);
+    }
+}
+
+// Kills replay resetting source-created partials or using normal discovery.
+#[test]
+fn presentation_owner_replay_preserves_partial_body_until_real_ack() {
+    use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
+    for lazy in [false, true] {
+        let mut window = OfferWindowFixture::new(true);
+        for _ in 0..4 {
+            window.pull();
+        }
+        {
+            let mut ledger = window.f.state.lock();
+            let entry = ledger
+                .seat_mut(
+                    &window.recipient.seat,
+                    window.recipient.binding_generation,
+                    window.recipient.native_session.as_str(),
+                )
+                .unwrap();
+            for n in 0..255 {
+                entry.record(
+                    &MessageId::new(format!("absent-{n:03}")),
+                    window.f.clock.utc_now(),
+                    false,
+                );
+            }
+        }
+        let mode = if lazy {
+            DeliveryMode::Lazy
+        } else {
+            DeliveryMode::Ordinary
+        };
+        let first = window.send(0, mode, &"a".repeat(58000));
+        let second = window.send(1, mode, &"é".repeat(32768));
+        let mut allocated = false;
+        for _ in 0..4 {
+            if let DeliveryPullReplyV2::Page(page) = window.pull()
+                && page.truncated.contains(&first)
+            {
+                allocated = true;
+                break;
+            }
+        }
+        assert!(allocated);
+        let partial: String = window.f.db.query_row("SELECT ordinary_partial FROM invitation_presentation_consumers WHERE seat_id='c' AND consumer='watch'",[],|r|r.get(0)).unwrap();
+        let partial: std::collections::HashMap<String, String> =
+            serde_json::from_str(&partial).unwrap();
+        assert!(
+            partial
+                .get(second.as_str())
+                .is_some_and(|body| !body.is_empty()),
+            "fixture must retain a real source-created partial body"
+        );
+        let parked = capacity_normal_state(&window);
+        let stamps = window.offers();
+        window.replace_watch();
+        let mut reoffered = false;
+        for _ in 0..4 {
+            if let DeliveryPullReplyV2::Page(page) = window.pull() {
+                reoffered |= page.truncated.contains(&first);
+            }
+            assert_eq!(capacity_normal_state(&window), parked);
+            assert_eq!(window.offers(), stamps);
+        }
+        assert!(reoffered);
+        if lazy {
+            window
+                .f
+                .service
+                .handle(
+                    Command::CompleteInboxDelivery(
+                        crate::protocol::commands::CompleteInboxDelivery {
+                            messages: vec![first.clone()],
+                            operation: OperationId::new("partial-lazy-completion"),
+                            claim: window.recipient.clone(),
+                            via: None,
+                        },
+                    ),
+                    peer(),
+                    &budget(),
+                )
+                .unwrap();
+            assert_eq!(
+                window
+                    .f
+                    .db
+                    .query_row(
+                        "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='c'",
+                        [first.as_str()],
+                        |r| r.get::<_, String>(0)
+                    )
+                    .unwrap(),
+                "displayed"
+            );
+        } else {
+            window.ack(
+                std::slice::from_ref(&first),
+                false,
+                false,
+                "partial-release",
+            );
+        }
+        let DeliveryPullReplyV2::Page(page) = window.pull() else {
+            panic!("same-call partial resume");
+        };
+        assert!(page.truncated.contains(&second));
+        let work = window
+            .f
+            .service
+            .presentation
+            .last_work
+            .lock()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            work.ordinary_due_key_probes, 0,
+            "one ordinary source per call"
+        );
+        assert!(work.ordinary > 0);
+    }
+}
+
+// Kills replacement interleaving between canonical allocation and replay
+// progress installation. Uses the existing real store writer pause.
+#[test]
+fn presentation_owner_replay_owner_permit_fences_replacement_during_store() {
+    use crate::{
+        ports::{ModChannelSink, ModChannels},
+        protocol::{
+            commands::DeliveryMode,
+            delivery::DeliveryPullReplyV2,
+            watch::{WatchFrame, WatchRequest},
+        },
+        test_support::failpoints::Failpoint,
+    };
+    struct Sink;
+    impl ModChannelSink for Sink {
+        fn push(&self, _: WatchFrame) -> bool {
+            true
+        }
+    }
+    let mut window = OfferWindowFixture::new(true);
+    let id = window.send(0, DeliveryMode::Ordinary, "owner race body");
+    window.drain(1);
+    window.replace_watch();
+    let request = window.watch_request();
+    let stale = request.clone();
+    let register = WatchRequest {
+        claim: window.recipient.clone(),
+    };
+    let (registry, _, _) = window.watch.as_ref().unwrap();
+    let pause = Failpoint::pause(
+        "store.writer.acquired",
+        window.f.directory.join("store.db").to_string_lossy(),
+    );
+    let service = &window.f.service;
+    let (result, replacement) = std::thread::scope(|scope| {
+        let pulling =
+            scope.spawn(|| service.handle(Command::DeliveryPullV2(request), peer(), &budget()));
+        let fired = pause.wait_fired(1, std::time::Duration::from_secs(5));
+        let held = registry
+            .presentation_owner(&window.recipient.seat)
+            .unwrap()
+            .unwrap()
+            .try_lock()
+            .is_err();
+        let replacing =
+            scope.spawn(|| service.watch_register(&register, Arc::new(Sink), &budget()));
+        pause.release();
+        let result = pulling.join().unwrap().unwrap();
+        let replacement = replacing.join().unwrap().unwrap();
+        assert!(
+            fired && held,
+            "canonical store pause must hold the same replacement permit"
+        );
+        (result, replacement)
+    });
+    drop(pause);
+    assert!(
+        matches!(result, CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(ref page)) if page.offered.contains(&id))
+    );
+    assert!(matches!(
+        service
+            .handle(Command::DeliveryPullV2(stale), peer(), &budget())
+            .unwrap(),
+        CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { .. })
+    ));
+    window.watch = Some((
+        registry.clone(),
+        replacement.0,
+        registry.presentation_lease(replacement.0).unwrap(),
+    ));
+    let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
+        panic!("successor immediately recaptures pending body")
+    };
+    assert!(page.offered.contains(&id));
+    assert_eq!(window.offers()[&id].count, 1);
+}
+
+// Kills accepting foreign execution/lease/stamps, zero counts, oversized work
+// or owner replay on Hook. Every refused input leaves canonical state unchanged.
+#[test]
+fn presentation_owner_replay_validates_full_scope_and_nonzero_count_domain() {
+    use crate::protocol::results::ErrorCode;
+    let window = OfferWindowFixture::new(true);
+    let id = MessageId::new("owner-validation-missing");
+    {
+        let mut ledger = window.f.state.lock();
+        let entry = ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap();
+        for _ in 0..255 {
+            entry.record(&id, window.f.clock.utc_now(), false);
+        }
+    }
+    let (registry, _, lease) = window.watch.as_ref().unwrap();
+    let input = owner_store_input(&window.f, &window.recipient, registry.as_ref(), lease);
+    for mutation in 0..9 {
+        let mut bad = input.clone();
+        let replay = bad.owner_replay.as_mut().unwrap();
+        match mutation {
+            0 => replay.scope.execution = ExecutionId::new("foreign"),
+            1 => replay.scope.lease = "00000000000000000000000000000000".into(),
+            2 => replay.scope.incarnation[0] ^= 1,
+            3 => replay.scope.generation += 1,
+            4 => replay.remaining.get_mut(&id).unwrap().truncated = true,
+            5 => {
+                replay.remaining.get_mut(&id).unwrap().count = 0;
+                bad.ordinary_due_snapshot
+                    .as_mut()
+                    .unwrap()
+                    .stamps
+                    .get_mut(&id)
+                    .unwrap()
+                    .count = 0;
+            }
+            6 => replay.scope.native_session = "foreign".into(),
+            7 => replay.active = false,
+            _ => {
+                bad.pull.consumer = crate::protocol::delivery::PresentationConsumer::Hook;
+                bad.pull.render = crate::protocol::delivery::PresentationRenderRequest::Hook {
+                    confirmable_selector: 0,
+                    passive_selector: 0,
+                };
+                bad.pull.presentation_lease = None;
+            }
+        }
+        assert_eq!(
+            window
+                .f
+                .store
+                .presentation_pull(bad, &budget())
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidRequest
+        );
+    }
+    assert_eq!(
+        window
+            .f
+            .db
+            .query_row(
+                "SELECT count(*) FROM invitation_presentation_consumers",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    let output = window.f.store.presentation_pull(input, &budget()).unwrap();
+    assert_eq!(
+        output.owner_replay.completed[&id].count, 255,
+        "full nonzero recorded u8 domain"
+    );
+    assert_eq!(window.offers()[&id].count, 255);
+}
+
+fn install_owner_hint(input: &mut crate::ports::PresentationInput) {
+    let due = input.ordinary_due_snapshot.as_ref().unwrap();
+    input.owner_replay = Some(crate::ports::WatchReplaySnapshot {
+        scope: crate::ports::WatchReplayScope {
+            seat: input.pull.claim.seat.clone(),
+            generation: input.pull.claim.binding_generation,
+            native_session: input.pull.claim.native_session.as_str().into(),
+            execution: input.pull.claim.execution.clone(),
+            lease: input.pull.presentation_lease.clone().unwrap(),
+            incarnation: due.incarnation,
+        },
+        remaining: due.stamps.clone(),
+        active: !due.stamps.is_empty(),
+    });
+}
+
+// Kills trusting physical hints as addressing/publication/settlement authority,
+// missing manifest-first fallbacks, and spending more than one ordinary slice.
+#[test]
+fn presentation_owner_replay_mixed_invalid_keys_and_physical_fallback_drain_finitely() {
+    use crate::protocol::delivery::{
+        DeliveryPresentationConfirmV2, DeliveryPullReplyV2, PresentationConsumer,
+    };
+    let f = fixture(3);
+    let recipient = pull_seat(&f);
+    f.service
+        .handle(
+            Command::Ack(crate::protocol::commands::Ack {
+                messages: ids(&["m2"]),
+                operation: OperationId::new("owner-mixed-acked"),
+                claim: recipient.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    f.db.execute(
+        "DELETE FROM receipts WHERE message_id='m3' AND seat_id='s'",
+        [],
+    )
+    .unwrap();
+    service_notice(&f, "owner-wrong-mode");
+    lazy_message(
+        &f,
+        "msg-owner-unpublished",
+        "must never recover unpublished body",
+    );
+    f.db.execute(
+        "DELETE FROM send_manifests WHERE message_id='msg-owner-unpublished'",
+        [],
+    )
+    .unwrap();
+    let mut input = capacity_missing_input(&f, &recipient, 251);
+    for id in ids(&[
+        "m1",
+        "m2",
+        "m3",
+        "owner-wrong-mode",
+        "msg-owner-unpublished",
+    ]) {
+        input.known_messages.push(id.clone());
+        input.ordinary_due_snapshot.as_mut().unwrap().stamps.insert(
+            id,
+            crate::delivery::ledger::Offer {
+                first_at: UtcMillis(0),
+                last_at: f.clock.utc_now(),
+                count: 3,
+                truncated: false,
+            },
+        );
+    }
+    input.blocked_messages = input.known_messages.clone();
+    input.new_message_slots = 0;
+    install_owner_hint(&mut input);
+    let initial = input.ordinary_due_snapshot.as_ref().unwrap().stamps.clone();
+    let mut emitted = Vec::new();
+    let mut attempts = 0;
+    for _ in 0..3 {
+        let output = f.store.presentation_pull(input.clone(), &budget()).unwrap();
+        assert_eq!(
+            output.owner_replay.source,
+            crate::ports::OrdinaryPresentationSource::OwnerReplay
+        );
+        assert!(output.work.ordinary <= 100 && output.work.ordinary_due_hydrated <= 32);
+        assert!(
+            output.work.ordinary_due_key_probes <= 1303 && output.work.ordinary_due_seeks <= 100
+        );
+        assert!(
+            output.work.output_passes <= 352
+                && output.work.offer_reconciliation_visits <= 256
+                && output.work.offer_reconciliation_probes <= 1280
+        );
+        assert!(
+            output.work.initial
+                + output.work.context
+                + output.work.revisit
+                + output.work.ordinary
+                + output.work.notices
+                + output.work.ordinary_publication_visits
+                + output.work.relevance_sources
+                + output.work.relevance_fallback
+                <= 433
+        );
+        attempts += output.work.ordinary;
+        if let DeliveryPullReplyV2::Page(page) = &output.reply {
+            assert_capacity_watch_page_bound(page);
+            emitted.extend(page.offered.iter().chain(&page.truncated).cloned());
+            if let Some(token) = &page.presentation_token {
+                f.store
+                    .presentation_confirm(
+                        &DeliveryPresentationConfirmV2 {
+                            claim: recipient.clone(),
+                            consumer: PresentationConsumer::Watch,
+                            token: token.clone(),
+                            presentation_lease: input.pull.presentation_lease.clone(),
+                            emitted_controls: page.emitted_controls.clone(),
+                        },
+                        &budget(),
+                    )
+                    .unwrap();
+            }
+        }
+        for id in output.reclaimed_messages {
+            assert_eq!(
+                id.as_str(),
+                "m2",
+                "only actual terminal evidence releases capacity"
+            );
+            input.known_messages.retain(|v| v != &id);
+            input.blocked_messages.retain(|v| v != &id);
+            input.new_message_slots += 1;
+        }
+        let replay = input.owner_replay.as_mut().unwrap();
+        replay
+            .remaining
+            .retain(|id, stamp| output.owner_replay.completed.get(id) != Some(stamp));
+        input.ordinary_due_snapshot = output.ordinary_due_update;
+        input
+            .ordinary_due_snapshot
+            .as_mut()
+            .unwrap()
+            .stamps
+            .retain(|id, _| input.known_messages.contains(id));
+        input.frozen_render = presentation_watch_frozen(&f, &recipient);
+    }
+    assert!(input.owner_replay.unwrap().remaining.is_empty());
+    assert_eq!(
+        attempts, 255,
+        "one canonically terminal key reclaimed; all other attempts bounded"
+    );
+    assert_eq!(
+        emitted,
+        ids(&["m1"]),
+        "physical receipt fallback remains canonical"
+    );
+    assert_eq!(receipt_state(&f, "m1"), "pending");
+    assert_eq!(receipt_state(&f, "m2"), "acked");
+    assert_eq!(lazy_state(&f, "msg-owner-unpublished"), "pending");
+    for (id, stamp) in &input.ordinary_due_snapshot.unwrap().stamps {
+        assert_eq!(initial[id], *stamp);
+    }
+}
+
+// Kills treating passive mixed owner output as a logical native outlook update.
+#[test]
+fn presentation_owner_replay_mixed_invitation_page_preserves_native_outlook() {
+    use crate::protocol::{
+        commands::DeliveryMode,
+        delivery::{DeliveryPullReplyV2, PresentationItemV2},
+    };
+    for more in [false, true] {
+        let mut window = OfferWindowFixture::new(true);
+        let id = window.send(0, DeliveryMode::Ordinary, "mixed physical replay");
+        window.drain(1);
+        for _ in 0..4 {
+            window.pull();
+        }
+        canonical_lazy_invitation_backlog(
+            &window.f,
+            &window.recipient,
+            &window.sender,
+            1,
+            "owner-mixed-passive",
+        );
+        {
+            let mut ledger = window.f.state.lock();
+            let entry = ledger
+                .seat_mut(
+                    &window.recipient.seat,
+                    window.recipient.binding_generation,
+                    window.recipient.native_session.as_str(),
+                )
+                .unwrap();
+            entry.more_pending = more;
+            entry.read_attention = Some(777);
+            entry.whole_read = Some(888);
+        }
+        let outlook = owner_outlook(&window);
+        let stamps = window.offers();
+        window.replace_watch();
+        let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
+            panic!("mixed page")
+        };
+        assert!(page.offered.contains(&id));
+        assert!(
+            page.items
+                .iter()
+                .any(|item| matches!(item, PresentationItemV2::Invitation { .. }))
+        );
+        assert_eq!(owner_outlook(&window), outlook);
+        assert_eq!(window.offers(), stamps);
+        assert_eq!(
+            window
+                .f
+                .db
+                .query_row(
+                    "SELECT count(*) FROM invitations WHERE seat_id='c' AND state='pending'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+    }
+}
+
+// Kills retaining owner leases/progress across a daemon-local restart or
+// resurrecting historical logical stamps rather than normal fresh allocation.
+#[test]
+fn presentation_owner_replay_restart_discards_lease_and_recovers_canonical_pending() {
+    use crate::{
+        ports::{ModChannels, ModStoreReads},
+        protocol::{
+            commands::DeliveryMode, delivery::DeliveryPullReplyV2, watch::ModDeliverySetting,
+        },
+        service::mod_channels::ModChannelRegistry,
+    };
+    let mut window = OfferWindowFixture::new(true);
+    let id = window.send(0, DeliveryMode::Ordinary, "pending across daemon restart");
+    window.drain(1);
+    for _ in 0..4 {
+        window.pull();
+    }
+    let stale = window.watch_request();
+    let old_registry = window.watch.as_ref().unwrap().0.clone();
+    old_registry.close_all(
+        crate::protocol::watch::WatchCloseReason::Stopping,
+        window.f.clock.utc_now(),
+    );
+    restart(&mut window.f);
+    let reads: Arc<dyn ModStoreReads> = window.f.store.clone();
+    let registry = Arc::new(ModChannelRegistry::new(
+        window.f.clock.clone(),
+        reads,
+        "i".into(),
+        Arc::new(|| {}),
+        ModDeliverySetting::On,
+    ));
+    window.f.service =
+        DomainService::new("i".into(), window.f.store.clone(), window.f.clock.clone())
+            .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+            .with_delivery_pull(window.f.state.clone())
+            .with_mod_channels(registry.clone());
+    window.watch = Some((registry, window.watch.as_ref().unwrap().1, String::new()));
+    window.replace_watch();
+    assert!(matches!(
+        window
+            .f
+            .service
+            .handle(Command::DeliveryPullV2(stale), peer(), &budget())
+            .unwrap(),
+        CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { .. })
+    ));
+    let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
+        panic!("normal fresh offer after local state loss")
+    };
+    assert!(page.offered.contains(&id));
+    assert_eq!(window.offers()[&id].count, 1);
+    assert_eq!(
+        window
+            .f
+            .service
+            .presentation
+            .last_work
+            .lock()
+            .unwrap()
+            .unwrap()
+            .ordinary_due_key_probes,
+        0
+    );
+    assert!(!old_registry.presentation_owner_live(
+        &window.recipient.seat,
+        window.recipient.binding_generation,
+        window.recipient.native_session.as_str(),
+        window.watch.as_ref().unwrap().2.as_str()
+    ));
+}
+
+// Kills endlessly probing an unrenderable standalone owner key, populating
+// logical due deferrals from owner failures, or refilling on render changes.
+#[test]
+fn presentation_owner_replay_standalone_unrenderable_attempt_is_finite_and_local() {
+    use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
+    let mut window = OfferWindowFixture::new(true);
+    window
+        .f
+        .db
+        .execute("UPDATE seats SET wake_on='all' WHERE id='c'", [])
+        .unwrap();
+    let id = window.send(0, DeliveryMode::Lazy, &"\0".repeat(65536));
+    window.drain(1);
+    for _ in 0..4 {
+        window.pull();
+    }
+    let stamps = window.offers();
+    let walk = capacity_normal_state(&window);
+    window.replace_watch();
+    let mut request = window.watch_request();
+    request.marker_prefix = vec!["\0".repeat(512); 8];
+    let CommandResult::DeliveryPulledV2(reply) = window
+        .f
+        .service
+        .handle(Command::DeliveryPullV2(request), peer(), &budget())
+        .unwrap()
+    else {
+        panic!("V2 response")
+    };
+    if let DeliveryPullReplyV2::Page(page) = &reply {
+        assert!(page.offered.is_empty() && page.truncated.is_empty());
+        assert_capacity_watch_page_bound(page);
+    }
+    assert_eq!(
+        window
+            .f
+            .service
+            .presentation
+            .last_work
+            .lock()
+            .unwrap()
+            .unwrap()
+            .ordinary_due_hydrated,
+        1
+    );
+    assert_eq!(window.offers(), stamps);
+    assert_eq!(capacity_normal_state(&window), walk);
+    let due = window
+        .f
+        .state
+        .lock()
+        .seat_mut(
+            &window.recipient.seat,
+            window.recipient.binding_generation,
+            window.recipient.native_session.as_str(),
+        )
+        .unwrap()
+        .due_snapshot(crate::protocol::delivery::PresentationConsumer::Watch);
+    assert!(
+        due.cache.deferred.is_empty(),
+        "physical failed render never creates logical deferral"
+    );
+    for _ in 0..3 {
+        let reply = window.raw_watch_pull();
+        if let DeliveryPullReplyV2::Page(page) = reply {
+            assert!(page.offered.is_empty() && page.truncated.is_empty());
+        }
+    }
+    window.replace_watch();
+    let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
+        panic!("new lease retries physical rendering")
+    };
+    assert!(page.truncated.contains(&id));
+    assert_eq!(window.offers(), stamps);
 }

@@ -185,9 +185,19 @@ impl DomainService {
                 entry.due_snapshot(pull.consumer),
             )
         };
+        let owner_replay = (pull.consumer == PresentationConsumer::Watch)
+            .then(|| {
+                self.mod_channels().presentation_replay_snapshot(
+                    &pull.claim,
+                    pull.presentation_lease.as_deref().unwrap_or_default(),
+                    &due_snapshot,
+                )
+            })
+            .flatten();
         let version = attention_version(&view.fingerprint, view.newest_pending_notice);
         let output = self.store.presentation_pull(
             PresentationInput {
+                owner_replay,
                 ordinary_due_snapshot: Some(due_snapshot),
                 render_profile: profile,
                 frozen_render,
@@ -210,7 +220,10 @@ impl DomainService {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(output.work);
         }
-        {
+        if matches!(output.reply, DeliveryPullReplyV2::Refused { .. }) {
+            return Ok(CommandResult::DeliveryPulledV2(output.reply));
+        }
+        let current = {
             let mut ledger = self.delivery_pull.lock();
             if let Some(entry) = ledger.seat_mut(
                 &pull.claim.seat,
@@ -223,22 +236,56 @@ impl DomainService {
                     entry.remove(id);
                 }
                 if let DeliveryPullReplyV2::Page(page) = &output.reply {
+                    debug_assert!(
+                        output
+                            .owner_replay
+                            .emitted
+                            .keys()
+                            .all(|id| page.offered.contains(id) || page.truncated.contains(id))
+                    );
+                    debug_assert!(
+                        output.owner_replay.emitted.is_empty()
+                            || output.owner_replay.source
+                                == crate::ports::OrdinaryPresentationSource::OwnerReplay
+                    );
                     for id in &page.offered {
-                        entry.record(id, now, false);
+                        if !output.owner_replay.emitted.contains_key(id) {
+                            entry.record(id, now, false);
+                        }
                     }
                     for id in &page.truncated {
-                        entry.record(id, now, true);
+                        if !output.owner_replay.emitted.contains_key(id) {
+                            entry.record(id, now, true);
+                        }
                     }
                     // Passive invitation progress must never consume an open
                     // canonical warning's eligibility or create a native wake.
                     // Only post-emission exact control confirmation may advance seen attention.
-                    entry.more_pending =
-                        page.more && (!page.offered.is_empty() || !page.truncated.is_empty());
+                    if !output.owner_replay.source.preserves_native_outlook() {
+                        entry.more_pending =
+                            page.more && (!page.offered.is_empty() || !page.truncated.is_empty());
+                    }
                 }
                 if let Some(update) = output.ordinary_due_update {
                     entry.apply_due_update(pull.consumer, update);
                 }
+                output
+                    .owner_replay
+                    .snapshot
+                    .as_ref()
+                    .map(|_| entry.due_snapshot(pull.consumer))
+            } else {
+                None
             }
+        };
+        // Never nest the registry and ledger locks. The owner permit continues
+        // to fence replacement through this successful progress installation.
+        if let (Some(snapshot), Some(current)) = (output.owner_replay.snapshot, current) {
+            self.mod_channels().apply_presentation_replay(
+                snapshot,
+                &output.owner_replay.completed,
+                &current,
+            );
         }
         Ok(CommandResult::DeliveryPulledV2(output.reply))
     }

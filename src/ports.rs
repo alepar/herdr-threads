@@ -3614,6 +3614,23 @@ pub trait ModChannels: Send + Sync {
     ) -> bool {
         false
     }
+    /// Pure bounded snapshot; initialization is committed only after store success.
+    fn presentation_replay_snapshot(
+        &self,
+        _claim: &CallerClaim,
+        _lease: &str,
+        _known: &crate::delivery::ledger::OrdinaryDueSnapshot,
+    ) -> Option<WatchReplaySnapshot> {
+        None
+    }
+    /// Apply successful exact-owner progress against current logical stamps.
+    fn apply_presentation_replay(
+        &self,
+        _snapshot: WatchReplaySnapshot,
+        _completed: &std::collections::BTreeMap<MessageId, crate::delivery::ledger::Offer>,
+        _current: &crate::delivery::ledger::OrdinaryDueSnapshot,
+    ) {
+    }
     /// Register a channel: at most one per seat. A newer one for the same seat
     /// and generation replaces the older (`Close{replaced}`); a new-generation
     /// registration ends a rebind grace; a same-generation re-registration
@@ -4910,10 +4927,51 @@ pub enum CreateTabOutcome {
     OutcomeUnknown(ApiError),
 }
 
+/// One process-local physical recovery pass for an exact live Watch owner.
+/// No body, render state, receipt authority or logical offer is retained here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchReplayScope {
+    pub seat: SeatId,
+    pub generation: u64,
+    pub native_session: String,
+    pub execution: crate::protocol::ids::ExecutionId,
+    pub lease: String,
+    pub incarnation: [u8; 16],
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchReplaySnapshot {
+    pub scope: WatchReplayScope,
+    pub remaining: std::collections::BTreeMap<MessageId, crate::delivery::ledger::Offer>,
+    /// Survives pruning/exhaustion in this call for native-outlook preservation.
+    pub active: bool,
+}
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum OrdinaryPresentationSource {
+    #[default]
+    None,
+    RecoveryControlOnly,
+    Normal,
+    LogicalDue,
+    OwnerReplay,
+}
+impl OrdinaryPresentationSource {
+    pub fn preserves_native_outlook(self) -> bool {
+        matches!(self, Self::OwnerReplay | Self::RecoveryControlOnly)
+    }
+}
+#[derive(Debug, Default, Clone)]
+pub struct WatchReplayProgress {
+    pub snapshot: Option<WatchReplaySnapshot>,
+    pub completed: std::collections::BTreeMap<MessageId, crate::delivery::ledger::Offer>,
+    pub emitted: std::collections::BTreeMap<MessageId, crate::delivery::ledger::Offer>,
+    pub source: OrdinaryPresentationSource,
+}
+
 /// Bounded service-owned hints for ordinary offer coalescing. These grant no
 /// authority and never settle an invitation or message.
 #[derive(Debug, Clone)]
 pub struct PresentationInput {
+    pub owner_replay: Option<WatchReplaySnapshot>,
     pub ordinary_due_snapshot: Option<crate::delivery::ledger::OrdinaryDueSnapshot>,
     pub frozen_render: Option<crate::delivery::presentation::FrozenPresentationRender>,
     pub render_profile: crate::delivery::presentation::PresentationRenderProfile,
@@ -4928,7 +4986,8 @@ pub struct PresentationInput {
 }
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PresentationWork {
-    /// Due-key work replaces the normal ordinary slice; these are additional keyed costs.
+    /// Exact-key logical due or owner replay replaces the normal ordinary slice.
+    /// Both mutually exclusive modes share these keyed costs.
     pub ordinary_due_key_probes: usize,
     pub ordinary_due_seeks: usize,
     pub ordinary_due_hydrated: usize,
@@ -4959,6 +5018,7 @@ pub struct PresentationWork {
 }
 #[derive(Debug, Clone)]
 pub struct PresentationOutput {
+    pub owner_replay: WatchReplayProgress,
     pub ordinary_due_update: Option<crate::delivery::ledger::OrdinaryDueSnapshot>,
     pub reply: crate::protocol::delivery::DeliveryPullReplyV2,
     pub work: PresentationWork,
