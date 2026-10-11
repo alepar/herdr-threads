@@ -5311,6 +5311,14 @@ fn doctor_flags_codex_install_missing_subagent_stop_and_session_end() {
     fs::create_dir(&s.codex_home).unwrap();
     let setup = s.run(&["setup", "codex"]);
     assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    // A current install lacks nothing (setup now owns the end-event groups, ht-54r.11) ...
+    let doctor = json_doctor(&s);
+    assert!(
+        doctor["hooks"]["codex"]["stale_install"].is_null(),
+        "{doctor}"
+    );
+    // ... and an install from before them is flagged.
+    drop_installed_events(&s, "codex", &s.hooks(), &["SubagentStop", "SessionEnd"]);
     let doctor = json_doctor(&s);
     let stale = &doctor["hooks"]["codex"]["stale_install"];
     assert_eq!(
