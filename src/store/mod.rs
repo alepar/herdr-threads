@@ -1299,8 +1299,12 @@ impl StorePort for SqliteStore {
         budget: &CallBudget,
     ) -> Result<crate::ports::PresentationOutput, ApiError> {
         let mut writer = self.writer(budget)?;
-        self.context.execute_decision(
+        // Pull's tentative state writes remain predecision work: cancellation
+        // through decision acceptance rolls them back; accepted commits retain
+        // the budgeted wrapper's independent storage outcome.
+        self.context.execute_budgeted_decision(
             &mut writer,
+            budget,
             |tx| invitation_content::pull(tx, &self.context, input, budget),
             |_, _, reply| Ok(reply),
         )
