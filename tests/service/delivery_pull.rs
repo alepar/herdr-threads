@@ -6655,6 +6655,10 @@ fn private_invitation_id_snapshot(db: &Connection) -> Vec<(String, Vec<Vec<u8>>)
 }
 
 fn repair_private_invitation_id(f: &Fixture, value: rusqlite::types::Value, cast_text: bool) -> rusqlite::Result<usize> {
+    repair_private_invitation_id_for_consumer(f, "hook", value, cast_text)
+}
+
+fn repair_private_invitation_id_for_consumer(f: &Fixture, consumer: &str, value: rusqlite::types::Value, cast_text: bool) -> rusqlite::Result<usize> {
     // Deliberately corrupt only the private ID through a short-lived repair
     // connection. Never relax the service/writer connection's foreign keys.
     let repair = Connection::open(f.directory.join("store.db")).unwrap();
@@ -6663,11 +6667,11 @@ fn repair_private_invitation_id(f: &Fixture, value: rusqlite::types::Value, cast
     repair.pragma_update(None, "foreign_keys", false).unwrap();
     assert!(!repair.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap());
     let sql = if cast_text {
-        "UPDATE invitation_presentation_items SET invitation_id=CAST(?1 AS TEXT) WHERE seat_id='s' AND consumer='hook'"
+        "UPDATE invitation_presentation_items SET invitation_id=CAST(?1 AS TEXT) WHERE seat_id='s' AND consumer=?2"
     } else {
-        "UPDATE invitation_presentation_items SET invitation_id=?1 WHERE seat_id='s' AND consumer='hook'"
+        "UPDATE invitation_presentation_items SET invitation_id=?1 WHERE seat_id='s' AND consumer=?2"
     };
-    let result = repair.execute(sql, [value]);
+    let result = repair.execute(sql, params![value, consumer]);
     repair.pragma_update(None, "foreign_keys", before).unwrap();
     assert!(repair.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap());
     assert!(f.db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap());
@@ -6754,4 +6758,98 @@ fn presentation_private_invitation_id_wrong_types_refuse_at_strict_storage_bound
         assert!(repair_private_invitation_id(&f, value, false).is_err(), "STRICT TEXT NOT NULL blocks constructing wrong-type corruption");
         assert_eq!(private_invitation_id_snapshot(&f.db), before);
     }
+}
+
+
+fn private_watch_cleanup_id_fixture() -> (Fixture, CallerClaim) {
+    // Keep a genuine Hook allocation/owner alongside independently initialized
+    // passive Watch state; the corruption fixture must not manufacture a binding.
+    let (f, recipient, ordinal) = private_invitation_id_fixture("cleanup");
+    f.store.presentation_refresh(
+        &recipient.seat, recipient.binding_generation, recipient.native_session.as_str(), &budget(),
+    ).unwrap().unwrap();
+    f.db.execute(
+        "UPDATE invitation_presentation_consumers SET mod_initial_after=?1,mod_initial_high=?1,mod_context_after_seq=COALESCE((SELECT MAX(last_change_seq) FROM invitation_context_latest),0),mod_context_high=COALESCE((SELECT MAX(last_change_seq) FROM invitation_context_latest),0),mod_context_after_thread=?2,mod_context_thread='',mod_context_selected_seq=0,mod_context_invitation_after=0,mod_context_invitation_high=0,mod_cleanup_after=0,mod_cleanup_high=?1 WHERE seat_id='s' AND consumer='watch'",
+        params![ordinal, "\u{10ffff}"],
+    ).unwrap();
+    let selected = f.db.query_row(
+        "SELECT (SELECT COUNT(*) FROM digest_pending_invitations d WHERE d.seat_id=s.seat_id AND d.ordinal>s.mod_initial_after AND d.ordinal<=s.mod_initial_high),(SELECT COUNT(*) FROM invitation_context_latest c WHERE c.instance_id=s.instance_id AND (c.last_change_seq,c.thread_id)>(s.mod_context_after_seq,s.mod_context_after_thread) AND c.last_change_seq<=s.mod_context_high),(SELECT COUNT(*) FROM invitation_presentation_items i WHERE i.seat_id=s.seat_id AND i.consumer='watch' AND i.revisit_ordinal>s.mod_cleanup_after AND i.revisit_ordinal<=s.mod_cleanup_high AND i.mod_key!='' AND i.mod_generation=s.mod_generation AND i.mod_execution=s.mod_execution) FROM invitation_presentation_consumers s WHERE s.seat_id='s' AND s.consumer='watch'",
+        [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+    ).unwrap();
+    assert_eq!(selected, (0, 0, 1), "only the owned passive Watch cleanup row is reachable");
+    assert!(f.db.query_row(
+        "SELECT s.mod_generation=b.generation AND s.mod_execution=b.execution_id AND b.native_session=?1 FROM invitation_presentation_consumers s JOIN occupant_bindings b ON b.seat_id=s.seat_id AND b.ended_at IS NULL WHERE s.seat_id='s' AND s.consumer='watch'",
+        [recipient.native_session.as_str()], |r| r.get::<_, bool>(0),
+    ).unwrap(), "passive cleanup retains the genuine canonical owner");
+    (f, recipient)
+}
+
+#[test]
+fn presentation_private_watch_cleanup_ids_refuse_malformed_identity_without_effects() {
+    use crate::protocol::results::{ApiError, ErrorCode};
+    let mut failures = Vec::new();
+    for (kind, id) in [
+        ("empty", ""), ("space", "bad id"), ("tab", "bad\tid"),
+        ("control", "bad\0id"), ("non_ascii", "λ"),
+    ] {
+        let (f, recipient) = private_watch_cleanup_id_fixture();
+        assert_eq!(repair_private_invitation_id_for_consumer(
+            &f, "watch", rusqlite::types::Value::Text(id.into()), true,
+        ).unwrap(), 1);
+        let before = private_invitation_id_snapshot(&f.db);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f.store.presentation_refresh(
+                &recipient.seat, recipient.binding_generation, recipient.native_session.as_str(), &budget(),
+            )
+        }));
+        if !matches!(result, Ok(Err(ApiError { code: ErrorCode::StoreCorrupt, .. }))) {
+            failures.push(format!("passive_watch_cleanup/{kind}: expected StoreCorrupt without panic, got {result:?}"));
+        }
+        if private_invitation_id_snapshot(&f.db) != before {
+            failures.push(format!("passive_watch_cleanup/{kind}: private or canonical rows changed after refusal"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn presentation_private_watch_cleanup_ids_enforce_borrowed_text_bounds_without_effects() {
+    use crate::protocol::results::{ApiError, ErrorCode};
+    for (kind, value) in [
+        ("overlong", rusqlite::types::Value::Text("x".repeat(129))),
+        ("invalid_utf8", rusqlite::types::Value::Blob(vec![0x80])),
+    ] {
+        let (f, recipient) = private_watch_cleanup_id_fixture();
+        assert_eq!(repair_private_invitation_id_for_consumer(&f, "watch", value, true).unwrap(), 1);
+        let before = private_invitation_id_snapshot(&f.db);
+        let result = f.store.presentation_refresh(
+            &recipient.seat, recipient.binding_generation, recipient.native_session.as_str(), &budget(),
+        );
+        assert!(matches!(result, Err(ApiError { code: ErrorCode::StoreCorrupt, .. })), "{kind}: {result:?}");
+        assert_eq!(private_invitation_id_snapshot(&f.db), before);
+    }
+}
+
+#[test]
+fn presentation_private_watch_cleanup_ids_allow_128_byte_id_without_canonical_owner_changes() {
+    let (f, recipient) = private_watch_cleanup_id_fixture();
+    let owner = || f.db.query_row(
+        "SELECT generation,native_session,execution_id,observation_provenance FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
+        [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
+    ).unwrap();
+    let before_owner = owner();
+    assert_eq!(repair_private_invitation_id_for_consumer(
+        &f, "watch", rusqlite::types::Value::Text("x".repeat(128)), true,
+    ).unwrap(), 1);
+    let output = f.store.presentation_refresh(
+        &recipient.seat, recipient.binding_generation, recipient.native_session.as_str(), &budget(),
+    ).unwrap().unwrap();
+    assert_eq!(output.context_visits, 0);
+    assert_eq!(output.lifecycle_visits, 1, "only passive cleanup is visited");
+    assert_eq!(output.ordinary_publication_visits, 0);
+    assert_eq!(owner(), before_owner);
+    assert_eq!(f.db.query_row("SELECT COUNT(*) FROM invitation_presentation_items WHERE seat_id='s' AND consumer='watch'", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "valid orphan private row is reclaimed");
+    assert_eq!(f.db.query_row("SELECT COUNT(*) FROM invitation_presentation_items WHERE seat_id='s' AND consumer='hook'", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "Hook owner state remains intact");
+    assert_eq!(f.db.query_row("SELECT COUNT(*) FROM invitations WHERE seat_id='s' AND state='pending'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(f.db.query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
 }
