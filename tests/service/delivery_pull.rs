@@ -1256,17 +1256,26 @@ fn hook_pull_once(
     }
 }
 
+/// Pending items the seat's pulls have read so far (the drain's store walk).
+fn items_read(f: &Fixture) -> usize {
+    f.state.probe.items_read.load(Ordering::SeqCst)
+}
+
 // Kills: a full offer table evicting still-pending ids (re-offered afresh: shown again < 60 s later, more than
-// three times, ~64 KiB per hook), a full table answering Delivers forever, and notices starving behind the
-// endless `more` backlog (main review Important 2; repro /private/tmp/agy-ledger-review.rs).
+// three times), a full table answering Delivers forever, notices starving behind the endless `more` backlog
+// (main review Important 2), and a full-table pull walking the whole pending set when the last whole read
+// already saw it (final review 11 S2: 70 s+ here; a large backlog overran the hook's budget).
 #[test]
-fn a_truncated_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox() {
+fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox() {
     use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
-    let backlog = MAX_OFFERS_PER_SEAT + 33;
+    // The smallest backlog that overfills the table, plus a few. The first four bodies are over the limit
+    // (truncated, never confirmable); the rest are short, so a store page holds 32 of them.
+    let backlog = MAX_OFFERS_PER_SEAT + 4;
     let f = fixture(0);
     let big = "x".repeat(WATCH_BODY_LIMIT_BYTES + 100);
     for n in 0..backlog {
-        ordinary_message(&f, &format!("b{n:03}"), &big);
+        let body = if n < 4 { big.as_str() } else { "hello" };
+        ordinary_message(&f, &format!("b{n:03}"), body);
     }
     let context = pull_seat(&f);
     // After the check-in, which would carry a notice already pending.
@@ -1296,9 +1305,9 @@ fn a_truncated_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_f
         }
     };
 
-    // A hook pull every 100 ms for 12 s.
+    // A hook pull every 100 ms for 1.6 s: the table fills in the first nine.
     let mut texts = Vec::new();
-    for _ in 0..120 {
+    for _ in 0..16 {
         texts.push(hook_pull_once(&f, &context, &mut seen, &mut shown));
         advance(&f, 100);
     }
@@ -1342,13 +1351,22 @@ fn a_truncated_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_f
         "a full table parks new ids for inbox"
     );
 
-    // Past 60 s, 120 s and 180 s: 6 s of pulls every 100 ms each time.
+    // Past 60 s, 120 s and 180 s: 1.2 s of pulls every 100 ms each time. The last whole read saw this same
+    // pending set, so a re-offer pull reads only as far as its due ids.
     for round in 1..=3 {
         f.clock
             .0
             .store(first_shown + round * REOFFER_AFTER_MS, Ordering::SeqCst);
-        for _ in 0..60 {
+        for index in 0..12 {
+            let before = items_read(&f);
             hook_pull_once(&f, &context, &mut seen, &mut shown);
+            if round == 1 && index == 0 {
+                let read = items_read(&f) - before;
+                assert!(
+                    read <= PAGE_MAX_BLOCKS,
+                    "the first re-offer pull stops after its due ids; it read {read} of {backlog}"
+                );
+            }
             advance(&f, 100);
         }
         bounded(&shown);
@@ -1362,6 +1380,20 @@ fn a_truncated_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_f
     );
     assert_eq!(outlook(&f), NextPull::Nothing);
     assert!(f.state.holds_parked(&seat, generation));
+
+    // A new notice on the parked full table rides a page without reading the pending set: nothing in it could be
+    // shown or freed.
+    service_notice(&f, "w-2");
+    let before = items_read(&f);
+    let text = hook_pull_once(&f, &context, &mut seen, &mut shown).expect("the notice is shown");
+    assert!(text.contains("notice w-2"), "{text}");
+    assert_eq!(items_read(&f), before, "the drain was skipped");
+    assert!(
+        shown
+            .values()
+            .all(|times| times.len() == usize::from(MAX_OFFERS_PER_GENERATION)),
+        "no message rides along"
+    );
     // New attention still wakes; the parked table makes that wake name `inbox`.
     bump_wake_attention(&f);
     assert_eq!(outlook(&f), NextPull::Delivers);
@@ -1404,5 +1436,43 @@ fn an_id_withheld_at_capacity_is_shown_once_a_whole_read_frees_a_slot() {
         freed.offered,
         ids(&[last.as_str()]),
         "no time passed: the freed slot shows it"
+    );
+}
+
+// Kills: a pull that settled its notices and then lost a rotation race before recording, answering Busy so the
+// settled notices are never shown (final review 11 S3).
+#[test]
+fn notices_settled_by_a_pull_that_lost_a_rotation_race_are_still_returned() {
+    let f = fixture(2);
+    let context = pull_seat(&f);
+    service_notice(&f, "w-race");
+    let newer = context.binding_generation + 1;
+    *f.state.probe.before_record.lock().unwrap() =
+        Some(Box::new(move |ledger: &mut OfferedLedger| {
+            ledger
+                .seat_mut(&SeatId::new("s"), newer, "n2")
+                .expect("a newer generation replaces the entry");
+        }));
+    let page = page(pull(&f, &context, None));
+    assert!(
+        page.text.contains("[herdr-threads] notice w-race in "),
+        "{}",
+        page.text
+    );
+    assert!(
+        notice_frontier(&f) > 0,
+        "the notice settled before the race"
+    );
+    assert!(
+        page.offered.is_empty() && page.truncated.is_empty() && !page.more,
+        "no message is shown to a superseded generation: {page:?}"
+    );
+    assert!(!page.text.contains("message m1"), "{}", page.text);
+    let ledger = f.state.lock();
+    let entry = ledger.get(&SeatId::new("s")).unwrap();
+    assert_eq!(entry.generation, newer);
+    assert!(
+        entry.offers.is_empty(),
+        "nothing recorded into the newer entry"
     );
 }
