@@ -148,7 +148,8 @@
       "migrations/0030_invitation_lifecycle.sql",
       "tests/cli/watch.rs",
       "tests/cli/lazy_display.rs",
-      "migrations/0031_invitation_warning_origin.sql"
+      "migrations/0031_invitation_warning_origin.sql",
+      "tests/store/schema.rs"
     ]
   },
   {
