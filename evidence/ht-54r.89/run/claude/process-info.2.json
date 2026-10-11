@@ -1,0 +1,1 @@
+{"id":"cli:pane:process_info","result":{"process_info":{"foreground_process_group_id":42815,"foreground_processes":[{"argv":["/Users/alepar/.local/bin/claude"],"argv0":"claude","cmdline":"/Users/alepar/.local/bin/claude","cwd":"/private/tmp/ih.oHO4go/home","name":"2.1.296","pid":42815}],"pane_id":"w1:p1","shell_pid":42799},"type":"pane_process_info"}}
