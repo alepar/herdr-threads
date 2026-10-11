@@ -1,0 +1,56 @@
+{
+  "baseline": "c18f3cea60af3824b059459e6233127c91cbc71c",
+  "files": [
+    {
+      "path": "src/harness/agy/delivery.rs",
+      "baseline_sha256": "66653edd96dbbe6bd16f941cc2883a27ecfd17cf51888639af6143df0a6f7215",
+      "final_sha256": "6d9ece730b07273d57577b201a41f40e614d910da060de61066d3021198c8089"
+    },
+    {
+      "path": "tests/harness/agy_delivery.rs",
+      "baseline_sha256": "c39cdf97aa74467d6d2823d31f6511e3cadacef4d6a27c06deff6ee8bed2164e",
+      "final_sha256": "4e20027e2e8f3f918ac9d2dfabd431ed6027c288972d9f722da8630ad85a0350"
+    }
+  ],
+  "patch_sha256": "b425a8d6bc145e8ca5c717603653d23993f06272b67c03e945a3be41a4c45106",
+  "excluded_setup_failure": "/private/tmp/ht-task15-completion-duplicate-red.log: from_value used on Vec<u8>; corrected to from_slice, not behavioral RED",
+  "red": {
+    "selected": 1,
+    "failed": 1,
+    "runtime_seconds": 0.01,
+    "build_seconds": 46.81,
+    "test": "completion_rejects_duplicate_captured_control_stamps",
+    "cause": "valid_completion accepted duplicate captured controls"
+  },
+  "green": {
+    "selected": 1,
+    "passed": 1,
+    "runtime_seconds": 0.01,
+    "build_seconds": 18.47
+  },
+  "size_witness": {
+    "test": "typed_completion_fits_two_maximal_admitted_records_and_escaped_claim_fields",
+    "selected": 1,
+    "passed": 1,
+    "note": "32 distinct20-digit epochs replace32 identical20-digit epochs; unchanged cardinality/serialized geometry"
+  },
+  "logs": [
+    {
+      "path": "/private/tmp/ht-task15-completion-duplicate-red.log",
+      "sha256": "f7a86990d67942bc86a34e776f02ef4de22315f5468740c54b3dc0335c285934"
+    },
+    {
+      "path": "/private/tmp/ht-task15-completion-duplicate-red-2.log",
+      "sha256": "be262b4fc7daad5bcb290f76642f46c5ddbbb30e5d3c7cbfdc301dd7042f3374"
+    },
+    {
+      "path": "/private/tmp/ht-task15-completion-duplicate-green.log",
+      "sha256": "fd6a166efd3fb910cf29934a53f7e209e11330cd092265e5dd5740831d8a818f"
+    },
+    {
+      "path": "/private/tmp/ht-task15-completion-distinct-size-green.log",
+      "sha256": "8b6c9286b10c18e578ac5bcd3ff3738911e49364c991c4951df96bca7df984d0"
+    }
+  ],
+  "review_status": "awaiting fresh scoped review; two paths frozen"
+}
