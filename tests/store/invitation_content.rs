@@ -571,6 +571,9 @@ mod binding_presentation {
     }
     impl Fixture {
         fn new() -> Self {
+            Self::with_clock(Arc::new(FixedClock))
+        }
+        fn with_clock(clock: Arc<dyn Clock>) -> Self {
             use std::os::unix::fs::DirBuilderExt;
             let directory =
                 std::env::temp_dir().join(format!("bound-presentation-{}", uuid::Uuid::new_v4()));
@@ -578,7 +581,7 @@ mod binding_presentation {
                 .mode(0o700)
                 .create(&directory)
                 .unwrap();
-            let context = StoreContext::new(directory.join("store.db"), Arc::new(FixedClock));
+            let context = StoreContext::new(directory.join("store.db"), clock);
             let db = context.open_writer().unwrap();
             db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'boot',1,100);
                 INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native','p',1,0,0);
@@ -1130,9 +1133,21 @@ mod binding_presentation {
         );
     }
     fn continued_body_fixture() -> (Fixture, CallerClaim, String) {
+        continued_body_fixture_with_clock(Arc::new(FixedClock), false)
+    }
+    fn continued_body_fixture_with_clock(
+        clock: Arc<dyn Clock>,
+        sibling_unread: bool,
+    ) -> (Fixture, CallerClaim, String) {
         use herdr_threads::protocol::pagination::{InboxBatchV2CursorState, InboxBatchV2Source};
-        let f = Fixture::new();
+        let f = Fixture::with_clock(clock);
         f.ordinary_body(&"z".repeat(65_536));
+        if sibling_unread {
+            // Initial fixture state, before any presentation/read: A also has
+            // unread content, so its later public advance is a real transition.
+            f.db.execute("UPDATE binding_cursors SET seq=0 WHERE binding_id='a'", [])
+                .unwrap();
+        }
         let mut claim = f.claim("b");
         claim.execution = ExecutionId::new("11111111-1111-4111-8111-111111111111");
         f.db.execute(
@@ -1314,7 +1329,23 @@ mod binding_presentation {
     }
     #[test]
     fn continued_unread_body_survives_sibling_full_read() {
-        let (f, claim, _) = continued_body_fixture();
+        use herdr_threads::protocol::{ids::MessageId, pagination::InboxBatchV2CursorState};
+        let (f, claim, cursor) = continued_body_fixture_with_clock(Arc::new(FixedClock), true);
+        let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        state.body.as_mut().unwrap().offset = 4096;
+        state.attention.receipts_done = true;
+        state.attention.next_manifest_warning = true;
+        let partial = serde_json::json!({"m":"z".repeat(4096)}).to_string();
+        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1,ordinary_partial=?2,ordinary_skip_body=NULL WHERE binding_id='b' AND consumer='watch'", rusqlite::params![state.encode("i").unwrap(),partial]).unwrap();
+        assert_eq!(
+            f.db.query_row(
+                "SELECT seq FROM binding_cursors WHERE binding_id='a'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
         let mut sibling = f.claim("a");
         sibling.execution = ExecutionId::new("22222222-2222-4222-8222-222222222222");
         f.db.execute(
@@ -1323,12 +1354,52 @@ mod binding_presentation {
         )
         .unwrap();
         read_complete_body_and_advance(&f, &sibling, "sibling-read");
+        assert_eq!(
+            f.db.query_row(
+                "SELECT seq FROM binding_cursors WHERE binding_id='a'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
         let result = f
             .store
             .presentation_pull(f.input_for_claim("b", claim), &budget())
             .unwrap();
         assert_eq!(result.work.ordinary_continuation_key_probes, 15);
         assert!(result.work.ordinary > 0);
+        let DeliveryPullReplyV2::Page(page) = result.reply else {
+            panic!("B's unread continuation must be emitted despite A's read")
+        };
+        let content = page
+            .items
+            .iter()
+            .find_map(|item| match item {
+                PresentationItemV2::Message { id, content, .. } if id.as_str() == "m" => {
+                    Some(content)
+                }
+                _ => None,
+            })
+            .expect("exact continued B message");
+        assert!(
+            !content.ack_required,
+            "A already settled the shared receipt"
+        );
+        assert_eq!(content.body_len, 65_536);
+        assert!(content.truncated);
+        assert_eq!(
+            content.body,
+            format!(
+                "{}{}",
+                "z".repeat(8192),
+                herdr_threads::protocol::watch::truncation_marker_for(
+                    &[],
+                    &MessageId::new("m"),
+                    false
+                )
+            )
+        );
         assert_eq!(
             f.db.query_row(
                 "SELECT seq FROM binding_cursors WHERE binding_id='b'",
@@ -1392,5 +1463,102 @@ mod binding_presentation {
             .unwrap();
         assert_eq!(retried.work.ordinary_continuation_key_probes, 15);
         assert!(retried.work.ordinary <= 100);
+    }
+    #[test]
+    fn continued_body_cancellation_before_final_save_rolls_back_and_retries() {
+        use herdr_threads::protocol::{
+            pagination::InboxBatchV2CursorState, results::ErrorCode, time::Cancellation,
+        };
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        struct CancelClock {
+            token: Cancellation,
+            armed: AtomicBool,
+            calls: AtomicUsize,
+            fired_at: AtomicUsize,
+        }
+        impl Clock for CancelClock {
+            fn utc_now(&self) -> UtcMillis {
+                UtcMillis(1000)
+            }
+            fn monotonic_now(&self) -> MonoInstant {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+                // Existing checks: two writer admission reads, then two done
+                // source rotations and the empty receipt-source completion.
+                // is_exhausted reads cancellation BEFORE this clock. Cancel
+                // here and return an unexpired time so that check returns false.
+                if self.armed.load(Ordering::SeqCst) && call == 2 + 2 + 1 {
+                    self.fired_at.store(call, Ordering::SeqCst);
+                    self.token.cancel();
+                }
+                MonoInstant(1)
+            }
+        }
+        let token = Cancellation::default();
+        let clock = Arc::new(CancelClock {
+            token: token.clone(),
+            armed: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+            fired_at: AtomicUsize::new(0),
+        });
+        let (f, claim, cursor) = continued_body_fixture_with_clock(clock.clone(), false);
+        read_complete_body_and_advance(&f, &claim, "cancel-before-save");
+        let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        // Keep one empty source-completion step after retirement. This makes
+        // cancellation observable on OLD code before its final save, without
+        // depending on a clock call introduced by the proposed new guard.
+        state.attention.receipts_done = false;
+        let receipts = state.attention.receipts.as_mut().unwrap();
+        receipts.physical_after = receipts.physical_high_water;
+        receipts.manifest_after = receipts.manifest_high_water;
+        state.attention.next_manifest_warning = true;
+        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1 WHERE binding_id='b' AND consumer='watch'", [state.encode("i").unwrap()]).unwrap();
+        let snapshot = || {
+            let mut statement = f.db.prepare("SELECT * FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'").unwrap();
+            let columns = statement.column_count();
+            statement
+                .query_row([], |row| {
+                    (0..columns)
+                        .map(|n| row.get::<_, rusqlite::types::Value>(n))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+        };
+        let before = snapshot();
+        let input = f.input_for_claim("b", claim.clone());
+        let mut cancelled_budget = budget();
+        cancelled_budget.cancellation = token.clone();
+        clock.calls.store(0, Ordering::SeqCst);
+        clock.armed.store(true, Ordering::SeqCst);
+        let result = f.store.presentation_pull(input, &cancelled_budget);
+        clock.armed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            clock.fired_at.load(Ordering::SeqCst),
+            5,
+            "cancellation must fire in an existing pre-save check"
+        );
+        assert!(
+            token.is_cancelled(),
+            "the request really was cancelled on old code too"
+        );
+        let error = result.expect_err(
+            "an actually cancelled terminal continuation must not commit its private progress",
+        );
+        assert_eq!(error.code, ErrorCode::Cancelled);
+        assert_eq!(
+            snapshot(),
+            before,
+            "all private fields roll back byte-for-byte"
+        );
+        let retry = f
+            .store
+            .presentation_pull(f.input_for_claim("b", claim), &budget())
+            .unwrap();
+        assert_eq!(retry.work.ordinary_continuation_key_probes, 15);
+        assert_eq!(retry.work.ordinary, 1);
+        assert_ne!(
+            snapshot(),
+            before,
+            "a fresh-budget retry commits the retirement"
+        );
     }
 }
