@@ -121,6 +121,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                         body_start,
                         body_end,
                         body_len,
+                        ..
                     } => InboxBatchItem::Message {
                         thread: thread.clone(),
                         topic_data: topic_data.clone(),

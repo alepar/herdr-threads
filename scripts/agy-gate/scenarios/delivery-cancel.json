@@ -1,0 +1,43 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "delivery-cancel",
+  "aux_text": "Gate delivery title",
+  "default": {
+    "text": "DELIVERY-UNEXPECTED"
+  },
+  "vars": {
+    "cwd": "/unset"
+  },
+  "steps": [
+    {
+      "label": "cancel-busy",
+      "match": {
+        "contains": [
+          "CANCEL-BUSY"
+        ]
+      },
+      "delay_ms": 5000,
+      "reply": {
+        "text": "CANCEL-BUSY-DONE"
+      }
+    },
+    {
+      "label": "cancel-inv0",
+      "match": {
+        "contains": [
+          "CANCEL-NOTE"
+        ]
+      },
+      "delay_ms": 20000,
+      "reply": {
+        "text": "CANCEL-INV0-DONE"
+      }
+    },
+    {
+      "label": "cancel-tail",
+      "reply": {
+        "text": "DELIV-TAIL"
+      }
+    }
+  ]
+}

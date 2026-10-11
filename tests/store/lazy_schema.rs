@@ -25,7 +25,7 @@ fn lazy_schema_upgrade25_defaults_existing_messages_to_ordinary() {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        32
+        35
     );
 }
 
@@ -178,7 +178,7 @@ fn lazy_pending_scan_skips_large_displayed_history() {
         stage(&db, n);
         publish(&db, n);
     }
-    // The binding's cursor has passed all but the last message (V31: display state is the
+    // The binding's cursor has passed all but the last message (V34: display state is the
     // cursor, not the recipient row's state).
     db.execute(
         "INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',1199 FROM occupant_bindings WHERE seat_id='s'",

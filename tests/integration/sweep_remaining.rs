@@ -1709,6 +1709,7 @@ fn producer_ordering_control(
         user_intent: None,
         thread: ThreadId::new("t"),
         body: "ordering target".into(),
+        direct_recipient: None,
         invited_recipients: vec![SeatId::new("b")],
         deadline_millis: None,
         relays_user: false,

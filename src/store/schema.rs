@@ -64,11 +64,14 @@ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sq
 const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
 const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
 const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
-const V29: &str = include_str!("../../migrations/0029_session_bindings.sql");
-const V30: &str = include_str!("../../migrations/0030_archival_scan_scope.sql");
-const V31: &str = include_str!("../../migrations/0031_binding_delivery_state.sql");
-const V32: &str = include_str!("../../migrations/0032_binding_attention_frontiers.sql");
-pub(crate) const LATEST_VERSION: i64 = 32;
+const V29: &str = include_str!("../../migrations/0029_direct_threads.sql");
+const V30: &str = include_str!("../../migrations/0030_automatic_handoff.sql");
+const V31: &str = include_str!("../../migrations/0031_seat_wake_on.sql");
+const V32: &str = include_str!("../../migrations/0032_session_bindings.sql");
+const V33: &str = include_str!("../../migrations/0033_archival_scan_scope.sql");
+const V34: &str = include_str!("../../migrations/0034_binding_delivery_state.sql");
+const V35: &str = include_str!("../../migrations/0035_binding_attention_frontiers.sql");
+pub(crate) const LATEST_VERSION: i64 = 35;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -179,6 +182,9 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V30))
                 .and_then(|_| conn.execute_batch(V31))
                 .and_then(|_| conn.execute_batch(V32))
+                .and_then(|_| conn.execute_batch(V33))
+                .and_then(|_| conn.execute_batch(V34))
+                .and_then(|_| conn.execute_batch(V35))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -419,7 +425,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=32 => verify_existing(conn),
+        18..=35 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -589,33 +595,90 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     }
     verify_existing_v28(conn)?;
     if (1..=28).contains(&version) {
-        migrate_v28_to_v29(conn, now())?;
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V29)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v29(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 29)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
     }
     verify_existing_v29(conn)?;
     if (1..=29).contains(&version) {
-        migrate_v29_to_v30(conn)?;
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V30)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v30(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 30)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
     }
     verify_existing_v30(conn)?;
     if (1..=30).contains(&version) {
-        migrate_v30_to_v31(conn)?;
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V31)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v31(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 31)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
     }
     verify_existing_v31(conn)?;
     if (1..=31).contains(&version) {
-        migrate_v31_to_v32(conn)?;
+        migrate_v31_to_v32(conn, now())?;
     }
-    verify_existing_v32(conn)
+    verify_existing_v32(conn)?;
+    if (1..=32).contains(&version) {
+        migrate_v32_to_v33(conn)?;
+    }
+    verify_existing_v33(conn)?;
+    if (1..=33).contains(&version) {
+        migrate_v33_to_v34(conn)?;
+    }
+    verify_existing_v34(conn)?;
+    if (1..=34).contains(&version) {
+        migrate_v34_to_v35(conn)?;
+    }
+    verify_existing_v35(conn)
 }
 
-/// V32 (ht-54r.9): the warning offer and notice frontiers move from one row per seat to one row
+/// V35 (ht-54r.9): the warning offer and notice frontiers move from one row per seat to one row
 /// per binding. One transaction.
-fn migrate_v31_to_v32(conn: &Connection) -> Result<(), ApiError> {
+fn migrate_v34_to_v35(conn: &Connection) -> Result<(), ApiError> {
     conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
     let result = conn
-        .execute_batch(V32)
+        .execute_batch(V35)
         .map_err(store_error)
-        .and_then(|_| verify_existing_v32(conn))
+        .and_then(|_| verify_existing_v35(conn))
         .and_then(|_| {
-            conn.pragma_update(None, "user_version", 32)
+            conn.pragma_update(None, "user_version", 35)
                 .map_err(store_error)
         });
     match result {
@@ -627,11 +690,11 @@ fn migrate_v31_to_v32(conn: &Connection) -> Result<(), ApiError> {
     }
 }
 
-/// Objects V32 creates or rebuilds, audited exactly as written (see `V29_AUDITED`).
-const V32_AUDITED: [(&str, &str, &str); 4] = [
-    ("table", "warning_offer_v32", "warning_offer"),
+/// Objects V35 creates or rebuilds, audited exactly as written (see `V32_AUDITED`).
+const V35_AUDITED: [(&str, &str, &str); 4] = [
+    ("table", "warning_offer_v35", "warning_offer"),
     ("index", "warning_offer_seat", "warning_offer_seat"),
-    ("table", "digest_notice_offer_v32", "digest_notice_offer"),
+    ("table", "digest_notice_offer_v35", "digest_notice_offer"),
     (
         "index",
         "digest_notice_offer_seat",
@@ -639,20 +702,20 @@ const V32_AUDITED: [(&str, &str, &str); 4] = [
     ),
 ];
 
-fn verify_existing_v32(conn: &Connection) -> Result<(), ApiError> {
-    audit_rebuilt_objects(conn, V32, &V32_AUDITED, "binding attention frontier")
+fn verify_existing_v35(conn: &Connection) -> Result<(), ApiError> {
+    audit_rebuilt_objects(conn, V35, &V35_AUDITED, "binding attention frontier")
 }
 
-/// V30 (ht-54r.15): archival scan scope. Narrows the mutation-revision triggers so the revision
+/// V33 (ht-54r.15): archival scan scope. Narrows the mutation-revision triggers so the revision
 /// moves only for membership, member-liveness and seat-lifecycle changes.
-fn migrate_v29_to_v30(conn: &Connection) -> Result<(), ApiError> {
+fn migrate_v32_to_v33(conn: &Connection) -> Result<(), ApiError> {
     conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
     let result = conn
-        .execute_batch(V30)
+        .execute_batch(V33)
         .map_err(store_error)
-        .and_then(|_| verify_existing_v30(conn))
+        .and_then(|_| verify_existing_v33(conn))
         .and_then(|_| {
-            conn.pragma_update(None, "user_version", 30)
+            conn.pragma_update(None, "user_version", 33)
                 .map_err(store_error)
         });
     match result {
@@ -664,9 +727,9 @@ fn migrate_v29_to_v30(conn: &Connection) -> Result<(), ApiError> {
     }
 }
 
-/// V23 triggers that V30 drops or replaces. From schema version 30 the V30 text owns them, so
-/// `verify_existing_v23` skips them and `verify_existing_v30` audits them byte for byte.
-const V30_SUPERSEDED_V23_TRIGGERS: [&str; 5] = [
+/// V23 triggers that V33 drops or replaces. From schema version 33 the V33 text owns them, so
+/// `verify_existing_v23` skips them and `verify_existing_v33` audits them byte for byte.
+const V33_SUPERSEDED_V23_TRIGGERS: [&str; 5] = [
     "archival_fence_seats_insert",
     "archival_fence_seats_update",
     "archival_fence_memberships_update",
@@ -674,10 +737,10 @@ const V30_SUPERSEDED_V23_TRIGGERS: [&str; 5] = [
     "archival_fence_occupant_bindings_update",
 ];
 
-/// Audits every object V30 creates exactly as written, and that each trigger it only drops is
+/// Audits every object V33 creates exactly as written, and that each trigger it only drops is
 /// absent.
-fn verify_existing_v30(conn: &Connection) -> Result<(), ApiError> {
-    let ddl = V30
+fn verify_existing_v33(conn: &Connection) -> Result<(), ApiError> {
+    let ddl = V33
         .lines()
         .filter(|line| !line.trim_start().starts_with("--") && !line.starts_with("DROP "))
         .collect::<Vec<_>>()
@@ -707,7 +770,7 @@ fn verify_existing_v30(conn: &Connection) -> Result<(), ApiError> {
         }
         created.push(name);
     }
-    for name in V30_SUPERSEDED_V23_TRIGGERS {
+    for name in V33_SUPERSEDED_V23_TRIGGERS {
         let present: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",
@@ -725,16 +788,16 @@ fn verify_existing_v30(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// V31 (ht-54r.22): lazy display state onto binding cursors (legacy pending carry-over) and
+/// V34 (ht-54r.22): lazy display state onto binding cursors (legacy pending carry-over) and
 /// catch-up rows keyed by binding. One transaction.
-fn migrate_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
+fn migrate_v33_to_v34(conn: &Connection) -> Result<(), ApiError> {
     conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
     let result = conn
-        .execute_batch(V31)
+        .execute_batch(V34)
         .map_err(store_error)
-        .and_then(|_| verify_existing_v31(conn))
+        .and_then(|_| verify_existing_v34(conn))
         .and_then(|_| {
-            conn.pragma_update(None, "user_version", 31)
+            conn.pragma_update(None, "user_version", 34)
                 .map_err(store_error)
         });
     match result {
@@ -746,9 +809,9 @@ fn migrate_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
     }
 }
 
-/// Objects V31 creates or rebuilds, audited exactly as written (see `V29_AUDITED`).
-const V31_AUDITED: [(&str, &str, &str); 6] = [
-    ("table", "catch_up_v31", "catch_up"),
+/// Objects V34 creates or rebuilds, audited exactly as written (see `V32_AUDITED`).
+const V34_AUDITED: [(&str, &str, &str); 6] = [
+    ("table", "catch_up_v34", "catch_up"),
     (
         "index",
         "catch_up_extension_until",
@@ -764,8 +827,8 @@ const V31_AUDITED: [(&str, &str, &str); 6] = [
     ),
 ];
 
-fn verify_existing_v31(conn: &Connection) -> Result<(), ApiError> {
-    audit_rebuilt_objects(conn, V31, &V31_AUDITED, "binding delivery state")?;
+fn verify_existing_v34(conn: &Connection) -> Result<(), ApiError> {
+    audit_rebuilt_objects(conn, V34, &V34_AUDITED, "binding delivery state")?;
     let column_ok: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('lazy_recipients') WHERE name='legacy_pending' AND type='INTEGER' AND \"notnull\"=1 AND dflt_value='0')",
@@ -789,7 +852,7 @@ fn verify_existing_v31(conn: &Connection) -> Result<(), ApiError> {
             "missing or altered lazy_recipients.legacy_pending",
         ));
     }
-    // The rebuilt catch_up must not be a stale V29-era shape.
+    // The rebuilt catch_up must not be a stale V32-era shape.
     let shaped: bool = conn
         .query_row(
             "SELECT NOT EXISTS(SELECT 1 FROM pragma_table_info('catch_up') WHERE name IN ('binding_generation','execution_id'))",
@@ -806,12 +869,12 @@ fn verify_existing_v31(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// V29 (ht-54r): session-keyed bindings. The SQL rebuild runs in one transaction; the
+/// V32 (ht-54r): session-keyed bindings. The SQL rebuild runs in one transaction; the
 /// upgrade time is the disconnected_at of each open migrated binding (archival grace).
-fn migrate_v28_to_v29(conn: &Connection, now: UtcMillis) -> Result<(), ApiError> {
+fn migrate_v31_to_v32(conn: &Connection, now: UtcMillis) -> Result<(), ApiError> {
     conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
     let result = conn
-        .execute_batch(V29)
+        .execute_batch(V32)
         .map_err(store_error)
         .and_then(|_| {
             conn.execute(
@@ -821,9 +884,9 @@ fn migrate_v28_to_v29(conn: &Connection, now: UtcMillis) -> Result<(), ApiError>
             .map(|_| ())
             .map_err(store_error)
         })
-        .and_then(|_| verify_existing_v29(conn))
+        .and_then(|_| verify_existing_v32(conn))
         .and_then(|_| {
-            conn.pragma_update(None, "user_version", 29)
+            conn.pragma_update(None, "user_version", 32)
                 .map_err(store_error)
         });
     match result {
@@ -835,11 +898,11 @@ fn migrate_v28_to_v29(conn: &Connection, now: UtcMillis) -> Result<(), ApiError>
     }
 }
 
-/// Objects V29 creates or rebuilds, audited exactly as written: (kind, name as written in V29,
+/// Objects V32 creates or rebuilds, audited exactly as written: (kind, name as written in V32,
 /// name as installed). The rebuilt table is installed under its final name, which SQLite's
 /// RENAME writes quoted.
-const V29_AUDITED: [(&str, &str, &str); 7] = [
-    ("table", "occupant_bindings_v29", "occupant_bindings"),
+const V32_AUDITED: [(&str, &str, &str); 7] = [
+    ("table", "occupant_bindings_v32", "occupant_bindings"),
     (
         "index",
         "occupant_bindings_session_key",
@@ -904,8 +967,8 @@ fn audit_rebuilt_objects(
     Ok(())
 }
 
-fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
-    audit_rebuilt_objects(conn, V29, &V29_AUDITED, "session binding")?;
+fn verify_existing_v32(conn: &Connection) -> Result<(), ApiError> {
+    audit_rebuilt_objects(conn, V32, &V32_AUDITED, "session binding")?;
     for (table, column) in [
         ("receipts", "ack_binding_id"),
         ("receipt_state", "ack_binding_id"),
@@ -928,6 +991,54 @@ fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
+fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+    let expected = V29
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let actual: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='direct_threads'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if actual.as_deref().map(str::trim) != Some(expected.trim().trim_end_matches(';')) {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered direct pair registry",
+        ));
+    }
+    Ok(())
+}
+
+/// The two DP8 columns: type, nullability and default are part of the contract
+/// (a fresh seat reads `nudge`; the lazy frontier starts absent).
+fn verify_existing_v31(conn: &Connection) -> Result<(), ApiError> {
+    for (table, column, kind, not_null, default) in [
+        ("seats", "wake_on", "TEXT", true, Some("'nudge'")),
+        ("wake_work", "last_lazy_ordinal", "INTEGER", false, None),
+    ] {
+        let found: Option<(String, bool, Option<String>)> = conn
+            .query_row(
+                &format!("SELECT type,\"notnull\",dflt_value FROM pragma_table_info('{table}') WHERE name=?1"),
+                [column],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if found != Some((kind.to_owned(), not_null, default.map(str::to_owned))) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered wake_on column {table}.{column}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The schema version stamped in the database (`PRAGMA user_version`).
 fn schema_version(conn: &Connection) -> Result<i64, ApiError> {
     conn.pragma_query_value(None, "user_version", |r| r.get(0))
@@ -935,7 +1046,7 @@ fn schema_version(conn: &Connection) -> Result<i64, ApiError> {
 }
 
 fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
-    let v31 = schema_version(conn)? >= 31;
+    let v34 = schema_version(conn)? >= 34;
     // Compare every lazy object, including trigger bodies with embedded semicolons.
     let ddl = V26
         .lines()
@@ -951,9 +1062,9 @@ fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
         let words = sql.split_whitespace().collect::<Vec<_>>();
         let kind = words[1].to_ascii_lowercase();
         let name = words[2];
-        // V31 appends one column to lazy_recipients; SQLite stores it right after `state`.
+        // V34 appends one column to lazy_recipients; SQLite stores it right after `state`.
         let appended;
-        let sql = if kind == "table" && name == "lazy_recipients" && v31 {
+        let sql = if kind == "table" && name == "lazy_recipients" && v34 {
             appended = sql.replacen(
                 "CHECK(state IN ('pending','displayed'))",
                 "CHECK(state IN ('pending','displayed')), legacy_pending INTEGER NOT NULL DEFAULT 0 CHECK(legacy_pending IN (0,1))",
@@ -1035,8 +1146,8 @@ fn verify_existing_v23(conn: &Connection) -> Result<(), ApiError> {
     // Preserve quoted literals and predicate bytes: case/whitespace folding
     // inside a SQL string can silently turn a guard into a different condition.
     let normalize = |sql: &str| sql.trim().trim_end_matches(';').trim().to_owned();
-    // From V30 the scan-scope triggers are owned and audited by `verify_existing_v30`.
-    let v30 = schema_version(conn)? >= 30;
+    // From V33 the scan-scope triggers are owned and audited by `verify_existing_v33`.
+    let v33 = schema_version(conn)? >= 33;
     for object in ddl.trim().split("\nCREATE ") {
         let sql = if object.starts_with("CREATE ") {
             object.to_owned()
@@ -1046,7 +1157,7 @@ fn verify_existing_v23(conn: &Connection) -> Result<(), ApiError> {
         let mut words = sql.split_whitespace().skip(1);
         let kind = words.next().unwrap_or_default().to_ascii_lowercase();
         let name = words.next().unwrap_or_default();
-        if v30 && kind == "trigger" && V30_SUPERSEDED_V23_TRIGGERS.contains(&name) {
+        if v33 && kind == "trigger" && V33_SUPERSEDED_V23_TRIGGERS.contains(&name) {
             continue;
         }
         let installed: Option<String> = conn
@@ -1197,10 +1308,10 @@ fn verify_existing_v27(conn: &Connection) -> Result<(), ApiError> {
         if name == "harness_binding_sequence_v22" {
             continue;
         }
-        // V29 rebuilds occupant_bindings and replaces its current-binding index; its own
-        // audit (`verify_existing_v29`) owns them. The history and execution indexes are
+        // V32 rebuilds occupant_bindings and replaces its current-binding index; its own
+        // audit (`verify_existing_v32`) owns them. The history and execution indexes are
         // recreated identically and stay audited here.
-        if schema_version(conn)? >= 29
+        if schema_version(conn)? >= 32
             && (name == "occupant_bindings_v22" || name == "occupant_bindings_current")
         {
             continue;
@@ -1674,9 +1785,9 @@ fn verify_v11_b1(conn: &Connection) -> Result<(), ApiError> {
             ));
         }
     }
-    let v29 = schema_version(conn)? >= 29;
+    let v32 = schema_version(conn)? >= 32;
     for name in B1_EXISTING_ACCESS_PATHS {
-        let name = if v29 && name == "occupant_bindings_current" {
+        let name = if v32 && name == "occupant_bindings_current" {
             "occupant_bindings_open"
         } else {
             name
@@ -2177,8 +2288,8 @@ fn verify_existing_v8(conn: &Connection) -> Result<(), ApiError> {
             .next()
             .filter(|name| !name.is_empty())
             .ok_or_else(|| api_error(ErrorCode::IncompatibleSchema, "invalid digest DDL"))?;
-        // V32 rebuilds the notice frontier per binding; its own audit owns it from then on.
-        if name == "digest_notice_offer" && schema_version(conn)? >= 32 {
+        // V35 rebuilds the notice frontier per binding; its own audit owns it from then on.
+        if name == "digest_notice_offer" && schema_version(conn)? >= 35 {
             continue;
         }
         let installed: Option<String> = conn
@@ -2755,8 +2866,8 @@ fn verify_existing_v1(conn: &Connection) -> Result<(), ApiError> {
         "warning_offer",
         "work_jobs",
     ];
-    // V29 replaces the one-open-binding-per-seat index with the non-unique access path.
-    let current_binding_index = if schema_version(conn)? >= 29 {
+    // V32 replaces the one-open-binding-per-seat index with the non-unique access path.
+    let current_binding_index = if schema_version(conn)? >= 32 {
         "occupant_bindings_open"
     } else {
         "occupant_bindings_current"
@@ -3557,6 +3668,40 @@ fn enqueue_transition_warning(
     Ok(())
 }
 
+/// Freeze the native rejection's audience in its deciding transaction. Reuse
+/// the bounded transition fanout without creating an open warning condition.
+pub(crate) fn enqueue_invitation_rejection_notice(
+    tx: &Connection,
+    warning: &str,
+    thread: &str,
+    actor: &str,
+) -> Result<(), ApiError> {
+    let seq: i64 = tx
+        .query_row(
+            "SELECT decision_seq FROM messages WHERE id=?1",
+            [warning],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let high_water: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(ordinal),0) FROM membership_intervals WHERE thread_id=?1",
+            [thread],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    enqueue_transition_warning(
+        tx,
+        warning,
+        seq,
+        thread,
+        high_water,
+        actor,
+        "invitation",
+        Some(seq),
+    )
+}
+
 /// Manifest publication fixes the unavailable warning's logical event and
 /// recipient high water. Persist its transition before a projection worker can
 /// lag or the seat's episode can close.
@@ -4290,7 +4435,13 @@ fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {
 }
 
 fn verify_existing_v28(conn: &Connection) -> Result<(), ApiError> {
-    let ddl = V28
+    verify_ddl(conn, V28, "bootstrap topology")
+}
+fn verify_existing_v30(conn: &Connection) -> Result<(), ApiError> {
+    verify_ddl(conn, V30, "automatic handoff")
+}
+fn verify_ddl(conn: &Connection, source: &str, label: &str) -> Result<(), ApiError> {
+    let ddl = source
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
@@ -4319,7 +4470,7 @@ fn verify_existing_v28(conn: &Connection) -> Result<(), ApiError> {
         if installed.as_deref().map(normalize) != Some(normalize(&sql)) {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
-                format!("missing or altered bootstrap topology {kind} {name}"),
+                format!("missing or altered {label} {kind} {name}"),
             ));
         }
     }

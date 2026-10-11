@@ -57,6 +57,7 @@ use crate::{
             AttentionClass, AttentionDigest, AttentionRef, AttentionRequirement, AttentionToken,
             DIGEST_VERSION, MAX_DIGEST_IDS, binding_token_hash,
         },
+        commands::WakeOn,
         ids::{BindingId, MessageId, SeatId, ThreadId},
         results::{ApiError, ErrorCode, MAX_PENDING_WARNING_COUNT, WarningRef},
     },
@@ -427,6 +428,7 @@ fn digest_for(
         invitation: frontier_key(&invitations)?,
         addressed_receipt: frontier_key(&receipts)?,
         actionable_warning: frontier_key(&warnings)?,
+        lazy: None,
     };
     let pair = |key: Option<LogicalPublicationKey>| key.map(|k| (k.decision_seq, k.event_offset));
     let digest = AttentionDigest {
@@ -779,7 +781,13 @@ fn judged_warning(
             "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings d WHERE d.seat_id=?1 AND d.warning_id=?2 AND EXISTS(SELECT 1 FROM warning_conditions c WHERE c.open_warning_id=d.warning_id OR c.clear_warning_id=d.warning_id))",
             params![seat_id,warning_id], |r| r.get(0),
         ).map_err(store_error)?;
-        if projected_transition {
+        if projected_transition
+            || (effective::is_invitation_rejection_notice(db, warning_id)?
+                && db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings WHERE seat_id=?1 AND warning_id=?2)",
+                    params![seat_id, warning_id], |r| r.get::<_, bool>(0),
+                ).map_err(store_error)?)
+        {
             return Ok(None);
         }
     }
@@ -833,7 +841,7 @@ pub const SEAT_NOTICE_BINDING_SQL: &str = "SELECT b.binding_id FROM occupant_bin
 /// mod channel) uses: the seat's newest open top-level binding, a connected one first. A seat
 /// holds several bindings (ht-54r.3) and each has its own frontier (`binding_notice_frontier`);
 /// the seat view follows the newest top-level session, never a subagent. The binding's own
-/// generation is informational (V29) and plays no part: a rebind ends every binding.
+/// generation is informational (V32) and plays no part: a rebind ends every binding.
 pub fn seat_notice_binding(db: &Connection, seat_id: &str) -> Result<Option<String>, ApiError> {
     db.query_row(SEAT_NOTICE_BINDING_SQL, [seat_id], |r| r.get(0))
         .optional()
@@ -882,7 +890,7 @@ pub fn informational_notice_pending(
         "SELECT EXISTS(SELECT 1 FROM warning_conditions c WHERE c.open_warning_id=?1 OR c.clear_warning_id=?1) OR EXISTS(SELECT 1 FROM messages m JOIN service_notification_publications p ON p.message_id=m.id WHERE m.id=?1 AND m.kind='warn' AND m.author_kind='programmatic')",
         [warning_id], |r| r.get(0),
     ).map_err(store_error)?;
-    if !informational {
+    if !informational && !effective::is_invitation_rejection_notice(db, warning_id)? {
         return Ok(None);
     }
     let ordinal: Option<i64> = db
@@ -932,6 +940,90 @@ pub fn binding_has_pending_notices(db: &Connection, binding: &BindingId) -> Resu
         |r| r.get(0),
     )
     .map_err(store_error)
+}
+
+/// The projection ordinal of the newest attributed notice above the seat view's carried
+/// frontier (`notice_frontier`), if any: one indexed probe.
+pub fn newest_pending_notice(db: &Connection, seat_id: &str) -> Result<Option<i64>, ApiError> {
+    let frontier = notice_frontier(db, seat_id)?;
+    newest_notice_above(db, seat_id, frontier)
+}
+
+/// [`newest_pending_notice`] above one binding's own carried frontier.
+pub fn binding_newest_pending_notice(
+    db: &Connection,
+    binding: &BindingId,
+) -> Result<Option<i64>, ApiError> {
+    let seat: Option<String> = db
+        .query_row(
+            "SELECT seat_id FROM occupant_bindings WHERE binding_id=?1",
+            [binding.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(seat) = seat else {
+        return Ok(None);
+    };
+    let frontier = binding_notice_frontier(db, binding.as_str())?;
+    newest_notice_above(db, &seat, frontier)
+}
+
+fn newest_notice_above(
+    db: &Connection,
+    seat_id: &str,
+    frontier: i64,
+) -> Result<Option<i64>, ApiError> {
+    db.query_row(
+        "SELECT MAX(ordinal) FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2",
+        params![seat_id, frontier],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
+/// Settle the notices a hook-pull page carries for the seat's open, connected top-level binding
+/// of `native_session` (with binding generation `generation`), in one deciding transaction: that
+/// binding's own frontier moves (spec §2 Hook notifications). `false` (nothing written) when
+/// there is no such open binding or `carried` is no longer exactly the oldest-first unoffered
+/// prefix of that binding: a concurrent check-in that carried them first is a normal race, not
+/// corruption.
+pub fn settle_pulled_notices(
+    tx: &Connection,
+    instance: &str,
+    seat_id: &str,
+    generation: u64,
+    native_session: &str,
+    carried: &[WarningRef],
+) -> Result<bool, ApiError> {
+    if carried.is_empty() {
+        return Ok(false);
+    }
+    let Ok(generation) = i64::try_from(generation) else {
+        return Ok(false);
+    };
+    let binding: Option<String> = tx
+        .query_row(
+            "SELECT b.binding_id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.liveness='connected' WHERE s.id=?1 AND s.instance_id=?2 AND s.state!='retired' AND b.generation=?3 AND b.native_session=?4 ORDER BY b.ordinal DESC LIMIT 1",
+            params![seat_id, instance, generation, native_session],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(binding) = binding.map(BindingId::new) else {
+        return Ok(false);
+    };
+    let page = notice_offer_page_for(tx, seat_id, &binding, carried.len())?;
+    if page.len() != carried.len()
+        || page
+            .iter()
+            .zip(carried)
+            .any(|(offered, carried)| offered.notice != *carried)
+    {
+        return Ok(false);
+    }
+    settle_offered_notices(tx, seat_id, &binding, &page)?;
+    Ok(true)
 }
 
 /// Is any attributed notice above the current occupant's carried frontier
@@ -1359,7 +1451,7 @@ pub const WAKE_PROBES: [WakeProbe; 6] = [
     },
 ];
 
-/// Does any pending access path hold a row for the seat? At most six O(1)
+/// Does any pending access path hold a row for the seat? At most seven O(1)
 /// probes, stopping at the first hit. A hit is only a reason to examine the
 /// seat: the canonical judges still decide whether the work is actionable.
 pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
@@ -1379,7 +1471,8 @@ pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, Api
             return Ok(true);
         }
     }
-    Ok(false)
+    // A `wake_on: all` seat is also examined for a pending lazy row (DP8).
+    super::lazy_delivery::has_wake_rows(db, seat_id)
 }
 
 /// A seat's wake attention: the canonical judgement of what is pending for
@@ -1406,6 +1499,9 @@ pub fn warning_wakes_seat(
     seat_id: &str,
     warning_id: &str,
 ) -> Result<bool, ApiError> {
+    if effective::is_invitation_rejection_notice(db, warning_id)? {
+        return Ok(false);
+    }
     db.query_row(
         "SELECT CASE WHEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1) OR EXISTS(SELECT 1 FROM warning_conditions WHERE clear_warning_id=?1) THEN EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND affected_seat_id=?2 AND clear_warning_id IS NULL) ELSE 1 END",
         params![warning_id, seat_id],
@@ -1458,6 +1554,12 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
     let receipts = pending_receipts(db, seat_id, None)?;
     let warnings = wake_warnings(db, seat_id, seat_pending_warnings(db, seat_id, &|| Ok(()))?)?;
     let latest_warning_seq = warnings.items.first().map(|item| item.key.0);
+    // A `wake_on: all` seat is also woken by a pending lazy row (DP8); a
+    // `nudge` seat never is, so its lazy frontier stays absent.
+    let lazy = match super::seats::wake_on(db, &SeatId::new(seat_id))? {
+        WakeOn::All => super::lazy_delivery::wake_frontier(db, seat_id)?,
+        WakeOn::Nudge => None,
+    };
     Ok(WakeSeatAttention {
         attention: effective::EffectiveSeatAttention {
             has_pending_invitation: !invitations.items.is_empty(),
@@ -1467,6 +1569,7 @@ pub fn wake_seat_attention(db: &Connection, seat_id: &str) -> Result<WakeSeatAtt
                 invitation: frontier_key(&invitations)?,
                 addressed_receipt: frontier_key(&receipts)?,
                 actionable_warning: frontier_key(&warnings)?,
+                lazy,
             },
         },
         decision_seq,

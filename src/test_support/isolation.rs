@@ -124,7 +124,14 @@ pub fn as_agent<'a>(command: &'a mut Command, harness: &str, session: &str) -> &
     let variable = match harness {
         "claude" => "CLAUDE_CODE_SESSION_ID",
         "codex" => "CODEX_SESSION_ID",
-        _ => "HERMES_SESSION_ID",
+        "hermes" => "HERMES_SESSION_ID",
+        // A registered adapter's declared caller shape names its session variable.
+        other => crate::harness::registry::builtins()
+            .registrations()
+            .iter()
+            .find(|registration| registration.metadata().id == other)
+            .and_then(|registration| registration.caller_env())
+            .map_or("HERMES_SESSION_ID", |shape| shape.session_var),
     };
     let stand_in = stand_in_process(harness, session).to_string();
     // Claude exports its own pid, and a claim prefers it: it names the stand-in too, never the

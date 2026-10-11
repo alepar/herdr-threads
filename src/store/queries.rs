@@ -300,6 +300,27 @@ fn query_inner(
             db.check_budget()?;
             Ok(CommandResult::MessageDeliveryModes(modes))
         }
+        Command::WakeOn(q) => db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2)",
+                params![q.seat.as_str(), instance],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(|e| db.map_error(e))
+            .and_then(|known| {
+                if known {
+                    super::seats::wake_on(&db, &q.seat)
+                } else {
+                    Err(api_error(ErrorCode::NotFound, "seat not found"))
+                }
+            })
+            .map(|wake_on| {
+                CommandResult::WakeOn(crate::protocol::results::WakeOnState {
+                    seat: q.seat.clone(),
+                    wake_on,
+                    changed: false,
+                })
+            }),
         Command::Search(q) => search(&db, store, instance, q, output, &active_budget),
         Command::Directory(q) => directory(&db, instance, q, output),
         Command::PickerDirectory(q) => {
@@ -1804,6 +1825,13 @@ fn directory(
     } else {
         0
     };
+    // Keep name changes independent of unrelated directory writes. Only
+    // filtered cursors acquire this dependency, including an empty needle.
+    let name_revision: Option<i64> = if q.topic_contains.is_some() {
+        Some(db.query_row("SELECT coalesce((SELECT revision FROM filter_revisions WHERE instance_id=?1 AND scope_kind='directory' AND scope_key='name/all'),0)",[instance],|r|r.get(0)).map_err(|e|db.map_error(e))?)
+    } else {
+        None
+    };
     let recent_revision: i64 = if q.recent {
         db.query_row("SELECT coalesce((SELECT revision FROM filter_revisions WHERE instance_id=?1 AND scope_kind='directory' AND scope_key='recent:all'),0)", [instance], |r|r.get(0)).map_err(|e|db.map_error(e))?
     } else {
@@ -1811,7 +1839,10 @@ fn directory(
     };
     let key = |ordinal: u64| -> Result<String, ApiError> {
         if !q.recent {
-            return Ok(lifecycle_revision.to_string());
+            return Ok(match name_revision {
+                Some(revision) => format!("{lifecycle_revision}:name:{revision}"),
+                None => lifecycle_revision.to_string(),
+            });
         }
         let activity: i64 = if ordinal == 0 {
             i64::MAX
@@ -1823,7 +1854,11 @@ fn directory(
             )
             .map_err(|e| db.map_error(e))?
         };
-        Ok(format!("{lifecycle_revision}:{member_revision}:{activity}"))
+        let key = format!("{lifecycle_revision}:{member_revision}:{activity}");
+        Ok(match name_revision {
+            Some(revision) => format!("{key}:name:{revision}"),
+            None => key,
+        })
     };
     let base_filter = (
         q.membership.as_ref().map(|s| s.as_str()),
@@ -1877,7 +1912,7 @@ fn directory(
             stop = StopReason::Rows;
             break;
         }
-        type Row = (i64, String, String, i64, i64, i64);
+        type Row = (i64, String, String, i64, i64, i64, Option<String>);
         let row: Option<Row> = if q.recent {
             // Seek the materialized index; never sort or scan the inventory.
             let activity: i64 = if last == 0 {
@@ -1891,9 +1926,9 @@ fn directory(
                 .map_err(|e| db.map_error(e))?
             };
             let sql = if last == 0 {
-                "SELECT ordinal,id,topic,archived,created_at,next_sequence FROM threads INDEXED BY threads_recent_activity WHERE instance_id=?1 AND last_activity<=?4 AND ordinal<=?3 ORDER BY last_activity DESC,ordinal DESC LIMIT 1"
+                "SELECT ordinal,id,topic,archived,created_at,next_sequence,name FROM threads INDEXED BY threads_recent_activity WHERE instance_id=?1 AND last_activity<=?4 AND ordinal<=?3 ORDER BY last_activity DESC,ordinal DESC LIMIT 1"
             } else {
-                "SELECT ordinal,id,topic,archived,created_at,next_sequence FROM threads INDEXED BY threads_recent_activity WHERE instance_id=?1 AND (last_activity,ordinal)<(?4,?2) AND ordinal<=?3 ORDER BY last_activity DESC,ordinal DESC LIMIT 1"
+                "SELECT ordinal,id,topic,archived,created_at,next_sequence,name FROM threads INDEXED BY threads_recent_activity WHERE instance_id=?1 AND (last_activity,ordinal)<(?4,?2) AND ordinal<=?3 ORDER BY last_activity DESC,ordinal DESC LIMIT 1"
             };
             db.query_row(
                 sql,
@@ -1906,22 +1941,22 @@ fn directory(
                         r.get(3)?,
                         r.get(4)?,
                         r.get(5)?,
+                        r.get(6)?,
                     ))
                 },
             )
             .optional()
             .map_err(|e| db.map_error(e))?
         } else {
-            db.query_row("SELECT ordinal,id,topic,archived,created_at,next_sequence FROM threads WHERE instance_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",params![instance,last as i64,high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?
+            db.query_row("SELECT ordinal,id,topic,archived,created_at,next_sequence,name FROM threads WHERE instance_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",params![instance,last as i64,high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(|e|db.map_error(e))?
         };
-        let Some((ordinal, id, topic, archived, created_at, next_sequence)) = row else {
+        let Some((ordinal, id, topic, archived, created_at, next_sequence, name)) = row else {
             break;
         };
         examined += 1;
-        let topic_match = q
-            .topic_contains
-            .as_ref()
-            .is_none_or(|needle| topic.contains(needle));
+        let text_match = q.topic_contains.as_ref().is_none_or(|needle| {
+            topic.contains(needle) || name.as_ref().is_some_and(|name| name.contains(needle))
+        });
         let membership_match = if let Some(seat) = &q.membership {
             let state =
                 super::service_substrate::effective_membership(db, &ThreadId::new(&id), seat)?
@@ -1935,7 +1970,7 @@ fn directory(
         } else {
             true
         };
-        if topic_match && membership_match {
+        if text_match && membership_match {
             let mut item = thread_summary(db, &id, &topic, archived, created_at, next_sequence)?;
             if q.recent {
                 item.last_activity = Some(UtcMillis(
@@ -6448,6 +6483,9 @@ mod inbox_v2 {
             })
             .transpose()?;
         let body = body[offset as usize..].to_owned();
+        let wakes = lazy
+            && super::super::seats::wake_on(db, &state.seat)?
+                == crate::protocol::commands::WakeOn::All;
         Ok(Some(if lazy {
             Item::LazyMessage {
                 thread: thread_id,
@@ -6463,6 +6501,7 @@ mod inbox_v2 {
                 body_start: offset,
                 body_end: body_len,
                 body_len,
+                wakes,
             }
         } else {
             Item::Message {

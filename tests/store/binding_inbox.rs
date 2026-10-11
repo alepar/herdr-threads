@@ -177,6 +177,7 @@ fn send_mode(
         operation: OperationId::new(format!("send-{}", fx.sends)),
         claim: claim_a(),
         relays_user: false,
+        direct_recipient: None,
     };
     loop {
         let progress = messages::prepare_send_step(
@@ -557,7 +558,7 @@ fn join_gives_every_open_binding_a_cursor_at_the_join_point() {
 // The store migrates V28 to the current LATEST_VERSION. The guarantee checked: nothing displayed
 // before the upgrade is delivered again, and pending obligations are listed once. The migrated
 // binding is disconnected, so its first call re-adopts it and must carry a fingerprint
-// (spec section 4 Migration V29, decision 9; the 24 h grace is archival only).
+// (spec section 4 Migration V29, shipped as V32, decision 9; the 24 h grace is archival only).
 // Kills: re-showing a message that was already displayed before the upgrade (the migrated
 // binding's cursors start at each thread's head), losing a pending obligation, listing one
 // twice (once as unread and once as an obligation), a re-adoption without a fingerprint being

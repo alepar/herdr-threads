@@ -111,6 +111,9 @@ pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
                     Some("codex") => include_str!(
                         "../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt"
                     ),
+                    Some("agy") => {
+                        include_str!("../fixtures/agy/composer/empty.read-detection.txt")
+                    }
                     _ => "unrecognized composer",
                 };
                 json!({"id":id,"result":{"type":"pane_read","read":{

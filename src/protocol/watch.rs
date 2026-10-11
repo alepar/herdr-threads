@@ -1,4 +1,4 @@
-//! The Claude mod watch protocol and the mod-side JSON-line contract
+//! The push-channel mod watch protocol and the mod-side JSON-line contract
 //! (spec D2-D4, D6, D7). Everything here is the seam contract of epic ht-j16:
 //! it is inert until ht-j16.2 (registry and transport), ht-j16.3 (ack
 //! decisions), ht-j16.5 (the `watch` child) and ht-j16.6 (the mod) land.
@@ -44,8 +44,8 @@
 //! `body`, and the row stays pending until a text `inbox` shows it; nothing
 //! reminds about it.
 //!
-//! The mod frames all message text as untrusted data and never starts a
-//! submit with `/`.
+//! The mod frames all message text so a body can never pass for a header
+//! line, and never starts a submit with `/`.
 
 use super::{
     authority::CallerClaim,
@@ -127,6 +127,43 @@ pub fn truncation_marker_for(prefix: &[String], id: &MessageId, lazy: bool) -> S
     }
 }
 
+/// The attention block's text: the same sentence as
+/// `notification::policy::MARKER`, with the command spelled by `prefix` (the
+/// invocation the agent's shell must use, as for [`truncation_marker_for`]);
+/// empty means bare `herdr-threads`, which gives `MARKER` byte for byte.
+pub fn attention_marker_for(prefix: &[String]) -> String {
+    let program = [MARKER_PROGRAM.to_owned()];
+    let prefix = if prefix.is_empty() {
+        &program[..]
+    } else {
+        prefix
+    };
+    let mut argv = prefix.to_vec();
+    argv.push("inbox".to_owned());
+    format!(
+        "herdr-threads: attention pending; run {}",
+        super::output::format_command_argv(&argv)
+    )
+}
+
+/// The body of a hook-pull `notice` block: an informational warning, shown
+/// once, with no ACK. `prefix` spells the invocation as for
+/// [`attention_marker_for`]. One line.
+pub fn notice_marker_for(prefix: &[String], warning: &MessageId) -> String {
+    let program = [MARKER_PROGRAM.to_owned()];
+    let prefix = if prefix.is_empty() {
+        &program[..]
+    } else {
+        prefix
+    };
+    let mut argv = prefix.to_vec();
+    argv.extend(["body".to_owned(), warning.as_str().to_owned()]);
+    format!(
+        "informational, no ACK; read: {}",
+        super::output::format_command_argv(&argv)
+    )
+}
+
 /// Daemon setting `mod_delivery` (`src/daemon/settings.rs` re-uses it).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -146,6 +183,17 @@ pub enum ModDeliveryVia {
     Submit,
     /// Appended to the transcript (lazy rows).
     Append,
+}
+
+impl ModDeliveryVia {
+    /// The snake_case wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Context => "context",
+            Self::Submit => "submit",
+            Self::Append => "append",
+        }
+    }
 }
 
 /// First client frame of a watch connection.
@@ -202,7 +250,7 @@ impl WatchWireRequest {
     }
 }
 
-/// The claim the CLI builds for `HERDR_PANE_ID`, harness `claude`, native
+/// The claim the CLI builds for `HERDR_PANE_ID`, the `--harness` id, native
 /// session from `--session`. The daemon decides registration in one
 /// transaction against A2 (spec D2) and records `cooperative_mod_channel`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,11 +312,15 @@ pub enum WatchRefusalReason {
     /// Over `MAX_WATCH_CONNECTIONS`.
     Busy,
     Stopping,
+    /// The harness declares no push delivery channel (wire code `not_claude`,
+    /// frozen). Core code names [`Self::NO_PUSH_CHANNEL`].
     NotClaude,
     Disabled,
 }
 
 impl WatchRefusalReason {
+    /// The neutral name of the frozen `not_claude` wire variant.
+    pub const NO_PUSH_CHANNEL: Self = Self::NotClaude;
     /// Exit code of `watch` for this refusal: retryable ones 2, permanent 3.
     pub fn exit_code(self) -> i32 {
         match self {
@@ -317,6 +369,8 @@ pub enum WatchStatusReason {
     Cooldown,
     Busy,
     Stopping,
+    /// The harness declares no push delivery channel (wire code `not_claude`,
+    /// frozen). Core code names [`Self::NO_PUSH_CHANNEL`].
     NotClaude,
     Disabled,
     Replaced,
@@ -332,6 +386,8 @@ pub enum WatchStatusReason {
 }
 
 impl WatchStatusReason {
+    /// The neutral name of the frozen `not_claude` wire variant.
+    pub const NO_PUSH_CHANNEL: Self = Self::NotClaude;
     /// Shared names (`unresolved`, `stopping`, `disabled`) follow the refusal
     /// mapping; a Close's exit comes from [`WatchCloseReason::exit_code`].
     pub fn exit_code(self) -> i32 {

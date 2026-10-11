@@ -1,0 +1,87 @@
+[
+  {
+    "kind": "message",
+    "id": "m1",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "human author",
+    "author_role": "human"
+  },
+  {
+    "kind": "message",
+    "id": "m2",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "relays the user",
+    "relays_user": true
+  },
+  {
+    "kind": "message",
+    "id": "m3",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "query",
+    "user_intent": "query"
+  },
+  {
+    "kind": "message",
+    "id": "m4",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "request",
+    "user_intent": "request"
+  },
+  {
+    "kind": "message",
+    "id": "m5",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "rule",
+    "user_intent": "rule"
+  },
+  {
+    "kind": "message",
+    "id": "m6",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "unknown intent adds no marker",
+    "user_intent": "bogus"
+  },
+  {
+    "kind": "message",
+    "id": "m7",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "all markers, ack required",
+    "author_role": "human",
+    "relays_user": true,
+    "user_intent": "rule",
+    "ack_required": true
+  },
+  {
+    "kind": "message",
+    "id": "m8",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "no marker",
+    "author_role": "agent",
+    "relays_user": false,
+    "ack_required": true
+  }
+]

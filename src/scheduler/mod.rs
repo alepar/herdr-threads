@@ -13,11 +13,11 @@ use crate::{
         policy::{AttentionSnapshot, DurableRetry, RetryConfig, poke_text},
     },
     ports::{
-        HostCallContext, ModChannels, NoModChannels, NoPokeCapabilities, NotificationPort,
-        PokeAttempt, PokeCapabilitySource, PokeDue, PokeMode, PokePlan, PokeReceipt,
-        PokeReservation, PriorLadder, RefusalCause, ReservedWakeAuthority, WakeCandidate,
-        WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest,
-        WakeReservation, WakeTarget,
+        HookPullOutlook, HostCallContext, ModChannels, NextPull, NoHookPullOutlook, NoModChannels,
+        NoPokeCapabilities, NotificationPort, PokeAttempt, PokeCapabilitySource, PokeDue, PokeMode,
+        PokePlan, PokeReceipt, PokeReservation, PriorLadder, RefusalCause, ReservedWakeAuthority,
+        WakeCandidate, WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome,
+        WakeRecoveryRequest, WakeReservation, WakeTarget,
     },
     protocol::{
         ids::{BindingId, SeatId, ThreadId, WakeAttemptId},
@@ -246,6 +246,12 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
             batch_cleanup: Mutex::new(BatchCleanupScanState::default()),
             scan: Mutex::new(WakeScanState::default()),
         }
+    }
+
+    /// Supplies the hook-pull outlook: a hook-pull seat is woken only when its next pull brings something.
+    pub fn with_hook_pull(mut self, outlook: &'a dyn HookPullOutlook) -> Self {
+        self.wakes.hook_pull = outlook;
+        self
     }
 
     /// Supplies the registry of live mod delivery channels (spec D7): a seat
@@ -610,9 +616,12 @@ pub struct WakeRunner<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> {
     caps: &'a dyn PokeCapabilitySource,
     /// Live mod delivery channels (spec D7); default: none.
     mod_channels: &'a dyn ModChannels,
+    /// What a hook-pull seat's next pull would show; default: unknown for every seat.
+    hook_pull: &'a dyn HookPullOutlook,
 }
 
 static NO_MOD_CHANNELS: NoModChannels = NoModChannels;
+static NO_HOOK_PULL: NoHookPullOutlook = NoHookPullOutlook;
 
 /// Spec D7: a mod channel for the seat (any unexpired registry entry, grace
 /// included, whatever its binding generation) replaces native wake and poke;
@@ -620,7 +629,7 @@ static NO_MOD_CHANNELS: NoModChannels = NoModChannels;
 /// per seat: the `/clear` window between the check-in commit and the worker
 /// pass holds a channel of the previous generation.
 fn mod_suppressed(channels: &dyn ModChannels, seat: &SeatId, now: UtcMillis) -> bool {
-    channels.seat_live(seat) && !channels.stalled(seat, now)
+    channels.wake_suppressed(seat) && !channels.stalled(seat, now)
 }
 
 /// Whether the mod channel of `binding` delivers its attention (spec §3 Wake): live for that
@@ -727,6 +736,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             notifier,
             caps: &NoPokeCapabilities,
             mod_channels: &NO_MOD_CHANNELS,
+            hook_pull: &NO_HOOK_PULL,
             state: Mutex::new(WakeRunnerState {
                 dispatch: DispatchState::new(config, boot_mono, daemon_boot),
                 pending: VecDeque::new(),
@@ -775,6 +785,25 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             self.store.clock().utc_now(),
         ) {
             return Ok(None);
+        }
+        // A hook-pull seat's wake must bring its next turn something: an id shown under 60 s ago is not wake work until
+        // its re-offer is due, and a seat whose next pull would show nothing is woken only to clear ids parked for `inbox`
+        // (the dispatcher then types the marker). Nothing is reserved or recorded; the next pass (<= the safety tick)
+        // re-derives the candidate.
+        if let Some(generation) = candidate.binding_generation {
+            let now = self.store.clock().utc_now();
+            match self.hook_pull.next_pull(
+                &candidate.seat,
+                generation,
+                candidate.attention_version,
+                now,
+            ) {
+                NextPull::ReofferAt(_) => return Ok(None),
+                NextPull::Nothing if !self.hook_pull.holds_parked(&candidate.seat, generation) => {
+                    return Ok(None);
+                }
+                _ => {}
+            }
         }
         let seat = candidate.seat.clone();
         let mut state = self
@@ -1363,3 +1392,6 @@ mod poke_flow;
 #[cfg(test)]
 #[path = "../../tests/scheduler/dispatch.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "../../tests/scheduler/wake_text.rs"]
+mod wake_text_tests;

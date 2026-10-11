@@ -1,4 +1,5 @@
 use super::*;
+use crate::harness::codex::launch::scoped_codex_cwd;
 use crate::ports::{
     CorrelatedStartup, EvidenceKind, ExecutionEvidence, HostSnapshot, IncarnationEvidence,
     ObservationProvenance, PromptOutcome, SafeWakeTarget,
@@ -1355,10 +1356,11 @@ pub(crate) fn process_hint_registry(required: bool) -> &'static crate::harness::
 }
 struct HintAdapter(bool);
 impl crate::harness::adapter::HarnessAdapter for HintAdapter {
-    type Admission = crate::harness::operational::ClaudeContract;
+    type Admission = crate::harness::claude::ClaudeContract;
     fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
         use crate::harness::adapter::*;
         static META: AdapterMetadata = AdapterMetadata {
+            agent_env_markers: &[],
             id: "hinted",
             display_label: "Hint fixture",
             context_spelling: "Hinted",
@@ -1462,10 +1464,10 @@ macro_rules! hint_policy {
  ($ty:ty $(,$hint:item)?) => {
  impl crate::harness::adapter::LaunchPolicy for $ty {
     $($hint)?
-    fn resolve_scope(&self,r:&crate::harness::adapter::LaunchRequest,_:&dyn CodexShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchScope,ApiError> { Ok(crate::harness::adapter::LaunchScope {setup:crate::harness::adapter::ResolvedSetupScope::ConfigRoot(r.environment.cwd.clone()),working_directory:r.environment.cwd.clone(),config_source:"fixture"}) }
+    fn resolve_scope(&self,r:&crate::harness::adapter::LaunchRequest,_:&dyn PaneShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchScope,ApiError> { Ok(crate::harness::adapter::LaunchScope {setup:crate::harness::adapter::ResolvedSetupScope::ConfigRoot(r.environment.cwd.clone()),working_directory:r.environment.cwd.clone(),config_source:"fixture"}) }
     fn validate_native_argv(&self,_:&[String])->Result<(),ApiError>{Ok(())}
     fn compose_argv(&self,caller:Vec<String>,owned:Vec<String>)->Result<Vec<String>,ApiError>{Ok([owned,caller].concat())}
-    fn prepare_launch(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope,_:&crate::harness::registry::AdmittedHandle,_:&crate::harness::adapter::LocalSetupStatus,_:&dyn CodexShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchPreparation,ApiError>{panic!("generic preparation uses supplied owned hook")}
+    fn prepare_launch(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope,_:&crate::harness::registry::AdmittedHandle,_:&crate::harness::adapter::LocalSetupStatus,_:&dyn PaneShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchPreparation,ApiError>{panic!("generic preparation uses supplied owned hook")}
     fn configuration_fingerprint(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope)->Result<String,ApiError>{Ok("hint-fixture".into())}
     fn expected_host_kinds(&self)-> &'static [&'static str]{ &["codex"] }
  }

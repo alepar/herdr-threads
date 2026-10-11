@@ -1,0 +1,40 @@
+  ▄▀▀      ▀▀▄
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Antigravity CLI   general    commands    shortcuts   (←/→ or tab to cycle)
+Keyboard Shortcuts
+  /keybindings to customize
+
+> /                               Open slash commands
+  \ + enter                       Insert newline fallback
+  alt+enter, ctrl+j, shift+enter  Insert newline
+  alt+j                           Manage subagent
+  alt+v, ctrl+v                   Paste image/video
+  ctrl+_, ctrl+shift+-            Undo
+  ctrl+c, esc                     Go back / dismiss
+  ctrl+d                          Exit
+  ctrl+end                        Go to bottom
+  ctrl+g                          Open prompt in $EDITOR
+  ctrl+home                       Go to top
+  ctrl+k                          Approve subagent fast
+  ctrl+l                          Clear CLI screen
+  ctrl+o                          Toggle trajectory view
+  ctrl+r                          Review artifact
+  ctrl+shift+z                    Redo
+  ctrl+y                          Yank (paste from kill ring)
+  ctrl+z                          Suspend CLI
+  down                            Move down
+  enter                           Send message or confirm
+  f2                              Rename
+  f4                              Delete
+  f5                              Start voice dictation
+  left                            Move left / Prev tab
+  pgdown                          Page down
+  pgup                            Page up
+  [1-26 of 33 items]
+
+Keyboard: ↑/↓ Navigate  ←/→ Switch View  esc Close
+
+                                                                                                   Gemini 3.1 Pro · low

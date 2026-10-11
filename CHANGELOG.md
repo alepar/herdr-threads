@@ -2,7 +2,36 @@
 
 ## Unreleased
 
-- **Session-keyed seat bindings: one-time upgrade cost.** Agent bindings migrated from the previous schema start disconnected (reason `migrated`): an idle agent waiting at its prompt gets no wake until its next turn, when its first herdr-threads call re-adopts the same binding with its cursors intact. Re-run `herdr-threads setup` to install the new hook groups; `doctor` and `setup-status` flag an install that lacks one (Claude SubagentStart/SubagentStop, Codex SubagentStop/SessionEnd, Hermes bridge callbacks) and `doctor fix` re-runs the owned setup. Agents started before the upgrade re-enroll on their next call; a long-lived pane whose harness does not export its session id is refused with the fix (restart the agent, or re-run setup) rather than attributed to the pane.
+- **Session-keyed seat bindings: one-time upgrade cost.** Agent bindings migrated from the previous schema start disconnected (reason `migrated`): an idle agent waiting at its prompt gets no wake until its next turn, when its first herdr-threads call re-adopts the same binding with its cursors intact. Schema migrations 32 to 35 (after v0.8.0's 31) apply on the first daemon start; wire protocol 7 means the CLI and daemon upgrade together. Re-run `herdr-threads setup` to install the new hook groups; `doctor` and `setup-status` flag an install that lacks one (Claude SubagentStart/SubagentStop, Codex SubagentStop/SessionEnd, Hermes bridge callbacks) and `doctor fix` re-runs the owned setup. Agents started before the upgrade re-enroll on their next call; a long-lived pane whose harness does not export its session id is refused with the fix (restart the agent, or re-run setup) rather than attributed to the pane. An agy agent's own `herdr-threads` calls are attributed to its conversation through `ANTIGRAVITY_CONVERSATION_ID`.
+
+## v0.8.0
+
+- **Antigravity CLI (agy).** An owned plugin supports setup, discovery, managed launch and handoff. Turn-start hooks pull pending messages and passive notices; transcript evidence confirms eligible message receipts. Setup retains explicit permission consent and timestamped configuration backups.
+- **Bounded hook delivery.** Pending offer history is retained at the 256-ID cap, with inbox fallback, three-offer/60-second re-offer limits and notice delivery during a backlog. Informational notices remain passive; their documented settlement-before-injection loss limit is retained.
+- **Compact delivery and wakes.** Shared framing is shorter and idle wakes carry no message body. Claude mod delivery appends the bodies before its wake turn; active sessions receive in-turn delivery.
+- **Per-seat wake preference.** `wake-on all` opts into idle wakes for lazy messages; the default remains `nudge`. Upgrade CLI and daemon together for additive schema migration 31.
+
+## v0.7.0
+
+- **Automatic one-to-one threads.** `send --seat SEAT` and handoffs with an omitted thread create or reuse the canonical thread for the two seats. Initial invitations still require explicit acceptance; leave, rejection and archival retain their explicit repair paths. Durable retries preserve the original message and launch decisions.
+- **Loaded-runner fixtures.** Handoff and operator test fixtures finish every snapshot staging turn before sealing, preserving the existing budgets.
+
+## v0.6.4
+
+- **Claude mod log prefix.** Delivery notices no longer repeat the plugin name that Claude Code already adds to mod log lines.
+
+## v0.6.3
+
+- **Thread search discovery.** `thread list --search` now matches case-sensitive literal thread names as well as topics, with rename-safe bounded pagination.
+
+## v0.6.2
+
+- **Canary version discovery.** npm version listings have a separate bounded 4 MiB capture/parse limit instead of the 64 KiB companion-result limit, fixing Codex discovery failures as its release list grows. Exhausted retries retain the final failure reason.
+- **Scheduled canary scope.** Scheduled and default workflow runs probe Claude Code and Codex. Hermes requires explicit runtime input and has no scheduled canary coverage; requesting it without that input remains inconclusive. The CLI default remains `all`.
+
+## v0.6.1
+
+- **Explicit invitation refusals.** Agents reject a decided bad-fit ordinary invitation by exact ID with a meaningful reason. New refusals deliver the retained reason as an attributed informational warning to the existing thread members at their next check-in; historical rejection replay, required memberships and receipt semantics remain unchanged.
 
 ## v0.6.0
 

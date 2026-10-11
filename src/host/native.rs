@@ -2436,7 +2436,11 @@ pub(crate) fn composer_state_from_text(text: Option<&str>) -> ports::AgentCompos
         None => tail.concat(),
     };
     let normalize = |raw: &str| -> String { raw.chars().filter(|c| !is_chrome(*c)).collect() };
-    if normalize(&composer).contains(&normalize(crate::notification::policy::MARKER)) {
+    let composer = normalize(&composer);
+    if crate::notification::policy::WAKE_TEXTS
+        .iter()
+        .any(|text| composer.contains(&normalize(text)))
+    {
         HoldingPrompt
     } else {
         Submitted
@@ -4455,9 +4459,10 @@ pub(crate) mod tests {
     use crate::harness::adapter::*;
     struct FourthAdapter(bool, bool);
     impl HarnessAdapter for FourthAdapter {
-        type Admission = crate::harness::operational::ClaudeContract;
+        type Admission = crate::harness::claude::ClaudeContract;
         fn metadata(&self) -> &'static AdapterMetadata {
             static META: AdapterMetadata = AdapterMetadata {
+                agent_env_markers: &[],
                 id: "fourth",
                 display_label: "Fourth",
                 context_spelling: "Fourth",
@@ -4472,6 +4477,7 @@ pub(crate) mod tests {
                 runtime_sources: &[],
             };
             static THIRD: AdapterMetadata = AdapterMetadata {
+                agent_env_markers: &[],
                 id: "third",
                 display_label: "Third",
                 context_spelling: "Third",
@@ -5605,7 +5611,9 @@ pub(crate) mod tests {
                 });
             assert_eq!(
                 stash.unwrap(),
-                ComposerStash::Failed(composer::CLAUDE_NOT_KNOWN_EMPTY.into())
+                ComposerStash::Failed(
+                    crate::harness::claude::composer::CLAUDE_NOT_KNOWN_EMPTY.into()
+                )
             );
             assert_eq!(methods, ["pane.get", "agent.read"], "no pane.send_keys");
         }

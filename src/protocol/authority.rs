@@ -100,6 +100,11 @@ pub const COOPERATIVE_MOD_CHANNEL_PROVENANCE: &str = "cooperative_mod_channel";
 /// TRUST-POLICY A3: receipt action observation (and lazy completion claim)
 /// for an item the mod reported delivered (spec D6). Not proof of reading.
 pub const COOPERATIVE_MOD_DELIVERY_PROVENANCE: &str = "cooperative_mod_delivery";
+/// TRUST-POLICY A3: receipt action observation (and lazy completion claim) for
+/// an item the daemon recorded as offered to the binding generation by a
+/// `DeliveryPull` and the hook reported found in the session's transcript
+/// (delivery-policy DP5/DP6). Not proof of reading.
+pub const COOPERATIVE_HOOK_DELIVERY_PROVENANCE: &str = "cooperative_hook_delivery";
 
 /// TRUST-POLICY A3: a plain cooperative call enrolled its session's binding (and a Codex or
 /// Hermes subagent attached to its parent) from the harness environment, without a hook.
@@ -236,6 +241,8 @@ pub struct CooperativeDecisionFence {
 #[derive(Debug, Clone)]
 pub(crate) enum HandoffRequirement {
     Delivery(Box<crate::protocol::handoff::DeliveryMutation>),
+    AutomaticDelivery(Box<crate::protocol::handoff::AutomaticDeliveryMutation>),
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapMutation>),
     BootstrapChild {
         namespace: crate::protocol::handoff::HandoffNamespace,
         command: Box<crate::protocol::commands::PermitMutation>,
@@ -290,6 +297,24 @@ impl MutationPermit {
         request: &crate::protocol::handoff::DeliveryMutation,
     ) -> Self {
         self.handoff_requirement = Some(HandoffRequirement::Delivery(Box::new(request.clone())));
+        self
+    }
+    pub(crate) fn with_automatic_delivery(
+        mut self,
+        request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+    ) -> Self {
+        self.handoff_requirement = Some(HandoffRequirement::AutomaticDelivery(Box::new(
+            request.clone(),
+        )));
+        self
+    }
+    pub(crate) fn with_automatic_bootstrap(
+        mut self,
+        request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+    ) -> Self {
+        self.handoff_requirement = Some(HandoffRequirement::AutomaticBootstrap(Box::new(
+            request.clone(),
+        )));
         self
     }
     pub(crate) fn delivery_requirement(
@@ -541,7 +566,7 @@ mod tests {
         let value = serde_json::to_value(&claim).unwrap();
         assert!(value.get("agent_id").is_none());
         assert!(value.get("liveness").is_none());
-        // A pre-V29 (wire 6 shape) claim still decodes.
+        // A pre-V32 (wire 6 shape) claim still decodes.
         let back: CallerClaim = serde_json::from_value(value).unwrap();
         assert_eq!(back, claim);
         let full = CallerClaim {

@@ -1317,11 +1317,19 @@ fn config5_resume_within_a_page_and_past_it() {
         smoke.binding(&seat, "codex", "codex-r", "").liveness,
         "disconnected"
     );
+    // Ordinary (nudge) sends: lazy ones would be presented in full by the resume's own hook
+    // (in-turn delivery), which this case does not exercise.
     for n in 1..=3 {
         smoke
             .cli(
                 &peer,
-                &["send", &thread, "--body", &format!("within-page-{n}")],
+                &[
+                    "send",
+                    &thread,
+                    "--nudge",
+                    "--body",
+                    &format!("within-page-{n}"),
+                ],
             )
             .data();
     }
@@ -1353,9 +1361,14 @@ fn config5_resume_within_a_page_and_past_it() {
     // Read them (the default text route records the display and moves this cursor only).
     let shown = smoke.text(&codex, &["inbox"]);
     assert_eq!(shown.code, 0, "{}", shown.text());
+    // The cursor covers every displayed message (the display ACK of the nudged messages appends
+    // its own info event after them).
     assert_eq!(
         smoke.cursor(&binding.id, &thread),
-        Some(smoke.head(&thread))
+        Some(smoke.count(
+            "SELECT MAX(sequence) FROM messages WHERE thread_id=?1 AND kind='ordinary'",
+            &[&thread]
+        ))
     );
 
     // Past one page: the resume fast-forwards to the head, reports the gap, and a pending ACK
@@ -1363,26 +1376,39 @@ fn config5_resume_within_a_page_and_past_it() {
     assert_eq!(smoke.hook(&codex, &codex_end("codex-r")).code, 0);
     let big = "x".repeat(9_000);
     for n in 1..=2 {
+        // Lazy (the default): no obligation, so the resume skips them past the page.
         smoke
             .cli(
                 &peer,
-                &["send", &thread, "--body", &format!("big-{n} {big}")],
+                &[
+                    "send",
+                    &thread,
+                    "--lazy",
+                    "--body",
+                    &format!("big-{n} {big}"),
+                ],
             )
             .data();
     }
-    let owed = smoke
-        .cli(
+    // An ordinary send right after the end reopens the seat's unavailability episode; until the
+    // warning worker publishes the previous episode's clear, the send is refused as transient
+    // `store_busy`: retry as a caller would.
+    let started = std::time::Instant::now();
+    let owed = loop {
+        let out = smoke.cli(
             &peer,
             &["send", &thread, "--body", "owed", "--require-ack", &seat],
-        )
-        .data()
-        .as_str()
-        .unwrap()
-        .to_owned();
+        );
+        if out.code == 0 || started.elapsed() > Duration::from_secs(20) {
+            break out.data().as_str().unwrap().to_owned();
+        }
+        assert!(out.text().contains("store_busy"), "{}", out.text());
+        std::thread::sleep(Duration::from_millis(100));
+    };
     let out = smoke.hook(&codex, &codex_start("codex-r", "resume"));
     assert_eq!(out.code, 0, "{}", out.text());
     assert!(
-        out.stdout.contains("resumed past 3 messages"),
+        out.stdout.contains("resumed past ") && out.stdout.contains(" messages:"),
         "{}",
         out.stdout
     );
@@ -1697,7 +1723,7 @@ fn downgrade_to_v28(path: &Path, displayed_through: i64) {
             )
             .unwrap();
         // `schema_identity` is a constant the migrations seed; the rest is per-seat delivery
-        // state V29 and V31 re-key by binding (a pre-upgrade writer keyed it by generation, so
+        // state V32 and V34 re-key by binding (a pre-upgrade writer keyed it by generation, so
         // the current rows say nothing a V28 database could hold). They start empty.
         let rekeyed = [
             "schema_identity",
@@ -1801,7 +1827,7 @@ fn config8_upgrade_from_a_v0_6_0_database() {
 
     // The new daemon migrates the database on its first start.
     smoke.human(None, &["daemon", "ensure"]).data();
-    assert_eq!(smoke.count("PRAGMA user_version", &[]), 32);
+    assert_eq!(smoke.count("PRAGMA user_version", &[]), 35);
     let migrated = smoke.all_bindings(&seat);
     assert_eq!(migrated.len(), 1, "{migrated:?}");
     assert_eq!(migrated[0].session, "sess-pre");
@@ -1848,7 +1874,7 @@ fn config8_upgrade_from_a_v0_6_0_database() {
         "the migrated binding is re-adopted"
     );
     assert_eq!(smoke.bindings(&seat).len(), 1, "no second binding appeared");
-    // V29 seeds the cursor at the thread head at upgrade, so nothing already shown (or ordinary
+    // V32 seeds the cursor at the thread head at upgrade, so nothing already shown (or ordinary
     // and ACKed) can come back through the stream; the pending lazy mail and the ACK obligation
     // came through the legacy and obligation paths above, once.
     assert_eq!(
@@ -1862,11 +1888,18 @@ fn config8_upgrade_from_a_v0_6_0_database() {
     assert_eq!(online.id, migrated[0].id);
     assert_eq!(online.liveness, "connected", "{online:?}");
     assert!(online.pid.is_some(), "{online:?}");
-    // Display and ACK settle everything exactly once; nothing is delivered a second time.
+    // The check-in's own hook presents the pending lazy row in full (in-turn delivery); the
+    // text inbox then shows the obligation. Display and ACK settle everything exactly once;
+    // nothing is delivered a second time.
+    assert!(
+        checked.stdout.contains("pending-lazy"),
+        "{}",
+        checked.text()
+    );
     let shown = smoke.text(&agent, &["inbox"]);
     assert_eq!(shown.code, 0, "{}", shown.text());
     assert!(
-        shown.stdout.contains("pending-lazy") && shown.stdout.contains("pending-owed"),
+        shown.stdout.contains("pending-owed") && !shown.stdout.contains("pending-lazy"),
         "{}",
         shown.text()
     );

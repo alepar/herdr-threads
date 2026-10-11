@@ -1542,6 +1542,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             ("claude", "already_installed"),
             ("codex", "already_installed"),
             ("hermes", "skipped"),
+            ("agy", "skipped"),
             ("synthetic_fourth", "skipped")
         ])
     );
@@ -1568,6 +1569,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             ("claude", "status"),
             ("codex", "status"),
             ("hermes", "skipped"),
+            ("agy", "status"),
             ("synthetic_fourth", "status")
         ])
     );
@@ -1579,7 +1581,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
     {
         assert_eq!(
             entry["report"]["installed"],
-            entry["harness"] != "synthetic_fourth",
+            !matches!(entry["harness"].as_str(), Some("synthetic_fourth" | "agy")),
             "{entry}"
         );
     }
@@ -1610,6 +1612,7 @@ fn bare_setup_covers_every_detected_harness_and_unsetup_removes_both() {
             ("claude", "not_installed"),
             ("codex", "not_installed"),
             ("hermes", "skipped"),
+            ("agy", "not_installed"),
             ("synthetic_fourth", "not_installed")
         ])
     );
@@ -1648,6 +1651,7 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
             ("claude", "skipped"),
             ("codex", "installed"),
             ("hermes", "skipped"),
+            ("agy", "skipped"),
             ("synthetic_fourth", "skipped")
         ])
     );
@@ -1662,6 +1666,7 @@ fn bare_setup_skips_missing_and_installs_available_harnesses() {
             ("claude", "not_installed"),
             ("codex", "removed"),
             ("hermes", "skipped"),
+            ("agy", "not_installed"),
             ("synthetic_fourth", "not_installed")
         ])
     );
@@ -1696,6 +1701,7 @@ fn bare_setup_exits_nonzero_only_for_a_failed_harness() {
             ("claude", "failed"),
             ("codex", "installed"),
             ("hermes", "skipped"),
+            ("agy", "skipped"),
             ("synthetic_fourth", "skipped")
         ])
     );
@@ -2680,7 +2686,7 @@ fn prompt_suggestion_flags_are_refused_elsewhere() {
         let out = s.run(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         assert!(
-            text(&out.stderr).contains("apply to `setup` and `setup claude` only"),
+            text(&out.stderr).contains("apply to `setup` and `setup <harness>` only"),
             "{args:?}: {}",
             text(&out.stderr)
         );

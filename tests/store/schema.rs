@@ -5517,6 +5517,9 @@ pub(crate) fn adapter_historical_database(version: usize) -> Connection {
         include_str!("../../migrations/0026_lazy_message_delivery.sql"),
         include_str!("../../migrations/0027_harness_adapters.sql"),
         include_str!("../../migrations/0028_handoff_topology.sql"),
+        include_str!("../../migrations/0029_direct_threads.sql"),
+        include_str!("../../migrations/0030_automatic_handoff.sql"),
+        include_str!("../../migrations/0031_seat_wake_on.sql"),
     ];
     // Tests start from several versions: replay each step of the chain at
     // most once per test process, keep the image after every prefix, and
@@ -5707,7 +5710,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
             "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
         ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
         let roots = db
-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports') ORDER BY name")
+            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','direct_threads','automatic_handoff_companions','automatic_handoff_keys','automatic_bootstrap_parents','automatic_bootstrap_keys','automatic_bootstrap_attempts','automatic_bootstrap_attachments','automatic_bootstrap_reports','automatic_bootstrap_recoveries') ORDER BY name")
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -5760,8 +5763,8 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
     );
     // Forward24 intentionally rebuilds these three tables and adds three evidence tables.
     // Every other historical table must retain its original root page.
-    // V29 adds binding_cursors; occupant_bindings is rebuilt again by V29.
-    // V31 rebuilds catch_up (per-binding rows). V32 rebuilds the two attention frontier tables.
+    // V32 adds binding_cursors; occupant_bindings is rebuilt again by V32.
+    // V34 rebuilds catch_up (per-binding rows). V35 rebuilds the two attention frontier tables.
     let adapter_tables = [
         "occupant_bindings",
         "binding_cursors",
@@ -6083,8 +6086,8 @@ fn adapter_migration_main24_to26_preserves_archival_guards_and_intent_history() 
     let guards = binding_archival_guards(&db);
     assert_eq!(guards.len(), 6);
     schema::initialize(&db, || UtcMillis(100)).unwrap();
-    // V30 narrows the insert and update fences; every other guard survives byte for byte.
-    let guards = assert_v30_guards(&guards, &binding_archival_guards(&db));
+    // V33 narrows the insert and update fences; every other guard survives byte for byte.
+    let guards = assert_v33_guards(&guards, &binding_archival_guards(&db));
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
@@ -6158,7 +6161,7 @@ fn adapter_migration_main24_to26_preserves_archival_guards_and_intent_history() 
         [],
     )
     .unwrap();
-    // V30: only liveness and ended_at move the mutation revision; the seat/sample reset stays.
+    // V33: only liveness and ended_at move the mutation revision; the seat/sample reset stays.
     assert_eq!(revision(), before);
     let before = revision();
     db.execute(
@@ -6214,9 +6217,9 @@ fn adapter_migration_main24_to26_preserves_archival_guards_and_intent_history() 
     }
 }
 
-/// V30 owns the narrowed insert and update fences of occupant_bindings; every other binding
+/// V33 owns the narrowed insert and update fences of occupant_bindings; every other binding
 /// trigger must equal its pre-upgrade text. Returns the upgraded guards.
-fn assert_v30_guards(
+fn assert_v33_guards(
     before: &[(String, String)],
     after: &[(String, String)],
 ) -> Vec<(String, String)> {
@@ -6230,7 +6233,7 @@ fn assert_v30_guards(
     );
     for (old, new) in before.iter().zip(after) {
         if owned.contains(&old.0.as_str()) {
-            assert_ne!(old.1, new.1, "{} must be narrowed by V30", old.0);
+            assert_ne!(old.1, new.1, "{} must be narrowed by V33", old.0);
             assert!(new.1.contains("WHEN EXISTS"), "{}", new.1);
         } else {
             assert_eq!(old, new, "{} must be unchanged", old.0);
@@ -6271,7 +6274,7 @@ fn v28_binding_fixture() -> Connection {
 }
 
 #[test]
-fn v28_upgrade_migrates_bindings_to_session_keyed_v29() {
+fn v28_upgrade_migrates_bindings_to_session_keyed_v32() {
     let db = v28_binding_fixture();
     let guards = binding_archival_guards(&db);
     schema::initialize(&db, || UtcMillis(777)).unwrap();
@@ -6280,7 +6283,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v29() {
             .unwrap(),
         schema::LATEST_VERSION
     );
-    assert_eq!(schema::LATEST_VERSION, 32);
+    assert_eq!(schema::LATEST_VERSION, 35);
     // ordinals, sequence and archival guards survive the rebuild
     assert_eq!(
         db.query_row(
@@ -6291,7 +6294,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v29() {
         .unwrap(),
         50
     );
-    assert_v30_guards(&guards, &binding_archival_guards(&db));
+    assert_v33_guards(&guards, &binding_archival_guards(&db));
     type Row = (
         i64,
         String,
@@ -6425,7 +6428,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v29() {
         .unwrap(),
         0
     );
-    // reopening audits the V29 shape without migrating again
+    // reopening audits the V32 shape without migrating again
     schema::initialize(&db, || UtcMillis(999)).unwrap();
     assert_eq!(
         db.query_row(
@@ -6439,7 +6442,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v29() {
 }
 
 #[test]
-fn v29_session_key_is_unique_only_among_open_rows() {
+fn v32_session_key_is_unique_only_among_open_rows() {
     let db = v28_binding_fixture();
     schema::initialize(&db, || UtcMillis(1)).unwrap();
     let insert = |generation: i64, session: &str, agent: &str, ended: Option<i64>| {
@@ -6454,7 +6457,7 @@ fn v29_session_key_is_unique_only_among_open_rows() {
 }
 
 #[test]
-fn v29_fresh_matches_upgraded_catalog() {
+fn v32_fresh_matches_upgraded_catalog() {
     let upgraded = v28_binding_fixture();
     schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
     let fresh = fresh_db();
@@ -6466,7 +6469,7 @@ fn v29_fresh_matches_upgraded_catalog() {
 }
 
 #[test]
-fn v29_startup_rejects_missing_or_altered_binding_objects() {
+fn v32_startup_rejects_missing_or_altered_binding_objects() {
     for alteration in [
         "DROP INDEX occupant_bindings_session_key",
         "DROP INDEX occupant_bindings_open",
@@ -6484,7 +6487,7 @@ fn v29_startup_rejects_missing_or_altered_binding_objects() {
     }
 }
 
-/// The V23 text of a trigger V30 drops or replaces.
+/// The V23 text of a trigger V33 drops or replaces.
 fn v23_trigger(name: &str) -> String {
     let v23 = include_str!("../../migrations/0023_channel_archival.sql");
     let start = v23
@@ -6493,27 +6496,27 @@ fn v23_trigger(name: &str) -> String {
     let end = start + v23[start..].find("END;").unwrap() + 4;
     v23[start..end].to_owned()
 }
-const V30_TRIGGERS: [&str; 5] = [
+const V33_TRIGGERS: [&str; 5] = [
     "archival_fence_seats_insert",
     "archival_fence_seats_update",
     "archival_fence_memberships_update",
     "archival_fence_occupant_bindings_insert",
     "archival_fence_occupant_bindings_update",
 ];
-/// A database exactly as V29 leaves it: the historical V28 schema with the V29 step applied
-/// by hand (the fresh schema is V31 since ht-54r.22, so V30's triggers can no longer simply be
+/// A database exactly as V32 leaves it: the historical V31 schema with the V32 step applied
+/// by hand (the fresh schema is V34 since ht-54r.22, so V33's triggers can no longer simply be
 /// swapped back).
-fn v29_database() -> Connection {
-    let db = adapter_historical_database(28);
+fn v32_database() -> Connection {
+    let db = adapter_historical_database(31);
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    db.execute_batch(include_str!("../../migrations/0029_session_bindings.sql"))
+    db.execute_batch(include_str!("../../migrations/0032_session_bindings.sql"))
         .unwrap();
-    db.pragma_update(None, "user_version", 29).unwrap();
+    db.pragma_update(None, "user_version", 32).unwrap();
     db.execute_batch("COMMIT").unwrap();
-    for name in V30_TRIGGERS {
+    for name in V33_TRIGGERS {
         assert!(
             v23_trigger(name).starts_with(&format!("CREATE TRIGGER {name} ")),
-            "V29 holds the V23 text of {name}"
+            "V32 holds the V23 text of {name}"
         );
     }
     db
@@ -6554,20 +6557,21 @@ const V28_LAZY_ROWS: &str = "
   UPDATE lazy_recipients SET state='displayed' WHERE message_id='msg-4';
 ";
 
-/// A V29 database (the V29 step applied by hand) holding the V28 binding fixture, lazy rows and
-/// catch-up rows in their V29 shape.
-fn v29_delivery_fixture() -> Connection {
+/// A V32 database (the V32 step applied by hand) holding the V28 binding fixture, lazy rows and
+/// catch-up rows in their V32 shape.
+fn v32_delivery_fixture() -> Connection {
     let db = v28_binding_fixture();
     db.execute_batch(V28_LAZY_ROWS).unwrap();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    db.execute_batch(include_str!("../../migrations/0029_session_bindings.sql"))
+    apply_main_v29_to_v31(&db);
+    db.execute_batch(include_str!("../../migrations/0032_session_bindings.sql"))
         .unwrap();
     db.execute(
         "UPDATE occupant_bindings SET disconnected_at=777 WHERE migrated=1 AND ended_at IS NULL",
         [],
     )
     .unwrap();
-    db.pragma_update(None, "user_version", 29).unwrap();
+    db.pragma_update(None, "user_version", 32).unwrap();
     db.execute_batch("COMMIT").unwrap();
     db.execute_batch(
         "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,last_progress_at,state,end_reason,ended_at,release_seq) VALUES
@@ -6580,16 +6584,16 @@ fn v29_delivery_fixture() -> Connection {
     db
 }
 
-/// `v29_delivery_fixture` with the V30 step (archival scan scope, ht-54r.15) applied by hand:
-/// a V30 database holding lazy and catch-up rows in their pre-V31 shape.
-fn v30_delivery_fixture() -> Connection {
-    let db = v29_delivery_fixture();
+/// `v32_delivery_fixture` with the V33 step (archival scan scope, ht-54r.15) applied by hand:
+/// a V33 database holding lazy and catch-up rows in their pre-V34 shape.
+fn v33_delivery_fixture() -> Connection {
+    let db = v32_delivery_fixture();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
     db.execute_batch(include_str!(
-        "../../migrations/0030_archival_scan_scope.sql"
+        "../../migrations/0033_archival_scan_scope.sql"
     ))
     .unwrap();
-    db.pragma_update(None, "user_version", 30).unwrap();
+    db.pragma_update(None, "user_version", 33).unwrap();
     db.execute_batch("COMMIT").unwrap();
     db
 }
@@ -6604,8 +6608,8 @@ fn binding_id_of(db: &Connection, ordinal: i64) -> String {
 }
 
 #[test]
-fn v30_to_v31_carries_lazy_and_catch_up_state() {
-    let db = v30_delivery_fixture();
+fn v33_to_v34_carries_lazy_and_catch_up_state() {
+    let db = v33_delivery_fixture();
     let (migrated, human) = (binding_id_of(&db, 3), binding_id_of(&db, 4));
     schema::initialize(&db, || UtcMillis(900)).unwrap();
     assert_eq!(
@@ -6698,7 +6702,7 @@ fn v30_to_v31_carries_lazy_and_catch_up_state() {
         [binding_id_of(&db, 3)],
     )
     .expect_err("one row per (binding, thread)");
-    // Reopening audits the V31 shape without migrating again.
+    // Reopening audits the V34 shape without migrating again.
     schema::initialize(&db, || UtcMillis(901)).unwrap();
 }
 
@@ -6746,7 +6750,7 @@ fn upgrade_from_v28_with_pending_lazy_and_catch_up_mail_delivers_exactly_once() 
     // pending message (legacy row), and the binding-level view carries it exactly once.
     assert_eq!(seat_page(&db), [MessageId::new("msg-3")]);
     assert_eq!(unread(&db), [MessageId::new("msg-3")]);
-    // The V29 cursor is the head at upgrade: nothing already displayed comes back.
+    // The V32 cursor is the head at upgrade: nothing already displayed comes back.
     assert_eq!(
         read_cursors::cursor_for(&db, &migrated, &thread).unwrap(),
         Some(4)
@@ -6811,8 +6815,8 @@ fn upgrade_from_v28_with_pending_lazy_and_catch_up_mail_delivers_exactly_once() 
 }
 
 #[test]
-fn v30_fresh_matches_upgraded_catalog() {
-    let upgraded = v29_database();
+fn v33_fresh_matches_upgraded_catalog() {
+    let upgraded = v32_database();
     assert_ne!(trigger_catalog(&upgraded), trigger_catalog(&fresh_db()));
     schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
     assert_eq!(
@@ -6822,7 +6826,7 @@ fn v30_fresh_matches_upgraded_catalog() {
         schema::LATEST_VERSION
     );
     assert_eq!(trigger_catalog(&upgraded), trigger_catalog(&fresh_db()));
-    // reopening audits the V30 shape without migrating again
+    // reopening audits the V33 shape without migrating again
     schema::initialize(&upgraded, || UtcMillis(2)).unwrap();
     let triggers = trigger_catalog(&upgraded)
         .into_iter()
@@ -6834,7 +6838,7 @@ fn v30_fresh_matches_upgraded_catalog() {
 }
 
 #[test]
-fn v30_startup_rejects_an_altered_archival_trigger() {
+fn v33_startup_rejects_an_altered_archival_trigger() {
     for alteration in [
         // dropped
         "DROP TRIGGER archival_fence_seats_update".to_owned(),
@@ -6854,7 +6858,7 @@ fn v30_startup_rejects_an_altered_archival_trigger() {
         ),
         // widened column list
         "DROP TRIGGER archival_fence_memberships_update; CREATE TRIGGER archival_fence_memberships_update AFTER UPDATE ON memberships BEGIN UPDATE archival_instances SET mutation_revision=mutation_revision+1; END".to_owned(),
-        // dropped V23 trigger V30 does not own
+        // dropped V23 trigger V33 does not own
         "DROP TRIGGER archival_fence_memberships_insert".to_owned(),
     ] {
         let db = fresh_db();
@@ -6868,13 +6872,13 @@ fn v30_startup_rejects_an_altered_archival_trigger() {
 }
 
 #[test]
-fn v31_fresh_matches_upgraded_catalog_with_delivery_data() {
-    let upgraded = v30_delivery_fixture();
+fn v34_fresh_matches_upgraded_catalog_with_delivery_data() {
+    let upgraded = v33_delivery_fixture();
     assert_eq!(
         upgraded
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        30
+        33
     );
     schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
     let fresh = fresh_db();
@@ -6886,7 +6890,7 @@ fn v31_fresh_matches_upgraded_catalog_with_delivery_data() {
 }
 
 #[test]
-fn v31_startup_rejects_altered_catch_up_and_lazy_objects() {
+fn v34_startup_rejects_altered_catch_up_and_lazy_objects() {
     for alteration in [
         "DROP INDEX catch_up_seat",
         "DROP INDEX catch_up_extension_until",
@@ -6908,18 +6912,18 @@ fn v31_startup_rejects_altered_catch_up_and_lazy_objects() {
     }
 }
 
-/// `v30_delivery_fixture` with the V31 step applied by hand, plus the seat-keyed attention
-/// frontiers a V31 database holds: `agent`'s offer names its open migrated binding; `human`'s
+/// `v33_delivery_fixture` with the V34 step applied by hand, plus the seat-keyed attention
+/// frontiers a V34 database holds: `agent`'s offer names its open migrated binding; `human`'s
 /// names its human binding; `launch`'s names an occupant that has no binding row; `idle` has no
 /// binding row at all.
-fn v31_attention_fixture() -> Connection {
-    let db = v30_delivery_fixture();
+fn v34_attention_fixture() -> Connection {
+    let db = v33_delivery_fixture();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
     db.execute_batch(include_str!(
-        "../../migrations/0031_binding_delivery_state.sql"
+        "../../migrations/0034_binding_delivery_state.sql"
     ))
     .unwrap();
-    db.pragma_update(None, "user_version", 31).unwrap();
+    db.pragma_update(None, "user_version", 34).unwrap();
     db.execute_batch("COMMIT").unwrap();
     db.execute_batch(
         "INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES
@@ -6932,8 +6936,8 @@ fn v31_attention_fixture() -> Connection {
 }
 
 #[test]
-fn v31_to_v32_moves_attention_frontiers_to_bindings() {
-    let db = v31_attention_fixture();
+fn v34_to_v35_moves_attention_frontiers_to_bindings() {
+    let db = v34_attention_fixture();
     let (agent, human, plugin) = (
         binding_id_of(&db, 3),
         binding_id_of(&db, 4),
@@ -6943,7 +6947,7 @@ fn v31_to_v32_moves_attention_frontiers_to_bindings() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        32
+        35
     );
     let rows = |sql: &str| -> Vec<(String, String, i64)> {
         db.prepare(sql)
@@ -6993,13 +6997,13 @@ fn v31_to_v32_moves_attention_frontiers_to_bindings() {
         [&other],
     )
     .expect_err("one row per binding");
-    // Reopening audits the V32 shape without migrating again.
+    // Reopening audits the V35 shape without migrating again.
     schema::initialize(&db, || UtcMillis(901)).unwrap();
 }
 
 #[test]
-fn v32_fresh_matches_upgraded_catalog_with_attention_data() {
-    let upgraded = v31_attention_fixture();
+fn v35_fresh_matches_upgraded_catalog_with_attention_data() {
+    let upgraded = v34_attention_fixture();
     schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
     let fresh = fresh_db();
     let catalog = |db: &Connection| {
@@ -7010,7 +7014,7 @@ fn v32_fresh_matches_upgraded_catalog_with_attention_data() {
 }
 
 #[test]
-fn v32_startup_rejects_altered_attention_frontier_objects() {
+fn v35_startup_rejects_altered_attention_frontier_objects() {
     for alteration in [
         "DROP TABLE digest_notice_offer",
         "DROP TABLE warning_offer",
@@ -7031,6 +7035,18 @@ fn v32_startup_rejects_altered_attention_frontier_objects() {
 }
 
 // Catches an altered current table or missing retention index accepted at v24.
+/// Main's released V29-V31 (direct threads, automatic handoff, seat wake_on), applied by hand
+/// inside the caller's transaction: every hand-built V32+ fixture sits on top of them.
+fn apply_main_v29_to_v31(db: &Connection) {
+    for migration in [
+        include_str!("../../migrations/0029_direct_threads.sql"),
+        include_str!("../../migrations/0030_automatic_handoff.sql"),
+        include_str!("../../migrations/0031_seat_wake_on.sql"),
+    ] {
+        db.execute_batch(migration).unwrap();
+    }
+}
+
 #[test]
 fn task3_versionless_schema24_rejects_altered_table_and_missing_index() {
     for alteration in [
@@ -7079,7 +7095,7 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
                 .unwrap(),
             schema::LATEST_VERSION
         );
-        assert_v30_guards(&guards, &binding_archival_guards(&db));
+        assert_v33_guards(&guards, &binding_archival_guards(&db));
         assert_eq!(
             db.query_row(
                 "SELECT event,first_seen_at,last_seen_at FROM harness_contract_diagnostics",
@@ -7103,25 +7119,25 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
             .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('\"',"")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
         };
         assert_eq!(catalog(&db), catalog(&fresh));
-        // V29 deltas: +1 table (binding_cursors); indexes -occupant_bindings_current,
+        // V32 deltas: +1 table (binding_cursors); indexes -occupant_bindings_current,
         // +occupant_bindings_session_key, +occupant_bindings_open, +binding_cursors_thread
-        // (net +2); triggers are recreated one for one. V30 drops archival_fence_seats_insert
+        // (net +2); triggers are recreated one for one. V33 drops archival_fence_seats_insert
         // (a new seat is in no channel) and recreates the other four fences in place (net -1).
-        // V31 deltas: +3 indexes (catch_up_seat, lazy_recipients_legacy,
+        // V34 deltas: +3 indexes (catch_up_seat, lazy_recipients_legacy,
         // lazy_recipients_seat_ordinal); catch_up and its triggers are rebuilt one for one.
-        // V32 deltas: +2 indexes (warning_offer_seat, digest_notice_offer_seat); the two
+        // V35 deltas: +2 indexes (warning_offer_seat, digest_notice_offer_seat); the two
         // frontier tables are rebuilt one for one.
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            75
+            84
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            146
+            147
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            180
+            198
         );
     }
 }
@@ -7308,4 +7324,89 @@ fn adapter_upgrade_rejects_tampered_diagnostics_from_main25_and_lazy26() {
             );
         }
     }
+}
+
+#[test]
+fn direct_pair_migration_preserves_v28_and_enforces_identity() {
+    let db = Connection::open_in_memory().unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for path in migrations
+        .into_iter()
+        .filter(|path| path.file_name().unwrap().to_str().unwrap() < "0029")
+    {
+        db.execute_batch(&std::fs::read_to_string(path).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", 28).unwrap();
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','i','resolved','native',0,0),('b','i','resolved','native',0,0),('c','i','resolved','native',0,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0),('u','i','other','goal',0,0); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','retained body',0,1);").unwrap();
+    let dump = |table: &str| {
+        let mut statement = db
+            .prepare(&format!("SELECT * FROM {table} ORDER BY ordinal"))
+            .unwrap();
+        let columns = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..columns)
+                    .map(|n| row.get::<_, rusqlite::types::Value>(n))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let before = [dump("seats"), dump("threads"), dump("messages")];
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    // Later migrations (0031 wake_on) only append defaulted columns: the v28 prefix of
+    // every row is preserved byte for byte.
+    let mut after = [dump("seats"), dump("threads"), dump("messages")];
+    for (table, rows) in after.iter_mut().enumerate() {
+        for (row, old) in rows.iter_mut().zip(&before[table]) {
+            row.truncate(old.len());
+        }
+    }
+    assert_eq!(before, after);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        35
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute(
+        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i','a','b','t')",
+        [],
+    )
+    .unwrap();
+    for (a, b, t) in [
+        ("a", "a", "u"),
+        ("b", "a", "u"),
+        ("a", "b", "u"),
+        ("a", "c", "t"),
+        ("a", "missing", "u"),
+        ("a", "c", "missing"),
+    ] {
+        assert!(db.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,?2,?3)",params![a,b,t]).is_err(),"{a}/{b}/{t}");
+    }
+    assert!(db.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('missing','a','c','u')",[]).is_err());
+    let plan: String = db.query_row("EXPLAIN QUERY PLAN SELECT thread_id FROM direct_threads WHERE instance_id='i' AND seat_a='a' AND seat_b='b'",[],|r|r.get(3)).unwrap();
+    assert!(
+        plan.contains("SEARCH direct_threads USING") && plan.contains("INDEX"),
+        "{plan}"
+    );
+    db.execute(
+        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i','a','c','u')",
+        [],
+    )
+    .unwrap();
+    assert!(db.execute("DELETE FROM threads WHERE id='u'", []).is_err());
+    assert!(db.execute("DELETE FROM seats WHERE id='b'", []).is_err());
 }

@@ -1,6 +1,6 @@
 //! Session-keyed seat bindings (spec §1, §2). A binding is keyed by
 //! (seat, harness, native session, agent id); a seat may hold many. Contract module (ht-54r.1):
-//! minimal implementations against schema V29; ht-54r.3 (resolution), ht-54r.10 (liveness),
+//! minimal implementations against schema V32; ht-54r.3 (resolution), ht-54r.10 (liveness),
 //! ht-54r.4 / ht-54r.10 (enroll hooks) and ht-54r.20 (lineage, receipts) build on it.
 use crate::{
     protocol::{
@@ -1293,7 +1293,7 @@ fn resolve_claim_inner(
     };
     if let Some(existing) = found {
         if !request.lifecycle && readopts {
-            // The one plain call that reconnects (TRUST-POLICY A4): a V29-migrated binding whose
+            // The one plain call that reconnects (TRUST-POLICY A4): a V32-migrated binding whose
             // stored session is the claim's key. Structural match, cursors kept.
             connect(
                 tx,
@@ -1487,7 +1487,7 @@ fn resolve_claim_inner(
     })
 }
 
-/// A binding the V29 migration created and nothing has reconnected yet.
+/// A binding the V32 migration created and nothing has reconnected yet.
 fn is_migrated_disconnected(binding: &BindingRow) -> bool {
     binding.migrated
         && binding.liveness == Liveness::Disconnected

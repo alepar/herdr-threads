@@ -63,7 +63,7 @@ enum Call {
     Observe,
     Stash,
     Submit(String),
-    /// A prompt submitted through the during-turn mode (`poke_during_turn`).
+    /// A prompt submitted through `submit_prompt_during_turn` (dispatch never calls it).
     SubmitDuringTurn(String),
     Restore(String),
 }
@@ -257,11 +257,6 @@ impl PokeCapabilitySource for Declared {
 const NO_CAPS: Declared = Declared(PokeCapabilities::NONE);
 const STASH_CAPS: Declared = Declared(PokeCapabilities {
     composer_stash: NativeSupport::Supported,
-    poke_during_turn: NativeSupport::Unsupported,
-});
-const DURING_TURN_CAPS: Declared = Declared(PokeCapabilities {
-    composer_stash: NativeSupport::Unsupported,
-    poke_during_turn: NativeSupport::Supported,
 });
 
 struct RemoveOnDrop(PathBuf);
@@ -579,11 +574,11 @@ fn skips_leave_the_receipt_unpoked_and_the_next_idle_evaluation_pokes() {
 }
 
 #[test]
-fn active_turn_pokes_remain_pending_even_with_the_capability() {
+fn active_turn_pokes_remain_pending_until_idle() {
     let fx = Fixture::new(&["t1"]);
     let host = RecordingHost::new(HostUiState::ActiveTurn, false);
     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
-    let flow = scheduler(&fx, &dispatcher, &DURING_TURN_CAPS);
+    let flow = scheduler(&fx, &dispatcher, &STASH_CAPS);
     assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
     assert_eq!(host.log(), [Call::Observe]);
     assert!(host.prompts().is_empty());
@@ -952,6 +947,7 @@ fn frozen_wake_lane_neither_reads_nor_pokes_until_recovery() {
         Arc::new(Declared(PokeCapabilities::NONE)),
         reachability.clone(),
         Arc::new(crate::ports::NoModChannels),
+        Arc::new(crate::ports::NoHookPullOutlook),
     )
     .unwrap();
     let _stop = Stop(cancel, Some(worker));

@@ -1,0 +1,102 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "downgrade",
+  "aux_text": "Gate downgrade title",
+  "default": {
+    "text": "DOWNGRADE-UNEXPECTED"
+  },
+  "vars": {
+    "cwd": "/unset"
+  },
+  "steps": [
+    {
+      "label": "warm",
+      "match": {
+        "contains": [
+          "DOWN-WARM"
+        ]
+      },
+      "reply": {
+        "text": "DOWN-WARM-OK"
+      }
+    },
+    {
+      "label": "wake-join",
+      "match": {
+        "contains": [
+          "herdr-threads: wake up"
+        ],
+        "not_contains": [
+          "DOWN-BUSY1"
+        ]
+      },
+      "reply": {
+        "text": "DOWN-WAKE-OK"
+      }
+    },
+    {
+      "label": "busy1",
+      "match": {
+        "contains": [
+          "DOWN-BUSY1"
+        ]
+      },
+      "reply": {
+        "text": "DOWN-BUSY1-DONE"
+      },
+      "delay_ms": 5000
+    },
+    {
+      "label": "busy2",
+      "match": {
+        "contains": [
+          "DOWN-BUSY2"
+        ]
+      },
+      "reply": {
+        "text": "DOWN-BUSY2-DONE"
+      },
+      "delay_ms": 5000
+    },
+    {
+      "label": "m2-inv0",
+      "match": {
+        "contains": [
+          "DOWN-M2"
+        ]
+      },
+      "reply": {
+        "text": "DOWN-M2-DONE"
+      }
+    },
+    {
+      "label": "busy3",
+      "match": {
+        "contains": [
+          "DOWN-BUSY3"
+        ]
+      },
+      "reply": {
+        "text": "DOWN-BUSY3-DONE"
+      },
+      "delay_ms": 5000
+    },
+    {
+      "label": "m3-inv0",
+      "match": {
+        "contains": [
+          "DOWN-M3"
+        ]
+      },
+      "reply": {
+        "text": "DOWN-M3-DONE"
+      }
+    },
+    {
+      "label": "tail",
+      "reply": {
+        "text": "DOWN-TAIL"
+      }
+    }
+  ]
+}

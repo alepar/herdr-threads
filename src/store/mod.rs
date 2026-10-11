@@ -1032,6 +1032,9 @@ fn pending_work_page_on(
             "receipt_timer_materialization" => WorkKind::ReceiptTimerMaterialization,
             "preparation_cleanup" => WorkKind::PreparationCleanup,
             "human_receipt_reconciliation" => WorkKind::HumanReceiptReconciliation,
+            // Advanced by `materialization` like the others; discovery must list it, or one
+            // pending sweep stalls every later job.
+            "warning_condition_close" => WorkKind::WarningConditionClose,
             _ => return Err(api_error(ErrorCode::StoreCorrupt, "invalid work kind")),
         };
         item_positions.push((
@@ -1561,7 +1564,8 @@ impl StorePort for SqliteStore {
         }
         let mut writer = self.writer(budget)?;
         match command {
-            PermitMutation::BeginBootstrap(_)
+            PermitMutation::AutomaticBootstrap(_)
+            | PermitMutation::BeginBootstrap(_)
             | PermitMutation::ReserveBootstrapAttempt(_)
             | PermitMutation::RecordBootstrapCreated(_)
             | PermitMutation::RecordBootstrapNotSubmitted(_)
@@ -1575,6 +1579,9 @@ impl StorePort for SqliteStore {
             PermitMutation::CompleteInboxDelivery(v) => {
                 control::complete_inbox_delivery(&self.context, &mut writer, budget, &v, permit)
             }
+            PermitMutation::SetWakeOn(v) => {
+                seats::set_wake_on(&self.context, &mut writer, budget, &v, permit)
+            }
             PermitMutation::CheckIn(_) => Err(api_error(
                 ErrorCode::InvalidRequest,
                 "check-in requires verified registration and read context",
@@ -1585,6 +1592,14 @@ impl StorePort for SqliteStore {
             PermitMutation::CompleteHandoff(v) => {
                 handoff::mutate(&self.context, &mut writer, budget, &v, permit, true)
             }
+            PermitMutation::EnsureDirectThread(v) => control::ensure_direct_thread(
+                &self.context,
+                &mut writer,
+                budget,
+                &v,
+                permit,
+                self.settings.invitation_default_ms,
+            ),
             PermitMutation::CreateThread(v) => {
                 control::create_thread(&self.context, &mut writer, budget, &v, permit)
             }
@@ -1626,6 +1641,10 @@ impl StorePort for SqliteStore {
             PermitMutation::AckModDelivered(v) => {
                 let mut permit = permit;
                 receipts::ack_mod_delivered(&self.context, &mut writer, budget, &v, &mut permit)
+            }
+            PermitMutation::DeliveryConfirm(v) => {
+                let mut permit = permit;
+                receipts::delivery_confirm(&self.context, &mut writer, budget, &v, &mut permit)
             }
             PermitMutation::Leave(v) => {
                 control::leave(&self.context, &mut writer, budget, &v, permit)
@@ -2685,6 +2704,74 @@ impl StorePort for SqliteStore {
             .map_err(|error| db.map_error(error))?;
         Ok(seats)
     }
+    fn pull_notice_page(
+        &self,
+        seat: &SeatId,
+        binding: Option<&crate::protocol::ids::BindingId>,
+        limit: usize,
+        budget: &CallBudget,
+    ) -> Result<Vec<crate::ports::PulledNotice>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        // The pulling binding's own frontier (spec §2): the page it later settles.
+        match binding {
+            Some(binding) => attention::notice_offer_page_for(&db, seat.as_str(), binding, limit)?,
+            None => attention::notice_offer_page(&db, seat.as_str(), limit)?,
+        }
+        .into_iter()
+        .map(|offered| {
+            let topic: String = db
+                .query_row(
+                    "SELECT topic FROM threads WHERE id=?1",
+                    [offered.notice.thread.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let author: Option<String> = db
+                .query_row(
+                    "SELECT actor_seat_id FROM messages WHERE id=?1",
+                    [offered.notice.warning.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(store_error)?
+                .flatten();
+            Ok(crate::ports::PulledNotice {
+                notice: offered.notice,
+                topic,
+                author: author.map(SeatId::new),
+            })
+        })
+        .collect()
+    }
+    fn settle_pulled_notices(
+        &self,
+        seat: &SeatId,
+        generation: u64,
+        native_session: &str,
+        carried: &[crate::protocol::results::WarningRef],
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        if carried.is_empty() {
+            return Ok(false);
+        }
+        let mut writer = self.writer(budget)?;
+        self.context.execute_decision(
+            &mut writer,
+            |tx| {
+                attention::settle_pulled_notices(
+                    tx,
+                    &self.instance,
+                    seat.as_str(),
+                    generation,
+                    native_session,
+                    carried,
+                )
+            },
+            |_, _, settled| Ok(settled),
+        )
+    }
     fn clear_wake_batch_if_empty(
         &self,
         seat: &SeatId,
@@ -2695,7 +2782,9 @@ impl StorePort for SqliteStore {
             &mut writer,
             |tx| {
                 let scan = attention::wake_seat_attention(tx, seat.as_str())?;
-                Ok(!scan.attention.has_pending_invitation && !scan.attention.has_pending_receipt)
+                Ok(!scan.attention.has_pending_invitation
+                    && !scan.attention.has_pending_receipt
+                    && scan.attention.frontier.lazy.is_none())
             },
             |tx, _, empty| {
                 if empty {
@@ -2895,6 +2984,9 @@ mod service_reads_tests;
 #[path = "../../tests/store/facade.rs"]
 mod tests;
 #[cfg(test)]
+#[path = "../../tests/store/wake_on_wake.rs"]
+mod wake_on_wake_tests;
+#[cfg(test)]
 #[path = "../../tests/store/wake.rs"]
 mod wake_tests;
 
@@ -2922,6 +3014,13 @@ pub fn cooperative_permit_request(
 ) -> Result<crate::ports::CooperativePermitRequest, ApiError> {
     use crate::protocol::authority::ObligationRef;
     let (claim, operation, obligation, payload_hash, check_in_mode) = match command {
+        PermitMutation::AutomaticBootstrap(v) => (
+            v.identity.claim.clone(),
+            v.operation().map_err(ApiError::invalid_request)?,
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("automatic_bootstrap_v2", &**v)?,
+            None,
+        ),
         PermitMutation::BeginBootstrap(v) => (
             v.identity.claim.clone(),
             v.operation.clone(),
@@ -2999,6 +3098,13 @@ pub fn cooperative_permit_request(
             control::cooperative_payload_hash("complete_handoff", v)?,
             None,
         ),
+        PermitMutation::EnsureDirectThread(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            control::cooperative_payload_hash("ensure_direct_thread", v)?,
+            None,
+        ),
         PermitMutation::CreateThread(v) => (
             v.claim.clone(),
             v.operation.clone(),
@@ -3069,11 +3175,25 @@ pub fn cooperative_permit_request(
             schema::canonical_digest(&receipts::ack_mod_delivered_payload(v))?,
             None,
         ),
+        PermitMutation::DeliveryConfirm(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            schema::canonical_digest(&receipts::delivery_confirm_payload(v))?,
+            None,
+        ),
         PermitMutation::CompleteInboxDelivery(v) => (
             v.claim.clone(),
             v.operation.clone(),
             ObligationRef::CheckIn(v.claim.seat.clone()),
             control::cooperative_payload_hash("complete_inbox_delivery", v)?,
+            None,
+        ),
+        PermitMutation::SetWakeOn(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            control::cooperative_payload_hash("set_wake_on", v)?,
             None,
         ),
         PermitMutation::Leave(v) => (

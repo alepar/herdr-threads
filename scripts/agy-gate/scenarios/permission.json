@@ -1,0 +1,71 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "permission",
+  "aux_text": "Gate permission title",
+  "default": {
+    "text": "PERMISSION-UNEXPECTED"
+  },
+  "vars": {
+    "cwd": "/unset"
+  },
+  "steps": [
+    {
+      "label": "allowed-call",
+      "match": {
+        "contains": [
+          "PERM-ALLOWED"
+        ]
+      },
+      "reply": {
+        "call": "run_command",
+        "args": {
+          "CommandLine": "herdr-threads --version",
+          "Cwd": "{var.cwd}",
+          "WaitMsBeforeAsync": 1000,
+          "toolAction": "gate",
+          "toolSummary": "gate"
+        }
+      }
+    },
+    {
+      "label": "allowed-final",
+      "match": {
+        "contains": [
+          "PERM-ALLOWED"
+        ]
+      },
+      "reply": {
+        "text": "PERM-ALLOWED-DONE"
+      }
+    },
+    {
+      "label": "denied-call",
+      "match": {
+        "contains": [
+          "PERM-DENIED"
+        ]
+      },
+      "reply": {
+        "call": "run_command",
+        "args": {
+          "CommandLine": "herdr-threads --version; touch gate-marker",
+          "Cwd": "{var.cwd}",
+          "WaitMsBeforeAsync": 1000,
+          "toolAction": "gate",
+          "toolSummary": "gate"
+        }
+      }
+    },
+    {
+      "label": "denied-final",
+      "match": {
+        "contains": [
+          "PERM-DENIED"
+        ]
+      },
+      "reply": {
+        "text": "PERM-DENIED-DONE"
+      }
+    }
+  ]
+}

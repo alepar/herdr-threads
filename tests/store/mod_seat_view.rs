@@ -652,3 +652,32 @@ fn lifecycle_check_in_through_the_store_notifies_the_observer() {
         "a binding change reaches the mod worker"
     );
 }
+
+/// ht-poh.53: the hook-pull notice probe is in the view but deliberately not
+/// in the fingerprint (notices never wake and never move mod attention).
+#[test]
+fn view_reports_the_newest_pending_notice_outside_the_fingerprint() {
+    let (store, conn, _) = fixture();
+    base(&conn);
+    conn.execute_batch(
+        "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t4','s',1,1),('t4','o',1,1);\
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-1','i','t4',1,'warn','{}',0,12,1),('w-2','i','t4',2,'warn','{}',0,13,1);\
+         INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t4','c-1','o','w-1',12),('receipt','t4','c-2','o','w-2',13);",
+    )
+    .unwrap();
+    assert_eq!(view(&store).newest_pending_notice, None);
+    let before = fp(&store);
+    conn.execute_batch(
+        "INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s','w-1','t4',12,1);",
+    )
+    .unwrap();
+    let first = view(&store).newest_pending_notice;
+    assert!(first.is_some());
+    conn.execute_batch(
+        "INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s','w-2','t4',13,1);",
+    )
+    .unwrap();
+    let second = view(&store).newest_pending_notice;
+    assert!(second > first, "{first:?} {second:?}");
+    assert_eq!(fp(&store), before, "notices are not in the fingerprint");
+}

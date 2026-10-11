@@ -121,7 +121,7 @@ fn legacy_pending_is_shown_to_top_level_bindings_until_displayed() {
     let a = enroll_binding(&db, "sess-A", None);
     let sub = enroll_binding(&db, "sess-A", Some(&a));
     lazy(&db, 3);
-    // The message was pending at the V31 upgrade, and the cursor is already past it.
+    // The message was pending at the V34 upgrade, and the cursor is already past it.
     db.execute("UPDATE lazy_recipients SET legacy_pending=1", [])
         .unwrap();
     db.execute("UPDATE binding_cursors SET seq=3", []).unwrap();

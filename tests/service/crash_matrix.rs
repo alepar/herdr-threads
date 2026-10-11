@@ -340,6 +340,7 @@ impl Matrix {
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: body.into(),
+            direct_recipient: None,
             invited_recipients: invited.iter().map(|s| SeatId::new(*s)).collect(),
             deadline_millis: None,
             operation: OperationId::new(op),
@@ -2619,8 +2620,14 @@ fn startup_evidence_health_recomputes_after_operator_repair_and_reregistration()
         inputs.coherent_enumeration = crate::protocol::results::CapabilityState::Supported;
         inputs.safe_prompt = crate::protocol::results::CapabilityState::Supported;
         inputs.receipt_registration = crate::protocol::results::CapabilityState::Supported;
-        inputs.codex = crate::daemon::health::HarnessStatus::Supported("native".into());
-        inputs.claude = crate::daemon::health::HarnessStatus::Supported("native".into());
+        inputs.set_harness(
+            "codex",
+            crate::daemon::health::HarnessStatus::Supported("native".into()),
+        );
+        inputs.set_harness(
+            "claude",
+            crate::daemon::health::HarnessStatus::Supported("native".into()),
+        );
         inputs.binding_evidence = report;
         inputs.unresolved = Some(Default::default());
         inputs.assemble()
@@ -2690,6 +2697,7 @@ fn failpoints_cannot_be_armed_through_requests_or_foreign_scopes() {
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: "hello".into(),
+            direct_recipient: None,
             invited_recipients: vec![],
             deadline_millis: None,
             operation: OperationId::new("wire"),

@@ -38,6 +38,7 @@ impl LocalClient for ReadOnly {
 }
 fn request() -> Request {
     Request {
+        automatic: false,
         new_tab: Some("same label".into()),
         existing: false,
         selector: PaneSelector::default(),
@@ -96,7 +97,9 @@ fn prepared(
             namespace: &namespace,
             topology: &topology(),
             invocation_cwd: root,
-            options: Some("--config 'quoted $HOME' --config '$(literal)'".into()),
+            // Only the V1 harnesses take the configured native option words here.
+            options: matches!(r.kind.as_deref(), Some("claude" | "codex"))
+                .then(|| "--config 'quoted $HOME' --config '$(literal)'".into()),
             client: &ReadOnly,
             clock: &crate::app::SystemClock::new(),
         },
@@ -147,6 +150,7 @@ fn publication_freezes_route_argv_caller_and_channel() {
     // Names and options can change after publication; reread is only saved bytes.
     let changed = prepared(
         &Request {
+            automatic: false,
             thread: Some("now ambiguous".into()),
             ..request()
         },
@@ -169,6 +173,7 @@ fn publication_validation_has_zero_journal_effects() {
         assert!(
             prepared(
                 &Request {
+                    automatic: false,
                     cwd: Some(cwd),
                     ..request()
                 },
@@ -394,6 +399,7 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
         host_endpoint: temp.path().join("host.sock"),
     };
     let r = Request {
+        automatic: false,
         cwd: Some(work.clone()),
         kind: Some("claude".into()),
         name: Some("Peer Name".into()),
@@ -441,26 +447,32 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
     std::fs::write(&file, "file").unwrap();
     for r in [
         Request {
+            automatic: false,
             cwd: Some(file),
             ..request()
         },
         Request {
+            automatic: false,
             body: " ".into(),
             ..request()
         },
         Request {
+            automatic: false,
             new_tab: Some(" ".into()),
             ..request()
         },
         Request {
+            automatic: false,
             kind: None,
             ..request()
         },
         Request {
+            automatic: false,
             kind: Some("human".into()),
             ..request()
         },
         Request {
+            automatic: false,
             topic: Some("conflict".into()),
             ..request()
         },
@@ -476,6 +488,7 @@ fn publication_refuses_cwd_removed_after_preparation() {
     std::fs::create_dir(&work).unwrap();
     let identity = prepared(
         &Request {
+            automatic: false,
             cwd: Some(work.clone()),
             ..request()
         },
@@ -965,6 +978,23 @@ mod live {
             let mut identity = prepared(&request, temp.path()).unwrap();
             if let Some(argv) = argv {
                 identity.payload.launch.argv = argv;
+                // A V2 plan freezes the adapter's composition of these very arguments.
+                if identity.payload.launch.composed_argv.is_some() {
+                    identity.payload.launch.composed_argv = Some(
+                        crate::harness::launch::compose_bootstrap_v2_argv(
+                            identity.payload.launch.harness,
+                            identity.payload.launch.argv.clone(),
+                        )
+                        .unwrap(),
+                    );
+                    identity.payload.launch.startup_input = Some(
+                        crate::harness::launch::bootstrap_v2_startup_input(
+                            identity.payload.launch.harness,
+                            &identity.payload.launch.argv,
+                        )
+                        .unwrap(),
+                    );
+                }
             }
             identity.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
             identity.digest = identity.semantic_digest().unwrap();
@@ -1238,7 +1268,7 @@ mod live {
             gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
         ) -> Result<super::super::super::launch::LaunchReport, RunError> {
             let argv = crate::harness::launch::compose_native_argv(
-                crate::protocol::authority::Harness::Codex,
+                request.harness.into(),
                 request.argv.clone(),
                 vec![],
             )?;
@@ -1266,7 +1296,7 @@ mod live {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o500)).unwrap();
             }
-            let mut report = serde_json::json!({"outcome":if self.unknown {"outcome_unknown"} else {"started"},"pane":request.target,"seat":seat,"harness":"codex","argv":argv});
+            let mut report = serde_json::json!({"outcome":if self.unknown {"outcome_unknown"} else {"started"},"pane":request.target,"seat":seat,"harness":request.harness.as_str(),"argv":argv});
             if self.invalid_report {
                 report["seat"] = serde_json::json!("different-seat");
             }
@@ -5162,6 +5192,97 @@ mod live {
         );
         armed
     }
+    fn fourth_fixture(fault: Fault) -> Fixture {
+        Fixture::with_request(fault, super::fourth_request(), Some(vec![]))
+    }
+    /// A V2 plan for a launch-capable adapter V1 refuses runs end to end through the real
+    /// store: create, attach, launch with the adapter's own composition, complete.
+    #[test]
+    fn bootstrap_v2_synthetic_fourth_completes_end_to_end() {
+        let f = fourth_fixture(Fault::None);
+        assert_eq!(f.peer.identity.payload.plan_version(), 2);
+        let mut launcher = DownstreamLauncher::default();
+        let mut output = vec![];
+        let done = downstream(&f, &mut launcher, &mut output)
+            .unwrap_or_else(|e| panic!("V2 bootstrap must complete: {e:?}"));
+        assert_eq!(done.state, BootstrapState::Completed);
+        let report = done.completed.unwrap().retained.report;
+        assert_eq!(report["harness"], "synthetic_fourth");
+        let argv = report["argv"].as_array().unwrap();
+        assert_eq!(argv[0], "--synthetic-only");
+        assert_eq!(
+            argv.len(),
+            2,
+            "synthetic-only marker plus the generated prompt"
+        );
+        assert_eq!(launcher.starts, 1);
+        // Replay presents the same bytes without a second start.
+        let mut replay = vec![];
+        downstream(&f, &mut launcher, &mut replay).unwrap();
+        assert_eq!(replay, output);
+        assert_eq!(launcher.starts, 1);
+    }
+    /// agy runs the V2 bootstrap end to end: the retained report places the frozen prompt with
+    /// `--prompt-interactive` and completion validates it against the frozen template.
+    #[test]
+    fn bootstrap_v2_agy_completes_end_to_end_with_prompt_interactive() {
+        let f = Fixture::with_request(Fault::None, super::kind_request("agy", &[]), Some(vec![]));
+        assert_eq!(f.peer.identity.payload.plan_version(), 2);
+        let mut launcher = DownstreamLauncher::default();
+        let mut output = vec![];
+        let done = downstream(&f, &mut launcher, &mut output)
+            .unwrap_or_else(|e| panic!("agy V2 bootstrap must complete: {e:?}"));
+        assert_eq!(done.state, BootstrapState::Completed);
+        let report = done.completed.unwrap().retained.report;
+        assert_eq!(report["harness"], "agy");
+        let argv = report["argv"].as_array().unwrap();
+        let flag = argv
+            .iter()
+            .position(|arg| arg == "--prompt-interactive")
+            .unwrap_or_else(|| panic!("no --prompt-interactive in {argv:?}"));
+        assert_eq!(flag + 2, argv.len(), "the prompt is the flag's value, last");
+        assert!(
+            argv[flag + 1]
+                .as_str()
+                .unwrap()
+                .starts_with("Expected handoff command routing")
+        );
+        assert_eq!(launcher.starts, 1);
+    }
+    /// The V2 Root launch refuses before any native start when today's composer would launch
+    /// different arguments than the adapter composition the plan froze.
+    #[test]
+    fn bootstrap_v2_root_launch_refuses_before_start_when_current_composition_differs() {
+        let f = fourth_fixture(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        let _drift = crate::harness::launch::current_drift::arm_output("--drifted");
+        let result = downstream(&f, &mut launcher, &mut vec![]);
+        assert!(
+            format!("{result:?}").contains("bootstrap plan V2"),
+            "{result:?}"
+        );
+        assert_eq!(launcher.starts, 0, "no native start");
+    }
+    /// A retained V2 report is validated against the frozen composition at completion: a
+    /// report whose argv the adapter would not have produced is refused.
+    #[test]
+    fn bootstrap_v2_completion_refuses_a_report_the_frozen_composition_did_not_produce() {
+        let f = fourth_fixture(Fault::CompleteBefore);
+        let mut setup = DownstreamLauncher::default();
+        assert!(downstream(&f, &mut setup, &mut vec![]).is_err());
+        let path = child_progress_path(&f.journal, &f.peer.reference);
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        saved["progress"]["launch"]["argv"][0] = "--changed".into();
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let mut launcher = DownstreamLauncher {
+            starts: setup.starts,
+            ..Default::default()
+        };
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        assert_eq!(f.peer.status().state, BootstrapState::Attached);
+        assert_eq!(launcher.starts, 1, "no relaunch");
+    }
     #[test]
     fn historical_v1_saved_success_completes_after_current_composition_drift() {
         let f = Fixture::downstream(Fault::CompleteBefore);
@@ -5336,6 +5457,2107 @@ mod live {
             assert_eq!(f.peer.state.lock().unwrap().native_calls, 1, "{change}");
         }
     }
+
+    mod automatic_live {
+        use super::*;
+        use crate::ports::{
+            BootstrapAttachmentGuard, BootstrapPaneObservation, BootstrapStorePort,
+            DurableWorkAdmission, SendPreparationProgress, StorePort,
+        };
+
+        struct NoAutomaticCapability;
+        impl LocalClient for NoAutomaticCapability {
+            fn call_with_output(
+                &self,
+                command: Command,
+                _: &crate::protocol::output::OutputSpec,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                self.call(command, budget)
+            }
+            fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+                assert!(
+                    matches!(command, Command::Capabilities),
+                    "no canonical Begin before capability"
+                );
+                Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList {
+                        capabilities: vec![],
+                    },
+                ))
+            }
+        }
+
+        #[test]
+        fn parsed_new_tab_unsupported_refuses_before_topology_or_journal() {
+            let mut parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "handoff",
+                "--new-tab",
+                "new peer",
+                "--kind",
+                "codex",
+                "--",
+                "literal work",
+            ])
+            .unwrap();
+            let super::super::super::super::commands::CliAction::TopologyHandoff(request) =
+                &parsed.action
+            else {
+                panic!("new-tab route")
+            };
+            assert!(request.automatic);
+            let temp = Temp::new();
+            let journal =
+                super::super::super::super::journal::Journal::open(temp.path().join("intents"))
+                    .unwrap();
+            let result = super::super::super::super::resolve_automatic_new_selectors(
+                &mut parsed,
+                &NoAutomaticCapability,
+                &crate::app::SystemClock::new(),
+                || -> Result<HostTopology, ApiError> {
+                    panic!("unsupported selector must not read topology")
+                },
+                || -> Result<Option<HostTargetId>, ApiError> {
+                    panic!("unsupported selector must not read caller pane")
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(RunError::Api(ApiError {
+                    code: crate::protocol::results::ErrorCode::Unsupported,
+                    ..
+                }))
+            ));
+            let peer = AutoPeer::new();
+            let mut launcher = DownstreamLauncher::default();
+            let result =
+                super::super::super::super::topology_runtime::try_run_automatic_new_with_ports(
+                    &parsed,
+                    &peer.base.peer.identity.claim,
+                    &journal,
+                    peer.ns(),
+                    &NoAutomaticCapability,
+                    &peer,
+                    &mut launcher,
+                    &peer.base.clock,
+                    peer.base._temp.path(),
+                    None,
+                    &mut || -> Result<HostTopology, RunError> {
+                        panic!("unsupported runtime must not read topology")
+                    },
+                    &mut |_| panic!("unsupported runtime must not preflight"),
+                    &crate::protocol::output::OutputSpec::default(),
+                    &mut Vec::new(),
+                );
+            assert!(matches!(
+                result,
+                Err(RunError::Api(ApiError {
+                    code: crate::protocol::results::ErrorCode::Unsupported,
+                    ..
+                }))
+            ));
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 0);
+            assert_eq!(launcher.starts, 0);
+            assert!(!std::fs::read_dir(journal.root()).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "intent")
+            }));
+        }
+
+        struct AutoPeer {
+            base: Fixture,
+            identity: AutomaticBootstrapIdentity,
+            active_identity: std::sync::Mutex<Option<AutomaticBootstrapIdentity>>,
+            reference: super::super::super::super::journal::IntentRef,
+            store: crate::store::SqliteStore,
+            native_outcome_once: std::sync::Mutex<Option<&'static str>>,
+            lost_child_reply: std::sync::Mutex<Option<&'static str>>,
+            lost_parent_reply: std::sync::Mutex<Option<&'static str>>,
+            fail_outer_complete_once: std::sync::atomic::AtomicBool,
+        }
+        impl AutoPeer {
+            fn new() -> Self {
+                Self::with_kind("codex")
+            }
+            fn with_kind(kind: &'static str) -> Self {
+                let base = Fixture::aligned(Fault::None, None);
+                base.journal.complete(&base.peer.reference).unwrap();
+                let parsed = super::super::super::super::commands::parse_argv([
+                    "ht",
+                    "handoff",
+                    "--new-tab",
+                    "new peer",
+                    "--kind",
+                    kind,
+                    "--",
+                    "literal work",
+                ])
+                .unwrap();
+                let super::super::super::super::commands::CliAction::TopologyHandoff(request) =
+                    parsed.action
+                else {
+                    panic!("parsed new-tab route")
+                };
+                assert!(request.automatic);
+                let identity = prepare_automatic(
+                    &request,
+                    Preparation {
+                        claim: &base.peer.identity.claim,
+                        namespace: &base.peer.identity.payload.handoff.namespace,
+                        topology: &topology(),
+                        invocation_cwd: base._temp.path(),
+                        options: None,
+                        client: &ReadOnly,
+                        clock: &base.clock,
+                    },
+                )
+                .unwrap();
+                let reference = publish_automatic(&base.journal, &identity, 1).unwrap();
+                let store = crate::store::SqliteStore::new(
+                    crate::store::connection::StoreContext::new(
+                        base.peer.database_path.clone(),
+                        Arc::new(crate::app::SystemClock::new()),
+                    ),
+                    "i",
+                    Default::default(),
+                )
+                .unwrap();
+                Self {
+                    base,
+                    identity,
+                    active_identity: std::sync::Mutex::new(None),
+                    reference,
+                    store,
+                    native_outcome_once: std::sync::Mutex::new(None),
+                    lost_child_reply: std::sync::Mutex::new(None),
+                    lost_parent_reply: std::sync::Mutex::new(None),
+                    fail_outer_complete_once: std::sync::atomic::AtomicBool::new(false),
+                }
+            }
+            fn ns(&self) -> &HandoffNamespace {
+                &self.identity.plan.payload.handoff.namespace
+            }
+            fn status(&self) -> AutomaticBootstrapResult {
+                self.status_for(&self.identity)
+            }
+            fn complete_child_with_lost_parent_reply(&self) -> DownstreamLauncher {
+                self.fail_outer_complete_once
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let mut launcher = DownstreamLauncher::default();
+                let result = resume_automatic_to_writer(
+                    &self.base.journal,
+                    &self.reference,
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    self.ns(),
+                    self,
+                    self,
+                    &mut launcher,
+                    &self.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &self.base.witness,
+                        context: &self.base.context,
+                    },
+                    &crate::protocol::output::OutputSpec::default(),
+                    &mut Vec::new(),
+                );
+                assert!(matches!(result, Err(RunError::Api(_))));
+                assert_eq!(self.status().state, BootstrapState::Attached);
+                launcher
+            }
+            fn historical_retry(
+                &self,
+                namespace: &HandoffNamespace,
+            ) -> Result<(bool, Vec<u8>), RunError> {
+                let parsed = super::super::super::super::commands::parse_argv([
+                    "ht",
+                    "retry",
+                    self.reference.recovery_ref().as_str(),
+                ])?;
+                assert_eq!(
+                    super::super::super::super::retry::preflight_original_actor(
+                        self.base.journal.root(),
+                        &self.reference.recovery_ref(),
+                        parsed.actor,
+                        &parsed.output.context,
+                    )?,
+                    super::super::super::super::journal::OriginalActor::Agent
+                );
+                let mut output = Vec::new();
+                let completed =
+                    super::super::super::super::topology_runtime::try_completed_with_namespace(
+                        &parsed,
+                        &self.base.journal,
+                        namespace,
+                        self,
+                        &self.base.clock,
+                        &mut output,
+                    )?;
+                Ok((completed, output))
+            }
+            fn sender_lifecycle_check_in(&self) -> crate::protocol::authority::CallerClaim {
+                let mut successor = self.identity.claim.clone();
+                successor.execution =
+                    crate::protocol::ids::ExecutionId::new(uuid::Uuid::new_v4().to_string());
+                // A lifecycle check-in records the harness process (session-keyed bindings).
+                successor.liveness = Some(crate::protocol::authority::LivenessFingerprint::TEST);
+                let command = crate::protocol::commands::CheckIn {
+                    mode: crate::protocol::commands::CheckInMode::Lifecycle {
+                        expected_binding_generation: successor.binding_generation,
+                    },
+                    claim: successor,
+                    operation: crate::protocol::ids::OperationId::new(
+                        uuid::Uuid::new_v4().to_string(),
+                    ),
+                    lineage_parent: None,
+                };
+                let budget = super::super::super::super::cooperative_budget(&self.base.clock);
+                let permit = self
+                    .store
+                    .issue_cooperative_permit(
+                        crate::store::cooperative_permit_request(
+                            &crate::protocol::commands::PermitMutation::CheckIn(command.clone()),
+                        )
+                        .unwrap(),
+                        &budget,
+                    )
+                    .unwrap();
+                let CommandResult::CheckedIn(checked) = self
+                    .store
+                    .register_available(
+                        crate::ports::RegisterAvailableRequest {
+                            command,
+                            read: crate::ports::ReadContext {
+                                instance: self.ns().instance.clone(),
+                                output: Default::default(),
+                                operation_scope: None,
+                            },
+                            operator: None,
+                        },
+                        permit,
+                        &budget,
+                    )
+                    .unwrap()
+                else {
+                    panic!("sender lifecycle check-in result")
+                };
+                checked.context
+            }
+            fn status_for(
+                &self,
+                identity: &AutomaticBootstrapIdentity,
+            ) -> AutomaticBootstrapResult {
+                let request = AutomaticBootstrapMutation {
+                    identity: identity.clone(),
+                    action: AutomaticBootstrapAction::Status,
+                };
+                let CommandResult::AutomaticBootstrap(status) = self
+                    .store
+                    .automatic_bootstrap_query(
+                        &identity.plan.payload.handoff.namespace,
+                        &request,
+                        &super::super::super::super::cooperative_budget(&self.base.clock),
+                    )
+                    .unwrap()
+                else {
+                    panic!("automatic parent status")
+                };
+                *status
+            }
+            fn guard_for(&self, identity: &AutomaticBootstrapIdentity) -> BootstrapAttachmentGuard {
+                let (_context, observation, admission, _budget) =
+                    scoped_peer_current(&self.base.peer);
+                BootstrapAttachmentGuard::try_new(
+                    &crate::protocol::commands::ResolveSeat {
+                        target: observation.target.clone(),
+                        operation: identity.plan.payload.keys.resolve.clone(),
+                    },
+                    BootstrapPaneObservation::try_new(
+                        observation,
+                        HostTargetId::new("w1"),
+                        HostTargetId::new("w1:t2"),
+                        self.base.witness.clone(),
+                    )
+                    .unwrap(),
+                    &admission,
+                )
+                .unwrap()
+            }
+            fn seed_unknown_creation(&self) {
+                for action in [
+                    AutomaticBootstrapAction::Begin,
+                    AutomaticBootstrapAction::Reserve {
+                        attempt: BootstrapAttempt::first(),
+                    },
+                    AutomaticBootstrapAction::RecordOutcomeUnknown {
+                        attempt: BootstrapAttempt::first(),
+                    },
+                ] {
+                    self.call(
+                        Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+                            identity: self.identity.clone(),
+                            action,
+                        })),
+                        &super::super::super::super::cooperative_budget(&self.base.clock),
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        impl LocalClient for AutoPeer {
+            fn call_with_output(
+                &self,
+                command: Command,
+                _: &crate::protocol::output::OutputSpec,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                self.call(command, budget)
+            }
+            fn call(
+                &self,
+                command: Command,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                match command {
+                    Command::Capabilities => Ok(CommandResult::Capabilities(
+                        crate::protocol::results::CapabilityList {
+                            capabilities: vec![
+                                crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into(),
+                            ],
+                        },
+                    )),
+                    Command::AutomaticBootstrap(request) => {
+                        {
+                            let mut active = self.active_identity.lock().unwrap();
+                            assert_eq!(
+                                active.get_or_insert_with(|| request.identity.clone()),
+                                &request.identity
+                            );
+                        }
+                        let role = match &request.action {
+                            AutomaticBootstrapAction::Status => "auto_status",
+                            AutomaticBootstrapAction::Begin => "auto_begin",
+                            AutomaticBootstrapAction::Reserve { .. } => "auto_reserve",
+                            AutomaticBootstrapAction::CheckSubmission { .. } => "auto_check",
+                            AutomaticBootstrapAction::RecordCreated { .. } => "auto_record",
+                            AutomaticBootstrapAction::Resolve { .. } => "auto_resolve",
+                            AutomaticBootstrapAction::Attach(_) => "auto_attach",
+                            AutomaticBootstrapAction::CheckStart => "auto_check_start",
+                            AutomaticBootstrapAction::Complete { .. } => "auto_complete",
+                            AutomaticBootstrapAction::RecordOutcomeUnknown { .. } => "auto_unknown",
+                            AutomaticBootstrapAction::RecordNotSubmitted { .. } => {
+                                "auto_not_submitted"
+                            }
+                            AutomaticBootstrapAction::Recover { .. } => "auto_recover",
+                        };
+                        self.base.peer.state.lock().unwrap().calls.push(role);
+                        if matches!(request.action, AutomaticBootstrapAction::Status) {
+                            return self.store.automatic_bootstrap_query(
+                                &request.identity.plan.payload.handoff.namespace,
+                                &request,
+                                budget,
+                            );
+                        }
+                        if matches!(request.action, AutomaticBootstrapAction::Recover { .. }) {
+                            let uid = unsafe { libc::geteuid() };
+                            let actor = crate::protocol::authority::OperatorActor::from_peer(
+                                crate::protocol::authority::PeerIdentity::from_kernel(uid),
+                                uid,
+                            )
+                            .unwrap();
+                            let result = self.store.automatic_bootstrap_recover(
+                                &request.identity.plan.payload.handoff.namespace,
+                                &request,
+                                &actor,
+                                if matches!(
+                                    request.action,
+                                    AutomaticBootstrapAction::Recover {
+                                        disposition:
+                                            AutomaticBootstrapRecoveryDisposition::CreatedPane { .. },
+                                        ..
+                                    }
+                                ) {
+                                    Some(self.guard_for(&request.identity))
+                                } else {
+                                    None
+                                },
+                                budget,
+                            )?;
+                            let mut loss = self.lost_parent_reply.lock().unwrap();
+                            if loss.as_ref() == Some(&role) {
+                                *loss = None;
+                                return Err(ApiError::unknown_outcome(
+                                    "simulated committed operator decision reply loss",
+                                ));
+                            }
+                            return Ok(result);
+                        }
+                        if matches!(request.action, AutomaticBootstrapAction::CheckStart) {
+                            return self.store.automatic_bootstrap_check_start(
+                                &request.identity.plan.payload.handoff.namespace,
+                                &request,
+                                self.guard_for(&request.identity),
+                                budget,
+                            );
+                        }
+                        if matches!(request.action, AutomaticBootstrapAction::Complete { .. }) {
+                            if self
+                                .fail_outer_complete_once
+                                .swap(false, std::sync::atomic::Ordering::SeqCst)
+                            {
+                                return Err(ApiError::host_unavailable(
+                                    "simulated outer completion delay",
+                                ));
+                            }
+                            return self.store.automatic_bootstrap_complete(
+                                &request.identity.plan.payload.handoff.namespace,
+                                &request,
+                                budget,
+                            );
+                        }
+                        let guard = if matches!(
+                            request.action,
+                            AutomaticBootstrapAction::Resolve { .. }
+                                | AutomaticBootstrapAction::Attach(_)
+                        ) {
+                            Some(self.guard_for(&request.identity))
+                        } else {
+                            None
+                        };
+                        let mutation =
+                            crate::protocol::commands::PermitMutation::AutomaticBootstrap(
+                                request.clone(),
+                            );
+                        let permit = self.store.issue_cooperative_permit(
+                            crate::store::cooperative_permit_request(&mutation)?,
+                            budget,
+                        )?;
+                        let result = self.store.automatic_bootstrap_mutate(
+                            &request.identity.plan.payload.handoff.namespace,
+                            &request,
+                            permit,
+                            guard,
+                            budget,
+                        )?;
+                        let mut loss = self.lost_parent_reply.lock().unwrap();
+                        if loss.as_ref() == Some(&role) {
+                            *loss = None;
+                            return Err(ApiError::unknown_outcome(
+                                "simulated committed parent reply loss",
+                            ));
+                        }
+                        Ok(result)
+                    }
+                    Command::AutomaticHandoffDelivery(request) => {
+                        let identity = self
+                            .active_identity
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .expect("active parent");
+                        let status = self.status_for(&identity);
+                        let attachment = status
+                            .attachment
+                            .as_ref()
+                            .expect("guarded attachment before child");
+                        assert_eq!(request.scope, attachment.child.scope);
+                        assert_eq!(request.claim, attachment.child.claim);
+                        assert_eq!(request.original, attachment.child.original);
+                        let role = match &request.action {
+                            AutomaticDeliveryAction::Status => "auto_child_status",
+                            AutomaticDeliveryAction::Prepare => "auto_child_prepare",
+                            AutomaticDeliveryAction::Begin { .. } => "auto_child_begin",
+                            AutomaticDeliveryAction::Ensure(_) => "auto_child_ensure",
+                            AutomaticDeliveryAction::Send(_) => "auto_child_send",
+                            AutomaticDeliveryAction::Complete { .. } => "auto_child_complete",
+                        };
+                        self.base.peer.state.lock().unwrap().calls.push(role);
+                        if matches!(
+                            request.action,
+                            AutomaticDeliveryAction::Status | AutomaticDeliveryAction::Prepare
+                        ) {
+                            return self.store.automatic_delivery_query(
+                                self.ns(),
+                                &request,
+                                budget,
+                            );
+                        }
+                        if matches!(request.action, AutomaticDeliveryAction::Send(_)) {
+                            loop {
+                                match self.store.automatic_delivery_prepare_send_step(
+                                    self.ns(),
+                                    &request,
+                                    DurableWorkAdmission::new(16).unwrap(),
+                                    budget,
+                                )? {
+                                    SendPreparationProgress::Ready { .. } => break,
+                                    SendPreparationProgress::More { .. } => {}
+                                    SendPreparationProgress::Committed(result) => {
+                                        return Ok(result);
+                                    }
+                                }
+                            }
+                        }
+                        let inner = crate::store::handoff::automatic::inner(&request)?;
+                        let permit = self.store.issue_cooperative_permit(
+                            crate::store::cooperative_permit_request(&inner)?,
+                            budget,
+                        )?;
+                        let result = self.store.automatic_delivery_mutate(
+                            self.ns(),
+                            &request,
+                            permit,
+                            budget,
+                        )?;
+                        let mut loss = self.lost_child_reply.lock().unwrap();
+                        if loss.as_ref() == Some(&role) {
+                            *loss = None;
+                            return Err(ApiError::unknown_outcome(
+                                "simulated committed child reply loss",
+                            ));
+                        }
+                        Ok(result)
+                    }
+                    _ => panic!(
+                        "new-tab automatic route must not use legacy or unrelated command: {command:?}"
+                    ),
+                }
+            }
+        }
+        enum OperatorTestClient<'a> {
+            Peer(&'a AutoPeer),
+            Unsupported,
+        }
+        impl LocalClient for OperatorTestClient<'_> {
+            fn call_with_output(
+                &self,
+                command: Command,
+                output: &crate::protocol::output::OutputSpec,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                match self {
+                    Self::Peer(peer) => peer.call_with_output(command, output, budget),
+                    Self::Unsupported => {
+                        NoAutomaticCapability.call_with_output(command, output, budget)
+                    }
+                }
+            }
+            fn call(
+                &self,
+                command: Command,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                match self {
+                    Self::Peer(peer) => peer.call(command, budget),
+                    Self::Unsupported => NoAutomaticCapability.call(command, budget),
+                }
+            }
+        }
+        impl CreateTabPort for AutoPeer {
+            fn create_tab(
+                &self,
+                request: &CreateTabRequest,
+                _: &HostCallContext,
+            ) -> CreateTabOutcome {
+                let mut state = self.base.peer.state.lock().unwrap();
+                state.calls.push("auto_native_create");
+                state.native_calls += 1;
+                let identity = self
+                    .active_identity
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("active parent");
+                assert_eq!(request.workspace, identity.plan.payload.workspace);
+                assert_eq!(request.expected_witness, self.base.witness);
+                drop(state);
+                match self.native_outcome_once.lock().unwrap().take() {
+                    Some("zero") => {
+                        return CreateTabOutcome::NotSubmitted(ApiError::host_unavailable(
+                            "typed zero submission",
+                        ));
+                    }
+                    Some("unknown") => {
+                        return CreateTabOutcome::OutcomeUnknown(ApiError::unknown_outcome(
+                            "typed unknown submission",
+                        ));
+                    }
+                    None => {}
+                    _ => panic!("invalid native outcome fixture"),
+                }
+                let mut created = crate::protocol::handoff::topology_contract_tests::created();
+                created.correlation = request.correlation.clone();
+                created.witness = request.expected_witness.clone();
+                CreateTabOutcome::Created(Box::new(created))
+            }
+        }
+
+        #[test]
+        fn parsed_human_recovery_of_automatic_unknown_creation_is_durable() {
+            let peer = AutoPeer::new();
+            peer.seed_unknown_creation();
+            let argv = vec![
+                "ht".to_owned(),
+                "human".to_owned(),
+                "handoff".to_owned(),
+                "recover".to_owned(),
+                peer.reference.recovery_ref(),
+                "--attempt".to_owned(),
+                "1".to_owned(),
+                "--not-created".to_owned(),
+            ];
+            let parsed = super::super::super::super::commands::parse_argv(argv).unwrap();
+            let mut output = Vec::new();
+            super::super::super::super::topology_runtime::run_automatic_operator_parsed(
+                &parsed,
+                &peer.base.journal,
+                peer.ns(),
+                &peer,
+                &peer.base.clock,
+                &mut output,
+                |_, _| panic!("not-created assertion must not observe a pane"),
+            )
+            .unwrap();
+            assert_eq!(peer.status().attempt.get(), 2);
+            assert!(!output.is_empty());
+        }
+
+        #[test]
+        fn parsed_human_created_and_cancelled_automatic_recovery_are_distinct() {
+            let created = AutoPeer::new();
+            created.seed_unknown_creation();
+            let argv = vec![
+                "ht".to_owned(),
+                "human".to_owned(),
+                "handoff".to_owned(),
+                "recover".to_owned(),
+                created.reference.recovery_ref(),
+                "--attempt".to_owned(),
+                "1".to_owned(),
+                "--created-pane".to_owned(),
+                "w1:p2".to_owned(),
+            ];
+            let parsed = super::super::super::super::commands::parse_argv(argv).unwrap();
+            let mut output = Vec::new();
+            super::super::super::super::topology_runtime::run_automatic_operator_parsed(
+                &parsed,
+                &created.base.journal,
+                created.ns(),
+                &created,
+                &created.base.clock,
+                &mut output,
+                |target, request| {
+                    let mut evidence = crate::protocol::handoff::topology_contract_tests::created();
+                    assert_eq!(target, &evidence.root_pane);
+                    evidence.correlation = request
+                        .map(|v| v.correlation.clone())
+                        .unwrap_or_else(|| HostCallId::new("operator-observed-creation"));
+                    evidence.witness = created.base.witness.clone();
+                    Ok((evidence, HostCallId::new("operator-structural-read")))
+                },
+            )
+            .unwrap();
+            assert_eq!(created.status().state, BootstrapState::Created);
+            assert_eq!(created.base.peer.state.lock().unwrap().native_calls, 0);
+
+            let cancelled = AutoPeer::new();
+            cancelled.seed_unknown_creation();
+            let argv = vec![
+                "ht".to_owned(),
+                "human".to_owned(),
+                "handoff".to_owned(),
+                "recover".to_owned(),
+                cancelled.reference.recovery_ref(),
+                "--attempt".to_owned(),
+                "1".to_owned(),
+                "--cancel".to_owned(),
+                "--reason".to_owned(),
+                "inspected quiescence".to_owned(),
+            ];
+            let parsed = super::super::super::super::commands::parse_argv(argv).unwrap();
+            let mut output = Vec::new();
+            super::super::super::super::topology_runtime::run_automatic_operator_parsed(
+                &parsed,
+                &cancelled.base.journal,
+                cancelled.ns(),
+                &cancelled,
+                &cancelled.base.clock,
+                &mut output,
+                |_, _| panic!("cancellation needs no native pane observation"),
+            )
+            .unwrap();
+            assert_eq!(cancelled.status().state, BootstrapState::Cancelled);
+            assert_eq!(cancelled.base.peer.state.lock().unwrap().native_calls, 0);
+        }
+
+        #[test]
+        fn parsed_human_automatic_operator_retry_replays_lost_decision_reply() {
+            let peer = AutoPeer::new();
+            peer.seed_unknown_creation();
+            *peer.lost_parent_reply.lock().unwrap() = Some("auto_recover");
+            let argv = vec![
+                "ht".to_owned(),
+                "human".to_owned(),
+                "handoff".to_owned(),
+                "recover".to_owned(),
+                peer.reference.recovery_ref(),
+                "--attempt".to_owned(),
+                "1".to_owned(),
+                "--not-created".to_owned(),
+            ];
+            let parsed = super::super::super::super::commands::parse_argv(argv).unwrap();
+            let mut output = Vec::new();
+            assert!(
+                super::super::super::super::topology_runtime::run_automatic_operator_parsed(
+                    &parsed,
+                    &peer.base.journal,
+                    peer.ns(),
+                    &peer,
+                    &peer.base.clock,
+                    &mut output,
+                    |_, _| panic!("not-created has no pane"),
+                )
+                .is_err()
+            );
+            assert_eq!(peer.status().attempt.get(), 2);
+            let operator_ref = format!("local:{}", peer.reference.ordinal + 1);
+            let retry = super::super::super::super::commands::parse_argv([
+                "ht",
+                "human",
+                "retry",
+                operator_ref.as_str(),
+            ])
+            .unwrap();
+            super::super::super::super::topology_runtime::run_automatic_operator_retry_parsed(
+                &retry,
+                &peer.base.journal,
+                peer.ns(),
+                &peer,
+                &peer.base.clock,
+                &mut output,
+            )
+            .unwrap();
+            assert_eq!(peer.status().attempt.get(), 2);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 0);
+            assert!(
+                peer.base
+                    .journal
+                    .resolve_recovery_ref(&operator_ref)
+                    .is_err()
+            );
+        }
+
+        #[test]
+        fn parsed_operator_dispatch_classifies_before_connect_and_replays_frozen_decision() {
+            let peer = AutoPeer::new();
+            peer.seed_unknown_creation();
+            let selected = crate::daemon::paths::RuntimeContext::explicit(
+                peer.ns().state_dir.clone(),
+                peer.ns().host_endpoint.clone(),
+                None,
+            )
+            .unwrap();
+            let argv = vec![
+                "ht".to_owned(),
+                "human".to_owned(),
+                "handoff".to_owned(),
+                "recover".to_owned(),
+                peer.reference.recovery_ref(),
+                "--attempt".to_owned(),
+                "1".to_owned(),
+                "--not-created".to_owned(),
+            ];
+            let parsed = super::super::super::super::commands::parse_argv(argv).unwrap();
+            use super::super::super::super::topology_runtime::try_run_automatic_operator_with_ports as dispatch;
+            let mut wrong_actor = parsed.clone();
+            wrong_actor.actor = super::super::super::super::actor_route::InvocationActor::Agent;
+            assert!(
+                dispatch(
+                    &wrong_actor,
+                    &selected,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut Vec::new(),
+                    &mut || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
+                        panic!("actor check before connect")
+                    },
+                    &mut |_, _| panic!("no host observation"),
+                )
+                .is_err()
+            );
+            let mut wrong_host = selected.clone();
+            wrong_host.host_endpoint = peer.base._temp.path().join("wrong-host");
+            assert!(
+                dispatch(
+                    &parsed,
+                    &wrong_host,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut Vec::new(),
+                    &mut || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
+                        panic!("origin host check before connect")
+                    },
+                    &mut |_, _| panic!("no host observation"),
+                )
+                .is_err()
+            );
+            let intent_count = || {
+                std::fs::read_dir(peer.base.journal.root())
+                    .unwrap()
+                    .filter(|entry| {
+                        entry
+                            .as_ref()
+                            .unwrap()
+                            .path()
+                            .extension()
+                            .is_some_and(|ext| ext == "intent")
+                    })
+                    .count()
+            };
+            let before = intent_count();
+            assert!(
+                dispatch(
+                    &parsed,
+                    &selected,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut Vec::new(),
+                    &mut || Ok((
+                        peer.ns().clone(),
+                        Box::new(OperatorTestClient::Unsupported) as Box<dyn LocalClient>
+                    )),
+                    &mut |_, _| panic!("unsupported before native observation"),
+                )
+                .is_err()
+            );
+            assert_eq!(intent_count(), before);
+            *peer.lost_parent_reply.lock().unwrap() = Some("auto_recover");
+            let mut output = Vec::new();
+            assert!(
+                dispatch(
+                    &parsed,
+                    &selected,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut output,
+                    &mut || Ok((
+                        peer.ns().clone(),
+                        Box::new(OperatorTestClient::Peer(&peer)) as Box<dyn LocalClient + '_>
+                    )),
+                    &mut |_, _| panic!("not-created assertion needs no host observation"),
+                )
+                .is_err()
+            );
+            assert_eq!(peer.status().attempt.get(), 2);
+            assert_eq!(intent_count(), before + 1);
+            let operator_ref = format!("local:{}", peer.reference.ordinal + 1);
+            let wrong_original = super::super::super::super::commands::parse_argv([
+                "ht",
+                "human",
+                "handoff",
+                "recover",
+                operator_ref.as_str(),
+                "--attempt",
+                "1",
+                "--not-created",
+            ])
+            .unwrap();
+            assert!(
+                dispatch(
+                    &wrong_original,
+                    &selected,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut Vec::new(),
+                    &mut || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
+                        panic!("operator original must refuse before connection")
+                    },
+                    &mut |_, _| panic!("operator original has no pane observation"),
+                )
+                .is_err()
+            );
+            let retry = super::super::super::super::commands::parse_argv([
+                "ht",
+                "human",
+                "retry",
+                operator_ref.as_str(),
+            ])
+            .unwrap();
+            assert!(
+                dispatch(
+                    &retry,
+                    &selected,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut output,
+                    &mut || Ok((
+                        peer.ns().clone(),
+                        Box::new(OperatorTestClient::Peer(&peer)) as Box<dyn LocalClient + '_>
+                    )),
+                    &mut |_, _| panic!("frozen retry never re-observes pane"),
+                )
+                .unwrap()
+            );
+            assert_eq!(peer.status().attempt.get(), 2);
+            assert_eq!(intent_count(), before);
+            assert!(!output.is_empty());
+        }
+
+        #[test]
+        fn parsed_new_tab_automatic_route_creates_one_pair_and_starts_once() {
+            let peer = AutoPeer::new();
+            let (messages_before, invitations_before) = {
+                let state = peer.base.peer.state.lock().unwrap();
+                (
+                    state
+                        .db
+                        .query_row(
+                            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                            [],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .unwrap(),
+                    state
+                        .db
+                        .query_row("SELECT count(*) FROM invitations", [], |r| {
+                            r.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                )
+            };
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = Vec::new();
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec {
+                    format: crate::protocol::output::OutputFormat::Json,
+                    ..Default::default()
+                },
+                &mut output,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{error:?}; calls={:?}; status={:?}",
+                    peer.base.peer.state.lock().unwrap().calls,
+                    peer.status()
+                )
+            });
+            assert_eq!(result.state, BootstrapState::Completed);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 1);
+            let status = peer.status();
+            let selected = status.thread.expect("exact selected pair thread");
+            let db = &peer.base.peer.state.lock().unwrap().db;
+            assert_eq!(
+                db.query_row(
+                    "SELECT thread_id FROM direct_threads WHERE thread_id=?1",
+                    [selected.as_str()],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                selected.as_str()
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                messages_before + 1
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM invitations", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                invitations_before + 1
+            );
+        }
+
+        fn ordinary_and_invitation_counts(peer: &AutoPeer) -> (i64, i64) {
+            let state = peer.base.peer.state.lock().unwrap();
+            (
+                state
+                    .db
+                    .query_row(
+                        "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                state
+                    .db
+                    .query_row("SELECT count(*) FROM invitations", [], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+            )
+        }
+
+        fn intent_count(journal: &super::super::super::super::journal::Journal) -> usize {
+            std::fs::read_dir(journal.root())
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "intent")
+                })
+                .count()
+        }
+
+        /// The automatic route refuses an adapter whose composition rewrites the applied caller
+        /// argv before the host preflight, journal publication, tab creation, launch or any
+        /// store write: such a launch could never complete against the automatic plan.
+        #[test]
+        fn parsed_new_tab_automatic_route_refuses_a_rewriting_kind_before_any_effect() {
+            let peer = AutoPeer::new();
+            let before = ordinary_and_invitation_counts(&peer);
+            let intents_before = intent_count(&peer.base.journal);
+            let parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "handoff",
+                "--new-tab",
+                "new peer",
+                "--kind",
+                "hermes",
+                "--",
+                "literal work",
+            ])
+            .unwrap();
+            let super::super::super::super::commands::CliAction::TopologyHandoff(request) =
+                &parsed.action
+            else {
+                panic!("parsed route")
+            };
+            assert!(request.automatic && !request.existing);
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = Vec::new();
+            let result =
+                super::super::super::super::topology_runtime::try_run_automatic_new_with_ports(
+                    &parsed,
+                    &peer.base.peer.identity.claim,
+                    &peer.base.journal,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    &mut launcher,
+                    &peer.base.clock,
+                    peer.base._temp.path(),
+                    None,
+                    &mut || Ok(topology()),
+                    &mut |_| panic!("a refused kind must not preflight the host"),
+                    &crate::protocol::output::OutputSpec::default(),
+                    &mut output,
+                );
+            let Err(RunError::Api(error)) = &result else {
+                panic!("refused: {result:?}")
+            };
+            assert_eq!(
+                error.code,
+                crate::protocol::results::ErrorCode::Unsupported,
+                "{error:?}"
+            );
+            assert!(error.detail.contains("--new-thread"), "{error:?}");
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 0);
+            assert_eq!(launcher.starts, 0);
+            assert_eq!(intent_count(&peer.base.journal), intents_before);
+            assert_eq!(ordinary_and_invitation_counts(&peer), before);
+            assert!(output.is_empty());
+        }
+
+        /// The automatic counterpart of the explicit-channel agy test: agy's composition leaves
+        /// the applied caller argv unchanged, so its automatic plan launches with
+        /// `--prompt-interactive` placing the frozen prompt and completes.
+        #[test]
+        fn automatic_new_tab_agy_completes_end_to_end_with_prompt_interactive() {
+            let peer = AutoPeer::with_kind("agy");
+            assert_eq!(peer.identity.plan.payload.launch.harness.as_str(), "agy");
+            assert!(peer.identity.plan.payload.startup_input.is_some());
+            let before = ordinary_and_invitation_counts(&peer);
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = Vec::new();
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec {
+                    format: crate::protocol::output::OutputFormat::Json,
+                    ..Default::default()
+                },
+                &mut output,
+            )
+            .unwrap_or_else(|error| panic!("agy automatic bootstrap must complete: {error:?}"));
+            assert_eq!(result.state, BootstrapState::Completed);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(
+                ordinary_and_invitation_counts(&peer),
+                (before.0 + 1, before.1 + 1)
+            );
+            let selected = peer.status().thread.expect("exact selected pair thread");
+            assert_eq!(
+                peer.base
+                    .peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .db
+                    .query_row(
+                        "SELECT thread_id FROM direct_threads WHERE thread_id=?1",
+                        [selected.as_str()],
+                        |r| r.get::<_, String>(0)
+                    )
+                    .unwrap(),
+                selected.as_str()
+            );
+            let report = &result.completed.as_ref().expect("completed").report;
+            assert_eq!(report["harness"], "agy");
+            let argv = report["argv"].as_array().unwrap();
+            let flag = argv
+                .iter()
+                .position(|arg| arg == "--prompt-interactive")
+                .unwrap_or_else(|| panic!("no --prompt-interactive in {argv:?}"));
+            assert_eq!(flag + 2, argv.len(), "the prompt is the flag's value, last");
+            assert!(
+                argv[flag + 1]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Expected handoff command routing")
+            );
+        }
+
+        #[test]
+        fn parsed_new_tab_selector_enters_public_runtime_dispatch() {
+            let peer = AutoPeer::new();
+            let mut parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "handoff",
+                "--new-tab",
+                "new peer",
+                "--space",
+                "work",
+                "--kind",
+                "codex",
+                "--",
+                "literal work",
+            ])
+            .unwrap();
+            let before = {
+                let state = peer.base.peer.state.lock().unwrap();
+                (
+                    state
+                        .db
+                        .query_row(
+                            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                            [],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .unwrap(),
+                    state
+                        .db
+                        .query_row("SELECT count(*) FROM invitations", [], |r| {
+                            r.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                )
+            };
+            super::super::super::super::resolve_automatic_new_selectors(
+                &mut parsed,
+                &peer,
+                &peer.base.clock,
+                || Ok(topology()),
+                || -> Result<Option<HostTargetId>, ApiError> {
+                    panic!("explicit workspace needs no caller pane")
+                },
+            )
+            .unwrap();
+            let super::super::super::super::commands::CliAction::TopologyHandoff(request) =
+                &parsed.action
+            else {
+                panic!("parsed route")
+            };
+            assert!(request.automatic && !request.existing);
+            assert_eq!(request.selector.space.as_deref(), Some("work"));
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = Vec::new();
+            assert!(
+                super::super::super::super::topology_runtime::try_run_automatic_new_with_ports(
+                    &parsed,
+                    &peer.base.peer.identity.claim,
+                    &peer.base.journal,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    &mut launcher,
+                    &peer.base.clock,
+                    peer.base._temp.path(),
+                    None,
+                    &mut || Ok(topology()),
+                    &mut |_| Ok(peer.base.witness.clone()),
+                    &crate::protocol::output::OutputSpec {
+                        format: crate::protocol::output::OutputFormat::Json,
+                        ..Default::default()
+                    },
+                    &mut output,
+                )
+                .unwrap()
+            );
+            let active = peer
+                .active_identity
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("new parent");
+            assert_ne!(active, peer.identity);
+            assert_eq!(active.plan.payload.workspace.as_str(), "w1");
+            assert_eq!(peer.status_for(&active).state, BootstrapState::Completed);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 1);
+            let state = peer.base.peer.state.lock().unwrap();
+            assert_eq!(
+                state
+                    .db
+                    .query_row(
+                        "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                before.0 + 1
+            );
+            assert_eq!(
+                state
+                    .db
+                    .query_row("SELECT count(*) FROM invitations", [], |r| r
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                before.1 + 1
+            );
+            let selected = peer.status_for(&active).thread.expect("paired thread");
+            assert_eq!(
+                state
+                    .db
+                    .query_row(
+                        "SELECT count(*) FROM direct_threads WHERE thread_id=?1",
+                        [selected.as_str()],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                1
+            );
+            assert!(!output.is_empty());
+        }
+
+        #[test]
+        fn typed_native_zero_advances_attempt_but_unknown_stays_fenced() {
+            let zero = AutoPeer::new();
+            *zero.native_outcome_once.lock().unwrap() = Some("zero");
+            let mut launcher = DownstreamLauncher::default();
+            let output = crate::protocol::output::OutputSpec {
+                format: crate::protocol::output::OutputFormat::Json,
+                ..Default::default()
+            };
+            let run_zero = |launcher: &mut DownstreamLauncher| {
+                resume_automatic_to_writer(
+                    &zero.base.journal,
+                    &zero.reference,
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    zero.ns(),
+                    &zero,
+                    &zero,
+                    launcher,
+                    &zero.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &zero.base.witness,
+                        context: &zero.base.context,
+                    },
+                    &output,
+                    &mut Vec::new(),
+                )
+            };
+            assert!(run_zero(&mut launcher).is_err());
+            assert_eq!(zero.status().attempt.get(), 2);
+            assert_eq!(zero.status().state, BootstrapState::Prepared);
+            assert_eq!(zero.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 0);
+            assert_eq!(
+                run_zero(&mut launcher).unwrap().state,
+                BootstrapState::Completed
+            );
+            assert_eq!(zero.base.peer.state.lock().unwrap().native_calls, 2);
+            assert_eq!(launcher.starts, 1);
+
+            let unknown = AutoPeer::new();
+            *unknown.native_outcome_once.lock().unwrap() = Some("unknown");
+            let mut launcher = DownstreamLauncher::default();
+            let mut pending = Vec::new();
+            for _ in 0..2 {
+                let error = resume_automatic_to_writer(
+                    &unknown.base.journal,
+                    &unknown.reference,
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    unknown.ns(),
+                    &unknown,
+                    &unknown,
+                    &mut launcher,
+                    &unknown.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &unknown.base.witness,
+                        context: &unknown.base.context,
+                    },
+                    &output,
+                    &mut pending,
+                )
+                .unwrap_err();
+                assert!(matches!(
+                    error,
+                    RunError::Api(ApiError {
+                        code: crate::protocol::results::ErrorCode::UnknownOutcome,
+                        ..
+                    })
+                ));
+            }
+            assert_eq!(unknown.status().attempt.get(), 1);
+            assert_eq!(unknown.status().state, BootstrapState::PossibleCreation);
+            assert_eq!(unknown.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 0);
+            let report: serde_json::Value =
+                serde_json::from_slice(pending.split(|byte| *byte == b'\n').next().unwrap())
+                    .unwrap();
+            assert_eq!(report["bootstrap"]["outcome"], "creation_unknown");
+        }
+
+        #[test]
+        fn completed_automatic_retry_is_historical_after_source_binding_changes() {
+            let peer = AutoPeer::new();
+            let mut launcher = DownstreamLauncher::default();
+            let output = crate::protocol::output::OutputSpec {
+                format: crate::protocol::output::OutputFormat::Json,
+                ..Default::default()
+            };
+            resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &output,
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(launcher.starts, 1);
+            let calls = peer.base.peer.state.lock().unwrap().calls.len();
+            peer.base.peer.state.lock().unwrap().db.execute(
+                "UPDATE occupant_bindings SET execution_id='later-binding' WHERE seat_id='sender'", [],
+            ).unwrap();
+            let recovered = super::super::super::super::retry::load_original_for_actor(
+                &peer.base.journal,
+                &peer.reference.recovery_ref(),
+            )
+            .unwrap();
+            assert_eq!(recovered.header.reference, peer.reference);
+            let mut replay = Vec::new();
+            assert!(
+                try_completed_automatic(
+                    &peer.base.journal,
+                    &peer.reference,
+                    peer.ns(),
+                    &peer,
+                    &peer.base.clock,
+                    &output,
+                    &mut replay,
+                )
+                .unwrap()
+            );
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.base.peer.state.lock().unwrap().calls.len(), calls + 1);
+            assert!(std::str::from_utf8(&replay).unwrap().contains("completed"));
+        }
+
+        #[test]
+        fn lost_automatic_ensure_or_send_reply_replays_one_exact_child() {
+            for lost in ["auto_child_ensure", "auto_child_send"] {
+                let peer = AutoPeer::new();
+                *peer.lost_child_reply.lock().unwrap() = Some(lost);
+                let mut launcher = DownstreamLauncher::default();
+                let output = crate::protocol::output::OutputSpec {
+                    format: crate::protocol::output::OutputFormat::Json,
+                    ..Default::default()
+                };
+                {
+                    let mut run = || {
+                        resume_automatic_to_writer(
+                            &peer.base.journal,
+                            &peer.reference,
+                            super::super::super::super::actor_route::InvocationActor::Agent,
+                            peer.ns(),
+                            &peer,
+                            &peer,
+                            &mut launcher,
+                            &peer.base.clock,
+                            BootstrapSubmissionInputs {
+                                witness: &peer.base.witness,
+                                context: &peer.base.context,
+                            },
+                            &output,
+                            &mut Vec::new(),
+                        )
+                    };
+                    let first = run().unwrap_err();
+                    assert!(matches!(first, RunError::Api(_)), "{lost}: {first:?}");
+                    assert_eq!(run().unwrap().state, BootstrapState::Completed, "{lost}");
+                }
+                assert_eq!(
+                    peer.base.peer.state.lock().unwrap().native_calls,
+                    1,
+                    "{lost}"
+                );
+                assert_eq!(launcher.starts, 1, "{lost}");
+                let state = peer.base.peer.state.lock().unwrap();
+                assert_eq!(
+                    state
+                        .db
+                        .query_row("SELECT count(*) FROM invitations", [], |r| r
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    1,
+                    "{lost}"
+                );
+                assert_eq!(
+                    state
+                        .db
+                        .query_row(
+                            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                            [],
+                            |r| r.get::<_, i64>(0)
+                        )
+                        .unwrap(),
+                    1,
+                    "{lost}"
+                );
+            }
+        }
+
+        #[test]
+        fn bound_recipient_rejection_after_lost_ensure_refuses_send() {
+            let peer = AutoPeer::new();
+            *peer.lost_child_reply.lock().unwrap() = Some("auto_child_ensure");
+            let mut launcher = DownstreamLauncher::default();
+            let output = crate::protocol::output::OutputSpec {
+                format: crate::protocol::output::OutputFormat::Json,
+                ..Default::default()
+            };
+            let mut first_output = Vec::new();
+            assert!(
+                resume_automatic_to_writer(
+                    &peer.base.journal,
+                    &peer.reference,
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    &mut launcher,
+                    &peer.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &peer.base.witness,
+                        context: &peer.base.context
+                    },
+                    &output,
+                    &mut first_output,
+                )
+                .is_err()
+            );
+            let status = peer.status();
+            let thread = status.thread.expect("Ensure selected canonical pair");
+            let attachment = status.attachment.unwrap();
+            let invitation: String = peer
+                .base
+                .peer
+                .state
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT id FROM invitations WHERE thread_id=?1 AND seat_id=?2",
+                    rusqlite::params![thread.as_str(), attachment.resolved_seat.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+
+            // The recipient is a real newly mapped seat. Give that pane its own
+            // lifecycle check-in before exercising the ordinary Reject command.
+            let mut recipient = peer.identity.claim.clone();
+            recipient.seat = attachment.resolved_seat;
+            recipient.target = attachment.created.root_pane;
+            recipient.binding_generation = 1;
+            // A real harness session (a `plugin_context:` placeholder is refused) and the
+            // harness process a lifecycle check-in records.
+            recipient.native_session =
+                crate::protocol::ids::NativeSessionId::new("recipient-session");
+            recipient.liveness = Some(crate::protocol::authority::LivenessFingerprint::TEST);
+            recipient.execution =
+                crate::protocol::ids::ExecutionId::new(uuid::Uuid::new_v4().to_string());
+            let check_in = crate::protocol::commands::CheckIn {
+                mode: crate::protocol::commands::CheckInMode::Lifecycle {
+                    expected_binding_generation: 1,
+                },
+                claim: recipient,
+                operation: crate::protocol::ids::OperationId::new(uuid::Uuid::new_v4().to_string()),
+                lineage_parent: None,
+            };
+            let permit = peer
+                .store
+                .issue_cooperative_permit(
+                    crate::store::cooperative_permit_request(
+                        &crate::protocol::commands::PermitMutation::CheckIn(check_in.clone()),
+                    )
+                    .unwrap(),
+                    &super::super::super::super::cooperative_budget(&peer.base.clock),
+                )
+                .unwrap();
+            let crate::protocol::results::CommandResult::CheckedIn(checked) = peer
+                .store
+                .register_available(
+                    crate::ports::RegisterAvailableRequest {
+                        command: check_in,
+                        read: crate::ports::ReadContext {
+                            instance: "i".into(),
+                            output: Default::default(),
+                            operation_scope: None,
+                        },
+                        operator: None,
+                    },
+                    permit,
+                    &super::super::super::super::cooperative_budget(&peer.base.clock),
+                )
+                .unwrap()
+            else {
+                panic!("recipient check-in result")
+            };
+            let reject = crate::protocol::commands::Reject {
+                thread,
+                invitation: crate::protocol::ids::InvitationId::new(invitation),
+                reason: "declined".into(),
+                operation: crate::protocol::ids::OperationId::new(uuid::Uuid::new_v4().to_string()),
+                claim: checked.context,
+            };
+            let mutation = crate::protocol::commands::PermitMutation::Reject(reject);
+            let permit = peer
+                .store
+                .issue_cooperative_permit(
+                    crate::store::cooperative_permit_request(&mutation).unwrap(),
+                    &super::super::super::super::cooperative_budget(&peer.base.clock),
+                )
+                .unwrap();
+            peer.store
+                .mutate(
+                    mutation,
+                    permit,
+                    &super::super::super::super::cooperative_budget(&peer.base.clock),
+                )
+                .unwrap();
+            let mut second_output = Vec::new();
+            let error = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &output,
+                &mut second_output,
+            )
+            .unwrap_err();
+            assert!(format!("{error:?}").contains("reinvite"), "{error:?}");
+            assert_eq!(launcher.starts, 0);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert!(peer.base.journal.load(&peer.reference).is_ok());
+            assert_eq!(
+                peer.base
+                    .peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .db
+                    .query_row(
+                        "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0
+            );
+            assert!(
+                std::str::from_utf8(&second_output)
+                    .unwrap()
+                    .contains(&peer.reference.recovery_ref())
+            );
+        }
+
+        #[test]
+        fn completed_child_reconciles_outer_without_relaunch_or_recreate() {
+            let peer = AutoPeer::new();
+            peer.fail_outer_complete_once
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut launcher = DownstreamLauncher::default();
+            let output = crate::protocol::output::OutputSpec {
+                format: crate::protocol::output::OutputFormat::Json,
+                ..Default::default()
+            };
+            let first = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &output,
+                &mut Vec::new(),
+            )
+            .unwrap_err();
+            assert!(matches!(first, RunError::Api(_)));
+            assert_eq!(peer.status().state, BootstrapState::Attached);
+            assert_eq!(launcher.starts, 1);
+            let second = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &output,
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(second.state, BootstrapState::Completed);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 1);
+        }
+
+        #[test]
+        fn public_historical_retry_reconciles_completed_child_after_sender_check_in() {
+            use super::super::super::super::{
+                actor_route::InvocationActor, journal::OriginalActor,
+            };
+
+            let peer = AutoPeer::new();
+            peer.fail_outer_complete_once
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut launcher = DownstreamLauncher::default();
+            let output = crate::protocol::output::OutputSpec {
+                format: crate::protocol::output::OutputFormat::Json,
+                context: crate::protocol::output::ContinuationContext {
+                    state_dir: Some(peer.ns().state_dir.to_string_lossy().into_owned()),
+                    host: Some(peer.ns().host_endpoint.to_string_lossy().into_owned()),
+                },
+            };
+            let original = peer
+                .base
+                .journal
+                .snapshot_bootstrap_origin(&peer.reference)
+                .unwrap();
+            assert!(
+                resume_automatic_to_writer(
+                    &peer.base.journal,
+                    &peer.reference,
+                    InvocationActor::Agent,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    &mut launcher,
+                    &peer.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &peer.base.witness,
+                        context: &peer.base.context,
+                    },
+                    &output,
+                    &mut Vec::new(),
+                )
+                .is_err()
+            );
+            let attached = peer.status();
+            assert_eq!(attached.state, BootstrapState::Attached);
+            let attachment = attached.attachment.as_ref().unwrap();
+            let mut child_query = attachment.child.clone();
+            child_query.action = AutomaticDeliveryAction::Status;
+            let CommandResult::Handoff(child) = peer
+                .store
+                .automatic_delivery_query(
+                    peer.ns(),
+                    &child_query,
+                    &super::super::super::super::cooperative_budget(&peer.base.clock),
+                )
+                .unwrap()
+            else {
+                panic!("canonical automatic child status")
+            };
+            assert_eq!(child.state, HandoffState::Completed);
+            let progress_path = peer.base.journal.root().join(format!(
+                "automatic-child-{}.progress",
+                peer.reference.operation.as_str()
+            ));
+            let progress: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&progress_path).unwrap()).unwrap();
+            let saved_report = progress["launch"].clone();
+            assert_eq!(saved_report["outcome"], "started");
+            let before = {
+                let state = peer.base.peer.state.lock().unwrap();
+                (
+                    state.native_calls,
+                    state
+                        .db
+                        .query_row("SELECT count(*) FROM invitations", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                    state
+                        .db
+                        .query_row(
+                            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                            [],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .unwrap(),
+                )
+            };
+            let successor = peer.sender_lifecycle_check_in();
+            assert_ne!(successor, peer.identity.claim);
+            // Session-keyed bindings: a lifecycle check-in of the same session re-registers its
+            // binding in place (new execution, same generation).
+            assert_eq!(
+                successor.binding_generation,
+                peer.identity.claim.binding_generation
+            );
+            assert_ne!(successor.execution, peer.identity.claim.execution);
+
+            let recovery = peer.reference.recovery_ref();
+            let mut parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "retry",
+                recovery.as_str(),
+            ])
+            .unwrap();
+            parsed.output = output.clone();
+            assert_eq!(
+                super::super::super::super::retry::preflight_original_actor(
+                    peer.base.journal.root(),
+                    &peer.reference.recovery_ref(),
+                    parsed.actor,
+                    &parsed.output.context,
+                )
+                .unwrap(),
+                OriginalActor::Agent
+            );
+            let mut replay = Vec::new();
+            assert!(
+                super::super::super::super::topology_runtime::try_completed_with_namespace(
+                    &parsed,
+                    &peer.base.journal,
+                    peer.ns(),
+                    &peer,
+                    &peer.base.clock,
+                    &mut replay,
+                )
+                .unwrap(),
+                "historical retry must absorb completed child before live caller selection"
+            );
+            assert_eq!(peer.status().state, BootstrapState::Completed);
+            assert_eq!(launcher.starts, 1);
+            let after = {
+                let state = peer.base.peer.state.lock().unwrap();
+                (
+                    state.native_calls,
+                    state
+                        .db
+                        .query_row("SELECT count(*) FROM invitations", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                    state
+                        .db
+                        .query_row(
+                            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                            [],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .unwrap(),
+                )
+            };
+            assert_eq!(after, before);
+            let report: serde_json::Value = serde_json::from_slice(&replay).unwrap();
+            assert_eq!(report["bootstrap"]["state"], "completed");
+            assert_eq!(report["bootstrap"]["launch"], saved_report);
+            let terminal = peer.base.journal.root().join(format!(
+                "automatic-bootstrap-{:020}-{}.terminal",
+                peer.reference.ordinal,
+                peer.reference.operation.as_str()
+            ));
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(terminal).unwrap()).unwrap();
+            assert_eq!(saved["original"].as_str().unwrap().as_bytes(), original);
+            assert!(peer.base.journal.load(&peer.reference).is_err());
+        }
+
+        #[test]
+        fn historical_retry_refuses_missing_or_contradictory_successful_launch() {
+            for missing in [true, false] {
+                let peer = AutoPeer::new();
+                let launcher = peer.complete_child_with_lost_parent_reply();
+                assert_eq!(launcher.starts, 1);
+                peer.sender_lifecycle_check_in();
+                let path = peer.base.journal.root().join(format!(
+                    "automatic-child-{}.progress",
+                    peer.reference.operation.as_str()
+                ));
+                let mut progress: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                if missing {
+                    progress["launch"] = serde_json::Value::Null;
+                } else {
+                    progress["launch"]["outcome"] = serde_json::json!("possible_start");
+                }
+                std::fs::write(&path, serde_json::to_vec(&progress).unwrap()).unwrap();
+                let before = peer.base.peer.state.lock().unwrap().native_calls;
+                let result = peer.historical_retry(peer.ns());
+                assert!(
+                    matches!(result, Err(RunError::Api(_))),
+                    "missing={missing}: {result:?}"
+                );
+                assert_eq!(peer.status().state, BootstrapState::Attached);
+                assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, before);
+                assert_eq!(launcher.starts, 1);
+            }
+        }
+
+        #[test]
+        fn historical_retry_refuses_wrong_namespace_and_changed_original() {
+            let peer = AutoPeer::new();
+            let launcher = peer.complete_child_with_lost_parent_reply();
+            peer.sender_lifecycle_check_in();
+            let mut other_namespace = peer.ns().clone();
+            other_namespace.host_endpoint = peer.base._temp.path().join("different-host.sock");
+            assert!(peer.historical_retry(&other_namespace).is_err());
+            let path = peer.base.journal.root().join(format!(
+                "{:020}-{}.intent",
+                peer.reference.ordinal,
+                peer.reference.operation.as_str()
+            ));
+            let original = std::fs::read_to_string(&path).unwrap();
+            let (header, body) = original.split_once('\n').unwrap();
+            let mut header: serde_json::Value = serde_json::from_str(header).unwrap();
+            header["semantic_digest"] = serde_json::json!("changed-original-digest");
+            std::fs::write(&path, format!("{header}\n{body}")).unwrap();
+            assert!(
+                super::super::super::super::retry::preflight_original_actor(
+                    peer.base.journal.root(),
+                    &peer.reference.recovery_ref(),
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    &Default::default(),
+                )
+                .is_err()
+            );
+            assert_eq!(peer.status().state, BootstrapState::Attached);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+        }
+
+        #[test]
+        fn historical_retry_does_not_admit_live_child_with_possible_start() {
+            let peer = AutoPeer::new();
+            let mut launcher = DownstreamLauncher {
+                unknown: true,
+                ..Default::default()
+            };
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec::default(),
+                &mut Vec::new(),
+            );
+            assert!(matches!(
+                result,
+                Err(RunError::Api(ApiError {
+                    code: crate::protocol::results::ErrorCode::UnknownOutcome,
+                    ..
+                }))
+            ));
+            peer.sender_lifecycle_check_in();
+            // Session-keyed bindings: the sender's lifecycle check-in re-registers its own binding
+            // in place (same session, same binding generation), so the frozen caller is no longer
+            // stale by generation. Either way the historical layer admits nothing: it refuses the
+            // caller, or reports the bootstrap not completed and absorbs nothing.
+            let retried = peer.historical_retry(peer.ns());
+            assert!(
+                matches!(
+                    retried,
+                    Err(RunError::Api(ApiError {
+                        code: crate::protocol::results::ErrorCode::CallerUnverified,
+                        ..
+                    })) | Ok((false, _))
+                ),
+                "{retried:?}"
+            );
+            assert_eq!(peer.status().state, BootstrapState::Attached);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+        }
+
+        #[test]
+        fn lost_guarded_attachment_reply_never_recreates_topology() {
+            let peer = AutoPeer::new();
+            *peer.lost_parent_reply.lock().unwrap() = Some("auto_attach");
+            let mut launcher = DownstreamLauncher::default();
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec {
+                    format: crate::protocol::output::OutputFormat::Json,
+                    ..Default::default()
+                },
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(result.state, BootstrapState::Completed);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 1);
+        }
+
+        #[test]
+        fn lost_start_outcome_stays_pending_without_second_start() {
+            let peer = AutoPeer::new();
+            let mut launcher = DownstreamLauncher {
+                unknown: true,
+                ..Default::default()
+            };
+            let mut pending = Vec::new();
+            {
+                let mut run = || {
+                    resume_automatic_to_writer(
+                        &peer.base.journal,
+                        &peer.reference,
+                        super::super::super::super::actor_route::InvocationActor::Agent,
+                        peer.ns(),
+                        &peer,
+                        &peer,
+                        &mut launcher,
+                        &peer.base.clock,
+                        BootstrapSubmissionInputs {
+                            witness: &peer.base.witness,
+                            context: &peer.base.context,
+                        },
+                        &crate::protocol::output::OutputSpec {
+                            format: crate::protocol::output::OutputFormat::Json,
+                            ..Default::default()
+                        },
+                        &mut pending,
+                    )
+                };
+                assert!(matches!(
+                    run(),
+                    Err(RunError::Api(ApiError {
+                        code: crate::protocol::results::ErrorCode::UnknownOutcome,
+                        ..
+                    }))
+                ));
+                assert!(matches!(
+                    run(),
+                    Err(RunError::Api(ApiError {
+                        code: crate::protocol::results::ErrorCode::UnknownOutcome,
+                        ..
+                    }))
+                ));
+            }
+            let report: serde_json::Value =
+                serde_json::from_slice(pending.split(|byte| *byte == b'\n').next().unwrap())
+                    .unwrap();
+            assert_eq!(report["bootstrap"]["outcome"], "possible_start");
+            assert_eq!(report["bootstrap"]["possible_start"], true);
+            assert_eq!(
+                report["bootstrap"]["recovery_ref"],
+                peer.reference.recovery_ref()
+            );
+            assert!(
+                report["bootstrap"]["guidance"]
+                    .as_str()
+                    .unwrap()
+                    .contains("No topology cleanup")
+            );
+            assert_eq!(peer.status().state, BootstrapState::Attached);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 1);
+        }
+    }
 }
 
 #[test]
@@ -5398,6 +7620,347 @@ fn current_main_topology_native_argv_preserves_empty_tokens() {
     );
 }
 
+fn fourth_request() -> Request {
+    Request {
+        kind: Some("synthetic_fourth".into()),
+        binary: None,
+        argv: vec![],
+        ..request()
+    }
+}
+/// V1 plans keep their exact bytes: no V2 field, plan version 1.
+#[test]
+fn v1_plan_payload_is_unchanged_by_bootstrap_v2() {
+    let temp = Temp::new();
+    let identity = prepared(&request(), temp.path()).unwrap();
+    assert_eq!(identity.payload.plan_version(), 1);
+    assert!(identity.payload.launch.composed_argv.is_none());
+    let launch = serde_json::to_value(&identity.payload.launch).unwrap();
+    assert!(launch.get("composed_argv").is_none(), "{launch}");
+    assert!(identity.payload.launch.startup_input.is_none());
+    assert!(launch.get("startup_input").is_none(), "{launch}");
+    let plan = downstream_plan(
+        &identity,
+        &created_tab(),
+        &crate::protocol::ids::SeatId::new("recipient"),
+    )
+    .unwrap();
+    assert!(plan.bootstrap_input.is_none());
+    let plan_json = serde_json::to_value(&plan).unwrap();
+    assert!(plan_json.get("bootstrap_input").is_none(), "{plan_json}");
+    // A pre-V2 stored payload (no such key) still reads back and validates.
+    let legacy: crate::protocol::handoff::BootstrapPayload =
+        serde_json::from_value(serde_json::to_value(&identity.payload).unwrap()).unwrap();
+    assert_eq!(legacy, identity.payload);
+    legacy.validate().unwrap();
+}
+/// A launch-capable adapter V1 refuses gets a V2 plan that freezes the adapter's composition,
+/// round-trips through the journal, and carries plan version 2.
+#[test]
+fn v2_plan_freezes_adapter_composition_and_round_trips() {
+    let temp = Temp::new();
+    let identity = prepared(&fourth_request(), temp.path()).unwrap();
+    assert_eq!(identity.payload.plan_version(), 2);
+    assert_eq!(identity.payload.launch.harness.as_str(), "synthetic_fourth");
+    let composed = identity.payload.launch.composed_argv.clone().unwrap();
+    assert_eq!(
+        composed,
+        crate::harness::launch::compose_bootstrap_v2_argv(
+            identity.payload.launch.harness,
+            identity.payload.launch.argv.clone()
+        )
+        .unwrap()
+    );
+    assert_eq!(composed[0], "--synthetic-only");
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let reference = publish(&journal, &identity, 1).expect("V2 publication must succeed");
+    let loaded = journal.load(&reference).unwrap();
+    assert_eq!(loaded.header.semantic_digest, identity.digest);
+    let super::super::journal::SemanticMutation::Frozen { mutation, .. } = loaded.semantic else {
+        panic!("missing frozen semantic")
+    };
+    let super::super::journal::SemanticMutation::HandoffBootstrap(plan) = *mutation else {
+        panic!("missing bootstrap")
+    };
+    assert_eq!(plan.version, 2);
+    assert_eq!(plan.payload, identity.payload);
+    let again: super::super::journal::BootstrapPlan =
+        serde_json::from_slice(&serde_json::to_vec(&*plan).unwrap()).unwrap();
+    assert_eq!(again, *plan);
+    again.validate().unwrap();
+}
+/// The plan version and the payload must agree: V1 never carries a frozen composition and V2
+/// never lacks one.
+#[test]
+fn bootstrap_plan_version_must_match_its_payload() {
+    let temp = Temp::new();
+    let v1 = prepared(&request(), temp.path()).unwrap().payload;
+    let v2 = prepared(&fourth_request(), temp.path()).unwrap().payload;
+    let plan = |version, payload: &crate::protocol::handoff::BootstrapPayload| {
+        super::super::journal::BootstrapPlan {
+            version,
+            payload: payload.clone(),
+        }
+    };
+    plan(1, &v1).validate().unwrap();
+    plan(2, &v2).validate().unwrap();
+    assert!(plan(2, &v1).validate().is_err());
+    assert!(plan(1, &v2).validate().is_err());
+    assert!(plan(3, &v2).validate().is_err());
+}
+/// V2 retained-launch validation accepts the frozen composition, refuses a changed argv, and
+/// refuses a plan whose adapter composes the caller arguments differently from the freeze.
+#[test]
+fn v2_retained_argv_validation_accepts_frozen_and_refuses_changed() {
+    let temp = Temp::new();
+    let identity = prepared(&fourth_request(), temp.path()).unwrap();
+    let launch = &identity.payload.launch;
+    let ns = &identity.payload.handoff.namespace;
+    let context = crate::protocol::output::ContinuationContext {
+        state_dir: Some(ns.state_dir.to_string_lossy().into_owned()),
+        host: Some(ns.host_endpoint.to_string_lossy().into_owned()),
+    };
+    let instance = &identity.claim.instance;
+    let prompt = super::super::handoff::bootstrap_v1::prompt("t1", &context, instance);
+    let mut caller = launch.argv.clone();
+    caller.push(prompt);
+    let frozen = serde_json::json!(
+        crate::harness::launch::compose_bootstrap_v2_argv(launch.harness, caller.clone()).unwrap()
+    );
+    let check = |launch: &crate::protocol::handoff::BootstrapLaunch,
+                 retained: &serde_json::Value| {
+        super::super::handoff::retained_launch_argv_matches(
+            launch,
+            "t1",
+            &context,
+            instance,
+            Some(retained),
+        )
+    };
+    assert!(check(launch, &frozen).unwrap());
+    let mut changed = frozen.clone();
+    changed.as_array_mut().unwrap().push("--extra".into());
+    assert!(!check(launch, &changed).unwrap());
+    let mut other_prompt = frozen.clone();
+    *other_prompt.as_array_mut().unwrap().last_mut().unwrap() = "invented prompt".into();
+    assert!(!check(launch, &other_prompt).unwrap());
+    let mut drifted = launch.clone();
+    drifted.composed_argv.as_mut().unwrap().push("--old".into());
+    let refusal = check(&drifted, &frozen).unwrap_err();
+    assert!(
+        refusal.detail.contains("synthetic_fourth") && refusal.detail.contains("V2"),
+        "{refusal:?}"
+    );
+}
+fn created_tab() -> crate::ports::CreatedTab {
+    use crate::host::continuity::{LocalEndpointWitness, SocketIdentity};
+    use crate::protocol::ids::{HostBootId, HostCallId, TerminalId};
+    crate::ports::CreatedTab {
+        correlation: HostCallId::new("correlation"),
+        workspace: HostTargetId::new("w1"),
+        tab: HostTargetId::new("w1:t2"),
+        root_pane: HostTargetId::new("w1:p2"),
+        terminal: TerminalId::new("terminal"),
+        host_incarnation: HostBootId::new("herdr-server:pid=42:start=1.000002:uid=501"),
+        witness: LocalEndpointWitness {
+            schema: 1,
+            platform: "macos-proc-bsdinfo-v1".into(),
+            endpoint: "/host.sock".into(),
+            peer_uid: 501,
+            peer_pid: 42,
+            start_seconds: 1,
+            start_microseconds: 2,
+            socket: SocketIdentity {
+                device: 1,
+                inode: 2,
+                birth_seconds: 1,
+                birth_nanoseconds: 0,
+                change_seconds: 1,
+                change_nanoseconds: 0,
+            },
+        },
+    }
+}
+fn kind_request(kind: &str, argv: &[&str]) -> Request {
+    Request {
+        kind: Some(kind.into()),
+        binary: None,
+        argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+        ..request()
+    }
+}
+fn identity_context(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+) -> crate::protocol::output::ContinuationContext {
+    let ns = &identity.payload.handoff.namespace;
+    crate::protocol::output::ContinuationContext {
+        state_dir: Some(ns.state_dir.to_string_lossy().into_owned()),
+        host: Some(ns.host_endpoint.to_string_lossy().into_owned()),
+    }
+}
+/// `handoff --new-tab --kind agy` places the frozen V1 prompt with `--prompt-interactive`
+/// instead of the bare positional agy's flag grammar refuses.
+#[test]
+fn v2_new_tab_agy_places_the_prompt_with_prompt_interactive() {
+    let temp = Temp::new();
+    let identity = prepared(&kind_request("agy", &["--effort", "high"]), temp.path())
+        .expect("agy new-tab preparation must succeed");
+    assert_eq!(identity.payload.plan_version(), 2);
+    let template = identity.payload.launch.startup_input.clone().unwrap();
+    assert_eq!(template.before, ["--prompt-interactive"]);
+    assert_eq!(template.insertion_index, 2);
+    let fresh = preflight_launch_request(&identity).unwrap();
+    let crate::protocol::handoff::HandoffChannel::Existing { thread } =
+        &identity.payload.handoff.channel
+    else {
+        panic!("fixture uses an existing thread")
+    };
+    let prompt = super::super::handoff::bootstrap_v1::prompt(
+        thread.as_str(),
+        &identity_context(&identity),
+        &identity.claim.instance,
+    );
+    assert_eq!(
+        fresh.argv,
+        ["--effort", "high", "--prompt-interactive", prompt.as_str()]
+    );
+    // The adapter accepts exactly this composition.
+    crate::harness::launch::compose_bootstrap_v2_argv(
+        identity.payload.launch.harness,
+        fresh.argv.clone(),
+    )
+    .unwrap();
+    // The downstream plan carries the frozen placement.
+    let plan = downstream_plan(
+        &identity,
+        &created_tab(),
+        &crate::protocol::ids::SeatId::new("recipient"),
+    )
+    .unwrap();
+    assert_eq!(plan.bootstrap_input, Some(template));
+    assert!(plan.startup_input.is_none());
+    plan.validate().unwrap();
+}
+/// Hermes places the same frozen text with `--query`.
+#[test]
+fn v2_new_tab_hermes_places_the_prompt_with_query() {
+    let temp = Temp::new();
+    let identity = prepared(&kind_request("hermes", &["--model", "m"]), temp.path())
+        .expect("hermes new-tab preparation must succeed");
+    assert_eq!(identity.payload.plan_version(), 2);
+    let template = identity.payload.launch.startup_input.clone().unwrap();
+    assert_eq!(template.before, ["--query"]);
+    let fresh = preflight_launch_request(&identity).unwrap();
+    assert_eq!(&fresh.argv[..3], ["--model", "m", "--query"]);
+    assert_eq!(fresh.argv.len(), 4);
+    assert!(fresh.argv[3].starts_with("Expected handoff command routing"));
+    let (expected, _) = template
+        .apply(&identity.payload.launch.argv, &fresh.argv[3])
+        .unwrap();
+    assert_eq!(fresh.argv, expected);
+    crate::harness::launch::compose_bootstrap_v2_argv(
+        identity.payload.launch.harness,
+        fresh.argv.clone(),
+    )
+    .unwrap();
+}
+/// Retained validation applies the template frozen in the plan; the V1 bare-positional form is
+/// not a V2 composition.
+#[test]
+fn v2_retained_argv_validation_uses_the_frozen_template() {
+    let temp = Temp::new();
+    let identity = prepared(&kind_request("agy", &["--effort", "high"]), temp.path()).unwrap();
+    let launch = &identity.payload.launch;
+    let context = identity_context(&identity);
+    let instance = &identity.claim.instance;
+    let prompt = super::super::handoff::bootstrap_v1::prompt("t1", &context, instance);
+    let placed = launch
+        .startup_input
+        .as_ref()
+        .unwrap()
+        .apply(&launch.argv, &prompt)
+        .unwrap()
+        .0;
+    let retained = serde_json::json!(
+        crate::harness::launch::compose_bootstrap_v2_argv(launch.harness, placed).unwrap()
+    );
+    let check = |launch: &crate::protocol::handoff::BootstrapLaunch,
+                 retained: &serde_json::Value| {
+        super::super::handoff::retained_launch_argv_matches(
+            launch,
+            "t1",
+            &context,
+            instance,
+            Some(retained),
+        )
+    };
+    assert!(check(launch, &retained).unwrap());
+    let mut bare = launch.argv.clone();
+    bare.push(prompt);
+    let bare = serde_json::json!(bare);
+    assert!(!matches!(check(launch, &bare), Ok(true)));
+    // A V2 launch without its frozen template is refused, never matched.
+    let mut stripped = launch.clone();
+    stripped.startup_input = None;
+    assert!(check(&stripped, &retained).is_err());
+}
+/// A V2 payload carries a template exactly when it carries a composition.
+#[test]
+fn v2_payload_requires_template_iff_composed_argv() {
+    let temp = Temp::new();
+    let v2 = prepared(&kind_request("agy", &[]), temp.path())
+        .unwrap()
+        .payload;
+    let v1 = prepared(&request(), temp.path()).unwrap().payload;
+    v2.validate().unwrap();
+    v1.validate().unwrap();
+    let mut missing = v2.clone();
+    missing.launch.startup_input = None;
+    assert!(missing.validate().is_err());
+    let mut extra = v1.clone();
+    extra.launch.startup_input = Some(crate::harness::adapter::StartupInputTemplate::positional(
+        v1.launch.argv.len(),
+    ));
+    assert!(extra.validate().is_err());
+    let plan = |version, payload: &crate::protocol::handoff::BootstrapPayload| {
+        super::super::journal::BootstrapPlan {
+            version,
+            payload: payload.clone(),
+        }
+    };
+    plan(2, &v2).validate().unwrap();
+    assert!(plan(2, &missing).validate().is_err());
+    assert!(plan(1, &extra).validate().is_err());
+    // A template that no longer fits the caller arguments is refused too.
+    let mut out_of_range = v2.clone();
+    out_of_range
+        .launch
+        .startup_input
+        .as_mut()
+        .unwrap()
+        .insertion_index = 9;
+    assert!(out_of_range.validate().is_err());
+}
+/// Fresh preparation refuses a plan whose frozen placement differs from today's adapter.
+#[test]
+fn v2_startup_input_drift_is_refused_at_preparation() {
+    let temp = Temp::new();
+    let mut identity = prepared(&kind_request("agy", &["--effort", "high"]), temp.path()).unwrap();
+    preflight_launch_argv(&identity).unwrap();
+    identity
+        .payload
+        .launch
+        .startup_input
+        .as_mut()
+        .unwrap()
+        .before
+        .push("--x".into());
+    let refusal = preflight_launch_argv(&identity).unwrap_err();
+    assert!(
+        format!("{refusal:?}").contains("current startup input differs from bootstrap plan V2"),
+        "{refusal:?}"
+    );
+}
 /// Fresh preparation keeps today's native admission: a present-day composer
 /// refusal stops it before publication even though frozen V1 would accept.
 /// The fresh Root generated input is the frozen V1 prompt.
@@ -5434,4 +7997,299 @@ fn fresh_root_preparation_uses_current_admission_and_v1_generated_input() {
         "{refused:?}"
     );
     assert!(!temp.path().join("intents").exists());
+}
+
+#[test]
+fn automatic_bootstrap_preparation_freezes_v2_without_invite_or_create_child() {
+    let temp = Temp::new();
+    let mut request = request();
+    request.automatic = true;
+    request.thread = None;
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: "i".into(),
+        state_dir: temp.path().join("state dir"),
+        host_endpoint: temp.path().join("host.sock"),
+    };
+    let identity = prepare_automatic(
+        &request,
+        Preparation {
+            claim: &claim(),
+            namespace: &namespace,
+            topology: &topology(),
+            invocation_cwd: temp.path(),
+            options: Some("--config 'quoted $HOME'".into()),
+            client: &ReadOnly,
+            clock: &crate::app::SystemClock::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(identity.plan.payload.workspace.as_str(), "w1");
+    assert_eq!(identity.plan.payload.handoff.body, "literal '$HOME' body");
+    assert_eq!(
+        identity.plan.payload.handoff.channel,
+        crate::protocol::handoff::HandoffChannel::Automatic
+    );
+    assert!(identity.plan.payload.startup_input.is_some());
+    let json = serde_json::to_string(&identity).unwrap();
+    assert!(!json.contains("invite_key"));
+    assert!(!json.contains("create_key"));
+    assert!(!temp.path().join("intents").exists());
+}
+
+/// Completion compares the retained native argv with the applied caller argv, so the
+/// automatic plan admits only an adapter whose composition leaves those arguments unchanged;
+/// the others are refused before any effect and pointed at the explicit-channel route.
+#[test]
+fn automatic_bootstrap_preparation_refuses_a_kind_whose_composition_rewrites_the_caller_argv() {
+    let temp = Temp::new();
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: "i".into(),
+        state_dir: temp.path().join("state dir"),
+        host_endpoint: temp.path().join("host.sock"),
+    };
+    let prepare = |kind: &str, argv: &[&str]| {
+        let mut request = kind_request(kind, argv);
+        request.automatic = true;
+        request.thread = None;
+        prepare_automatic(
+            &request,
+            Preparation {
+                claim: &claim(),
+                namespace: &namespace,
+                topology: &topology(),
+                invocation_cwd: temp.path(),
+                options: None,
+                client: &ReadOnly,
+                clock: &crate::app::SystemClock::new(),
+            },
+        )
+    };
+    for (kind, argv) in [
+        ("hermes", &[][..]),
+        ("hermes", &["--model", "m"][..]),
+        ("synthetic_fourth", &[][..]),
+    ] {
+        let refused = prepare(kind, argv).expect_err(kind);
+        let RunError::Api(error) = &refused else {
+            panic!("{kind}: {refused:?}")
+        };
+        assert_eq!(
+            error.code,
+            crate::protocol::results::ErrorCode::Unsupported,
+            "{kind}: {error:?}"
+        );
+        assert!(
+            error.detail.contains("--new-thread") && error.detail.contains("--thread "),
+            "{kind}: {error:?}"
+        );
+        assert!(
+            !error.detail.contains(kind),
+            "core error names no harness: {error:?}"
+        );
+    }
+    for (kind, argv) in [
+        ("claude", &[][..]),
+        ("codex", &["--model", "saved value"][..]),
+        ("agy", &[][..]),
+    ] {
+        prepare(kind, argv).unwrap_or_else(|e| panic!("{kind} stays accepted: {e:?}"));
+    }
+    assert!(!temp.path().join("intents").exists());
+}
+
+fn seam_automatic_bootstrap_identity(
+    root: &std::path::Path,
+) -> crate::protocol::handoff::AutomaticBootstrapIdentity {
+    use crate::protocol::handoff::{
+        AutomaticBootstrapIdentity, AutomaticBootstrapKeys, AutomaticBootstrapPayload,
+        AutomaticBootstrapPlan, AutomaticHandoffPayload,
+    };
+    let legacy = prepared(&request(), root).unwrap();
+    let compound = crate::protocol::ids::OperationId::new("automatic-test-parent");
+    let handoff = AutomaticHandoffPayload::new(
+        legacy.payload.handoff.namespace.clone(),
+        crate::protocol::ids::OperationId::new("automatic-test-child"),
+        legacy.payload.handoff.body.clone(),
+    )
+    .unwrap();
+    AutomaticBootstrapIdentity::new(
+        legacy.scope,
+        legacy.claim,
+        AutomaticBootstrapPlan {
+            version: 2,
+            payload: AutomaticBootstrapPayload {
+                handoff,
+                keys: AutomaticBootstrapKeys::new(compound),
+                workspace: legacy.payload.workspace,
+                cwd: legacy.payload.cwd,
+                label: legacy.payload.label,
+                focus: false,
+                env: Default::default(),
+                launch: legacy.payload.launch,
+                startup_input: None,
+            },
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn automatic_bootstrap_retry_loads_its_frozen_original_without_v1_decode() {
+    let temp = Temp::new();
+    let identity = seam_automatic_bootstrap_identity(temp.path());
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let reference = journal
+        .record(identity.scope.clone(), identity.semantic(), 1)
+        .unwrap();
+    let original =
+        super::super::retry::load_original_for_actor(&journal, &reference.recovery_ref()).unwrap();
+    assert_eq!(original.header.reference, reference);
+    assert_eq!(original.semantic, identity.semantic());
+}
+
+/// These are intentionally malformed *local* retained-family collisions. The
+/// exact classifier diagnostic must win before either terminal decoder runs.
+fn assert_retained_family_collision(
+    journal: &super::super::journal::Journal,
+    recovery: &str,
+    terminal_names: &[String],
+    expected: &str,
+) {
+    use std::collections::BTreeMap;
+    for name in terminal_names {
+        std::fs::write(journal.root().join(name), b"{not a terminal").unwrap();
+    }
+    let snapshot = || -> BTreeMap<std::ffi::OsString, Vec<u8>> {
+        std::fs::read_dir(journal.root())
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), std::fs::read(entry.path()).unwrap())
+            })
+            .collect()
+    };
+    let before = snapshot();
+    let error = super::super::retry::load_original_for_actor(journal, recovery).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), expected);
+    assert_eq!(
+        snapshot(),
+        before,
+        "retry classifier changed original files"
+    );
+    // This loader accepts no client or output port, so refusal cannot send or present.
+}
+
+#[test]
+fn retained_family_collision_bootstrap_same_kind_refuses_before_decoder() {
+    let temp = Temp::new();
+    let legacy = prepared(&request(), temp.path()).unwrap();
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let v1 = publish(&journal, &legacy, 1).unwrap();
+    assert_retained_family_collision(
+        &journal,
+        &v1.recovery_ref(),
+        &[format!(
+            "automatic-bootstrap-{:020}-{}.terminal",
+            v1.ordinal,
+            v1.operation.as_str()
+        )],
+        "conflicting original intent and automatic bootstrap terminal",
+    );
+
+    let temp = Temp::new();
+    let identity = seam_automatic_bootstrap_identity(temp.path());
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let v2 = journal
+        .record(identity.scope.clone(), identity.semantic(), 1)
+        .unwrap();
+    assert_retained_family_collision(
+        &journal,
+        &v2.recovery_ref(),
+        &[format!(
+            "bootstrap-{:020}-{}.terminal",
+            v2.ordinal,
+            v2.operation.as_str()
+        )],
+        "conflicting original intent and bootstrap terminal",
+    );
+}
+
+#[test]
+fn retained_family_collision_delivery_same_kind_refuses_before_decoder() {
+    use super::super::journal::{DeliveryPlan, SemanticMutation};
+    use crate::protocol::handoff::{
+        AutomaticDeliveryPlan, AutomaticHandoffPayload, AutomaticOriginal,
+    };
+    use crate::protocol::ids::{OperationId, SeatId};
+
+    let temp = Temp::new();
+    let legacy = prepared(&request(), temp.path()).unwrap();
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let v1_semantic = SemanticMutation::freeze(
+        SemanticMutation::HandoffDelivery(Box::new(DeliveryPlan {
+            version: 1,
+            payload: legacy.payload.handoff.clone(),
+            recipient: SeatId::new("recipient"),
+        })),
+        legacy.claim.clone(),
+    )
+    .unwrap();
+    let v1 = journal
+        .record(legacy.scope.clone(), v1_semantic, 1)
+        .unwrap();
+    assert_retained_family_collision(
+        &journal,
+        &v1.recovery_ref(),
+        &[format!(
+            "automatic-{:020}-{}.terminal",
+            v1.ordinal,
+            v1.operation.as_str()
+        )],
+        "conflicting automatic original",
+    );
+
+    let temp = Temp::new();
+    let legacy = prepared(&request(), temp.path()).unwrap();
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let payload = AutomaticHandoffPayload::new(
+        legacy.payload.handoff.namespace.clone(),
+        OperationId::new("automatic-delivery-seam"),
+        legacy.payload.handoff.body.clone(),
+    )
+    .unwrap();
+    let plan = AutomaticDeliveryPlan::new(payload, SeatId::new("recipient")).unwrap();
+    let v2 = journal
+        .record(
+            legacy.scope,
+            AutomaticOriginal::Delivery(Box::new(plan)).semantic(legacy.claim),
+            1,
+        )
+        .unwrap();
+    assert_retained_family_collision(
+        &journal,
+        &v2.recovery_ref(),
+        &[format!(
+            "delivery-{:020}-{}.terminal",
+            v2.ordinal,
+            v2.operation.as_str()
+        )],
+        "conflicting original intent and delivery terminal",
+    );
+}
+
+#[test]
+fn retained_family_collision_two_v2_terminals_refuses_before_decoder() {
+    let temp = Temp::new();
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let operation = uuid::Uuid::new_v4();
+    assert_retained_family_collision(
+        &journal,
+        "local:1",
+        &[
+            format!("automatic-{:020}-{operation}.terminal", 1),
+            format!("automatic-bootstrap-{:020}-{operation}.terminal", 1),
+        ],
+        "ambiguous original intent reference",
+    );
 }

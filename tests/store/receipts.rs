@@ -63,6 +63,7 @@ fn send_request(explicit: Vec<&str>) -> SendMessage {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("t"),
         body: "hello".into(),
+        direct_recipient: None,
         invited_recipients: explicit.into_iter().map(SeatId::new).collect(),
         deadline_millis: None,
         operation: OperationId::new("op"),

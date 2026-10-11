@@ -1,0 +1,9 @@
+{
+  "artifactDirectoryPath": "<root>/home/.gemini/antigravity-cli/brain/534e47d6-64b3-4fd6-bd7f-446ceec4d86c",
+  "conversationId": "534e47d6-64b3-4fd6-bd7f-446ceec4d86c",
+  "modelName": "gemini-3.1-pro-low",
+  "transcriptPath": "<root>/home/.gemini/antigravity-cli/brain/534e47d6-64b3-4fd6-bd7f-446ceec4d86c/.system_generated/logs/transcript_full.jsonl",
+  "workspacePaths": [
+    "<root>/ws"
+  ]
+}

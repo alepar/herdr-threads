@@ -1,0 +1,38 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 9,
+  "scoutsDead": 0,
+  "rawFindings": 0,
+  "dedupedFindings": 0,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 0,
+  "spotCount": 0,
+  "promotedCount": 0,
+  "judgeCompletionPct": 0,
+  "scoutNames": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "regression",
+    "domain:distributed-systems",
+    "domain:database-integrity",
+    "domain:identity-and-authorization"
+  ],
+  "judgeSeatsDispatched": 0,
+  "judgeSeatsApplicable": 0,
+  "capacityNote": "At most 7 active descendants; 9 scout dispatches staggered, all completed, no omitted lenses.",
+  "modelNote": "No Workflow or Claude models available; all stage agents inherited OpenAI model family with fresh contexts. No judge panels applicable this round.",
+  "formatRetries": 0,
+  "ruleQualifier": "Literal reporter rule requires low coverage for zero raw findings on nontrivial artifact despite valid late-round empty scout answers; no convergence claimed.",
+  "stageCounts": {
+    "triage": 1,
+    "scouts": 9,
+    "dedupe": 1,
+    "judges": 0,
+    "reporter": 1
+  }
+}

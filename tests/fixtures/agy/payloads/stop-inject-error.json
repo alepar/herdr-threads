@@ -1,0 +1,13 @@
+{
+  "artifactDirectoryPath": "<root>/home/.gemini/antigravity-cli/brain/5299b3e7-20e3-4970-aa8d-477d46a420c6",
+  "conversationId": "5299b3e7-20e3-4970-aa8d-477d46a420c6",
+  "error": "pre-invocation hook: failed to inject steps from hook jsonhook__probe_PreInvocation_0_0: unknown injected step type: <nil>",
+  "executionNum": 0,
+  "fullyIdle": true,
+  "modelName": "gemini-3.1-pro-low",
+  "terminationReason": "ERROR",
+  "transcriptPath": "<root>/home/.gemini/antigravity-cli/brain/5299b3e7-20e3-4970-aa8d-477d46a420c6/.system_generated/logs/transcript_full.jsonl",
+  "workspacePaths": [
+    "<root>/ws"
+  ]
+}

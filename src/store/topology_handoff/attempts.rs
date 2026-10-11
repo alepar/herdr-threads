@@ -648,7 +648,7 @@ mod tests {
             claim: id.claim.clone(),
             mutation: Box::new(crate::cli::journal::SemanticMutation::HandoffBootstrap(
                 Box::new(crate::cli::journal::BootstrapPlan {
-                    version: 1,
+                    version: id.payload.plan_version(),
                     payload: id.payload.clone(),
                 }),
             )),

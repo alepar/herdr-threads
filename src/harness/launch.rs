@@ -10,8 +10,136 @@ use crate::protocol::{
     results::{ApiError, ErrorCode},
     time::{CallBudget, Clock, MonoInstant},
 };
+use std::{
+    io::Read,
+    process::{Command as Process, Stdio},
+    time::{Duration, Instant},
+};
 
-pub use super::codex::launch::{CodexShellProbe, SHELL_PROBE_TIMEOUT, SystemShellProbe};
+/// Bounded pane-shell configuration exports; tests inject synthetic probes.
+pub trait PaneShellProbe {
+    fn pane_shell_env_bounded(
+        &self,
+        var: &str,
+        clock: &dyn crate::protocol::time::Clock,
+        budget: &CallBudget,
+    ) -> Option<String> {
+        if budget.is_exhausted(clock) {
+            return None;
+        }
+        self.pane_shell_env(var)
+    }
+
+    /// The value the pane's interactive shell itself gives `var` (an `export`
+    /// in its startup files), without the launcher's own value; `None` when
+    /// the shell sets none or cannot be asked. Herdr's `agent.start` carries
+    /// no environment, so the agent inherits whatever the pane shell has.
+    fn pane_shell_env(&self, _var: &str) -> Option<String> {
+        None
+    }
+}
+
+/// The bound on configuration-directory shell probes.
+pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Runs the pane interactive shell to inspect configuration exports only.
+pub struct SystemShellProbe {
+    pub shell: std::path::PathBuf,
+    pub timeout: Duration,
+}
+
+impl SystemShellProbe {
+    pub fn from_process() -> Self {
+        let shell = std::env::var_os("SHELL")
+            .filter(|shell| !shell.is_empty())
+            .map_or_else(|| "/bin/zsh".into(), std::path::PathBuf::from);
+        Self {
+            shell,
+            timeout: crate::protocol::time::external_bound(SHELL_PROBE_TIMEOUT),
+        }
+    }
+}
+
+impl SystemShellProbe {
+    /// Runs `script` in the interactive shell (`-ic`), stdout only, bounded by
+    /// the probe timeout. `unset` removes one inherited variable first.
+    fn run_script(&self, script: &str, unset: Option<&str>) -> Result<String, String> {
+        let mut command = Process::new(&self.shell);
+        command.arg("-ic").arg(script);
+        if let Some(var) = unset {
+            command.env_remove(var);
+        }
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("{}: {error}", self.shell.display()))?;
+        let mut stdout = child.stdout.take().ok_or("no shell stdout")?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = stdout.read_to_end(&mut bytes).map(|_| bytes);
+            let _ = sender.send(result);
+        });
+        let deadline = Instant::now() + self.timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("the shell probe timed out".into());
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        };
+        if !status.success() {
+            return Err(format!("the shell probe exited with {status}"));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let bytes = receiver
+            .recv_timeout(remaining.max(Duration::from_millis(100)))
+            .map_err(|_| "the shell probe output was not closed".to_owned())?
+            .map_err(|error| error.to_string())?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+impl PaneShellProbe for SystemShellProbe {
+    fn pane_shell_env_bounded(
+        &self,
+        var: &str,
+        clock: &dyn crate::protocol::time::Clock,
+        budget: &CallBudget,
+    ) -> Option<String> {
+        let remaining = budget.deadline.0.saturating_sub(clock.monotonic_now().0);
+        if remaining == 0 {
+            return None;
+        }
+        Self {
+            shell: self.shell.clone(),
+            timeout: self.timeout.min(Duration::from_millis(remaining)),
+        }
+        .pane_shell_env(var)
+    }
+
+    fn pane_shell_env(&self, var: &str) -> Option<String> {
+        const BEGIN: &str = "HT_PANE_ENV_BEGIN";
+        const END: &str = "HT_PANE_ENV_END";
+        // Only a plain variable name is ever interpolated into the script.
+        if var.is_empty() || !var.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+            return None;
+        }
+        let script = format!("printf '%s' {BEGIN}\"${{{var}-}}\"{END}");
+        let output = self.run_script(&script, Some(var)).ok()?;
+        let value = output.split(BEGIN).nth(1)?.split(END).next()?;
+        (!value.is_empty()).then(|| value.to_owned())
+    }
+}
 
 const MAX_LAUNCH_MILLIS: u64 = 30_000;
 
@@ -180,7 +308,6 @@ fn launch_target(
 pub(crate) use super::codex::launch::{
     CODEX_EXEC_UNSUPPORTED_SUBCOMMANDS, CODEX_UNSUPPORTED_SUBCOMMANDS, CODEX_VALUE_OPTIONS,
 };
-pub use super::codex::launch::{CodexLaunchForm, scoped_codex_cwd};
 
 pub fn compose_native_argv(
     harness: Harness,
@@ -261,7 +388,7 @@ pub mod current_drift {
 }
 
 /// Frozen V1 bootstrap launch composition: the native argv a version-1 Root
-/// bootstrap (`BootstrapPlan.version == 1`, the only plan version) produced
+/// bootstrap (`BootstrapPlan.version == 1`) produced
 /// from its caller arguments plus generated prompt, with the empty owned argv
 /// that production hook inspection supplies. Retained successful launch
 /// reports are validated against this, never against today's registry or
@@ -288,6 +415,83 @@ pub fn compose_bootstrap_v1_argv(
     }
     v1::codex_guard(&caller)?;
     Ok(caller)
+}
+
+/// The version-1 bootstrap target named by a `--kind` value: a registered agent that is one of
+/// the original V1 native targets. A kind V1 refuses, or that is not registered, gives `None`,
+/// so the handoff and topology kind lists never admit what the frozen record cannot compose.
+pub fn bootstrap_v1_target(
+    registry: &super::registry::Registry,
+    kind: &str,
+) -> Option<super::context::Harness> {
+    let harness: Harness = super::registry::OccupantHarness::Agent(registry.agent(kind).ok()?);
+    bootstrap_v1_harness(harness).then(|| harness.into())
+}
+
+/// Whether `harness` is one of the original V1 native targets (Codex, Claude).
+pub fn bootstrap_v1_harness(harness: Harness) -> bool {
+    harness == Harness::Claude || harness == Harness::Codex
+}
+
+/// The version-2 bootstrap target named by a `--kind` value: a registered agent with a launch
+/// policy that version 1 does not admit. A V1-capable kind never gets V2 (its plans stay
+/// byte-identical); an agent without a launch policy, or an unregistered kind, gives `None`.
+pub fn bootstrap_v2_target(
+    registry: &super::registry::Registry,
+    kind: &str,
+) -> Option<super::context::Harness> {
+    if bootstrap_v1_target(registry, kind).is_some() {
+        return None;
+    }
+    let id = registry.agent(kind).ok()?;
+    registry.by_id(id).ok()?.launch_policy()?;
+    Some(super::registry::OccupantHarness::Agent(id).into())
+}
+
+/// Every `--kind` value a bootstrap plan can compose: the V1 targets, then the adapters with a
+/// launch policy (V2).
+pub fn bootstrap_target(
+    registry: &super::registry::Registry,
+    kind: &str,
+) -> Option<super::context::Harness> {
+    bootstrap_v1_target(registry, kind).or_else(|| bootstrap_v2_target(registry, kind))
+}
+
+/// Version-2 bootstrap launch composition: the adapter's own `LaunchPolicy::compose_argv`
+/// over `caller` with empty owned argv, which is what production hook inspection supplies.
+/// Unlike V1 it carries no harness grammar of its own; a plan freezes the result for its
+/// caller arguments and refuses when the adapter later composes them differently.
+pub fn compose_bootstrap_v2_argv(
+    harness: Harness,
+    caller: Vec<String>,
+) -> Result<Vec<String>, ApiError> {
+    launch_registration(super::registry::builtins(), harness)?
+        .launch_policy()
+        .expect("checked provider")
+        .compose_argv(caller, vec![])
+}
+
+/// Bootstrap plan V2: the adapter's own startup-input placement for `caller`. An adapter without one
+/// cannot be the target of a handoff (the same refusal as the pane path).
+pub fn bootstrap_v2_startup_input(
+    harness: Harness,
+    caller: &[String],
+) -> Result<crate::harness::adapter::StartupInputTemplate, ApiError> {
+    launch_registration(super::registry::builtins(), harness)?
+        .launch_policy()
+        .expect("checked provider")
+        .prepare_startup_input(
+            caller,
+            &crate::harness::adapter::StartupInputSpec {
+                max_text_bytes: crate::ports::NativeLaunchRequest::MAX_ARG_BYTES,
+            },
+        )?
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::UnsupportedHarness,
+                "selected adapter has no handoff startup input",
+            )
+        })
 }
 
 /// The V1 Codex acceptance grammar, frozen with its original tables.
@@ -838,7 +1042,7 @@ pub(crate) fn native_scope(
     request: &super::adapter::LaunchRequest,
     id: &str,
     variable: &str,
-    probe: &dyn CodexShellProbe,
+    probe: &dyn PaneShellProbe,
     budget: &CallBudget,
 ) -> Result<super::adapter::LaunchScope, ApiError> {
     if budget.is_exhausted(request.environment.clock.as_ref()) {
@@ -872,7 +1076,14 @@ pub(crate) fn owned_launch_hook(
     status.configured_hook.clone().filter(|_| status.installed && status.enabled != Some(false) && status.admitted != Some(false))
         .ok_or_else(|| {
             let file = status.projection["settings"].as_str().or_else(|| status.projection["hooks_file"].as_str()).unwrap_or("the selected scope");
-            error(ErrorCode::MissingHook, &format!("supported hook is not configured in {file}; run `herdr-threads setup` first with the config directory the agent uses"))
+            // A disabled integration is repaired by the harness's own manual step, which the
+            // status diagnostics carry; `setup` alone would not help.
+            let repair = if status.enabled == Some(false) {
+                status.diagnostics.iter().filter(|d| d.manual_argv().is_some()).map(|d| format!(" ({})", d.text)).collect::<String>()
+            } else {
+                String::new()
+            };
+            error(ErrorCode::MissingHook, &format!("supported hook is not configured in {file}{repair}; run `herdr-threads setup` first with the config directory the agent uses"))
         })
 }
 

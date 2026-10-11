@@ -107,7 +107,7 @@ fn fresh_store_installs26_and_reopens() {
     let database = Database::new();
     drop(database.store().unwrap());
     let db = database.connection();
-    assert_eq!(version(&db), 32);
+    assert_eq!(version(&db), 35);
     for table in ["messages", "send_preparations"] {
         let default: String = db
             .query_row(
@@ -133,7 +133,7 @@ fn historical25_store_upgrade_preserves_evidence_and_defaults_modes() {
     drop(db);
     drop(database.store().unwrap());
     let db = database.connection();
-    assert_eq!(version(&db), 32);
+    assert_eq!(version(&db), 35);
     assert_eq!(evidence(&db), before);
     for table in ["messages", "send_preparations"] {
         let mode: String = db
@@ -199,7 +199,7 @@ fn rejected_on_reopen(database: &Database, description: &str) {
         herdr_threads::protocol::results::ErrorCode::IncompatibleSchema,
         "{description}: {error:?}"
     );
-    assert_eq!(version(&database.connection()), 32);
+    assert_eq!(version(&database.connection()), 35);
 }
 
 // Omitting the v26 startup audit accepts a removed or weakened immutable guard.

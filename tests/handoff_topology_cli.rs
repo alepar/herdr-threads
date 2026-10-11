@@ -40,7 +40,7 @@ use uuid::Uuid;
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 const WAIT: Duration = Duration::from_secs(15);
-const BODY: &str = "literal '$HOME' \"quoted\" work\n--agent-arg=body stays here";
+pub(super) const BODY: &str = "literal '$HOME' \"quoted\" work\n--agent-arg=body stays here";
 const OPTIONS: &str = "--model 'env model' --config 'note=\"literal $HOME\"' --config repeat=true";
 const FROZEN: &[&str] = &[
     "--model",
@@ -149,7 +149,7 @@ fn finish(mut child: OwnedChild) -> Output {
     });
     child.wait_with_output().unwrap()
 }
-fn successful(out: Output) -> Value {
+pub(super) fn successful(out: Output) -> Value {
     assert!(
         out.status.success(),
         "{}\n{}",
@@ -174,8 +174,8 @@ fn pane(id: &str, agent: Option<&Value>) -> Value {
     value
 }
 #[derive(Default)]
-struct HostState {
-    requests: Vec<Value>,
+pub(super) struct HostState {
+    pub(super) requests: Vec<Value>,
     created: bool,
     agent: Option<Value>,
     lose: Option<&'static str>,
@@ -183,10 +183,10 @@ struct HostState {
     // so the injected failure is a witnessed post-publication read.
     lose_after_publication: Option<(&'static str, PathBuf)>,
     lost_after_publication: Vec<Value>,
-    helpers: Vec<Value>,
+    pub(super) helpers: Vec<Value>,
 }
-struct Host {
-    state: Arc<Mutex<HostState>>,
+pub(super) struct Host {
+    pub(super) state: Arc<Mutex<HostState>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     socket: PathBuf,
@@ -257,7 +257,7 @@ impl Host {
                     }
                     "agent.start" => {
                         let kind = request["params"]["kind"].as_str().unwrap();
-                        assert!(matches!(kind, "claude" | "codex"));
+                        assert!(matches!(kind, "claude" | "codex" | "agy"));
                         let argv: Vec<String> =
                             serde_json::from_value(request["params"]["args"].clone()).unwrap();
                         // Native start carries kind+args, not the admitted binary path.
@@ -332,7 +332,7 @@ impl Host {
             let _ = writeln!(std::io::stderr(), "owned host panicked during cleanup");
         }
     }
-    fn requests(&self, method: &str) -> Vec<Value> {
+    pub(super) fn requests(&self, method: &str) -> Vec<Value> {
         self.state
             .lock()
             .unwrap()
@@ -356,17 +356,17 @@ struct RecipientIdentity {
     bindings: Vec<IdentityRow>,
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     daemon: OwnedChild,
-    host: Host,
-    iso: TestIsolation,
-    context: RuntimeContext,
+    pub(super) host: Host,
+    pub(super) iso: TestIsolation,
+    pub(super) context: RuntimeContext,
     paths: InstancePaths,
-    instance: Uuid,
+    pub(super) instance: Uuid,
     cli_log: Mutex<Vec<Value>>,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self::with_instance(None)
     }
     fn with_instance(copied: Option<Uuid>) -> Self {
@@ -390,6 +390,7 @@ impl Fixture {
         );
         install_helper(&iso.path("claude"), &script);
         install_helper(&iso.path("codex"), &script);
+        install_helper(&iso.path("agy"), &script);
         install_helper(
             &iso.path("shell"),
             "#!/bin/sh\nprintf '%s\\n' probe >> \"$HT_SMOKE_SHELL_LOG\"\nprintf '%s' HT_PANE_ENV_BEGINHT_PANE_ENV_END\n",
@@ -497,15 +498,24 @@ impl Fixture {
                 &budget,
             )
             .unwrap();
-        store
-            .stage_snapshot_targets(
-                &stage.id,
-                0,
-                &snapshot.targets,
-                DurableWorkAdmission::new(16).unwrap(),
-                &budget,
-            )
-            .unwrap();
+        // A writer turn stages only a prefix when its 5 ms quantum runs out
+        // (a loaded machine): stage the rest in the following turns, as
+        // `reconcile` does, or the seal sees an incomplete target set.
+        let admission_limit = DurableWorkAdmission::new(16).unwrap();
+        let mut staged = 0usize;
+        while staged < snapshot.targets.len() {
+            let progress = store
+                .stage_snapshot_targets(
+                    &stage.id,
+                    staged as u64,
+                    &snapshot.targets[staged..],
+                    admission_limit,
+                    &budget,
+                )
+                .unwrap();
+            assert!(progress.visited > 0, "snapshot staging must advance");
+            staged += usize::from(progress.visited);
+        }
         store.seal_snapshot_stage(&stage.id, &budget).unwrap();
         store.publish_snapshot_stage(&stage.id, &budget).unwrap();
         let execution = Uuid::new_v4();
@@ -579,7 +589,7 @@ impl Fixture {
             .stderr(Stdio::piped());
         cmd
     }
-    fn run(&self, args: &[&str], options: &str) -> Output {
+    pub(super) fn run(&self, args: &[&str], options: &str) -> Output {
         self.run_format(args, options, true)
     }
     fn run_format(&self, args: &[&str], options: &str, json: bool) -> Output {
@@ -614,7 +624,7 @@ impl Fixture {
         self.cli_log.lock().unwrap().push(json!({"argv":argv,"pid":pid,"code":out.status.code(),"out":String::from_utf8_lossy(&out.stdout),"err":String::from_utf8_lossy(&out.stderr)}));
         out
     }
-    fn setup(&self, kind: &str) {
+    pub(super) fn setup(&self, kind: &str) {
         let mut cmd = self.iso.command(BIN);
         cmd.arg("human")
             .args(["--json", "--state-dir"])
@@ -631,12 +641,12 @@ impl Fixture {
             .stderr(Stdio::piped());
         successful(self.capture(cmd));
     }
-    fn db(&self) -> Connection {
+    pub(super) fn db(&self) -> Connection {
         let db = Connection::open(&self.paths.database_path).unwrap();
         db.busy_timeout(Duration::from_secs(5)).unwrap();
         db
     }
-    fn count(&self, sql: &str) -> i64 {
+    pub(super) fn count(&self, sql: &str) -> i64 {
         self.db().query_row(sql, [], |r| r.get(0)).unwrap()
     }
     fn recipient_identity(&self) -> RecipientIdentity {
@@ -683,7 +693,7 @@ impl Fixture {
         let header: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
         format!("local:{}", header["reference"]["ordinal"].as_u64().unwrap())
     }
-    fn effect_counts(&self) -> (usize, usize, i64, i64) {
+    pub(super) fn effect_counts(&self) -> (usize, usize, i64, i64) {
         (
             self.host.requests("tab.create").len(),
             self.host.requests("agent.start").len(),
@@ -691,7 +701,7 @@ impl Fixture {
             self.count("SELECT count(*) FROM messages WHERE kind='ordinary'"),
         )
     }
-    fn assert_work(&self, recipient: &str, thread: &str) {
+    pub(super) fn assert_work(&self, recipient: &str, thread: &str) {
         let db = self.db();
         let body: String = db
             .query_row(
@@ -839,7 +849,7 @@ impl Fixture {
         files.sort_by(|a, b| a.0.cmp(&b.0));
         files
     }
-    fn new_thread_args<'a>(&'a self, kind: &'a str, binary: &'a str) -> Vec<&'a str> {
+    pub(super) fn new_thread_args<'a>(&'a self, kind: &'a str, binary: &'a str) -> Vec<&'a str> {
         vec![
             "handoff",
             "--new-tab",
@@ -1702,8 +1712,8 @@ fn final_sdd_public_possible_start_reports_known_committed_work_without_relaunch
         &manual[..3],
         [
             "env",
-            "HERDR_THREADS_CODEX_OPTS=",
-            "HERDR_THREADS_CLAUDE_OPTS="
+            "HERDR_THREADS_CLAUDE_OPTS=",
+            "HERDR_THREADS_CODEX_OPTS="
         ]
     );
     assert!(manual.contains(&"--config=frozen=true".into()));
@@ -1714,7 +1724,7 @@ fn final_sdd_public_possible_start_reports_known_committed_work_without_relaunch
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains("phase: launch"));
     assert!(text.contains("outcome: possible_start"));
-    assert!(text.contains("manual_launch_after_confirming_no_start_argv: env HERDR_THREADS_CODEX_OPTS= HERDR_THREADS_CLAUDE_OPTS="));
+    assert!(text.contains("manual_launch_after_confirming_no_start_argv: env HERDR_THREADS_CLAUDE_OPTS= HERDR_THREADS_CODEX_OPTS="));
     assert!(text.contains("--config=frozen=true"));
     assert!(text.contains("seat_inspect_argv:"));
     assert!(text.contains("inspect_argv:"));
@@ -2131,4 +2141,32 @@ fn pending_public_retry_from_different_valid_caller_is_silent() {
     assert_eq!(f.effect_counts(), (0, 0, 0, 0));
     assert_eq!(f.count("SELECT count(*) FROM bootstrap_handoffs"), 0);
     assert_eq!(f.original_bytes(), original);
+}
+
+#[test]
+fn directory_search_discovers_canonical_name_with_unrelated_topic() {
+    let f = Fixture::new();
+    successful(f.run(
+        &[
+            "thread",
+            "create",
+            "--name",
+            "psa-global",
+            "--topic",
+            "Important system wide announcements",
+            "--goal",
+            "Discovery regression",
+        ],
+        "",
+    ));
+    let thread: String = f
+        .db()
+        .query_row("SELECT id FROM threads WHERE name='psa-global'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let output = successful(f.run(&["thread", "list", "--search", "psa-global"], ""));
+    let text = output.to_string();
+    assert!(text.contains(&thread), "{text}");
+    assert!(text.contains("psa-global"), "{text}");
 }

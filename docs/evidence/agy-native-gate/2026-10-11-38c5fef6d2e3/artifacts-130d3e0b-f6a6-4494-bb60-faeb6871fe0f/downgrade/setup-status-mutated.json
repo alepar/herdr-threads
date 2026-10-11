@@ -1,0 +1,48 @@
+{
+  "allow_entry": {
+    "file": "/private/tmp/ih.mRab36/home/.gemini/antigravity-cli/settings.json",
+    "rule": "command(herdr-threads)",
+    "state": "owned"
+  },
+  "plugin": {
+    "current": false,
+    "enabled": true,
+    "installed": false,
+    "path": "/private/tmp/ih.mRab36/home/.gemini/config/plugins/herdr-threads",
+    "version": null
+  },
+  "raw": {
+    "setup": {
+      "allow_entry": {
+        "file": "/private/tmp/ih.mRab36/home/.gemini/antigravity-cli/settings.json",
+        "rule": "command(herdr-threads)",
+        "state": "owned"
+      },
+      "harness_version": {
+        "admission": "unavailable",
+        "refusal": "installed agy executable not found on PATH",
+        "version": null
+      },
+      "hooks_file": "/private/tmp/ih.mRab36/home/.gemini/config/plugins/herdr-threads/hooks.json",
+      "installed": false,
+      "manifests": {
+        "allow_entry": "/private/tmp/ih.mRab36/ht/setup/agy-user-d453e0a4f14cfd8cfd9446602ad07ef5.json",
+        "plugin": "/private/tmp/ih.mRab36/ht/setup/agy-plugin-5dcf048bbccdc499eb8d03f6d013955d.json"
+      },
+      "permissions": {
+        "file": "/private/tmp/ih.mRab36/home/.gemini/antigravity-cli/settings.json",
+        "manifest": "/private/tmp/ih.mRab36/ht/setup/agy-user-d453e0a4f14cfd8cfd9446602ad07ef5.json",
+        "pre_existing": false,
+        "rule": "command(herdr-threads)",
+        "state": "installed"
+      },
+      "plugin": {
+        "current": false,
+        "enabled": true,
+        "installed": false,
+        "path": "/private/tmp/ih.mRab36/home/.gemini/config/plugins/herdr-threads",
+        "version": null
+      }
+    }
+  }
+}

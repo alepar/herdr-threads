@@ -12,7 +12,7 @@ use super::sweep::{FakeHost, Scratch, agent_pane, pane};
 use herdr_threads::{
     cli::hook::installed_argv,
     daemon::paths::{InstancePaths, RuntimeContext},
-    harness::{context::Harness, setup::plan_claude},
+    harness::{claude::setup::plan_claude, context::Harness},
     test_support::spawn::SpawnOwned,
 };
 use serde_json::{Value, json};
@@ -468,6 +468,7 @@ impl World {
                 user_intent: None,
                 thread: ThreadId::new(thread),
                 body: body.to_owned(),
+                direct_recipient: None,
                 invited_recipients: require_ack
                     .iter()
                     .map(|(seat, _)| SeatId::new(*seat))
@@ -1744,7 +1745,7 @@ fn codex_compact_recovery_names_the_hot_thread() {
     let context = output["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
-    let (fixed, data) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+    let (fixed, data) = context.split_once("\npeer_data: ").unwrap();
     assert!(
         fixed
             .lines()

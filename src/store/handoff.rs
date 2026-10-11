@@ -1,4 +1,5 @@
 //! Canonical compound protection and absorbing terminal replay.
+pub(crate) mod automatic;
 use super::connection::{api_error, store_error};
 use crate::protocol::{
     handoff::{HandoffIdentity, HandoffResult, HandoffState},
@@ -42,6 +43,13 @@ fn validate_identity(identity: &HandoffIdentity) -> Result<(), ApiError> {
 /// Read the CURRENT state only after matching the entire immutable identity.
 /// Completed rows grant historical presentation, never live action authority.
 pub fn current(
+    db: &Connection,
+    identity: &HandoffIdentity,
+) -> Result<Option<HandoffResult>, ApiError> {
+    automatic::guard_legacy_identity(db, identity)?;
+    current_legacy(db, identity)
+}
+fn current_legacy(
     db: &Connection,
     identity: &HandoffIdentity,
 ) -> Result<Option<HandoffResult>, ApiError> {
@@ -128,6 +136,12 @@ pub(crate) fn validate_handoff_requirement(
     replay: bool,
 ) -> Result<(), ApiError> {
     match requirement {
+        crate::protocol::authority::HandoffRequirement::AutomaticBootstrap(request) => {
+            super::topology_handoff::automatic::validate_parent_phase(db, request, replay)
+        }
+        crate::protocol::authority::HandoffRequirement::AutomaticDelivery(request) => {
+            automatic::validate_phase(db, request, replay)
+        }
         crate::protocol::authority::HandoffRequirement::Delivery(request) => {
             if replay {
                 validate_delivery_replay(db, request)

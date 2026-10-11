@@ -5,7 +5,7 @@
 //! Fixture: a resolved seat `s` (mapping generation 4) holding two connected top-level agent
 //! bindings (sessions A and B, enrolled through `bindings::resolve_claim`) and one disconnected
 //! binding (session C; each session has its own liveness PID because of same-PID supersede), a joined thread `t` with messages. Several tests then make the bindings'
-//! own `generation` stale: since V29 it is informational, so no reader may depend on it.
+//! own `generation` stale: since V32 it is informational, so no reader may depend on it.
 use super::*;
 use crate::{
     ports::{PublishedSnapshot, SnapshotGenerationId},
@@ -155,7 +155,7 @@ fn fixture() -> Fixture {
     Fixture { store, db }
 }
 
-/// Makes every binding's own `generation` disagree with the seat's: the V29 contract says it is
+/// Makes every binding's own `generation` disagree with the seat's: the V32 contract says it is
 /// informational, so no reader may use it to find "the current binding".
 fn stale_binding_generations(db: &Connection) {
     db.execute("UPDATE occupant_bindings SET generation=3", [])

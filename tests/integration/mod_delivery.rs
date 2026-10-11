@@ -19,7 +19,7 @@ use herdr_threads::{
     app::{LaneProbe, SystemClock, run_elected_probed},
     cli::hook::installed_argv,
     daemon::paths::{InstancePaths, RuntimeContext},
-    harness::{context::Harness, setup::plan_claude},
+    harness::{claude::setup::plan_claude, context::Harness},
     host::native::NativeCli,
     ports::HostPort,
     protocol::time::{Cancellation, Clock, MonoInstant, UtcMillis},
@@ -1939,7 +1939,11 @@ fn attention_marker_line_for_invitation() {
     .data("invite");
     let line = watch.wait_attention_marker();
     assert_eq!(
-        line["text"], "herdr-threads: attention pending; run herdr-threads inbox",
+        line["text"],
+        format!(
+            "herdr-threads: attention pending; run herdr-threads --state-dir {} inbox",
+            rig.state.display()
+        ),
         "{line}"
     );
     assert!(line["attention_version"].as_u64().is_some());
@@ -2793,3 +2797,8 @@ fn stand_in_host_drop_joins_a_blocked_serving_thread() {
         "the client sees the shut connection"
     );
 }
+
+/// ht-poh.11: the agy adapter's cross-leaf paths on this rig (a child module, so it reuses the
+/// rig's private items).
+#[path = "agy_sweep.rs"]
+mod agy_sweep;

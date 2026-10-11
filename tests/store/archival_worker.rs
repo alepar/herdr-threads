@@ -746,29 +746,41 @@ fn legacy_veto(db: &rusqlite::Connection) -> bool {
 }
 #[test]
 fn archival_worker_consumed_outer_admission_failure_vetoes_same_traversal_and_fresh_recovers() {
-    let (mut worker, host, db, _directory, paths) = journal_worker_fixture();
-    distinct_journals(&paths);
-    worker.writer = Arc::new(FairWriter::new(0));
-    let error = worker.run_page().unwrap_err();
-    assert_eq!(error.code, ErrorCode::StoreBusy);
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM channel_handoff_fences", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        0,
-        "outer admission failed before any deciding import"
-    );
-    worker.writer = host.writer.clone();
-    drain_worker_traversal(&mut worker);
-    let imported: i64 = db
-        .query_row("SELECT count(*) FROM channel_handoff_fences", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert!(
-        (1..37).contains(&imported),
-        "first pending journal page was consumed and not imported: {imported}"
-    );
+    // The legacy scan pages on a 10 ms real-time budget. Under load the
+    // failed page can reach its deadline before it reads any record, and then
+    // nothing is consumed: retry on a fresh fixture until the failed page did
+    // consume part of the journal, the case this test is about.
+    let mut attempt = 0;
+    let (mut worker, host, db, _directory, _paths) = loop {
+        attempt += 1;
+        let (mut worker, host, db, directory, paths) = journal_worker_fixture();
+        distinct_journals(&paths);
+        worker.writer = Arc::new(FairWriter::new(0));
+        let error = worker.run_page().unwrap_err();
+        assert_eq!(error.code, ErrorCode::StoreBusy);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM channel_handoff_fences", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "outer admission failed before any deciding import"
+        );
+        worker.writer = host.writer.clone();
+        drain_worker_traversal(&mut worker);
+        let imported: i64 = db
+            .query_row("SELECT count(*) FROM channel_handoff_fences", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        if imported == 37 && attempt < 5 {
+            continue;
+        }
+        assert!(
+            (1..37).contains(&imported),
+            "first pending journal page was consumed and not imported: {imported} (attempt {attempt})"
+        );
+        break (worker, host, db, directory, paths);
+    };
     assert!(
         legacy_veto(&db),
         "same Source EOF must not accept coverage after dropped admission page"
@@ -792,12 +804,15 @@ fn archival_worker_consumed_outer_admission_failure_vetoes_same_traversal_and_fr
 #[test]
 fn archival_worker_deciding_bootstrap_veto_reaches_next_consumer() {
     let (mut worker, host, db, _directory, paths) = journal_worker_fixture();
-    worker.run_page().unwrap(); // Seed the actual observation work before parking it.
+    // Seed the actual observation work before parking it. The legacy scan
+    // pages on a 10 ms real-time budget, so under load one traversal can take
+    // several pages: drain each one rather than assume a single page.
+    drain_worker_traversal(&mut worker);
     super::archival_legacy::modern_compound(&paths, true, false);
     worker.reachability.mark_archival_published(100);
     db.execute("UPDATE seat_archival SET next_mono=999999", [])
         .unwrap();
-    assert!(!worker.run_page().unwrap());
+    drain_worker_traversal(&mut worker);
     assert_eq!(host.calls.load(Ordering::SeqCst), 0);
     assert!(
         legacy_veto(&db),

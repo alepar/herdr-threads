@@ -132,6 +132,7 @@ fn page() -> CommandResult {
                 body_start: 0,
                 body_end: 4,
                 body_len: 4,
+                wakes: false,
             },
             InboxBatchV2Item::Message {
                 thread: ThreadId::new("thread"),

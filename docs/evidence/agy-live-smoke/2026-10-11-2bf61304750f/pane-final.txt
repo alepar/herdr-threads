@@ -1,0 +1,96 @@
+PATH=<root>/bin:"$PATH" <root>/bin/agy
+alepar@Mac ws % PATH=<root>/bin:"$PATH" <root>/bin/agy
+
+      ▄▀▀▄        Antigravity CLI 1.3.2
+     ▀▀▀▀▀▀       Gemini API key
+    ▀▀▀▀▀▀▀▀      Gemini 3.1 Pro (Low)
+   ▄▀▀    ▀▀▄     <root>/ws
+  ▄▀▀      ▀▀▄
+────────────────────────────────────────────────────────────
+> This is an automated herdr-threads smoke test. Reply with the single word READY.
+
+  READY
+
+────────────────────────────────────────────────────────────
+> herdr-threads: wake up
+
+  CRITICAL INSTRUCTION 1: You may have access to a variety of tools at your disposal. Some tools may be for a
+  specific task such as 'view_file' (for viewing contents of a file). Others may be very broadly applicable such as
+  the ability to run a command on a terminal. Always prioritize using the most specific tool you can for the task at
+  hand. Here are some rules: (a) NEVER run cat inside a bash command to create a new file or append to an existing
+  file. (b) ALWAYS use grep_search instead of running grep inside a bash command unless absolutely needed. (c) DO NOT
+  use ls for listing, cat for viewing, grep for finding, sed for replacing.
+  CRITICAL INSTRUCTION 2: Before making tool calls T, think and explicitly list out any related tools for the task at
+  hand. You can only execute a set of tools T if all other tools in the list are either more generic or cannot be
+  used for the task at hand. ALWAYS START your thought with recalling critical instructions 1 and 2. In particular,
+  the format for the start of your thought block must be '...94>thought\nCRITICAL INSTRUCTION 1: ...\nCRITICAL
+  INSTRUCTION 2: ...'.
+
+● Ran (herdr-threads ack mrFqaQc8f) (ctrl+o to expand)
+
+  CRITICAL INSTRUCTION 1: You may have access to a variety of tools at your disposal. Some tools may be for a
+  specific task such as 'view_file' (for viewing contents of a file). Others may be very broadly applicable such as
+  the ability to run a command on a terminal. Always prioritize using the most specific tool you can for the task at
+  hand. Here are some rules: (a) NEVER run cat inside a bash command to create a new file or append to an existing
+  file. (b) ALWAYS use grep_search instead of running grep inside a bash command unless absolutely needed. (c) DO NOT
+  use ls for listing, cat for viewing, grep for finding, sed for replacing.
+  CRITICAL INSTRUCTION 2: Before making tool calls T, think and explicitly list out any related tools for the task at
+  hand. You can only execute a set of tools T if all other tools in the list are either more generic or cannot be
+  used for the task at hand. ALWAYS START your thought with recalling critical instructions 1 and 2. In particular,
+  the format for the start of your thought block must be '...94>thought\nCRITICAL INSTRUCTION 1: ...\nCRITICAL
+  INSTRUCTION 2: ...'.
+● Ran (herdr-threads send tOndlXeKe SMOKE-OK) failed (ctrl+o to expand)
+  CRITICAL INSTRUCTION 1: You may have access to a variety of tools at your disposal. Some tools may be for a
+  specific task such as 'view_file' (for viewing contents of a file). Others may be very broadly applicable such as
+  the ability to run a command on a terminal. Always prioritize using the most specific tool you can for the task at
+  hand. Here are some rules: (a) NEVER run cat inside a bash command to create a new file or append to an existing
+  file. (b) ALWAYS use grep_search instead of running grep inside a bash command unless absolutely needed. (c) DO NOT
+  use ls for listing, cat for viewing, grep for finding, sed for replacing.
+  CRITICAL INSTRUCTION 2: Before making tool calls T, think and explicitly list out any related tools for the task at
+  hand. You can only execute a set of tools T if all other tools in the list are either more generic or cannot be
+  used for the task at hand. ALWAYS START your thought with recalling critical instructions 1 and 2. In particular,
+  the format for the start of your thought block must be '...94>thought\nCRITICAL INSTRUCTION 1: ...\nCRITICAL
+  INSTRUCTION 2: ...'.
+  I made a mistake in the previous command. The herdr-threads send command expects the message content after the
+  thread ID, but it seems I'm passing it as an argument. I need to use the --message flag to send the message
+  content.
+● Ran (herdr-threads send tOndlXeKe --message SMOKE-OK) failed (ctrl+o to expand)
+
+  CRITICAL INSTRUCTION 1: You may have access to a variety of tools at your disposal. Some tools may be for a
+  specific task such as 'view_file' (for viewing contents of a file). Others may be very broadly applicable such as
+  the ability to run a command on a terminal. Always prioritize using the most specific tool you can for the task at
+  hand. Here are some rules: (a) NEVER run cat inside a bash command to create a new file or append to an existing
+  file. (b) ALWAYS use grep_search instead of running grep inside a bash command unless absolutely needed. (c) DO NOT
+  use ls for listing, cat for viewing, grep for finding, sed for replacing.
+  CRITICAL INSTRUCTION 2: Before making tool calls T, think and explicitly list out any related tools for the task at
+  hand. You can only execute a set of tools T if all other tools in the list are either more generic or cannot be
+  used for the task at hand. ALWAYS START your thought with recalling critical instructions 1 and 2. In particular,
+  the format for the start of your thought block must be '...94>thought\nCRITICAL INSTRUCTION 1: ...\nCRITICAL
+  INSTRUCTION 2: ...'.
+  I'm still having trouble with the herdr-threads send command. It seems I'm misinterpreting the --message flag. I
+  will try to use the send command with the message directly as an argument, and consult the herdr-threads send --
+  help to understand the correct syntax.
+
+● Ran (herdr-threads send --help) (ctrl+o to expand)
+
+  CRITICAL INSTRUCTION 1: You may have access to a variety of tools at your disposal. Some tools may be for a
+  specific task such as 'view_file' (for viewing contents of a file). Others may be very broadly applicable such as
+  the ability to run a command on a terminal. Always prioritize using the most specific tool you can for the task at
+  hand. Here are some rules: (a) NEVER run cat inside a bash command to create a new file or append to an existing
+  file. (b) ALWAYS use grep_search instead of running grep inside a bash command unless absolutely needed. (c) DO NOT
+  use ls for listing, cat for viewing, grep for finding, sed for replacing.
+  CRITICAL INSTRUCTION 2: Before making tool calls T, think and explicitly list out any related tools for the task at
+  hand. You can only execute a set of tools T if all other tools in the list are either more generic or cannot be
+  used for the task at hand. ALWAYS START your thought with recalling critical instructions 1 and 2. In particular,
+  the format for the start of your thought block must be '...94>thought\nCRITICAL INSTRUCTION 1: ...\nCRITICAL
+  INSTRUCTION 2: ...'.
+  I see, the correct way to send a message is by using the --body flag for the message content.
+
+● Ran (herdr-threads send tOndlXeKe --body SMOKE-OK) (ctrl+o to expand)
+
+  I have acknowledged the message and sent the reply "SMOKE-OK" to the thread.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+? for shortcuts                                                                                     Gemini 3.1 Pro · low

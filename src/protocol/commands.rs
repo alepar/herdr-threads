@@ -40,6 +40,8 @@ pub enum Command {
     /// Read-only v2 inbox contract; advertised only when its handler lands.
     InboxBatchV2(InboxQuery),
     MessageDeliveryModes(MessageDeliveryModesQuery),
+    /// Read a seat's `wake_on` preference; gated by `seat.wake_on_v1`.
+    WakeOn(WakeOnQuery),
     Warnings(WarningsQuery),
     /// Bounded read-only active warning conditions for one thread.
     ActiveWarnings(ActiveWarningsQuery),
@@ -86,6 +88,7 @@ pub enum Command {
     BeginHandoff(crate::protocol::handoff::HandoffMutation),
     CompleteHandoff(crate::protocol::handoff::HandoffMutation),
     CreateThread(CreateThread),
+    EnsureDirectThread(EnsureDirectThread),
     Invite(Invite),
     Join(Join),
     Accept(Accept),
@@ -98,6 +101,10 @@ pub enum Command {
     /// The bundled Claude mod reports items it delivered (spec D6); sent only to a
     /// daemon advertising `mod.watch_v1`. Decided per id against A2.
     AckModDelivered(AckModDelivered),
+    /// Hook-pull read (delivery-policy DP4); gated by `delivery.pull_v1`.
+    DeliveryPull(crate::protocol::delivery::DeliveryPull),
+    /// Hook-pull settlement (DP4); gated by `delivery.pull_v1`.
+    DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
     /// Advance the caller binding's own read cursors over messages it fully displayed. Allowed
@@ -107,6 +114,9 @@ pub enum Command {
     /// start enrolls its binding, a subagent stop or session end disconnects. Not an accountable
     /// seat write, so declared subagents may report it.
     BindingEvent(BindingEvent),
+    /// Set the caller seat's `wake_on` preference (TRUST-POLICY A5); gated by
+    /// `seat.wake_on_v1`.
+    SetWakeOn(SetWakeOn),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -118,6 +128,8 @@ pub enum Command {
     OperatorRetire(OperatorRetire),
     OperatorReplace(OperatorReplace),
     HandoffDelivery(Box<crate::protocol::handoff::DeliveryMutation>),
+    AutomaticHandoffDelivery(Box<crate::protocol::handoff::AutomaticDeliveryMutation>),
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapMutation>),
     BeginBootstrap(Box<crate::protocol::handoff::BeginBootstrap>),
     ReserveBootstrapAttempt(Box<crate::protocol::handoff::ReserveBootstrapAttempt>),
     RecordBootstrapCreated(Box<crate::protocol::handoff::RecordBootstrapCreated>),
@@ -364,6 +376,7 @@ pub struct DirectoryQuery {
     pub recent: bool,
     pub membership: Option<SeatId>,
     pub membership_filter: DirectoryMembership,
+    /// Retained legacy wire name: case-sensitive literal substring of thread name or topic.
     pub topic_contains: Option<String>,
     pub page: PageRequest,
 }
@@ -687,6 +700,15 @@ pub struct CreateThread {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Resolve the immutable canonical pair; returns the ordinary ThreadCreated ID.
+/// Resolves the immutable canonical pair through the guarded thread.direct_v1 runtime.
+pub struct EnsureDirectThread {
+    pub recipient: SeatId,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Invite {
     pub thread: ThreadId,
     pub seat: SeatId,
@@ -790,6 +812,45 @@ impl DeliveryMode {
     }
 }
 
+/// Which pending work wakes an idle seat: `nudge` keeps the ordinary wake
+/// policy, `all` also wakes for pending lazy messages (spec DP8).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeOn {
+    #[default]
+    Nudge,
+    All,
+}
+impl WakeOn {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Nudge => "nudge",
+            Self::All => "all",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "nudge" => Some(Self::Nudge),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetWakeOn {
+    pub value: WakeOn,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WakeOnQuery {
+    pub seat: SeatId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageDeliveryModesQuery {
@@ -859,6 +920,9 @@ pub struct SendMessage {
     pub user_intent: Option<crate::protocol::summary::UserIntent>,
     pub thread: ThreadId,
     pub body: String,
+    /// Explicit direct audience intent; never an ACK request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_recipient: Option<SeatId>,
     pub invited_recipients: Vec<SeatId>,
     pub deadline_millis: Option<u64>,
     pub operation: OperationId,
@@ -1002,6 +1066,7 @@ impl Command {
             Self::CheckIn(v) | Self::OperatorCheckIn(v) => Some(&v.claim),
             Self::BeginHandoff(v) | Self::CompleteHandoff(v) => Some(&v.identity.claim),
             Self::CreateThread(v) => Some(&v.claim),
+            Self::EnsureDirectThread(v) => Some(&v.claim),
             Self::Invite(v) => Some(&v.claim),
             Self::Join(v) => Some(&v.claim),
             Self::Accept(v) => Some(&v.claim),
@@ -1011,6 +1076,7 @@ impl Command {
             Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
             Self::AckModDelivered(v) => Some(&v.claim),
             Self::CompleteInboxDelivery(v) => Some(&v.claim),
+            Self::SetWakeOn(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
             Self::SetThreadName(v) => Some(&v.claim),
@@ -1022,6 +1088,8 @@ impl Command {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
             Self::HandoffDelivery(v) => return v.validate(),
+            Self::AutomaticHandoffDelivery(v) => return v.validate(),
+            Self::AutomaticBootstrap(v) => return v.validate(),
             Self::BeginBootstrap(v) => {
                 v.identity.validate()?;
                 if v.operation != v.identity.payload.handoff.keys.begin {
@@ -1107,7 +1175,13 @@ impl Command {
                 }
             }
         }
-        let claim = self.accountable_claim();
+        // Hook-pull delivery answers a subagent with its own refusal reply (delivery-policy DP6),
+        // so it is not an early-refused accountable claim; its binding fields are still checked.
+        let claim = self.accountable_claim().or(match self {
+            Self::DeliveryPull(v) => Some(&v.claim),
+            Self::DeliveryConfirm(v) => Some(&v.claim),
+            _ => None,
+        });
         if let Some(claim) = claim {
             claim.validate_binding_fields()?;
         }
@@ -1272,6 +1346,8 @@ impl Command {
             {
                 Err("invalid mod delivery ack batch")
             }
+            Self::DeliveryPull(pull) => pull.validate(),
+            Self::DeliveryConfirm(confirm) => confirm.validate(),
             _ => Ok(()),
         }
     }
@@ -1326,6 +1402,7 @@ impl TryFrom<Command> for OperatorCommand {
 /// cannot be passed to the permit-consuming store path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermitMutation {
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapMutation>),
     BeginBootstrap(Box<crate::protocol::handoff::BeginBootstrap>),
     ReserveBootstrapAttempt(Box<crate::protocol::handoff::ReserveBootstrapAttempt>),
     RecordBootstrapCreated(Box<crate::protocol::handoff::RecordBootstrapCreated>),
@@ -1338,6 +1415,7 @@ pub enum PermitMutation {
     BeginHandoff(crate::protocol::handoff::HandoffMutation),
     CompleteHandoff(crate::protocol::handoff::HandoffMutation),
     CreateThread(CreateThread),
+    EnsureDirectThread(EnsureDirectThread),
     Invite(Invite),
     Join(Join),
     Accept(Accept),
@@ -1348,8 +1426,12 @@ pub enum PermitMutation {
     AckDisplayed(Ack),
     /// Mod delivery ack (spec D6): settles per id under the daemon's decision.
     AckModDelivered(AckModDelivered),
+    /// Hook-pull settlement (delivery-policy DP4).
+    DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
+    /// Wake preference of the caller's own seat; wake eligibility only.
+    SetWakeOn(SetWakeOn),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -1360,6 +1442,7 @@ impl TryFrom<Command> for PermitMutation {
     type Error = Command;
     fn try_from(command: Command) -> Result<Self, Self::Error> {
         match command {
+            Command::AutomaticBootstrap(v) => Ok(Self::AutomaticBootstrap(v)),
             Command::BeginBootstrap(v) => Ok(Self::BeginBootstrap(v)),
             Command::ReserveBootstrapAttempt(v) => Ok(Self::ReserveBootstrapAttempt(v)),
             Command::RecordBootstrapCreated(v) => Ok(Self::RecordBootstrapCreated(v)),
@@ -1373,6 +1456,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::BeginHandoff(v) => Ok(Self::BeginHandoff(v)),
             Command::CompleteHandoff(v) => Ok(Self::CompleteHandoff(v)),
             Command::CreateThread(v) => Ok(Self::CreateThread(v)),
+            Command::EnsureDirectThread(v) => Ok(Self::EnsureDirectThread(v)),
             Command::Invite(v) => Ok(Self::Invite(v)),
             Command::Join(v) => Ok(Self::Join(v)),
             Command::Accept(v) => Ok(Self::Accept(v)),
@@ -1382,7 +1466,9 @@ impl TryFrom<Command> for PermitMutation {
             Command::Ack(v) => Ok(Self::Ack(v)),
             Command::AckDisplayed(v) => Ok(Self::AckDisplayed(v)),
             Command::AckModDelivered(v) => Ok(Self::AckModDelivered(v)),
+            Command::DeliveryConfirm(v) => Ok(Self::DeliveryConfirm(v)),
             Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
+            Command::SetWakeOn(v) => Ok(Self::SetWakeOn(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
             Command::SetThreadName(v) => Ok(Self::SetThreadName(v)),

@@ -25,6 +25,10 @@ use crate::{
 use std::io::{self, Write};
 use uuid::Uuid;
 
+/// Heading of the selected directory overview in a presented offer.
+const OVERVIEW_HEADING: &[u8] =
+    b"Current directory overview at presentation time (selected data):\n";
+
 #[derive(Debug)]
 pub enum BridgeError {
     Context(ContextError),
@@ -152,7 +156,7 @@ pub fn encode_hook(
             if page.items.len() > 8 || page.validate().is_err() {
                 return Err(PresentationError::Invalid);
             }
-            bytes.extend_from_slice(b"Current directory overview at presentation time (selected data; peer topics are untrusted):\n");
+            bytes.extend_from_slice(OVERVIEW_HEADING);
             bytes.extend_from_slice(
                 &encode_selected(result, input.output).map_err(PresentationError::Api)?,
             );
@@ -228,7 +232,7 @@ fn directory_share(input: &HookInput<'_>, seat: &str) -> Result<u32, Presentatio
     let mut selector = directory_argv(input.output, seat, MAX_PAGE_BYTES);
     selector.extend(["--cursor".to_owned(), "x".repeat(MAX_CURSOR_BYTES)]);
     let selector_bytes = serde_json::to_vec(&selector).map_err(|_| PresentationError::Invalid)?;
-    let fixed = b"Current directory overview at presentation time (selected data; peer topics are untrusted):\n".len()
+    let fixed = OVERVIEW_HEADING.len()
         + b"Current directory age and count labels (JSON data; age_millis_signed is now minus created_at):\n".len()
         + b"For a chosen thread, an explicit cheap child can read a bounded history and return message IDs and a summary; only the top-level agent may decide acceptance or ACK.\n".len()
         + empty_selected.len() + age_bytes.len() + 1 + selector_bytes.len();
@@ -1298,6 +1302,15 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     // `lifecycle_check_in`, where the offered notices still show), so pending
     // ones are still offered here.
     let live = digest.as_ref().is_ok_and(|digest| digest.mod_channel_live);
+    // A hook-pull seat withholds the digest from what it presents at every tool
+    // boundary (delivery-policy DP7) while the coalescing mark works as for any
+    // seat; a failed digest read fails open.
+    let omit = digest.is_ok()
+        && crate::delivery::routing::omit_digest(
+            crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
+            live,
+            crate::delivery::routing::Boundary::Tool,
+        );
     if live && !notices_pending {
         return Ok(ToolBoundary::default());
     }
@@ -1353,7 +1366,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     // The carried notice page rides with the digest summary, which survives
     // the hook's oversize fallback: the offer settles exactly what it shows.
     // A live channel offers the notice page alone: no digest, no summary line.
-    let digest = digest.ok().filter(|digest| !digest.mod_channel_live);
+    let digest = digest.ok().filter(|_| !omit);
     Ok(ToolBoundary {
         text: hook.bytes,
         summary: join_summaries(
@@ -1362,7 +1375,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
         ),
         digest,
         mark,
-        live,
+        live: omit,
     })
 }
 

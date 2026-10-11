@@ -1,4 +1,4 @@
-//! Catch-up rows (spec §7): one per (binding, thread) since V31 (ht-54r.22). Contract surface from
+//! Catch-up rows (spec §7): one per (binding, thread) since V34 (ht-54r.22). Contract surface from
 //! ht-1ip.1; the lifecycle and the pushed-attention hold are ht-1ip.6. Every
 //! `extension_until` write is ht-1ip.7, made through the hooks in `receipts`:
 //! nothing here computes or writes an extension value.

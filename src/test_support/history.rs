@@ -226,6 +226,7 @@ fn send_one(
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new(thread),
         body: format!("history {operation}"),
+        direct_recipient: None,
         invited_recipients: Vec::new(),
         deadline_millis,
         operation: OperationId::new(operation),

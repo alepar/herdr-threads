@@ -1,0 +1,7 @@
+[herdr-threads] new messages:
+
+[herdr-threads] message m1 in T  1   "pl ans \"quoted\" \\ back slash" from S  1 "al ice  \"x\"":
+  ok
+
+[herdr-threads] mes sage m 2 in T1 "plans" from S1 "alice":
+  ok

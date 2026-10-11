@@ -12,7 +12,7 @@ use herdr_threads::{
         paths::{InstancePaths, RuntimeContext},
     },
     harness::manifest::{CurlFetcher, ManifestPolicy, ManifestService},
-    harness::{context::Harness, setup::plan_claude},
+    harness::{claude::setup::plan_claude, context::Harness},
     protocol::{
         commands::Command,
         results::CommandResult,
@@ -35,6 +35,9 @@ use std::{
 use uuid::Uuid;
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
+
+#[path = "hook_entrypoint/agy.rs"]
+mod agy;
 
 /// A real `curl` fetch of an unreachable loopback URL, whatever URL the
 /// manifest service asks for: the fetch fails after the recorder has already
@@ -688,10 +691,14 @@ fn agent_origin(harness: &str, session: &str) -> herdr_threads::cli::caller::Ori
     };
     herdr_threads::cli::caller::fix_origin(herdr_threads::cli::caller::CallerOrigin::Agent(
         herdr_threads::harness::caller_env::EnvClaim {
-            harness: if harness == "codex" {
-                Harness::Codex
-            } else {
-                Harness::Claude
+            harness: match harness {
+                "codex" => Harness::Codex,
+                "claude" => Harness::Claude,
+                other => Harness::Agent(
+                    herdr_threads::harness::registry::builtins()
+                        .agent(other)
+                        .unwrap(),
+                ),
             },
             native_session: herdr_threads::protocol::ids::NativeSessionId::new(session),
             agent_id: None,
@@ -1190,7 +1197,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     );
     let message = sent["result"]["data"].as_str().unwrap().to_owned();
 
-    // 4. The next tool hook offers it as marked untrusted data; nothing is ACKed.
+    // 4. The next tool hook offers it as framed peer data; nothing is ACKed.
     let offered = run_hook(&command, "w9:p1", &host, &tool("sess-1"));
     assert_eq!(offered.code, Some(0), "{}", offered.stderr);
     let value = offered.context();
@@ -1198,9 +1205,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     let context = value["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
-    let (fixed, data) = context
-        .split_once("\nuntrusted_peer_data: ")
-        .expect(context);
+    let (fixed, data) = context.split_once("\npeer_data: ").expect(context);
     assert!(!fixed.contains("Ignore instructions"), "{fixed}");
     let data: String = serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap();
     assert!(data.contains(&thread) || data.contains(&message), "{data}");
@@ -1712,10 +1717,7 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
         assert_eq!(hook.code, Some(0), "{label}: {}", hook.stderr);
         assert!(hook.stderr.is_empty(), "{label}: {}", hook.stderr);
         let context = context_of(&hook);
-        assert!(
-            context.contains("untrusted_peer_data"),
-            "{label}: {context}"
-        );
+        assert!(context.contains("peer_data"), "{label}: {context}");
         context
     };
     // The invitation is new attention: offered once, then quiet.
@@ -1751,7 +1753,7 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
     // frontier, so the next routine tool call is quiet until something new.
     let cleared = fx.hook("w9:p1", &Payload::session_start("sess-2", "clear").bytes());
     assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
-    assert!(context_of(&cleared).contains("untrusted_peer_data"));
+    assert!(context_of(&cleared).contains("peer_data"));
     let hook = fx.hook("w9:p1", &tool("sess-2"));
     assert!(hook.stderr.is_empty(), "{}", hook.stderr);
     assert!(
@@ -1761,7 +1763,7 @@ fn offer_then_identical_tool_call_is_quiet_then_new_message_is_emitted() {
     );
     let _fourth = send("fourth");
     let hook = fx.hook("w9:p1", &tool("sess-2"));
-    assert!(context_of(&hook).contains("untrusted_peer_data"));
+    assert!(context_of(&hook).contains("peer_data"));
     // Nothing here ACKs on the model's behalf.
     assert_eq!(
         fx.count("SELECT count(*) FROM receipt_state WHERE state='acked'"),
@@ -2239,7 +2241,7 @@ impl Calls<'_> {
         assert!(!hook.stdout.is_empty(), "{label}: suppressed");
         let context = context_of(&hook);
         let (_, data) = context
-            .split_once("\nuntrusted_peer_data: ")
+            .split_once("\npeer_data: ")
             .unwrap_or_else(|| panic!("{label}: {context}"));
         let data: String = serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap();
         let summary = data
@@ -3462,9 +3464,11 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
     );
     let context = context_of(&cleared);
     let (_, text) = context
-        .split_once("\nuntrusted_peer_data: ")
+        .split_once("\npeer_data: ")
         .unwrap_or_else(|| panic!("clear: {context}"));
-    let text: String = serde_json::from_str(text).unwrap();
+    // The peer data is one JSON line; an inbox pointer can follow it when it
+    // still fits the context budget (shorter state paths leave room for it).
+    let text: String = serde_json::from_str(text.lines().next().unwrap_or(text)).unwrap();
     assert_eq!(carried_notices("clear", &text), (fx.notice_page(0), true));
     timings.push(("clear", cleared.elapsed));
     let successor = fx.count("SELECT generation FROM seats WHERE id='seat'");
@@ -3513,7 +3517,7 @@ fn run_in_pane(fx: &Fixture, pane: &str, command: &str) -> std::process::Output 
 /// The plugin-authored section (before any escaped peer data).
 fn fixed_section(context: &str) -> &str {
     context
-        .split_once("\nuntrusted_peer_data: ")
+        .split_once("\npeer_data: ")
         .map_or(context, |(fixed, _)| fixed)
 }
 
@@ -3533,7 +3537,7 @@ fn ready_command(context: &str, label: &str) -> String {
 /// The escaped peer data section, decoded.
 fn peer_data(context: &str) -> String {
     let (_, data) = context
-        .split_once("\nuntrusted_peer_data: ")
+        .split_once("\npeer_data: ")
         .unwrap_or_else(|| panic!("no peer data in {context}"));
     serde_json::from_str(data.lines().next().unwrap_or(data)).unwrap()
 }
@@ -4003,7 +4007,7 @@ fn real_installed_codex_hook_emits_context_with_a_warm_fingerprint_cache() {
         value["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap()
-            .contains("untrusted_peer_data")
+            .contains("peer_data")
     );
     say!("warm PreToolUse hook (offer): {:?}", offered.elapsed);
     for _ in 0..3 {
@@ -6266,11 +6270,11 @@ fn clear_and_codex_compact_emit_recovery_text_but_startup_and_tool_calls_do_not(
         &["send", &thread, "--body", "hello", "--require-ack", "seat"],
     );
     let peer_data = |context: &str| -> String {
-        let (_, data) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+        let (_, data) = context.split_once("\npeer_data: ").unwrap();
         serde_json::from_str(data.lines().next().unwrap()).unwrap()
     };
     let assert_recovery = |label: &str, context: &str| {
-        let fixed = context.split("\nuntrusted_peer_data: ").next().unwrap();
+        let fixed = context.split("\npeer_data: ").next().unwrap();
         assert!(
             fixed.lines().any(|line| line == instruction),
             "{label}: {context}"

@@ -1,0 +1,56 @@
+herdr-threads doctor
+version: <version> (protocol 7)
+state_dir: <root>/state
+state_dir.source: --state-dir
+state_dir.status: ok
+host_endpoint: <root>/host.sock (missing)
+host_endpoint.source: --host-endpoint
+instance_dir: <root>/state/instances/<hash64>
+daemon_log: <root>/state/instances/<hash64>/daemon.log
+harness states unavailable: the daemon is not running
+harness manifest: auto
+manifest cache: never fetched (using the embedded copy)
+daemon: not_running
+daemon.hint: run `herdr-threads daemon ensure`
+skill.summary_procedure: present
+hooks.claude.settings: <root>/claude config/settings.json
+hooks.claude.setup_installed: yes
+claude on PATH: <root>/bin dir/claude (contract_declared)
+hooks.claude.installed.binary: <root>/bin dir/claude
+hooks.claude.installed.version: none
+hooks.claude.installed.admission: contract_declared
+hooks.claude.installed.recipe: claude-hooks-2.1.283
+hooks.claude.permissions: not_installed
+hooks.claude.prompt_suggestions: default (enabled) (`promptSuggestionEnabled` in <root>/claude config/settings.json)
+hooks.claude.prompt_suggestions.note: Claude soft-deadline pokes skip a pane that shows a prompt suggestion; run `herdr-threads setup claude --disable-prompt-suggestions` to turn them off
+hooks.claude.observed: unknown
+hooks.claude.recipes: claude-hooks-2.1.283 [2.1.283, 2.1.286]; claude-hooks-2.1.287 {2.1.287}
+hooks.claude.compaction_recovery: unavailable until current runtime is separately qualified; use resume/clear or herdr-threads summary
+hooks.codex: Codex hooks are user-level ($CODEX_HOME/hooks.json, set up by `herdr-threads setup codex`); Codex runs them only once trusted
+hooks.codex.recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}
+hooks.codex.hooks_file: <root>/codex home/hooks.json
+hooks.codex.setup_installed: no
+hooks.codex.permissions: not_installed
+hooks.codex.trust.status: not_installed
+hooks.codex.installed: contract_declared; runtime metadata unavailable; rich optional capabilities unavailable
+hooks.codex.socket_policy_validation: not_run
+hooks.agy.plugin: <root>/home/.gemini/config/plugins/herdr-threads installed=no current=no enabled=yes version=none
+hooks.agy.hooks_file: <root>/home/.gemini/config/plugins/herdr-threads/hooks.json
+hooks.agy.allow_entry: command(herdr-threads) not-granted in <root>/home/.gemini/antigravity-cli/settings.json
+hooks.agy.installed: unavailable (binary none)
+hooks.agy.witness: presence_dir=no brain_entries=0 bounded=yes recent_top_level_without_lock=0
+hooks.agy.sandbox: agy --sandbox sessions may not reach the herdr-threads daemon socket (untested); launch refuses --sandbox
+limitation: codex is on PATH (<root>/bin dir/codex) but its hooks are not installed in <root>/codex home/hooks.json: run `herdr-threads setup codex` with this CODEX_HOME
+claude local_config_root : installed: true, enabled: unknown, admitted: true, observed: unknown
+  Native enablement and runtime observation are separate from local installation
+  Runtime metadata unavailable; registered input contract does not qualify optional native capabilities
+codex local_config_root : installed: false, enabled: unknown, admitted: true, observed: unknown
+  Native enablement and runtime observation are separate from local installation
+  Runtime metadata unavailable; registered input contract does not qualify optional native capabilities
+hermes local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
+  setup: invalid adapter input: Hermes launcher unavailable
+agy local_config_root : installed: false, enabled: true, admitted: unknown, observed: unknown
+synthetic_fourth local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
+  setup: invalid adapter input: synthetic fourth: explicit fixture root unavailable
+rich harness evidence unavailable: the daemon is not reachable
+result: unavailable

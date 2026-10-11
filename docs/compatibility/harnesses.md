@@ -46,18 +46,18 @@ The retained recipe tables and explicit versioned parser/planner APIs describe h
 | Recipe | Versions | Evidence | Scope |
 | --- | --- | --- | --- |
 | `claude-hooks-2.1.283` | generated: see [`harness-versions.json`](harness-versions.json) | `claude-probe.md`, `claude-lifecycle-probe.md`, `claude-284-hook-capture/report.md`, `claude-285-hook-capture/report.md`, `claude-286-hook-capture/report.md` | 2.1.283: input and Bash `updatedInput` rewrite observed. 2.1.284: input captured and parsed unchanged; hook-output application unverified. 2.1.285: input captured and parsed unchanged; print-mode `updatedInput` application and `additionalContext` delivery observed (rewritten command is permission-checked). 2.1.286: the same, re-captured with the 2.1.285 method. Model receipt unsupported |
-| `claude-hooks-2.1.287` | generated: see [`harness-versions.json`](harness-versions.json) | `claude-compact-capture/report.md`, `poke-spike/findings.md`, `validation/report.md` | 2.1.287: startup/resume and root/subagent Bash input captured, same shapes as 2.1.286; SessionStart `source: compact` captured and its `additionalContext` delivered after compaction in print mode (`tests/fixtures/claude-2.1.287/`); ht-p03.20 native matrix manual and managed core-flow cells. Profile: compact supported, model receipt unsupported. `claude-hooks-2.1.283` declares compact unsupported (no evidence), and `doctor` reports that as `hooks.claude.compaction_recovery`. Poke spike: `composer_stash` and `poke_during_turn` supported (see Poke capabilities below) |
+| `claude-hooks-2.1.287` | generated: see [`harness-versions.json`](harness-versions.json) | `claude-compact-capture/report.md`, `poke-spike/findings.md`, `validation/report.md` | 2.1.287: startup/resume and root/subagent Bash input captured, same shapes as 2.1.286; SessionStart `source: compact` captured and its `additionalContext` delivered after compaction in print mode (`tests/fixtures/claude-2.1.287/`); ht-p03.20 native matrix manual and managed core-flow cells. Profile: compact supported, model receipt unsupported. `claude-hooks-2.1.283` declares compact unsupported (no evidence), and `doctor` reports that as `hooks.claude.compaction_recovery`. Poke spike: `composer_stash` supported (see Poke capabilities below) |
 | `codex-hooks-v1` | generated: see [`harness-versions.json`](harness-versions.json) | `codex-probe.md`, `codex-158-hook-capture/report.md`, `codex-158-live-hook-capture/report.md` | Input mapping for both. 0.158.0: schemas identical to 0.157.1; live SessionStart startup/resume, SubagentStart and root/child PreToolUse input; context-only `additionalContext` delivery proven for SessionStart and PreToolUse only. Fork known-unsupported. Transport (`updatedInput` rewrite) and receipt unsupported |
 
 ## Poke capabilities
 
-The table preserves the exact committed [poke spike](../evidence/poke-spike/findings.md) declarations. Current daemon selection grants neither capability (`NONE`) until a separately safe current-runtime qualifier exists. Optional metadata naming Claude 2.1.287 does not enable its historical declaration. The hard-deadline warning remains the backstop for skipped pokes.
+The table preserves the exact committed [poke spike](../evidence/poke-spike/findings.md) declarations. Current daemon selection grants no capability (`NONE`) until a separately safe current-runtime qualifier exists. Optional metadata naming Claude 2.1.287 does not enable its historical declaration. The hard-deadline warning remains the backstop for skipped pokes. The spike also saw a prompt sent during a turn steered into it; no turn-time poke exists (an active turn is always deferred, ht-poh.42).
 
-| Recipe | `composer_stash` | `poke_during_turn` | Basis |
-| --- | --- | --- | --- |
-| `claude-hooks-2.1.283` | unsupported | unsupported | not tested by the spike |
-| `claude-hooks-2.1.287` | supported | supported | spike on Claude 2.1.287: composer read via `agent read --source detection`, clear with `ctrl+u`, retype with `send-text` and no Enter; `agent prompt` during a turn is steered into it |
-| `codex-hooks-v1` | unsupported | unsupported | the spike tested Codex 0.160.0 (against a mock provider), which no recipe covers; recipes are not widened here |
+| Recipe | `composer_stash` | Basis |
+| --- | --- | --- |
+| `claude-hooks-2.1.283` | unsupported | not tested by the spike |
+| `claude-hooks-2.1.287` | supported | spike on Claude 2.1.287: composer read via `agent read --source detection`, clear with `ctrl+u`, retype with `send-text` and no Enter |
+| `codex-hooks-v1` | unsupported | the spike tested Codex 0.160.0 (against a mock provider), which no recipe covers; recipes are not widened here |
 
 The stash skips (poke not sent) a composer holding `[Image #` or `[Pasted text`, a row within 12 columns of the pane width, or a width that cannot be determined. Herdr's pane record carries no width, so the adapter infers it from Claude's composer rule; Codex has no rule, so Codex typed text is never stashed until a width source exists. The observed UI state (idle, typed input, active turn) comes from `agent_status` plus the same composer read; see TRUST-POLICY.md A4.
 
@@ -77,7 +77,7 @@ Preparation is durably saved before dispatch. Completion places current context,
 
 The caller supplies an existing private absolute directory. Symlink ancestors/files and Unix group/other permissions are refused. macOS/Linux file opens use `O_NOFOLLOW`. These checks assume a cooperative owner and a local filesystem with atomic rename, working OS locks and fsync; they do not defend against same-user directory replacement or establish remote-filesystem crash semantics. Temporary files left by a hard crash are ignored, never treated as completion. The journal is bounded to 1 MiB and 128 completion records, with 64 KiB request/output limits and completion space reserved before dispatch. Capacity exhaustion returns `TooLarge`; automatic pruning or repair is deliberately absent from this seam.
 
-`render_context` returns plain context for a future qualified output encoder. It keeps exact message IDs, labels topics as untrusted JSON data (the `Mail data (JSON)` section is rendered only when rows are supplied; production hooks supply none and carry pending items in the digest line and the ready-command block instead), strips control characters, limits topics to 256 UTF-8 bytes, and limits total output to 4096 bytes. No-change output is empty. The instructions give the top-level agent explicit exact-ID ACK responsibility and separate invitation acceptance; children can read/summarize and return IDs. Rendering or CheckIn never performs those receipt actions.
+`render_context` returns plain context for a future qualified output encoder. It keeps exact message IDs, carries topics as escaped JSON data (the `Mail data (JSON)` section is rendered only when rows are supplied; production hooks supply none and carry pending items in the digest line and the ready-command block instead), strips control characters, limits topics to 256 UTF-8 bytes, and limits total output to 4096 bytes. No-change output is empty. The instructions give the top-level agent explicit exact-ID ACK responsibility and separate invitation acceptance; children can read/summarize and return IDs. Rendering or CheckIn never performs those receipt actions.
 
 ## Setup API for the eventual installer
 
@@ -163,7 +163,7 @@ A version newer than every recipe is therefore never `broken` just for being unl
 
 ## Harness canary
 
-`scripts/harness-canary.sh` installs each newer Claude Code and Codex release into a throwaway home and checks that herdr-threads still works with it. It runs daily from `.github/workflows/harness-canary.yml` (cron `17 6 * * *`) and on manual dispatch. It never touches `~/.claude`, `~/.codex` or aisw profiles.
+`scripts/harness-canary.sh` installs each newer Claude Code and Codex release into a throwaway home and checks that herdr-threads still works with it. It runs daily from `.github/workflows/harness-canary.yml` (cron `17 6 * * *`) and on manual dispatch. The workflow selects `--harness both` (Claude Code and Codex) unless a dispatch names another selector: `all` also selects exact-runtime adapters (Hermes), which need a `--runtime-command-file` the workflow never supplies, so they always end inconclusive and fail the run. Hermes therefore has no scheduled canary coverage: only an explicit run with its runtime input probes it, and `all` without that input reports it inconclusive, never passing. `both` is a fixed Claude Code and Codex selection, so a new npm-release adapter needs a selector change to join the daily run. It never touches `~/.claude`, `~/.codex` or aisw profiles.
 
 ### What each tier checks
 

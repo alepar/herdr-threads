@@ -71,7 +71,7 @@ pub fn run_delivery_retry_to_writer<C: crate::ports::LocalClient + ?Sized, W: Wr
     )
 }
 
-/// Additive internal bootstrap consumer; public routing remains inert.
+/// V1 bootstrap retry consumer; V2 automatic bootstrap has a separate executor.
 #[allow(clippy::too_many_arguments)]
 pub fn run_bootstrap_retry<
     C: crate::ports::LocalClient + ?Sized,
@@ -133,6 +133,45 @@ pub fn run_bootstrap_retry_to_writer<
         ));
     }
     super::topology_handoff::resume_to_writer(
+        journal, reference, actor, namespace, client, native, launcher, clock, submission, output,
+        writer,
+    )
+}
+
+/// Exact V2 linked bootstrap continuation. The outer frozen original is the
+/// only local intent; the derived child has no separate journal or digest.
+#[allow(clippy::too_many_arguments)]
+pub fn run_automatic_bootstrap_retry_to_writer<
+    C: crate::ports::LocalClient + ?Sized,
+    N: crate::ports::CreateTabPort + ?Sized,
+    W: Write,
+>(
+    journal: &Journal,
+    reference: &IntentRef,
+    actor: super::actor_route::InvocationActor,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    native: &N,
+    launcher: &mut dyn super::handoff::HandoffLauncher,
+    clock: &dyn crate::protocol::time::Clock,
+    submission: super::topology_handoff::BootstrapSubmissionInputs<'_>,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<crate::protocol::handoff::AutomaticBootstrapResult, super::RunError> {
+    preflight_original_actor(
+        journal.root(),
+        &reference.recovery_ref(),
+        actor,
+        &output.context,
+    )?;
+    let original = load_original_for_actor(journal, &reference.recovery_ref())?;
+    if original.header.reference != *reference {
+        return Err(super::invalid_request(
+            "automatic bootstrap original reference mismatch",
+        ));
+    }
+    super::topology_handoff::automatic_bootstrap_identity(&original)?;
+    super::topology_handoff::resume_automatic_to_writer(
         journal, reference, actor, namespace, client, native, launcher, clock, submission, output,
         writer,
     )
@@ -550,6 +589,9 @@ fn preflight_original_intent(
 ) -> io::Result<(super::journal::OriginalActor, super::journal::PendingIntent)> {
     let journal = Journal::read_only(root)?;
     let pending = load_original_for_actor(&journal, recovery)?;
+    if let Some((plan, _)) = super::direct_send::plan(&pending.semantic) {
+        super::direct_send::check_namespace(plan, context)?;
+    }
     let original =
         super::journal::classify_original_actor(&pending.header.scope, &pending.semantic)?;
     if original == super::journal::OriginalActor::HumanOrOperator
@@ -617,9 +659,13 @@ pub(crate) fn load_original_for_actor(
     let prefix = format!("{ordinal:020}-");
     let terminal_prefix = format!("delivery-{ordinal:020}-");
     let bootstrap_prefix = format!("bootstrap-{ordinal:020}-");
+    let automatic_prefix = format!("automatic-{ordinal:020}-");
+    let automatic_bootstrap_prefix = format!("automatic-bootstrap-{ordinal:020}-");
     let mut intents = 0;
     let mut retained = false;
     let mut bootstrap_retained = false;
+    let mut automatic_retained = false;
+    let mut automatic_bootstrap_retained = false;
     for entry in std::fs::read_dir(journal.root())? {
         let name = entry?.file_name();
         let name = name.to_string_lossy();
@@ -628,8 +674,22 @@ pub(crate) fn load_original_for_actor(
         }
         retained |= name.starts_with(&terminal_prefix) && name.ends_with(".terminal");
         bootstrap_retained |= name.starts_with(&bootstrap_prefix) && name.ends_with(".terminal");
+        automatic_retained |= name.starts_with(&automatic_prefix) && name.ends_with(".terminal");
+        automatic_bootstrap_retained |=
+            name.starts_with(&automatic_bootstrap_prefix) && name.ends_with(".terminal");
     }
-    if intents > 1 || (retained && bootstrap_retained) {
+    if intents > 1
+        || [
+            retained,
+            bootstrap_retained,
+            automatic_retained,
+            automatic_bootstrap_retained,
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count()
+            > 1
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "ambiguous original intent reference",
@@ -638,7 +698,11 @@ pub(crate) fn load_original_for_actor(
     let pending = match journal.resolve_recovery_ref(recovery) {
         Ok(reference) => Some(journal.load(&reference)?),
         Err(error)
-            if error.kind() == io::ErrorKind::NotFound && (retained || bootstrap_retained) =>
+            if error.kind() == io::ErrorKind::NotFound
+                && (retained
+                    || bootstrap_retained
+                    || automatic_retained
+                    || automatic_bootstrap_retained) =>
         {
             None
         }
@@ -652,7 +716,9 @@ pub(crate) fn load_original_for_actor(
     if retained
         && pending
             .as_ref()
-            .is_some_and(|p| p.header.kind != crate::protocol::results::IntentKind::HandoffDelivery)
+            .is_some_and(|p| {
+                !matches!(&p.semantic, SemanticMutation::Frozen { mutation, .. } if matches!(mutation.as_ref(), SemanticMutation::HandoffDelivery(_)))
+            })
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -661,7 +727,7 @@ pub(crate) fn load_original_for_actor(
     }
     if bootstrap_retained
         && pending.as_ref().is_some_and(|p| {
-            p.header.kind != crate::protocol::results::IntentKind::HandoffBootstrap
+            !matches!(&p.semantic, SemanticMutation::Frozen { mutation, .. } if matches!(mutation.as_ref(), SemanticMutation::HandoffBootstrap(_)))
         })
     {
         return Err(io::Error::new(
@@ -669,11 +735,59 @@ pub(crate) fn load_original_for_actor(
             "conflicting original intent and bootstrap terminal",
         ));
     }
+    if automatic_bootstrap_retained
+        && pending.as_ref().is_some_and(|p| {
+            !matches!(&p.semantic, SemanticMutation::Frozen { mutation, .. } if matches!(mutation.as_ref(), SemanticMutation::AutomaticBootstrap(_)))
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "conflicting original intent and automatic bootstrap terminal",
+        ));
+    }
+    if automatic_bootstrap_retained {
+        let reference = super::topology_handoff::resolve_automatic_recovery_ref(journal, recovery)
+            .map_err(io::Error::other)?;
+        return super::topology_handoff::load_automatic_original(journal, &reference)
+            .map_err(io::Error::other);
+    }
+    if automatic_retained || pending.as_ref().is_some_and(|p| {
+        matches!(
+            &p.semantic,
+            SemanticMutation::Frozen { mutation, .. }
+                if matches!(mutation.as_ref(),
+                    SemanticMutation::AutomaticDelivery(_) | SemanticMutation::AutomaticHandoff(_))
+        )
+    }) {
+        if pending.as_ref().is_some_and(|p| !matches!(
+            &p.semantic,
+            SemanticMutation::Frozen { mutation, .. }
+                if matches!(mutation.as_ref(),
+                    SemanticMutation::AutomaticDelivery(_) | SemanticMutation::AutomaticHandoff(_))
+        )) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "conflicting automatic original"));
+        }
+        let reference = super::handoff_delivery::resolve_automatic_recovery_ref(journal, recovery)
+            .map_err(io::Error::other)?;
+        return super::handoff_delivery::load_automatic_original(journal, &reference)
+            .map_err(io::Error::other);
+    }
     if bootstrap_retained
         || pending.as_ref().is_some_and(|p| {
             p.header.kind == crate::protocol::results::IntentKind::HandoffBootstrap
         })
     {
+        if pending.as_ref().is_some_and(|p| {
+            matches!(
+                &p.semantic,
+                SemanticMutation::Frozen { mutation, .. }
+                    if matches!(mutation.as_ref(), SemanticMutation::AutomaticBootstrap(_))
+            )
+        }) {
+            let reference = journal.resolve_recovery_ref(recovery)?;
+            return super::topology_handoff::load_automatic_original(journal, &reference)
+                .map_err(io::Error::other);
+        }
         let reference = super::topology_handoff::resolve_recovery_ref(journal, recovery)
             .map_err(io::Error::other)?;
         return super::topology_handoff::load_original(journal, &reference)

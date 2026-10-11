@@ -305,6 +305,7 @@ pub fn scan_effective_seat_attention(
         actionable_warning: key(position
             .latest_warning_seq
             .zip(position.latest_warning_offset))?,
+        lazy: None,
     };
     let attention = (!has_more).then_some(EffectiveSeatAttention {
         has_pending_invitation: position.has_pending_invitation,

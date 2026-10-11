@@ -880,6 +880,16 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
 }
 
 #[test]
+fn thread_list_help_explains_literal_name_or_topic_search() {
+    let help = match parse_argv_or_informational(["ht", "thread", "list", "--help"]).unwrap_err() {
+        ParseFailure::Informational(text) => text,
+        other => panic!("expected help, got {other:?}"),
+    };
+    assert!(help.contains("case-sensitive literal substring"), "{help}");
+    assert!(help.contains("thread name or topic"), "{help}");
+}
+
+#[test]
 fn continuation_argv_round_trips_context_filter_format_and_bounds() {
     use crate::protocol::pagination::{Cursor, CursorDirection, CursorScope};
     let cursor = Cursor {
@@ -911,8 +921,9 @@ fn continuation_argv_round_trips_context_filter_format_and_bounds() {
         "thread".into(),
         "list".into(),
         "--all".into(),
+        "--recent".into(),
         "--search".into(),
-        "雪's topic".into(),
+        "雪's %_.* topic".into(),
         "--cursor".into(),
         cursor.clone(),
         "--limit".into(),
@@ -935,8 +946,8 @@ fn continuation_argv_round_trips_context_filter_format_and_bounds() {
     );
     assert!(
         matches!(parsed.action, CliAction::Wire(crate::protocol::commands::Command::Directory(q)) if
-        q.membership_filter == crate::protocol::commands::DirectoryMembership::All &&
-        q.topic_contains.as_deref() == Some("雪's topic") && q.page.cursor.as_deref() == Some(&cursor) &&
+        q.recent && q.membership_filter == crate::protocol::commands::DirectoryMembership::All &&
+        q.topic_contains.as_deref() == Some("雪's %_.* topic") && q.page.cursor.as_deref() == Some(&cursor) &&
         q.page.limit == 3 && q.page.max_bytes == 600)
     );
 }
@@ -1718,7 +1729,6 @@ fn handoff_new_tab_conflicts_and_required_fields() {
     }
     for argv in [
         vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--", "work"],
-        vec!["herdr-threads", "handoff", "--new-tab", "peer", "--kind", "codex", "--", "work"],
         vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--kind", "codex"],
         vec!["herdr-threads", "handoff", "--pane", "w1:p1", "--cwd", "/tmp", "--new-thread", "--kind", "codex", "--", "work"],
     ] { assert!(parse_argv(argv.clone()).is_err(), "accepted missing/conflict: {argv:?}"); }
@@ -2142,7 +2152,7 @@ impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
     type Admission = ();
     fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
         use crate::harness::adapter::*;
-        static METADATA: AdapterMetadata = AdapterMetadata {
+        static METADATA: AdapterMetadata = AdapterMetadata { agent_env_markers: &[],
             id: "selectorfixture",
             display_label: "Synthetic SelectorFixture",
             context_spelling: "SelectorFixture",
@@ -2156,7 +2166,7 @@ impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
             },
             runtime_sources: &[],
         };
-        static FOURTH: AdapterMetadata = AdapterMetadata {
+        static FOURTH: AdapterMetadata = AdapterMetadata { agent_env_markers: &[],
             id: "fourth",
             display_label: "Fourth",
             context_spelling: "Fourth",
@@ -2495,3 +2505,71 @@ fn stamp_agent_id_sets_only_the_claim_agent_id() {
         claim
     );
 }
+
+#[test]
+fn direct_send_accepts_target_body_and_human_forms() {
+    for argv in [
+        vec!["ht", "send", "--seat", "seat-b", "--body", "hello"],
+        vec!["ht", "human", "send", "--seat", "seat-b", "--body", "hello", "--nudge"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--require-ack", "seat-b", "seat-b"],
+    ] {
+        assert!(parse_argv(argv.clone()).is_ok(), "{argv:?}");
+    }
+}
+
+#[test]
+fn direct_send_rejects_ambiguous_selectors_and_broadened_ack() {
+    for argv in [
+        vec!["ht", "send", "--body", "hello"],
+        vec!["ht", "send", "t1", "--seat", "seat-b", "--body", "hello"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--require-ack", "seat-c"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--require-ack-pane", "pane-b"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--pane", "pane-b"],
+    ] {
+        assert!(parse_argv(argv.clone()).is_err(), "{argv:?}");
+    }
+}
+
+#[test]
+fn direct_send_file_and_options_preserve_frozen_input() {
+    let path = std::env::temp_dir().join(format!("ht-direct-body-{}", uuid::Uuid::new_v4()));
+    std::fs::write(&path, "first\n雪\n").unwrap();
+    let parsed = parse_argv(["ht", "send", "--seat", "seat-b", "--file", path.to_str().unwrap(), "--nudge", "--deadline", "30", "--relays-user", "--user-intent", "request"]).unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert!(matches!(parsed.action, CliAction::Mutation(MutationSpec::DirectSend(request)) if request.target.as_str() == "seat-b" && request.body == "first\n雪\n" && request.delivery_mode == DeliveryMode::Ordinary && request.deadline_millis == Some(30_000) && request.relays_user && request.user_intent == Some(UserIntent::Request)));
+    for argv in [
+        vec!["ht", "send", "--seat", "seat-b", "--body", "x", "--deadline", "30"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "x", "--lazy", "--require-ack", "seat-b"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "x", "--nudge", "--deadline", "0"],
+    ] {
+        assert!(parse_argv(argv).is_err());
+    }
+}
+
+#[test]
+fn direct_send_stdin_grammar_uses_shared_bounded_utf8_source() {
+    let cli = Cli::try_parse_from(["ht", "send", "--seat", "seat-b", "--stdin"]).unwrap();
+    let Top::Send(args) = cli.command else { panic!("send expected") };
+    assert_eq!(args.seat.as_deref(), Some("seat-b"));
+    assert!(args.thread.is_none());
+    let mut input = "line one\n雪\n".as_bytes();
+    assert_eq!(crate::cli::input::read_body_from(args.body, args.file, args.stdin, &mut input).unwrap(), "line one\n雪\n");
+}
+
+#[test]
+fn automatic_handoff_channel_omission_parses_for_every_destination() {
+    for args in [
+        vec!["ht", "handoff", "--existing", "--seat", "s1", "--", "work"],
+        vec!["ht", "handoff", "--existing", "--pane", "w1:p2", "--", "work"],
+        vec!["ht", "handoff", "--pane", "w1:p2", "--kind", "codex", "--", "work"],
+        vec!["ht", "handoff", "--new-tab", "peer", "--kind", "codex", "--", "work"],
+    ] {
+        let parsed = parse_argv(args.clone()).unwrap_or_else(|e| panic!("automatic channel rejected: {args:?}: {e:?}"));
+        match parsed.action {
+            CliAction::Handoff(request) => assert!(request.automatic),
+            CliAction::TopologyHandoff(request) => assert!(request.automatic),
+            _ => panic!("unexpected automatic parser route"),
+        }
+    }
+}
+

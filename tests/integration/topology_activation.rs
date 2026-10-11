@@ -325,15 +325,24 @@ impl Fixture {
                 &budget,
             )
             .unwrap();
-        store
-            .stage_snapshot_targets(
-                &stage.id,
-                0,
-                &snapshot.targets,
-                DurableWorkAdmission::new(16).unwrap(),
-                &budget,
-            )
-            .unwrap();
+        // A writer turn stages only a prefix when its 5 ms quantum runs out
+        // (a loaded machine): stage the rest in the following turns, as
+        // `reconcile` does, or the seal sees an incomplete target set.
+        let admission_limit = DurableWorkAdmission::new(16).unwrap();
+        let mut staged = 0usize;
+        while staged < snapshot.targets.len() {
+            let progress = store
+                .stage_snapshot_targets(
+                    &stage.id,
+                    staged as u64,
+                    &snapshot.targets[staged..],
+                    admission_limit,
+                    &budget,
+                )
+                .unwrap();
+            assert!(progress.visited > 0, "snapshot staging must advance");
+            staged += usize::from(progress.visited);
+        }
         store.seal_snapshot_stage(&stage.id, &budget).unwrap();
         store.publish_snapshot_stage(&stage.id, &budget).unwrap();
         // The sender's binding carries its session's execution, as every claim of that session
@@ -1143,6 +1152,7 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
         thread: completed.retained.thread.clone(),
         body: identity.payload.handoff.body.clone(),
+        direct_recipient: None,
         invited_recipients: vec![completed.retained.recipient.clone()],
         deadline_millis: None,
         operation: identity.payload.handoff.keys.send.clone(),
@@ -1437,6 +1447,7 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: identity.payload.handoff.body.clone(),
+        direct_recipient: None,
         invited_recipients: vec![attachment.resolved_seat.clone()],
         deadline_millis: None,
         operation: identity.payload.handoff.keys.send.clone(),
@@ -2199,6 +2210,8 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
             binary: Some("/usr/bin/true".into()),
             name: None,
             argv: vec![],
+            composed_argv: None,
+            startup_input: None,
         },
         handoff_key: OperationId::new("task21-child"),
         resolve_key: OperationId::new("task21-resolve"),

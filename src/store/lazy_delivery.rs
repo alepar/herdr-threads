@@ -45,7 +45,7 @@ pub struct PendingPage {
 /// so a binding WITHOUT a cursor row for the thread also needs the seat to have it joined (the
 /// lazy twin of `read_cursors::UNREAD_EXTRA`). A binding that holds a cursor row keeps its
 /// addressed rows after the seat leaves, as the lazy spec requires ("Leaving does not erase
-/// already addressed delivery"). The legacy branch (rows carried pending from before V31,
+/// already addressed delivery"). The legacy branch (rows carried pending from before V34,
 /// delivered to top-level bindings until displayed) is deliberately not membership-gated, so no
 /// pre-upgrade pending lazy row disappears.
 macro_rules! binding_lazy_unread_sql {
@@ -56,8 +56,8 @@ macro_rules! binding_lazy_unread_sql {
 pub(crate) use binding_lazy_unread_sql;
 
 /// A lazy recipient row `r` (with its message `m`, possibly absent) is unread at seat level when
-/// it is legacy pending (carried from before V31) or some connected top-level binding of the seat
-/// finds it unread (`binding_lazy_unread_sql!`). Post-V31 delivery never reads
+/// it is legacy pending (carried from before V34) or some connected top-level binding of the seat
+/// finds it unread (`binding_lazy_unread_sql!`). Post-V34 delivery never reads
 /// `lazy_recipients.state`.
 macro_rules! seat_unread_sql {
     () => {
@@ -303,7 +303,7 @@ pub enum LazyCompletion {
 
 /// With a `binding`, a published addressed row is pending until that binding's cursor passes
 /// it (or, for a top-level binding, until its legacy pending flag clears); without one (a
-/// pre-binding caller) the seat-wide `state` column decides, as before V31.
+/// pre-binding caller) the seat-wide `state` column decides, as before V34.
 pub fn lazy_completion_state(
     conn: &Connection,
     instance: &str,
@@ -457,7 +457,7 @@ pub fn seat_lazy_pending(db: &Connection, seat: &SeatId, cap: i64) -> Result<(u6
 /// Displays completed for `binding`: advances the binding's cursor over the displayed messages
 /// and, when the binding is top-level, clears the seat's displayed legacy rows. With `None` (a
 /// caller that matches no open binding, a pre-binding client) the display counts for the whole
-/// seat as before V31: every open top-level binding advances. Also keeps the historical `state`
+/// seat as before V34: every open top-level binding advances. Also keeps the historical `state`
 /// column. The completion handlers validate the caller and the messages before calling.
 pub fn complete_for_binding(
     tx: &Transaction<'_>,
@@ -522,6 +522,88 @@ pub fn complete_for_binding(
 
 fn is_top_level(db: &Connection, binding: &BindingId) -> Result<bool, ApiError> {
     Ok(bindings::get(db, binding)?.is_some_and(|b| b.role == bindings::BindingRole::TopLevel))
+}
+
+/// Bound of the pending-lazy count (a change detector for the mod fingerprint
+/// and the wake frontier, not a count anyone presents).
+pub const PENDING_SUMMARY_CAP: i64 = 1000;
+
+/// `(count, max ordinal)` of the seat's published pending lazy rows, over the
+/// newest `PENDING_SUMMARY_CAP`. Published rows only: a staged row is invisible
+/// to the mod and to wake, and its publication (manifest + message) must change
+/// both. Shared by `mod_seat_view` and `wake_seat_attention`.
+pub fn pending_summary(conn: &Connection, seat: &SeatId) -> Result<(i64, i64), ApiError> {
+    // Pending means unread at seat level (`seat_unread_sql!`): post-V34 delivery never reads
+    // `lazy_recipients.state`.
+    let (count, max) = seat_lazy_pending(conn, seat, PENDING_SUMMARY_CAP)?;
+    Ok((i64::try_from(count).unwrap_or(i64::MAX), max))
+}
+
+/// The lazy wake frontier of a `wake_on: all` seat: the greatest publication
+/// decision sequence (`send_manifests.decision_seq`) of its pending published
+/// lazy rows, or `None` when nothing is pending. Publication order only grows,
+/// so a row staged early but published late still lies beyond a frontier
+/// reserved earlier; the staging ordinal would not. Same window as
+/// [`pending_summary`]: the newest `PENDING_SUMMARY_CAP` pending rows by
+/// staging ordinal. A late-published row's ordinal is near the top, because
+/// staging and publication are seconds apart.
+pub fn wake_frontier(conn: &Connection, seat: &str) -> Result<Option<i64>, ApiError> {
+    let (count, max_seq): (i64, i64) = conn
+        .query_row(
+            concat!(
+                "SELECT count(*),COALESCE(max(w.decision_seq),0) FROM (SELECT sm.decision_seq FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=sm.message_id AND m.delivery_mode='lazy' WHERE r.seat_id=?1 AND ",
+                seat_unread_sql!(),
+                " ORDER BY r.ordinal DESC LIMIT ?2) w"
+            ),
+            params![seat, PENDING_SUMMARY_CAP],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(store_error)?;
+    Ok((count > 0).then_some(max_seq))
+}
+
+/// Publication time of the seat's oldest published pending lazy row; the batch
+/// window treats it like an ordinary receipt's publication time.
+pub fn oldest_pending_at(conn: &Connection, seat: &str) -> Result<Option<i64>, ApiError> {
+    conn.query_row(
+        concat!(
+            "SELECT m.decision_at FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=sm.message_id AND m.delivery_mode='lazy' WHERE r.seat_id=?1 AND ",
+                seat_unread_sql!(),
+                " ORDER BY r.ordinal LIMIT 1"
+        ),
+        [seat],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(store_error)
+}
+
+/// Wake discovery probe: the seat is `wake_on: all` and has a lazy recipient row that is
+/// staged (no message yet) or unread at seat level, within the newest
+/// `PENDING_SUMMARY_CAP` rows. The canonical summary decides whether the row is published.
+pub fn has_wake_rows(conn: &Connection, seat: &str) -> Result<bool, ApiError> {
+    conn.query_row(
+        concat!(
+            "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND wake_on='all') AND EXISTS(SELECT 1 FROM (SELECT r.ordinal FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND (m.id IS NULL OR ",
+            seat_unread_sql!(),
+            ") ORDER BY r.ordinal DESC LIMIT 1000))"
+        ),
+        [seat],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
+}
+
+/// Publication of a lazy send: every `wake_on: all` recipient gets the
+/// new-attention write so the dispatcher re-judges it. A `nudge` recipient is
+/// untouched. One set-based statement over the preparation's recipients.
+pub fn note_published(tx: &Transaction<'_>, preparation: &str) -> Result<(), ApiError> {
+    tx.execute(
+        "INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT r.seat_id,1,1 FROM lazy_recipients r INDEXED BY lazy_recipients_preparation_ordinal JOIN seats s ON s.id=r.seat_id WHERE r.preparation_id=?1 AND s.wake_on='all' ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
+        [preparation],
+    )
+    .map_err(store_error)?;
+    Ok(())
 }
 
 pub fn stage_recipient(

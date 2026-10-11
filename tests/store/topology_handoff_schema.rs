@@ -86,10 +86,10 @@ fn registered28_fresh_and_genuine_historical_chains_reopen() {
     for previous in [0, 1, 15, 22, 25, 26, 27] {
         let db = historical(previous);
         schema::initialize(&db, || UtcMillis(0)).unwrap();
-        assert_eq!(version(&db), 32, "actual {previous}->32");
+        assert_eq!(version(&db), 35, "actual {previous}->latest");
         assert_eq!(objects(&db), objects(&historical(28)));
         schema::initialize(&db, || UtcMillis(1)).unwrap();
-        assert_eq!(version(&db), 32);
+        assert_eq!(version(&db), 35);
     }
 }
 #[test]
@@ -203,7 +203,7 @@ fn registered28_preserves25_and26_history_and_rolls_back_late_ddl_failure() {
                 .unwrap();
         }
         schema::initialize(&db, || UtcMillis(0)).unwrap();
-        assert_eq!(version(&db), 32);
+        assert_eq!(version(&db), 35);
         assert_eq!(evidence(&db), before);
         let ordinary: String = db
             .query_row(

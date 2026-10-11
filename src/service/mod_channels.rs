@@ -1,4 +1,4 @@
-//! The daemon's registry of live Claude mod watch channels (spec D2, D7; spec §3 Wake).
+//! The daemon's registry of live push-channel mod watch channels (spec D2, D7; spec §3 Wake).
 //!
 //! One entry per binding: every connected top-level binding of a seat may hold its own channel
 //! (`ModChannelRegistration` is decided against A2 by `DomainService::watch_register` before it
@@ -43,6 +43,7 @@
 //! every second. The registry never holds its lock across a store read.
 
 use crate::{
+    harness::adapter::IdleWake,
     ports::{
         ModBindingRef, ModChannelId, ModChannelRegistration, ModChannelSink, ModChannels,
         ModFingerprint, ModStoreReads,
@@ -78,6 +79,7 @@ struct Entry {
     generation: u64,
     native_session: String,
     harness: Harness,
+    idle_wake: IdleWake,
     connected_since: UtcMillis,
     state: ModChannelState,
     grace_until: Option<UtcMillis>,
@@ -570,6 +572,7 @@ impl ModChannels for ModChannelRegistry {
                     generation: registration.binding_generation,
                     native_session: registration.native_session.as_str().to_owned(),
                     harness: registration.harness,
+                    idle_wake: registration.idle_wake,
                     connected_since: now,
                     state: ModChannelState::Live,
                     grace_until: None,
@@ -646,6 +649,21 @@ impl ModChannels for ModChannelRegistry {
             bindings
                 .iter()
                 .any(|binding| state.entries.get(binding).is_some_and(|e| e.handling(now)))
+        })
+    }
+
+    fn wake_suppressed(&self, seat: &SeatId) -> bool {
+        // Per binding (spec §3 Wake): some handling channel of the seat (Live or
+        // ReconnectGrace, as `seat_live`) whose policy wakes an idle session itself.
+        let now = self.clock.utc_now();
+        let state = self.lock();
+        state.by_seat.get(seat).is_some_and(|bindings| {
+            bindings.iter().any(|binding| {
+                state
+                    .entries
+                    .get(binding)
+                    .is_some_and(|e| e.idle_wake == IdleWake::Channel && e.handling(now))
+            })
         })
     }
 
@@ -735,3 +753,7 @@ impl ModChannels for ModChannelRegistry {
 #[cfg(test)]
 #[path = "../../tests/service/mod_channels.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/delivery/push_channel.rs"]
+mod push_channel_tests;

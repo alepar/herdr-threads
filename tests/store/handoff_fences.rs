@@ -394,7 +394,7 @@ fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_withou
     joined_agent(&db);
     let mut id = identity();
     // The migrated session binding is disconnected; its re-adopting call carries a fingerprint
-    // (spec section 4 Migration V29, decision 9), or the daemon refuses it.
+    // (spec section 4 Migration V29, shipped as V32, decision 9), or the daemon refuses it.
     id.claim.liveness = Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST);
     id.thread = None;
     let create = CreateThread {
@@ -413,11 +413,11 @@ fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_withou
         StoreSettings::default(),
     )
     .unwrap();
-    // The initializer upgrades the historical22 fixture to Main27 plus topology28.
+    // The initializer upgrades the historical22 fixture to Main27 plus topology28 plus wake_on29.
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        32
+        35
     );
     let tx = db.transaction().unwrap();
     let imported = handoff::import_hint(&tx, &id, None, "legacy22", UtcMillis(100)).unwrap();

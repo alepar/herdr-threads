@@ -475,6 +475,8 @@ pub enum WorkKind {
     ReceiptTimerMaterialization,
     PreparationCleanup,
     HumanReceiptReconciliation,
+    /// A bounded sweep that closes an ended unavailability episode's open conditions.
+    WarningConditionClose,
 }
 /// One bounded hidden send-preparation step. `Ready` is not a publish permit;
 /// the service must obtain fresh caller proof for the final deciding mutation.
@@ -2265,12 +2267,19 @@ pub struct LogicalAttentionFrontier {
     pub invitation: Option<LogicalPublicationKey>,
     pub addressed_receipt: Option<LogicalPublicationKey>,
     pub actionable_warning: Option<LogicalPublicationKey>,
+    /// Greatest publication decision sequence (`send_manifests.decision_seq`)
+    /// of the seat's pending lazy rows, set only for a `wake_on: all` seat
+    /// (delivery-policy DP8). Publication order only grows, so a larger value
+    /// is a lazy row published after the last reservation, even one staged
+    /// earlier.
+    pub lazy: Option<i64>,
 }
 impl LogicalAttentionFrontier {
     pub fn advanced_beyond(&self, prior: &Self) -> bool {
         self.invitation > prior.invitation
             || self.addressed_receipt > prior.addressed_receipt
             || self.actionable_warning > prior.actionable_warning
+            || self.lazy > prior.lazy
     }
 }
 
@@ -2304,6 +2313,24 @@ mod logical_attention_frontier_tests {
             ..next
         };
         assert!(warning_batch.advanced_beyond(&next));
+    }
+
+    #[test]
+    fn a_higher_lazy_ordinal_advances_the_frontier_and_none_never_does() {
+        let none = LogicalAttentionFrontier::default();
+        let one = LogicalAttentionFrontier {
+            lazy: Some(1),
+            ..none
+        };
+        let two = LogicalAttentionFrontier {
+            lazy: Some(2),
+            ..none
+        };
+        assert!(one.advanced_beyond(&none));
+        assert!(two.advanced_beyond(&one));
+        assert!(!one.advanced_beyond(&one));
+        assert!(!one.advanced_beyond(&two));
+        assert!(!none.advanced_beyond(&one));
     }
 }
 impl WakeAttentionWitness {
@@ -2400,8 +2427,22 @@ impl WakeCandidate {
         !self.effectively_retired
             && (self.has_pending_invitation
                 || self.has_pending_receipt
+                || self.has_unreserved_lazy()
                 || (self.actionable_warning_seq.is_some()
                     && !self.warning_offered_for_current_occupant()))
+    }
+    /// The lazy frontier a `wake_on: all` seat has pending (None for a `nudge`
+    /// seat, whose lazy rows never wake it).
+    pub fn pending_lazy(&self) -> Option<i64> {
+        self.attention_witness
+            .as_ref()
+            .and_then(|witness| witness.frontier.lazy)
+    }
+    /// A pending lazy row beyond the last reservation's lazy frontier: a seat
+    /// is woken once per lazy frontier, never re-woken for rows it was
+    /// already prompted about.
+    pub fn has_unreserved_lazy(&self) -> bool {
+        self.pending_lazy() > self.last_reserved_frontier.lazy
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2649,6 +2690,20 @@ pub struct ModSeatView {
     pub binding: Option<ModBindingView>,
     pub attention_version: u64,
     pub fingerprint: ModFingerprint,
+    /// The newest informational notice above the current occupant's offered
+    /// frontier (its projection ordinal), if any. Hook-pull only;
+    /// deliberately not part of `ModFingerprint`: notices never wake and the
+    /// mod channel's change detector must not see them.
+    pub newest_pending_notice: Option<i64>,
+}
+
+/// One informational notice a hook-pull page carries: the warning, its
+/// thread's topic and its author (`None` for a programmatic notice).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PulledNotice {
+    pub notice: crate::protocol::results::WarningRef,
+    pub topic: String,
+    pub author: Option<SeatId>,
 }
 
 /// Store implementations inject a clock at construction and sample UTC inside each
@@ -2657,6 +2712,10 @@ pub struct ModSeatView {
 /// Required deciding bootstrap adapter, supplied only by an equipped runtime.
 /// Namespace is independently selected by election; guards remain transient.
 pub trait BootstrapStorePort: Send + Sync {
+    /// True only for an adapter implementing the complete canonical V2 mechanism.
+    fn automatic_available(&self) -> bool {
+        false
+    }
     fn bootstrap_begin_permit(
         &self,
         canonical: &crate::protocol::handoff::HandoffNamespace,
@@ -2670,6 +2729,96 @@ pub trait BootstrapStorePort: Send + Sync {
         admission: DurableWorkAdmission,
         budget: &CallBudget,
     ) -> Result<SendPreparationProgress, ApiError>;
+    fn automatic_bootstrap_check_start(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _guard: BootstrapAttachmentGuard,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported("automatic start guard unavailable"))
+    }
+    fn automatic_bootstrap_query(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic bootstrap runtime unavailable",
+        ))
+    }
+    fn automatic_bootstrap_recovery_replay(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _actor: &crate::protocol::authority::OperatorActor,
+        _budget: &CallBudget,
+    ) -> Result<Option<CommandResult>, ApiError> {
+        Err(ApiError::unsupported("automatic recovery unavailable"))
+    }
+    fn automatic_bootstrap_recover(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _actor: &crate::protocol::authority::OperatorActor,
+        _guard: Option<BootstrapAttachmentGuard>,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported("automatic recovery unavailable"))
+    }
+    fn automatic_bootstrap_complete(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported("automatic completion unavailable"))
+    }
+    fn automatic_bootstrap_mutate(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _permit: MutationPermit,
+        _guard: Option<BootstrapAttachmentGuard>,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic bootstrap runtime unavailable",
+        ))
+    }
+    fn automatic_delivery_prepare_send_step(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        _admission: DurableWorkAdmission,
+        _budget: &CallBudget,
+    ) -> Result<SendPreparationProgress, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic canonical runtime unavailable",
+        ))
+    }
+    fn automatic_delivery_query(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic canonical runtime unavailable",
+        ))
+    }
+    fn automatic_delivery_mutate(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        _permit: MutationPermit,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic canonical runtime unavailable",
+        ))
+    }
     fn delivery_query(
         &self,
         canonical: &crate::protocol::handoff::HandoffNamespace,
@@ -3197,6 +3346,33 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         Ok(Vec::new())
     }
 
+    /// The next page (at most `limit`, oldest first) of informational notices
+    /// not yet offered to the seat's current occupant. Read-only.
+    fn pull_notice_page(
+        &self,
+        _seat: &SeatId,
+        _binding: Option<&BindingId>,
+        _limit: usize,
+        _budget: &CallBudget,
+    ) -> Result<Vec<PulledNotice>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    /// Settle exactly `carried`, the oldest-first unoffered prefix, for the
+    /// canonical open binding (`generation`, `native_session`). `false`
+    /// when the binding moved or the carried notices are no longer exactly
+    /// that prefix (a check-in carried them first); nothing is written then.
+    fn settle_pulled_notices(
+        &self,
+        _seat: &SeatId,
+        _generation: u64,
+        _native_session: &str,
+        _carried: &[crate::protocol::results::WarningRef],
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+
     /// Clear a retained window only when canonical ordinary attention is gone.
     fn clear_wake_batch_if_empty(
         &self,
@@ -3510,6 +3686,9 @@ pub struct ModChannelRegistration {
     pub binding_generation: u64,
     pub native_session: NativeSessionId,
     pub harness: Harness,
+    /// What wakes an idle seat of this harness, from its delivery policy
+    /// (delivery-policy DP7).
+    pub idle_wake: crate::harness::adapter::IdleWake,
     pub registered_at: UtcMillis,
 }
 
@@ -3597,7 +3776,7 @@ pub trait ModChannels: Send + Sync {
     /// seat whose grace has not expired, Live or ReconnectGrace, whichever binding holds it.
     /// A RebindGrace entry (a binding closed as superseded) does not count: the new binding is
     /// woken and digested for its own unread mail (spec §1.3, §3 Wake). Consumers: the seat-level wake candidate
-    /// path and pokes (scheduler `mod_suppressed`) and the Claude hook digest
+    /// path and pokes (via [`Self::wake_suppressed`]) and the push-channel hook digest
     /// flag (`mod_channel_live`). The default answers from `status()`.
     fn seat_live(&self, seat: &SeatId) -> bool {
         self.status().is_some_and(|status| {
@@ -3606,6 +3785,14 @@ pub trait ModChannels: Send + Sync {
                     && entry.state != crate::protocol::watch::ModChannelState::RebindGrace
             })
         })
+    }
+    /// Whether native wake and pokes are suppressed for the seat (delivery-policy
+    /// DP7): the mod handles the seat *and* its policy says the channel is what
+    /// wakes an idle session (`IdleWake::Channel`). The default is
+    /// [`Self::seat_live`]; a registry that records each channel's `idle_wake`
+    /// overrides it.
+    fn wake_suppressed(&self, seat: &SeatId) -> bool {
+        self.seat_live(seat)
     }
     /// Push `Attention{version}` to every Live channel of the seat.
     fn notify(&self, _seat: &SeatId, _attention_version: u64) {}
@@ -3640,6 +3827,42 @@ pub trait ModChannels: Send + Sync {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoModChannels;
 impl ModChannels for NoModChannels {}
+
+/// What a hook-pull seat's next `DeliveryPull` would show, from the daemon's process-local offered ledger (no
+/// store read). Seats the ledger has no entry for are `Unknown`: every seat of a harness without hook pull, and every
+/// seat before its first pull in this process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NextPull {
+    Unknown,
+    /// New attention since the last whole read, more behind a page bound, or a re-offer that is due.
+    Delivers,
+    /// Everything pending was shown; the earliest re-offer comes due at this time.
+    ReofferAt(UtcMillis),
+    /// Everything pending was shown and no re-offer is left in this generation.
+    Nothing,
+}
+
+pub trait HookPullOutlook: Send + Sync {
+    fn next_pull(
+        &self,
+        _seat: &SeatId,
+        _binding_generation: u64,
+        _attention_version: u64,
+        _now: UtcMillis,
+    ) -> NextPull {
+        NextPull::Unknown
+    }
+    /// The seat's ledger entry of this generation holds an id shown the maximum number of times, or is full (new
+    /// ids are not shown): it waits for `inbox`.
+    fn holds_parked(&self, _seat: &SeatId, _binding_generation: u64) -> bool {
+        false
+    }
+}
+
+/// The default outlook: nothing is known.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoHookPullOutlook;
+impl HookPullOutlook for NoHookPullOutlook {}
 
 pub trait NotificationPort: Send + Sync {
     fn attempt_wake(

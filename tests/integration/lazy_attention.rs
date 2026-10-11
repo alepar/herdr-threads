@@ -128,6 +128,7 @@ impl Fixture {
             delivery_mode: mode,
             thread: ThreadId::new("t"),
             body: format!("announcement {op}"),
+            direct_recipient: None,
             invited_recipients: vec![],
             deadline_millis: None,
             operation: OperationId::new(op),

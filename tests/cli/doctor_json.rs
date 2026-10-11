@@ -4,6 +4,10 @@
 //! Each test names the mutation it kills.
 
 use super::*;
+use crate::harness::{
+    claude::doctor::{claude_installed_on, claude_installed_stub, claude_installed_with_warning},
+    codex::doctor::codex_installed_json,
+};
 
 struct CurrentHealthDoctorClock(std::sync::atomic::AtomicI64);
 impl Clock for CurrentHealthDoctorClock {
@@ -442,7 +446,7 @@ fn claude_stub_is_not_found_with_null_fields() {
 fn codex_not_found_maps_to_the_same_string_as_state() {
     let codex = crate::harness::codex::InstalledAdmission::observe_on_path(
         Some(std::ffi::OsStr::new("/nonexistent-ht-p03-47")),
-        crate::harness::codex::VERSION_TIMEOUT,
+        crate::harness::process::VERSION_TIMEOUT,
     );
     let installed = codex_installed_json(&codex);
     assert_eq!(installed.admission.as_str(), codex.state());
@@ -942,6 +946,7 @@ impl HarnessAdapter for ProfileDoctorAdapter {
     type Admission = ();
     fn metadata(&self) -> &'static AdapterMetadata {
         static META: AdapterMetadata = AdapterMetadata {
+            agent_env_markers: &[],
             id: "fourth",
             display_label: "Fourth",
             context_spelling: "Fourth",
@@ -1047,6 +1052,15 @@ impl HarnessAdapter for ProfileDoctorAdapter {
             },
             repair_options: Default::default(),
         })
+    }
+    fn doctor_text(&self, _: &Value, form: DoctorTextForm) -> String {
+        match form {
+            DoctorTextForm::Debug => "x: debug line\n".into(),
+            DoctorTextForm::Summary => "x: summary line\n".into(),
+        }
+    }
+    fn doctor_summary_claims(&self) -> &'static [&'static str] {
+        &["fourth already said"]
     }
     fn setup(
         &self,
@@ -1418,4 +1432,206 @@ fn doctor_local_native_capture_is_clamped_to_shared_doctor_deadline() {
     let _ = run_registered(&parsed, registry, Some(&environment), &mut out);
     let doc: Value = serde_json::from_slice::<Value>(&out).unwrap()["doctor"].clone();
     assert_eq!(doc["hooks"]["claude"]["installed"]["version"], Value::Null);
+}
+
+fn fourth_and_claude_registry(
+    safe: bool,
+) -> (
+    &'static ProfileDoctorAdapter,
+    &'static crate::harness::registry::Registry,
+) {
+    use crate::harness::registry::{Registration, Registry};
+    let adapter: &'static ProfileDoctorAdapter = Box::leak(Box::new(ProfileDoctorAdapter {
+        requests: Default::default(),
+        setup_deadlines: Default::default(),
+        safe,
+        captured_scope: None,
+    }));
+    let registry = Box::leak(Box::new(
+        Registry::new(Box::leak(
+            vec![
+                Registration::new(adapter),
+                Registration::new(&crate::harness::claude::ClaudeAdapter),
+            ]
+            .into_boxed_slice(),
+        ))
+        .unwrap(),
+    ));
+    (adapter, registry)
+}
+
+/// Kills a core that renders `hooks.<id>` itself instead of asking each adapter, or that
+/// ignores `adapter_order` (a fixed claude-then-codex sequence).
+#[test]
+fn registered_adapter_doctor_text_renders_in_adapter_order_for_both_forms() {
+    let (_, registry) = fourth_and_claude_registry(false);
+    let claude = json!({"setup": {"installed": true}, "installed": {"admission": "listed"}});
+    let mut report = json!({
+        "result": "ok", "context": {"ok": true}, "state_dir": {"safe": true},
+        "daemon": {"state": "healthy"},
+        "adapter_order": ["fourth", "claude"],
+        "hooks": {"fourth": {}, "claude": claude},
+    });
+    let debug = render_debug_text_in(&report, registry);
+    let summary = render_text_in(&report, registry);
+    for (text, mine, theirs) in [
+        (&debug, "x: debug line\n", "hooks.claude.settings"),
+        (
+            &summary,
+            "x: summary line\n",
+            "claude: listed, hooks installed",
+        ),
+    ] {
+        let (a, b) = (text.find(mine), text.find(theirs));
+        assert!(a.is_some() && b.is_some() && a < b, "{text}");
+    }
+    report["adapter_order"] = json!(["claude", "fourth"]);
+    for (text, mine, theirs) in [
+        (
+            render_debug_text_in(&report, registry),
+            "x: debug line\n",
+            "hooks.claude.settings",
+        ),
+        (
+            render_text_in(&report, registry),
+            "x: summary line\n",
+            "claude: listed, hooks installed",
+        ),
+    ] {
+        let (a, b) = (text.find(mine), text.find(theirs));
+        assert!(a.is_some() && b.is_some() && b < a, "{text}");
+    }
+    // An adapter that is not selected renders nothing.
+    report["adapter_order"] = json!(["claude"]);
+    assert!(!render_debug_text_in(&report, registry).contains("x: debug line"));
+    assert!(!render_text_in(&report, registry).contains("x: summary line"));
+}
+
+/// Kills printing a limitation the adapter's summary text already claimed (twice), and
+/// over-filtering that drops other limitations.
+#[test]
+fn summary_limitations_claimed_by_an_adapter_prefix_are_not_printed_twice() {
+    let (_, registry) = fourth_and_claude_registry(false);
+    let report = json!({
+        "result": "degraded", "context": {"ok": true}, "state_dir": {"safe": true},
+        "daemon": {"state": "healthy"}, "adapter_order": ["fourth"],
+        "hooks": {"fourth": {}},
+        "limitations": ["fourth already said: check hooks", "unrelated limitation"],
+    });
+    let summary = render_text_in(&report, registry);
+    assert!(!summary.contains("fourth already said"), "{summary}");
+    assert!(
+        summary.contains("issue: unrelated limitation\n"),
+        "{summary}"
+    );
+    // The debug form still lists every limitation.
+    let debug = render_debug_text_in(&report, registry);
+    assert!(
+        debug.contains("limitation: fourth already said: check hooks\n"),
+        "{debug}"
+    );
+}
+
+/// Kills a summary `fix:` line driven by builtin-specific hooks instead of the collected safe
+/// repairs of any registered adapter, and a `--json` document that leaks the internal hand-off.
+#[test]
+fn projection_safe_repairs_fire_the_summary_fix_line_and_stay_out_of_json() {
+    let case = PathCase::new("safe-repair-fix-line");
+    let (_, registry) = fourth_and_claude_registry(true);
+    let state = case.dir.join("state");
+    let host = case.dir.join("herdr.sock");
+    let environment = SetupEnvironment {
+        config_roots: [("fourth".into(), case.dir.join("profiles"))]
+            .into_iter()
+            .collect(),
+        declared: [("PROFILE_INPUT".into(), "v".into())].into_iter().collect(),
+        path: Some("/no-native-doctor-path".into()),
+        state_dir: Some(state.clone()),
+        host_endpoint: Some(host.clone()),
+        executable: PathBuf::from("/isolated/herdr-threads"),
+        ..Default::default()
+    };
+    let mut report = json!({
+        "result": "ok", "context": {"ok": true}, "state_dir": {"safe": true},
+        "daemon": {"state": "healthy"},
+    });
+    let owned = collect_local(
+        &mut report,
+        registry,
+        Some("fourth"),
+        &SetupScopeRequest::Profile("work".into()),
+        &environment,
+    );
+    assert_eq!(owned.len(), 1);
+    assert_eq!(
+        report["local_harnesses"]["fourth"]["safe_repairs"],
+        json!(["install_owned"])
+    );
+    let summary = render_text_in(&report, registry);
+    assert!(
+        summary.contains("fix: herdr-threads doctor fix\n"),
+        "{summary}"
+    );
+    // The write gate still applies: an unsafe state tree offers no fix.
+    report["state_dir"]["safe"] = json!(false);
+    assert!(!render_text_in(&report, registry).contains("fix: herdr-threads"));
+    report["state_dir"]["safe"] = json!(true);
+    // No safe repair from any adapter and a running daemon: no fix line.
+    report["local_harnesses"]["fourth"]["safe_repairs"] = json!([]);
+    assert!(!render_text_in(&report, registry).contains("fix: herdr-threads"));
+
+    let parsed = super::super::commands::parse_argv_in_registry(
+        [
+            std::ffi::OsString::from("herdr-threads"),
+            "doctor".into(),
+            "--json".into(),
+            "--harness".into(),
+            "fourth".into(),
+            "--profile".into(),
+            "work".into(),
+            "--state-dir".into(),
+            state.into_os_string(),
+            "--host-endpoint".into(),
+            host.into_os_string(),
+        ],
+        registry,
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    let _ = run_registered(&parsed, registry, Some(&environment), &mut out);
+    let doc: Value = serde_json::from_slice::<Value>(&out).unwrap()["doctor"].clone();
+    assert!(
+        doc["local_harnesses"]["fourth"]
+            .get("safe_repairs")
+            .is_none(),
+        "{doc}"
+    );
+}
+
+/// Kills a fixed `harness_claude`/`harness_codex` pair: any `daemon.harness_<id>` key renders,
+/// sorted, between the host and error lines.
+#[test]
+fn daemon_harness_keys_render_sorted_and_neutral() {
+    let report = json!({
+        "result": "ok", "context": {"ok": true, "state_dir": "/s", "host_endpoint": "/h"},
+        "state_dir": {"exists": true, "safe": true},
+        "daemon": {
+            "state": "healthy", "host_reachability": "ok",
+            "harness_zeta": "supported", "harness_alpha": "cooperative", "harness_mid": "unknown",
+            "error": "boom"
+        },
+    });
+    let text = render_debug_text(&report);
+    let positions: Vec<_> = [
+        "daemon.host_reachability: ok\n",
+        "daemon.harness_alpha: cooperative\n",
+        "daemon.harness_mid: unknown\n",
+        "daemon.harness_zeta: supported\n",
+        "daemon.error: boom\n",
+    ]
+    .iter()
+    .map(|line| text.find(line))
+    .collect();
+    assert!(positions.iter().all(Option::is_some), "{text}");
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
 }

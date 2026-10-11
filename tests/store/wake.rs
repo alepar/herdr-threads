@@ -1013,6 +1013,7 @@ fn prior_ladder() -> crate::ports::PriorLadder {
             }),
             addressed_receipt: None,
             actionable_warning: None,
+            lazy: None,
         },
     }
 }

@@ -249,15 +249,25 @@ impl Fixture {
                 &budget,
             )
             .unwrap();
-        host.store
-            .stage_snapshot_targets(
-                &stage.id,
-                0,
-                &captured.targets,
-                DurableWorkAdmission::new(16).unwrap(),
-                &budget,
-            )
-            .unwrap();
+        // A writer turn stages only a prefix when its 5 ms quantum runs out
+        // (a loaded machine): stage the rest in the following turns, as
+        // `reconcile` does, or the seal sees an incomplete target set.
+        let admission_limit = DurableWorkAdmission::new(16).unwrap();
+        let mut staged = 0usize;
+        while staged < captured.targets.len() {
+            let progress = host
+                .store
+                .stage_snapshot_targets(
+                    &stage.id,
+                    staged as u64,
+                    &captured.targets[staged..],
+                    admission_limit,
+                    &budget,
+                )
+                .unwrap();
+            assert!(progress.visited > 0, "snapshot staging must advance");
+            staged += usize::from(progress.visited);
+        }
         host.store.seal_snapshot_stage(&stage.id, &budget).unwrap();
         host.store
             .publish_snapshot_stage(&stage.id, &budget)

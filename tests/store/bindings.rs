@@ -433,7 +433,7 @@ mod resolution {
         db.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// The state the V29 migration leaves an agent binding in: open, `migrated`, disconnected for
+    /// The state the V32 migration leaves an agent binding in: open, `migrated`, disconnected for
     /// reason `migrated`, no fingerprint, keyed by its pre-upgrade session.
     fn migrate(db: &Connection, id: &BindingId, session: &str) {
         db.execute(

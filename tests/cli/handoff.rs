@@ -5,6 +5,648 @@ use crate::protocol::{
     time::{CallBudget, MonoInstant, UtcMillis},
 };
 use std::sync::Mutex;
+
+// This fixture exercises the parsed omitted-channel request through the actual
+// producer, and refuses every standalone Create/Invite/Accept/ACK route.
+struct AutomaticClient {
+    supported: bool,
+    calls: Mutex<Vec<Command>>,
+    thread: Mutex<Option<ThreadId>>,
+    sent: Mutex<bool>,
+    send_count: Mutex<usize>,
+    invitations: Mutex<usize>,
+    rejected: Mutex<bool>,
+    lose_ensure: Mutex<bool>,
+    binding_changed: Mutex<bool>,
+    completed: Mutex<bool>,
+    lose_complete: Mutex<bool>,
+}
+impl AutomaticClient {
+    fn new() -> Self {
+        Self {
+            supported: true,
+            calls: Mutex::new(vec![]),
+            thread: Mutex::new(None),
+            sent: Mutex::new(false),
+            send_count: Mutex::new(0),
+            invitations: Mutex::new(0),
+            rejected: Mutex::new(false),
+            lose_ensure: Mutex::new(false),
+            binding_changed: Mutex::new(false),
+            completed: Mutex::new(false),
+            lose_complete: Mutex::new(false),
+        }
+    }
+}
+impl LocalClient for AutomaticClient {
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command.clone());
+        match command {
+            Command::Capabilities => Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: if self.supported {
+                        vec![crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into()]
+                    } else {
+                        vec![]
+                    },
+                },
+            )),
+            Command::AutomaticHandoffDelivery(request) => {
+                use crate::protocol::handoff::AutomaticDeliveryAction;
+                if *self.binding_changed.lock().unwrap()
+                    && !matches!(request.action, AutomaticDeliveryAction::Status)
+                {
+                    return Err(ApiError::new(
+                        ErrorCode::CallerUnverified,
+                        "original binding changed; only history may replay",
+                    ));
+                }
+                assert_eq!(request.plan().recipient.as_str(), "recipient");
+                assert_eq!(request.plan().payload.body, "secret durable task");
+                let keys = &request.plan().payload.keys;
+                let status = |state, thread| {
+                    CommandResult::Handoff(crate::protocol::handoff::HandoffResult {
+                        compound: keys.compound.clone(),
+                        thread,
+                        state,
+                    })
+                };
+                match &request.action {
+                    AutomaticDeliveryAction::Prepare => {
+                        Ok(CommandResult::SeatResolved(SeatId::new("recipient")))
+                    }
+                    AutomaticDeliveryAction::Status | AutomaticDeliveryAction::Begin { .. } => {
+                        Ok(status(
+                            if *self.completed.lock().unwrap() {
+                                crate::protocol::handoff::HandoffState::Completed
+                            } else {
+                                crate::protocol::handoff::HandoffState::Live
+                            },
+                            self.thread.lock().unwrap().clone(),
+                        ))
+                    }
+                    AutomaticDeliveryAction::Ensure(ensure) => {
+                        assert_eq!(ensure.operation, keys.ensure);
+                        let mut thread = self.thread.lock().unwrap();
+                        if thread.is_none() {
+                            *self.invitations.lock().unwrap() += 1;
+                            *thread = Some(ThreadId::new("t-pair"));
+                        }
+                        drop(thread);
+                        if std::mem::take(&mut *self.lose_ensure.lock().unwrap()) {
+                            return Err(ApiError::unknown_outcome("Ensure committed; reply lost"));
+                        }
+                        Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
+                    }
+                    AutomaticDeliveryAction::Send(send) => {
+                        assert_eq!(send.operation, keys.send);
+                        assert_eq!(send.thread.as_str(), "t-pair");
+                        assert_eq!(
+                            send.direct_recipient.as_ref().unwrap().as_str(),
+                            "recipient"
+                        );
+                        if *self.rejected.lock().unwrap() && !*self.sent.lock().unwrap() {
+                            return Err(ApiError::new(
+                                ErrorCode::MembershipRequired,
+                                "recipient rejected; explicitly reinvite",
+                            ));
+                        }
+                        *self.sent.lock().unwrap() = true;
+                        *self.send_count.lock().unwrap() += 1;
+                        Ok(CommandResult::MessageSent(MessageId::new("m-pair")))
+                    }
+                    AutomaticDeliveryAction::Complete { operation } => {
+                        assert_eq!(operation, &keys.complete);
+                        assert!(*self.sent.lock().unwrap());
+                        *self.completed.lock().unwrap() = true;
+                        if std::mem::take(&mut *self.lose_complete.lock().unwrap()) {
+                            return Err(ApiError::unknown_outcome(
+                                "Complete committed; reply lost",
+                            ));
+                        }
+                        Ok(status(
+                            crate::protocol::handoff::HandoffState::Completed,
+                            Some(ThreadId::new("t-pair")),
+                        ))
+                    }
+                }
+            }
+            other => panic!("automatic producer used forbidden command: {other:?}"),
+        }
+    }
+}
+
+#[derive(Default)]
+struct AutomaticLauncher {
+    starts: usize,
+    lose_start: bool,
+}
+impl HandoffLauncher for AutomaticLauncher {
+    fn select_startup_input(
+        &mut self,
+        request: &LaunchRequest,
+    ) -> Result<crate::harness::adapter::StartupInputTemplate, RunError> {
+        Ok(crate::harness::adapter::StartupInputTemplate::positional(
+            request.argv.len(),
+        ))
+    }
+    fn preflight(&mut self, _: &LaunchRequest) -> Result<SeatId, RunError> {
+        Ok(SeatId::new("recipient"))
+    }
+    fn launch(
+        &mut self,
+        request: &LaunchRequest,
+        seat: &SeatId,
+        gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
+    ) -> Result<super::super::launch::LaunchReport, RunError> {
+        assert_eq!(seat.as_str(), "recipient");
+        assert!(request.argv.iter().any(|arg| arg.contains("t-pair")));
+        gate(true)?;
+        self.starts += 1;
+        if self.lose_start {
+            return Err(ApiError::unknown_outcome("native start submitted; reply lost").into());
+        }
+        Ok(super::super::launch::LaunchReport {
+            report: serde_json::json!({"outcome":"started"}),
+            exit: 0,
+        })
+    }
+}
+
+#[test]
+fn automatic_launched_pane_uses_ensure_send_and_one_start() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong parser route")
+    };
+    assert!(request.automatic);
+    let (_temp, journal) = journal();
+    let client = AutomaticClient::new();
+    let mut launcher = AutomaticLauncher::default();
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut bytes = vec![];
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let result = start(
+        &journal,
+        request,
+        original_claim,
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut bytes,
+    );
+    assert!(result.is_ok(), "automatic launch failed: {result:?}");
+    assert_eq!(launcher.starts, 1);
+    let calls = client.calls.lock().unwrap();
+    assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Ensure(_)))).count(), 1);
+    assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Send(_)))).count(), 1);
+    assert!(!bytes.is_empty());
+}
+
+#[test]
+fn automatic_launched_pane_lost_ensure_then_reject_preserves_original_without_send_or_start() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong parser route")
+    };
+    assert!(request.automatic);
+    let (_temp, journal) = journal();
+    let client = AutomaticClient::new();
+    *client.lose_ensure.lock().unwrap() = true;
+    let mut launcher = AutomaticLauncher::default();
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let mut first_output = vec![];
+    let first = start(
+        &journal,
+        request,
+        original_claim.clone(),
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut first_output,
+    );
+    assert!(
+        matches!(first, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{first:?}"
+    );
+    assert!(!first_output.is_empty(), "lost Ensure needs retry guidance");
+    assert_eq!(*client.invitations.lock().unwrap(), 1);
+    assert_eq!(*client.send_count.lock().unwrap(), 0);
+    assert_eq!(launcher.starts, 0);
+
+    let reference =
+        crate::cli::handoff_delivery::resolve_automatic_recovery_ref(&journal, "local:1").unwrap();
+    let original =
+        crate::cli::handoff_delivery::load_automatic_original(&journal, &reference).unwrap();
+    let original_bytes = serde_json::to_vec(&original.semantic).unwrap();
+    let original_digest = original.header.semantic_digest.clone();
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: original_claim.instance.clone(),
+        state_dir: "/tmp/automatic-state".into(),
+        host_endpoint: "/tmp/automatic-host.sock".into(),
+    };
+    *client.rejected.lock().unwrap() = true;
+    let mut retry_output = vec![];
+    let retry = retry_automatic_live(
+        &journal,
+        "local:1",
+        &original_claim,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut retry_output,
+    );
+    assert!(
+        matches!(retry, Err(RunError::Api(ref e)) if e.code == ErrorCode::MembershipRequired && e.detail.contains("reinvite")),
+        "{retry:?}"
+    );
+    assert!(
+        !retry_output.is_empty(),
+        "rejection needs recovery guidance"
+    );
+    assert_eq!(*client.invitations.lock().unwrap(), 1);
+    assert_eq!(*client.send_count.lock().unwrap(), 0);
+    assert_eq!(launcher.starts, 0);
+    let retained =
+        crate::cli::handoff_delivery::load_automatic_original(&journal, &reference).unwrap();
+    assert_eq!(retained.header.semantic_digest, original_digest);
+    assert_eq!(
+        serde_json::to_vec(&retained.semantic).unwrap(),
+        original_bytes
+    );
+    assert!(
+        String::from_utf8(original_bytes)
+            .unwrap()
+            .contains("secret durable task")
+    );
+    assert!(journal.resolve_recovery_ref("local:1").is_ok());
+    assert!(client.calls.lock().unwrap().iter().all(|call| !matches!(
+        call,
+        Command::Invite(_) | Command::Accept(_) | Command::Ack(_)
+    )));
+}
+
+#[test]
+fn automatic_launched_pane_unsupported_refuses_before_journal_and_start() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let (_temp, journal) = journal();
+    let mut client = AutomaticClient::new();
+    client.supported = false;
+    let mut launcher = AutomaticLauncher::default();
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let result = start(
+        &journal,
+        request,
+        original_claim,
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(
+        matches!(result, Err(RunError::Api(ref e)) if e.code == ErrorCode::Unsupported),
+        "{result:?}"
+    );
+    assert_eq!(launcher.starts, 0);
+    assert_eq!(client.calls.lock().unwrap().len(), 1);
+    assert!(journal.resolve_recovery_ref("local:1").is_err());
+}
+
+#[test]
+fn automatic_launched_pane_lost_start_never_resubmits_on_retry() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let (_temp, journal) = journal();
+    let client = AutomaticClient::new();
+    let mut launcher = AutomaticLauncher {
+        lose_start: true,
+        ..Default::default()
+    };
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let mut first_bytes = vec![];
+    let first = start(
+        &journal,
+        request,
+        original_claim,
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut first_bytes,
+    );
+    assert!(
+        matches!(first, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{first:?}"
+    );
+    assert_eq!(launcher.starts, 1);
+    assert!(!first_bytes.is_empty());
+    let reference =
+        crate::cli::handoff_delivery::resolve_automatic_recovery_ref(&journal, "local:1").unwrap();
+    launcher.lose_start = false;
+    let retry = crate::cli::handoff_delivery::retry_automatic_to_writer(
+        &journal,
+        &reference,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &crate::protocol::handoff::HandoffNamespace {
+            instance: claim().instance,
+            state_dir: "/tmp/automatic-state".into(),
+            host_endpoint: "/tmp/automatic-host.sock".into(),
+        },
+        &client,
+        Some(&mut launcher),
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(
+        matches!(retry, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{retry:?}"
+    );
+    assert_eq!(launcher.starts, 1);
+}
+
+#[test]
+fn automatic_launched_pane_lost_complete_retries_terminal_without_relaunch() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let (_temp, journal) = journal();
+    let client = AutomaticClient::new();
+    *client.lose_complete.lock().unwrap() = true;
+    let mut launcher = AutomaticLauncher::default();
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let first = start(
+        &journal,
+        request,
+        original_claim,
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(
+        matches!(first, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{first:?}"
+    );
+    assert_eq!(launcher.starts, 1);
+    let reference =
+        crate::cli::handoff_delivery::resolve_automatic_recovery_ref(&journal, "local:1").unwrap();
+    let report = crate::cli::handoff_delivery::retry_automatic_to_writer(
+        &journal,
+        &reference,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &crate::protocol::handoff::HandoffNamespace {
+            instance: claim().instance,
+            state_dir: "/tmp/automatic-state".into(),
+            host_endpoint: "/tmp/automatic-host.sock".into(),
+        },
+        &client,
+        None,
+        &TestClock,
+        &output,
+        &mut vec![],
+    )
+    .unwrap();
+    assert_eq!(report["outcome"], "started");
+    assert_eq!(launcher.starts, 1);
+}
+
+#[test]
+fn automatic_launched_pane_live_retry_requires_original_current_caller() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong parser route")
+    };
+    let (temp, journal) = journal();
+    let selected = crate::daemon::paths::RuntimeContext::explicit(
+        temp.0.clone(),
+        temp.0.join("host.sock"),
+        None,
+    )
+    .unwrap();
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: claim().instance,
+        state_dir: selected.state_dir.clone(),
+        host_endpoint: selected.host_endpoint.clone(),
+    };
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some(selected.state_dir.to_string_lossy().into_owned());
+    output.context.host = Some(selected.host_endpoint.to_string_lossy().into_owned());
+    let client = AutomaticClient::new();
+    *client.lose_ensure.lock().unwrap() = true;
+    let mut launcher = AutomaticLauncher::default();
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let first = start(
+        &journal,
+        request,
+        original_claim.clone(),
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(
+        matches!(first, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{first:?}"
+    );
+    assert_eq!(*client.send_count.lock().unwrap(), 0);
+    assert_eq!(launcher.starts, 0);
+    assert!(journal.resolve_recovery_ref("local:1").is_ok());
+
+    let mut other_current = original_claim.clone();
+    other_current.seat = SeatId::new("other-current-seat");
+    other_current.target = HostTargetId::new("w1:p3");
+    let before = client.calls.lock().unwrap().len();
+    let mut rejected_output = vec![];
+    let rejected = retry_automatic_live(
+        &journal,
+        "local:1",
+        &other_current,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut rejected_output,
+    );
+    assert!(
+        matches!(rejected, Err(RunError::Api(ref e)) if e.code == ErrorCode::InvalidRequest),
+        "{rejected:?}"
+    );
+    assert_eq!(client.calls.lock().unwrap().len(), before);
+    assert_eq!(*client.send_count.lock().unwrap(), 0);
+    assert_eq!(launcher.starts, 0);
+    assert!(rejected_output.is_empty());
+    assert!(journal.resolve_recovery_ref("local:1").is_ok());
+
+    let mut changed_binding = original_claim.clone();
+    changed_binding.binding_generation += 1;
+    let rejected_binding = retry_automatic_live(
+        &journal,
+        "local:1",
+        &changed_binding,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(
+        matches!(rejected_binding, Err(RunError::Api(ref e)) if e.code == ErrorCode::InvalidRequest),
+        "{rejected_binding:?}"
+    );
+    assert_eq!(client.calls.lock().unwrap().len(), before);
+    assert_eq!(*client.send_count.lock().unwrap(), 0);
+    assert_eq!(launcher.starts, 0);
+
+    let resumed = retry_automatic_live(
+        &journal,
+        "local:1",
+        &original_claim,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut vec![],
+    );
+    assert!(matches!(resumed, Ok(true)), "{resumed:?}");
+    assert_eq!(*client.send_count.lock().unwrap(), 1);
+    assert_eq!(launcher.starts, 1);
+
+    // Public dispatch probes completed history before selecting a current seat.
+    *client.binding_changed.lock().unwrap() = true;
+    let mut parsed_retry = crate::cli::commands::parse_argv(["ht", "retry", "local:1"]).unwrap();
+    parsed_retry.output = output;
+    let mut historical = vec![];
+    assert!(
+        crate::cli::topology_runtime::try_completed(
+            &parsed_retry,
+            &journal,
+            uuid::Uuid::parse_str(&namespace.instance).unwrap(),
+            &selected,
+            &client,
+            &TestClock,
+            &mut historical,
+        )
+        .unwrap()
+    );
+    assert!(!historical.is_empty());
+    assert_eq!(*client.send_count.lock().unwrap(), 1);
+    assert_eq!(launcher.starts, 1);
+}
 struct TestClock;
 impl Clock for TestClock {
     fn utc_now(&self) -> UtcMillis {
@@ -151,6 +793,7 @@ fn claim() -> CallerClaim {
 }
 fn request() -> HandoffRequest {
     HandoffRequest {
+        automatic: false,
         thread: None,
         thread_name: Some("review".into()),
         topic: Some("Review".into()),
@@ -978,6 +1621,7 @@ fn frozen_in(
             SemanticMutation::freeze(
                 SemanticMutation::Handoff(Box::new(HandoffPlan {
                     startup_input: None,
+                    bootstrap_input: None,
                     request: request(),
                     context,
                     recipient: SeatId::new("recipient"),
@@ -1990,6 +2634,7 @@ fn registered_plan_fixture(
 ) -> HandoffPlan {
     HandoffPlan {
         startup_input: None,
+        bootstrap_input: None,
         request: req,
         context,
         recipient: SeatId::new("recipient"),
@@ -2263,6 +2908,7 @@ fn handoff_manual_recovery_preserves_frozen_options_without_reentry() {
             .unwrap();
         let plan = HandoffPlan {
             startup_input: None,
+            bootstrap_input: None,
             request,
             context: Default::default(),
             recipient: SeatId::new("recipient"),
@@ -2406,6 +3052,7 @@ fn stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver() {
         .unwrap();
     let plan = HandoffPlan {
         startup_input: None,
+        bootstrap_input: None,
         request,
         context: Default::default(),
         recipient: SeatId::new("recipient"),
@@ -2447,8 +3094,8 @@ fn stage_a_manual_recovery_extra_key_lossless_shell_parser_resolver() {
             &manual[..3],
             [
                 "env",
-                "HERDR_THREADS_CODEX_OPTS=",
-                "HERDR_THREADS_CLAUDE_OPTS="
+                "HERDR_THREADS_CLAUDE_OPTS=",
+                "HERDR_THREADS_CODEX_OPTS="
             ]
         );
         assert_eq!(
@@ -2713,6 +3360,7 @@ fn task48_hermes_actual_native_launcher_composes_before_durable_work() {
             // BASE original prompt-free preflight must reach real selected Hermes preparation.
             assert_eq!(launcher.preflight(&launch).unwrap().as_str(), "seat_launch");
             let req = HandoffRequest {
+                automatic: false,
                 launch,
                 ..request()
             };
@@ -2960,6 +3608,28 @@ fn task48_finite_grammar_keeps_captured_caller_states_and_refuses_neighbors() {
             "accepted Hermes {argv:?}"
         );
     }
+}
+
+/// Pane handoff places the startup text with each adapter's own template, and the composed
+/// argv passes that adapter's native argv validation (agy and Hermes, ht-poh.22 acceptance).
+#[test]
+fn pane_handoff_agy_and_hermes_produce_valid_argv() {
+    let caller: Vec<String> = vec!["--model".into(), "m".into()];
+    let agy = task48_select("agy", &["--model", "m"]).unwrap();
+    let (argv, slot) = agy.apply(&caller, "TEXT").unwrap();
+    assert_eq!(argv, ["--model", "m", "--prompt-interactive", "TEXT"]);
+    assert_eq!(slot, 3);
+    task48_policy("agy").validate_native_argv(&argv).unwrap();
+    // A bare positional is what the V1 bootstrap appended; agy's grammar refuses it.
+    let bare: Vec<String> = ["--model", "m", "TEXT"].map(String::from).to_vec();
+    assert!(task48_policy("agy").validate_native_argv(&bare).is_err());
+    // The prompt flag is occupied by the caller: no template.
+    assert!(task48_select("agy", &["--prompt-interactive", "x"]).is_err());
+
+    let hermes = task48_select("hermes", &["--model", "m"]).unwrap();
+    let (argv, _) = hermes.apply(&caller, "TEXT").unwrap();
+    assert_eq!(argv, ["--model", "m", "--query", "TEXT"]);
+    task48_policy("hermes").validate_native_argv(&argv).unwrap();
 }
 
 struct Task48UnavailableLauncher;
@@ -3353,6 +4023,7 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
                             start(
                                 &journal,
                                 HandoffRequest {
+                                    automatic: false,
                                     launch,
                                     ..request()
                                 },
@@ -3381,6 +4052,7 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
                         "fresh" => start(
                             &journal,
                             HandoffRequest {
+                                automatic: false,
                                 launch,
                                 ..request()
                             },
@@ -3408,7 +4080,9 @@ fn task48_claude_actual_native_boundary_covers_fresh_old_new_and_safe_list_mutan
                         _ => {
                             let plan = HandoffPlan {
                                 startup_input: None,
+                                bootstrap_input: None,
                                 request: HandoffRequest {
+                                    automatic: false,
                                     launch,
                                     ..request()
                                 },
@@ -3544,6 +4218,7 @@ fn task48_claude_lossless_manual_shell_parser_options_and_actual_native_chain() 
                 let result = start(
                     &journal,
                     HandoffRequest {
+                        automatic: false,
                         launch,
                         ..request()
                     },
@@ -3624,6 +4299,7 @@ fn task48_nonpositional_optional_provider_reaches_actual_guarded_native() {
             start(
                 &journal,
                 HandoffRequest {
+                    automatic: false,
                     launch,
                     ..request()
                 },
@@ -3748,6 +4424,7 @@ fn frozen_v1_prompt_and_manual_projection_ignore_current_renderer_drift() {
     let (_temp, journal) = journal();
     let plan = HandoffPlan {
         startup_input: None,
+        bootstrap_input: None,
         request: request(),
         context: v1_context("/state", "/host.sock"),
         recipient: SeatId::new("recipient"),

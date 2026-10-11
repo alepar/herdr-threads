@@ -612,7 +612,7 @@ fn projections_hold_only_pending_rows_through_settlement_and_upgrade() {
     .unwrap();
     let backfill: String = include_str!("../../migrations/0008_digest_pending_paths.sql")
         .split("\n\n")
-        // The notice frontier backfill is the V8 table's shape; V32 owns the table now.
+        // The notice frontier backfill is the V8 table's shape; V35 owns the table now.
         .filter(|s| s.trim_start().starts_with("INSERT") && !s.contains("INTO digest_notice_offer"))
         .collect::<Vec<_>>()
         .join("\n");
@@ -1911,7 +1911,7 @@ fn recipients_backfill_covers_existing_warnings() {
     assert!(ids(&digest(&db, "s").digest.warnings).is_empty());
     let backfill: String = include_str!("../../migrations/0008_digest_pending_paths.sql")
         .split("\n\n")
-        // The notice frontier backfill is the V8 table's shape; V32 owns the table now.
+        // The notice frontier backfill is the V8 table's shape; V35 owns the table now.
         .filter(|s| s.trim_start().starts_with("INSERT") && !s.contains("INTO digest_notice_offer"))
         .collect::<Vec<_>>()
         .join("\n");
@@ -2201,4 +2201,161 @@ fn held_mail_is_not_pushed_until_the_catch_up_releases_it() {
             "{binding}: the release key"
         );
     }
+}
+
+/// The occupant a hook-pull settles for: `rcv`'s canonical open binding.
+fn rcv_binding(db: &Connection) -> (u64, String, String) {
+    db.query_row(
+        "SELECT s.generation,b.native_session,b.execution_id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE s.id='rcv'",
+        [],
+        |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?)),
+    )
+    .unwrap()
+}
+
+fn notice_refs(db: &Connection, limit: usize) -> Vec<crate::protocol::results::WarningRef> {
+    notice_offer_page(db, "rcv", limit)
+        .unwrap()
+        .into_iter()
+        .map(|offered| offered.notice)
+        .collect()
+}
+
+#[test]
+fn newest_pending_notice_follows_the_frontier() {
+    let (_context, db, _guard) = axis_history(Axis::ProgrammaticUndelivered, 3);
+    let page = notice_offer_page(&db, "rcv", 10).unwrap();
+    let total = page.len();
+    assert!(total >= 3, "the fixture projects the live warning too");
+    let newest = page.last().unwrap().ordinal;
+    assert_eq!(newest_pending_notice(&db, "rcv").unwrap(), Some(newest));
+    let (generation, session, _) = rcv_binding(&db);
+    let carried = notice_refs(&db, 2);
+    assert!(settle_pulled_notices(&db, "i", "rcv", generation, &session, &carried).unwrap());
+    assert_eq!(
+        newest_pending_notice(&db, "rcv").unwrap(),
+        Some(newest),
+        "notices are still above the frontier"
+    );
+    let rest = notice_refs(&db, 10);
+    assert_eq!(rest.len(), total - 2);
+    assert!(settle_pulled_notices(&db, "i", "rcv", generation, &session, &rest).unwrap());
+    assert_eq!(newest_pending_notice(&db, "rcv").unwrap(), None);
+    assert_eq!(
+        newest_pending_notice(&db, "o").unwrap(),
+        None,
+        "no projection, no notice"
+    );
+}
+
+#[test]
+fn settle_pulled_notices_settles_exactly_the_carried_prefix_for_the_open_binding() {
+    let (_context, db, _guard) = axis_history(Axis::ProgrammaticUndelivered, 4);
+    let (generation, session, execution) = rcv_binding(&db);
+    let all = notice_refs(&db, 10);
+    let prefix = all[..2].to_vec();
+    assert!(settle_pulled_notices(&db, "i", "rcv", generation, &session, &prefix).unwrap());
+    // Session-keyed bindings: the frontier row is the canonical open binding's own.
+    let (binding, binding_execution): (String, String) = db
+        .query_row(
+            "SELECT o.binding_id,b.execution_id FROM digest_notice_offer o JOIN occupant_bindings b ON b.binding_id=o.binding_id WHERE o.seat_id='rcv'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let open: String = db
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='rcv' AND ended_at IS NULL AND native_session=?1",
+            [&session],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(binding, open);
+    assert_eq!(
+        binding_execution, execution,
+        "the canonical binding's own row, not a client value"
+    );
+    assert_eq!(
+        notice_refs(&db, 10),
+        all[2..].to_vec(),
+        "exactly the prefix left the page"
+    );
+    let projected: i64 = db
+        .query_row(
+            "SELECT count(*) FROM digest_programmatic_warnings WHERE seat_id='rcv'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        projected as usize,
+        all.len(),
+        "no projection row is deleted"
+    );
+    assert!(!settle_pulled_notices(&db, "i", "rcv", generation, &session, &[]).unwrap());
+}
+
+#[test]
+fn settle_pulled_notices_refuses_a_stale_generation_another_session_or_a_non_prefix() {
+    let (_context, db, _guard) = axis_history(Axis::ProgrammaticUndelivered, 3);
+    let (generation, session, _) = rcv_binding(&db);
+    let all = notice_refs(&db, 10);
+    let frontier = || -> i64 {
+        db.query_row(
+            "SELECT COALESCE(MAX(offered_ordinal),0) FROM digest_notice_offer WHERE seat_id='rcv'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let before = frontier();
+    for (label, at_generation, native, carried) in [
+        (
+            "stale generation",
+            generation + 1,
+            session.as_str(),
+            all[..1].to_vec(),
+        ),
+        (
+            "another session",
+            generation,
+            "other-session",
+            all[..1].to_vec(),
+        ),
+        (
+            "not the oldest",
+            generation,
+            session.as_str(),
+            all[1..2].to_vec(),
+        ),
+        (
+            "not a prefix of the page",
+            generation,
+            session.as_str(),
+            vec![all[0].clone(), all[2].clone()],
+        ),
+        ("more than the page holds", generation, session.as_str(), {
+            let mut more = all.clone();
+            more.push(all[0].clone());
+            more
+        }),
+    ] {
+        assert!(
+            !settle_pulled_notices(&db, "i", "rcv", at_generation, native, &carried).unwrap(),
+            "{label}"
+        );
+        assert_eq!(frontier(), before, "{label}: frontier unchanged");
+    }
+    assert!(
+        !settle_pulled_notices(
+            &db,
+            "other-instance",
+            "rcv",
+            generation,
+            &session,
+            &all[..1]
+        )
+        .unwrap()
+    );
+    assert_eq!(frontier(), before);
 }

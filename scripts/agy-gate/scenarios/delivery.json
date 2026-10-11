@@ -1,0 +1,64 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "delivery",
+  "aux_text": "Gate delivery title",
+  "default": {
+    "text": "DELIVERY-UNEXPECTED"
+  },
+  "vars": {
+    "cwd": "/unset"
+  },
+  "steps": [
+    {
+      "label": "busy",
+      "match": {
+        "contains": [
+          "DELIV-BUSY"
+        ]
+      },
+      "delay_ms": 5000,
+      "reply": {
+        "text": "DELIV-BUSY-DONE"
+      }
+    },
+    {
+      "label": "inv0",
+      "match": {
+        "contains": [
+          "MAIN-O1"
+        ]
+      },
+      "delay_ms": 3000,
+      "bind": {
+        "index": -2
+      },
+      "reply": {
+        "call": "run_command",
+        "args": {
+          "CommandLine": "herdr-threads ack {frame.id}",
+          "Cwd": "{var.cwd}",
+          "WaitMsBeforeAsync": 1000,
+          "toolAction": "gate",
+          "toolSummary": "gate"
+        }
+      }
+    },
+    {
+      "label": "inv1",
+      "match": {
+        "contains": [
+          "MAIN-O1"
+        ]
+      },
+      "reply": {
+        "text": "DELIV-DONE"
+      }
+    },
+    {
+      "label": "main-tail",
+      "reply": {
+        "text": "DELIV-TAIL"
+      }
+    }
+  ]
+}

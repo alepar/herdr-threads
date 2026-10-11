@@ -1,0 +1,9 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "boot",
+  "aux_text": "Gate boot title",
+  "default": {"text": "BOOT-UNEXPECTED"},
+  "steps": [
+    {"label": "boot", "reply": {"text": "BOOT-OK"}}
+  ]
+}

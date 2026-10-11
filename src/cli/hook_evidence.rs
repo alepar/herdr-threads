@@ -46,7 +46,6 @@ use crate::{
     },
     harness::{
         attribution::{Attribution, attribute_payload},
-        codex_evidence,
         context::Harness,
         contract::{self, Classification, EventClass},
     },
@@ -189,6 +188,21 @@ fn classify_legacy(
     })
 }
 
+/// Whether `harness` declares sticky creating-runtime suppression on resume.
+fn suppresses_resumed(harness: &str) -> bool {
+    let registry = crate::harness::registry::builtins();
+    registry
+        .agent(harness)
+        .ok()
+        .and_then(|id| registry.by_id(id).ok())
+        .is_some_and(|registration| {
+            registration
+                .contracts()
+                .iter()
+                .any(|d| d.holding == crate::harness::evidence::AttributionHolding::SuppressResumed)
+        })
+}
+
 impl Classified {
     /// The legacy adapter's declared sticky creating-runtime suppression.
     fn starts_suppressed_resume(
@@ -207,12 +221,12 @@ impl Classified {
     }
 
     /// Reads the version from the payload's transcript (bounded, in-process).
-    /// A Codex session known to be `resumed` is never attributed and its
-    /// transcript is not opened.
+    /// A session of a harness that suppresses resumed attribution, known to
+    /// be `resumed`, is never attributed and its transcript is not opened.
     pub fn attribute(self, resumed: bool) -> Evidence {
         let attribution = match &self.payload {
-            _ if resumed && self.harness == "codex" => Attribution::Unattributable {
-                reason: crate::harness::attribution::Unattributed::CodexResumed,
+            _ if resumed && suppresses_resumed(self.harness) => Attribution::Unattributable {
+                reason: crate::harness::attribution::Unattributed::ResumedCreator,
             },
             Some(payload) => attribute_payload(self.harness, payload),
             None => Attribution::Unattributable {
@@ -352,7 +366,7 @@ impl GateState {
 
 /// `<state>/harness/evidence`.
 pub fn gate_dir(state_dir: &Path) -> PathBuf {
-    codex_evidence::dir(state_dir).join(GATE_DIR)
+    crate::harness::evidence::dir(state_dir).join(GATE_DIR)
 }
 
 /// `<gate dir>/<harness>-<first 16 hex of sha256(session id)>.json`.
@@ -391,7 +405,7 @@ fn write_gate(state_dir: &Path, path: &Path, state: &GateState) -> io::Result<()
         }
         state.sent.remove(0);
     };
-    codex_evidence::prepare(state_dir)?;
+    crate::harness::evidence::prepare(state_dir)?;
     crate::daemon::paths::ensure_private_dir(&gate_dir(state_dir))?;
     let temporary = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
     let written = std::fs::OpenOptions::new()
@@ -625,7 +639,7 @@ struct V2GateState {
     sent: Vec<String>,
 }
 pub fn v2_gate_dir(state: &Path) -> PathBuf {
-    codex_evidence::dir(state).join(V2_GATE_DIR)
+    crate::harness::evidence::dir(state).join(V2_GATE_DIR)
 }
 impl V2GateState {
     fn fresh(key: V2GateKey) -> Self {
@@ -738,7 +752,7 @@ impl V2GateState {
             }
             stored.sent.remove(0);
         };
-        codex_evidence::prepare(state)?;
+        crate::harness::evidence::prepare(state)?;
         crate::daemon::paths::ensure_private_dir(&v2_gate_dir(state))?;
         let temporary = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
         let written = std::fs::OpenOptions::new()

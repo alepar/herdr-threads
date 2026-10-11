@@ -160,3 +160,24 @@ fn without_prompt_line_wrapped_marker_reads_holding() {
         AgentComposerState::HoldingPrompt
     );
 }
+
+/// Kills: a verification that only knows the inbox marker (the minimal wake would then read
+/// `Submitted` while still held in the composer), or one that reads history as held.
+#[test]
+fn a_held_wake_up_prompt_is_unsubmitted() {
+    let wake = crate::notification::policy::WAKE_UP;
+    let held = format!(
+        "previous output\n\n╭──────────────╮\n│ > {wake}   │\n╰──────────────╯\n  ? for shortcuts\n"
+    );
+    assert_eq!(
+        composer_state_from_text(Some(&held)),
+        AgentComposerState::HoldingPrompt
+    );
+    let submitted = format!(
+        "> {wake}\n\n● Working\n\n╭──────────────╮\n│ >            │\n╰──────────────╯\n  ? for shortcuts\n"
+    );
+    assert_eq!(
+        composer_state_from_text(Some(&submitted)),
+        AgentComposerState::Submitted
+    );
+}

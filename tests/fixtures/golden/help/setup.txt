@@ -1,0 +1,142 @@
+Install the owned herdr-threads hooks for a harness at user level (with no harness: for every detected harness). Claude: `$CLAUDE_CONFIG_DIR/settings.json` (hooks and allow rule). Codex: `$CODEX_HOME/hooks.json`. Ownership manifests stay private in plugin state. Setup uses the declared hook contract; installed version metadata is optional and may be unknown. Configured hooks do not prove observed delivery or native harness support
+
+Usage: herdr-threads setup [OPTIONS] [HARNESS]
+
+Arguments:
+  [HARNESS]  Harness whose hooks to manage. Omitted: every harness (setup: each one found on PATH; unsetup and setup-status: both) [possible values: claude, codex, hermes, agy, synthetic_fourth]
+
+Options:
+      --state-dir <STATE_DIR>
+          Select the local herdr-threads state directory. May repeat with an identical value; conflicting values are refused
+      --with-permissions
+          setup: let agents run herdr-threads commands without prompting (person and setup commands keep asking). Default: keep what is there, asking on a terminal when missing
+      --host-endpoint <HOST_ENDPOINT>
+          Select the local Herdr host socket path. May repeat with an identical value; conflicting values are refused
+      --without-permissions
+          setup: remove the permission rules setup owns, keeping the hooks
+      --json
+          Emit a structured JSON result on stdout
+      --profile <NAME>
+          Existing named profile, supported only by the explicitly selected adapter
+      --harness-binary <PATH>
+          Absolute harness executable (default: the first `claude`/`codex` on PATH). Version metadata is optional; setup uses the declared contract
+      --human
+          Human-readable tables and transcripts (the default on a terminal)
+      --disable-prompt-suggestions
+          setup (claude): set Claude's `promptSuggestionEnabled` to false without asking (unsetup reverts it). Default: ask on a terminal, else advise
+      --machine
+          The stable `key: value` text form for scripts and models (the default when stdout is not a terminal)
+      --cooperative-seat <COOPERATIVE_SEAT>
+          Explicit seat ID for a cooperative agent call; requires all four --cooperative-* options
+      --keep-prompt-suggestions
+          setup (claude): leave Claude's prompt suggestions as they are, without asking or advising
+      --cooperative-target <COOPERATIVE_TARGET>
+          Exact live pane ID or scoped name bound to the cooperative seat
+      --hooks-only
+          setup (claude): install or keep the hooks but not the delivery mod; removes the mod's `CLAUDE_CODE_PLUGIN_DIRS` path and files if setup wrote them (for example under managed policy that forbids the key)
+      --cooperative-harness <COOPERATIVE_HARNESS>
+          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
+      --cooperative-role <COOPERATIVE_ROLE>
+          Agent role for the cooperative call [possible values: top-level, subagent]
+      --agent-id <ID>
+          Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into the cooperative claim; no behaviour change until session bindings land
+  -h, --help
+          Print help
+
+No harness named: every registered harness. `setup` sets up every detected harness
+and prints one line per harness: installed, already
+installed or skipped (not on PATH);
+`unsetup` removes recorded installations (on PATH or not); `setup-status` reports
+every registered harness. Hook-trust reminders are printed once at the end. The exit status is that
+of the first harness that failed; skipped harnesses are not failures.
+
+Agent permissions: --with-permissions grants them, --without-permissions removes them and
+keeps the hooks; otherwise setup asks on a terminal and keeps an existing grant current.
+Every changed configuration file is first backed up beside it as
+<name>.<UTC timestamp>-<uuid>.herdr-threads.
+
+Scope (user level, like Herdr's own agent hooks):
+  claude  $CLAUDE_CONFIG_DIR/settings.json (default ~/.claude/settings.json), created as `{}`
+          when absent. Adds the hook groups (SessionStart, Bash PreToolUse) beside the hooks
+          already there. Agent permissions are a separate component, written only with
+          consent: allow rules for `herdr-threads` and `ht`, and ask rules for `human`, `setup`,
+          `unsetup`, `doctor fix` and `internal installer-integrations`. An older installation's
+          owned `Bash(herdr-threads *)` rule is kept and gains the ask rules. A rule you already
+          have is left as yours.
+  codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
+          (SessionStart, SubagentStart, Bash PreToolUse). With consent, agent permissions go
+          in their own file, $CODEX_HOME/rules/herdr-threads.rules: an allow rule for
+          `herdr-threads` and `ht` and prompt rules for the same human and setup commands.
+          Setup installs no sandbox socket, writable-root or network allowance. Run
+          herdr-threads commands through Codex's approved outside-sandbox execution; a
+          denied approval is a policy refusal.
+          Historical owned allowances remain inspectable; unsetup removes only unchanged
+          owned values and refuses edited ownership records. Codex runs user hooks only once
+          you trust them: the next interactive `codex` start lists them for review (or use
+          /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.
+  hermes  Experimental; natively measured on 0.21.5 with a private Herdr build. Select
+          `setup hermes --profile NAME` (or explicit default when omitted). --profile
+          requires a named harness and is refused for bare multi-harness commands.
+          The captured official resolver selects lexical/physical HERMES_HOME; no
+          profile is created and a sticky active profile is not silently selected.
+          Installs owned plugin.yaml, __init__.py and bridge_config.json under the
+          selected home's plugins/herdr-threads. Enable manually with the printed
+          `hermes --profile NAME plugins enable herdr-threads` command and retain
+          native consent. Installed, configured enabled and native activation are
+          separate. A bare Hermes CLI session in a Herdr pane then joins through these
+          hooks. After upgrading, run setup again so the installed bridge is current;
+          setup-status reports each profile's enablement and whether its bridge is
+          current. Unsetup preserves foreign/modified assets and native YAML/enable
+          selection, reporting residue and manual disable guidance.
+  agy: ~/.gemini (plugin config/plugins/herdr-threads; allow entry in antigravity-cli/settings.json)
+
+
+Foreground agents (user-managed, read-only inspection): setup and setup-status report user
+settings and manual advice for every harness. Claude: merge `disableAgentView: true` into
+user settings.json, or set its env.CLAUDE_CODE_DISABLE_AGENT_VIEW to `1`. The inspected Codex has
+no persistent config/environment daemon opt-out; features.daemon_auto_start=false still attaches
+to an existing daemon. Use native --no-daemon, or HERDR_THREADS_CODEX_OPTS='--no-daemon'
+when the selected binary/wrapper supports and forwards it. Setup never sets these choices;
+configured settings/arguments do not prove foreground execution and overrides may change them.
+
+Claude prompt suggestions: Claude shows a dim prompt suggestion in its input box after every
+turn, which herdr-threads cannot tell from typed text, so it never pokes a Claude pane that shows
+one. Unless `promptSuggestionEnabled` is already false, `setup claude` (and bare `setup`) asks
+`Disable prompt suggestions? [y/N]` on a terminal and writes `promptSuggestionEnabled: false` only
+on yes; without a terminal it only advises. --disable-prompt-suggestions / --keep-prompt-suggestions
+decide without asking. The write is recorded; unsetup reverts it if setup set it.
+
+Herdr instance: --state-dir and --host-endpoint, else HERDR_PLUGIN_STATE_DIR and
+HERDR_SOCKET_PATH (set inside Herdr), else Herdr's defaults when they exist
+($XDG_STATE_HOME or ~/.local/state, then herdr/plugins/herdr-threads; $XDG_CONFIG_HOME or
+~/.config, then herdr/herdr.sock), else detected with the herdr CLI (`herdr plugin list`,
+`herdr status server`).
+Ambiguity is refused. The installed hook command is
+`<this executable> --state-dir <state> --host-endpoint <socket> hook <harness>`, registered
+for each event with `--event <EVENT>` appended (hooks installed before that keep working;
+`doctor` suggests re-running setup); in any session that is not a pane of that Herdr
+instance it prints nothing, runs no version probe and starts no daemon, and only sends a
+short best-effort evidence note to a daemon already running (gate files under
+<state>/harness/evidence).
+Each harness's ownership manifest lives in <state>/setup/.
+
+A hook file that already holds exactly this command's hook groups under another setup's
+owner marker (for example a hook file copied with its trust into a second config root) is
+adopted: setup records a manifest for it and leaves the file byte-identical (action
+`adopted`), setup-status and doctor report it installed (adopted), and unsetup removes only
+those groups from that file.
+
+Setup resolves the selected executable without invoking --version, --help or schema probes.
+Admission is contract_declared: the registered hook contract is configured, runtime metadata
+is unknown. Installation does not prove hook delivery, native support or receipt.
+
+Exit status:
+  0  installed / removed / nothing to remove / status reported
+  1  refused: the file changed concurrently, an owned entry was edited or removed by hand,
+     the recorded allow rule was removed by hand, an unowned identical hook exists (for
+     some harnesses also in another config layer), a recorded legacy allowance is partial or
+     edited, or a file could not be written
+  2  invalid arguments, undetectable Herdr instance, or invalid settings file (not a JSON
+     object / not valid TOML, symlink, over 1 MiB)
+  4  the named harness is missing from PATH or --harness-binary is not an executable file;
+     with no harness named an absent harness is skipped
