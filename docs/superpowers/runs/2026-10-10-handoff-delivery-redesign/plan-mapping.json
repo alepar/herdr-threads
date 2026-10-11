@@ -200,7 +200,11 @@
       "tests/store/lazy_schema.rs",
       "tests/store/handoff_fences.rs",
       "tests/store/effective.rs",
-      "tests/integration/channel_activation.rs"
+      "tests/integration/channel_activation.rs",
+      "src/service/kicks.rs",
+      "tests/store/commit_kicks.rs",
+      "tests/service/kicks_contract.rs",
+      "tests/store/invitation_due.rs"
     ]
   },
   {
