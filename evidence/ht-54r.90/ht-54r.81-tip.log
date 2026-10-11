@@ -1,0 +1,20 @@
+# src state: tip with reverse-applied src diffs of: (none; tip)
+# command: cargo test --locked --all-features --lib -- a_pull_reconnects_a_disconnected disconnected_binding_ack_reconnects display_ack_reconnects_a_disconnected fingerprintless_ack_of fingerprintless_display_ack plain_call_reconnect_never_fast_forwards plain_call_without_a_fingerprint a_dead_fingerprint_reconnect plain_call_on_a_retired plain_call_with_a_fingerprint_reconnects superseded_binding_plain_call a_stale_callers_reconnect hermes_registered_child_call
+
+running 13 tests
+test store::bindings::tests::resolution::plain_call_with_a_fingerprint_reconnects_a_disconnected_binding ... ok
+test store::bindings::tests::resolution::plain_call_without_a_fingerprint_serves_a_disconnected_binding_without_reconnecting ... ok
+test store::bindings::tests::resolution::superseded_binding_plain_call_reconnects_without_superseding ... ok
+test store::bindings::tests::resolution::plain_call_on_a_retired_seat_does_not_reconnect ... ok
+test store::receipts::tests::display_ack_reconnects_a_disconnected_plain_call_enrolled_binding ... ok
+test service::liveness::liveness_worker_tests::a_dead_fingerprint_reconnect_is_disconnected_on_the_next_pass ... ok
+test store::receipts::tests::binding_attribution::fingerprintless_ack_of_a_disconnected_binding_is_refused ... ok
+test service::dispatch::cooperative_tests::hermes_registered_child_call_after_subagent_stop_reconnects_it ... ok
+test store::receipts::tests::binding_attribution::disconnected_binding_ack_reconnects_and_settles ... ok
+test service::liveness::liveness_worker_tests::a_stale_callers_reconnect_of_a_superseded_binding_is_superseded_again ... ok
+test service::delivery_pull::tests::a_pull_reconnects_a_disconnected_non_migrated_binding_and_delivers ... ok
+test store::first_contact::tests::plain_call_reconnect_never_fast_forwards ... ok
+test store::receipts::tests::fingerprintless_display_ack_of_a_disconnected_binding_is_refused ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 4456 filtered out; finished in 0.34s
+

@@ -1,0 +1,48 @@
+# worktree at 4fb24bc5 (the .77 fix commit) with its own src diff reverse-applied; tests as committed, except tests/service/mod_channels.rs at 4fb24bc5^ (its only .77 change is the fixture field disconnect_reason: None, which does not compile without the fix)
+
+running 5 tests
+test harness::agy::delivery::tests::a_no_binding_refusal_keeps_the_state_file ... ok
+test cli::hook::local_evidence_tests::hook_step_runs_for_top_level_observer_events_with_claim_state_dir_and_daemon ... FAILED
+test service::delivery_pull::tests::a_pull_on_a_disconnected_non_migrated_binding_is_refused_no_binding ... FAILED
+test service::delivery_pull::tests::a_pull_re_adopts_a_migrated_binding_and_delivers ... FAILED
+test service::delivery_pull::tests::a_pull_without_a_fingerprint_does_not_re_adopt_and_is_refused_no_binding ... FAILED
+
+failures:
+
+---- cli::hook::local_evidence_tests::hook_step_runs_for_top_level_observer_events_with_claim_state_dir_and_daemon stdout ----
+
+thread 'cli::hook::local_evidence_tests::hook_step_runs_for_top_level_observer_events_with_claim_state_dir_and_daemon' (52564470) panicked at src/cli/../../tests/cli/hook_local_evidence.rs:727:13:
+assertion `left == right` failed: the step's claim carries the hook's fingerprint
+  left: None
+ right: Some(LivenessFingerprint { pid: 1, start: 1 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- service::delivery_pull::tests::a_pull_on_a_disconnected_non_migrated_binding_is_refused_no_binding stdout ----
+
+thread 'service::delivery_pull::tests::a_pull_on_a_disconnected_non_migrated_binding_is_refused_no_binding' (52564472) panicked at src/service/../../tests/service/delivery_pull.rs:676:5:
+assertion `left == right` failed
+  left: SessionMismatch
+ right: NoBinding
+
+---- service::delivery_pull::tests::a_pull_re_adopts_a_migrated_binding_and_delivers stdout ----
+
+thread 'service::delivery_pull::tests::a_pull_re_adopts_a_migrated_binding_and_delivers' (52564473) panicked at src/service/../../tests/service/delivery_pull.rs:270:18:
+expected a page, got Refused { reason: SessionMismatch }
+
+---- service::delivery_pull::tests::a_pull_without_a_fingerprint_does_not_re_adopt_and_is_refused_no_binding stdout ----
+
+thread 'service::delivery_pull::tests::a_pull_without_a_fingerprint_does_not_re_adopt_and_is_refused_no_binding' (52564474) panicked at src/service/../../tests/service/delivery_pull.rs:663:5:
+assertion `left == right` failed
+  left: SessionMismatch
+ right: NoBinding
+
+
+failures:
+    cli::hook::local_evidence_tests::hook_step_runs_for_top_level_observer_events_with_claim_state_dir_and_daemon
+    service::delivery_pull::tests::a_pull_on_a_disconnected_non_migrated_binding_is_refused_no_binding
+    service::delivery_pull::tests::a_pull_re_adopts_a_migrated_binding_and_delivers
+    service::delivery_pull::tests::a_pull_without_a_fingerprint_does_not_re_adopt_and_is_refused_no_binding
+
+test result: FAILED. 1 passed; 4 failed; 0 ignored; 0 measured; 4453 filtered out; finished in 0.21s
+
+error: test failed, to rerun pass `--lib`

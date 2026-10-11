@@ -5214,6 +5214,15 @@ fn a_launch_placeholder_target_matches_the_started_process() {
     );
     assert_eq!(outcome, WakeOutcome::Submitted);
     assert_eq!(prompted[0].bound_harness.as_deref(), Some("codex"));
+    // Only the started process matches: another foreground process is a pre-send refusal, the
+    // single-harness rule no longer types to a lone launch placeholder.
+    let (outcome, prompted) = composer_wake(
+        vec![binding_target("launch", "codex", Some(42))],
+        HostUiState::Unknown,
+        Some(43),
+    );
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unsafe));
+    assert!(prompted.is_empty());
 }
 
 /// A cooperative host that answers the plain observation with an unclassified

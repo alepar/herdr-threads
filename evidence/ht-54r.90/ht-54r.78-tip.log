@@ -1,0 +1,12 @@
+# src state: tip with reverse-applied src diffs of: (none; tip)
+# command: cargo test --locked --all-features --lib -- continuity_reattach_matches_when continuity_reattach_reopens continuity_reattach_without a_reused_intent_with_another a_reused_intent_without
+
+running 5 tests
+test cli::hook::tests::continuity_gate::a_reused_intent_without_a_fingerprint_submits_the_current_one ... ok
+test cli::hook::tests::continuity_gate::a_reused_intent_with_another_fingerprint_submits_the_current_one ... ok
+test store::control::tests::continuity_reattach_reopens_the_sessions_binding_with_its_cursors ... ok
+test store::control::tests::continuity_reattach_without_a_reopenable_row_enrolls_at_the_seat_read_position ... ok
+test store::control::tests::continuity_reattach_matches_when_a_later_binding_enrolled_after_the_main_session ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 4464 filtered out; finished in 0.31s
+

@@ -1,0 +1,59 @@
+# src state: tip with reverse-applied src diffs of: a56ed12a
+ M src/cli/hook.rs
+ M src/store/seats.rs
+# command: cargo test --locked --all-features --lib -- continuity_reattach_matches_when continuity_reattach_reopens continuity_reattach_without a_reused_intent_with_another a_reused_intent_without
+
+running 5 tests
+test cli::hook::tests::continuity_gate::a_reused_intent_without_a_fingerprint_submits_the_current_one ... FAILED
+test cli::hook::tests::continuity_gate::a_reused_intent_with_another_fingerprint_submits_the_current_one ... FAILED
+test store::control::tests::continuity_reattach_without_a_reopenable_row_enrolls_at_the_seat_read_position ... FAILED
+test store::control::tests::continuity_reattach_reopens_the_sessions_binding_with_its_cursors ... FAILED
+test store::control::tests::continuity_reattach_matches_when_a_later_binding_enrolled_after_the_main_session ... FAILED
+
+failures:
+
+---- cli::hook::tests::continuity_gate::a_reused_intent_without_a_fingerprint_submits_the_current_one stdout ----
+
+thread 'cli::hook::tests::continuity_gate::a_reused_intent_without_a_fingerprint_submits_the_current_one' (52274730) panicked at src/cli/../../tests/cli/hook.rs:3551:9:
+assertion `left == right` failed
+  left: None
+ right: Some(LivenessFingerprint { pid: 1, start: 1 })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- cli::hook::tests::continuity_gate::a_reused_intent_with_another_fingerprint_submits_the_current_one stdout ----
+
+thread 'cli::hook::tests::continuity_gate::a_reused_intent_with_another_fingerprint_submits_the_current_one' (52274729) panicked at src/cli/../../tests/cli/hook.rs:3529:9:
+assertion `left == right` failed
+  left: Some(LivenessFingerprint { pid: 999, start: 3 })
+ right: Some(LivenessFingerprint { pid: 1, start: 1 })
+
+---- store::control::tests::continuity_reattach_without_a_reopenable_row_enrolls_at_the_seat_read_position stdout ----
+
+thread 'store::control::tests::continuity_reattach_without_a_reopenable_row_enrolls_at_the_seat_read_position' (52274733) panicked at src/store/../../tests/store/control.rs:8509:5:
+assertion `left == right` failed: the new binding starts at the seat's furthest-read point
+  left: None
+ right: Some(5)
+
+---- store::control::tests::continuity_reattach_reopens_the_sessions_binding_with_its_cursors stdout ----
+
+thread 'store::control::tests::continuity_reattach_reopens_the_sessions_binding_with_its_cursors' (52274732) panicked at src/store/../../tests/store/control.rs:8431:5:
+assertion `left == right` failed: the session's own row is reopened
+  left: "1c17cb4107aa763b3c662b05cffc3328"
+ right: "0ad7a7d00fb550772a8c8e7f5562ae3b"
+
+---- store::control::tests::continuity_reattach_matches_when_a_later_binding_enrolled_after_the_main_session stdout ----
+
+thread 'store::control::tests::continuity_reattach_matches_when_a_later_binding_enrolled_after_the_main_session' (52274731) panicked at src/store/../../tests/store/control.rs:8459:6:
+called `Result::unwrap()` on an `Err` value: ApiError { code: ServiceBusy, detail: "recovery reconciliation of the current host epoch has not finished; retry", restart_argv: None, required_minimum_bytes: None, class_override: None }
+
+
+failures:
+    cli::hook::tests::continuity_gate::a_reused_intent_with_another_fingerprint_submits_the_current_one
+    cli::hook::tests::continuity_gate::a_reused_intent_without_a_fingerprint_submits_the_current_one
+    store::control::tests::continuity_reattach_matches_when_a_later_binding_enrolled_after_the_main_session
+    store::control::tests::continuity_reattach_reopens_the_sessions_binding_with_its_cursors
+    store::control::tests::continuity_reattach_without_a_reopenable_row_enrolls_at_the_seat_read_position
+
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 4464 filtered out; finished in 0.23s
+
+error: test failed, to rerun pass `--lib`

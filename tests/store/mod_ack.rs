@@ -163,9 +163,40 @@ fn cursor_b(conn: &Connection, binding: &BindingId) -> u64 {
         .unwrap()
         .unwrap_or(0)
 }
+fn sequence_of(conn: &Connection, id: &str) -> u64 {
+    let sequence: i64 = conn
+        .query_row("SELECT sequence FROM messages WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    u64::try_from(sequence).unwrap()
+}
+/// The highest sequence in thread `t`: the last displayed message or the non-receivable ack event
+/// the settlement appended after it. A cursor that walked every row the display covered ends here.
+fn thread_tail(conn: &Connection) -> u64 {
+    let tail: i64 = conn
+        .query_row(
+            "SELECT max(sequence) FROM messages WHERE thread_id='t'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    u64::try_from(tail).unwrap()
+}
 fn receipt_state(conn: &Connection, id: &str) -> String {
     conn.query_row(
         "SELECT state FROM receipts WHERE message_id=?1 AND seat_id='b'",
+        [id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+/// The effective state of a receivable message's receipt for `b`: settlement of a message with a
+/// send manifest writes `receipt_state`, never the `receipts` row [`receipt_state`] reads.
+fn manifest_receipt_state(conn: &Connection, id: &str) -> String {
+    conn.query_row(
+        "SELECT COALESCE((SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id='b'), \
+                         (SELECT state FROM receipts WHERE message_id=?1 AND seat_id='b'))",
         [id],
         |r| r.get(0),
     )
@@ -488,9 +519,12 @@ fn mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both() {
         ]
     );
     let binding = binding_b(&conn);
-    // The cursor also skips the non-receivable ack event the settlement appended (seq 3).
-    assert!(
-        cursor_b(&conn, &binding) >= 2,
+    // o6 is seq 1, the lazy row seq 2 and the settlement appended the non-receivable ack event
+    // after them: the cursor walks all three and stops at the thread tail.
+    assert_eq!(thread_tail(&conn), 3, "o6, the lazy row, the ack event");
+    assert_eq!(
+        cursor_b(&conn, &binding),
+        thread_tail(&conn),
         "passes the ordinary and the lazy row"
     );
     assert!(!read_cursors::has_unread(&conn, &binding).unwrap());
@@ -510,13 +544,28 @@ fn mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both() {
 #[test]
 fn mod_ack_of_only_the_lazy_row_stops_before_an_unshown_ordinary_message() {
     let (context, mut conn, _) = setup();
-    receivable_pending(&conn, "o6", 1, "ordinary");
-    let lazy_id = lazy(&conn, "p0000aaaa", 2, "lazy body");
-    run(&context, &mut conn, &request(&[&lazy_id])).unwrap();
+    // o5 (seq 1) is acked whole next to the lazy row (seq 3); o6 (seq 2) lies between them and is
+    // never shown, so the cursor passes o5 and stops before o6.
+    receivable_pending(&conn, "o5", 1, "shown ordinary");
+    receivable_pending(&conn, "o6", 2, "never shown");
+    let lazy_id = lazy(&conn, "p0000aaaa", 3, "lazy body");
+    let report = run(&context, &mut conn, &request(&["o5", &lazy_id])).unwrap();
+    assert_eq!(
+        outcomes(&report),
+        vec![
+            ("o5", ModAckOutcome::Settled, None),
+            (lazy_id.as_str(), ModAckOutcome::Settled, None)
+        ]
+    );
     let binding = binding_b(&conn);
-    assert_eq!(cursor_b(&conn, &binding), 0, "o6 was never shown");
+    assert_eq!(
+        cursor_b(&conn, &binding),
+        sequence_of(&conn, "o5"),
+        "the cursor ends at o5, the last message before the unshown o6"
+    );
     assert!(read_cursors::has_unread(&conn, &binding).unwrap());
-    assert_eq!(receipt_state(&conn, "o6"), "pending");
+    assert_eq!(manifest_receipt_state(&conn, "o5"), "acked");
+    assert_eq!(manifest_receipt_state(&conn, "o6"), "pending");
 }
 
 #[test]
@@ -533,7 +582,9 @@ fn already_settled_ordinary_still_advances_a_second_bindings_cursor() {
         .unwrap(),
     );
     run(&context, &mut conn, &request(&["o6"])).unwrap();
-    assert!(cursor_b(&conn, &binding_b(&conn)) >= 1);
+    // o6 is seq 1 and the settlement appended its non-receivable ack event after it (seq 2).
+    assert_eq!(thread_tail(&conn), 2, "o6, then the ack event");
+    assert_eq!(cursor_b(&conn, &binding_b(&conn)), thread_tail(&conn));
     assert_eq!(cursor_b(&conn, &second), 0);
     let mut again = request(&["o6"]);
     again.operation = OperationId::new("second-binding-op");
@@ -544,19 +595,26 @@ fn already_settled_ordinary_still_advances_a_second_bindings_cursor() {
         outcomes(&report),
         vec![("o6", ModAckOutcome::AlreadySettled, None)]
     );
-    assert!(cursor_b(&conn, &second) >= 1);
+    // The already-settled display writes no further event, so the tail is unchanged and the second
+    // binding's cursor walks o6 and the ack event just as the first binding's did.
+    assert_eq!(thread_tail(&conn), 2);
+    assert_eq!(cursor_b(&conn, &second), thread_tail(&conn));
     assert!(!read_cursors::has_unread(&conn, &second).unwrap());
 }
 
 #[test]
 fn truncated_ordinary_next_to_a_lazy_row_does_not_let_the_cursor_pass() {
     let (context, mut conn, _) = setup();
-    receivable_pending(&conn, "big", 1, &"x".repeat(WATCH_BODY_LIMIT_BYTES + 1));
-    let lazy_id = lazy(&conn, "p0000aaaa", 2, "lazy body");
-    let report = run(&context, &mut conn, &request(&["big", &lazy_id])).unwrap();
+    // ok1 (seq 1) is shown whole; big (seq 2) is refused as truncated, so it is not displayed and
+    // the lazy row (seq 3) behind it cannot carry the cursor past it.
+    receivable_pending(&conn, "ok1", 1, "short");
+    receivable_pending(&conn, "big", 2, &"x".repeat(WATCH_BODY_LIMIT_BYTES + 1));
+    let lazy_id = lazy(&conn, "p0000aaaa", 3, "lazy body");
+    let report = run(&context, &mut conn, &request(&["ok1", "big", &lazy_id])).unwrap();
     assert_eq!(
         outcomes(&report),
         vec![
+            ("ok1", ModAckOutcome::Settled, None),
             (
                 "big",
                 ModAckOutcome::RefusedTerminal,
@@ -565,5 +623,9 @@ fn truncated_ordinary_next_to_a_lazy_row_does_not_let_the_cursor_pass() {
             (lazy_id.as_str(), ModAckOutcome::Settled, None)
         ]
     );
-    assert_eq!(cursor_b(&conn, &binding_b(&conn)), 0);
+    assert_eq!(
+        cursor_b(&conn, &binding_b(&conn)),
+        sequence_of(&conn, "ok1"),
+        "the cursor ends at ok1, before the truncated big"
+    );
 }
