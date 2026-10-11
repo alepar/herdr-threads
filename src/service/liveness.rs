@@ -2,8 +2,8 @@
 //! fingerprints of connected bindings on a cadence and before wake decisions.
 //!
 //! A binding disconnects `ProcessExit` when its fingerprinted process is gone (or the pid now
-//! belongs to a process with another start stamp), or when it is a migrated binding connected
-//! with no fingerprint.
+//! belongs to a process with another start stamp), or when it is connected with no
+//! fingerprint (decision 9: no zombie bindings).
 //! Among connected top-level bindings sharing one process (same instance, harness, pid and start)
 //! only the latest lifecycle claim stays connected; the rest disconnect `Superseded`. Every write
 //! goes through `bindings::disconnect`, the sole transition: the worker never ends a binding,
@@ -69,13 +69,9 @@ pub fn classify(
             }
             // Exited, or the pid now belongs to a process with another start.
             Some(_) => decisions.push(decision(binding, DisconnectReason::ProcessExit)),
-            // A migrated binding that reconnected without a fingerprint has no process to
-            // vouch for it. A fingerprint-less binding that is not migrated is absence of
-            // evidence (the fingerprint rule is not yet enforced for every client): left alone.
-            None if binding.migrated => {
-                decisions.push(decision(binding, DisconnectReason::ProcessExit))
-            }
-            None => {}
+            // A connected agent binding with no fingerprint has no process to vouch for it
+            // (decision 9: no zombie bindings). The migrated 24 h grace is archival only.
+            None => decisions.push(decision(binding, DisconnectReason::ProcessExit)),
         }
     }
     for group in sharing.values().filter(|group| group.len() > 1) {

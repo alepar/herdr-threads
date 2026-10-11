@@ -515,7 +515,10 @@ impl Fixture {
         ] {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0)",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
         }
-        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1)",params![observation.host_boot.as_str(),execution.to_string()]).unwrap();
+        // A live fingerprint: the liveness worker (decision 9) disconnects a binding without one.
+        let sender_fp =
+            herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "session");
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(sender_fp.pid),sender_fp.start as i64]).unwrap();
         let contexts = paths
             .instance_dir
             .join("contexts")
@@ -774,13 +777,17 @@ impl Fixture {
             .unwrap()
     }
     fn peer_binding(&self) {
-        self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation FROM occupant_bindings WHERE seat_id='sender'",[Uuid::new_v4().to_string()]).unwrap();
+        let peer_fp =
+            herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "peer-session");
+        self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation,?2,?3 FROM occupant_bindings WHERE seat_id='sender'",params![Uuid::new_v4().to_string(),i64::from(peer_fp.pid),peer_fp.start as i64]).unwrap();
     }
     // Check in the recipient as a second valid cooperative top-level caller,
     // with the same binding/context shape the fixture seeds for the sender.
     fn check_in_recipient(&self) {
         let execution = Uuid::new_v4();
-        self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation FROM occupant_bindings WHERE seat_id='sender'",[execution.to_string()]).unwrap();
+        let peer_fp =
+            herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "peer-session");
+        self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation,?2,?3 FROM occupant_bindings WHERE seat_id='sender'",params![execution.to_string(),i64::from(peer_fp.pid),peer_fp.start as i64]).unwrap();
         let contexts = self
             .paths
             .instance_dir

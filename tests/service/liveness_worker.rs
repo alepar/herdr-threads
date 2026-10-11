@@ -281,7 +281,7 @@ fn subagents_neither_supersede_nor_are_superseded() {
 }
 
 #[test]
-fn fingerprintless_migrated_binding_disconnects_on_first_pass() {
+fn fingerprintless_bindings_disconnect_on_first_pass() {
     let fx = Fx::new("liveness-nofp");
     let migrated = fx.bind("s", "claude", "A", None, 10);
     let plain = fx.bind("s", "codex", "B", None, 11);
@@ -292,12 +292,42 @@ fn fingerprintless_migrated_binding_disconnects_on_first_pass() {
         )
         .unwrap();
     fx.worker.pass(&budget()).unwrap();
-    assert_eq!(
-        fx.state(&migrated),
-        ("disconnected".into(), Some("liveness_process_exit".into()))
-    );
-    // No fingerprint and not migrated: nothing proves the process gone.
-    assert!(fx.connected(&plain));
+    // Decision 9: no zombie bindings. The migrated 24 h grace is archival only (§4), so
+    // migrated and plain fingerprint-less bindings alike disconnect, and neither is ended.
+    for binding in [&migrated, &plain] {
+        assert_eq!(
+            fx.state(binding),
+            ("disconnected".into(), Some("liveness_process_exit".into()))
+        );
+        let ended: Option<i64> = fx
+            .raw()
+            .query_row(
+                "SELECT ended_at FROM occupant_bindings WHERE binding_id=?1",
+                [binding],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ended, None);
+    }
+}
+
+#[test]
+fn fingerprintless_verdict_is_void_after_a_fingerprinted_reconnect() {
+    let fx = Fx::new("liveness-nofp-void");
+    let b = fx.bind("s", "claude", "A", None, 10);
+    let candidates = fx.store.liveness_candidates(None, &budget()).unwrap();
+    let decisions = classify(&candidates, fx.table.as_ref());
+    assert_eq!(decisions.len(), 1);
+    // The binding reconnects with a live fingerprint before the write lands.
+    fx.table.set(100, 5);
+    fx.raw()
+        .execute(
+            "UPDATE occupant_bindings SET liveness_pid=100, liveness_start=5 WHERE binding_id=?1",
+            [&b],
+        )
+        .unwrap();
+    assert_eq!(fx.store.apply_liveness(&decisions, &budget()).unwrap(), 0);
+    assert!(fx.connected(&b));
 }
 
 #[test]
