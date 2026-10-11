@@ -1038,9 +1038,14 @@ pub fn registered_child_claim(
 }
 
 /// The open Hermes subagent binding registered for the child session `key` names
-/// (`(seat, hermes, X, agent_id = X)`), if any. Only Hermes registers children this way.
+/// (`(seat, harness, X, agent_id = X)`), if any. Only a harness whose `BindingPolicy` registers
+/// child sessions does so.
 fn registered_child(db: &Connection, key: &BindingKey) -> Result<Option<BindingRow>, ApiError> {
-    if key.harness != "hermes" || key.agent_id.is_some() {
+    if !crate::harness::registry::builtins()
+        .binding_policy(&key.harness)
+        .registered_child_sessions
+        || key.agent_id.is_some()
+    {
         return Ok(None);
     }
     Ok(match_claim(
@@ -1282,7 +1287,10 @@ fn resolve_claim_inner(
     } else {
         crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE
     };
-    let sub_provenance = if harness == crate::protocol::authority::Harness::Claude {
+    let sub_provenance = if crate::harness::registry::builtins()
+        .binding_policy(harness.as_str())
+        .hook_agent_id
+    {
         crate::protocol::authority::COOPERATIVE_HOOK_AGENT_PROVENANCE
     } else {
         crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE

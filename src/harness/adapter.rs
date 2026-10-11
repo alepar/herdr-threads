@@ -33,6 +33,20 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn caller_env(&self) -> Option<CallerEnvShape> {
         None
     }
+    /// How the daemon and the client treat this harness's subagent and child sessions.
+    fn binding_policy(&self) -> BindingPolicy {
+        BindingPolicy::default()
+    }
+    /// The hook events this harness's installed integration must register for herdr-threads to
+    /// work; a missing one marks the install stale.
+    fn required_hook_events(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+    /// A daemon-free rewrite of this harness's hook stdout, applied to every outcome. `None`:
+    /// leave `existing_stdout` as it is.
+    fn rewrite_hook_output(&self, _input: &[u8], _existing_stdout: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection> {
         let observed = self.classify(input);
         self.contracts()
@@ -255,6 +269,36 @@ pub struct CallerEnvShape {
     /// environment (cooperative, never authority: the daemon decides the claim against A2).
     /// `None`: every session is top-level.
     pub role: Option<CallerRoleWitness>,
+    /// Other process shapes of the harness beyond the argv[0] names (argv contents, interpreter
+    /// launchers).
+    pub process_match: Option<fn(&crate::ports::ProcessRecord) -> bool>,
+    /// A variable in which the harness exports its own pid to its descendants: a process with
+    /// that pid is this harness, and its record is preferred for the fingerprint while it exists.
+    pub pid_var: Option<&'static str>,
+    /// A process of this harness that has no pane (a managed daemon): a caller under it is
+    /// refused `managed_daemon`.
+    pub paneless: Option<PanelessProcess>,
+}
+
+/// A process of a harness that has no pane, and the refusal text for a caller under it.
+#[derive(Debug, Clone, Copy)]
+pub struct PanelessProcess {
+    pub matches: fn(&crate::ports::ProcessRecord) -> bool,
+    /// The refusal message, given the pid of the paneless process.
+    pub refusal: fn(u32) -> String,
+}
+
+/// Adapter-declared facts about how a harness's sessions bind, used by the client and the daemon.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BindingPolicy {
+    /// The harness's own hook passes a subagent's id to the CLI as `--agent-id`: the client
+    /// honours `--agent-id` only for such a harness, and its subagent bindings are recorded
+    /// `cooperative_hook_agent` (else `cooperative_env_session`).
+    pub hook_agent_id: bool,
+    /// Child sessions are registered by their parent as subagent bindings keyed
+    /// `(seat, harness, child, agent_id = child)`; a top-level-shaped claim naming the child
+    /// session resolves to that binding.
+    pub registered_child_sessions: bool,
 }
 
 /// `CallerEnvShape::role`: the session id and the caller's environment lookup.
@@ -268,6 +312,14 @@ pub enum CallerSession {
     /// id is the child's own session id.
     Subagent {
         parent: String,
+    },
+    /// A subagent of the named session whose agent id is `agent`.
+    Marked {
+        agent: String,
+    },
+    /// A subagent marker in `var` is present but unparseable: refused, never read as top-level.
+    MalformedMarker {
+        var: &'static str,
     },
     /// The evidence cannot tell: refused, never read as top-level (fails toward child).
     Unattributable(String),

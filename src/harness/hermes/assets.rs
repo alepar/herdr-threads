@@ -906,12 +906,11 @@ pub fn status(o: &ProfileObservation, state: &Path) -> Result<AssetStatus, Setup
             let bridge = m.assets.get("__init__.py").ok_or(SetupError::Conflict)?;
             result.bridge_current = Some(bridge.digest == fingerprint(EMBEDDED_BRIDGE));
             let text = String::from_utf8_lossy(&bridge.bytes);
-            result.bridge_missing_events =
-                crate::harness::required_hooks::HERMES_REQUIRED_HOOK_EVENTS
-                    .iter()
-                    .filter(|event| !text.contains(&format!("\"{event}\"")))
-                    .map(|event| (*event).to_owned())
-                    .collect();
+            result.bridge_missing_events = crate::harness::hermes::REQUIRED_HOOK_EVENTS
+                .iter()
+                .filter(|event| !text.contains(&format!("\"{event}\"")))
+                .map(|event| (*event).to_owned())
+                .collect();
             let settings: LaunchAssetSettings =
                 serde_json::from_slice(&m.assets["bridge_config.json"].bytes)
                     .map_err(|_| SetupError::Conflict)?;
@@ -1175,7 +1174,7 @@ mod tests {
     #[test]
     fn doctor_flags_stale_hermes_bridge() {
         let f = Fixture::new();
-        let required = crate::harness::required_hooks::HERMES_REQUIRED_HOOK_EVENTS;
+        let required = crate::harness::hermes::REQUIRED_HOOK_EVENTS;
         let all_named = required
             .iter()
             .map(|event| format!("# \"{event}\"\n"))

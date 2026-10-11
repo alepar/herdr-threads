@@ -3770,13 +3770,15 @@ fn emit(outcome: &HookOutcome) -> bool {
     delivered
 }
 
-/// A Claude subagent's `herdr-threads`/`ht` Bash call carries its `agent_id` to the CLI as
-/// `--agent-id` (spec §1). The rewrite needs no daemon, so it rides on every PreToolUse
-/// outcome, including the quiet and unavailable ones.
+/// A harness's daemon-free hook-output rewrite (spec §1: a Claude subagent's `herdr-threads`/`ht`
+/// Bash call carries its `agent_id` to the CLI as `--agent-id`). The rewrite needs no daemon, so
+/// it rides on every outcome, including the quiet and unavailable ones.
 fn with_subagent_rewrite(args: &HookArgs, stdin: &[u8], mut outcome: HookOutcome) -> HookOutcome {
-    if args.harness == Harness::Claude
-        && let Some(stdout) =
-            crate::harness::claude::subagent_rewrite_output(stdin, &outcome.stdout)
+    if let Some(stdout) = builtins()
+        .registrations()
+        .iter()
+        .find(|registration| registration.metadata().id == args.harness.as_str())
+        .and_then(|registration| registration.rewrite_hook_output(stdin, &outcome.stdout))
     {
         outcome.stdout = stdout;
     }

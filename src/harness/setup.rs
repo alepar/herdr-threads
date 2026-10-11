@@ -841,7 +841,11 @@ pub fn missing_required_events<'a>(
     installed: impl IntoIterator<Item = &'a str>,
 ) -> Vec<String> {
     let installed: Vec<&str> = installed.into_iter().collect();
-    super::required_hooks::required_hook_events(harness)
+    super::registry::builtins()
+        .registrations()
+        .iter()
+        .find(|registration| registration.metadata().id == harness)
+        .map(|registration| registration.required_hook_events())
         .unwrap_or_default()
         .iter()
         .filter(|event| !installed.contains(event))
